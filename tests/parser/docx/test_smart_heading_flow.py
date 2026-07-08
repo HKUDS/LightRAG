@@ -12,6 +12,7 @@ from lightrag.parser.docx.smart_heading.heading_flow import (
     align_numbering_series,
     assign_levels_by_size,
     backfill_top_level,
+    demote_strong_body_headings,
     document_fs_base,
     gate_candidates,
     gate_with_cb1,
@@ -1018,3 +1019,102 @@ def test_table_title_block_end_to_end_assembly(monkeypatch) -> None:
 
     # I1: absorbed cell texts never trip the paragraph-preservation check.
     assert g.verify_content_preservation(records, blocks, toc_indices=set()) == []
+
+
+# ---------------------------------------------------------------------------
+# §2.3.3 CB1 look-ahead: density evaluated AFTER strong-body + series propagation
+# ---------------------------------------------------------------------------
+
+
+def test_cb1_strong_body_lookahead_keeps_cnnum_headings(caplog) -> None:
+    """A flat, same-size 公文 whose body is ``CnParentNum`` "(一)…。" clauses
+    floods raw density (all numbered candidates at one size), but projecting the
+    downstream strong-body + CB2 series propagation drops it back under the bar.
+    CB1 must withhold the trip WITHOUT re-estimating, so the genuine same-size
+    ``CnNum`` headings survive the normal demotion sweep instead of being wiped
+    out by the blanket "same-size composite off" re-gate."""
+    clause = "加强组织领导，落实工作责任，明确任务分工，确保各项措施落地见效。"
+    records = [
+        _para("一、总体要求"),
+        _para(f"（一）{clause}"),
+        _para(f"（二）{clause}"),
+        _para(f"（三）{clause}"),
+        _para("二、主要任务"),
+        _para(f"（四）{clause}"),
+        _para(f"（五）{clause}"),
+        _para(f"（六）{clause}"),
+    ]
+    indices = list(range(len(records)))
+    fs = document_fs_base(records, indices)
+    assert fs.size_pt == 12.0 and fs.confidence_high
+
+    warnings: dict = {}
+    with caplog.at_level(logging.INFO, logger="lightrag"):
+        gate = gate_with_cb1(
+            records,
+            indices,
+            fs_base=fs,
+            warnings=warnings,
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
+    # Look-ahead spared the trip WITHOUT re-estimation or a fallback.
+    assert warnings.get("smart_cb1_strong_body_recovered") == 1
+    assert gate.cb1_strong_body_recovered
+    assert not gate.cb1_reestimated and not gate.cb1_tripped
+    regate = next(r for r in caplog.records if "not tripping" in r.getMessage())
+    assert regate.levelno == logging.INFO
+    assert not any("re-estimated FS_base" in m for m in _log_messages(caplog))
+
+    # gate_with_cb1 defers the real demotion — run the downstream sweep exactly
+    # as run_smart_heading does; the CnParentNum body collapses, the CnNum
+    # headings remain.
+    ds = gate.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings=warnings)
+    assert {d.text for d in ds if d.is_heading} == {"一、总体要求", "二、主要任务"}
+
+
+def test_cb1_lookahead_propagates_demotion_across_partial_series(caplog) -> None:
+    """CB2 propagation inside the look-ahead: only one member of each
+    ``CnParentNum`` series is sentence-like, but a 33% hit share (≥ the 20%
+    body ratio, no physical outline) propagates the body demotion to the whole
+    series — so the projected density still falls under threshold and CB1 is
+    spared, keeping the ``CnNum`` headings."""
+    sentence = "加强组织领导，落实工作责任，明确任务分工，确保各项措施落地见效。"
+    phrase = (
+        "完善制度机制，强化监督问责，明确任务分工，压实各方责任"  # no 。, < 60 chars
+    )
+    records = [
+        _para("一、总体要求"),
+        _para(f"（一）{sentence}"),  # sentence-like -> individual hit
+        _para(f"（二）{phrase}"),  # not an individual hit
+        _para(f"（三）{phrase}"),  # not an individual hit
+        _para("二、保障措施"),
+        _para(f"（四）{sentence}"),  # sentence-like -> individual hit
+        _para(f"（五）{phrase}"),
+        _para(f"（六）{phrase}"),
+    ]
+    indices = list(range(len(records)))
+    fs = document_fs_base(records, indices)
+
+    warnings: dict = {}
+    with caplog.at_level(logging.INFO, logger="lightrag"):
+        gate = gate_with_cb1(
+            records,
+            indices,
+            fs_base=fs,
+            warnings=warnings,
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
+    assert gate.cb1_strong_body_recovered
+    assert not gate.cb1_reestimated and not gate.cb1_tripped
+
+    ds = gate.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings=warnings)
+    # Whole CnParentNum series demoted via propagation, not just the two hits.
+    assert {d.text for d in ds if d.is_heading} == {"一、总体要求", "二、保障措施"}

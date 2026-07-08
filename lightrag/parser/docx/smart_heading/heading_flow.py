@@ -21,6 +21,7 @@ skeleton correction (§2.2.8) build on these decisions in later steps.
 
 from __future__ import annotations
 
+import copy
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -226,8 +227,15 @@ class GateResult:
     decisions: list[HeadingDecision]  # admitted candidates, document order
     fs_base: FsBase
     density: float  # candidates / non-empty paragraphs
+    non_empty: int = 0  # denominator behind ``density`` (non-empty, non-TOC paras)
     cb1_reestimated: bool = False
     cb1_tripped: bool = False  # still too dense after one re-estimation
+    #: CB1 spared the sub-document without re-estimation: the raw first-pass
+    #: density was over threshold, but a look-ahead of the downstream
+    #: strong-body + CB2 series-propagation sweep projected it back under the
+    #: bar, so the trip was withheld (§2.3.3). Real demotion is left to the
+    #: normal post-merge sweep.
+    cb1_strong_body_recovered: bool = False
     cb1_new_fs: float | None = None  # re-estimated FS_base (audit, §2.3.5)
     #: Second-pass mean body chars between adjacent candidates (observational
     #: only — the §2.3.3 recheck is density-only; None when < 2 candidates).
@@ -532,7 +540,11 @@ def gate_candidates(
     non_empty = len(para_indices)
     density = (len(decisions) / non_empty) if non_empty else 0.0
     return GateResult(
-        decisions=decisions, fs_base=fs_base, density=density, demoted=demoted
+        decisions=decisions,
+        fs_base=fs_base,
+        density=density,
+        non_empty=non_empty,
+        demoted=demoted,
     )
 
 
@@ -569,11 +581,22 @@ def gate_with_cb1(
 ) -> GateResult:
     """Run the gate; on CB1 overflow (density > threshold, or the average
     body chars between adjacent candidates below
-    ``DOCX_SMART_MIN_INTER_HEADING_CHARS`` — trigger side only,
-    §2.3.3), re-estimate FS_base once by folding the candidates' dominant
-    size into the body and re-gate in ``cb1_reestimate`` mode (composite
-    same-size paths off, sizes above the new body size still auto-admit).
-    Still over the density threshold → mark the breaker tripped.
+    ``DOCX_SMART_MIN_INTER_HEADING_CHARS`` — trigger side only, §2.3.3):
+
+    1. Look-ahead: project the downstream strong-body + CB2 series-propagation
+       sweep onto a throwaway copy of the candidates and re-measure density.
+       The raw first-pass density counts numbered body-in-disguise (e.g. a run
+       of ``CnParentNum`` "(一)…。" clauses) whose strong-body demotion is
+       deferred to that post-merge sweep — and the sweep is skipped once the
+       breaker trips. If the projected density falls back under threshold, the
+       sub-document is not truly over-detected: withhold the trip, keep the
+       first-pass decisions (``cb1_strong_body_recovered``), and let the normal
+       sweep do the real demotion. Genuine same-size numbered headings (``一、``)
+       survive instead of being wiped by the blanket re-estimation below.
+    2. Otherwise re-estimate FS_base once by folding the candidates' dominant
+       size into the body and re-gate in ``cb1_reestimate`` mode (composite
+       same-size paths off, sizes above the new body size still auto-admit).
+       Still over the density threshold → mark the breaker tripped.
 
     The density threshold is baseline-aware: ``max(floor, baseline_density +
     margin)`` where the floor is ``DOCX_SMART_DENSITY_MAX`` and the margin is
@@ -597,6 +620,49 @@ def gate_with_cb1(
     inter_chars = _avg_inter_heading_body_chars(records, indices, result)
     sparse_body = inter_chars is not None and inter_chars < min_inter
     if result.density <= threshold and not sparse_body:
+        return result
+
+    # CB1 look-ahead (§2.3.3): the raw first-pass density is over the bar, but
+    # numbered body-in-disguise (e.g. a run of ``CnParentNum`` "(一)…。" clauses)
+    # is still counted as candidates here — its strong-body demotion is deferred
+    # to the post-merge sweep, which runs LATER and is skipped entirely once the
+    # breaker trips. Project that sweep forward on a throwaway copy (strong-body
+    # + CB2 series propagation) and re-measure: if the projected density falls
+    # back under threshold, the sub-document is not truly over-detected once
+    # body-in-disguise is removed. Withhold the trip and let the normal
+    # downstream sweep do the real demotion — this keeps genuine same-size
+    # numbered headings (``一、``) that the blanket re-estimation would wipe out.
+    #
+    # The projection runs the FULL strong-body check (so multi-sentence body is
+    # caught too), but ``strong_body`` is a per-parse memo (run_smart_heading):
+    # every verdict computed here is cached by paragraph text, so the
+    # authoritative post-merge sweep reads them back instead of re-invoking
+    # spaCy. Net spaCy cost stays one pass per unique paragraph across the gate,
+    # this look-ahead, and the downstream sweep.
+    scratch = [copy.deepcopy(d) for d in result.decisions]
+    assign_levels_by_size(scratch)  # CB2 series-group intervals need d.level
+    demote_strong_body_headings(
+        scratch, strong_body=gate_kwargs.get("strong_body"), warnings=None
+    )
+    survivors = [d for d in scratch if d.is_heading]
+    proj_density = (len(survivors) / result.non_empty) if result.non_empty else 0.0
+    proj = GateResult(decisions=survivors, fs_base=fs_base, density=proj_density)
+    proj_inter = _avg_inter_heading_body_chars(records, indices, proj)
+    proj_sparse = proj_inter is not None and proj_inter < min_inter
+    if proj_density <= threshold and not proj_sparse:
+        result.cb1_strong_body_recovered = True
+        if warnings is not None:
+            warnings["smart_cb1_strong_body_recovered"] = (
+                warnings.get("smart_cb1_strong_body_recovered", 0) + 1
+            )
+        logger.info(
+            "[smart_heading] CB1: raw density %.0f%% over threshold %.0f%%, but "
+            "strong-body + series propagation projects %.0f%% — not tripping "
+            "(deferred to the post-merge demotion sweep)",
+            result.density * 100,
+            threshold * 100,
+            proj_density * 100,
+        )
         return result
 
     # CB1: the dominant "heading" size is body in disguise. Fold it in:
@@ -1708,6 +1774,26 @@ def _outline_only_decisions(
     return out
 
 
+def _memoized_strong_body(
+    fn: Callable[[str], str | None],
+) -> Callable[[str], str | None]:
+    """Per-parse memo for the strong-body verdict. The verdict is a pure
+    function of the paragraph text within one parse (the length env is
+    constant), so the gate, the CB1 look-ahead, and the post-merge demotion
+    sweep can share ONE spaCy pass per unique paragraph rather than each
+    re-running ``sentence_count`` on the same text. The cache is scoped to this
+    wrapper instance (one per ``run_smart_heading`` call), so it never leaks
+    across documents or survives an env change between parses."""
+    cache: dict[str, str | None] = {}
+
+    def _cached(text: str) -> str | None:
+        if text not in cache:
+            cache[text] = fn(text)
+        return cache[text]
+
+    return _cached
+
+
 def run_smart_heading(
     records: Sequence[Any],
     *,
@@ -1733,6 +1819,10 @@ def run_smart_heading(
     min_tokens = int(
         os.getenv("DOCX_SMART_MIN_TOKENS", "") or DEFAULT_DOCX_SMART_MIN_TOKENS
     )
+
+    # One spaCy pass per unique paragraph across the whole document: the gate,
+    # the CB1 look-ahead, and the post-merge sweep all share this memo.
+    strong_body = _memoized_strong_body(strong_body or g.strong_body_reason)
 
     audit: dict[str, Any] = {"sub_documents": [], "rule_events": []}
 
@@ -1915,6 +2005,8 @@ def run_smart_heading(
                 if gate.cb1_new_inter_chars is not None
                 else None
             )
+        if gate.cb1_strong_body_recovered:  # §2.3.3 look-ahead spared the trip
+            sub_audit["cb1_strong_body_recovered"] = True
         if gate.cb1_tripped:
             sub_audit["fallback"] = "cb1_density"
             fallback_subs += 1
