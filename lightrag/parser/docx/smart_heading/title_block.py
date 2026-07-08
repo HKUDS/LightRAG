@@ -154,10 +154,15 @@ def _window_mode_size(records: Sequence[Any], indices: Sequence[int]) -> float |
     return max(weights.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
-#: Multi-paragraph windows admit a title line at the §2.2.2 strong-signal
-#: tier (+1pt over the global FS_base initial value); the single-paragraph
-#: channel is one tier stricter (+2pt via DOCX_SMART_TITLE_BLOCK_MIN_DELTA).
-MULTI_WINDOW_TITLE_DELTA_PT = 1.0
+#: A title line must clear FS_base by at least this many points. BOTH
+#: channels require +2pt: the multi-paragraph window used to admit the
+#: §2.2.2 strong-signal tier (+1pt), but that deliberately let ordinary
+#: section-heading-sized lines open windows (A7/B17). Tightening to +2pt —
+#: matching the single-paragraph channel (DOCX_SMART_TITLE_BLOCK_MIN_DELTA) —
+#: demands genuine cover-title dominance over body and aligns with the
+#: §2.2.4 conservative-preference principle (a title-block false positive is
+#: leveraged into regional structural errors, so ties go to "not a title").
+MULTI_WINDOW_TITLE_DELTA_PT = 2.0
 
 
 def find_title_block_candidates(
@@ -229,6 +234,46 @@ def find_title_block_candidates(
             and not rec.is_toc_link
         )
 
+    def _dominates_neighbor_headings(
+        win_max: float | None, start: int, end: int
+    ) -> bool:
+        """Visual-dominance gate (Rule 2): the block's biggest line must
+        out-size a neighbouring section heading on at least one flank.
+
+        Scans up to ``_FLANK_WINDOW`` paragraphs outward from each window edge
+        for the nearest real section heading (physical outline OR genuine
+        numbering, via ``_is_real_heading``) and compares its effective size.
+        A genuine cover title sits ABOVE the section-heading tier; a mid-body
+        emphasis cluster that never beats the surrounding headings is not a
+        title block. When no such heading flanks the window (e.g. a document
+        with no outline/numbering structure, or a size-less neighbour) the
+        rule cannot be evaluated and passes — its absolute counterpart
+        (``_is_title_line``'s +2pt over body) still guards the candidate.
+        """
+        if win_max is None:
+            return False
+        total = len(records)
+
+        def _nearest_heading_size(step: int, frm: int) -> float | None:
+            seen = 0
+            k = frm
+            while 0 <= k < total and seen < _FLANK_WINDOW:
+                r = records[k]
+                if r.kind == "para":
+                    seen += 1
+                    if _is_real_heading(k):
+                        return effective_font_size_pt(r)
+                k += step
+            return None
+
+        prev = _nearest_heading_size(-1, start - 1)
+        nxt = _nearest_heading_size(1, end)
+        if prev is None and nxt is None:
+            return True  # no comparable neighbour → rule inapplicable, pass
+        return (prev is not None and win_max > prev) or (
+            nxt is not None and win_max > nxt
+        )
+
     candidates: list[TitleBlockCandidate] = []
     covered: set[int] = set()
 
@@ -271,8 +316,15 @@ def find_title_block_candidates(
             window_paras.append(j)
             j += 1
         end = j
-        if len(window_paras) >= 2 and any(
-            _is_title_line(records[k]) for k in window_paras
+        title_line_sizes = [
+            effective_font_size_pt(records[k])
+            for k in window_paras
+            if _is_title_line(records[k])
+        ]
+        if (
+            len(window_paras) >= 2
+            and title_line_sizes
+            and _dominates_neighbor_headings(max(title_line_sizes), start, end)
         ):
             candidates.append(
                 TitleBlockCandidate(
@@ -306,6 +358,8 @@ def find_title_block_candidates(
             and single_size is not None
             and single_size >= fs_base_pt + delta
         ):
+            continue
+        if not _dominates_neighbor_headings(single_size, idx, idx + 1):
             continue
         if not _single_boundary_evidence(records, idx, pos, para_indices):
             continue

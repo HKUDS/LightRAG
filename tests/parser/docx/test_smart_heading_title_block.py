@@ -413,17 +413,26 @@ def test_multi_verdict_rejects_duplicate_indices() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_multi_window_admits_strong_tier_plus_one_pt() -> None:
-    """A7 (§2.2.4): the multi-paragraph window title line sits at the
-    strong-signal tier (+1pt over the FS_base initial value); only the
-    single-paragraph channel keeps the stricter +2pt delta."""
-    records = [
-        _para("产品技术白皮书", size=13.0),  # +1pt — below the old +2pt bar
+def test_multi_window_requires_two_pt_over_body() -> None:
+    """A7 tightened (§2.2.4 conservative preference): the multi-paragraph
+    window title line now needs +2pt over FS_base, matching the single
+    channel. The old +1pt strong-signal tier let ordinary section-heading
+    sizes open windows, so it is no longer sufficient on its own."""
+    # +1pt over base: below the (now unified) +2pt bar → no title line.
+    plus_one = [
+        _para("产品技术白皮书", size=13.0),
         _para("研发中心", size=12.0),
         _para("这一段是以句号结尾的正式正文内容，用来终止候选窗口的生长。", size=12.0),
     ]
-    cands = _find(records)
-    assert [c.trigger for c in cands] == ["multi_window"]
+    assert _find(plus_one) == []
+
+    # +2pt over base clears the bar → a multi_window candidate.
+    plus_two = [
+        _para("产品技术白皮书", size=14.0),
+        _para("研发中心", size=12.0),
+        _para("这一段是以句号结尾的正式正文内容，用来终止候选窗口的生长。", size=12.0),
+    ]
+    assert [c.trigger for c in _find(plus_two)] == ["multi_window"]
 
     # Control: at exactly base size the window carries no title line.
     flat = [
@@ -588,6 +597,93 @@ def test_multi_window_plain_cover_still_found() -> None:
     cands = _find(records)
     assert len(cands) == 1 and not cands[0].single
     assert (cands[0].start, cands[0].end) == (0, 3)
+
+
+# ---------------------------------------------------------------------------
+# visual-dominance gate (Rule 2): a title block must out-size a neighbouring
+# section heading on at least one flank
+# ---------------------------------------------------------------------------
+
+
+def test_multi_window_rejected_when_not_dominant_over_headings() -> None:
+    """A cluster whose biggest line is SMALLER than the neighbouring section
+    headings is a mid-body emphasis block, not a cover title — rejected even
+    though the line clears +2pt over body."""
+    records = [
+        _para("第一章 绪论", size=18.0, outline_level_raw=0),  # heading before
+        _para("一段以句号结尾的正文内容，用来隔开上一个标题。", size=12.0),
+        _para("强调小标题", size=14.0),  # +2pt over body, but < 18pt headings
+        _para("配套的说明行", size=12.0),
+        _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+        _para("第二章 概览", size=18.0, outline_level_raw=0),  # heading after
+    ]
+    # window is [2, 4): 强调小标题(14) + 配套的说明行(12); flanked by 18pt
+    # headings on both sides → 14 is not dominant → no candidate.
+    assert _find(records) == []
+
+
+def test_multi_window_admitted_when_dominant_over_one_flank() -> None:
+    """OR semantics: dominating the heading on EITHER flank is enough."""
+    records = [
+        _para("第一章 绪论", size=20.0, outline_level_raw=0),  # bigger flank
+        _para("一段以句号结尾的正文内容，用来隔开上一个标题。", size=12.0),
+        _para("某某产品发布公告", size=18.0),  # title line
+        _para("配套的说明行", size=12.0),
+        _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+        _para("第二章 概览", size=16.0, outline_level_raw=0),  # smaller flank
+    ]
+    # 18pt beats the 16pt following heading (though not the 20pt preceding
+    # one) → dominant on one flank → candidate over [2, 4).
+    cands = _find(records)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (2, 4)
+
+
+def test_multi_window_dominance_passes_without_neighbor_headings() -> None:
+    """No comparable section heading flanks the window (unstructured doc) →
+    the relative rule is inapplicable and passes; the +2pt absolute bar still
+    guards the candidate."""
+    records = [
+        _para("公司数字化转型白皮书", size=14.0),  # +2pt, no heading neighbours
+        _para("研发中心发布", size=12.0),
+        _para("这一段是以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (0, 2)
+
+
+def test_dominance_reference_includes_numbered_headings() -> None:
+    """The neighbour reference is a real heading = physical outline OR genuine
+    numbering; a numbered-but-un-outlined heading still counts."""
+    records = [
+        _para("第一章 绪论", size=18.0),  # genuine numbering, NO outline level
+        _para("一段以句号结尾的正文内容，用来隔开上一个标题。", size=12.0),
+        _para("强调小标题", size=14.0),  # +2pt, but < 18pt numbered heading
+        _para("配套的说明行", size=12.0),
+        _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+    ]
+    # Only flank heading is numbered (no outline) but still bounds dominance;
+    # 14 < 18 and no other neighbour → not dominant → no candidate.
+    assert _find(records) == []
+
+
+def test_dominance_ignores_headings_beyond_flank_window(monkeypatch) -> None:
+    """Section headings farther than K=20 paragraphs from the window are not
+    compared against; with a small K the distant big heading is ignored and
+    the window (no near neighbour) passes on the fallback."""
+    import lightrag.parser.docx.smart_heading.title_block as tb
+
+    monkeypatch.setattr(tb, "_FLANK_WINDOW", 1)
+    records = [
+        _para("第一章 绪论", size=20.0, outline_level_raw=0),  # 2 paras away
+        _para("一段以句号结尾的正文内容，用来隔开。", size=12.0),
+        _para("某某产品发布公告", size=14.0),  # title line, +2pt over body
+        _para("配套的说明行", size=12.0),
+        _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+    ]
+    # With K=1 the 20pt heading (2 body paras before the window start) is out
+    # of reach → no comparable neighbour → dominance passes → candidate.
+    cands = _find(records)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (2, 4)
 
 
 def test_single_candidate_after_previous_paragraph_break_run() -> None:
