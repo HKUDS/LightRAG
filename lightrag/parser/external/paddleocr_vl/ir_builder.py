@@ -46,8 +46,19 @@ _SKIP_LABELS = {
     "footer_image",
     "aside_text",
 }
-_TEXT_LABELS = {"text", "abstract", "reference_content", "footnote", "figure_title"}
-_MEDIA_LABELS = {"table", "image"}
+_TEXT_LABELS = {
+    "abstract",
+    "algorithm",
+    "content",
+    "figure_title",
+    "footnote",
+    "reference",
+    "reference_content",
+    "text",
+    "vision_footnote",
+}
+_DRAWING_LABELS = {"chart", "image", "seal"}
+_MEDIA_LABELS = {"table", *_DRAWING_LABELS}
 _FIGURE_TITLE_LABEL = "figure_title"
 
 
@@ -161,13 +172,12 @@ class PaddleOCRVLIRBuilder:
                 text = _item_content(item)
 
                 # Handle images first since they may have empty content
-                if label == "image":
+                if label in _DRAWING_LABELS:
                     bbox = item.get("block_bbox") or item.get("bbox")
                     src = page_images.get(tuple(bbox) if bbox else None, "")
                     if not src:
                         src = _extract_image_src(text)
-                    drawing, asset = _build_drawing(
-                        item,
+                    drawing, asset = _build_ir_drawing(
                         src,
                         raw_dir,
                         page_index=page_index,
@@ -198,7 +208,7 @@ class PaddleOCRVLIRBuilder:
                     continue
 
                 if label == "table":
-                    table = _build_table(
+                    table = _build_ir_table(
                         item, caption=captions_by_index.get(item_index, "")
                     )
                     if table is None:
@@ -210,18 +220,22 @@ class PaddleOCRVLIRBuilder:
                     record_position(item, page_index)
                     continue
 
-                if label == "display_formula":
+                if label in {"display_formula", "inline_formula"}:
+                    is_block = label == "display_formula"
                     equation = IREquation(
                         placeholder_key=next_key("eq"),
                         latex=text.strip(),
-                        is_block=True,
+                        is_block=is_block,
                         self_ref=(
                             f"{CONTENT_LIST_FILENAME}#/{page_index}/prunedResult/"
                             f"parsing_res_list/{item_index}"
+                            if is_block
+                            else ""
                         ),
                     )
                     cb_equations.append(equation)
-                    cb_lines.append(f"{{{{EQ:{equation.placeholder_key}}}}}")
+                    token = "EQ" if is_block else "EQI"
+                    cb_lines.append(f"{{{{{token}:{equation.placeholder_key}}}}}")
                     record_position(item, page_index)
                     continue
 
@@ -289,7 +303,7 @@ def _page_images_map(page: dict[str, Any]) -> dict[tuple[int, int, int, int], st
     )
     if not isinstance(images, dict):
         return result
-    for path in images.keys():
+    for path in images:
         bbox = _parse_bbox_from_image_path(path)
         if bbox:
             result[bbox] = path
@@ -445,7 +459,7 @@ def _position_from_item(item: dict[str, Any], page_index: int) -> IRPosition | N
     return IRPosition(type="bbox", anchor=str(page_index + 1))
 
 
-def _build_table(item: dict[str, Any], *, caption: str = "") -> IRTable | None:
+def _build_ir_table(item: dict[str, Any], *, caption: str = "") -> IRTable | None:
     raw = _item_content(item)
     if not raw:
         return None
@@ -474,8 +488,7 @@ def _extract_image_src(text: str) -> str:
     return m.group(1) if m else ""
 
 
-def _build_drawing(
-    item: dict[str, Any],
+def _build_ir_drawing(
     src: str,
     raw_dir: Path,
     *,

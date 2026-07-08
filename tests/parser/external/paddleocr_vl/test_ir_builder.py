@@ -351,3 +351,82 @@ def test_caption_does_not_match_across_non_skip_content(tmp_path: Path) -> None:
     block = ir.blocks[0]
     assert block.tables[0].caption == ""
     assert "Table 1: Results." in block.content_template
+
+
+@pytest.mark.offline
+def test_paddleocr_vl_known_labels_map_to_ir_actions(tmp_path: Path) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Title",
+                            "block_bbox": [10, 20, 30, 40],
+                        },
+                        {
+                            "block_label": "algorithm",
+                            "block_content": "for i in range(3): pass",
+                            "block_bbox": [10, 50, 90, 60],
+                        },
+                        {
+                            "block_label": "content",
+                            "block_content": "Content block.",
+                            "block_bbox": [10, 62, 90, 68],
+                        },
+                        {
+                            "block_label": "reference",
+                            "block_content": "References",
+                            "block_bbox": [10, 70, 90, 80],
+                        },
+                        {
+                            "block_label": "vision_footnote",
+                            "block_content": "Visual footnote.",
+                            "block_bbox": [10, 82, 90, 90],
+                        },
+                        {
+                            "block_label": "inline_formula",
+                            "block_content": "x+y",
+                            "block_bbox": [10, 92, 90, 100],
+                        },
+                        {
+                            "block_label": "chart",
+                            "block_content": "",
+                            "block_bbox": [10, 110, 90, 150],
+                        },
+                        {
+                            "block_label": "seal",
+                            "block_content": "",
+                            "block_bbox": [10, 160, 90, 190],
+                        },
+                    ]
+                },
+                "markdown": {
+                    "images": {
+                        "imgs/img_in_image_box_10_110_90_150.jpg": "ignored",
+                        "imgs/img_in_image_box_10_160_90_190.jpg": "ignored",
+                    }
+                },
+            }
+        ],
+    )
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    block = ir.blocks[0]
+    assert "for i in range(3): pass" in block.content_template
+    assert "Content block." in block.content_template
+    assert "References" in block.content_template
+    assert "Visual footnote." in block.content_template
+    assert len(block.equations) == 1
+    assert block.equations[0].latex == "x+y"
+    assert block.equations[0].is_block is False
+    assert f"{{{{EQI:{block.equations[0].placeholder_key}}}}}" in block.content_template
+    assert [drawing.asset_ref for drawing in block.drawings] == [
+        "imgs/img_in_image_box_10_110_90_150.jpg",
+        "imgs/img_in_image_box_10_160_90_190.jpg",
+    ]
