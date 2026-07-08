@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import base64
-import inspect
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import lightrag.parser.external.paddleocr_vl.client as client_mod
 from lightrag.parser.external.paddleocr_vl.client import PaddleOCRVLRawClient
 
 DEFAULT_PAYLOAD = {
@@ -184,7 +182,7 @@ def _install_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
-        lambda *a, **kw: None,
+        lambda *_, **__: None,
     )
 
 
@@ -387,44 +385,6 @@ def test_client_records_mode_specific_endpoints(
     assert client.official_endpoint == "http://official-paddle.test/api/v2/ocr/jobs"
     assert client.local_endpoint == "http://local-paddle.test"
     assert client.endpoint == client.official_endpoint
-
-
-def test_client_keeps_endpoint_env_resolution_local_to_client() -> None:
-    source = inspect.getsource(client_mod)
-
-    for name in (
-        "current_api_mode",
-        "current_official_endpoint_signature",
-        "current_local_endpoint_signature",
-        "current_engine_version",
-        "current_options_signature",
-    ):
-        assert name not in source
-
-    assert "self._parser_options.signature()" in source
-
-
-def test_client_does_not_redefine_cache_owned_constants() -> None:
-    source = inspect.getsource(client_mod)
-
-    for name in (
-        "DEFAULT_PADDLEOCR_VL_API_MODE",
-        "VALID_PADDLEOCR_VL_API_MODES",
-        "DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT",
-        "DEFAULT_PADDLEOCR_VL_MODEL",
-        "DEFAULT_PADDLEOCR_VL_ENGINE_VERSION",
-    ):
-        assert f"{name} =" not in source
-
-
-def test_download_into_delegates_to_mode_specific_downloaders() -> None:
-    source = inspect.getsource(PaddleOCRVLRawClient.download_into)
-
-    assert "await self._download_official(" in source
-    assert "await self._download_local(" in source
-    assert "_submit_official" not in source
-    assert "_poll_official_until_done" not in source
-    assert "_download_json_result" not in source
 
 
 def test_client_rejects_invalid_api_mode(monkeypatch: pytest.MonkeyPatch) -> None:

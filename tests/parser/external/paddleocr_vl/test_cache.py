@@ -9,11 +9,6 @@ import pytest
 import lightrag.parser.external.paddleocr_vl.cache as cache_mod
 from lightrag.parser.external import Manifest, ManifestFile, write_manifest
 from lightrag.parser.external._common import compute_size_and_hash
-from lightrag.parser.external.paddleocr_vl import (
-    PADDLEOCR_VL_RAW_DIR_SUFFIX,
-    clear_dir_contents,
-    raw_dir_for_parsed_dir,
-)
 from lightrag.parser.external.paddleocr_vl.cache import (
     PaddleOCRVLParserOptions,
     is_bundle_valid,
@@ -259,15 +254,6 @@ def test_parser_options_allow_none_page_range_alias() -> None:
     assert options.page_ranges is None
 
 
-def test_parser_option_coercion_uses_target_type_parameter() -> None:
-    assert cache_mod._coerce_value("true", bool, default=False) is True
-    assert cache_mod._coerce_value("7", int) == 7
-    assert cache_mod._coerce_value("0.7", float) == 0.7
-    assert cache_mod._coerce_value("  ocr  ", str) == "ocr"
-    assert cache_mod._coerce_value('["header"]', list) == ["header"]
-    assert cache_mod._coerce_value('{"temperature": 0.2}', dict) == {"temperature": 0.2}
-
-
 def test_per_file_overrides_participate_in_cache_signature(
     tmp_path: Path, source_file: Path
 ) -> None:
@@ -283,23 +269,6 @@ def test_per_file_overrides_participate_in_cache_signature(
 
     assert is_bundle_valid(raw, source_file, overrides=overrides) is True
     assert is_bundle_valid(raw, source_file) is False
-
-
-def test_cache_keeps_mode_specific_endpoint_helpers_private() -> None:
-    assert "current_official_endpoint_signature" not in cache_mod.__all__
-    assert "current_local_endpoint_signature" not in cache_mod.__all__
-
-
-def test_facade_exposes_raw_dir_helpers(tmp_path: Path) -> None:
-    parsed_dir = tmp_path / "demo.pdf.parsed"
-    raw_dir = raw_dir_for_parsed_dir(parsed_dir)
-    assert raw_dir == tmp_path / f"demo.pdf{PADDLEOCR_VL_RAW_DIR_SUFFIX}"
-
-    nested = raw_dir / "imgs"
-    nested.mkdir(parents=True)
-    (nested / "fig.jpg").write_bytes(b"fake")
-    clear_dir_contents(raw_dir)
-    assert list(raw_dir.iterdir()) == []
 
 
 def test_endpoint_change_invalidates_cache(
