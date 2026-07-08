@@ -13,6 +13,7 @@ asyncpg>=0.31.0,<1.0.0
 bcrypt>=4.0.0
 google-api-core>=2.0.0,<3.0.0
 google-genai>=1.0.0,<3.0.0
+lancedb>=0.34.0,<1.0.0
 llama-index>=0.14.0,<1.0.0
 llama-index-llms-openai>=0.6.12
 neo4j>=5.0.0,<7.0.0
