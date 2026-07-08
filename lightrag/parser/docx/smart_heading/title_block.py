@@ -193,6 +193,30 @@ def find_title_block_candidates(
             strong_cache[idx] = strong_body(records[idx].text)
         return strong_cache[idx] is not None
 
+    real_heading_cache: dict[int, bool] = {}
+
+    def _is_real_heading(idx: int) -> bool:
+        """A paragraph carrying a physical outline level or GENUINE numbering
+        is a structural section heading, never title-block cover text — so
+        BOTH channels exclude it: it terminates (and stays out of) a
+        multi-paragraph window, and it is never a single-paragraph candidate.
+
+        Enforces invariant I2 at candidate-formation time: an outline
+        paragraph is a heading and must never be routed into a title block —
+        a multi-window member's text is lost (absorbed members become empty
+        sentinels) and a single-line title would demote it to a level-0
+        cover heading. ``outline_level_raw`` (pre-policy) is used so a
+        length-demoted heading (``outline_level`` None, raw set) is also kept
+        out, matching the physical-outline test in :func:`judge_title_block`.
+        """
+        if idx not in real_heading_cache:
+            r = records[idx]
+            real_heading_cache[idx] = (
+                r.outline_level_raw is not None
+                or _has_real_numbering(r.text, numbering_veto)
+            )
+        return real_heading_cache[idx]
+
     def _is_title_line(rec: Any) -> bool:
         size = effective_font_size_pt(rec)
         return (
@@ -217,6 +241,7 @@ def find_title_block_candidates(
             rec.kind != "para"
             or i in skip_indices
             or _is_strong(i)
+            or _is_real_heading(i)
             or rec.is_toc_field
             or rec.is_toc_link
         ):
@@ -224,7 +249,8 @@ def find_title_block_candidates(
             continue
         # Grow the window: consecutive paragraphs without strong-body
         # features; empty paragraphs stay inside, tables / section breaks /
-        # TOC lines / strong-body paragraphs end it.
+        # TOC lines / strong-body paragraphs / real section headings
+        # (physical outline or genuine numbering) end it.
         start = i
         window_paras = []
         j = i
@@ -239,6 +265,7 @@ def find_title_block_candidates(
                 or r.is_toc_field
                 or r.is_toc_link
                 or _is_strong(j)
+                or _is_real_heading(j)
             ):
                 break
             window_paras.append(j)
@@ -271,7 +298,7 @@ def find_title_block_candidates(
             > TITLE_LINE_MAX_WEIGHTED_CHARS
         ):
             continue
-        if _has_real_numbering(rec.text, numbering_veto):
+        if _is_real_heading(idx):
             continue
         single_size = effective_font_size_pt(rec)
         if not (

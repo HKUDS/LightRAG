@@ -467,6 +467,129 @@ def test_title_line_uses_first_line_size_for_split_records() -> None:
     assert [c.trigger for c in cands] == ["single_line"]
 
 
+# ---------------------------------------------------------------------------
+# multi-window boundary: real section headings are never title-block members
+# ---------------------------------------------------------------------------
+
+
+def test_multi_window_excludes_numbered_outline_headings() -> None:
+    """Repro (M1212 标准化大纲): body-sized reference lines followed by real
+    numbered+outlined section headings must NOT form a title block. The only
+    lines reaching the +1pt title tier were the section headings themselves;
+    excluding them leaves the reference run with no title line → no candidate,
+    so the headings keep their standing and the reference text stays body."""
+    records = [
+        _para("GJB/Z 106A-2005  工艺标准化大纲编制指南", size=12.0),
+        _para("GJB/Z 114A-2015  产品标准化大纲编制指南", size=12.0),
+        _para("《M1212(ML001) 模块技术协议书》", size=12.0),
+        _para("1.4   产品简介", size=14.0, outline_level_raw=1),
+        _para("1.4.1   产品组成", size=14.0, outline_level_raw=2),
+        _para("这一段是以句号结尾的正式正文内容，用来终止候选窗口的生长。", size=12.0),
+    ]
+    assert _find(records) == []
+
+
+def test_multi_window_stops_before_outline_heading() -> None:
+    """A real section heading TERMINATES the window rather than nuking the
+    whole candidate: a genuine cover run before it still yields a candidate
+    whose ``end`` stops at the heading."""
+    records = [
+        _para("公司数字化转型白皮书", size=22.0),  # title line
+        _para("研发中心发布", size=12.0),
+        _para("概述", size=14.0, outline_level_raw=0),  # outline heading — boundary
+        _para("这一段是以句号结尾的正文内容。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1 and not cands[0].single
+    assert (cands[0].start, cands[0].end) == (0, 2)  # stops before the heading
+
+
+def test_multi_window_outline_heading_not_a_window_start() -> None:
+    """A window never STARTS on a real section heading (even a big one).
+
+    Without the start guard, ``[0, 2)`` would be a multi_window candidate
+    (18pt title line + a body-sized companion); the outline heading blocks it.
+    """
+    records = [
+        _para("引言", size=18.0, outline_level_raw=0),  # outline heading — big
+        _para("研发中心", size=12.0),
+        _para("这一段是以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+    ]
+    assert _find(records) == []
+
+
+def test_multi_window_stops_before_numbered_heading() -> None:
+    """Genuine numbering (no physical outline) is also a boundary — the
+    single-line channel already excludes it; multi-window now matches."""
+    records = [
+        _para("公司数字化转型白皮书", size=22.0),
+        _para("研发中心发布", size=12.0),
+        _para("第二章 总体设计", size=14.0),  # genuine numbering, no outline
+        _para("这一段是以句号结尾的正文内容。", size=12.0),
+    ]
+    # numbering_veto defaults to _stub_no_veto → the numbering stays genuine.
+    cands = _find(records)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (0, 2)
+
+
+def test_multi_window_boundary_uses_raw_outline_level() -> None:
+    """Field-choice pin: a length-demoted heading (``outline_level`` None,
+    ``outline_level_raw`` set) is still a boundary. Using the post-policy
+    ``outline_level`` would miss it and sweep its text into the block, where
+    a title-block member's text is lost — so the raw level is the right test.
+    """
+    records = [
+        _para("公司数字化转型白皮书", size=22.0),
+        _para("研发中心发布", size=12.0),
+        _para(
+            "某个被样式标成标题却因过长而被降级的段落标题行内容",
+            size=14.0,
+            outline_level=None,
+            outline_level_raw=1,
+        ),
+        _para("这一段是以句号结尾的正文内容。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (0, 2)
+
+
+def test_single_candidate_outline_heading_excluded() -> None:
+    """The single-paragraph channel excludes real section headings too: an
+    outline-carrying heading at a boundary (here doc start) is a top-level
+    heading for the outline anchor path, not a level-0 title block — mirroring
+    the numbering exclusion so a genuine heading never splits sub-documents."""
+    records = [
+        _para("引言", size=18.0, outline_level_raw=0),  # Heading-1 at doc start
+        _para("正文第一段说明了总体情况。", size=12.0),
+        _para("正文第二段继续说明。", size=12.0),
+    ]
+    assert _find(records) == []
+
+    # Control: the same lone big first line WITHOUT an outline is still a
+    # single-paragraph candidate (the feature is intact for non-headings).
+    plain = [
+        _para("某某产品发布公告", size=18.0),
+        _para("正文第一段说明了总体情况。", size=12.0),
+        _para("正文第二段继续说明。", size=12.0),
+    ]
+    cands = _find(plain)
+    assert len(cands) == 1 and cands[0].single and cands[0].start == 0
+
+
+def test_multi_window_plain_cover_still_found() -> None:
+    """Over-suppression guard: a legitimate cover block (big main title plus
+    body-sized companions, no outline, no numbering) still forms a candidate."""
+    records = [
+        _para("某某产品标准化大纲", size=22.0),
+        _para("副标题：模块化设计", size=14.0),
+        _para("某某研究所 发布", size=12.0),
+        _para("这一段是以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1 and not cands[0].single
+    assert (cands[0].start, cands[0].end) == (0, 3)
+
+
 def test_single_candidate_after_previous_paragraph_break_run() -> None:
     """A8 (§2.2.4 evidence b): a w:br type="page" run in the PREVIOUS
     paragraph is boundary evidence for the next paragraph; the paragraph
