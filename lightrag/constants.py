@@ -167,8 +167,14 @@ DEFAULT_DOCX_SMART_ENNUM_BLACKLIST = (
 DEFAULT_DOCX_SMART_CAPTION_PREFIXES = "图,表,公式,Figure,Table,Fig.,Eq.,Chart"
 # Heuristic TOC evidence: at least this many consecutive dot-leader lines.
 DEFAULT_DOCX_SMART_TOC_MIN_LINES = 3
-# CB1 heading-density ceiling (headings / non-empty paragraphs).
-DEFAULT_DOCX_SMART_DENSITY_MAX = 0.30
+# CB1 heading-density ceiling (headings / non-empty paragraphs): the floor of
+# the effective threshold. The threshold is baseline-aware — a document with a
+# rich physical outline naturally admits more candidates, so the effective
+# ceiling is max(this floor, baseline outline density + the margin below).
+DEFAULT_DOCX_SMART_DENSITY_MAX = 0.35
+# CB1 margin added to the sub-document's baseline outline density when it beats
+# the floor above (percentage points, not relative).
+DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN = 0.10
 # CB2 demotion-propagation breaker ratios.
 DEFAULT_DOCX_SMART_CB2_BODY_RATIO = 0.20
 DEFAULT_DOCX_SMART_CB2_OUTLINE_RATIO = 0.50

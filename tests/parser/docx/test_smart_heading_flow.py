@@ -111,6 +111,39 @@ def test_outline_strong_body_demotion_is_rule_tagged() -> None:
     assert verify_baseline_heading_retention(records, merged) == []
 
 
+def test_non_outline_strong_body_demotion_is_audited_output_neutral() -> None:
+    """Every recognition-time strong-body demotion is audited, not just the
+    I2 outline ones: a NON-outline candidate that the check demotes leaves a
+    rule-tagged demoted decision so the per-paragraph ledger matches the
+    demotion counter — but stays output-neutral (``use_raw_text`` off, no
+    physical outline, so it renders as plain body just like no decision)."""
+    records = _body(30) + [
+        # +4pt over the 12pt body → a size_strong candidate, but strong-body
+        # (ends with a period) and NOT carrying any physical outline level.
+        _para(
+            "这是一段被字号误判为标题候选但其实是正文的内容，它以句号收尾。", size=16.0
+        )
+    ]
+    warnings: dict = {}
+    result = _gate(records, warnings=warnings)
+    # Not admitted as a heading…
+    assert (
+        "这是一段被字号误判为标题候选但其实是正文的内容，它以句号收尾。"
+        not in _texts(result)
+    )
+    # …but recorded as an explicit, rule-tagged, audited demotion.
+    assert warnings.get("smart_strong_body_demotions") == 1
+    assert len(result.demoted) == 1
+    dem = result.demoted[0]
+    assert dem.record_index == len(records) - 1
+    assert dem.is_heading is False
+    assert "strong_body_demoted" in dem.rule_trail
+    # Non-outline: output-neutral (renders rec.text, not full_text_raw) and no
+    # physical-outline weight, so it never touches the I2 retention check.
+    assert dem.use_raw_text is False
+    assert dem.outline_level is None
+
+
 def test_high_confidence_size_tiers() -> None:
     """G5-6: +1pt alone stands; +0.5pt needs companions; isolated fails."""
     records = _body(30)
@@ -593,6 +626,68 @@ def test_cb1_long_inter_heading_body_does_not_trigger() -> None:
     )
     assert not result.cb1_reestimated
     assert all(f"正常标题{i}" in _texts(result) for i in range(4))
+
+
+def _cb1_baseline_density_records() -> list:
+    """4 headings (16pt) with long body gaps → 40% candidate density but the
+    inter-heading spacing stays well over 200 weighted chars (no sparse-body
+    trip). Layout: H B B H B B H B B H → 4 headings / 10 paras = 0.40."""
+    long_body = "这是一段刻意写长的正文内容，用来把相邻标题之间的正文字符数撑到二百加权字符以上，从而避开稀疏正文触发条件的判定。"
+    records: list = []
+    for i in range(4):
+        records.append(_para(f"标题第{i}节", size=16.0))
+        if i < 3:
+            records.append(_para(long_body, size=12.0))
+            records.append(_para(long_body, size=12.0))
+    return records
+
+
+def test_cb1_threshold_is_baseline_aware() -> None:
+    """The density ceiling is max(floor 0.35, baseline_density + 0.10). A
+    richly-outlined sub-document (high baseline) tolerates a candidate density
+    the flat floor would reject, so CB1 does NOT trip and every heading is
+    kept."""
+    records = _cb1_baseline_density_records()
+    indices = list(range(len(records)))
+    fs = document_fs_base(records, indices)
+    assert fs.confidence_high
+
+    # baseline outline density 0.35 → threshold max(0.35, 0.45) = 0.45;
+    # the 40% candidate density sits under it.
+    result = gate_with_cb1(
+        records,
+        indices,
+        fs_base=fs,
+        baseline_density=0.35,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert not result.cb1_reestimated
+    assert all(f"标题第{i}节" in _texts(result) for i in range(4))
+
+
+def test_cb1_low_baseline_still_trips_same_density() -> None:
+    """Control for baseline-awareness: the SAME 40% candidate density, but a
+    low baseline (threshold falls back to the 0.35 floor), trips CB1."""
+    records = _cb1_baseline_density_records()
+    indices = list(range(len(records)))
+    fs = document_fs_base(records, indices)
+
+    warnings: dict = {}
+    result = gate_with_cb1(
+        records,
+        indices,
+        fs_base=fs,
+        baseline_density=0.0,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result.cb1_reestimated
+    assert warnings.get("smart_cb1_reestimated") == 1
 
 
 def test_caption_veto_spares_outline_paragraphs() -> None:

@@ -30,6 +30,7 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_CB2_BODY_RATIO,
     DEFAULT_DOCX_SMART_CB2_OUTLINE_RATIO,
     DEFAULT_DOCX_SMART_CONFIDENCE_RATIO,
+    DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN,
     DEFAULT_DOCX_SMART_DENSITY_MAX,
     DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
     DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS,
@@ -223,10 +224,16 @@ class GateResult:
     #: Second-pass mean body chars between adjacent candidates (observational
     #: only — the §2.3.3 recheck is density-only; None when < 2 candidates).
     cb1_new_inter_chars: float | None = None
-    #: Recognition-time strong-body demotions of OUTLINE paragraphs. Kept
-    #: apart from ``decisions`` (they must not be leveled/anchored) but carry
-    #: a rule-tagged ``HeadingDecision`` so the §2.3.2 I2 retention check sees
-    #: an explicit, audited demotion instead of a silent drop (review C2).
+    #: Recognition-time strong-body demotions. Kept apart from ``decisions``
+    #: (they must not be leveled/anchored) but carry a rule-tagged
+    #: ``HeadingDecision`` so every demotion is explicit and audited, never a
+    #: silent drop. OUTLINE members bear the §2.3.2 I2 weight — they were
+    #: baseline headings, so they re-render from ``full_text_raw``
+    #: (``use_raw_text``) and the retention check sees the rule trail (review
+    #: C2). NON-outline members were never baseline headings: they exist purely
+    #: so the per-paragraph audit ledger matches the demotion counter, and stay
+    #: output-neutral (``use_raw_text`` off → same body rendering as no
+    #: decision).
     demoted: list[HeadingDecision] = field(default_factory=list)
 
 
@@ -465,26 +472,32 @@ def gate_candidates(
                     warnings["smart_strong_body_demotions"] = (
                         warnings.get("smart_strong_body_demotions", 0) + 1
                     )
-                if rec.outline_level is not None:
-                    # I2 (§2.3.2): a baseline (outline) heading may be demoted
-                    # by a decidable strong-body feature, but only as an
-                    # EXPLICIT, rule-tagged, per-paragraph event — never a
-                    # silent drop. Emit a demoted decision (kept out of the
-                    # leveled candidate list) so the retention check sees the
-                    # rule trail and the audit ledger records it (review C2).
-                    dem = HeadingDecision(
-                        record_index=i,
-                        text=text,
-                        is_heading=False,
-                        outline_level=rec.outline_level,
-                        numbering=cls,
-                        use_raw_text=True,
-                    )
-                    dem.note(reason)
-                    dem.note("strong_body_demoted")
-                    if i in veto_notes:
-                        dem.note(veto_notes[i])
-                    demoted.append(dem)
+                # Every recognition-time strong-body demotion leaves an
+                # EXPLICIT, rule-tagged, per-paragraph decision — never a
+                # silent drop — so the per-paragraph audit ledger matches the
+                # demotion counter above. The demoted decision is kept out of
+                # the leveled candidate list. Outline members bear the I2
+                # (§2.3.2) weight: they were baseline headings, so they
+                # re-render from full_text_raw (``use_raw_text``), the retention
+                # check sees the rule trail (review C2), and the demotion is
+                # warned. Non-outline candidates were never baseline headings —
+                # they stay output-neutral (``use_raw_text`` off → same body
+                # rendering as no decision) and emit no I2 warning.
+                is_outline = rec.outline_level is not None
+                dem = HeadingDecision(
+                    record_index=i,
+                    text=text,
+                    is_heading=False,
+                    outline_level=rec.outline_level,
+                    numbering=cls,
+                    use_raw_text=is_outline,
+                )
+                dem.note(reason)
+                dem.note("strong_body_demoted")
+                if i in veto_notes:
+                    dem.note(veto_notes[i])
+                demoted.append(dem)
+                if is_outline:
                     logger.warning(
                         "[smart_heading] I2: outline paragraph demoted to body "
                         "by strong-body feature (%s)",
@@ -552,19 +565,31 @@ def gate_with_cb1(
     warnings: dict | None = None,
     **gate_kwargs: Any,
 ) -> GateResult:
-    """Run the gate; on CB1 overflow (density > max, or the average body
-    chars between adjacent candidates < 200 — trigger side only, §2.3.3),
-    re-estimate FS_base once by folding the candidates' dominant size into
-    the body and re-gate in ``cb1_reestimate`` mode (composite same-size
-    paths off, sizes above the new body size still auto-admit). Still over
-    the density threshold → mark the breaker tripped."""
-    density_max = _env_float("DOCX_SMART_DENSITY_MAX", DEFAULT_DOCX_SMART_DENSITY_MAX)
+    """Run the gate; on CB1 overflow (density > threshold, or the average
+    body chars between adjacent candidates < 200 — trigger side only,
+    §2.3.3), re-estimate FS_base once by folding the candidates' dominant
+    size into the body and re-gate in ``cb1_reestimate`` mode (composite
+    same-size paths off, sizes above the new body size still auto-admit).
+    Still over the density threshold → mark the breaker tripped.
+
+    The density threshold is baseline-aware: ``max(floor, baseline_density +
+    margin)`` where the floor is ``DOCX_SMART_DENSITY_MAX`` and the margin is
+    ``DOCX_SMART_DENSITY_BASELINE_MARGIN``. A richly-outlined sub-document
+    admits more candidates by construction, so its baseline outline density
+    (plus the margin) raises the ceiling above the flat floor. The SAME
+    threshold gates both the first-pass trip and the re-gate recheck.
+    """
+    density_floor = _env_float("DOCX_SMART_DENSITY_MAX", DEFAULT_DOCX_SMART_DENSITY_MAX)
+    baseline_margin = _env_float(
+        "DOCX_SMART_DENSITY_BASELINE_MARGIN", DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN
+    )
+    threshold = max(density_floor, baseline_density + baseline_margin)
     result = gate_candidates(
         records, indices, fs_base=fs_base, warnings=warnings, **gate_kwargs
     )
     inter_chars = _avg_inter_heading_body_chars(records, indices, result)
     sparse_body = inter_chars is not None and inter_chars < _CB1_MIN_INTER_HEADING_CHARS
-    if result.density <= density_max and not sparse_body:
+    if result.density <= threshold and not sparse_body:
         return result
 
     # CB1: the dominant "heading" size is body in disguise. Fold it in:
@@ -587,10 +612,10 @@ def gate_with_cb1(
     if warnings is not None:
         warnings["smart_cb1_reestimated"] = warnings.get("smart_cb1_reestimated", 0) + 1
     logger.warning(
-        "[smart_heading] CB1 tripped (density %.0f%% vs max %.0f%%%s); "
+        "[smart_heading] CB1 tripped (density %.0f%% vs threshold %.0f%%%s); "
         "re-estimated FS_base to %s and disabled same-size composite paths",
         result.density * 100,
-        density_max * 100,
+        threshold * 100,
         (
             f", avg body chars between headings {inter_chars:.0f} < "
             f"{_CB1_MIN_INTER_HEADING_CHARS}"
@@ -612,7 +637,6 @@ def gate_with_cb1(
     # Second-pass inter-heading spacing: observational only (the §2.3.3
     # recheck stays density-only — this does NOT feed the trip decision).
     second.cb1_new_inter_chars = _avg_inter_heading_body_chars(records, indices, second)
-    threshold = max(density_max, baseline_density)
     if second.density > threshold:
         second.cb1_tripped = True
         if warnings is not None:
