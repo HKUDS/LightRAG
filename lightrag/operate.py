@@ -49,6 +49,7 @@ from lightrag.utils import (
 )
 from lightrag.base import (
     BaseGraphStorage,
+    BaseKeywordStorage,
     BaseKVStorage,
     BaseVectorStorage,
     TextChunkSchema,
@@ -3794,6 +3795,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    keyword_storage: BaseKeywordStorage | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -3809,6 +3811,9 @@ async def kg_query(
         hashing_kv: Cache storage
         system_prompt: System prompt
         chunks_vdb: Document chunks vector database
+        keyword_storage: Optional BM25 keyword storage used to seed entities
+            alongside dense vector search when query_param.enable_bm25_seeding
+            is True
 
     Returns:
         QueryResult | None: Unified query result object containing:
@@ -3867,6 +3872,7 @@ async def kg_query(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        keyword_storage=keyword_storage,
     )
 
     if context_result is None:
@@ -4322,6 +4328,7 @@ async def _perform_kg_search(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    keyword_storage: BaseKeywordStorage | None = None,
 ) -> dict[str, Any]:
     """
     Pure search logic that retrieves raw entities, relations, and vector chunks.
@@ -4404,6 +4411,7 @@ async def _perform_kg_search(
             entities_vdb,
             query_param,
             query_embedding=ll_embedding,
+            keyword_storage=keyword_storage,
         )
 
     elif query_param.mode == "global" and len(hl_keywords) > 0:
@@ -4423,6 +4431,7 @@ async def _perform_kg_search(
                 entities_vdb,
                 query_param,
                 query_embedding=ll_embedding,
+                keyword_storage=keyword_storage,
             )
         if len(hl_keywords) > 0:
             global_relations, global_entities = await _get_edge_data(
@@ -5031,6 +5040,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    keyword_storage: BaseKeywordStorage | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5054,6 +5064,7 @@ async def _build_query_context(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        keyword_storage=keyword_storage,
     )
 
     if not search_result["final_entities"] and not search_result["final_relations"]:
@@ -5141,12 +5152,34 @@ async def _build_query_context(
     return QueryContextResult(context=context, raw_data=raw_data)
 
 
+def fuse_seed_rankings(
+    vector_names: list[str],
+    bm25_names: list[str],
+    top_k: int,
+    rrf_k: int = 60,
+) -> list[tuple[str, str]]:
+    """Fuse two ranked entity-name lists with Reciprocal Rank Fusion."""
+    scores: dict[str, float] = {}
+    sources: dict[str, set[str]] = {}
+    for source, names in (("vector", vector_names), ("bm25", bm25_names)):
+        for rank, name in enumerate(names):
+            scores[name] = scores.get(name, 0.0) + 1.0 / (rrf_k + rank + 1)
+            sources.setdefault(name, set()).add(source)
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    result: list[tuple[str, str]] = []
+    for name, _score in ordered[:top_k]:
+        src = sources[name]
+        result.append((name, "both" if len(src) == 2 else next(iter(src))))
+    return result
+
+
 async def _get_node_data(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     query_param: QueryParam,
     query_embedding=None,
+    keyword_storage: BaseKeywordStorage | None = None,
 ):
     logger.info(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
@@ -5155,6 +5188,32 @@ async def _get_node_data(
     results = await entities_vdb.query(
         query, top_k=query_param.top_k, query_embedding=query_embedding
     )
+
+    # Optional BM25 seed path: fuse sparse keyword hits with dense vector seeds
+    if keyword_storage is not None and query_param.enable_bm25_seeding:
+        try:
+            bm25_hits = await keyword_storage.search(query, top_k=query_param.top_k)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[bm25] seed search failed, using vector-only seeds: {e}"
+            )
+            bm25_hits = []
+        if bm25_hits:
+            vector_names = [r["entity_name"] for r in results]
+            fused = fuse_seed_rankings(
+                vector_names,
+                [name for name, _score in bm25_hits],
+                top_k=query_param.top_k,
+            )
+            logger.info(
+                "[bm25] fused seeds: "
+                + ", ".join(f"{name}({src})" for name, src in fused)
+            )
+            by_name = {r["entity_name"]: r for r in results}
+            results = [
+                by_name.get(name, {"entity_name": name, "created_at": None})
+                for name, _src in fused
+            ]
 
     if not len(results):
         return [], []

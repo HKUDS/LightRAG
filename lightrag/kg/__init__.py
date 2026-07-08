@@ -43,6 +43,12 @@ STORAGE_IMPLEMENTATIONS = {
         ],
         "required_methods": ["get_docs_by_status"],
     },
+    "KEYWORD_STORAGE": {
+        "implementations": [
+            "Bm25KeywordStorage",
+        ],
+        "required_methods": ["index_entities", "search"],
+    },
 }
 
 # Storage implementation environment variable without default value
@@ -95,6 +101,8 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "MONGO_URI",
         "MONGO_DATABASE",
     ],
+    # Keyword (BM25) Storage Implementations
+    "Bm25KeywordStorage": [],
     # OpenSearch Storage Implementations
     "OpenSearchKVStorage": [
         "OPENSEARCH_HOSTS",
@@ -112,6 +120,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
 
 # Storage implementation module mapping
 STORAGES = {
+    "Bm25KeywordStorage": ".kg.bm25s_keyword_impl",
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",

@@ -156,6 +156,14 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
+    enable_bm25_seeding: bool = (
+        os.getenv("ENABLE_BM25_SEEDING", "false").lower() == "true"
+    )
+    """If True, augments dense vector entity seeding with a sparse BM25 keyword
+    search over entity names, fusing both rankings with Reciprocal Rank Fusion.
+    Helps recall on rare-term / jargon queries that embeddings may miss.
+    """
+
 
 @dataclass
 class StorageNameSpace(ABC):
@@ -787,6 +795,30 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             List of matching labels sorted by relevance
+        """
+
+
+@dataclass
+class BaseKeywordStorage(StorageNameSpace, ABC):
+    """Sparse keyword (BM25) index over entity names.
+
+    Serves as a parallel seed path beside dense vector search: exact term
+    matches on rare jargon survive even when embeddings fail. The index is
+    derived data — it can always be rebuilt from the graph's entity-name
+    set, so implementations favor idempotent full rebuilds over incremental
+    updates.
+    """
+
+    @abstractmethod
+    async def index_entities(self, names: list[str]) -> None:
+        """(Re)build the index from the full entity-name corpus."""
+
+    @abstractmethod
+    async def search(self, query: str, top_k: int) -> list[tuple[str, float]]:
+        """Return up to ``top_k`` ``(entity_name, score)`` pairs, best first.
+
+        Must return an empty list (never raise) when the index is empty or
+        unavailable.
         """
 
 

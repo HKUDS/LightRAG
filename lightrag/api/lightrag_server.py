@@ -478,6 +478,9 @@ def _get_storage_workspaces(rag: Any) -> dict[str, str | None]:
             getattr(rag, "chunk_entity_relation_graph", None)
         ),
         "vector_storage": _get_storage_workspace(getattr(rag, "entities_vdb", None)),
+        "keyword_storage": _get_storage_workspace(
+            getattr(rag, "entity_keywords", None)
+        ),
     }
 
 
@@ -2054,6 +2057,7 @@ def create_app(args):
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
             doc_status_storage=args.doc_status_storage,
+            keyword_storage=args.keyword_storage,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -2364,6 +2368,7 @@ def create_app(args):
                         "doc_status_storage": args.doc_status_storage,
                         "graph_storage": args.graph_storage,
                         "vector_storage": args.vector_storage,
+                        "keyword_storage": args.keyword_storage,
                         "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                         "enable_llm_cache": args.enable_llm_cache,
                         "vlm_process_enable": args.vlm_process_enable,

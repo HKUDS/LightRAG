@@ -93,6 +93,7 @@ from lightrag.kg.shared_storage import (
 
 from lightrag.base import (
     BaseGraphStorage,
+    BaseKeywordStorage,
     BaseKVStorage,
     BaseVectorStorage,
     DocProcessingStatus,
@@ -283,6 +284,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
+
+    keyword_storage: str = field(default="Bm25KeywordStorage")
+    """Storage backend for the sparse (BM25) entity-name keyword index."""
 
     # Workspace
     # ---
@@ -1009,6 +1013,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ("VECTOR_STORAGE", self.vector_storage),
             ("GRAPH_STORAGE", self.graph_storage),
             ("DOC_STATUS_STORAGE", self.doc_status_storage),
+            ("KEYWORD_STORAGE", self.keyword_storage),
         ]
 
         for storage_type, storage_name in storage_configs:
@@ -1189,6 +1194,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             embedding_func=None,
         )
 
+        # Initialize the sparse (BM25) entity-name keyword index. Derived data
+        # rebuilt wholesale from the graph's entity-name set after each insert
+        # (see _insert_done); never a primary source of truth.
+        keyword_storage_cls = get_storage_class(self.keyword_storage)
+        self.entity_keywords: BaseKeywordStorage = keyword_storage_cls(
+            namespace=NameSpace.KEYWORD_STORE_ENTITY_NAMES,
+            workspace=self.workspace,
+            global_config=global_config,
+        )
+
         # Per-role isolated LLM wrappers (independent queues per role).
         # The base ``self.llm_model_func`` is intentionally NOT queue-wrapped:
         # every code path that calls an LLM goes through one of the role
@@ -1300,6 +1315,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.chunk_entity_relation_graph,
                 self.llm_response_cache,
                 self.doc_status,
+                self.entity_keywords,
             ):
                 if storage:
                     # logger.debug(f"Initializing storage: {storage}")
@@ -1324,6 +1340,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
                 ("llm_response_cache", self.llm_response_cache),
                 ("doc_status", self.doc_status),
+                ("entity_keywords", self.entity_keywords),
             ]
 
             # Finalize each storage individually to ensure one failure doesn't prevent others from closing
@@ -1741,6 +1758,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+
+        # Best-effort rebuild of the sparse entity-name keyword index from the
+        # now-flushed graph. Derived data, always rebuildable from
+        # get_all_labels(), so a rebuild failure must never block ingestion.
+        try:
+            if getattr(self.entity_keywords, "available", False):
+                labels = await self.chunk_entity_relation_graph.get_all_labels()
+                await self.entity_keywords.index_entities(labels)
+        except Exception as e:
+            logger.warning(f"[bm25] entity keyword index rebuild failed: {e}")
 
     async def _insert_done_with_cleanup(self) -> None:
         """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
@@ -2279,6 +2306,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 hashing_kv=self.llm_response_cache,
                 system_prompt=None,
                 chunks_vdb=self.chunks_vdb,
+                keyword_storage=self.entity_keywords,
             )
         elif data_param.mode == "naive":
             logger.debug(f"[aquery_data] Using naive_query for mode: {data_param.mode}")
@@ -2377,6 +2405,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
+                    keyword_storage=self.entity_keywords,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -4040,12 +4069,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """
         from lightrag.utils_graph import adelete_by_entity
 
-        return await adelete_by_entity(
+        result = await adelete_by_entity(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
             entity_name,
         )
+        if result.status == "success":
+            try:
+                if getattr(self.entity_keywords, "available", False):
+                    labels = await self.chunk_entity_relation_graph.get_all_labels()
+                    await self.entity_keywords.index_entities(labels)
+            except Exception as e:
+                logger.warning(f"[bm25] index rebuild after entity delete failed: {e}")
+        return result
 
     def delete_by_entity(self, entity_name: str) -> DeletionResult:
         """Synchronously delete an entity and all its relationships.

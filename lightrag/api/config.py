@@ -66,6 +66,7 @@ class DefaultRAGStorageConfig:
     VECTOR_STORAGE = "NanoVectorDBStorage"
     GRAPH_STORAGE = "NetworkXStorage"
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
+    KEYWORD_STORAGE = "Bm25KeywordStorage"
 
 
 def get_default_host(binding_type: str) -> str:
@@ -499,6 +500,9 @@ def parse_args() -> argparse.Namespace:
     )
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+    )
+    args.keyword_storage = get_env_value(
+        "LIGHTRAG_KEYWORD_STORAGE", DefaultRAGStorageConfig.KEYWORD_STORAGE
     )
 
     # Get MAX_PARALLEL_INSERT from environment

@@ -21,6 +21,8 @@ class NameSpace:
 
     DOC_STATUS = "doc_status"
 
+    KEYWORD_STORE_ENTITY_NAMES = "entity_keywords"
+
 
 def is_namespace(namespace: str, base_namespace: str | Iterable[str]):
     if isinstance(base_namespace, str):
