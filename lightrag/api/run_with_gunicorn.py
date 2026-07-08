@@ -122,6 +122,39 @@ def main():
         print("=" * 80 + "\n")
         sys.exit(1)
 
+    # LanceDB is an embedded database whose write serialization is
+    # per-process; concurrent writers from multiple gunicorn workers can
+    # commit duplicate rows. Refuse to start multi-worker with it.
+    if global_args.workers > 1:
+        lancedb_storages = [
+            name
+            for name in (
+                global_args.kv_storage,
+                global_args.doc_status_storage,
+                global_args.graph_storage,
+                global_args.vector_storage,
+            )
+            if name.startswith("LanceDB")
+        ]
+        if lancedb_storages:
+            print("\n" + "=" * 80)
+            print("❌ ERROR: LanceDB storage does not support multi-worker mode!")
+            print("=" * 80)
+            print(
+                f"\nConfigured LanceDB storages: {', '.join(sorted(set(lancedb_storages)))}"
+            )
+            print(f"Workers: {global_args.workers}")
+            print("\nLanceDB is an embedded database; its write serialization is")
+            print("per-process, so concurrent gunicorn workers could commit")
+            print("duplicate rows to the same tables.")
+            print("\nHow to fix:")
+            print("  Option 1 - Use single worker mode:")
+            print("     lightrag-server (or lightrag-gunicorn --workers 1)")
+            print("  Option 2 - Use a server-based backend for multi-worker mode")
+            print("     (PostgreSQL, MongoDB, OpenSearch, ...)")
+            print("=" * 80 + "\n")
+            sys.exit(1)
+
     # Check and install dependencies
     check_and_install_dependencies()
 
