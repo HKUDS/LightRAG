@@ -184,8 +184,17 @@ DEFAULT_DOCX_SMART_CB2_BODY_RATIO = 0.20
 DEFAULT_DOCX_SMART_CB2_OUTLINE_RATIO = 0.50
 # CB5 FS_base confidence threshold (dominant-size char share).
 DEFAULT_DOCX_SMART_CONFIDENCE_RATIO = 0.60
-# CB4 short-document gate: below this many tokens smart is skipped entirely.
-DEFAULT_DOCX_SMART_MIN_TOKENS = 2000
+# CB4 whole-document gate: below this many tokens the whole document is too
+# short for smart heading — it is skipped entirely (baseline output). Kept
+# below DEFAULT_CHUNK_P_SIZE (2000): a document that fits inside a single
+# paragraph-chunk does not need heading-driven structural splitting.
+DEFAULT_DOCX_SMART_MIN_TOKENS = 1800
+# CB4 per-sub-document gate: once the whole document clears the gate above,
+# an individual sub-document below this many tokens falls back to outline-only
+# levels (``_outline_only_decisions``) instead of size-based leveling. Lower
+# than the whole-document gate — a sub-document is a fragment and needs less
+# content to be worth leveling.
+DEFAULT_DOCX_SMART_SUBDOC_MIN_TOKENS = 1000
 # Title-block LLM window cap (tokens) — content beyond it is truncated.
 DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS = 1000
 # Single-paragraph title-block gate: font size must exceed the global

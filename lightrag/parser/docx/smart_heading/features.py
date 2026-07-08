@@ -69,6 +69,12 @@ class StyleAttributes:
     default_size_half_points: int | None = None
     default_bold: bool | None = None
     default_alignment: str | None = None
+    #: styleId of the document's default paragraph style (``w:default="1"``,
+    #: usually "Normal"). A paragraph with no explicit ``<w:pStyle>`` inherits
+    #: this style's formatting before docDefaults (OOXML cascade), so its run
+    #: sizes must resolve through it — else a body whose base size lives on the
+    #: default style (not in docDefaults) reads as size-unknown.
+    default_para_style_id: str | None = None
 
     def style_size_half_points(self, style_id: str | None) -> int | None:
         """Effective ``w:sz`` (half-points) for a style chain, else None."""
@@ -183,6 +189,13 @@ def parse_styles_attributes(
                 style_id = style.get(_w("styleId"))
                 if not style_id:
                     continue
+                # Record the default paragraph style (``w:default`` is an
+                # attribute on ``<w:style>``, OOXML on/off semantics — not a
+                # child ``w:val``, so _parse_bool_attr does not apply).
+                if style.get(_w("type")) == "paragraph" and style.get(
+                    _w("default")
+                ) in ("1", "true", "on"):
+                    attrs.default_para_style_id = style_id
                 raw = _RawStyle()
                 based_on = style.find(_w("basedOn"))
                 if based_on is not None:
@@ -392,6 +405,11 @@ def extract_paragraph_physical_features(
         jc = ppr.find(_w("jc"))
         if jc is not None:
             alignment = jc.get(_w("val"))
+    # No explicit <w:pStyle>: the document's default paragraph style still
+    # applies (OOXML cascade), so size/bold/alignment must resolve through it
+    # before falling to docDefaults.
+    if para_style_id is None:
+        para_style_id = styles.default_para_style_id
     if alignment is None:
         alignment = styles.style_alignment(para_style_id)
     if alignment is None:

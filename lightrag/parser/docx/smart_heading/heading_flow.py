@@ -1811,13 +1811,28 @@ def run_smart_heading(
     :class:`SmartHeadingResult`; per-sub-document breaker trips fall back to
     outlineLvl-only levels for that sub-document only.
     """
-    from lightrag.constants import DEFAULT_DOCX_SMART_MIN_TOKENS
+    from lightrag.constants import (
+        DEFAULT_DOCX_SMART_MIN_TOKENS,
+        DEFAULT_DOCX_SMART_SUBDOC_MIN_TOKENS,
+    )
 
     from . import guardrails as g
     from . import title_block as tb
 
-    min_tokens = int(
-        os.getenv("DOCX_SMART_MIN_TOKENS", "") or DEFAULT_DOCX_SMART_MIN_TOKENS
+    # Two CB4 gates: the whole-document gate (below) decides whether smart runs
+    # at all; the per-sub-document gate (in the sub-document loop) decides
+    # whether an individual sub-document gets size-based leveling or falls back
+    # to outline-only. The sub-document gate DEFAULTS to
+    # ``min(DEFAULT_DOCX_SMART_SUBDOC_MIN_TOKENS, min_tokens)`` so that lowering
+    # DOCX_SMART_MIN_TOKENS alone (the "run smart on short documents" knob) also
+    # pulls the sub-document floor down — otherwise a short document would clear
+    # the whole-document gate only to have its sub-documents silently fall back
+    # to outline-only. An explicit DOCX_SMART_SUBDOC_MIN_TOKENS is honored as-is
+    # (a large document may legitimately want to level only its big sections).
+    min_tokens = _env_int("DOCX_SMART_MIN_TOKENS", DEFAULT_DOCX_SMART_MIN_TOKENS)
+    subdoc_min_tokens = _env_int(
+        "DOCX_SMART_SUBDOC_MIN_TOKENS",
+        min(DEFAULT_DOCX_SMART_SUBDOC_MIN_TOKENS, min_tokens),
     )
 
     # One spaCy pass per unique paragraph across the whole document: the gate,
@@ -1973,7 +1988,7 @@ def run_smart_heading(
         )
         baseline_density = baseline_headings / len(sub_indices)
 
-        if _estimate_record_tokens(records, sub_indices) < min_tokens:
+        if _estimate_record_tokens(records, sub_indices) < subdoc_min_tokens:
             sub_audit["fallback"] = "cb4_short_subdoc"
             fallback_subs += 1
             for d in _outline_only_decisions(records, sub_indices):

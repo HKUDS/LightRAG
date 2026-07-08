@@ -244,10 +244,24 @@ def _make_llm(title_responses: dict[str, dict], counter: list | None = None):
     return _llm
 
 
-def _extract(name: str, llm, monkeypatch, *, min_tokens: int = 50):
+def _extract(
+    name: str,
+    llm,
+    monkeypatch,
+    *,
+    min_tokens: int = 50,
+    subdoc_min_tokens: int | None = None,
+):
     from lightrag.parser.docx.parse_document import extract_docx_blocks
 
+    # The whole-document and per-sub-document CB4 gates read separate env vars;
+    # these fixtures are tiny, so force both low (sub defaults to the whole-doc
+    # value) or the sub-document gate falls the fixture back to outline-only.
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", str(min_tokens))
+    monkeypatch.setenv(
+        "DOCX_SMART_SUBDOC_MIN_TOKENS",
+        str(min_tokens if subdoc_min_tokens is None else subdoc_min_tokens),
+    )
     warnings: dict = {}
     metadata: dict = {}
     blocks = extract_docx_blocks(
@@ -619,6 +633,10 @@ def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
         "附录题库": {"is_title_block": True, "main_title": "附录题库"},
     }
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "50")
+    # The healthy sub-document (一、总体要求 / 二、工作安排) is short; keep the
+    # per-sub-document CB4 gate low too or it falls back to outline-only and
+    # drops these size/bold headings.
+    monkeypatch.setenv("DOCX_SMART_SUBDOC_MIN_TOKENS", "50")
     warnings: dict = {}
     metadata: dict = {}
     blocks = extract_docx_blocks(
@@ -667,3 +685,47 @@ def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
     )
     assert "range" in qb_sub
     assert qb_sub.get("headings", 0) == 0
+
+
+def test_subdoc_gate_follows_lowered_whole_doc_gate(monkeypatch, tmp_path) -> None:
+    """The per-sub-document CB4 gate DEFAULTS to min(1000, DOCX_SMART_MIN_TOKENS):
+    lowering only DOCX_SMART_MIN_TOKENS (the "run smart on short documents" knob)
+    must also pull the sub-document floor down. Otherwise a short document clears
+    the whole-document gate only to have its sub-documents silently fall back to
+    outline-only — with the old independent 1000 default this asserts-false."""
+    from docx import Document
+
+    from lightrag.parser.docx.parse_document import extract_docx_blocks
+
+    doc = Document()
+    _p(doc, "管理工作指引手册", size=18.0, center=True)
+    # Strong body pins the title block to the single-paragraph channel so the
+    # window does not swallow the headings below.
+    _p(doc, "本篇给出管理工作的总体指引，请结合实际执行。", size=12.0)
+    _p(doc, "一、总体要求", size=14.0, bold=True)
+    _body_filler(doc, 4, prefix="总体要求正文")
+    _p(doc, "二、工作安排", size=14.0, bold=True)
+    _body_filler(doc, 4, prefix="工作安排正文")
+    path = tmp_path / "short_subdoc.docx"
+    doc.save(str(path))
+
+    # The sub-document (everything under the title block) is far shorter than the
+    # 1000-token default sub-gate; lower ONLY the whole-document gate and leave
+    # the sub-gate env unset so the follow-down default (min(1000, 50)=50) applies.
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "50")
+    monkeypatch.delenv("DOCX_SMART_SUBDOC_MIN_TOKENS", raising=False)
+    responses = {
+        "管理工作指引手册": {"is_title_block": True, "main_title": "管理工作指引手册"}
+    }
+    warnings: dict = {}
+    blocks = extract_docx_blocks(
+        str(path),
+        parse_warnings=warnings,
+        parse_metadata={},
+        smart_heading_runtime=_Runtime(_make_llm(responses)),
+    )
+    by_heading = {b["heading"] for b in blocks}
+    # The short sub-document kept smart leveling (not outline-only), so its
+    # size/bold headings survived.
+    assert "一、总体要求" in by_heading
+    assert "二、工作安排" in by_heading
