@@ -133,14 +133,14 @@ def extract_paragraph_content_table(
             )
             return
         if tag == "oMath":
-            from omml import convert_omml_to_latex
+            from .omml import convert_omml_to_latex
 
             latex = convert_omml_to_latex(node)
             if latex:
                 parts.append(f"<equation>{latex}</equation>")
             return
         if tag == "oMathPara":
-            from omml import convert_omml_to_latex
+            from .omml import convert_omml_to_latex
 
             for omath in node:
                 if omath.tag.split("}")[-1] == "oMath":
