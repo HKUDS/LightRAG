@@ -78,9 +78,7 @@ def test_miss_path_threads_identical_engine_params(tmp_path):
 
 
 def test_paddleocr_vl_params_decode_and_thread_identically(tmp_path):
-    ctx = _make_ctx(
-        tmp_path, "paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)"
-    )
+    ctx = _make_ctx(tmp_path, "paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)")
     parser = _RecordingParser(hit=False)
     with pytest.raises(_Stop):
         asyncio.run(parser.parse(ctx))
