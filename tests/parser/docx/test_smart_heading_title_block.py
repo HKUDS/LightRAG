@@ -697,3 +697,202 @@ def test_single_candidate_after_previous_paragraph_break_run() -> None:
     ]
     cands = _find(records)
     assert len(cands) == 1 and cands[0].single and cands[0].start == 1
+
+
+# ---------------------------------------------------------------------------
+# table windows (§2.2.4 table channel): a cover laid out inside tables
+# ---------------------------------------------------------------------------
+
+
+def _table(rows, **kw) -> ParagraphRecord:
+    """Fake table record; ``rows`` = per-row lists of (text, size, outline)."""
+    return ParagraphRecord(
+        kind="table", text="<table>[]</table>", table_cell_features=rows, **kw
+    )
+
+
+def _cover_tables() -> list[ParagraphRecord]:
+    """M1212-style cover: form tables (multi-cell rows, short text) + a title
+    table (single-cell big rows) + a publisher table."""
+    return [
+        _table(
+            [
+                [("档 号", 10.5, False), ("", None, False)],
+                [("版 本 号", 10.5, False), ("1V1.0.0", 10.5, False)],
+            ]
+        ),
+        _empty(),
+        _table(
+            [
+                [("产品标准化大纲", 22.0, False)],  # title rows: single cell
+                [("某某模块", 22.0, False)],
+            ]
+        ),
+        _table([[("某某电子股份有限公司", 16.0, False)]]),
+    ]
+
+
+def test_table_window_merges_adjacent_qualifying_tables() -> None:
+    """Adjacent member-qualifying tables (blank lines between are fine) merge
+    into ONE table_window candidate spanning form + title + publisher."""
+    records = _cover_tables() + [
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.table and c.trigger == "table_window" and not c.single
+    assert (c.start, c.end) == (0, 4)
+
+
+def test_table_window_prefix_breaks_at_disqualified_table() -> None:
+    """Rule 3: the first non-qualifying table ends the window AND the run —
+    a later qualifying table in the same run never seeds a new window."""
+    data_table = _table(
+        [[("序号", 10.5, False), ("这一格是以句号结尾的数据内容。", 10.5, False)]]
+    )
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        data_table,
+        _table([[("另一份大字标题", 22.0, False)]]),  # after the break: ignored
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert (cands[0].start, cands[0].end) == (0, 1)  # prefix only
+
+
+def test_table_window_requires_qualifying_first_table() -> None:
+    """A run whose FIRST table is disqualified yields no candidate at all,
+    even though a qualifying title table follows in the same run."""
+    records = [
+        _table(
+            [[("序号", 10.5, False), ("这一格是以句号结尾的数据内容。", 10.5, False)]]
+        ),
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+
+
+@pytest.mark.parametrize(
+    "bad_cell",
+    [
+        ("这一格是以句号结尾的正文语句。", 10.5, False),  # strong body
+        ("超" * 40, 10.5, False),  # 40 CJK = 120 weighted > 90 cap
+        ("带物理大纲的格", 10.5, True),  # physical outline
+    ],
+)
+def test_table_member_gate_rejects_bad_cells(bad_cell) -> None:
+    """Rule 2: ONE offending cell disqualifies the whole table."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)], [bad_cell]]),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+
+
+def test_table_title_row_requires_single_big_unnumbered_cell() -> None:
+    """Rule 1: the title row is a single-PHYSICAL-cell row at the +2pt tier
+    whose text has no genuine numbering."""
+    # (a) all sizes below fs_base+2 → no title row.
+    records = [
+        _table([[("产品标准化大纲", 13.0, False)]]),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+
+    # (b) big text but in a MULTI-cell row → not a title row.
+    records = [
+        _table([[("产品标准化大纲", 22.0, False), ("旁边一格", 10.5, False)]]),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+
+    # (c) genuine numbering disqualifies the title row (consistent with the
+    # paragraph channels)…
+    records = [
+        _table([[("第二章 总体设计", 22.0, False)]]),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+
+    # …but the homophone veto keeps a date-opener title alive.
+    records = [
+        _table([[("2026年度工作报告", 22.0, False)]]),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records, numbering_veto=_stub_always_veto)
+    assert len(cands) == 1 and cands[0].table
+
+
+def test_table_window_dominance_gate() -> None:
+    """The table window shares the visual-dominance gate: a bigger real
+    heading on both flanks rejects the candidate."""
+    records = [
+        _para("第一章 绪论", size=20.0, outline_level_raw=0),
+        _para("一段以句号结尾的正文，用来隔开标题。", size=12.0),
+        _table([[("强调框标题", 14.0, False)]]),  # +2pt but < 20pt heading
+        _para("一段以句号结尾的正文。", size=12.0),
+        _para("第二章 概览", size=20.0, outline_level_raw=0),
+    ]
+    assert _find(records) == []
+
+
+# --- judge: table candidates ------------------------------------------------
+
+_TABLE_RECORDS = [
+    _table(
+        [
+            [("产品标准化大纲", 22.0, False)],
+            [("某某模块", 22.0, False)],
+        ]
+    ),
+    _table([[("某某电子股份有限公司", 16.0, False)]]),
+    _para("正文从这里开始，以句号结尾。", size=12.0),
+]
+_TABLE_CANDIDATE = TitleBlockCandidate(
+    start=0, end=2, single=False, trigger="table_window", table=True
+)
+
+
+def test_table_verdict_members_are_table_records() -> None:
+    decision = _judge_with(
+        {
+            "is_title_block": True,
+            "main_title": "产品标准化大纲某某模块",  # concatenated cells
+            "publisher": "某某电子股份有限公司",
+        },
+        records=_TABLE_RECORDS,
+        candidate=_TABLE_CANDIDATE,
+    )
+    assert decision.is_title_block
+    assert decision.member_indices == (0, 1)  # the TABLE record indices
+    assert (
+        compose_title_heading(decision)
+        == "产品标准化大纲某某模块(某某电子股份有限公司)"
+    )
+
+
+def test_table_verdict_locates_against_cell_texts() -> None:
+    """Locate-back runs against the CELL texts (the record text is a <table>
+    placeholder); a hallucinated title hard-fails."""
+    with pytest.raises(TitleBlockLLMError):
+        _judge_with(
+            {"is_title_block": True, "main_title": "凭空捏造的标题"},
+            records=_TABLE_RECORDS,
+            candidate=_TABLE_CANDIDATE,
+        )
+
+
+def test_table_non_title_verdict_ignored() -> None:
+    """A non-title verdict for a table window grants/vetoes nothing (D3):
+    cells are not paragraph records, so the partition is ignored even when
+    it is malformed."""
+    decision = _judge_with(
+        {"is_title_block": False, "headings": [0, 0], "body": []},  # malformed
+        records=_TABLE_RECORDS,
+        candidate=_TABLE_CANDIDATE,
+    )
+    assert not decision.is_title_block
+    assert decision.heading_indices == () and decision.body_indices == ()

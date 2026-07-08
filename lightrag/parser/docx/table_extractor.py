@@ -157,6 +157,51 @@ def extract_paragraph_content_table(
     return "".join(parts)
 
 
+def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tuple:
+    """Physical-cell features for the smart title-block table channel (§2.2.4).
+
+    Returns ``(text, effective_size_pt, has_outline)`` computed from the
+    cell's OWN ``w:p`` children (direct children only — nested tables are
+    excluded; vMerge-continue cells report their own, usually empty, text):
+
+    - ``text``: visible source characters (``w:t`` via ``run_features``), so
+      drawing/equation placeholders and auto-numbering labels never inflate
+      the title-length gate;
+    - ``effective_size_pt``: max per-paragraph char-weighted dominant size,
+      resolved through the full cascade (run rPr > paragraph mark > style
+      chain > docDefaults) — a bare ``run.font.size`` would miss inherited
+      sizes;
+    - ``has_outline``: any paragraph with a direct ``w:outlineLvl`` or a
+      ``pStyle`` mapped by ``styles_outline`` (physical-outline cells are
+      structural headings, never title-block material).
+    """
+    # Function-local import: the smart-off path must stay free of the
+    # smart_heading package (same convention as parse_document).
+    from lightrag.parser.docx.smart_heading.features import (
+        extract_paragraph_physical_features,
+    )
+
+    texts = []
+    max_size = None
+    has_outline = False
+    for para_elem in tc.findall(qn_func("w:p")):
+        phys = extract_paragraph_physical_features(para_elem, style_attributes)
+        text = "".join(rf.text for rf in phys.run_features).strip()
+        if text:
+            texts.append(text)
+        if phys.font_size_pt is not None and (
+            max_size is None or phys.font_size_pt > max_size
+        ):
+            max_size = phys.font_size_pt
+        if not has_outline:
+            ppr = para_elem.find(qn_func("w:pPr"))
+            if ppr is not None and ppr.find(qn_func("w:outlineLvl")) is not None:
+                has_outline = True
+            elif phys.style_id and styles_outline and phys.style_id in styles_outline:
+                has_outline = True
+    return ("\n".join(texts), max_size, has_outline)
+
+
 class TableExtractor:
     """
     Extract table content handling merged cells correctly.
@@ -199,6 +244,8 @@ class TableExtractor:
         table: Table,
         numbering_resolver=None,
         drawing_context: DrawingExtractionContext = None,
+        style_attributes=None,
+        styles_outline=None,
     ) -> dict:
         """
         Extract table to 2D string array with metadata (paraIds, header info).
@@ -210,6 +257,11 @@ class TableExtractor:
         Args:
             table: python-docx Table object
             numbering_resolver: Optional NumberingResolver for extracting numbering
+            style_attributes: Optional smart_heading ``StyleAttributes``; when
+                given, per-physical-cell features are collected for the
+                title-block table channel (smart-only; legacy passes None)
+            styles_outline: Optional style-id -> outline-level map used for
+                the cell ``has_outline`` feature
 
         Returns:
             Dict with:
@@ -219,8 +271,13 @@ class TableExtractor:
             - para_ids_end: 2D list of paraIds (last paraId in each cell, or None)
                             For vertically merged cells, all rows share the start cell's paraId
             - header_indices: List of row indices marked as table headers
+            - cell_features: per-row lists of PHYSICAL cells as
+              ``(text, effective_size_pt, has_outline)`` tuples (one entry per
+              ``w:tc`` — a gridSpan-merged full-width row is ONE cell), or
+              None when ``style_attributes`` was not provided
         """
         tbl = table._tbl
+        collect_features = style_attributes is not None
 
         # Get number of columns from tblGrid
         tbl_grid = tbl.find(qn("w:tblGrid"))
@@ -234,6 +291,7 @@ class TableExtractor:
                 "para_ids": [],
                 "para_ids_end": [],
                 "header_indices": [],
+                "cell_features": [] if collect_features else None,
             }
 
         # Detect header rows using w:tblHeader attribute
@@ -249,16 +307,22 @@ class TableExtractor:
         grid = []
         para_ids_grid = []
         para_ids_end_grid = []  # Track last paraId in each cell
+        cell_features_grid = [] if collect_features else None
         vmerge_content = {}  # Track vertical merge by column: {col: {'text': str, 'para_id': str, 'para_id_end': str}}
 
         for tr in tbl.findall(qn("w:tr")):
             row_data = [""] * num_cols  # Pre-fill with empty strings
             row_para_ids = [None] * num_cols  # Pre-fill with None
             row_para_ids_end = [None] * num_cols  # Pre-fill with None for last paraId
+            row_cell_features = [] if collect_features else None
             grid_col = 0
 
             # Iterate actual <w:tc> elements (each physical cell appears once)
             for tc in tr.findall(qn("w:tc")):
+                if collect_features:
+                    row_cell_features.append(
+                        _extract_cell_features(tc, qn, style_attributes, styles_outline)
+                    )
                 # Reset numbering state when cell changes to prevent incorrect continuation
                 if numbering_resolver is not None:
                     numbering_resolver.reset_tracking_state()
@@ -410,10 +474,13 @@ class TableExtractor:
             grid.append(row_data)
             para_ids_grid.append(row_para_ids)
             para_ids_end_grid.append(row_para_ids_end)
+            if collect_features:
+                cell_features_grid.append(row_cell_features)
 
         return {
             "rows": grid,
             "para_ids": para_ids_grid,
             "para_ids_end": para_ids_end_grid,
             "header_indices": header_indices,
+            "cell_features": cell_features_grid,
         }

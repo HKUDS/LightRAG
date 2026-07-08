@@ -651,6 +651,11 @@ class ParagraphRecord:
     is_toc_field: bool = False  # TOC field instruction inside the paragraph
     is_toc_link: bool = False  # hyperlink to a _Toc bookmark
     size_trace_failed: bool = False  # font-size cascade found nothing (CB5)
+    # Table only (smart-only): per-row PHYSICAL cells as
+    # (text, effective_size_pt, has_outline) tuples — one entry per w:tc, so a
+    # gridSpan-merged full-width row is ONE cell. Feeds the §2.2.4 title-block
+    # table channel; None when smart is off.
+    table_cell_features: list | None = None
 
 
 def _read_document_records(
@@ -824,6 +829,8 @@ def _read_document_records(
                 table,
                 numbering_resolver=resolver,
                 drawing_context=drawing_context,
+                style_attributes=style_attributes,
+                styles_outline=styles_outline,
             )
 
             table_rows = table_metadata["rows"]
@@ -872,6 +879,7 @@ def _read_document_records(
                     para_id=find_first_valid_para_id(para_ids),
                     para_id_end=find_last_valid_para_id(para_ids_end),
                     table_header_rows=header_rows_or_none,
+                    table_cell_features=table_metadata.get("cell_features"),
                 )
             )
 
@@ -1253,35 +1261,52 @@ def _assemble_blocks_smart(
             continue  # non-lead title-block member, emitted with the lead
         if rec.kind in ("empty_para", "empty_table", "section_break"):
             continue
-        if rec.kind == "table":
-            current_paragraphs.append(
-                {
-                    "text": rec.text,
-                    "para_id": rec.para_id,
-                    "para_id_end": rec.para_id_end,
-                    "is_table": True,
-                    "_table_header": rec.table_header_rows,
-                }
-            )
-            continue
 
         d = decisions.get(i)
         if d is not None and d.absorbed:
             continue  # text already merged into a preceding heading
+        # The title-block lead branch must run BEFORE the plain-table branch:
+        # a §2.2.4 TABLE-channel lead is itself a table record — emitting it
+        # as body content would discard the composed heading and drop every
+        # non-lead member via title_member_skip.
         if d is not None and d.is_title_block and i == d.member_indices[0]:
             heading_full = _truncate_title_heading(
                 d.composed_heading or d.text, rec.para_id
             )
             _flush()
-            member_paras = [
-                {
-                    "text": records[m].text,
-                    "para_id": records[m].para_id,
-                    "is_table": False,
-                }
-                for m in d.member_indices
-                if records[m].kind == "para"
-            ]
+            member_paras = []
+            for m in d.member_indices:
+                mrec = records[m]
+                if mrec.kind == "para":
+                    member_paras.append(
+                        {
+                            "text": mrec.text,
+                            "para_id": mrec.para_id,
+                            "is_table": False,
+                        }
+                    )
+                elif mrec.kind == "table" and mrec.table_cell_features:
+                    # Absorbed cover table: its cell texts ARE the title
+                    # material (every cell passed the §2.2.4 membership gate:
+                    # short, non-body, no outline), so the block carries them
+                    # verbatim and the <table> placeholder is dropped. I1
+                    # only audits kind=="para" records — this explicit
+                    # carry-over is what keeps absorption lossless.
+                    cell_texts = [
+                        t.strip()
+                        for row in mrec.table_cell_features
+                        for (t, _size, _outline) in row
+                        if t and t.strip()
+                    ]
+                    if cell_texts:
+                        member_paras.append(
+                            {
+                                "text": "\n".join(cell_texts),
+                                "para_id": mrec.para_id,
+                                "para_id_end": mrec.para_id_end,
+                                "is_table": False,
+                            }
+                        )
             blocks.append(
                 {
                     **_build_unsplit_block(heading_full, member_paras, [], 0),
@@ -1297,6 +1322,18 @@ def _assemble_blocks_smart(
                 if parse_metadata is not None:
                     parse_metadata["first_heading"] = main_title
                 first_heading_recorded = True
+            continue
+
+        if rec.kind == "table":
+            current_paragraphs.append(
+                {
+                    "text": rec.text,
+                    "para_id": rec.para_id,
+                    "para_id_end": rec.para_id_end,
+                    "is_table": True,
+                    "_table_header": rec.table_header_rows,
+                }
+            )
             continue
 
         if d is not None and d.is_heading:

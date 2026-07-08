@@ -810,3 +810,86 @@ def test_run_logs_physical_feature_summary(monkeypatch, caplog) -> None:
     assert "FS_base=12.0pt" in summary
     assert "31 paragraphs" in summary
     assert "L1: 1" in summary and "none: 30" in summary
+
+
+def test_table_title_block_end_to_end_assembly(monkeypatch) -> None:
+    """§2.2.4 table channel, end to end: a cover laid out inside tables is
+    judged a title block, assembled as a standalone level-0 block whose
+    content carries every absorbed cell text, and the cover tables are no
+    longer emitted as body tables; a data table stays a body table; I1
+    passes (absorption is lossless)."""
+    import json
+
+    from lightrag.parser.docx.parse_document import (
+        ParagraphRecord,
+        _assemble_blocks_smart,
+    )
+    from lightrag.parser.docx.smart_heading import guardrails as g
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    def _table(rows, text="<table>[]</table>"):
+        return ParagraphRecord(kind="table", text=text, table_cell_features=rows)
+
+    cover_title = _table(
+        [[("产品标准化大纲", 22.0, False)], [("某某模块", 22.0, False)]],
+        text='<table>[["产品标准化大纲"], ["某某模块"]]</table>',
+    )
+    cover_publisher = _table(
+        [[("某某电子股份有限公司", 16.0, False)]],
+        text='<table>[["某某电子股份有限公司"]]</table>',
+    )
+    data_table = _table(
+        [[("序号", 10.5, False), ("这一格是以句号结尾的数据。", 10.5, False)]],
+        text='<table>[["序号", "这一格是以句号结尾的数据。"]]</table>',
+    )
+    records = [cover_title, cover_publisher] + _body(30, size=12.0) + [data_table]
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        if "产品标准化大纲" in prompt:
+            return json.dumps(
+                {
+                    "is_title_block": True,
+                    "main_title": "产品标准化大纲某某模块",
+                    "publisher": "某某电子股份有限公司",
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps({"is_title_block": False}, ensure_ascii=False)
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.doc_title == "产品标准化大纲某某模块"
+    lead = result.decisions[0]
+    assert lead.is_title_block and lead.level == 0
+    assert lead.member_indices == (0, 1)
+
+    meta: dict = {}
+    blocks = _assemble_blocks_smart(records, result, {}, meta)
+    title_blocks = [b for b in blocks if b.get("is_title_block")]
+    assert len(title_blocks) == 1
+    tb = title_blocks[0]
+    assert tb["level"] == 0
+    assert tb["heading"] == "产品标准化大纲某某模块(某某电子股份有限公司)"
+    for cell in ("产品标准化大纲", "某某模块", "某某电子股份有限公司"):
+        assert cell in tb["content"]  # absorption is lossless
+    assert meta["first_heading"] == "产品标准化大纲某某模块"
+
+    # The cover tables are absorbed — no body block carries their placeholder
+    # — while the data table is still emitted as an ordinary body table.
+    body_contents = [
+        b.get("content") or "" for b in blocks if not b.get("is_title_block")
+    ]
+    assert not any('["产品标准化大纲"]' in c for c in body_contents)
+    assert any('<table>[["序号"' in c for c in body_contents)
+
+    # I1: absorbed cell texts never trip the paragraph-preservation check.
+    assert g.verify_content_preservation(records, blocks, toc_indices=set()) == []

@@ -491,3 +491,69 @@ def test_bare_sz_does_not_mask_valid_szcs() -> None:
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     rpr = ET.fromstring(f'<w:rPr xmlns:w="{w}"><w:sz/><w:szCs w:val="28"/></w:rPr>')
     assert _element_direct_size(rpr) == 28  # 14pt, not None
+
+
+def test_table_cell_features_captured_on_table_records(tmp_path) -> None:
+    """§2.2.4 table channel wiring: the read pass captures per-PHYSICAL-cell
+    (text, effective size, has_outline) on ``kind=="table"`` records — a
+    gridSpan full-width merge is ONE cell, sizes resolve through the style
+    cascade, and an ``outlineLvl`` cell paragraph flags ``has_outline``."""
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+
+    doc = Document()
+    _set_doc_default_size(doc, 21)  # docDefaults 10.5pt — inherited by cells
+    table = doc.add_table(rows=3, cols=2)
+    # Row 0: full-width merged title cell at 22pt (direct run size).
+    merged = table.cell(0, 0).merge(table.cell(0, 1))
+    run = merged.paragraphs[0].add_run("产品标准化大纲")
+    run.font.size = Pt(22)
+    # Row 1: two plain cells with NO direct size — must inherit 10.5pt.
+    table.cell(1, 0).paragraphs[0].add_run("档 号")
+    table.cell(1, 1).paragraphs[0].add_run("1V1.0.0")
+    # Row 2: a cell paragraph carrying a direct outlineLvl.
+    outline_para = table.cell(2, 0).paragraphs[0]
+    outline_para.add_run("带大纲的格")
+    ppr = outline_para._p.get_or_add_pPr()
+    lvl = OxmlElement("w:outlineLvl")
+    lvl.set(qn("w:val"), "0")
+    ppr.append(lvl)
+    doc.add_paragraph("正文段落，以句号结尾。")
+
+    path = _save(doc, tmp_path)
+    resolver = NumberingResolver(str(path))
+    styles_outline = parse_styles_outline_levels(str(path))
+    styles = parse_styles_attributes(str(path))
+    records = _read_document_records(
+        Document(str(path)),
+        resolver,
+        styles_outline,
+        None,
+        {},
+        style_attributes=styles,
+    )
+
+    tables = [r for r in records if r.kind == "table"]
+    assert len(tables) == 1
+    cf = tables[0].table_cell_features
+    assert cf is not None and len(cf) == 3
+    assert len(cf[0]) == 1  # gridSpan merge → ONE physical cell
+    assert cf[0][0][0] == "产品标准化大纲" and cf[0][0][1] == 22.0
+    assert len(cf[1]) == 2  # plain row → two physical cells
+    assert cf[1][0][:2] == ("档 号", 10.5)  # inherited docDefaults size
+    assert cf[1][1][:2] == ("1V1.0.0", 10.5)
+    assert cf[2][0][2] is True  # outlineLvl cell → has_outline
+
+    # Smart off: no style_attributes → the field stays None (legacy parity).
+    records_off = _read_document_records(
+        Document(str(path)),
+        NumberingResolver(str(path)),
+        styles_outline,
+        None,
+        {},
+        style_attributes=None,
+    )
+    assert [r.table_cell_features for r in records_off if r.kind == "table"] == [None]

@@ -91,6 +91,9 @@ class TitleBlockCandidate:
     end: int
     single: bool
     trigger: str  # audit rule id
+    #: §2.2.4 table channel: the window spans TABLE records (a cover laid out
+    #: inside tables); members are the table records, rendered cell-by-cell.
+    table: bool = False
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,96 @@ def find_title_block_candidates(
             covered.update(range(start, end))
         i = max(end, i + 1)
 
+    # --- table windows (§2.2.4 table channel) ------------------------------
+    # A cover laid out INSIDE tables. Scan each run of consecutive tables
+    # (empty paragraphs may sit between them) and take its leading prefix of
+    # member-qualifying tables; the first non-qualifying table ends both the
+    # window AND the run (the remainder never joins a title block). The
+    # prefix is a candidate when >=1 member table carries a title row.
+
+    def _table_member_ok(idx: int) -> bool:
+        """Membership gate: EVERY non-empty cell reads as title material —
+        no strong-body feature, within the title length cap, no physical
+        outline. A data table (sentence / long cells) can never join, which
+        is what makes absorbing member tables content-safe."""
+        cf = records[idx].table_cell_features
+        if cf is None:
+            return False
+        for row in cf:
+            for text, _size, has_outline in row:
+                t = (text or "").strip()
+                if not t:
+                    continue
+                if has_outline:
+                    return False
+                if guardrails.weighted_char_length(t) > TITLE_LINE_MAX_WEIGHTED_CHARS:
+                    return False
+                if strong_body(t) is not None:
+                    return False
+        return True
+
+    def _table_title_size(idx: int) -> float | None:
+        """Max size over this table's title rows (None = no title row).
+
+        A title row is a single-PHYSICAL-cell row (a gridSpan full-width
+        merge is ONE ``w:tc``) whose text is non-empty, unnumbered (same
+        genuine-numbering exclusion as the paragraph channels) and sized at
+        the +2pt tier over the global FS_base."""
+        if fs_base_pt is None:
+            return None
+        best = None
+        for row in records[idx].table_cell_features or ():
+            if len(row) != 1:
+                continue
+            text, size, _outline = row[0]
+            t = (text or "").strip()
+            if (
+                t
+                and size is not None
+                and size >= fs_base_pt + MULTI_WINDOW_TITLE_DELTA_PT
+                and not _has_real_numbering(t, numbering_veto)
+            ):
+                if best is None or size > best:
+                    best = size
+        return best
+
+    i = 0
+    while i < n:
+        if records[i].kind != "table" or i in skip_indices:
+            i += 1
+            continue
+        members: list[int] = []
+        j = i
+        while j < n:
+            r = records[j]
+            if r.kind == "empty_para":
+                j += 1
+                continue
+            if r.kind != "table" or j in skip_indices or not _table_member_ok(j):
+                break
+            members.append(j)
+            j += 1
+        # The rest of the run (from the first non-qualifying table) is
+        # skipped outright — it never seeds another window.
+        run_end = j
+        while run_end < n and records[run_end].kind in ("table", "empty_para"):
+            run_end += 1
+        if members:
+            sizes = [s for s in map(_table_title_size, members) if s is not None]
+            start, end = members[0], members[-1] + 1
+            if sizes and _dominates_neighbor_headings(max(sizes), start, end):
+                candidates.append(
+                    TitleBlockCandidate(
+                        start=start,
+                        end=end,
+                        single=False,
+                        trigger="table_window",
+                        table=True,
+                    )
+                )
+                covered.update(range(start, end))
+        i = max(run_end, i + 1)
+
     # --- single-paragraph channel -----------------------------------------
     single_found = 0
     single_truncated = 0
@@ -536,6 +629,54 @@ def _render_window(
     return "\n".join(lines), index_map
 
 
+def _render_table_window(
+    records: Sequence[Any], candidate: TitleBlockCandidate, warnings: dict | None
+) -> tuple[str, list[int], str]:
+    """Render a TABLE candidate window for the LLM (§2.2.4 table channel).
+
+    One indexed line per non-empty PHYSICAL cell, row by row across the
+    member tables. Returns ``(window_text, member_table_indices,
+    window_canon)`` — the canon concatenates the cell texts because the
+    table record's own ``text`` is a ``<table>{json}</table>`` placeholder
+    and useless for locate-back. Token-capped from the tail (same cap and
+    warning as the multi-paragraph window)."""
+    cap = _env_int("DOCX_SMART_LLM_WINDOW_TOKENS", DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS)
+    lines: list[str] = []
+    canon_parts: list[str] = []
+    members: list[int] = []
+    used = 0
+    truncated = False
+    for i in range(candidate.start, candidate.end):
+        rec = records[i]
+        if rec.kind != "table" or rec.table_cell_features is None:
+            continue
+        members.append(i)
+        for row in rec.table_cell_features:
+            for text, _size, _outline in row:
+                t = (text or "").strip()
+                if not t or truncated:
+                    continue
+                line = f"[{len(lines)}] {t}"
+                cost = _estimate_tokens(line)
+                if used + cost > cap and lines:
+                    truncated = True
+                    continue
+                used += cost
+                lines.append(line)
+                canon_parts.append(_canon(t))
+    if truncated:
+        if warnings is not None:
+            warnings["title_block_window_truncated"] = (
+                warnings.get("title_block_window_truncated", 0) + 1
+            )
+        logger.warning(
+            "[smart_heading] title-block candidate window exceeded %d tokens; "
+            "tail content not shown to the LLM",
+            cap,
+        )
+    return "\n".join(lines), members, "".join(canon_parts)
+
+
 def _parse_llm_json(raw: str) -> dict:
     text = (raw or "").strip()
     m = re.search(r"\{.*\}", text, re.DOTALL)
@@ -582,13 +723,22 @@ def judge_title_block(
             "smart_heading needs an LLM to judge a title-block candidate but "
             "none is configured (debug runs: build_debug_rag(extract_llm_func=…))"
         )
-    window_text, index_map = _render_window(records, candidate, warnings)
+    if candidate.table:
+        # §2.2.4 table channel: the window is cell texts, and locate-back
+        # must run against them (the record text is a <table> placeholder).
+        window_text, member_tables, window_canon = _render_table_window(
+            records, candidate, warnings
+        )
+        index_map = []
+    else:
+        window_text, index_map = _render_window(records, candidate, warnings)
+        window_canon = "".join(_canon(records[i].text) for i in index_map)
+        member_tables = []
     prompt = _USER_TEMPLATE.format(window=window_text)
     raw = llm_judge(prompt, system_prompt=_SYSTEM_PROMPT)
     data = _parse_llm_json(raw)
 
     is_title = bool(data.get("is_title_block"))
-    window_canon = "".join(_canon(records[i].text) for i in index_map)
 
     def _opt_str(key: str) -> str | None:
         value = data.get(key)
@@ -616,7 +766,10 @@ def judge_title_block(
             # reference-only context paragraph must not validate (review D4).
             locate_scope = _canon(records[candidate.start].text)
         else:
-            member_indices = tuple(index_map)
+            # Table windows: members are the TABLE records themselves.
+            member_indices = (
+                tuple(member_tables) if candidate.table else tuple(index_map)
+            )
             sub_title = _opt_str("sub_title")
             doc_number = _opt_str("doc_number")
             classification = _opt_str("classification")
@@ -651,7 +804,11 @@ def judge_title_block(
     # simply re-enters the normal §2.2.5 flow on its own signals — it is not
     # demoted, and the surrounding context keeps whatever standing the gate
     # gives it. The LLM's headings/body partition over the context is ignored.
-    if candidate.single:
+    #
+    # A TABLE candidate takes the same path: cells are not paragraph records,
+    # so a headings/body partition has nothing to land on — the member tables
+    # simply stay ordinary body tables.
+    if candidate.single or candidate.table:
         return TitleBlockDecision(
             candidate=candidate,
             is_title_block=False,
