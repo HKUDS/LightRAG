@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from lightrag.parser.docx.parse_document import ParagraphRecord
@@ -17,6 +19,18 @@ from lightrag.parser.docx.smart_heading.heading_flow import (
 from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
 pytestmark = pytest.mark.offline
+
+
+@pytest.fixture(autouse=True)
+def _propagate_lightrag_logs():
+    """The ``lightrag`` logger sets propagate=False; caplog needs it on."""
+    lg = logging.getLogger("lightrag")
+    old = lg.propagate
+    lg.propagate = True
+    try:
+        yield
+    finally:
+        lg.propagate = old
 
 
 def _para(text: str, *, size: float = 12.0, **kw) -> ParagraphRecord:
@@ -225,7 +239,7 @@ def test_centered_run_longer_than_four_loses_channel() -> None:
     assert "居中标题一" in texts and "居中标题二" in texts
 
 
-def test_cb1_reestimation_recovers_density(monkeypatch) -> None:
+def test_cb1_reestimation_recovers_density(monkeypatch, caplog) -> None:
     """G3-4 branch 1: dominant fake-heading size folds into the body; the
     re-gated density collapses and the breaker does NOT trip."""
     records = _body(60, size=10.5)
@@ -238,22 +252,30 @@ def test_cb1_reestimation_recovers_density(monkeypatch) -> None:
     assert fs.confidence_high
 
     warnings: dict = {}
-    result = gate_with_cb1(
-        records,
-        indices,
-        fs_base=fs,
-        warnings=warnings,
-        strong_body=_stub_strong_body,
-        numbering_veto=_stub_no_veto,
-        caption_veto=_stub_no_caption,
-    )
+    with caplog.at_level(logging.INFO, logger="lightrag"):
+        result = gate_with_cb1(
+            records,
+            indices,
+            fs_base=fs,
+            warnings=warnings,
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
     assert warnings.get("smart_cb1_reestimated") == 1
     assert result.cb1_reestimated and not result.cb1_tripped
     # 12pt became the body baseline; the bare lines lost candidacy.
     assert result.decisions == []
+    # Re-gate outcome logged as a converged (INFO) event.
+    regate = next(m for m in _log_messages(caplog) if "CB1 re-gate:" in m)
+    assert "converged" in regate and "threshold" in regate
 
 
-def test_cb1_extreme_sample_trips_breaker(monkeypatch) -> None:
+def _log_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records]
+
+
+def test_cb1_extreme_sample_trips_breaker(monkeypatch, caplog) -> None:
     """G3-4 branch 2: a question-bank doc stays dense after one
     re-estimation → the breaker trips (sub-document falls back)."""
     records = []
@@ -264,18 +286,23 @@ def test_cb1_extreme_sample_trips_breaker(monkeypatch) -> None:
     fs = document_fs_base(records, indices)
 
     warnings: dict = {}
-    result = gate_with_cb1(
-        records,
-        indices,
-        fs_base=fs,
-        warnings=warnings,
-        strong_body=_stub_strong_body,
-        numbering_veto=_stub_no_veto,
-        caption_veto=_stub_no_caption,
-    )
+    with caplog.at_level(logging.INFO, logger="lightrag"):
+        result = gate_with_cb1(
+            records,
+            indices,
+            fs_base=fs,
+            warnings=warnings,
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
     assert result.cb1_reestimated
     assert result.cb1_tripped
     assert warnings.get("smart_cb1_tripped") == 1
+    # Re-gate outcome logged as a still-over (WARNING) fallback event.
+    regate = next(r for r in caplog.records if "CB1 re-gate:" in r.getMessage())
+    assert regate.levelno == logging.WARNING
+    assert "outline-only fallback" in regate.getMessage()
 
 
 # ---------------------------------------------------------------------------
@@ -708,5 +735,78 @@ def test_run_level_audit_exports_metrics(monkeypatch) -> None:
     assert [c["is_title_block"] for c in audit["title_block_candidates"]] == [True]
     rows = audit["decisions"]
     assert rows
-    assert all({"hash", "rules", "level", "is_heading"} <= set(r) for r in rows)
+    assert all(
+        {
+            "hash",
+            "summary",
+            "font_size_pt",
+            "sub_fs_base",
+            "rules",
+            "level",
+            "is_heading",
+        }
+        <= set(r)
+        for r in rows
+    )
     assert any(any("title_block" in rule for rule in r["rules"]) for r in rows)
+    # Enriched fields present and the plaintext preview is capped. Value
+    # assertions live in test_audit_decision_fields_enriched below.
+    from lightrag.parser.docx.smart_heading.heading_flow import _AUDIT_SUMMARY_CHARS
+
+    assert all(len(r["summary"]) <= _AUDIT_SUMMARY_CHARS + 3 for r in rows)  # +"..."
+    # Every sub-document (fallbacks included) now records its fs_base.
+    assert all("fs_base" in s for s in audit["sub_documents"])
+
+
+def test_audit_decision_fields_enriched(monkeypatch) -> None:
+    """Requirement 2: each decision row carries a plaintext summary, the
+    paragraph mode font off the record, and its sub-document fs_base."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    # No title block (llm_judge=None) → the whole doc is one sub-document.
+    records = [_para("第一章 绪论", size=16.0, outline_level=0)]
+    records += _body(30, size=12.0)
+
+    result = run_smart_heading(
+        records,
+        llm_judge=None,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    rows = result.audit["decisions"]
+    heading_row = next(r for r in rows if r["summary"] == "第一章 绪论")
+    assert heading_row["is_heading"] is True
+    assert heading_row["font_size_pt"] == 16.0  # record mode, not FS_base
+    assert heading_row["sub_fs_base"] == 12.0  # the sub-document body baseline
+
+
+def test_run_logs_physical_feature_summary(monkeypatch, caplog) -> None:
+    """Requirement 1: a document-level info line (FS_base, paragraph count,
+    outline histogram) fires once physical features are extracted."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = [_para("第一章 绪论", size=16.0, outline_level=0)]
+    records += _body(30, size=12.0)
+
+    with caplog.at_level(logging.INFO, logger="lightrag"):
+        run_smart_heading(
+            records,
+            llm_judge=None,
+            warnings={},
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
+
+    summary = next(
+        (m for m in _log_messages(caplog) if "physical features:" in m), None
+    )
+    assert summary is not None
+    assert "FS_base=12.0pt" in summary
+    assert "31 paragraphs" in summary
+    assert "L1: 1" in summary and "none: 30" in summary

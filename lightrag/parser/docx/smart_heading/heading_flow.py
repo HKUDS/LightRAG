@@ -34,7 +34,7 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
     DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS,
 )
-from lightrag.utils import logger
+from lightrag.utils import get_content_summary, logger
 
 from . import guardrails
 from .features import effective_font_size_pt
@@ -52,6 +52,11 @@ from .style_key import (
 )
 
 _CENTER_RUN_MAX = 4  # anti-poetry: longer centered runs lose the channel
+
+#: §2.3.5 deviation: the re-judgment ledger normally stores only a content
+#: hash, never plaintext. This is the max character length of the plaintext
+#: preview added alongside that hash for human-readable auditing.
+_AUDIT_SUMMARY_CHARS = 60
 
 
 def _env_float(env_name: str, default: float) -> float:
@@ -160,6 +165,44 @@ def document_fs_base(
     return compute_fs_base(pairs, confidence_ratio=ratio)
 
 
+def _log_physical_feature_summary(
+    records: Sequence[Any], body_indices: Sequence[int], doc_fs: FsBase
+) -> None:
+    """Emit a one-line document-level summary once physical features are
+    extracted: the body FS_base (over body paragraphs, its natural scope),
+    the total paragraph count and the per-outline-level histogram (over all
+    ``para`` records, the physical view). Outline levels are shown 1-based
+    (``L1`` == outline_level 0, i.e. Word "Level 1"); paragraphs without an
+    outline fall in the ``none`` bucket."""
+    total_paras = 0
+    outline_hist: dict[int | None, int] = {}
+    for rec in records:
+        if rec.kind != "para":
+            continue
+        total_paras += 1
+        lv = rec.outline_level
+        outline_hist[lv] = outline_hist.get(lv, 0) + 1
+
+    parts = [
+        f"L{lv + 1}: {outline_hist[lv]}"
+        for lv in sorted(k for k in outline_hist if k is not None)
+    ]
+    if None in outline_hist:
+        parts.append(f"none: {outline_hist[None]}")
+    levels_str = ", ".join(parts) if parts else "(none)"
+
+    fs_str = f"{doc_fs.size_pt}pt" if doc_fs.size_pt is not None else "unknown"
+    confidence = "high" if doc_fs.confidence_high else "low"
+    logger.info(
+        "[smart_heading] physical features: FS_base=%s (confidence=%s), "
+        "%d paragraphs {%s}",
+        fs_str,
+        confidence,
+        total_paras,
+        levels_str,
+    )
+
+
 # ---------------------------------------------------------------------------
 # step 1 — candidate gate
 # ---------------------------------------------------------------------------
@@ -177,6 +220,9 @@ class GateResult:
     cb1_reestimated: bool = False
     cb1_tripped: bool = False  # still too dense after one re-estimation
     cb1_new_fs: float | None = None  # re-estimated FS_base (audit, §2.3.5)
+    #: Second-pass mean body chars between adjacent candidates (observational
+    #: only — the §2.3.3 recheck is density-only; None when < 2 candidates).
+    cb1_new_inter_chars: float | None = None
     #: Recognition-time strong-body demotions of OUTLINE paragraphs. Kept
     #: apart from ``decisions`` (they must not be leveled/anchored) but carry
     #: a rule-tagged ``HeadingDecision`` so the §2.3.2 I2 retention check sees
@@ -563,11 +609,38 @@ def gate_with_cb1(
     )
     second.cb1_reestimated = True
     second.cb1_new_fs = new_size
+    # Second-pass inter-heading spacing: observational only (the §2.3.3
+    # recheck stays density-only — this does NOT feed the trip decision).
+    second.cb1_new_inter_chars = _avg_inter_heading_body_chars(records, indices, second)
     threshold = max(density_max, baseline_density)
     if second.density > threshold:
         second.cb1_tripped = True
         if warnings is not None:
             warnings["smart_cb1_tripped"] = warnings.get("smart_cb1_tripped", 0) + 1
+    # Re-gate outcome: the first warning above fires BEFORE this second pass
+    # runs, so it can only report the first-pass density. Surface the
+    # post-re-estimation density AND inter-heading spacing here — WARNING when
+    # it stayed over the bar (this sub-document falls back to outline-only),
+    # INFO when it converged.
+    log = logger.warning if second.cb1_tripped else logger.info
+    inter_str = (
+        f"{second.cb1_new_inter_chars:.0f}"
+        if second.cb1_new_inter_chars is not None
+        else "n/a"
+    )
+    log(
+        "[smart_heading] CB1 re-gate: density %.0f%%->%.0f%% (threshold %.0f%%), "
+        "avg body chars between headings %s, %s",
+        result.density * 100,
+        second.density * 100,
+        threshold * 100,
+        inter_str,
+        (
+            "still over -> outline-only fallback for this sub-document"
+            if second.cb1_tripped
+            else "converged, kept re-estimated pass"
+        ),
+    )
     return second
 
 
@@ -1644,13 +1717,21 @@ def run_smart_heading(
         for i in range(len(records))
         if records[i].kind == "para" and i not in toc_indices
     ]
+
+    # Physical features are all extracted by now: log a document-level
+    # summary before the CB4 gate can short-circuit (so even skipped short
+    # docs surface the diagnostic). ``doc_fs`` is reused as the title-block
+    # baseline below to avoid recomputing the global FS_base.
+    doc_fs = document_fs_base(records, body_indices)
+    _log_physical_feature_summary(records, body_indices, doc_fs)
+
     if _estimate_record_tokens(records, body_indices) < min_tokens:
         return None  # CB4 whole-document gate — smart never ran
 
     # --- title blocks -------------------------------------------------------
     # §2.2.4: the title-block gate baseline is the GLOBAL FS_base initial
     # value — the char-weighted dominant size (§2.2.2), not a weighted mean.
-    fs_initial = document_fs_base(records, body_indices).size_pt
+    fs_initial = doc_fs.size_pt
     candidates = tb.find_title_block_candidates(
         records,
         fs_base_pt=fs_initial,
@@ -1739,6 +1820,11 @@ def run_smart_heading(
         spans.append((start, end))
 
     fallback_subs = 0
+    #: record_index -> the FS_base (body size) of the sub-document it lives
+    #: in, so the per-paragraph audit ledger can report each paragraph's
+    #: sub-document baseline. Populated for EVERY sub-document below,
+    #: including the CB4 short-doc fallback.
+    sub_fs_by_index: dict[int, float | None] = {}
     for start, end in spans:
         sub_indices = [
             i
@@ -1752,6 +1838,16 @@ def run_smart_heading(
         sub_audit: dict[str, Any] = {"range": [start, end]}
         audit["sub_documents"].append(sub_audit)
 
+        # Per-sub-document FS_base is computed and recorded up front (before
+        # the CB4 gate can short-circuit) so its value is available for the
+        # audit ledger of every sub-document, fallbacks included.
+        fs = document_fs_base(records, sub_indices)
+        sub_audit["fs_base"] = fs.size_pt
+        sub_audit["fs_confidence_high"] = fs.confidence_high
+        sub_audit["fs_dominant_ratio"] = round(fs.dominant_ratio, 4)
+        for i in sub_indices:
+            sub_fs_by_index[i] = fs.size_pt
+
         baseline_headings = sum(
             1 for i in sub_indices if records[i].outline_level is not None
         )
@@ -1764,10 +1860,6 @@ def run_smart_heading(
                 decisions[d.record_index] = d
             continue
 
-        fs = document_fs_base(records, sub_indices)
-        sub_audit["fs_base"] = fs.size_pt
-        sub_audit["fs_confidence_high"] = fs.confidence_high
-        sub_audit["fs_dominant_ratio"] = round(fs.dominant_ratio, 4)
         if not fs.confidence_high:  # §2.3.5: CB5 trips per sub-document
             warnings["smart_cb5_low_confidence"] = (
                 warnings.get("smart_cb5_low_confidence", 0) + 1
@@ -1785,8 +1877,14 @@ def run_smart_heading(
             llm_heading_grants=llm_grants,
             llm_body_vetoes=llm_body_vetoes,
         )
-        if gate.cb1_reestimated:  # §2.3.5: FS_base value after re-estimation
+        if gate.cb1_reestimated:  # §2.3.5: FS_base + density after re-estimation
             sub_audit["cb1_reestimated_fs"] = gate.cb1_new_fs
+            sub_audit["cb1_reestimated_density"] = round(gate.density, 4)
+            sub_audit["cb1_reestimated_inter_chars"] = (
+                round(gate.cb1_new_inter_chars, 1)
+                if gate.cb1_new_inter_chars is not None
+                else None
+            )
         if gate.cb1_tripped:
             sub_audit["fallback"] = "cb1_density"
             fallback_subs += 1
@@ -1855,6 +1953,14 @@ def run_smart_heading(
     audit["decisions"] = [
         {
             "hash": _para_hash(d.text),
+            # §2.3.5 deviation: a plaintext preview alongside the hash for
+            # human-readable auditing (see _AUDIT_SUMMARY_CHARS).
+            "summary": get_content_summary(d.text, max_length=_AUDIT_SUMMARY_CHARS),
+            # Paragraph font size = the char-weighted MODE off the record
+            # (NOT the effective size on the decision), plus the body
+            # baseline of the sub-document this paragraph belongs to.
+            "font_size_pt": records[d.record_index].font_size_pt,
+            "sub_fs_base": sub_fs_by_index.get(d.record_index),
             "rules": list(d.rule_trail),
             "level": d.level,
             "is_heading": d.is_heading,
