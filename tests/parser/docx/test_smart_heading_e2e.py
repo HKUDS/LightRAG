@@ -349,9 +349,17 @@ def test_outline_intact_structure_equivalent(monkeypatch) -> None:
 
 
 def test_question_bank_cb1_yields_no_phantom_headings(monkeypatch) -> None:
-    """G11-4: the CB1 breaker keeps a question bank heading-free."""
+    """G11-4: the CB1 breaker keeps a question bank heading-free.
+
+    The invariant is "CB1 engages and no phantom heading survives", NOT the
+    specific mechanism. Whether CB1 trips (falls back to outline-only) or the
+    re-estimation converges to zero candidates depends on FS_base, which is a
+    near-tie here (12pt stems vs 10.5pt option lines); the §2.2.2 whitespace-
+    excluding weight fix tipped it to 12pt, so the re-gate now converges to 0
+    candidates instead of tripping. Both keep the bank heading-free — assert
+    the engagement + outcome, not the branch."""
     blocks, warnings, _ = _extract("question_bank", _make_llm({}), monkeypatch)
-    assert warnings.get("smart_cb1_tripped") == 1
+    assert warnings.get("smart_cb1_reestimated") == 1
     # No phantom heading blocks: everything stays one preface block.
     assert all(not b.get("is_title_block") for b in blocks)
     assert {b["heading"] for b in blocks} == {"Preface/Uncategorized"}
@@ -577,10 +585,13 @@ def test_toc_warning_only_on_accepted_smart_output(monkeypatch, tmp_path) -> Non
 
 
 def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
-    """G11-7: two title-block sub-documents; the question-bank one trips CB1
-    and falls back to outlineLvl-only levels while the other keeps its smart
-    structure. Title blocks, doc_title and parent_headings survive; the
-    audit records the fallback scope."""
+    """G11-7: two title-block sub-documents; the question-bank one engages CB1
+    (yielding no headings) while the other keeps its smart structure. Title
+    blocks, doc_title and parent_headings survive; the audit records the CB1
+    scope. Whether CB1 trips (outline-only fallback) or the re-estimation
+    converges to zero candidates depends on a near-tie FS_base — assert the
+    engagement + zero-heading outcome, not the branch (see the CB1 note in
+    test_question_bank_cb1_yields_no_phantom_headings)."""
     from docx import Document
 
     from lightrag.parser.docx.parse_document import extract_docx_blocks
@@ -643,8 +654,16 @@ def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
         assert "附录题库" in chain
 
     audit = metadata["smart_audit"]
-    fallbacks = [
-        s for s in audit["sub_documents"] if s.get("fallback") == "cb1_density"
-    ]
-    assert len(fallbacks) == 1 and "range" in fallbacks[0]
-    assert warnings.get("smart_cb1_tripped", 0) >= 1
+    # CB1 engaged on the question-bank sub-document (re-estimation always runs
+    # before the trip check, so this holds whether it trips or converges).
+    assert warnings.get("smart_cb1_reestimated", 0) >= 1
+    # Locate that sub-document in the audit by its CB1 marks (converged → a
+    # cb1_reestimated_fs; tripped → a cb1_density fallback) and assert it
+    # contributed no headings either way.
+    qb_sub = next(
+        s
+        for s in audit["sub_documents"]
+        if s.get("cb1_reestimated_fs") is not None or s.get("fallback") == "cb1_density"
+    )
+    assert "range" in qb_sub
+    assert qb_sub.get("headings", 0) == 0
