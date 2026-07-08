@@ -67,6 +67,47 @@ async def test_filter_keys_returns_missing_keys(global_config, embedding_func):
         await storage.finalize()
 
 
+async def test_get_all_keys_enumerates_every_id(global_config, embedding_func):
+    storage = _make_storage(global_config, embedding_func)
+    await storage.initialize()
+    try:
+        assert await storage.get_all_keys() == []
+        await storage.upsert(
+            {
+                "default:extract:1": {"content": "a"},
+                "mix:query:1": {"content": "b"},
+                "hybrid:keywords:1": {"content": "c"},
+            }
+        )
+        assert set(await storage.get_all_keys()) == {
+            "default:extract:1",
+            "mix:query:1",
+            "hybrid:keywords:1",
+        }
+        await storage.delete(["mix:query:1"])
+        assert set(await storage.get_all_keys()) == {
+            "default:extract:1",
+            "hybrid:keywords:1",
+        }
+    finally:
+        await storage.finalize()
+
+
+async def test_get_all_keys_is_workspace_scoped(global_config, embedding_func):
+    ws1 = _make_storage(global_config, embedding_func, workspace="ws1")
+    ws2 = _make_storage(global_config, embedding_func, workspace="ws2")
+    await ws1.initialize()
+    await ws2.initialize()
+    try:
+        await ws1.upsert({"a": {"content": "1"}, "b": {"content": "2"}})
+        await ws2.upsert({"c": {"content": "3"}})
+        assert set(await ws1.get_all_keys()) == {"a", "b"}
+        assert set(await ws2.get_all_keys()) == {"c"}
+    finally:
+        await ws1.finalize()
+        await ws2.finalize()
+
+
 async def test_upsert_replaces_record_but_preserves_create_time(
     global_config, embedding_func
 ):

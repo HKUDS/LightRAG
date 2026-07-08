@@ -16,6 +16,7 @@ Supported KV Storage Types:
     - PGKVStorage
     - MongoKVStorage
     - OpenSearchKVStorage
+    - LanceDBKVStorage (embedded, single-process: shut the server down first)
 """
 
 import asyncio
@@ -49,6 +50,7 @@ STORAGE_TYPES = {
     "3": "PGKVStorage",
     "4": "MongoKVStorage",
     "5": "OpenSearchKVStorage",
+    "6": "LanceDBKVStorage",
 }
 
 # Workspace environment variable mapping
@@ -57,6 +59,7 @@ WORKSPACE_ENV_MAP = {
     "MongoKVStorage": "MONGODB_WORKSPACE",
     "RedisKVStorage": "REDIS_WORKSPACE",
     "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
+    "LanceDBKVStorage": "LANCEDB_WORKSPACE",
 }
 
 # Query cache modes
@@ -175,6 +178,10 @@ class CleanupTool:
                 )
             elif storage_name == "OpenSearchKVStorage":
                 return config.has_option("opensearch", "hosts")
+            elif storage_name == "LanceDBKVStorage":
+                # Embedded backend: works out of the box from working_dir,
+                # so no config.ini section is required.
+                return True
 
             return False
         except Exception:
@@ -243,6 +250,10 @@ class CleanupTool:
             from lightrag.kg.opensearch_impl import OpenSearchKVStorage
 
             return OpenSearchKVStorage
+        elif storage_name == "LanceDBKVStorage":
+            from lightrag.kg.lancedb_impl import LanceDBKVStorage
+
+            return LanceDBKVStorage
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -420,6 +431,27 @@ class CleanupTool:
 
         return counts
 
+    async def count_query_caches_lancedb(self, storage) -> Dict[str, Dict[str, int]]:
+        """Count query caches in LanceDBKVStorage by mode and cache_type."""
+        counts = {mode: {"query": 0, "keywords": 0} for mode in QUERY_MODES}
+
+        print("Scanning LanceDB records...", end="", flush=True)
+        start_time = time.time()
+
+        for key in await storage.get_all_keys():
+            for mode in QUERY_MODES:
+                if key.startswith(f"{mode}:query:"):
+                    counts[mode]["query"] += 1
+                elif key.startswith(f"{mode}:keywords:"):
+                    counts[mode]["keywords"] += 1
+
+        elapsed = time.time() - start_time
+        if elapsed > 1:
+            print(f" (took {elapsed:.1f}s)", end="")
+        print()
+
+        return counts
+
     async def count_query_caches(
         self, storage, storage_name: str
     ) -> Dict[str, Dict[str, int]]:
@@ -442,6 +474,8 @@ class CleanupTool:
             return await self.count_query_caches_mongo(storage)
         elif storage_name == "OpenSearchKVStorage":
             return await self.count_query_caches_opensearch(storage)
+        elif storage_name == "LanceDBKVStorage":
+            return await self.count_query_caches_lancedb(storage)
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -760,6 +794,66 @@ class CleanupTool:
                     f"{type(e).__name__}: {str(e)}"
                 )
 
+    async def delete_query_caches_lancedb(
+        self, storage, cleanup_type: str, stats: CleanupStats
+    ):
+        """Delete query caches from LanceDBKVStorage."""
+        keys_to_delete = []
+
+        for key in await storage.get_all_keys():
+            should_delete = False
+            for mode in QUERY_MODES:
+                if cleanup_type == "all":
+                    if key.startswith(f"{mode}:query:") or key.startswith(
+                        f"{mode}:keywords:"
+                    ):
+                        should_delete = True
+                elif cleanup_type == "query":
+                    if key.startswith(f"{mode}:query:"):
+                        should_delete = True
+                elif cleanup_type == "keywords":
+                    if key.startswith(f"{mode}:keywords:"):
+                        should_delete = True
+
+            if should_delete:
+                keys_to_delete.append(key)
+
+        total_keys = len(keys_to_delete)
+        stats.total_batches = (total_keys + self.batch_size - 1) // self.batch_size
+
+        print("\n=== Starting Cleanup ===")
+        print(
+            f"💡 Processing {self.batch_size:,} records at a time from LanceDBKVStorage\n"
+        )
+
+        for batch_idx in range(stats.total_batches):
+            start_idx = batch_idx * self.batch_size
+            end_idx = min((batch_idx + 1) * self.batch_size, total_keys)
+            batch_keys = keys_to_delete[start_idx:end_idx]
+
+            try:
+                await storage.delete(batch_keys)
+                stats.successful_batches += 1
+                stats.successfully_deleted += len(batch_keys)
+
+                progress = (stats.successfully_deleted / total_keys) * 100
+                bar_length = 20
+                filled_length = int(
+                    bar_length * stats.successfully_deleted // total_keys
+                )
+                bar = "█" * filled_length + "░" * (bar_length - filled_length)
+
+                print(
+                    f"Batch {batch_idx + 1}/{stats.total_batches}: {bar} "
+                    f"{stats.successfully_deleted:,}/{total_keys:,} ({progress:.1f}%) ✓"
+                )
+            except Exception as e:
+                stats.add_error(batch_idx + 1, e, len(batch_keys))
+                print(
+                    f"Batch {batch_idx + 1}/{stats.total_batches}: ✗ FAILED - "
+                    f"{type(e).__name__}: {str(e)}"
+                )
+
     async def delete_query_caches(
         self, storage, storage_name: str, cleanup_type: str, stats: CleanupStats
     ):
@@ -781,6 +875,8 @@ class CleanupTool:
             await self.delete_query_caches_mongo(storage, cleanup_type, stats)
         elif storage_name == "OpenSearchKVStorage":
             await self.delete_query_caches_opensearch(storage, cleanup_type, stats)
+        elif storage_name == "LanceDBKVStorage":
+            await self.delete_query_caches_lancedb(storage, cleanup_type, stats)
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -976,13 +1072,17 @@ class CleanupTool:
 
         storage_name = STORAGE_TYPES[choice]
 
-        # Special warning for JsonKVStorage about concurrent access
-        if storage_name == "JsonKVStorage":
+        # Special warning for single-process backends about concurrent access.
+        # JsonKVStorage (in-memory) and LanceDBKVStorage (embedded) both write
+        # to local files that a running server cannot share safely.
+        if storage_name in ("JsonKVStorage", "LanceDBKVStorage"):
             print("\n" + "=" * 60)
-            print(f"{BOLD_RED}⚠️  IMPORTANT WARNING - JsonKVStorage Concurrency{RESET}")
+            print(
+                f"{BOLD_RED}⚠️  IMPORTANT WARNING - {storage_name} Concurrency{RESET}"
+            )
             print("=" * 60)
-            print("\nJsonKVStorage is an in-memory database that does NOT support")
-            print("concurrent access to the same file by multiple programs.")
+            print(f"\n{storage_name} is a single-process backend that does NOT")
+            print("support concurrent access to the same files by multiple programs.")
             print("\nBefore proceeding, please ensure that:")
             print("  • LightRAG Server is completely shut down")
             print("  • No other programs are accessing the storage files")
@@ -999,7 +1099,7 @@ class CleanupTool:
                 )
                 return None, None, None
 
-            print("✓ Proceeding with JsonKVStorage cleanup...")
+            print(f"✓ Proceeding with {storage_name} cleanup...")
 
         # Check configuration (warnings only, doesn't block)
         print("\nChecking configuration...")
@@ -1045,6 +1145,9 @@ class CleanupTool:
             elif storage_name == "OpenSearchKVStorage":
                 print("     [opensearch]")
                 print("     hosts = localhost:9200")
+            elif storage_name == "LanceDBKVStorage":
+                print("     [lancedb]")
+                print("     uri = ./rag_storage/lancedb  # optional; defaults to WORKING_DIR/lancedb")
 
             return None, None, None
 

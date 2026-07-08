@@ -408,6 +408,11 @@ async def enumerate_kv_keys(kv) -> List[str]:
             keys.extend(hit["_id"] for hit in hits)
         return keys
 
+    if storage_name == "LanceDBKVStorage":
+        # Table name is workspace-prefixed, so this scan is already
+        # workspace-scoped. LanceDB is single-process: stop the server first.
+        return await kv.get_all_keys()
+
     raise ValueError(f"Unsupported KV storage type for key enumeration: {storage_name}")
 
 

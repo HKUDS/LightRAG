@@ -98,8 +98,11 @@ Menu options:
   vector record they previously lacked (improving their retrievability).
 - **Chunk enumeration is backend-specific.** `BaseKVStorage` has no key
   enumeration API, so the tool scans each KV backend directly (JsonKV,
-  Redis, PostgreSQL, MongoDB, OpenSearch). When a new KV backend is added,
-  `enumerate_kv_keys()` in `rebuild_vdb.py` must be extended.
+  Redis, PostgreSQL, MongoDB, OpenSearch, LanceDB). When a new KV backend is
+  added, `enumerate_kv_keys()` in `rebuild_vdb.py` must be extended.
+- **LanceDB is single-process.** The embedded LanceDB backend is fully
+  supported, but stop the LightRAG Server (and any other writer) before
+  running this tool against the same LanceDB directory.
 
 ## Library usage
 

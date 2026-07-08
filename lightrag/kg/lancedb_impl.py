@@ -482,6 +482,17 @@ class LanceDBKVStorage(BaseKVStorage):
         rows = await _fetch_rows_by_ids(self._table(), list(keys), columns=["id"])
         return keys - {row["id"] for row in rows}
 
+    async def get_all_keys(self) -> list[str]:
+        """List every id in this namespace's table.
+
+        BaseKVStorage has no enumeration contract; the offline maintenance
+        tools (rebuild_vdb / clean_llm_query_cache / migrate_llm_cache) rely
+        on this backend-specific scan. The table name is workspace-prefixed,
+        so a plain scan already returns only this workspace's ids.
+        """
+        rows = await _fetch_rows(self._table(), columns=["id"])
+        return [row["id"] for row in rows]
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return

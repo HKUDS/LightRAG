@@ -16,6 +16,7 @@ Supported KV Storage Types:
     - PGKVStorage
     - MongoKVStorage
     - OpenSearchKVStorage
+    - LanceDBKVStorage (embedded, single-process: shut the server down first)
 """
 
 import asyncio
@@ -51,6 +52,7 @@ STORAGE_TYPES = {
     "3": "PGKVStorage",
     "4": "MongoKVStorage",
     "5": "OpenSearchKVStorage",
+    "6": "LanceDBKVStorage",
 }
 
 # Workspace environment variable mapping
@@ -59,6 +61,7 @@ WORKSPACE_ENV_MAP = {
     "MongoKVStorage": "MONGODB_WORKSPACE",
     "RedisKVStorage": "REDIS_WORKSPACE",
     "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
+    "LanceDBKVStorage": "LANCEDB_WORKSPACE",
 }
 
 # Default batch size for migration
@@ -160,6 +163,10 @@ class MigrationTool:
                 )
             elif storage_name == "OpenSearchKVStorage":
                 return config.has_option("opensearch", "hosts")
+            elif storage_name == "LanceDBKVStorage":
+                # Embedded backend: works out of the box from working_dir,
+                # so no config.ini section is required.
+                return True
 
             return False
         except Exception:
@@ -256,6 +263,10 @@ class MigrationTool:
             from lightrag.kg.opensearch_impl import OpenSearchKVStorage
 
             return OpenSearchKVStorage
+        elif storage_name == "LanceDBKVStorage":
+            from lightrag.kg.lancedb_impl import LanceDBKVStorage
+
+            return LanceDBKVStorage
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -508,6 +519,34 @@ class MigrationTool:
 
         return cache_data
 
+    async def get_default_caches_lancedb(
+        self, storage, batch_size: int = 1000
+    ) -> Dict[str, Any]:
+        """Get default caches from LanceDBKVStorage.
+
+        The table name is workspace-prefixed, so enumerating ids already
+        scopes the scan to this workspace. The synthetic ``_id`` field added
+        on read is stripped so it is not carried into the target payload.
+        """
+        cache_data = {}
+
+        keys = [
+            key
+            for key in await storage.get_all_keys()
+            if key.startswith("default:extract:") or key.startswith("default:summary:")
+        ]
+
+        for offset in range(0, len(keys), batch_size):
+            batch_keys = keys[offset : offset + batch_size]
+            records = await storage.get_by_ids(batch_keys)
+            for key, record in zip(batch_keys, records):
+                if record is not None:
+                    entry = dict(record)
+                    entry.pop("_id", None)
+                    cache_data[key] = entry
+
+        return cache_data
+
     async def get_default_caches(self, storage, storage_name: str) -> Dict[str, Any]:
         """Get default caches from any storage type
 
@@ -528,6 +567,8 @@ class MigrationTool:
             return await self.get_default_caches_mongo(storage)
         elif storage_name == "OpenSearchKVStorage":
             return await self.get_default_caches_opensearch(storage)
+        elif storage_name == "LanceDBKVStorage":
+            return await self.get_default_caches_lancedb(storage)
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -659,6 +700,24 @@ class MigrationTool:
 
         return count
 
+    async def count_default_caches_lancedb(self, storage) -> int:
+        """Count default caches in LanceDBKVStorage."""
+        print("Scanning LanceDB records...", end="", flush=True)
+        start_time = time.time()
+
+        count = sum(
+            1
+            for key in await storage.get_all_keys()
+            if key.startswith("default:extract:") or key.startswith("default:summary:")
+        )
+
+        elapsed = time.time() - start_time
+        if elapsed > 1:
+            print(f" (took {elapsed:.1f}s)", end="")
+        print()
+
+        return count
+
     async def count_default_caches(self, storage, storage_name: str) -> int:
         """Count default caches from any storage type efficiently
 
@@ -679,6 +738,8 @@ class MigrationTool:
             return await self.count_default_caches_mongo(storage)
         elif storage_name == "OpenSearchKVStorage":
             return await self.count_default_caches_opensearch(storage)
+        elif storage_name == "LanceDBKVStorage":
+            return await self.count_default_caches_lancedb(storage)
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
@@ -900,6 +961,34 @@ class MigrationTool:
         if batch:
             yield batch
 
+    async def stream_default_caches_lancedb(self, storage, batch_size: int):
+        """Stream default caches from LanceDBKVStorage - yields batches.
+
+        The synthetic ``_id`` field added on read is stripped so it is not
+        carried into the target payload.
+        """
+        keys = [
+            key
+            for key in await storage.get_all_keys()
+            if key.startswith("default:extract:") or key.startswith("default:summary:")
+        ]
+
+        for offset in range(0, len(keys), batch_size):
+            batch_keys = keys[offset : offset + batch_size]
+            records = await storage.get_by_ids(batch_keys)
+
+            batch = {}
+            for key, record in zip(batch_keys, records):
+                if record is not None:
+                    entry = dict(record)
+                    entry.pop("_id", None)
+                    batch[key] = entry
+
+            if batch:
+                yield batch
+
+            await asyncio.sleep(0)
+
     async def stream_default_caches(
         self, storage, storage_name: str, batch_size: int = None
     ):
@@ -932,6 +1021,9 @@ class MigrationTool:
             async for batch in self.stream_default_caches_opensearch(
                 storage, batch_size
             ):
+                yield batch
+        elif storage_name == "LanceDBKVStorage":
+            async for batch in self.stream_default_caches_lancedb(storage, batch_size):
                 yield batch
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
@@ -1121,6 +1213,13 @@ class MigrationTool:
                     else "config.ini or defaults"
                 )
                 print(f"- Configuration Source: {config_source}")
+            elif storage_name == "LanceDBKVStorage":
+                config_source = (
+                    "environment variable"
+                    if "LANCEDB_URI" in os.environ
+                    else "config.ini or WORKING_DIR default"
+                )
+                print(f"- Configuration Source: {config_source}")
 
         except Exception as e:
             print(f"✗ Initialization failed: {e}")
@@ -1150,6 +1249,9 @@ class MigrationTool:
             elif storage_name == "OpenSearchKVStorage":
                 print("     [opensearch]")
                 print("     hosts = localhost:9200")
+            elif storage_name == "LanceDBKVStorage":
+                print("     [lancedb]")
+                print("     uri = ./rag_storage/lancedb  # optional; defaults to WORKING_DIR/lancedb")
 
             return None, None, None, 0
 

@@ -160,8 +160,10 @@ class TestMigrationToolOpenSearch:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "config.ini").write_text("[opensearch]\nhosts = localhost:9200\n")
 
+        # JsonKVStorage (no config) + OpenSearchKVStorage (config.ini) +
+        # LanceDBKVStorage (embedded, no config needed) are all available.
         with patch.dict("os.environ", {}, clear=True):
-            assert MigrationTool().count_available_storage_types() == 2
+            assert MigrationTool().count_available_storage_types() == 3
 
     @pytest.mark.asyncio
     async def test_setup_storage_returns_effective_workspace(self, monkeypatch):
