@@ -690,6 +690,36 @@ def test_cb1_low_baseline_still_trips_same_density() -> None:
     assert warnings.get("smart_cb1_reestimated") == 1
 
 
+def test_min_inter_heading_chars_env_override(monkeypatch) -> None:
+    """DOCX_SMART_MIN_INTER_HEADING_CHARS tunes the sparse-body trigger: a
+    document whose inter-heading spacing clears the default 200 trips
+    re-estimation once the floor is raised above that spacing."""
+    records: list = []
+    for i in range(4):
+        records.append(_para(f"正常标题{i}", size=16.0))
+        records += _body(3, size=12.0)  # ~250 weighted chars between headings
+    records += _body(40, size=12.0)  # tail body keeps density low
+    indices = list(range(len(records)))
+    fs = document_fs_base(records, indices)
+
+    def _run():
+        return gate_with_cb1(
+            records,
+            indices,
+            fs_base=fs,
+            warnings={},
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
+
+    # Default 200: the gaps are wide enough → not sparse, no re-estimation.
+    assert not _run().cb1_reestimated
+    # Raise the floor above the gap width → the same doc now reads as sparse.
+    monkeypatch.setenv("DOCX_SMART_MIN_INTER_HEADING_CHARS", "400")
+    assert _run().cb1_reestimated
+
+
 def test_caption_veto_spares_outline_paragraphs() -> None:
     """A5 (P3 × I2): an outline paragraph hitting the caption blacklist keeps
     its candidacy (silently dropping it would trip the I2 machine check);

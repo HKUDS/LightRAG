@@ -33,6 +33,7 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN,
     DEFAULT_DOCX_SMART_DENSITY_MAX,
     DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
+    DEFAULT_DOCX_SMART_MIN_INTER_HEADING_CHARS,
     DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS,
 )
 from lightrag.utils import get_content_summary, logger
@@ -63,6 +64,13 @@ _AUDIT_SUMMARY_CHARS = 60
 def _env_float(env_name: str, default: float) -> float:
     try:
         return float(os.getenv(env_name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_int(env_name: str, default: int) -> int:
+    try:
+        return int(os.getenv(env_name, "") or default)
     except ValueError:
         return default
 
@@ -528,12 +536,6 @@ def gate_candidates(
     )
 
 
-#: §2.3.3 CB1 trigger #2: average body chars between adjacent candidate
-#: headings below this trips re-estimation (trigger side only — the
-#: post-re-estimation recheck stays density-only per the spec).
-_CB1_MIN_INTER_HEADING_CHARS = 200
-
-
 def _avg_inter_heading_body_chars(
     records: Sequence[Any], indices: Sequence[int], result: GateResult
 ) -> float | None:
@@ -566,7 +568,8 @@ def gate_with_cb1(
     **gate_kwargs: Any,
 ) -> GateResult:
     """Run the gate; on CB1 overflow (density > threshold, or the average
-    body chars between adjacent candidates < 200 — trigger side only,
+    body chars between adjacent candidates below
+    ``DOCX_SMART_MIN_INTER_HEADING_CHARS`` — trigger side only,
     §2.3.3), re-estimate FS_base once by folding the candidates' dominant
     size into the body and re-gate in ``cb1_reestimate`` mode (composite
     same-size paths off, sizes above the new body size still auto-admit).
@@ -584,11 +587,15 @@ def gate_with_cb1(
         "DOCX_SMART_DENSITY_BASELINE_MARGIN", DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN
     )
     threshold = max(density_floor, baseline_density + baseline_margin)
+    min_inter = _env_int(
+        "DOCX_SMART_MIN_INTER_HEADING_CHARS",
+        DEFAULT_DOCX_SMART_MIN_INTER_HEADING_CHARS,
+    )
     result = gate_candidates(
         records, indices, fs_base=fs_base, warnings=warnings, **gate_kwargs
     )
     inter_chars = _avg_inter_heading_body_chars(records, indices, result)
-    sparse_body = inter_chars is not None and inter_chars < _CB1_MIN_INTER_HEADING_CHARS
+    sparse_body = inter_chars is not None and inter_chars < min_inter
     if result.density <= threshold and not sparse_body:
         return result
 
@@ -617,8 +624,7 @@ def gate_with_cb1(
         result.density * 100,
         threshold * 100,
         (
-            f", avg body chars between headings {inter_chars:.0f} < "
-            f"{_CB1_MIN_INTER_HEADING_CHARS}"
+            f", avg body chars between headings {inter_chars:.0f} < {min_inter}"
             if sparse_body
             else ""
         ),
