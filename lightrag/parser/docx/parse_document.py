@@ -23,6 +23,7 @@ from lightrag.parser._markdown import (
     render_heading_line,
     strip_heading_markdown_prefix,
 )
+from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
 from .table_extractor import TableExtractor
 from .drawing_image_extractor import (
@@ -570,7 +571,11 @@ def _collect_table_headers(paragraphs: list) -> list:
 
 
 def _build_unsplit_block(
-    heading: str, paragraphs: list, parent_headings: list, level: int
+    heading: str,
+    paragraphs: list,
+    parent_headings: list,
+    level: int,
+    is_title_block: bool = False,
 ) -> dict:
     """Build a single block from paragraphs without size-based splitting."""
     last_para = paragraphs[-1]
@@ -583,6 +588,8 @@ def _build_unsplit_block(
         "parent_headings": parent_headings,
         "level": level,
     }
+    if is_title_block:
+        block["is_title_block"] = True
     table_headers = _collect_table_headers(paragraphs)
     if table_headers:
         block["table_headers"] = table_headers
@@ -595,6 +602,7 @@ def _flush_current_block(
     paragraphs: list,
     parent_headings: list,
     level: int,
+    is_title_block: bool = False,
 ) -> None:
     """Flush accumulated paragraphs into a single heading-scoped block.
 
@@ -605,7 +613,11 @@ def _flush_current_block(
     if not paragraphs:
         return
 
-    blocks.append(_build_unsplit_block(heading, paragraphs, parent_headings, level))
+    blocks.append(
+        _build_unsplit_block(
+            heading, paragraphs, parent_headings, level, is_title_block
+        )
+    )
 
 
 @dataclass
@@ -1152,9 +1164,7 @@ def extract_docx_blocks(
         # §2.3.2 mandates an ERROR *log* (not a bare stderr print) so the
         # event is visible to the repo's caplog-based assertions and any
         # structured log routing.
-        from lightrag.utils import logger as _logger
-
-        _logger.error(
+        logger.error(
             "[smart_heading] guardrail violation "
             "(I1 missing=%d, I2=%s, I3=%s, length_ok=%s); "
             "falling back to baseline output for this document.",
@@ -1182,27 +1192,6 @@ def extract_docx_blocks(
     return smart_blocks
 
 
-def _truncate_title_heading(heading: str, para_id) -> str:
-    """Cap a compound title-block heading at MAX_HEADING_LENGTH by shedding
-    components tail-first: the ``(...)`` metadata group goes first, then the
-    subtitle/doc-number segments, and the main title survives (hard-truncated
-    only as the last resort)."""
-    if len(heading) <= MAX_HEADING_LENGTH:
-        return heading
-    import re as _re
-
-    no_meta = _re.sub(r"\([^()]*\)\s*$", "", heading).rstrip()
-    if len(no_meta) <= MAX_HEADING_LENGTH:
-        return no_meta
-    parts = no_meta.split(" — ")
-    while len(parts) > 1:
-        parts.pop()
-        candidate = " — ".join(parts)
-        if len(candidate) <= MAX_HEADING_LENGTH:
-            return candidate
-    return truncate_heading(parts[0], para_id)
-
-
 def _assemble_blocks_smart(
     records: list,
     smart_result,
@@ -1212,9 +1201,11 @@ def _assemble_blocks_smart(
     """Smart (pass3) assembly: rebuild blocks from records + HeadingDecisions.
 
     Same state machine as the legacy assembler; the differences are exactly
-    the smart products — TOC paragraphs are dropped, title blocks land as
-    standalone level-0 blocks flagged ``is_title_block``, heading/level come
-    from the decisions (merged texts, demotions to ``full_text_raw``), and
+    the smart products — TOC paragraphs are dropped, a title block seeds a
+    level-0 block flagged ``is_title_block`` (heading = the plain main title)
+    that then OWNS the following body up to the next heading / title / EOF
+    (like an ordinary section heading owns its body), heading/level come from
+    the decisions (merged texts, demotions to ``full_text_raw``), and
     ``parent_headings`` chains rebuild naturally from the final levels.
     """
     decisions = smart_result.decisions
@@ -1224,11 +1215,13 @@ def _assemble_blocks_smart(
     # lead record's composite block; their standalone rows must be skipped.
     # (Their sentinel decisions are NOT ``is_title_block``, so checking the
     # decision flag on each record misses them and double-emits the text —
-    # review C3.)
+    # review C3.) Populated lazily when a title lead is SUCCESSFULLY seeded
+    # (below): a title verdict rejected for empty members must not silently
+    # skip its members. A title lead's own index is always < its non-lead
+    # member indices (single = (start,), multi = ascending index_map, table =
+    # ascending member_tables), so seeding the lead before its members are
+    # reached keeps the skip set correct.
     title_member_skip: set[int] = set()
-    for _d in decisions.values():
-        if _d.is_title_block and _d.member_indices:
-            title_member_skip.update(_d.member_indices[1:])
 
     blocks: list = []
     current_heading = "Preface/Uncategorized"
@@ -1236,6 +1229,7 @@ def _assemble_blocks_smart(
     current_heading_stack: dict[int, str] = {}
     current_parent_headings: list = []
     current_paragraphs: list = []
+    current_is_title_block = False
     first_heading_recorded = False
 
     if smart_result.doc_title and parse_metadata is not None:
@@ -1251,6 +1245,7 @@ def _assemble_blocks_smart(
                 current_paragraphs,
                 current_parent_headings,
                 current_heading_level,
+                current_is_title_block,
             )
             current_paragraphs = []
 
@@ -1270,9 +1265,6 @@ def _assemble_blocks_smart(
         # as body content would discard the composed heading and drop every
         # non-lead member via title_member_skip.
         if d is not None and d.is_title_block and i == d.member_indices[0]:
-            heading_full = _truncate_title_heading(
-                d.composed_heading or d.text, rec.para_id
-            )
             _flush()
             member_paras = []
             for m in d.member_indices:
@@ -1307,20 +1299,47 @@ def _assemble_blocks_smart(
                                 "is_table": False,
                             }
                         )
-            blocks.append(
-                {
-                    **_build_unsplit_block(heading_full, member_paras, [], 0),
-                    "is_title_block": True,
-                }
+            if not member_paras:
+                # Defensive: a title verdict with no emittable member content
+                # is unreachable in practice — judge_title_block's locate-back
+                # requires main_title to match a non-empty window — but we must
+                # never crash (_build_unsplit_block indexes paragraphs[-1]) nor
+                # silently mis-label. Warn, drop the degenerate lead, and do
+                # NOT fall through to the heading branch (which would coerce
+                # is_heading/level=0 into a level-1 heading). Members stay OUT
+                # of title_member_skip so they are not silently dropped.
+                logger.warning(
+                    "[smart_heading] title-block lead at record %d has no "
+                    "emittable member content; skipping title treatment",
+                    i,
+                )
+                if parse_warnings is not None:
+                    parse_warnings["title_block_empty_members"] = (
+                        parse_warnings.get("title_block_empty_members", 0) + 1
+                    )
+                current_is_title_block = False
+                continue
+            main_title = (
+                d.title_parts[0] if d.title_parts else (d.composed_heading or d.text)
             )
-            main_title = d.title_parts[0] if d.title_parts else heading_full
-            current_heading = main_title
+            title_heading = truncate_heading(main_title, rec.para_id)
+            # Seed the block with the title cover; the following body joins the
+            # SAME block so the title block OWNS its content up to the next
+            # heading/title/EOF. (Earlier versions emitted the cover standalone
+            # then let the body form a second same-heading block — the split
+            # was the block-boundary bug, not a parent-heading one.)
+            current_paragraphs = list(member_paras)
+            current_heading = title_heading
             current_heading_level = 0
             current_parent_headings = []
-            current_heading_stack = {0: main_title}
+            current_heading_stack = {0: title_heading}
+            current_is_title_block = True
+            # Skip the non-lead members' standalone rows (their content is
+            # already carried above). Added HERE, on a successful seed only.
+            title_member_skip.update(d.member_indices[1:])
             if not first_heading_recorded:
                 if parse_metadata is not None:
-                    parse_metadata["first_heading"] = main_title
+                    parse_metadata["first_heading"] = title_heading
                 first_heading_recorded = True
             continue
 
@@ -1369,6 +1388,7 @@ def _assemble_blocks_smart(
             )
             current_heading = clean_heading_text
             current_heading_level = level
+            current_is_title_block = False
             current_parent_headings = [
                 current_heading_stack[lvl]
                 for lvl in sorted(current_heading_stack.keys())

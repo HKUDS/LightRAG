@@ -940,10 +940,12 @@ def test_run_logs_physical_feature_summary(monkeypatch, caplog) -> None:
 
 def test_table_title_block_end_to_end_assembly(monkeypatch) -> None:
     """§2.2.4 table channel, end to end: a cover laid out inside tables is
-    judged a title block, assembled as a standalone level-0 block whose
-    content carries every absorbed cell text, and the cover tables are no
-    longer emitted as body tables; a data table stays a body table; I1
-    passes (absorption is lossless)."""
+    judged a title block (level-0, heading = main title) whose content carries
+    every absorbed cover-cell text verbatim (as plain text, not a ``<table>``
+    placeholder). With no section heading in the document, the title block also
+    OWNS the following body and the trailing data table (block-boundary merge),
+    and the data table keeps its ``<table>`` placeholder; I1 passes (absorption
+    is lossless)."""
     import json
 
     from lightrag.parser.docx.parse_document import (
@@ -1004,21 +1006,70 @@ def test_table_title_block_end_to_end_assembly(monkeypatch) -> None:
     assert len(title_blocks) == 1
     tb = title_blocks[0]
     assert tb["level"] == 0
-    assert tb["heading"] == "产品标准化大纲某某模块(某某电子股份有限公司)"
+    # heading is the plain main title; the publisher stays in the content.
+    assert tb["heading"] == "产品标准化大纲某某模块"
     for cell in ("产品标准化大纲", "某某模块", "某某电子股份有限公司"):
         assert cell in tb["content"]  # absorption is lossless
     assert meta["first_heading"] == "产品标准化大纲某某模块"
 
-    # The cover tables are absorbed — no body block carries their placeholder
-    # — while the data table is still emitted as an ordinary body table.
-    body_contents = [
-        b.get("content") or "" for b in blocks if not b.get("is_title_block")
-    ]
-    assert not any('["产品标准化大纲"]' in c for c in body_contents)
-    assert any('<table>[["序号"' in c for c in body_contents)
+    # No section heading separates the cover from the rest, so the whole
+    # document is one title block: cover cells carried as PLAIN text (no
+    # <table> placeholder), while the ordinary data table keeps its placeholder.
+    assert len(blocks) == 1
+    assert '["产品标准化大纲"]' not in tb["content"]
+    assert '<table>[["序号"' in tb["content"]
 
     # I1: absorbed cell texts never trip the paragraph-preservation check.
     assert g.verify_content_preservation(records, blocks, toc_indices=set()) == []
+
+
+def test_title_block_empty_members_defense() -> None:
+    """Defensive: a title verdict whose members yield no emittable content (an
+    empty-cell cover table) must warn + skip the title treatment rather than
+    crash (``_build_unsplit_block`` indexes ``paragraphs[-1]``) or mis-label.
+    The degenerate lead never becomes a level-1 heading and no stale pin leaks
+    to the following body block. (Unreachable via ``run_smart_heading`` — its
+    locate-back requires a non-empty window — so it is exercised directly.)"""
+    from lightrag.parser.docx.parse_document import (
+        ParagraphRecord,
+        _assemble_blocks_smart,
+    )
+    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+
+    empty_cover = ParagraphRecord(
+        kind="table",
+        text='<table>[[""]]</table>',
+        table_cell_features=[[("   ", 22.0, False)]],
+        para_id="t0",
+    )
+    body = ParagraphRecord(
+        kind="para", text="正文一句。", font_size_pt=12.0, para_id="p1"
+    )
+    records = [empty_cover, body]
+    result = SmartHeadingResult(
+        decisions={
+            0: HeadingDecision(
+                record_index=0,
+                text="<table>…",
+                is_heading=True,
+                level=0,
+                is_title_block=True,
+                member_indices=(0,),
+            )
+        },
+        toc_indices=set(),
+        doc_title=None,
+        audit={},
+    )
+    warnings: dict = {}
+    blocks = _assemble_blocks_smart(records, result, warnings, {})
+
+    assert warnings.get("title_block_empty_members") == 1
+    assert not any(b.get("is_title_block") for b in blocks)
+    # The following body survived as an ordinary (non-title) block — no crash,
+    # no level-1 mis-labelling of the degenerate title decision.
+    joined = "\n".join(b["content"] for b in blocks)
+    assert "正文一句" in joined
 
 
 # ---------------------------------------------------------------------------

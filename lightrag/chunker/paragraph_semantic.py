@@ -542,10 +542,17 @@ def _new_block(
 
 
 def _is_pinned(block: dict[str, Any]) -> bool:
-    """A pinned block never merges, absorbs, or gets absorbed/glued.
+    """A pinned block is fixed against SAME-LEVEL merging and gluing.
 
-    Currently only smart-heading title blocks (``is_title_block``) pin. The
-    judgment deliberately ignores ``level == 0``: the markdown parser emits
+    Currently only smart-heading title blocks (``is_title_block``) pin. Pinning
+    blocks HeadingGlue and Phase A same-level merging, so adjacent title blocks
+    (e.g. spliced multi-article documents) never fuse and no sibling/tail run
+    crosses a title boundary. It does NOT block Phase B cross-level absorption:
+    a title block is always level 0 (the shallowest node) and may act as the
+    SHALLOW absorber there, pulling its level-1 descendants in — that path
+    checks ``_is_descendant`` and is deliberately not gated on ``_is_pinned``.
+
+    The judgment deliberately ignores ``level == 0``: the markdown parser emits
     prefaces at level 0 today and those must keep merging exactly as before.
     """
     return bool(block.get("is_title_block"))
@@ -995,31 +1002,19 @@ def _expand_block_with_table_splits(
     # disappear after the slice glues with surrounding paragraphs.
     cur_role = "none"
 
-    def flush_cur() -> None:
-        nonlocal cur_role
-        if not cur_paras:
-            cur_role = "none"
-            return
-        out.append(
-            _new_block(
-                heading=block["heading"],
-                parent_headings=block["parent_headings"],
-                level=block["level"],
-                paragraphs=cur_paras,
-                table_chunk_role=cur_role,
-                tokenizer=tokenizer,
-                blockids=block.get("blockids"),
-            )
-        )
-        cur_paras.clear()
-        cur_role = "none"
+    # A split title block loses its coherence as a pin target, but the FIRST
+    # emitted fragment carries the cover (paragraphs before the first oversized
+    # table accumulate in cur_paras and land in the first flush) and must stay
+    # pinned so it separates this block from its neighbours at a title boundary
+    # — otherwise fragments (all ``parent_headings == []``) would look like
+    # siblings of an adjacent title block's fragments and fuse under Phase A.
+    # Every emit routes through append_block so no maintenance path is missed.
+    first_out = [True]
 
-    def _append_bridge_block(
+    def append_block(
         paragraphs: list[dict[str, Any]],
         table_chunk_role: str,
     ) -> None:
-        if not paragraphs:
-            return
         out.append(
             _new_block(
                 heading=block["heading"],
@@ -1029,8 +1024,27 @@ def _expand_block_with_table_splits(
                 table_chunk_role=table_chunk_role,
                 tokenizer=tokenizer,
                 blockids=block.get("blockids"),
+                is_title_block=block.get("is_title_block", False) and first_out[0],
             )
         )
+        first_out[0] = False
+
+    def flush_cur() -> None:
+        nonlocal cur_role
+        if not cur_paras:
+            cur_role = "none"
+            return
+        append_block(cur_paras, cur_role)
+        cur_paras.clear()
+        cur_role = "none"
+
+    def _append_bridge_block(
+        paragraphs: list[dict[str, Any]],
+        table_chunk_role: str,
+    ) -> None:
+        if not paragraphs:
+            return
+        append_block(paragraphs, table_chunk_role)
 
     def _text_paragraph(text: str) -> dict[str, Any] | None:
         if not text or not text.strip():
@@ -1208,17 +1222,7 @@ def _expand_block_with_table_splits(
                 # this middle slice as a standalone block that LevelMerge
                 # MUST keep intact (table_chunk_role == "middle").
                 flush_cur()
-                out.append(
-                    _new_block(
-                        heading=block["heading"],
-                        parent_headings=block["parent_headings"],
-                        level=block["level"],
-                        paragraphs=[chunk_para],
-                        table_chunk_role="middle",
-                        tokenizer=tokenizer,
-                        blockids=block.get("blockids"),
-                    )
-                )
+                append_block([chunk_para], "middle")
 
     flush_cur()
     return out
@@ -1274,8 +1278,11 @@ def _split_long_block(
             )
         ]
     # NOTE: an over-cap title block IS split like any other block (no size
-    # exemption); the split fragments drop the pinned flag — a title block
-    # that large is no longer a coherent pin target.
+    # exemption). Only the FIRST fragment (carrying the original paragraphs[0]
+    # = the cover) keeps the pinned flag, so it still separates this block from
+    # its neighbours at the title boundary; the body fragments drop the pin and
+    # consolidate normally — a title block that large is no longer one coherent
+    # pin target.
 
     target_blocks = max(
         math.ceil(total / target_ideal),
@@ -1399,6 +1406,7 @@ def _split_long_block(
                     table_chunk_role=table_chunk_role,
                     tokenizer=tokenizer,
                     blockids=blockids,
+                    is_title_block=is_title_block,
                 )
             ]
 
@@ -1420,6 +1428,9 @@ def _split_long_block(
                     table_chunk_role=table_chunk_role if i == 0 else "none",
                     tokenizer=tokenizer,
                     blockids=blockids,
+                    # Keep the pin only on the first fragment (the cover); the
+                    # rest are body — see the over-cap NOTE above.
+                    is_title_block=is_title_block and i == 0,
                 )
             )
         return sub_blocks
@@ -1443,6 +1454,9 @@ def _split_long_block(
     # Only the first sub-block keeps the inbound table_chunk_role; the
     # post-anchor sub-blocks are text-only by construction.
     cur_role = table_chunk_role
+    # Keep the pin only on the first emitted fragment (it carries the original
+    # paragraphs[0] = the title cover); see the over-cap NOTE above.
+    first_frag = True
 
     for anchor in selected:
         split_idx = anchor["index"]
@@ -1457,8 +1471,10 @@ def _split_long_block(
                     table_chunk_role=cur_role,
                     tokenizer=tokenizer,
                     blockids=blockids,
+                    is_title_block=is_title_block and first_frag,
                 )
             )
+            first_frag = False
         # Anchor becomes the first paragraph (and heading) of the next sub-block.
         cur_parents = (
             list(parent_headings) + [heading]
@@ -1480,8 +1496,10 @@ def _split_long_block(
                 table_chunk_role=cur_role,
                 tokenizer=tokenizer,
                 blockids=blockids,
+                is_title_block=is_title_block and first_frag,
             )
         )
+        first_frag = False
 
     # Recursive guard: any sub-block still over target_max is re-split,
     # including single-paragraph subs — the no-anchor branch above honors
@@ -1502,6 +1520,9 @@ def _split_long_block(
                     target_ideal=target_ideal,
                     chunk_overlap_token_size=chunk_overlap_token_size,
                     blockids=sub.get("blockids") or blockids,
+                    # A still-over-cap first fragment keeps the pin on ITS first
+                    # sub-fragment, so the flag stays with paragraphs[0].
+                    is_title_block=sub.get("is_title_block", False),
                 )
             )
         else:
@@ -1581,6 +1602,13 @@ def _merged_pair(
         "content": content,
         "tokens": _count_tokens(tokenizer, content),
         "table_chunk_role": "none",
+        # Inherit the pin from the kept side. Phase A / HeadingGlue never feed
+        # a title block as ``base`` (their _is_pinned gates exclude it), so
+        # this is True only when a level-0 title block absorbs a deeper
+        # descendant in Phase B — keeping the merged result pinned so it stays
+        # at level 0, never merges same-level with an adjacent title block, and
+        # can keep absorbing further descendants.
+        "is_title_block": base.get("is_title_block", False),
         "blockids": merged_blockids,
     }
 
@@ -1938,7 +1966,15 @@ def _merge_small_blocks(
                 below_ideal = 0 < cur_tokens < target_ideal
                 is_cur_lv = cur_level == current_level
 
-                if below_ideal and is_cur_lv and not _is_pinned(cur):
+                # A pinned title block MAY act as the SHALLOW absorber in
+                # Phase B (cross-level). It is always level 0 (the shallowest
+                # node), so it can only ever be the shallow side here — the
+                # deep-party gates below (``nxt``, and the backward branch's
+                # ``cur``) still can never be a title block (their level must
+                # be strictly greater than the shallow side's). It stays
+                # excluded from same-level Phase A merging (that gate keeps
+                # ``not _is_pinned``), so adjacent title blocks never fuse.
+                if below_ideal and is_cur_lv:
                     merged = False
 
                     if _can_merge_forward(cur_role) and i + 1 < len(result):
@@ -1960,9 +1996,10 @@ def _merge_small_blocks(
 
                     if not merged and _can_merge_backward(cur_role) and new_result:
                         prev = new_result[-1]
+                        # ``prev`` may be a pinned title block absorbing its
+                        # level-1 descendant (``_is_descendant`` still gates it).
                         if (
                             prev.get("level", 1) < current_level
-                            and not _is_pinned(prev)
                             and _can_merge_forward(prev.get("table_chunk_role", "none"))
                             and prev["tokens"] < target_ideal
                             and _is_descendant(prev, cur)

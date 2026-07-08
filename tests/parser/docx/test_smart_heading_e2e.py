@@ -312,11 +312,9 @@ def test_redhead_document_structure(monkeypatch) -> None:
         "redhead", _make_llm(_REDHEAD_TITLE), monkeypatch
     )
     summary = _summary(blocks)
-    assert summary[0] == (
-        "某某市人民政府文件 — 关于加强某某管理的通知 — 某政发〔2026〕5号",
-        0,
-        True,
-    )
+    # heading is the plain main title now (subtitle / doc-number live in the
+    # block content); the sub-heading parent chain below still references it.
+    assert summary[0] == ("某某市人民政府文件", 0, True)
     by_heading = {h: (lv, tb) for h, lv, tb in summary}
     assert by_heading["一、总体要求"] == (1, False)
     assert by_heading["二、工作重点"] == (1, False)
@@ -655,21 +653,14 @@ def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
     assert by_heading["一、总体要求"]["level"] >= 1
 
     # The question-bank sub-document fell back: its lines are body, not
-    # headings, and its blocks still chain to the title-block main title.
+    # headings. With no headings of its own, that body is OWNED by its title
+    # block (parse-time block-boundary merge) — the question text lives inside
+    # the 附录题库 title block itself, so retrieval context still carries the
+    # sub-document's main title.
     assert "1. 下面关于某某概念的说法正确的是" not in by_heading
-    tail_blocks = [
-        b
-        for b in blocks
-        if "下面关于某某概念" in b["content"] and not b.get("is_title_block")
-    ]
-    assert tail_blocks
-    # The fallback sub-document has NO headings of its own, so its body
-    # chains directly under the title block: heading == the main title and
-    # level 0 without is_title_block (§3.4 preface convention). Retrieval
-    # context still carries the sub-document's main title.
-    for b in tail_blocks:
-        chain = [b["heading"], *(b["parent_headings"] or [])]
-        assert "附录题库" in chain
+    appendix = by_heading["附录题库"]
+    assert appendix.get("is_title_block")
+    assert "下面关于某某概念" in appendix["content"]
 
     audit = metadata["smart_audit"]
     # CB1 engaged on the question-bank sub-document (re-estimation always runs
