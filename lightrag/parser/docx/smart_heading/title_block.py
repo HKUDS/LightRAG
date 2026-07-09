@@ -835,8 +835,11 @@ _SYSTEM_PROMPT = (
     "after a page break). Decide whether they form a TITLE BLOCK: the cover "
     "area carrying the document's main title plus optional subtitle, "
     "document number, classification, publisher and date — as opposed to "
-    "ordinary section headings or body text. Answer with a single JSON "
-    "object and nothing else."
+    "ordinary section headings or body text. A title block must contain the "
+    "document's own MAIN TITLE; metadata lines alone (a standard/document "
+    "number, a date) without the main title are NOT a title block. If "
+    "unsure, answer false. Answer with a single raw JSON object — no "
+    "markdown fences, no commentary."
 )
 
 _USER_TEMPLATE = """Paragraphs (indexed; [BLANK] marks an empty line in the original):
@@ -844,9 +847,9 @@ _USER_TEMPLATE = """Paragraphs (indexed; [BLANK] marks an empty line in the orig
 {window}
 
 Rules:
-- Fill "main_title" / "sub_title" / "doc_number" / "classification" / "publisher" / "date" ONLY when "is_title_block" is true; they must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs). When "is_title_block" is false, set ALL of them to null.
-- When "is_title_block" is false, classify EVERY index into exactly one of "headings" (a real section heading) or "body". Document numbers, dates, and publisher lines are NOT headings — put them in "body".
-- Use null for fields that are absent.
+- First decide "is_title_block".
+- If true: fill "main_title" (required) plus any of "sub_title" / "doc_number" / "classification" / "publisher" / "date" that are present — each must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs); use null for absent fields, and set "headings" and "body" to [].
+- If false: set all six text fields to null, and classify EVERY index — {indices} — into exactly one of "headings" (a real section heading, e.g. 前言 / 第一章) or "body" (everything else; document numbers, dates and publisher lines are NOT headings — put them in "body"). Each index must appear in exactly one of the two arrays, as an integer (not a string).
 
 Respond with JSON matching:
 {{"is_title_block": true|false, "main_title": string|null, "sub_title": string|null, "doc_number": string|null, "classification": string|null, "publisher": string|null, "date": string|null, "headings": [int, ...], "body": [int, ...]}}"""
@@ -1074,6 +1077,9 @@ def judge_title_block(
             records, candidate, warnings
         )
         index_map = []
+        # Table windows render one indexed line per emitted cell/paragraph and
+        # never a [BLANK] line, so the rendered line count IS the index count.
+        line_count = len(window_text.splitlines())
     else:
         window_text, index_map, image_paras = _render_window(
             records, candidate, warnings
@@ -1085,7 +1091,13 @@ def judge_title_block(
             _canon(_cover_semantic_text(records[i])) for i in index_map
         )
         member_records = []
-    prompt = _USER_TEMPLATE.format(window=window_text)
+        line_count = len(index_map)
+    # Spell out the exact index set the partition must cover — a copyable
+    # list is far harder to drop an index from than an implicit "EVERY".
+    prompt = _USER_TEMPLATE.format(
+        window=window_text,
+        indices=", ".join(str(k) for k in range(line_count)),
+    )
     raw = llm_judge(prompt, system_prompt=_SYSTEM_PROMPT)
     data = _parse_llm_json(raw)
 
