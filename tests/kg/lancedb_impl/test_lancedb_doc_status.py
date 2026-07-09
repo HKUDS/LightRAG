@@ -76,7 +76,9 @@ async def test_get_docs_by_status_returns_dataclasses(storage):
     assert isinstance(pending["doc-1"], DocProcessingStatus)
     assert pending["doc-1"].status == DocStatus.PENDING
 
-    several = await storage.get_docs_by_statuses([DocStatus.PROCESSED, DocStatus.FAILED])
+    several = await storage.get_docs_by_statuses(
+        [DocStatus.PROCESSED, DocStatus.FAILED]
+    )
     assert set(several) == {"doc-2", "doc-3"}
     assert several["doc-2"].chunks_count == 4
     assert several["doc-3"].error_msg == "boom"
@@ -176,7 +178,9 @@ async def test_get_docs_paginated(storage):
     asc, _ = await storage.get_docs_paginated(sort_direction="asc", page_size=10)
     assert asc[0][0] == "doc-0"
 
-    by_id, _ = await storage.get_docs_paginated(sort_field="id", sort_direction="asc", page_size=10)
+    by_id, _ = await storage.get_docs_paginated(
+        sort_field="id", sort_direction="asc", page_size=10
+    )
     assert by_id[0][0] == "doc-0"
     assert by_id[1][0] == "doc-1"
 
