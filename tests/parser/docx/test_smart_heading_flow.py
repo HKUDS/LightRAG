@@ -12,10 +12,12 @@ from lightrag.parser.docx.smart_heading.heading_flow import (
     align_numbering_series,
     assign_levels_by_size,
     backfill_top_level,
+    close_unnumbered_level_gaps,
     demote_strong_body_headings,
     document_fs_base,
     gate_candidates,
     gate_with_cb1,
+    nest_numbered_under_parent,
 )
 from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
@@ -1643,3 +1645,224 @@ def test_trailing_document_date_not_absorbed_into_next_cover(monkeypatch) -> Non
     assert all(date_idx not in d.member_indices for d in tb_roots)
     d_date = result.decisions.get(date_idx)
     assert d_date is None or not (d_date.is_heading or d_date.is_title_block)
+
+
+# ---------------------------------------------------------------------------
+# §2.2.8: close_unnumbered_level_gaps (post-demotion unnumbered lift)
+# ---------------------------------------------------------------------------
+
+
+def _leveled(
+    idx: int,
+    text: str,
+    level: int,
+    *,
+    plain: bool = False,
+    outline: int | None = None,
+    title_block: bool = False,
+    anchored: bool = False,
+) -> HeadingDecision:
+    """A surviving post-leveling decision (numbering derived from text)."""
+    return HeadingDecision(
+        record_index=idx,
+        text=text,
+        is_heading=True,
+        level=level,
+        font_size_pt=12.0,
+        numbering=None if plain else classify_numbering(text),
+        outline_level=outline,
+        anchored=anchored or outline is not None,
+        is_title_block=title_block,
+    )
+
+
+def test_gap_close_test7_shape() -> None:
+    """The test7-专利说明书 shape: an EnNum claims series occupied the class
+    slot (L2) then got demoted wholesale — sections must lift 3 → 2."""
+    warnings: dict = {}
+    ds = [
+        _leveled(0, "一种层级感知的文档语义分块方法及系统", 1, plain=True),
+        _leveled(1, "技术领域", 3, plain=True),
+        _leveled(2, "背景技术", 3, plain=True),
+    ]
+    close_unnumbered_level_gaps(ds, warnings=warnings)
+    assert [d.level for d in ds] == [1, 2, 2]
+    assert "unnumbered_gap_closed" in ds[1].rule_trail
+    assert "unnumbered_gap_closed" in ds[2].rule_trail
+    # Unmoved levels leave no note; the counter matches moved headings only.
+    assert "unnumbered_gap_closed" not in ds[0].rule_trail
+    assert warnings["smart_unnumbered_gap_closed"] == 2
+
+
+def test_gap_close_preserves_mln_deliberate_gaps() -> None:
+    """MultiLevelNum raw-level gaps are the author's choice: pinned levels
+    keep their values and the trailing unnumbered heading stays put."""
+    ds = [
+        _leveled(0, "总标题", 1, plain=True),
+        _leveled(1, "1.1 概述", 2),
+        _leveled(2, "1.1.1.1 深层小节", 4),  # deliberate gap at 3
+        _leveled(3, "普通小节", 5, plain=True),
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 2, 4, 5]
+    assert all("unnumbered_gap_closed" not in d.rule_trail for d in ds)
+
+
+def test_gap_close_single_gap_below_surviving_numbered() -> None:
+    """A vacated level between a surviving numbered class and an unnumbered
+    heading: the unnumbered one snaps up; the numbered one is pinned."""
+    ds = [
+        _leveled(0, "居中主标题", 1, plain=True),
+        _leveled(1, "一、编号章", 2),
+        _leveled(2, "加粗小节", 4, plain=True),  # L3 vacated by demotion
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 2, 3]
+
+
+def test_gap_close_cascading_gaps() -> None:
+    """Several movable levels re-pack consecutively (1/3/4 → 1/2/3)."""
+    ds = [
+        _leveled(0, "主标题", 1, plain=True),
+        _leveled(1, "加粗章", 3, plain=True),
+        _leveled(2, "加粗节", 4, plain=True),
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 2, 3]
+
+
+def test_gap_close_numbered_numbered_gap_out_of_scope() -> None:
+    """A gap BETWEEN two pinned numbered levels is out of scope: numbered
+    levels never move (series equality), so the gap stays."""
+    ds = [
+        _leveled(0, "第一章 总则", 1),
+        _leveled(1, "（一）分项", 3),  # gap at 2 between numbered classes
+        _leveled(2, "加粗小节", 4, plain=True),
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 3, 4]
+
+
+def test_gap_close_mixed_level_is_pinned() -> None:
+    """A level holding both a numbered and an unnumbered heading is
+    conservatively pinned — moving only the unnumbered half would split it."""
+    ds = [
+        _leveled(0, "主标题", 1, plain=True),
+        _leveled(1, "一、编号章", 3),
+        _leveled(2, "加粗章", 3, plain=True),  # same level as the numbered one
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 3, 3]
+
+
+def test_gap_close_outline_pinned_round2_anchored_still_movable() -> None:
+    """Physical-outline headings are pinned via ``outline_level`` — but a
+    plain heading that anchoring round 2 flagged ``anchored=True`` (mere
+    bookkeeping, not an outline lock) must still be movable."""
+    ds = [
+        _leveled(0, "样式标题", 1, outline=0),
+        _leveled(1, "加粗小节", 4, plain=True, anchored=True),
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert ds[0].level == 1  # outline pinned
+    assert ds[1].level == 2  # round-2 anchored plain heading still lifts
+
+
+def test_gap_close_title_block_is_pinned() -> None:
+    """A title-block root never moves, even off a vacated shallower level."""
+    ds = [
+        _leveled(0, "封面主标题", 2, plain=True, title_block=True),
+        _leveled(1, "加粗章", 4, plain=True),
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [2, 3]
+
+
+def test_gap_close_then_nest_child_lands_on_corrected_parent() -> None:
+    """Nest interaction (a): a numbered child nest WILL move (child level ≤
+    parent level) lands on the parent's corrected level, not the stale one."""
+    ds = [
+        _leveled(0, "主标题", 1, plain=True),
+        _leveled(1, "加粗章", 4, plain=True),  # stranded deep by a demoted class
+        _leveled(2, "1. 子项", 2),  # EnNum class slot above the section
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 3, 2]  # section lifted 4 → 3
+    nest_numbered_under_parent(ds)
+    assert ds[2].level == 4  # corrected parent (3) + 1, not stale 4 + 1
+
+
+def test_gap_close_then_nest_deeper_child_keeps_documented_gap() -> None:
+    """Nest interaction (b), the documented scope boundary: nest is
+    one-directional (``d.level > parent.level`` skips), so a child already
+    deeper than its lifted parent keeps its level — the numeric gap stays,
+    heading ORDER (child strictly deeper) and series equality hold."""
+    ds = [
+        _leveled(0, "主标题", 1, plain=True),
+        _leveled(1, "加粗章", 3, plain=True),
+        _leveled(2, "1. 子项", 4),
+    ]
+    close_unnumbered_level_gaps(ds)
+    assert [d.level for d in ds] == [1, 2, 4]  # gap between parent and child
+    nest_numbered_under_parent(ds)
+    assert ds[2].level == 4  # nest never pulls a deeper child up
+    assert ds[2].level > ds[1].level  # order invariant holds
+
+
+def test_gap_close_end_to_end_bold_sections_reach_level_2(monkeypatch) -> None:
+    """End-to-end mirror of test7-专利说明书: no outline, single font size,
+    a centered+bold main title, an EnNum claims series that the post-merge
+    sweep demotes wholesale, and bold left-aligned section headings — the
+    sections must land at L2 (not L3) after the vacated class slot closes."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = (
+        [
+            _para(
+                "一种层级感知的文档语义分块方法及系统",
+                size=12.0,
+                all_bold=True,
+                alignment="center",
+            )
+        ]
+        + [
+            _para(
+                f"{i}、根据权利要求所述的方法，其特征在于，包括对应的处理步骤。",
+                size=12.0,
+            )
+            for i in range(1, 9)
+        ]
+        + [_para("技术领域", size=12.0, all_bold=True)]
+        + _body(10)
+        + [_para("背景技术", size=12.0, all_bold=True)]
+        + _body(10)
+    )
+    title_idx = 0
+    section_indices = [9, 20]
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps({"is_title_block": False}, ensure_ascii=False)
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    d_title = result.decisions[title_idx]
+    assert d_title.is_heading and d_title.level == 1
+    for i in section_indices:
+        d = result.decisions[i]
+        assert d.is_heading, records[i].text
+        assert d.level == 2, (records[i].text, d.level, d.rule_trail)
+        assert "unnumbered_gap_closed" in d.rule_trail
+    # The claims series is body (demoted by the post-merge sweep).
+    for i in range(1, 9):
+        d = result.decisions.get(i)
+        assert d is None or not d.is_heading

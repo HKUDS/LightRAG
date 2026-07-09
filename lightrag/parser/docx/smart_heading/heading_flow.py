@@ -1861,6 +1861,74 @@ def nest_numbered_under_parent(
         d.note("nest_under_parent")
 
 
+def close_unnumbered_level_gaps(
+    decisions: list[HeadingDecision], *, warnings: dict | None = None
+) -> None:
+    """§2.2.8: lift unnumbered headings over levels vacated by demotion.
+
+    ``assign_levels_by_size`` hands each numbering class a slot BETWEEN the
+    centered-plain and uncentered-plain tracks; when the post-merge sweep
+    (§2.2.7) later demotes such a class wholesale (e.g. patent claims
+    ``1、…`` matched as an EnNum series), its slot empties and the unnumbered
+    headings below it are stranded one-or-more levels too deep (title L1 /
+    sections L3 with nothing at L2).
+
+    Unnumbered headings carry no same-series equality constraint, so they —
+    and ONLY they — may move: ascending over the surviving occupied levels,
+    a level whose headings are all movable (unnumbered, no physical outline,
+    not a title block) snaps to one below the nearest surviving level above;
+    every other level is pinned at its value, which keeps same-series
+    equality, MultiLevelNum's deliberate raw-level gaps, and outline levels
+    (I3) intact. A mixed level (movable and pinned members) is conservatively
+    pinned. ``remap[L] <= L`` always holds (lift-only), and a movable level
+    lands at ``running + 1`` — strictly below every pinned level processed so
+    far — so it never collides with or crosses a surviving numbered heading.
+
+    Scope note (design ruling): this pass repairs unnumbered headings
+    THEMSELVES, not the numeric contiguity of their numbered descendants. A
+    pinned child already deeper than a lifted parent keeps its level (the
+    downstream nest pass is one-directional and never pulls a deeper child
+    up), leaving a documented numeric gap; heading ORDER (child strictly
+    deeper than parent) is preserved, which is all the chunker's parent-path
+    resolution needs.
+
+    ``anchored`` is deliberately NOT consulted: anchoring round 2 flags every
+    processed heading ``anchored=True`` as bookkeeping (not an outline lock —
+    see :func:`_shift_subtree_unlocked`); genuine outline pinning is the
+    ``outline_level`` check.
+    """
+    survivors = [d for d in decisions if d.is_heading and d.level is not None]
+    if not survivors:
+        return
+
+    def _movable(d: HeadingDecision) -> bool:
+        return d.numbering is None and d.outline_level is None and not d.is_title_block
+
+    by_level: dict[int, list[HeadingDecision]] = {}
+    for d in survivors:
+        by_level.setdefault(d.level, []).append(d)
+
+    remap: dict[int, int] = {}
+    running = 0  # deepest new level assigned so far
+    for level in sorted(by_level):
+        if all(_movable(d) for d in by_level[level]):
+            remap[level] = running + 1  # snap below the nearest level above
+        else:
+            remap[level] = level  # pinned: series / MLN gaps / outline stay
+        running = max(running, remap[level])
+
+    for level, members in by_level.items():
+        if remap[level] == level:  # pinned levels always map to themselves
+            continue
+        for d in members:
+            d.level = remap[level]
+            d.note("unnumbered_gap_closed")
+        if warnings is not None:
+            warnings["smart_unnumbered_gap_closed"] = warnings.get(
+                "smart_unnumbered_gap_closed", 0
+            ) + len(members)
+
+
 def clamp_deep_levels(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> None:
@@ -2309,6 +2377,10 @@ def run_smart_heading(
                     event["hash"] = _para_hash(ds[pos].text)
             audit["rule_events"].extend(skeleton_audit)
         align_numbering_series(ds, skip_anchored=True)  # §2.2.8 smoothing
+        # §2.2.8: lift unnumbered headings over levels the post-merge sweep
+        # vacated — BEFORE nest, so re-nested children land on the corrected
+        # parent levels (nest never pulls an already-deeper child up).
+        close_unnumbered_level_gaps(ds, warnings=warnings)
         # §2.2.8: nest same-size non-MLN numbered lists under their structural
         # parent — AFTER smoothing (else series-align would overwrite it),
         # before clamp.
