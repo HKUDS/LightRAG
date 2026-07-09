@@ -188,6 +188,11 @@ def test_caption_prefix(text: str, vetoed: bool) -> None:
 
 # ---------------------------------------------------------------------------
 # 公文版记 (imprint) markers (no NLP needed)
+#
+# Q1 revision (product decision): the reliable ANCHOR set is 抄送 + 主题词 (both
+# are formal GB/T 版记 fields in the "前缀：" shape). 主题词 being a DEFAULT
+# anchor is deliberate, not accidental; the closer (印发-family, incl. 印发机关)
+# is region-scoped and never an anchor.
 # ---------------------------------------------------------------------------
 
 
@@ -198,9 +203,8 @@ def test_caption_prefix(text: str, vetoed: bool) -> None:
         "抄送:各区人民政府",  # half-width colon
         "抄　送：省政府办公厅",  # justified label — ideographic space inside
         "　　抄送：市政府各委办局",  # leading indent
-        "印发机关　某某市人民政府办公厅",  # ideographic-space separator
-        "印发机关 2026年7月1日",
-        "印发机关\n某某办公厅",  # soft line break counts as whitespace
+        "主题词：经济 管理 通知",  # 主题词 is a default anchor too (Q1 revision)
+        "主题词:城市规划",  # half-width colon
     ],
 )
 def test_imprint_marker_detected(text: str) -> None:
@@ -214,8 +218,9 @@ def test_imprint_marker_detected(text: str) -> None:
     [
         "抄送单位管理规定",  # no colon
         "主送：各处室",  # 主送 dropped by design (uncommon)
-        "印发机关名单",  # non-whitespace follows the prefix
-        "印发机关",  # bare label, no trailing whitespace
+        "主题词经济管理",  # no colon
+        "印发机关 某某厅",  # 印发机关 is a CLOSER now, never an anchor
+        "印发机关：某某厅",
         "请及时抄送：相关单位",  # prefix not at line start
         "一、抄送：相关单位",  # numbering-led line is not an imprint opener
         "",
@@ -232,23 +237,97 @@ def test_imprint_prefixes_env_override(monkeypatch) -> None:
 
     monkeypatch.setenv("DOCX_SMART_IMPRINT_COLON_PREFIXES", "传阅")
     assert imprint_marker_reason("传阅：全体职工") == "imprint_marker"
-    assert imprint_marker_reason("抄送：各区人民政府") is None
-
-    monkeypatch.setenv("DOCX_SMART_IMPRINT_SPACE_PREFIXES", "签发人")
-    assert imprint_marker_reason("签发人 张三") == "imprint_marker"
-    assert imprint_marker_reason("印发机关 某办公厅") is None
+    assert imprint_marker_reason("抄送：各区人民政府") is None  # default replaced
 
 
 def test_strong_body_rule0_imprint() -> None:
-    """Imprint is strong-body rule 0: it returns before the sentence-end (P4)
-    check — the 。-terminated line reports imprint, not sentence_end — and on
-    the RAW text, so the whitespace evidence after a space-class prefix
-    survives (a strip()-ed path would erase 印发机关\\n机构名). Both hits
-    return before any spaCy call, so no models are needed."""
+    """The imprint ANCHOR is strong-body rule 0: it returns before the
+    sentence-end (P4) check — the 。-terminated 抄送 line reports imprint, not
+    sentence_end — and before any spaCy call, so no models are needed. (The
+    印发-family CLOSER is region-scoped and deliberately absent from
+    strong_body; see test_imprint_closer_absent_from_strong_body.)"""
     from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
 
     assert strong_body_reason("抄送：市委各部门。") == "imprint_marker"
-    assert strong_body_reason("印发机关\n某某办公厅") == "imprint_marker"
+    assert strong_body_reason("主题词：经济 管理。") == "imprint_marker"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "印发：某某集团公司",  # prefix + colon
+        "印发 某某集团公司",  # prefix + space
+        "印发　某某厅",  # prefix + ideographic space
+        "印发机关 某某市人民政府办公厅",  # 印发机关 closer + space
+        "印发机关：某某厅",  # 印发机关 closer + colon
+        "印发机关\n某某办公厅",  # soft line break counts as whitespace
+        "某某办公室    2026年6月30日 印发",  # trailing (GB/T layout)
+        "某某办公室2026年6月30日印发",  # trailing, no separators
+    ],
+)
+def test_imprint_closer_detected(text: str) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_closer_reason
+
+    assert imprint_closer_reason(text) == "imprint_closer"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "已于近日印发。",  # trailing period → body prose, not a closer
+        "印发",  # bare label, nothing before/after
+        "该文件印发范围包括",  # 印发 mid-line, no prefix/trailing shape
+        "抄送：各区人民政府",  # an anchor, not a closer
+        "",
+    ],
+)
+def test_imprint_closer_not_hit(text: str) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_closer_reason
+
+    assert imprint_closer_reason(text) is None
+
+
+def test_imprint_closer_absent_from_strong_body() -> None:
+    """The closer is region-scoped only: it must NOT demote a line per-line
+    via strong_body (that would defeat the "印发 after 抄送" gate)."""
+    from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
+
+    # A bare prefix-印发 line, no sentence terminator, short → strong_body is
+    # blind to it (only the region scanner in title_block sees it as a closer).
+    assert strong_body_reason("印发 某某集团公司") is None
+
+
+def test_imprint_closer_env_override(monkeypatch) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_closer_reason
+
+    monkeypatch.setenv("DOCX_SMART_IMPRINT_CLOSER_PREFIXES", "签发")
+    assert imprint_closer_reason("签发：张三") == "imprint_closer"
+    assert imprint_closer_reason("印发：某某厅") is None  # default replaced
+
+    monkeypatch.setenv("DOCX_SMART_IMPRINT_CLOSER_TRAILING", "签章")
+    assert imprint_closer_reason("某某办公室 签章") == "imprint_closer"
+    assert imprint_closer_reason("某某办公室 2026年 印发") is None
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("二○○九年七月六日", True),  # CJK numerals, ○ = circle zero
+        ("二〇二六年十二月三十一日", True),  # 〇 = ideographic zero
+        ("2009年7月6日", True),
+        ("  2026 年 12 月 31 日 ", True),  # padded / spaced
+        ("第十六条 本规程自2009年7月1日起施行。", False),  # CONTAINS a date, not bare
+        ("2009年", False),  # no month/day
+        ("某某办公室 2009年7月6日印发", False),  # a closer, not a bare date
+        ("规划 备案 规程", False),
+        ("", False),
+    ],
+)
+def test_is_document_date(text: str, expected: bool) -> None:
+    """A WHOLE-line 成文日期 only; a line that merely contains a date is not."""
+    from lightrag.parser.docx.smart_heading.guardrails import is_document_date
+
+    assert is_document_date(text) is expected
 
 
 # ---------------------------------------------------------------------------

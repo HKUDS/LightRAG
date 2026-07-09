@@ -1792,8 +1792,8 @@ def _outline_only_decisions(
             dem.note(reason)
             dem.note("strong_body_demoted")
             logger.warning(
-                "[smart_heading] I2: outline paragraph demoted to body in "
-                "sub-document fallback by imprint marker (%s)",
+                "[smart_heading] imprint marker demoted outline paragraph to "
+                "body in sub-document fallback (%s)",
                 reason,
             )
             out.append(dem)
@@ -1808,6 +1808,67 @@ def _outline_only_decisions(
         d.note("subdoc_fallback_outline_only")
         out.append(d)
     return out
+
+
+def _demote_confirmed_imprint_regions(
+    records: Sequence[Any],
+    decisions: dict[int, HeadingDecision],
+    regions: Sequence[Any],
+    title_starts: Sequence[int],
+    warnings: dict | None,
+) -> None:
+    """Force a confirmed 公文版记 region's lines to body (§版记 conditional).
+
+    A region is CONFIRMED — 100% 版记, not a false imprint hit — only when its
+    closer is IMMEDIATELY followed by a valid title block: the first structural
+    record after the closer (blank paragraphs / section breaks skipped) starts
+    a title block, i.e. the next document's cover in a 公文汇编. Then every
+    region member that is STILL a heading is demoted to body with a rule-tagged
+    decision (``strong_body_demoted`` keeps invariant I2 green); members already
+    body are output-neutral and left untouched. The preceding signature/date
+    lines (``reg.preceding``) are NEVER demoted — they are the previous
+    document's own content, only vetoed from title-block absorption.
+    """
+    valid_starts = set(title_starts)
+    n = len(records)
+    for reg in regions:
+        if reg.closer is None:
+            continue
+        # Scan from the region's LAST member (a trailing 成文日期 absorbed after
+        # the closer extends the region past reg.closer), not the closer itself.
+        j = max(reg.members) + 1
+        while j < n and records[j].kind in (
+            "empty_para",
+            "empty_table",
+            "section_break",
+        ):
+            j += 1
+        if j >= n or j not in valid_starts:
+            continue  # no title block right after → veto-only, not confirmed
+        for idx in sorted(reg.members):
+            existing = decisions.get(idx)
+            if existing is None or not existing.is_heading:
+                continue  # already body — output-neutral, don't re-tag/re-count
+            rec = records[idx]
+            dem = HeadingDecision(
+                record_index=idx,
+                text=rec.text,
+                is_heading=False,
+                outline_level=rec.outline_level,
+                use_raw_text=True,
+            )
+            dem.note("imprint_region")
+            dem.note("strong_body_demoted")
+            decisions[idx] = dem
+            if warnings is not None:
+                warnings["smart_imprint_region_demotions"] = (
+                    warnings.get("smart_imprint_region_demotions", 0) + 1
+                )
+            logger.warning(
+                "[smart_heading] imprint region line demoted to body — a title "
+                "block follows the 版记 (record %d)",
+                idx,
+            )
 
 
 def _memoized_strong_body(
@@ -1903,11 +1964,26 @@ def run_smart_heading(
     # §2.2.4: the title-block gate baseline is the GLOBAL FS_base initial
     # value — the char-weighted dominant size (§2.2.2), not a weighted mean.
     fs_initial = doc_fs.size_pt
+    # §版记: map imprint regions ONCE (抄送 anchor → 印发 closer, + preceding
+    # signature/date lines). The union is the title-block veto set; the regions
+    # themselves are reused after title judgment for the conditional demotion
+    # (a region followed by a valid title block is a 公文汇编 boundary).
+    imprint_regions = tb.detect_imprint_regions(
+        records,
+        imprint_marker=g.imprint_marker_reason,
+        imprint_closer=g.imprint_closer_reason,
+        skip_indices=toc_indices,
+    )
+    imprint_excluded: set[int] = set()
+    for reg in imprint_regions:
+        imprint_excluded |= reg.members
+        imprint_excluded |= reg.preceding
     candidates = tb.find_title_block_candidates(
         records,
         fs_base_pt=fs_initial,
         strong_body=strong_body,
         numbering_veto=numbering_veto,
+        imprint_excluded=imprint_excluded,
         warnings=warnings,
         skip_indices=toc_indices,
     )
@@ -2119,6 +2195,12 @@ def run_smart_heading(
                 sentinel = HeadingDecision(record_index=m, text="")
                 sentinel.note("title_block_member")
                 decisions[m] = sentinel
+
+    # §版记: a 抄送…印发 region whose closer is immediately followed by a valid
+    # title block is a confirmed 公文汇编 boundary — force its lines to body.
+    _demote_confirmed_imprint_regions(
+        records, decisions, imprint_regions, title_starts, warnings
+    )
 
     # §2.3.5: the full re-judgment ledger — one row per paragraph that any
     # rule touched (hash + rule trail + final level), replayable offline.

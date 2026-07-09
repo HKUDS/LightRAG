@@ -1303,3 +1303,160 @@ def test_whole_doc_cb4_skip_leaves_imprint_to_baseline(monkeypatch) -> None:
         caption_veto=_stub_no_caption,
     )
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 版记 region conditional demotion: a 抄送…印发 span followed by a valid title
+# block (a 公文汇编 boundary) is force-demoted to body; otherwise veto-only.
+# ---------------------------------------------------------------------------
+
+
+def test_imprint_region_demoted_when_title_block_follows(monkeypatch) -> None:
+    """公文汇编 boundary: a 抄送…印发 region whose closer is immediately followed
+    by a valid title block is confirmed 版记 — its outline lines are force-
+    demoted to body (use_raw_text, rule-tagged, I2-green). The 抄送 anchor is
+    body already (no outline) and is left alone; the closer is a TRAILING 印发
+    line the injected strong_body stub cannot see — only the region does."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    doc1 = _body(20)
+    region = [
+        _para("抄送：各区人民政府", size=12.0),  # anchor (body)
+        _para("中间说明行不带大纲", size=12.0),  # middle (plain body)
+        _para("某某办公室 2026年6月30日 印发", size=12.0, outline_level=1),  # closer
+        ParagraphRecord(kind="empty_para"),
+        _para("数字政府建设白皮书", size=18.0, page_break_before=True),  # doc2 cover
+    ]
+    records = doc1 + region + _body(20)
+    closer_idx = len(doc1) + 2
+    cover_idx = len(doc1) + 4
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "数字政府建设白皮书"},
+            ensure_ascii=False,
+        )
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.decisions[cover_idx].is_title_block  # doc2 cover confirmed
+    # The TRAILING 印发 outline line — invisible to the strong_body stub — is
+    # force-demoted to body because the title block immediately follows.
+    dem = result.decisions[closer_idx]
+    assert dem.is_heading is False and dem.use_raw_text is True
+    assert dem.rule_trail[-2:] == ["imprint_region", "strong_body_demoted"]
+    assert warnings["smart_imprint_region_demotions"] == 1
+    assert (
+        verify_baseline_heading_retention(records, list(result.decisions.values()))
+        == []
+    )
+
+
+def test_imprint_region_veto_only_without_following_title_block(monkeypatch) -> None:
+    """No valid title block after the 印发 closer → the region is NOT confirmed:
+    veto-only, the outline lines are kept as headings (never force-demoted)."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    doc1 = _body(20)
+    records = (
+        doc1
+        + [
+            _para("抄送：各区人民政府", size=12.0),
+            _para("中间说明行不带大纲", size=12.0),
+            _para("某某办公室 2026年6月30日 印发", size=12.0, outline_level=1),
+        ]
+        + _body(20)
+    )
+    closer_idx = len(doc1) + 2
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=None,  # nothing to confirm a following title block
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.decisions[closer_idx].is_heading is True
+    assert "smart_imprint_region_demotions" not in warnings
+
+
+def test_imprint_region_below_cb4_gate_untouched(monkeypatch) -> None:
+    """Guarantee boundary: below the whole-document CB4 gate run_smart_heading
+    returns None — the region / closer rules never reach the baseline output."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "1000000")
+    records = _body(5) + [
+        _para("抄送：各区", size=12.0),
+        _para("某某办公室 2026年 印发", size=12.0, outline_level=1),
+    ]
+    result = run_smart_heading(
+        records,
+        llm_judge=None,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is None
+
+
+def test_trailing_document_date_not_absorbed_into_next_cover(monkeypatch) -> None:
+    """End-to-end (mirrors test5-红头文件): a 成文日期 mis-ordered right after the
+    版记 must NOT become the leading member of the following 附件 cover — it
+    stays body under the previous section; the cover roots at the real title."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    doc1 = _body(20)
+    tail = [
+        _para("抄送：各设区市城乡规划局", size=12.0),  # anchor
+        _para("河北省住房和城乡建设厅办公室  2009年7月6日印发", size=12.0),  # closer
+        _para("二○○九年七月六日", size=12.0),  # 成文日期 (mis-ordered)
+        _para("附件：", size=12.0),  # 附件 cover root
+        _para("城市控制性详细规划备案工作规程", size=18.0),  # cover title
+    ]
+    records = doc1 + tail + _body(20)
+    date_idx = len(doc1) + 2
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "城市控制性详细规划备案工作规程"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    tb_roots = [d for d in result.decisions.values() if d.is_title_block]
+    assert tb_roots  # 附件 cover confirmed
+    # The date is never a title-block member, and is body (not a heading).
+    assert all(date_idx not in d.member_indices for d in tb_roots)
+    d_date = result.decisions.get(date_idx)
+    assert d_date is None or not (d_date.is_heading or d_date.is_title_block)

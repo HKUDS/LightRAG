@@ -21,8 +21,9 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_CAPTION_PREFIXES,
     DEFAULT_DOCX_SMART_ENNUM_BLACKLIST,
     DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
+    DEFAULT_DOCX_SMART_IMPRINT_CLOSER_PREFIXES,
+    DEFAULT_DOCX_SMART_IMPRINT_CLOSER_TRAILING,
     DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES,
-    DEFAULT_DOCX_SMART_IMPRINT_SPACE_PREFIXES,
     DEFAULT_DOCX_SMART_TOC_MIN_LINES,
 )
 
@@ -93,10 +94,11 @@ def strong_body_reason(text: str) -> str | None:
     """Return the rule id when ``text`` carries a strong body feature.
 
     Rules (any one suffices):
-      - ``imprint_marker``: opens with a 公文版记 (imprint) marker — checked
-        first, on the RAW text (an imprint line keeps its identity however
-        long it runs, and the whitespace after a space-class prefix is
-        evidence that ``strip()`` would destroy);
+      - ``imprint_marker``: opens with a 公文版记 (imprint) ANCHOR — a colon
+        prefix (抄送：/ 主题词：) — checked first, before any length / spaCy
+        rule, so an anchor line keeps its imprint identity however long it
+        runs. (The 印发-family CLOSER is region-scoped and deliberately NOT
+        part of strong_body; see :func:`imprint_closer_reason`.);
       - ``strong_body_length``: weighted length > 180 en-equivalent chars;
       - ``strong_body_multi_sentence``: spaCy sees ≥2 sentences;
       - ``strong_body_sentence_end``: ends with a sentence terminator
@@ -214,9 +216,11 @@ def caption_prefix_reason(text: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 公文版记 (imprint) marker lines — metadata, never headings (they also veto
-# title-block membership for themselves and their neighbourhood; see
-# title_block._imprint_veto_indices)
+# 公文版记 (imprint) lines — metadata, never headings. An ANCHOR (抄送 / 主题词)
+# opens a 版记 region and vetoes title-block membership for itself + its 2
+# preceding non-blank paragraphs; a CLOSER (印发-family, incl. 印发机关) ends the
+# region but is only recognized region-side, in an anchor's forward window. See
+# title_block.detect_imprint_regions / _imprint_veto_indices.
 # ---------------------------------------------------------------------------
 
 #: Whitespace allowed to interleave/pad a prefix: justified official-document
@@ -225,41 +229,98 @@ _IMPRINT_GAP = r"[ \t　]*"
 
 
 def imprint_marker_reason(text: str) -> str | None:
-    """A 公文版记 (imprint) marker line — 抄送：… / 印发机关␣… — is metadata.
+    """A 公文版记 (imprint) ANCHOR line — 抄送：… / 主题词：… — is metadata.
 
-    Two prefix classes (env-tunable, comma/pipe-separated):
-      - colon class (抄送): prefix followed by a full/half-width colon;
-      - space class (印发机关): prefix followed by any whitespace — ``\\s``
-        includes a soft line break and the ideographic space, so a two-line
-        ``印发机关\\n机构名`` paragraph still hits.
+    A single colon class (env-tunable, comma/pipe-separated): the prefix
+    followed by a full/half-width colon. The issuing-organ / print line that
+    ENDS a 版记 (印发-family, incl. 印发机关) is a CLOSER, not an anchor — see
+    :func:`imprint_closer_reason`.
 
-    Operates on the RAW text (leading whitespace ignored, the rest kept):
-    the whitespace after a space-class prefix is the match evidence, so a
-    ``strip()``-ed copy must never be passed in. A bare label with nothing
-    after it (印发机关) does not match.
+    Operates on the RAW text (leading whitespace ignored, the rest kept); a
+    bare label with no colon after it does not match.
     """
     head = text.lstrip()
     if not head:
         return None
-    for env, default, tail in (
-        (
-            "DOCX_SMART_IMPRINT_COLON_PREFIXES",
-            DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES,
-            _IMPRINT_GAP + "[：:]",
-        ),
-        (
-            "DOCX_SMART_IMPRINT_SPACE_PREFIXES",
-            DEFAULT_DOCX_SMART_IMPRINT_SPACE_PREFIXES,
-            r"\s",
-        ),
+    for prefix in _env_items(
+        "DOCX_SMART_IMPRINT_COLON_PREFIXES",
+        DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES,
     ):
-        for prefix in _env_items(env, default):
-            # Per-char escape: prefixes are env-configurable, so a user item
-            # carrying regex metachars must still match literally.
-            body = _IMPRINT_GAP.join(re.escape(ch) for ch in prefix)
-            if re.match(body + tail, head):
-                return "imprint_marker"
+        # Per-char escape: prefixes are env-configurable, so a user item
+        # carrying regex metachars must still match literally.
+        body = _IMPRINT_GAP.join(re.escape(ch) for ch in prefix)
+        if re.match(body + _IMPRINT_GAP + "[：:]", head):
+            return "imprint_marker"
     return None
+
+
+def imprint_closer_reason(text: str) -> str | None:
+    """A 版记 region CLOSER line — 印发-family — is metadata.
+
+    Deliberately NOT a standalone per-line rule and NOT part of
+    :func:`strong_body_reason`: a line-final ``印发`` occurs in body prose
+    (…已印发) too, so callers invoke this ONLY inside the forward window of an
+    imprint anchor (:func:`title_block.detect_imprint_regions`). That scoping
+    is exactly how the "印发 must follow 抄送/主题词" constraint is enforced.
+
+    Two forms (env-tunable, comma/pipe-separated):
+      - prefix class (印发 / 印发机关): the line OPENS with the marker + a colon
+        or any whitespace (印发：XX办公厅 / 印发 XX办公厅 / 印发机关　XX办公厅). ``\\s``
+        includes a soft line break and the ideographic space, so a two-line
+        ``印发机关\\n机构名`` still hits;
+      - trailing class (印发): the line ENDS with the marker (某某办公室
+        2026年6月30日 印发) — the GB/T layout with the issuer/date first. A
+        trailing period stops the match (已印发。 does not close a region).
+
+    Operates on the RAW text: the leading/trailing whitespace is evidence.
+    """
+    head = text.lstrip()
+    if not head:
+        return None
+    for prefix in _env_items(
+        "DOCX_SMART_IMPRINT_CLOSER_PREFIXES",
+        DEFAULT_DOCX_SMART_IMPRINT_CLOSER_PREFIXES,
+    ):
+        body = _IMPRINT_GAP.join(re.escape(ch) for ch in prefix)
+        # Prefix marker followed by a (optionally gap-padded) colon OR any
+        # whitespace — mirrors the anchor tails but for the 印发 opener.
+        if re.match(body + r"(?:" + _IMPRINT_GAP + r"[：:]|\s)", head):
+            return "imprint_closer"
+    tail = text.rstrip()
+    for marker in _env_items(
+        "DOCX_SMART_IMPRINT_CLOSER_TRAILING",
+        DEFAULT_DOCX_SMART_IMPRINT_CLOSER_TRAILING,
+    ):
+        body = _IMPRINT_GAP.join(re.escape(ch) for ch in marker)
+        m = re.search(body + r"$", tail)
+        # The GB/T trailing form carries the issuer/date BEFORE 印发, so a bare
+        # label (印发 alone) must not fire — require something to precede it.
+        if m is not None and m.start() > 0:
+            return "imprint_closer"
+    return None
+
+
+#: A whole-line 成文日期 (document date): CJK-numeral (二○○九年七月六日) or
+#: Arabic (2009年7月6日). Zero is written 〇 / ○ (circle) / 零 in practice.
+_CN_DATE_DIGIT = "〇○零一二三四五六七八九十两廿"
+_DOCUMENT_DATE_CN = re.compile(
+    rf"^[{_CN_DATE_DIGIT}]{{2,4}}年[{_CN_DATE_DIGIT}]{{1,3}}月[{_CN_DATE_DIGIT}]{{1,3}}日$"
+)
+_DOCUMENT_DATE_AR = re.compile(r"^\d{2,4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日$")
+
+
+def is_document_date(text: str) -> bool:
+    """True when the WHOLE line is a 成文日期 (a bare document date), e.g.
+    ``二○○九年七月六日`` or ``2009年7月6日``.
+
+    A line that merely CONTAINS a date (第十六条…自2009年7月1日起施行。) is NOT a
+    document date — the ``^…$`` anchors demand the date be the entire line.
+    Used only to pull a mis-ordered 成文日期 trailing a 版记 into the region
+    (:func:`title_block.detect_imprint_regions`), never as a standalone
+    heading/body rule.
+    """
+    s = text.strip()
+    return bool(_DOCUMENT_DATE_CN.match(s) or _DOCUMENT_DATE_AR.match(s))
 
 
 # ---------------------------------------------------------------------------

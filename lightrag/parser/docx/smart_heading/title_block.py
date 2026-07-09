@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.constants import (
+    DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS,
     DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS,
     DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX,
     DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA,
@@ -168,42 +169,161 @@ def _window_mode_size(records: Sequence[Any], indices: Sequence[int]) -> float |
 MULTI_WINDOW_TITLE_DELTA_PT = 2.0
 
 
-def _imprint_veto_indices(
-    records: Sequence[Any],
-    imprint_marker: Callable[[str], str | None],
-    skip_indices: set[int],
-) -> set[int]:
-    """Record indices barred from every title-block channel by 公文版记.
+@dataclass
+class ImprintRegion:
+    """A 公文版记 span anchored on an imprint marker (抄送 / 主题词).
 
-    Each imprint marker line (:func:`guardrails.imprint_marker_reason`) is an
-    anchor; the anchor plus up to 2 preceding non-blank paragraphs join the
-    veto set — the lines right above an imprint area are signature/date
-    lines that a tail window would otherwise absorb as cover-title material.
-    The backward walk skips blank paragraphs without counting and stops at
-    any non-paragraph record (a table or section break is a structural
-    boundary; a negative ruling must not leak across it). TOC lines
-    (``skip_indices``) cannot anchor a veto. Consecutive imprint lines
-    cascade naturally: only the region's first line reaches real content.
+    - ``anchor``: the marker record index.
+    - ``closer``: the 印发-family line that ends the region, or ``None`` when
+      none was found within the forward window (then the region is just the
+      anchor — the pre-region fallback).
+    - ``members``: anchor→closer span, inclusive, paragraphs only — barred
+      from every title-block channel and force-demoted to body when a valid
+      title block immediately follows the region.
+    - ``preceding``: up to 2 non-blank paragraphs above the anchor — the
+      signature/date lines a tail window would otherwise absorb; VETOED from
+      title blocks but NEVER demoted (they are the previous document's own
+      content, not 版记 metadata).
     """
-    veto: set[int] = set()
+
+    anchor: int
+    closer: int | None
+    members: set[int]
+    preceding: set[int]
+
+
+def _blank_or_skipped(rec: Any, idx: int, skip_indices: set[int]) -> bool:
+    """A record the imprint walks step over WITHOUT spending budget: a blank
+    paragraph or a TOC line (``skip_indices``). TOC lines never count toward
+    the 2-preceding / forward window and never join a region (N2)."""
+    return (
+        rec.kind == "empty_para"
+        or (rec.kind == "para" and not rec.text.strip())
+        or idx in skip_indices
+    )
+
+
+def detect_imprint_regions(
+    records: Sequence[Any],
+    *,
+    imprint_marker: Callable[[str], str | None],
+    imprint_closer: Callable[[str], str | None],
+    document_date: Callable[[str], bool] | None = None,
+    skip_indices: set[int] = frozenset(),
+) -> list[ImprintRegion]:
+    """Map every 公文版记 region: an imprint anchor with its neighbourhood.
+
+    For each anchor (:func:`guardrails.imprint_marker_reason`, e.g. 抄送 /
+    主题词; TOC lines cannot anchor) two bounded walks run:
+
+    - BACKWARD: up to 2 non-blank paragraphs → ``preceding`` (the signature /
+      date lines above the 版记).
+    - FORWARD: up to ``DOCX_SMART_IMPRINT_FORWARD_PARAS`` (default 3) non-blank
+      paragraphs, closing on the first 印发-family CLOSER
+      (:func:`guardrails.imprint_closer_reason`, only ever recognized here, in
+      an anchor's forward window). Another anchor (抄送/主题词) encountered mid-
+      walk is MIDDLE content, not a closer — a 主题词-opened region runs THROUGH
+      a following 抄送 to reach the 印发 closer. When a closer is found the
+      anchor→closer span (middle lines included) becomes ``members``; otherwise
+      ``members`` is just the anchor.
+    - After the closer, up to 2 bare 成文日期 lines (:func:`guardrails.
+      is_document_date`) immediately following it are ALSO pulled into
+      ``members``. Some documents mis-order 版记 THEN 成文日期 (not the GB/T
+      order); that trailing date belongs to THIS document, so absorbing it
+      keeps the NEXT cover from seeding a title window on it.
+
+    All walks step over blank AND TOC lines without spending budget, and stop
+    at any non-paragraph record (a table / section break is a structural
+    boundary a ruling must not leak across). Overlapping anchors' regions are
+    unioned by the caller.
+    """
+    document_date = document_date or guardrails.is_document_date
+    forward_paras = _env_int(
+        "DOCX_SMART_IMPRINT_FORWARD_PARAS", DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS
+    )
+    n = len(records)
+    regions: list[ImprintRegion] = []
     for i, rec in enumerate(records):
         if rec.kind != "para" or i in skip_indices:
             continue
         if imprint_marker(rec.text) is None:
             continue
-        veto.add(i)
+
+        preceding: set[int] = set()
         remaining = 2
         k = i - 1
         while k >= 0 and remaining:
             r = records[k]
-            if r.kind == "empty_para" or (r.kind == "para" and not r.text.strip()):
+            if _blank_or_skipped(r, k, skip_indices):
                 k -= 1
                 continue
             if r.kind != "para":
                 break
-            veto.add(k)
+            preceding.add(k)
             remaining -= 1
             k -= 1
+
+        members: set[int] = {i}
+        closer: int | None = None
+        seen = 0
+        j = i + 1
+        while j < n and seen < forward_paras:
+            r = records[j]
+            if _blank_or_skipped(r, j, skip_indices):
+                j += 1
+                continue
+            if r.kind != "para":
+                break
+            seen += 1
+            members.add(j)
+            # Only a 印发-family CLOSER ends the region; a start marker (抄送 /
+            # 主题词) here is middle content, so the walk runs through it.
+            if imprint_closer(r.text) is not None:
+                closer = j
+                break
+            j += 1
+        if closer is None:
+            members = {i}  # no closer within the window → anchor only
+        else:
+            # Absorb a mis-ordered 成文日期 trailing the closer (see docstring).
+            date_budget = 2
+            m = closer + 1
+            while m < n and date_budget:
+                r = records[m]
+                if _blank_or_skipped(r, m, skip_indices):
+                    m += 1
+                    continue
+                if r.kind != "para" or not document_date(r.text):
+                    break
+                members.add(m)
+                date_budget -= 1
+                m += 1
+
+        regions.append(
+            ImprintRegion(anchor=i, closer=closer, members=members, preceding=preceding)
+        )
+    return regions
+
+
+def _imprint_veto_indices(
+    records: Sequence[Any],
+    imprint_marker: Callable[[str], str | None],
+    imprint_closer: Callable[[str], str | None],
+    document_date: Callable[[str], bool],
+    skip_indices: set[int],
+) -> set[int]:
+    """Record indices barred from every title-block channel by 公文版记 —
+    the union of every region's members and preceding neighbours."""
+    veto: set[int] = set()
+    for reg in detect_imprint_regions(
+        records,
+        imprint_marker=imprint_marker,
+        imprint_closer=imprint_closer,
+        document_date=document_date,
+        skip_indices=skip_indices,
+    ):
+        veto |= reg.members
+        veto |= reg.preceding
     return veto
 
 
@@ -214,24 +334,36 @@ def find_title_block_candidates(
     strong_body: Callable[[str], str | None] | None = None,
     numbering_veto: Callable[[Any, str], str | None] | None = None,
     imprint_marker: Callable[[str], str | None] | None = None,
+    imprint_closer: Callable[[str], str | None] | None = None,
+    document_date: Callable[[str], bool] | None = None,
+    imprint_excluded: set[int] | None = None,
     warnings: dict | None = None,
     skip_indices: set[int] = frozenset(),
 ) -> list[TitleBlockCandidate]:
     """Find multi-paragraph windows and single-paragraph title candidates.
 
-    ``strong_body`` / ``numbering_veto`` / ``imprint_marker`` default to the
-    guardrails implementations and are injectable for NLP-free tests.
+    ``strong_body`` / ``numbering_veto`` / ``imprint_marker`` / ``imprint_closer``
+    / ``document_date`` default to the guardrails implementations and are
+    injectable for NLP-free tests. ``imprint_excluded`` (the 版记 veto set) is
+    computed internally via :func:`detect_imprint_regions` when not supplied;
+    ``run_smart_heading`` passes a precomputed set so it can reuse the same
+    regions for demotion.
     """
     strong_body = strong_body or guardrails.strong_body_reason
     numbering_veto = numbering_veto or guardrails.numbering_homophone_reason
     imprint_marker = imprint_marker or guardrails.imprint_marker_reason
+    imprint_closer = imprint_closer or guardrails.imprint_closer_reason
+    document_date = document_date or guardrails.is_document_date
     delta = _env_float(
         "DOCX_SMART_TITLE_BLOCK_MIN_DELTA", DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA
     )
     single_cap = _env_int(
         "DOCX_SMART_SINGLE_TITLE_LLM_MAX", DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX
     )
-    imprint_excluded = _imprint_veto_indices(records, imprint_marker, skip_indices)
+    if imprint_excluded is None:
+        imprint_excluded = _imprint_veto_indices(
+            records, imprint_marker, imprint_closer, document_date, skip_indices
+        )
 
     para_indices = [
         i for i, r in enumerate(records) if r.kind == "para" and i not in skip_indices
@@ -390,10 +522,10 @@ def find_title_block_candidates(
 
     def _table_member_ok(idx: int) -> bool:
         """Membership gate: EVERY non-empty cell reads as title material —
-        no strong-body feature, no 版记 (imprint) marker, within the title
-        length cap, no physical outline. A data table (sentence / long
-        cells) can never join, which is what makes absorbing member tables
-        content-safe."""
+        no strong-body feature, no 版记 (imprint) marker OR 印发-family closer,
+        within the title length cap, no physical outline. A data table
+        (sentence / long cells) can never join, which is what makes absorbing
+        member tables content-safe."""
         cf = records[idx].table_cell_features
         if cf is None:
             return False
@@ -409,10 +541,13 @@ def find_title_block_candidates(
                 if strong_body(t) is not None:
                     return False
                 # Imprint check on the RAW cell text: the whitespace after a
-                # space-class prefix (印发机关␣…) is the match evidence and a
-                # stripped copy would erase it. A short imprint cell is not
-                # necessarily caught by the strong-body rules.
-                if imprint_marker(text) is not None:
+                # closer prefix (印发机关␣…) is the match evidence and a stripped
+                # copy would erase it. A short imprint cell is not necessarily
+                # caught by the strong-body rules. BOTH the anchor (抄送 / 主题词)
+                # and closer (印发 / …印发) shapes are checked per-cell — a table
+                # channel has no "anchor above" context, so a 版记 cell must veto
+                # on its own here.
+                if imprint_marker(text) is not None or imprint_closer(text) is not None:
                     return False
         return True
 

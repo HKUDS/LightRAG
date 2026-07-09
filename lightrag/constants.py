@@ -165,14 +165,30 @@ DEFAULT_DOCX_SMART_ENNUM_BLACKLIST = (
 # P3 caption prefixes: a paragraph starting with one of these + a numbering
 # shape is a figure/table caption, never a heading. Comma/pipe-separated.
 DEFAULT_DOCX_SMART_CAPTION_PREFIXES = "图,表,公式,Figure,Table,Fig.,Eq.,Chart"
-# 公文版记 (imprint) markers: a paragraph opening with a colon-class prefix
-# followed by [：:] (抄送：各区人民政府) or a space-class prefix followed by
-# whitespace (印发机关　XX办公厅) is imprint metadata — body, never a heading —
-# and it vetoes title-block membership for itself AND its 2 preceding
-# non-blank paragraphs (typically the signature/date lines above it).
+# 公文版记 (imprint) ANCHORS: a paragraph opening with one of these + [：:]
+# (抄送：各区人民政府 / 主题词：经济 管理) starts a 版记 region. It is imprint
+# metadata — body, never a heading — and it vetoes title-block membership for
+# itself AND its 2 preceding non-blank paragraphs (the signature/date lines
+# above). Anchors may also sit as middle content of another anchor's region
+# (主题词 then 抄送); only a CLOSER (below) ends a region.
 # Comma/pipe-separated; whitespace may interleave the prefix chars (抄　送：).
-DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES = "抄送"
-DEFAULT_DOCX_SMART_IMPRINT_SPACE_PREFIXES = "印发机关"
+DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES = "抄送,主题词"
+# 版记 region CLOSER markers (印发-family — the issuing-organ / print line that
+# ENDS a 版记). Recognized ONLY inside the forward window of an anchor above
+# (never a standalone per-line rule), so a line-final 印发 in body prose
+# (…已印发) cannot false-fire on its own:
+#   - closer prefix: line opens with the prefix + [：:] or whitespace
+#     (印发：XX / 印发 XX / 印发机关 XX / 印发机关：XX — 印发机关 is a closer, NOT an
+#     anchor, which is why there is no longer an IMPRINT_SPACE_PREFIXES knob);
+#   - closer trailing: line ENDS with 印发 (某某办公室 2026年6月30日 印发) — the
+#     GB/T standard layout with the issuer/date first and 印发 last.
+# Comma/pipe-separated. When a closer is found within FORWARD_PARAS non-blank
+# paragraphs of an anchor, the whole 抄送…印发 span (middle lines included) is
+# barred from title blocks; and if a valid title block immediately follows the
+# span (a 公文汇编 boundary), the span's lines are force-demoted to body.
+DEFAULT_DOCX_SMART_IMPRINT_CLOSER_PREFIXES = "印发,印发机关"
+DEFAULT_DOCX_SMART_IMPRINT_CLOSER_TRAILING = "印发"
+DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS = 3
 # Heuristic TOC evidence: at least this many consecutive dot-leader lines.
 DEFAULT_DOCX_SMART_TOC_MIN_LINES = 3
 # CB1 heading-density ceiling (headings / non-empty paragraphs): the floor of

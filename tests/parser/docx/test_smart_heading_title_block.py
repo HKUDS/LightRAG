@@ -12,10 +12,12 @@ import json
 import pytest
 
 from lightrag.parser.docx.parse_document import ParagraphRecord
+from lightrag.parser.docx.smart_heading import guardrails
 from lightrag.parser.docx.smart_heading.title_block import (
     TitleBlockCandidate,
     TitleBlockLLMError,
     compose_title_heading,
+    detect_imprint_regions,
     find_title_block_candidates,
     judge_title_block,
 )
@@ -963,13 +965,13 @@ def test_imprint_neighbor_veto_blocks_single_candidate() -> None:
 
 def test_imprint_neighbor_walk_skips_blank_paras() -> None:
     """The backward walk skips empty/whitespace-only paragraphs without
-    consuming the 2-paragraph budget (space-class prefix here)."""
+    consuming the 2-paragraph budget."""
     records = [
         _para("某某公司发文稿纸", size=22.0),  # 0 ← vetoed (2nd preceding)
         _empty(),
         _para("某某办公室", size=12.0),  # 2 ← vetoed (1st preceding)
         _para("   ", size=12.0),  # whitespace-only para: skipped, not counted
-        _para("印发机关　某某办公厅", size=12.0),  # 4 anchor
+        _para("抄送：各成员单位", size=12.0),  # 4 anchor
         _para("正文从这里开始，以句号结尾。", size=12.0),
     ]
     assert _find(records) == []
@@ -1005,3 +1007,187 @@ def test_table_member_rejects_imprint_cell() -> None:
         _para("正文从这里开始，以句号结尾。", size=12.0),
     ]
     assert _find(records) == []
+
+
+def test_table_member_rejects_closer_cell() -> None:
+    """A 印发-family CLOSER cell also disqualifies the table (no anchor-above
+    context in a table, so the closer must veto on its own here)."""
+    records = [
+        _table(
+            [
+                [("产品标准化大纲", 22.0, False)],
+                [("某某办公室 2026年6月30日 印发", 10.5, False)],
+            ]
+        ),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+
+
+# ---------------------------------------------------------------------------
+# 版记 region model: detect_imprint_regions (抄送 anchor → 印发 closer, forward
+# window, TOC/blank skip, structural boundary)
+# ---------------------------------------------------------------------------
+
+
+def _regions(records, **kw):
+    kw.setdefault("imprint_marker", guardrails.imprint_marker_reason)
+    kw.setdefault("imprint_closer", guardrails.imprint_closer_reason)
+    return detect_imprint_regions(records, **kw)
+
+
+def test_imprint_region_closer_within_forward_window() -> None:
+    """A 抄送 anchor closes on the first 印发 line inside the 3-paragraph
+    forward window; the middle lines join the region."""
+    records = [
+        _para("抄送：各区人民政府", size=12.0),  # 0 anchor
+        _para("中间行一", size=12.0),  # 1 middle
+        _para("某某办公室 2026年6月30日 印发", size=12.0),  # 2 closer (trailing)
+    ]
+    regs = _regions(records)
+    assert len(regs) == 1
+    assert regs[0].anchor == 0 and regs[0].closer == 2
+    assert regs[0].members == {0, 1, 2}
+
+
+def test_imprint_region_closer_beyond_window_falls_back() -> None:
+    """A 印发 line as the 4th non-blank paragraph is out of window → no closer,
+    region degrades to the anchor alone (pre-region behaviour)."""
+    records = [
+        _para("抄送：各区人民政府", size=12.0),  # 0 anchor
+        _para("中间行一", size=12.0),  # 1
+        _para("中间行二", size=12.0),  # 2
+        _para("中间行三", size=12.0),  # 3
+        _para("某某办公室 2026年 印发", size=12.0),  # 4 closer (too far)
+    ]
+    regs = _regions(records)
+    assert len(regs) == 1
+    assert regs[0].closer is None
+    assert regs[0].members == {0}
+
+
+def test_imprint_region_walks_skip_toc(monkeypatch) -> None:
+    """N2: TOC lines (skip_indices) are stepped over WITHOUT spending the
+    backward-2 / forward budget and never join a region."""
+    records = [
+        _para("上文", size=12.0),  # 0 ← preceding (2nd)
+        _para("目录行", size=12.0),  # 1 TOC — skipped, not counted
+        _para("署名行", size=12.0),  # 2 ← preceding (1st)
+        _para("抄送：各区", size=12.0),  # 3 anchor
+        _para("目录行二", size=12.0),  # 4 TOC — skipped, not counted
+        _para("某某 2026年 印发", size=12.0),  # 5 closer
+    ]
+    regs = _regions(records, skip_indices={1, 4})
+    assert len(regs) == 1
+    r = regs[0]
+    assert r.preceding == {0, 2}  # TOC(1) skipped without eating budget
+    assert r.closer == 5 and r.members == {3, 5}  # TOC(4) not a member
+
+
+def test_imprint_region_forward_walk_stops_at_table() -> None:
+    """A non-paragraph record ends the forward walk: a closer beyond a table
+    is unreachable, region falls back to the anchor."""
+    records = [
+        _para("抄送：各部门", size=12.0),  # 0 anchor
+        _table([[("附件清单", 10.5, False)]]),  # 1 boundary
+        _para("某某办公室 2026年 印发", size=12.0),  # 2 (past the table)
+    ]
+    regs = _regions(records)
+    assert regs[0].closer is None and regs[0].members == {0}
+
+
+def test_imprint_region_start_marker_is_middle_content() -> None:
+    """A 主题词-opened region runs THROUGH a following 抄送 (middle content, not
+    a closer) to reach the 印发 closer; both anchors are vetoed."""
+    records = [
+        _para("主题词：经济 管理", size=12.0),  # 0 anchor (主题词)
+        _para("抄送：各区人民政府", size=12.0),  # 1 middle content (own anchor too)
+        _para("某某办公室 2026年 印发", size=12.0),  # 2 closer
+    ]
+    by_anchor = {r.anchor: r for r in _regions(records)}
+    assert by_anchor[0].closer == 2 and by_anchor[0].members == {0, 1, 2}
+    assert by_anchor[1].closer == 2 and by_anchor[1].members == {1, 2}
+
+
+def test_imprint_region_closer_is_yinfa_jiguan() -> None:
+    """印发机关 is a CLOSER (not an anchor): it ends a 抄送-opened region — the
+    old space-class anchor knob (DOCX_SMART_IMPRINT_SPACE_PREFIXES) is gone."""
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_marker_reason
+
+    records = [
+        _para("抄送：各区", size=12.0),  # 0 anchor
+        _para("印发机关　某某市人民政府办公厅", size=12.0),  # 1 closer
+    ]
+    assert imprint_marker_reason(records[1].text) is None  # never an anchor
+    regs = _regions(records)
+    assert len(regs) == 1
+    assert regs[0].closer == 1 and regs[0].members == {0, 1}
+
+
+def test_imprint_region_absorbs_trailing_document_date() -> None:
+    """A mis-ordered 成文日期 right after the 印发 closer (版记 THEN date — not the
+    GB/T order) is pulled into the region; it belongs to THIS document."""
+    records = [
+        _para("抄送：各设区市城乡规划局", size=12.0),  # 0 anchor
+        _para("河北省住房和城乡建设厅办公室   2009年7月6日印发", size=12.0),  # 1 closer
+        _para("二○○九年七月六日", size=12.0),  # 2 成文日期 → absorbed
+        _para("正文从这里开始，以句号结尾。", size=12.0),  # 3 not a date → stop
+    ]
+    regs = _regions(records)
+    assert len(regs) == 1
+    assert regs[0].closer == 1 and regs[0].members == {0, 1, 2}
+
+
+def test_imprint_region_date_absorb_stops_at_non_date() -> None:
+    """Only bare date-only lines right after the closer are pulled in; the walk
+    stops at the first non-date paragraph (a later date does not leak in)."""
+    records = [
+        _para("抄送：各区", size=12.0),  # 0 anchor
+        _para("某某办公室 2009年 印发", size=12.0),  # 1 closer
+        _para("二○○九年七月六日", size=12.0),  # 2 date → absorbed
+        _para("附件：", size=12.0),  # 3 NOT a date → stop
+        _para("2009年7月7日", size=12.0),  # 4 date, but past the stop → not absorbed
+    ]
+    regs = _regions(records)
+    assert regs[0].members == {0, 1, 2}
+
+
+def test_trailing_document_date_vetoed_from_next_cover() -> None:
+    """End-to-end (mirrors test5-红头文件): the absorbed 成文日期 no longer seeds
+    the following 附件 cover — the window starts at the real title, not the
+    date. Injecting a no-op document_date restores the bug (date seeds)."""
+    records = [
+        _para("抄送：各设区市城乡规划局", size=12.0),  # 0 anchor
+        _para("河北省住房和城乡建设厅办公室  2009年7月6日印发", size=12.0),  # 1 closer
+        _para("二○○九年七月六日", size=12.0),  # 2 成文日期
+        _para("附件：", size=12.0),  # 3
+        _para("河北省城市控制性详细规划备案工作规程", size=22.0),  # 4 cover title
+        _para("第一条 为规范……以句号结尾。", size=12.0),  # 5 body
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert (cands[0].start, cands[0].end) == (3, 5)  # window skips the date (2)
+
+    # Control: date not recognized → it seeds the window (the pre-fix bug).
+    cands2 = _find(records, document_date=lambda t: False)
+    assert cands2 and cands2[0].start == 2
+
+
+def test_imprint_forward_region_vetoes_middle_single_candidate() -> None:
+    """The middle line of a 抄送…印发 region is barred from the single-line
+    channel; disabling the closer detector restores it as a candidate (proving
+    the forward region — not strong_body — is what vetoes it)."""
+    records = [
+        _para("正文一，以句号结尾。", size=12.0),  # 0
+        _para("抄送：各区人民政府", size=12.0),  # 1 anchor
+        _empty(),  # 2
+        _para("通知标题", size=18.0, alignment="center"),  # 3 middle (would-be)
+        _empty(),  # 4
+        _para("某某办公室2026年6月30日印发", size=12.0),  # 5 closer (trailing)
+        _para("正文二，以句号结尾。", size=12.0),  # 6
+    ]
+    assert _find(records) == []
+    # Control: no-op closer → region is anchor-only → idx 3 leads a candidate
+    # (a tail window absorbing the 版记 material — exactly the bug being fixed).
+    cands = _find(records, imprint_closer=lambda t: None)
+    assert len(cands) == 1 and cands[0].start == 3
