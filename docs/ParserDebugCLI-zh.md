@@ -22,7 +22,7 @@ python -m lightrag.parser.cli <input_file> \
 | 参数 | 说明 |
 |---|---|
 | `input_file` | 待解析的源文件路径（位置参数，必填）。文件必须实际存在。 |
-| `--engine` | 必填，可选值来自注册表：内置 `native`（本地结构化解析）/ `legacy`（纯文本抽取，无 sidecar）/ `mineru`（PDF/办公文档，调 MinerU 服务）/ `docling`（PDF/办公文档，调 docling-serve）/ `paddleocr_vl`（PDF/Office/图片，调 PaddleOCR-VL 服务），以及任何已注册的第三方引擎。 |
+| `--engine` | 必填，可选值来自注册表：内置 `native`（本地结构化解析）/ `legacy`（纯文本抽取，无 sidecar）/ `mineru`（PDF/办公文档，调 MinerU 服务）/ `docling`（PDF/办公文档，调 docling-serve）/ `paddleocr_vl`（PDF/图片，调 PaddleOCR-VL 服务），以及任何已注册的第三方引擎。 |
 | `-o / --sidecar-parent-dir` | sidecar 与 raw 目录的父目录，默认 = 源文件所在目录。 |
 | `--doc-id` | 自定义文档 ID，默认 `doc-<md5(源文件绝对路径)>`（同一文件多次跑结果稳定）。 |
 | `--force-reparse` | 仅对外部服务引擎（`mineru` / `docling` / `paddleocr_vl` 及继承 `ExternalParserBase` 的第三方引擎）生效：清空 raw 目录、强制重新下载与解析。默认行为是 raw 目录非空即复用。 |

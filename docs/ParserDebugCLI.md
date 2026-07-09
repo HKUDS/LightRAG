@@ -22,7 +22,7 @@ python -m lightrag.parser.cli <input_file> \
 | Argument | Description |
 |---|---|
 | `input_file` | Path to the source file to parse (positional argument, required). The file must actually exist. |
-| `--engine` | Required; choices come from the registry: built-in `native` (local structured parsing) / `legacy` (plain-text extraction, no sidecar) / `mineru` (PDF/Office documents, calls MinerU service) / `docling` (PDF/Office documents, calls docling-serve) / `paddleocr_vl` (PDF/Office/images, calls PaddleOCR-VL service), plus any registered third-party engine. |
+| `--engine` | Required; choices come from the registry: built-in `native` (local structured parsing) / `legacy` (plain-text extraction, no sidecar) / `mineru` (PDF/Office documents, calls MinerU service) / `docling` (PDF/Office documents, calls docling-serve) / `paddleocr_vl` (PDF/images, calls PaddleOCR-VL service), plus any registered third-party engine. |
 | `-o / --sidecar-parent-dir` | Parent directory of the sidecar and raw directories. Defaults to the directory containing the source file. |
 | `--doc-id` | Custom document ID. Defaults to `doc-<md5(absolute path of source file)>` (stable across multiple runs on the same file). |
 | `--force-reparse` | Effective only for external-service engines (`mineru` / `docling` / `paddleocr_vl` and third-party engines subclassing `ExternalParserBase`): clears the raw directory and forces re-download and re-parse. By default, a non-empty raw directory is reused. |

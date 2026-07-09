@@ -198,15 +198,11 @@ _DOCLING_SUFFIXES = frozenset(
 _PADDLEOCR_VL_SUFFIXES = frozenset(
     {
         "pdf",
-        "doc",
-        "docx",
-        "ppt",
-        "pptx",
-        "xls",
-        "xlsx",
         "png",
         "jpg",
         "jpeg",
+        "tiff",
+        "tif",
         "webp",
         "bmp",
     }

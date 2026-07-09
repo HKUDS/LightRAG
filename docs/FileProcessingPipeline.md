@@ -180,7 +180,7 @@ Currently supported engine parameters (canonical / alias):
 | `native` | Built-in intelligent structured content extractor | `docx` `md` `textpack` |
 | `mineru` | External MinerU content extraction engine | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
-| `paddleocr_vl` | External PaddleOCR-VL content extraction engine | `pdf` `doc` `docx` `ppt` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `webp` `bmp` |
+| `paddleocr_vl` | External PaddleOCR-VL content extraction engine | `pdf` `jpeg` `jpg` `png` `tiff` `tif` `bmp` `webp` |
 
 `mineru`, `docling`, and `paddleocr_vl` are external content extraction engines; before enabling related rules, the services must be running first, and the corresponding endpoint/token must be configured in LightRAG.
 
@@ -373,7 +373,7 @@ docker compose -f compose.yaml --profile api up -d
 
 #### Using the PaddleOCR-VL File Parsing Engine
 
-LightRAG can also parse PDFs, Office documents, and common image formats through the `paddleocr_vl` engine. Like MinerU and Docling, PaddleOCR-VL is an external parsing service: before enabling routing rules, configure either a cloud token or a local service endpoint.
+LightRAG can also parse PDFs and common image formats (`jpeg`, `jpg`, `png`, `tiff`, `tif`, `bmp`, `webp`) through the `paddleocr_vl` engine. Like MinerU and Docling, PaddleOCR-VL is an external parsing service: before enabling routing rules, configure either a cloud token or a local service endpoint.
 
 - `official` mode: uses PaddleOCR's AIStudio cloud async API. Obtain an access token first, then add the following to LightRAG's `.env`:
 
@@ -948,9 +948,8 @@ document through hints, for example
 `paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)`. In local mode, the
 same effective options are sent as top-level JSON fields next to the base64
 `file`, following the LightRAG-compatible `POST /layout-parsing` contract. The
-compatible local service should auto-detect the file type, so LightRAG does not
-send `fileType`. The options below are sent with the current client defaults
-when unset:
+client sends `fileType=0` for PDF inputs and `fileType=1` for image inputs.
+The options below are sent with the current client defaults when unset:
 
 ```bash
 PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false

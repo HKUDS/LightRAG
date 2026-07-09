@@ -19,8 +19,9 @@ def test_supported_engines_are_user_selectable_only():
 
 def test_suffix_capabilities_lookup():
     assert "pdf" in registry.suffix_capabilities("mineru")
-    assert "pdf" in registry.suffix_capabilities("paddleocr_vl")
-    assert "jpg" in registry.suffix_capabilities("paddleocr_vl")
+    assert registry.suffix_capabilities("paddleocr_vl") == frozenset(
+        {"pdf", "jpeg", "jpg", "png", "tiff", "tif", "bmp", "webp"}
+    )
     assert registry.suffix_capabilities("native") == frozenset(
         {"docx", "md", "textpack"}
     )

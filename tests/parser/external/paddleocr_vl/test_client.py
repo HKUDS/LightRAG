@@ -423,7 +423,7 @@ async def test_local_mode_posts_synchronous_layout_parsing_json(
     assert recorder.post_calls[0]["json"]["file"] == base64.b64encode(
         b"%PDF local"
     ).decode("ascii")
-    assert "fileType" not in recorder.post_calls[0]["json"]
+    assert recorder.post_calls[0]["json"]["fileType"] == 0
     assert recorder.post_calls[0]["json"]["useLayoutDetection"] is True
     assert "model" not in recorder.post_calls[0]["json"]
     assert "optionalPayload" not in recorder.post_calls[0]["json"]
@@ -448,3 +448,23 @@ async def test_local_mode_posts_synchronous_layout_parsing_json(
     )
     assert manifest.task_id == "local-log-1"
     assert manifest.api_mode == "local"
+
+
+@pytest.mark.parametrize("suffix", ["jpeg", "jpg", "png", "tiff", "tif", "bmp", "webp"])
+async def test_local_mode_sends_image_file_type(
+    suffix: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / f"demo.{suffix}"
+    source.write_bytes(b"image local")
+    recorder = _Recorder()
+    _CURRENT["recorder"] = recorder
+    _install_httpx(monkeypatch)
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
+    monkeypatch.setenv("PADDLEOCR_VL_LOCAL_ENDPOINT", "http://local-paddle")
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "")
+
+    await PaddleOCRVLRawClient().download_into(
+        tmp_path / "demo.paddleocr_vl_raw", source
+    )
+
+    assert recorder.post_calls[0]["json"]["fileType"] == 1

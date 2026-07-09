@@ -267,6 +267,7 @@ class PaddleOCRVLRawClient:
         payload["file"] = base64.b64encode(source_file_path.read_bytes()).decode(
             "ascii"
         )
+        payload["fileType"] = _local_file_type(source_file_path)
         return payload
 
     async def _download_referenced_images(
@@ -388,6 +389,14 @@ def _safe_name(name: str) -> str:
 def _suffix_from_url(url: str) -> str:
     suffix = Path(urlparse(url).path).suffix.lower()
     return suffix if suffix and len(suffix) <= 8 else ""
+
+
+def _local_file_type(path: Path) -> int:
+    suffix = path.suffix.lower().lstrip(".")
+    if suffix == "pdf":
+        return 0
+    # Registry suffix gating ensures every non-PDF reaching this client is an image.
+    return 1
 
 
 def _looks_like_http_url(value: str) -> bool:
