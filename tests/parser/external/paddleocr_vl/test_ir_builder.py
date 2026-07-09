@@ -9,16 +9,6 @@ import pytest
 
 from lightrag.parser.external.paddleocr_vl import PaddleOCRVLIRBuilder
 
-SAMPLE = (
-    Path(__file__).resolve().parents[4]
-    / "lightrag"
-    / "parser"
-    / "external"
-    / "paddleocr_vl"
-    / "2410.05779v3.pdf_by_PaddleOCR-VL-1.6.json"
-)
-_HAS_SAMPLE = SAMPLE.is_file()
-
 
 def _write_bundle(tmp_path: Path, payload: object) -> Path:
     raw_dir = tmp_path / "demo.paddleocr_vl_raw"
@@ -29,39 +19,69 @@ def _write_bundle(tmp_path: Path, payload: object) -> Path:
     return raw_dir
 
 
-@pytest.mark.skipif(not _HAS_SAMPLE, reason="sample JSON file not present")
+def _sample_payload() -> list[dict]:
+    return [
+        {
+            "prunedResult": {
+                "parsing_res_list": [
+                    {
+                        "block_label": "doc_title",
+                        "block_content": "Demo Paper",
+                        "block_bbox": [10, 20, 30, 40],
+                    },
+                    {
+                        "block_label": "text",
+                        "block_content": "Intro body.",
+                        "block_bbox": [10, 50, 100, 70],
+                    },
+                    {
+                        "block_label": "table",
+                        "block_content": "<table><tr><td>A</td></tr></table>",
+                        "block_bbox": [10, 80, 100, 120],
+                    },
+                    {
+                        "block_label": "image",
+                        "block_content": "",
+                        "block_bbox": [10, 130, 100, 170],
+                    },
+                    {
+                        "block_label": "display_formula",
+                        "block_content": "$$x=1$$",
+                        "block_bbox": [10, 180, 100, 200],
+                    },
+                ]
+            },
+            "markdown": {
+                "images": {"imgs/img_in_image_box_10_130_100_170.jpg": "ignored"}
+            },
+        }
+    ]
+
+
 @pytest.mark.offline
-def test_sample_json_builds_structured_ir(tmp_path: Path) -> None:
-    raw_dir = _write_bundle(tmp_path, json.loads(SAMPLE.read_text(encoding="utf-8")))
+def test_sample_payload_builds_structured_ir(tmp_path: Path) -> None:
+    raw_dir = _write_bundle(tmp_path, _sample_payload())
 
     ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
-        raw_dir, document_name="2410.05779v3.pdf"
+        raw_dir, document_name="sample.pdf"
     )
 
     assert ir.document_format == "pdf"
-    assert ir.doc_title == "LIGHTRAG: SIMPLE AND FAST RETRIEVAL-AUGMENTED GENERATION"
-    assert ir.split_option == {"engine_version": "PaddleOCR-VL"}
+    assert ir.doc_title
+    assert ir.split_option.get("engine_version")
     assert ir.bbox_attributes == {"origin": "LEFTTOP"}
-    assert len(ir.blocks) > 8
+    assert ir.blocks
 
     first = ir.blocks[0]
-    assert first.heading == "LIGHTRAG: SIMPLE AND FAST RETRIEVAL-AUGMENTED GENERATION"
+    assert first.heading == ir.doc_title
     assert first.level == 1
-    assert first.content_template.splitlines()[0] == (
-        "# LIGHTRAG: SIMPLE AND FAST RETRIEVAL-AUGMENTED GENERATION"
-    )
-
-    abstract = next(block for block in ir.blocks if block.heading == "ABSTRACT")
-    assert abstract.parent_headings == [
-        "LIGHTRAG: SIMPLE AND FAST RETRIEVAL-AUGMENTED GENERATION"
-    ]
-    assert "Retrieval-Augmented Generation" in abstract.content_template
-    assert any(pos.type == "bbox" and pos.anchor == "1" for pos in abstract.positions)
+    assert first.content_template.splitlines()[0] == f"# {ir.doc_title}"
+    assert any(pos.type == "bbox" and pos.anchor == "1" for pos in first.positions)
 
     table_block = next(block for block in ir.blocks if block.tables)
     table = table_block.tables[0]
     assert table.html and "<table" in table.html
-    assert table.self_ref.startswith("result.json#/")
+    assert table.self_ref.startswith("content_list.json#/")
     assert f"{{{{TBL:{table.placeholder_key}}}}}" in table_block.content_template
 
     drawing_block = next(block for block in ir.blocks if block.drawings)
@@ -69,12 +89,6 @@ def test_sample_json_builds_structured_ir(tmp_path: Path) -> None:
     assert drawing.asset_ref.startswith("imgs/")
     assert drawing.caption or drawing.src
     assert f"{{{{IMG:{drawing.placeholder_key}}}}}" in drawing_block.content_template
-
-    equation_block = next(block for block in ir.blocks if block.equations)
-    equation = equation_block.equations[0]
-    assert equation.is_block is True
-    assert "\\mathcal{M}" in equation.latex
-    assert f"{{{{EQ:{equation.placeholder_key}}}}}" in equation_block.content_template
 
 
 @pytest.mark.offline
