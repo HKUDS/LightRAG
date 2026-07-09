@@ -21,6 +21,8 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_CAPTION_PREFIXES,
     DEFAULT_DOCX_SMART_ENNUM_BLACKLIST,
     DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
+    DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES,
+    DEFAULT_DOCX_SMART_IMPRINT_SPACE_PREFIXES,
     DEFAULT_DOCX_SMART_TOC_MIN_LINES,
 )
 
@@ -91,6 +93,10 @@ def strong_body_reason(text: str) -> str | None:
     """Return the rule id when ``text`` carries a strong body feature.
 
     Rules (any one suffices):
+      - ``imprint_marker``: opens with a 公文版记 (imprint) marker — checked
+        first, on the RAW text (an imprint line keeps its identity however
+        long it runs, and the whitespace after a space-class prefix is
+        evidence that ``strip()`` would destroy);
       - ``strong_body_length``: weighted length > 180 en-equivalent chars;
       - ``strong_body_multi_sentence``: spaCy sees ≥2 sentences;
       - ``strong_body_sentence_end``: ends with a sentence terminator
@@ -99,6 +105,9 @@ def strong_body_reason(text: str) -> str | None:
 
     Returns None when no rule fires (the paragraph MAY be a heading).
     """
+    reason = imprint_marker_reason(text)
+    if reason is not None:
+        return reason
     stripped = text.strip()
     if not stripped:
         return None
@@ -201,6 +210,55 @@ def caption_prefix_reason(text: str) -> str | None:
         after = stripped[len(prefix) :].lstrip()
         if re.match(r"^[0-9０-９一二三四五六七八九十]+([-.–][0-9]+)*", after):
             return "caption_prefix"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 公文版记 (imprint) marker lines — metadata, never headings (they also veto
+# title-block membership for themselves and their neighbourhood; see
+# title_block._imprint_veto_indices)
+# ---------------------------------------------------------------------------
+
+#: Whitespace allowed to interleave/pad a prefix: justified official-document
+#: typesetting stretches a label with plain/ideographic spaces (抄　送：).
+_IMPRINT_GAP = r"[ \t　]*"
+
+
+def imprint_marker_reason(text: str) -> str | None:
+    """A 公文版记 (imprint) marker line — 抄送：… / 印发机关␣… — is metadata.
+
+    Two prefix classes (env-tunable, comma/pipe-separated):
+      - colon class (抄送): prefix followed by a full/half-width colon;
+      - space class (印发机关): prefix followed by any whitespace — ``\\s``
+        includes a soft line break and the ideographic space, so a two-line
+        ``印发机关\\n机构名`` paragraph still hits.
+
+    Operates on the RAW text (leading whitespace ignored, the rest kept):
+    the whitespace after a space-class prefix is the match evidence, so a
+    ``strip()``-ed copy must never be passed in. A bare label with nothing
+    after it (印发机关) does not match.
+    """
+    head = text.lstrip()
+    if not head:
+        return None
+    for env, default, tail in (
+        (
+            "DOCX_SMART_IMPRINT_COLON_PREFIXES",
+            DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES,
+            _IMPRINT_GAP + "[：:]",
+        ),
+        (
+            "DOCX_SMART_IMPRINT_SPACE_PREFIXES",
+            DEFAULT_DOCX_SMART_IMPRINT_SPACE_PREFIXES,
+            r"\s",
+        ),
+    ):
+        for prefix in _env_items(env, default):
+            # Per-char escape: prefixes are env-configurable, so a user item
+            # carrying regex metachars must still match literally.
+            body = _IMPRINT_GAP.join(re.escape(ch) for ch in prefix)
+            if re.match(body + tail, head):
+                return "imprint_marker"
     return None
 
 

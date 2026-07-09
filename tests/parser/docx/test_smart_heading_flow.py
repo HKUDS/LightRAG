@@ -1169,3 +1169,137 @@ def test_cb1_lookahead_propagates_demotion_across_partial_series(caplog) -> None
     demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings=warnings)
     # Whole CnParentNum series demoted via propagation, not just the two hits.
     assert {d.text for d in ds if d.is_heading} == {"一、总体要求", "二、保障措施"}
+
+
+# ---------------------------------------------------------------------------
+# 公文版记 (imprint): strong-body rule 0 in the gate/sweep, and the
+# outline-only fallback exception
+# ---------------------------------------------------------------------------
+# These tests use the REAL guardrails.strong_body_reason: every record either
+# opens with an imprint marker (regex, returns before any NLP) or ends with a
+# CJK sentence terminator (string check), so no spaCy models are needed.
+
+
+def test_imprint_candidate_demoted_at_recognition() -> None:
+    """An imprint line admitted by a size rule is demoted at recognition time
+    (unnumbered → check_now always applies) with the imprint rule id."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    records = _body(20) + [_para("抄送：各区人民政府", size=16.0)]
+    warnings: dict = {}
+    result = _gate(
+        records, strong_body=guardrails.strong_body_reason, warnings=warnings
+    )
+    assert "抄送：各区人民政府" not in _texts(result)
+    assert len(result.demoted) == 1
+    dem = result.demoted[0]
+    assert dem.rule_trail == ["imprint_marker", "strong_body_demoted"]
+    assert dem.use_raw_text is False  # never a baseline heading: output-neutral
+    assert warnings["smart_strong_body_demotions"] == 1
+
+
+def test_imprint_outline_demotion_passes_i2() -> None:
+    """An OUTLINE imprint line demotes with use_raw_text and an I2-recognized
+    rule trail, so the retention check stays green."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    records = _body(20) + [_para("抄送：各区人民政府", size=12.0, outline_level=1)]
+    result = _gate(records, strong_body=guardrails.strong_body_reason)
+    assert len(result.demoted) == 1
+    dem = result.demoted[0]
+    assert dem.is_heading is False and dem.use_raw_text is True
+    merged = list(result.decisions) + result.demoted
+    assert guardrails.verify_baseline_heading_retention(records, merged) == []
+
+
+def test_postmerge_sweep_demotes_imprint_heading() -> None:
+    """Leak path (e.g. llm_grant): a surviving imprint heading is caught by
+    the §2.2.7 sweep; unnumbered → no series propagation side effects."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    d = _decision("抄送：各成员单位", numbered=False)
+    demote_strong_body_headings([d], strong_body=guardrails.strong_body_reason)
+    assert d.is_heading is False
+    assert "imprint_marker" in d.rule_trail
+    assert "strong_body_demoted" in d.rule_trail
+
+
+def test_outline_only_fallback_demotes_imprint() -> None:
+    """The sub-document fallback keeps outlineLvl headings EXCEPT imprint
+    lines, which get an explicit rule-tagged demotion (a silent skip would be
+    an I2 violation). Both fallback call sites share this helper."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+    from lightrag.parser.docx.smart_heading.heading_flow import (
+        _outline_only_decisions,
+    )
+
+    records = [
+        _para("第一章 总体要求", size=12.0, outline_level=0),
+        _para("正文段落，以句号结尾。", size=12.0),
+        _para("抄送：各成员单位", size=12.0, outline_level=1),
+    ]
+    warnings: dict = {}
+    out = _outline_only_decisions(records, range(len(records)), warnings=warnings)
+    assert len(out) == 2
+    normal = next(d for d in out if d.record_index == 0)
+    assert normal.is_heading and normal.level == 1
+    assert "subdoc_fallback_outline_only" in normal.rule_trail
+    dem = next(d for d in out if d.record_index == 2)
+    assert dem.is_heading is False and dem.use_raw_text is True
+    assert dem.rule_trail == ["imprint_marker", "strong_body_demoted"]
+    assert warnings["smart_strong_body_demotions"] == 1
+    assert verify_baseline_heading_retention(records, out) == []
+
+
+def test_cb4_short_subdoc_fallback_wires_imprint(monkeypatch) -> None:
+    """Wiring: run_smart_heading's cb4_short_subdoc fallback demotes an
+    outline imprint line and counts it — even with an injected stub
+    strong_body that does not know imprint (the fallback uses the guardrails
+    default marker, not the injected strong_body)."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    monkeypatch.setenv("DOCX_SMART_SUBDOC_MIN_TOKENS", "1000000")
+
+    records = _body(20) + [
+        _para("附则说明", size=12.0, outline_level=0),
+        _para("抄送：各成员单位", size=12.0, outline_level=1),
+    ]
+    imprint_idx = len(records) - 1
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=None,  # uniform 12pt: no title-block candidates, no LLM
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.audit["sub_documents"][0]["fallback"] == "cb4_short_subdoc"
+    dem = result.decisions[imprint_idx]
+    assert dem.is_heading is False and dem.use_raw_text is True
+    assert "imprint_marker" in dem.rule_trail
+    assert result.decisions[imprint_idx - 1].is_heading  # plain outline kept
+    assert warnings["smart_strong_body_demotions"] == 1
+
+
+def test_whole_doc_cb4_skip_leaves_imprint_to_baseline(monkeypatch) -> None:
+    """Guarantee boundary: below the whole-document CB4 gate smart never runs
+    (returns None) — the imprint rules do NOT reach the untouched baseline
+    output, by design."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "1000000")
+    records = _body(5) + [_para("抄送：各成员单位", size=12.0, outline_level=1)]
+    result = run_smart_heading(
+        records,
+        llm_judge=None,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is None

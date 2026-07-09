@@ -896,3 +896,112 @@ def test_table_non_title_verdict_ignored() -> None:
     )
     assert not decision.is_title_block
     assert decision.heading_indices == () and decision.body_indices == ()
+
+
+# ---------------------------------------------------------------------------
+# 公文版记 (imprint) veto: the marker line and its 2 preceding non-blank
+# paragraphs are barred from every title-block channel
+# ---------------------------------------------------------------------------
+
+
+def test_imprint_breaks_multi_window_and_vetoes_two_neighbors() -> None:
+    """The window ends 2 non-blank paragraphs BEFORE the imprint line; with
+    the veto injected away, the imprint line and its neighbours would be
+    absorbed as cover-title material (the bug being fixed)."""
+    records = [
+        _para("公司数字化转型白皮书", size=22.0),  # 0 big main title
+        _para("（2026年版）", size=12.0),  # 1
+        _para("某某市人民政府办公室", size=12.0),  # 2 ← vetoed (2nd preceding)
+        _para("研究策划部编写", size=12.0),  # 3 ← vetoed (1st preceding)
+        _para("抄送：各区人民政府", size=12.0),  # 4 anchor
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert not cands[0].single
+    assert (cands[0].start, cands[0].end) == (0, 2)
+
+    # Injectable: a no-op marker restores the pre-fix absorption behaviour.
+    cands = _find(records, imprint_marker=lambda t: None)
+    assert len(cands) == 1
+    assert (cands[0].start, cands[0].end) == (0, 5)
+
+
+def test_imprint_line_never_single_candidate() -> None:
+    """Mirror of test_single_candidate_centered_with_blank_flanks: the same
+    boundary evidence yields a candidate for a plain line but never for an
+    imprint line (stub strong_body does NOT know imprint — the title_block
+    veto must hold on its own)."""
+    records = [
+        _para("开头正文，以句号结尾。", size=12.0),
+        _empty(),
+        _para("抄送：各市人民政府", size=18.0, alignment="center"),
+        _empty(),
+        _para("后续正文，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+    cands = _find(records, imprint_marker=lambda t: None)
+    assert len(cands) == 1 and cands[0].single and cands[0].start == 2
+
+
+def test_imprint_neighbor_veto_blocks_single_candidate() -> None:
+    """Tail signature/date lines above an imprint line stop being title
+    candidates; without the imprint line the same area yields one."""
+    body = [_para(f"正文段落{i}，以句号结尾。", size=12.0) for i in range(3)]
+    records = body + [
+        _empty(),
+        _para("某某市人民政府办公室", size=18.0, alignment="center"),  # 4
+        _empty(),
+        _para("二〇二六年七月一日", size=12.0),  # 6 ← vetoed
+        _para("抄送：各县区人民政府", size=12.0),  # 7 anchor
+    ]
+    assert _find(records) == []
+    # Control: drop the imprint line → the signature line is a candidate.
+    cands = _find(records[:-1])
+    assert len(cands) == 1 and cands[0].start == 4
+
+
+def test_imprint_neighbor_walk_skips_blank_paras() -> None:
+    """The backward walk skips empty/whitespace-only paragraphs without
+    consuming the 2-paragraph budget (space-class prefix here)."""
+    records = [
+        _para("某某公司发文稿纸", size=22.0),  # 0 ← vetoed (2nd preceding)
+        _empty(),
+        _para("某某办公室", size=12.0),  # 2 ← vetoed (1st preceding)
+        _para("   ", size=12.0),  # whitespace-only para: skipped, not counted
+        _para("印发机关　某某办公厅", size=12.0),  # 4 anchor
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []
+    assert len(_find(records, imprint_marker=lambda t: None)) == 1
+
+
+def test_imprint_neighbor_walk_stops_at_table() -> None:
+    """A non-paragraph record is a structural boundary: the veto never leaks
+    across it, so the window above the table survives intact."""
+    records = [
+        _para("产品发布白皮书", size=22.0),  # 0
+        _para("某某公司编", size=12.0),  # 1
+        _table([[("附件清单", 10.5, False)]]),  # 2 boundary
+        _para("某某办公室代拟", size=12.0),  # 3 ← vetoed (walk stops at table)
+        _para("抄送：各部门", size=12.0),  # 4 anchor
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert (cands[0].start, cands[0].end) == (0, 2)
+
+
+def test_table_member_rejects_imprint_cell() -> None:
+    """One imprint cell disqualifies the whole table from the table channel
+    (a short imprint cell is not caught by the strong-body stub)."""
+    records = [
+        _table(
+            [
+                [("产品标准化大纲", 22.0, False)],
+                [("抄送：市委各部门", 10.5, False)],
+            ]
+        ),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    assert _find(records) == []

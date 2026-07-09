@@ -1753,24 +1753,60 @@ def _estimate_record_tokens(records: Sequence[Any], indices: Sequence[int]) -> i
 
 
 def _outline_only_decisions(
-    records: Sequence[Any], indices: Sequence[int]
+    records: Sequence[Any],
+    indices: Sequence[int],
+    *,
+    imprint_marker: Callable[[str], str | None] | None = None,
+    warnings: dict | None = None,
 ) -> list[HeadingDecision]:
     """Sub-document fallback: internal levels revert to outlineLvl-only
     (the baseline rule); global actions (title blocks, TOC removal,
-    doc_title) are NOT undone (§3.4 mixed-output rules)."""
+    doc_title) are NOT undone (§3.4 mixed-output rules).
+
+    公文版记 (imprint) lines are the one exception to the baseline revert: an
+    outline paragraph opening with an imprint marker is demoted to body with
+    an explicit rule-tagged decision — skipping it silently would read as an
+    I2 violation (a baseline heading with no decision). Only the pure-regex
+    imprint rule applies here; the fallback must not grow the full NLP
+    strong-body demotion surface.
+    """
+    imprint_marker = imprint_marker or guardrails.imprint_marker_reason
     out = []
     for i in indices:
         rec = records[i]
-        if rec.kind == "para" and rec.outline_level is not None:
-            d = HeadingDecision(
+        if rec.kind != "para" or rec.outline_level is None:
+            continue
+        reason = imprint_marker(rec.text)
+        if reason is not None:
+            if warnings is not None:
+                warnings["smart_strong_body_demotions"] = (
+                    warnings.get("smart_strong_body_demotions", 0) + 1
+                )
+            dem = HeadingDecision(
                 record_index=i,
                 text=rec.text,
-                is_heading=True,
-                level=rec.outline_level + 1,
+                is_heading=False,
                 outline_level=rec.outline_level,
+                use_raw_text=True,
             )
-            d.note("subdoc_fallback_outline_only")
-            out.append(d)
+            dem.note(reason)
+            dem.note("strong_body_demoted")
+            logger.warning(
+                "[smart_heading] I2: outline paragraph demoted to body in "
+                "sub-document fallback by imprint marker (%s)",
+                reason,
+            )
+            out.append(dem)
+            continue
+        d = HeadingDecision(
+            record_index=i,
+            text=rec.text,
+            is_heading=True,
+            level=rec.outline_level + 1,
+            outline_level=rec.outline_level,
+        )
+        d.note("subdoc_fallback_outline_only")
+        out.append(d)
     return out
 
 
@@ -1991,7 +2027,7 @@ def run_smart_heading(
         if _estimate_record_tokens(records, sub_indices) < subdoc_min_tokens:
             sub_audit["fallback"] = "cb4_short_subdoc"
             fallback_subs += 1
-            for d in _outline_only_decisions(records, sub_indices):
+            for d in _outline_only_decisions(records, sub_indices, warnings=warnings):
                 decisions[d.record_index] = d
             continue
 
@@ -2025,7 +2061,7 @@ def run_smart_heading(
         if gate.cb1_tripped:
             sub_audit["fallback"] = "cb1_density"
             fallback_subs += 1
-            for d in _outline_only_decisions(records, sub_indices):
+            for d in _outline_only_decisions(records, sub_indices, warnings=warnings):
                 decisions[d.record_index] = d
             continue
 

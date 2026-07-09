@@ -165,6 +165,14 @@ DEFAULT_DOCX_SMART_ENNUM_BLACKLIST = (
 # P3 caption prefixes: a paragraph starting with one of these + a numbering
 # shape is a figure/table caption, never a heading. Comma/pipe-separated.
 DEFAULT_DOCX_SMART_CAPTION_PREFIXES = "图,表,公式,Figure,Table,Fig.,Eq.,Chart"
+# 公文版记 (imprint) markers: a paragraph opening with a colon-class prefix
+# followed by [：:] (抄送：各区人民政府) or a space-class prefix followed by
+# whitespace (印发机关　XX办公厅) is imprint metadata — body, never a heading —
+# and it vetoes title-block membership for itself AND its 2 preceding
+# non-blank paragraphs (typically the signature/date lines above it).
+# Comma/pipe-separated; whitespace may interleave the prefix chars (抄　送：).
+DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES = "抄送"
+DEFAULT_DOCX_SMART_IMPRINT_SPACE_PREFIXES = "印发机关"
 # Heuristic TOC evidence: at least this many consecutive dot-leader lines.
 DEFAULT_DOCX_SMART_TOC_MIN_LINES = 3
 # CB1 heading-density ceiling (headings / non-empty paragraphs): the floor of

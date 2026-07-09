@@ -187,6 +187,71 @@ def test_caption_prefix(text: str, vetoed: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 公文版记 (imprint) markers (no NLP needed)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "抄送：市委各部门。",
+        "抄送:各区人民政府",  # half-width colon
+        "抄　送：省政府办公厅",  # justified label — ideographic space inside
+        "　　抄送：市政府各委办局",  # leading indent
+        "印发机关　某某市人民政府办公厅",  # ideographic-space separator
+        "印发机关 2026年7月1日",
+        "印发机关\n某某办公厅",  # soft line break counts as whitespace
+    ],
+)
+def test_imprint_marker_detected(text: str) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_marker_reason
+
+    assert imprint_marker_reason(text) == "imprint_marker"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "抄送单位管理规定",  # no colon
+        "主送：各处室",  # 主送 dropped by design (uncommon)
+        "印发机关名单",  # non-whitespace follows the prefix
+        "印发机关",  # bare label, no trailing whitespace
+        "请及时抄送：相关单位",  # prefix not at line start
+        "一、抄送：相关单位",  # numbering-led line is not an imprint opener
+        "",
+    ],
+)
+def test_imprint_marker_not_hit(text: str) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_marker_reason
+
+    assert imprint_marker_reason(text) is None
+
+
+def test_imprint_prefixes_env_override(monkeypatch) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import imprint_marker_reason
+
+    monkeypatch.setenv("DOCX_SMART_IMPRINT_COLON_PREFIXES", "传阅")
+    assert imprint_marker_reason("传阅：全体职工") == "imprint_marker"
+    assert imprint_marker_reason("抄送：各区人民政府") is None
+
+    monkeypatch.setenv("DOCX_SMART_IMPRINT_SPACE_PREFIXES", "签发人")
+    assert imprint_marker_reason("签发人 张三") == "imprint_marker"
+    assert imprint_marker_reason("印发机关 某办公厅") is None
+
+
+def test_strong_body_rule0_imprint() -> None:
+    """Imprint is strong-body rule 0: it returns before the sentence-end (P4)
+    check — the 。-terminated line reports imprint, not sentence_end — and on
+    the RAW text, so the whitespace evidence after a space-class prefix
+    survives (a strip()-ed path would erase 印发机关\\n机构名). Both hits
+    return before any spaCy call, so no models are needed."""
+    from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
+
+    assert strong_body_reason("抄送：市委各部门。") == "imprint_marker"
+    assert strong_body_reason("印发机关\n某某办公厅") == "imprint_marker"
+
+
+# ---------------------------------------------------------------------------
 # G12-1 judgment layer: missing spaCy/model hard-fails with guidance
 # ---------------------------------------------------------------------------
 

@@ -168,28 +168,70 @@ def _window_mode_size(records: Sequence[Any], indices: Sequence[int]) -> float |
 MULTI_WINDOW_TITLE_DELTA_PT = 2.0
 
 
+def _imprint_veto_indices(
+    records: Sequence[Any],
+    imprint_marker: Callable[[str], str | None],
+    skip_indices: set[int],
+) -> set[int]:
+    """Record indices barred from every title-block channel by 公文版记.
+
+    Each imprint marker line (:func:`guardrails.imprint_marker_reason`) is an
+    anchor; the anchor plus up to 2 preceding non-blank paragraphs join the
+    veto set — the lines right above an imprint area are signature/date
+    lines that a tail window would otherwise absorb as cover-title material.
+    The backward walk skips blank paragraphs without counting and stops at
+    any non-paragraph record (a table or section break is a structural
+    boundary; a negative ruling must not leak across it). TOC lines
+    (``skip_indices``) cannot anchor a veto. Consecutive imprint lines
+    cascade naturally: only the region's first line reaches real content.
+    """
+    veto: set[int] = set()
+    for i, rec in enumerate(records):
+        if rec.kind != "para" or i in skip_indices:
+            continue
+        if imprint_marker(rec.text) is None:
+            continue
+        veto.add(i)
+        remaining = 2
+        k = i - 1
+        while k >= 0 and remaining:
+            r = records[k]
+            if r.kind == "empty_para" or (r.kind == "para" and not r.text.strip()):
+                k -= 1
+                continue
+            if r.kind != "para":
+                break
+            veto.add(k)
+            remaining -= 1
+            k -= 1
+    return veto
+
+
 def find_title_block_candidates(
     records: Sequence[Any],
     *,
     fs_base_pt: float | None,
     strong_body: Callable[[str], str | None] | None = None,
     numbering_veto: Callable[[Any, str], str | None] | None = None,
+    imprint_marker: Callable[[str], str | None] | None = None,
     warnings: dict | None = None,
     skip_indices: set[int] = frozenset(),
 ) -> list[TitleBlockCandidate]:
     """Find multi-paragraph windows and single-paragraph title candidates.
 
-    ``strong_body`` / ``numbering_veto`` default to the guardrails
-    implementations and are injectable for NLP-free tests.
+    ``strong_body`` / ``numbering_veto`` / ``imprint_marker`` default to the
+    guardrails implementations and are injectable for NLP-free tests.
     """
     strong_body = strong_body or guardrails.strong_body_reason
     numbering_veto = numbering_veto or guardrails.numbering_homophone_reason
+    imprint_marker = imprint_marker or guardrails.imprint_marker_reason
     delta = _env_float(
         "DOCX_SMART_TITLE_BLOCK_MIN_DELTA", DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA
     )
     single_cap = _env_int(
         "DOCX_SMART_SINGLE_TITLE_LLM_MAX", DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX
     )
+    imprint_excluded = _imprint_veto_indices(records, imprint_marker, skip_indices)
 
     para_indices = [
         i for i, r in enumerate(records) if r.kind == "para" and i not in skip_indices
@@ -288,6 +330,7 @@ def find_title_block_candidates(
         if (
             rec.kind != "para"
             or i in skip_indices
+            or i in imprint_excluded
             or _is_strong(i)
             or _is_real_heading(i)
             or rec.is_toc_field
@@ -310,6 +353,7 @@ def find_title_block_candidates(
             if (
                 r.kind != "para"
                 or j in skip_indices
+                or j in imprint_excluded
                 or r.is_toc_field
                 or r.is_toc_link
                 or _is_strong(j)
@@ -346,9 +390,10 @@ def find_title_block_candidates(
 
     def _table_member_ok(idx: int) -> bool:
         """Membership gate: EVERY non-empty cell reads as title material —
-        no strong-body feature, within the title length cap, no physical
-        outline. A data table (sentence / long cells) can never join, which
-        is what makes absorbing member tables content-safe."""
+        no strong-body feature, no 版记 (imprint) marker, within the title
+        length cap, no physical outline. A data table (sentence / long
+        cells) can never join, which is what makes absorbing member tables
+        content-safe."""
         cf = records[idx].table_cell_features
         if cf is None:
             return False
@@ -362,6 +407,12 @@ def find_title_block_candidates(
                 if guardrails.weighted_char_length(t) > TITLE_LINE_MAX_WEIGHTED_CHARS:
                     return False
                 if strong_body(t) is not None:
+                    return False
+                # Imprint check on the RAW cell text: the whitespace after a
+                # space-class prefix (印发机关␣…) is the match evidence and a
+                # stripped copy would erase it. A short imprint cell is not
+                # necessarily caught by the strong-body rules.
+                if imprint_marker(text) is not None:
                     return False
         return True
 
@@ -437,6 +488,10 @@ def find_title_block_candidates(
         if rec.is_toc_field or rec.is_toc_link:
             continue
         if _is_strong(idx):
+            continue
+        # Imprint veto before the LLM-review cap below: a vetoed line must
+        # not consume the per-document single-candidate budget.
+        if idx in imprint_excluded:
             continue
         if (
             guardrails.weighted_char_length(rec.text.strip())
