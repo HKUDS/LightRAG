@@ -1419,6 +1419,163 @@ def test_imprint_region_below_cb4_gate_untouched(monkeypatch) -> None:
     assert result is None
 
 
+# ---------------------------------------------------------------------------
+# mixed table/paragraph covers, end to end: absorbed paragraphs stay members
+# in SOURCE ORDER through judgment and assembly
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_cover_assembly_preserves_source_order(monkeypatch) -> None:
+    """表A + 封面材料段 + 表B: the absorbed paragraph rides in member_indices
+    between the tables, assembly renders 表A cells → 段落 → 表B cells in source
+    order with no duplication, and I1 passes."""
+    import json
+
+    from lightrag.parser.docx.parse_document import (
+        ParagraphRecord,
+        _assemble_blocks_smart,
+    )
+    from lightrag.parser.docx.smart_heading import guardrails as g
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    def _table(rows, text="<table>[]</table>"):
+        return ParagraphRecord(kind="table", text=text, table_cell_features=rows)
+
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("研究策划部编写", size=16.0),  # absorbed cover-material paragraph
+        _table([[("某某电子股份有限公司", 16.0, False)]]),
+    ] + _body(30, size=12.0)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "产品标准化大纲"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    lead = result.decisions[0]
+    assert lead.is_title_block
+    assert lead.member_indices == (0, 1, 2)  # 表A, 段, 表B — source order
+
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+    tb = next(b for b in blocks if b.get("is_title_block"))
+    content = tb["content"]
+    # Source order preserved, each fragment exactly once.
+    for frag in ("产品标准化大纲", "研究策划部编写", "某某电子股份有限公司"):
+        assert content.count(frag) == 1
+    assert (
+        content.index("产品标准化大纲")
+        < content.index("研究策划部编写")
+        < content.index("某某电子股份有限公司")
+    )
+    assert g.verify_content_preservation(records, blocks, toc_indices=set()) == []
+
+
+def test_paragraph_tail_cover_end_to_end(monkeypatch) -> None:
+    """档号表 + 主标题段 + body(无后置表格): the paragraph-tail cover completes
+    the title-block path — the candidate stands on the paragraph's size, the
+    heading is the paragraph-borne main title, assembly is lossless."""
+    import json
+
+    from lightrag.parser.docx.parse_document import (
+        ParagraphRecord,
+        _assemble_blocks_smart,
+    )
+    from lightrag.parser.docx.smart_heading import guardrails as g
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    form_table = ParagraphRecord(
+        kind="table",
+        text="<table>[]</table>",
+        table_cell_features=[
+            [("档 号", 10.5, False), ("", None, False)],
+            [("密 级", 10.5, False), ("公开", 10.5, False)],
+        ],
+    )
+    records = [form_table, _para("某某管理办法", size=22.0)] + _body(30, size=12.0)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "某某管理办法"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    lead = result.decisions[0]
+    assert lead.is_title_block
+    assert lead.member_indices == (0, 1)
+
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+    tb = next(b for b in blocks if b.get("is_title_block"))
+    assert tb["heading"] == "某某管理办法"
+    assert tb["content"].count("某某管理办法") == 1  # member, not re-emitted
+    assert g.verify_content_preservation(records, blocks, toc_indices=set()) == []
+
+
+def test_rejected_mixed_cover_paragraph_regains_heading_path(monkeypatch) -> None:
+    """LLM 否决取舍固化: when the LLM rejects the mixed-cover candidate, the
+    absorbed 22pt paragraph re-enters the normal gate and becomes an ORDINARY
+    heading (not a title block) — bounded loss, mirroring multi-window."""
+    import json
+
+    from lightrag.parser.docx.parse_document import ParagraphRecord
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    monkeypatch.setenv("DOCX_SMART_SUBDOC_MIN_TOKENS", "10")
+
+    form_table = ParagraphRecord(
+        kind="table",
+        text="<table>[]</table>",
+        table_cell_features=[[("档 号", 10.5, False), ("", None, False)]],
+    )
+    records = [
+        form_table,
+        _para("某某管理办法", size=22.0),
+        ParagraphRecord(
+            kind="table",
+            text="<table>[]</table>",
+            table_cell_features=[[("某某电子股份有限公司", 16.0, False)]],
+        ),
+    ] + _body(30, size=12.0)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps({"is_title_block": False}, ensure_ascii=False)
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    d = result.decisions.get(1)
+    assert d is not None and d.is_heading and not d.is_title_block
+
+
 def test_trailing_document_date_not_absorbed_into_next_cover(monkeypatch) -> None:
     """End-to-end (mirrors test5-红头文件): a 成文日期 mis-ordered right after the
     版记 must NOT become the leading member of the following 附件 cover — it

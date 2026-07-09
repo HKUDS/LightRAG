@@ -1025,6 +1025,270 @@ def test_table_member_rejects_closer_cell() -> None:
 
 
 # ---------------------------------------------------------------------------
+# mixed table/paragraph covers: absorbable paragraphs join the table run
+# (image-only, cover-material, paragraph-borne main title, paragraph tail)
+# ---------------------------------------------------------------------------
+
+_FORM_TABLE_ROWS = [
+    [("档 号", 10.5, False), ("", None, False)],
+    [("密 级", 10.5, False), ("公开", 10.5, False)],
+]
+_PUB_TABLE_ROWS = [[("某某电子股份有限公司", 16.0, False)]]
+
+
+def test_image_para_no_longer_breaks_table_run() -> None:
+    """A pure <drawing/> paragraph (印章/logo) between cover tables is absorbed
+    instead of splitting the cover; members carry it in source order."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para('<drawing id="1" name="图"/>', size=12.0),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.table and (c.start, c.end) == (0, 3)
+    assert c.members == (0, 1, 2)
+
+
+def test_mixed_cover_paragraph_carries_main_title() -> None:
+    """档号表(小字,无 title row) + 主标题段(22pt) + 发文机关表: the candidate
+    stands on the PARAGRAPH's size — the table channel is no longer
+    tables-only."""
+    records = [
+        _table(_FORM_TABLE_ROWS),
+        _para("某某管理办法", size=22.0),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert cands[0].members == (0, 1, 2)
+
+
+def test_mixed_image_and_title_para_stands_on_semantic_text() -> None:
+    """logo 与主标题同段: the long drawing tag must not push the title line
+    over the length cap — length judges the semantic text, size the real
+    paragraph size."""
+    records = [
+        _table(_FORM_TABLE_ROWS),
+        _para(
+            '<drawing id="1" name="logo" path="assets/very-long-path-to-'
+            'image-file-name-here.png"/> 某某管理办法',
+            size=22.0,
+        ),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert cands[0].members == (0, 1, 2)
+
+
+def test_cover_material_para_with_formula_absorbed() -> None:
+    """A short cover-material paragraph carrying an inline formula joins the
+    cover (情形 2 user ruling); the formula text rides along losslessly."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("副标题 <equation>x</equation>", size=16.0),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert cands[0].members == (0, 1, 2)
+
+
+def test_body_para_still_breaks_table_run() -> None:
+    """Control: a strong-body paragraph between tables still splits the run —
+    absorption is for cover material only."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("这是一段以句号结尾的正文。", size=12.0),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert [(c.start, c.end) for c in cands] == [(0, 1), (2, 3)]
+
+
+def test_real_heading_para_still_breaks_table_run() -> None:
+    """Control: a physical-outline paragraph between tables is a real section
+    heading, never cover material — the run splits."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("第一章 总则", size=12.0, outline_level_raw=0),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert all(1 not in c.members for c in cands)
+
+
+def test_drawing_prefixed_numbered_heading_still_breaks_table_run() -> None:
+    """A leading <drawing/> tag must not smuggle a genuinely NUMBERED heading
+    into the cover: raw-text numbering classification is defeated by the tag,
+    so the absorbable gate re-checks real numbering on the semantic text."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para('<drawing id="1" name="装饰"/> 第一章 总则', size=12.0),
+        _table(_PUB_TABLE_ROWS),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert all(1 not in c.members for c in cands)
+
+
+def test_paragraph_tail_cover() -> None:
+    """A cover ending in a paragraph (档号表 + 主标题段, no trailing table)
+    still forms one candidate — no tail trimming (user ruling)."""
+    records = [
+        _table(_FORM_TABLE_ROWS),
+        _para("某某管理办法", size=22.0),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert (cands[0].start, cands[0].end) == (0, 2)
+    assert cands[0].members == (0, 1)
+
+
+def test_trailing_image_para_joins_cover() -> None:
+    """标题表 + 尾随印章图片段: the trailing image joins the cover members."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para('<drawing id="9" name="印章"/>', size=12.0),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert cands[0].members == (0, 1)
+
+
+def test_imprint_preceding_line_not_absorbed_by_table_run() -> None:
+    """版记 region neighbourhood protection reaches the table channel: the
+    signature line PRECEDING a 抄送 anchor sits in imprint_excluded and is
+    never absorbed as cover material."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("某某市人民政府办公室", size=12.0),  # preceding of the anchor below
+        _para("抄送：各区人民政府", size=12.0),  # imprint anchor
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    cands = _find(records)
+    assert len(cands) == 1
+    assert cands[0].members == (0,)  # the signature line stayed out
+
+
+def test_table_verdict_locates_paragraph_main_title() -> None:
+    """judge 层: a members-bearing candidate renders the absorbed paragraph
+    into the LLM window and canon, so a paragraph-borne main_title passes
+    locate-back and lands in member_indices in source order."""
+    records = [
+        _table(_FORM_TABLE_ROWS),
+        _para("某某管理办法", size=22.0),
+        _table(_PUB_TABLE_ROWS),
+    ]
+    candidate = TitleBlockCandidate(
+        start=0,
+        end=3,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2),
+    )
+    decision = _judge_with(
+        {"is_title_block": True, "main_title": "某某管理办法"},
+        records=records,
+        candidate=candidate,
+    )
+    assert decision.is_title_block
+    assert decision.member_indices == (0, 1, 2)
+
+
+def test_mixed_para_locates_semantic_main_title() -> None:
+    """A mid-line drawing tag must not break locate-back: the canon carries
+    the para's SEMANTIC text, so the LLM's tag-free main_title ("某某管理办法"
+    out of "某某<drawing/>管理办法") still matches contiguously."""
+    records = [
+        _table(_FORM_TABLE_ROWS),
+        _para('某某<drawing id="1" name="纹章"/>管理办法', size=22.0),
+        _table(_PUB_TABLE_ROWS),
+    ]
+    candidate = TitleBlockCandidate(
+        start=0,
+        end=3,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2),
+    )
+    decision = _judge_with(
+        {"is_title_block": True, "main_title": "某某管理办法"},
+        records=records,
+        candidate=candidate,
+    )
+    assert decision.is_title_block
+    assert decision.member_indices == (0, 1, 2)
+
+
+def test_llm_window_contains_no_image_placeholders() -> None:
+    """Images are removed from the LLM window ENTIRELY (least noise, nothing
+    for the LLM to echo back): a pure-image member contributes no window line,
+    a mixed line reads as its clean semantic text — while both stay members
+    so assembly keeps them in source order."""
+    prompts: list[str] = []
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        prompts.append(prompt)
+        return json.dumps(
+            {"is_title_block": True, "main_title": "某某管理办法"},
+            ensure_ascii=False,
+        )
+
+    # Table channel: pure-image member + mixed title member.
+    records = [
+        _table(_FORM_TABLE_ROWS),
+        _para('<drawing id="9" name="印章" path="a/b.png"/>', size=12.0),
+        _para('某某<drawing id="1" name="纹章"/>管理办法', size=22.0),
+        _table(_PUB_TABLE_ROWS),
+    ]
+    candidate = TitleBlockCandidate(
+        start=0,
+        end=4,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2, 3),
+    )
+    decision = judge_title_block(candidate, records, _llm, warnings={})
+    assert decision.is_title_block
+    assert decision.member_indices == (0, 1, 2, 3)  # image kept as a member
+    assert "<drawing" not in prompts[-1]
+    assert "[IMAGE]" not in prompts[-1]
+    assert "某某管理办法" in prompts[-1]  # mixed line reads clean
+
+    # Paragraph channel (multi-window): same stripping + semantic locate; the
+    # pure-image paragraph contributes no window line at all.
+    records2 = [
+        _para('某某<drawing id="1" name="纹章"/>管理办法', size=22.0),
+        _para('<drawing id="9" name="印章"/>', size=12.0),
+        _para("（2026年版）", size=12.0),
+    ]
+    cand2 = TitleBlockCandidate(start=0, end=3, single=False, trigger="multi_window")
+    decision2 = judge_title_block(cand2, records2, _llm, warnings={})
+    assert decision2.is_title_block
+    assert "<drawing" not in prompts[-1]
+    assert "[IMAGE]" not in prompts[-1]
+    assert "某某管理办法" in prompts[-1]
+    assert "（2026年版）" in prompts[-1]  # image line skipped, context intact
+    # The unrendered image paragraph STAYS a member (source-order assembly);
+    # dropping it would re-emit the image after the block's members.
+    assert decision2.member_indices == (0, 1, 2)
+
+
+# ---------------------------------------------------------------------------
 # 版记 region model: detect_imprint_regions (抄送 anchor → 印发 closer, forward
 # window, TOC/blank skip, structural boundary)
 # ---------------------------------------------------------------------------

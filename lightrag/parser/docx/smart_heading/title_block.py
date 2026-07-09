@@ -32,6 +32,7 @@ from lightrag.constants import (
 from lightrag.utils import logger
 
 from . import guardrails
+from ..drawing_image_extractor import DRAWING_TAG_PATTERN
 from .features import effective_font_size_pt
 from .style_key import classify_numbering
 
@@ -43,6 +44,18 @@ TITLE_LINE_MAX_WEIGHTED_CHARS = 90
 
 _FLANK_WINDOW = 20  # K paragraphs on each side for the size-divergence gate
 _SINGLE_CONTEXT = 2  # paragraphs of context around a single candidate
+
+
+def _cover_semantic_text(rec: Any) -> str:
+    """The paragraph text with its ``<drawing.../>`` tags stripped — what the
+    cover-material judgments (length / strong-body / imprint / title-line)
+    see, AND what the LLM window shows / locate-back matches against. Images
+    carry no judgeable text, so they are removed from the prompt entirely
+    (least noise, no reliance on the LLM obeying a marker convention); a
+    placeholder's own attribute text (id/name/path) must never count toward
+    the length cap or feed text rules. Block ASSEMBLY always keeps the
+    original ``rec.text`` — the image survives in the output."""
+    return DRAWING_TAG_PATTERN.sub("", rec.text or "").strip()
 
 
 class TitleBlockLLMError(ValueError):
@@ -92,9 +105,14 @@ class TitleBlockCandidate:
     end: int
     single: bool
     trigger: str  # audit rule id
-    #: §2.2.4 table channel: the window spans TABLE records (a cover laid out
-    #: inside tables); members are the table records, rendered cell-by-cell.
+    #: §2.2.4 table channel: a cover laid out inside tables; tables render
+    #: cell-by-cell for the LLM. ``members`` below carries the member records.
     table: bool = False
+    #: Table-channel member records in source order: the qualifying tables
+    #: PLUS any absorbed cover-material / image-only paragraphs between or
+    #: after them. Filled by the table-run scan; paragraph channels leave it
+    #: empty (render then falls back to scanning the range for tables).
+    members: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -514,11 +532,72 @@ def find_title_block_candidates(
         i = max(end, i + 1)
 
     # --- table windows (§2.2.4 table channel) ------------------------------
-    # A cover laid out INSIDE tables. Scan each run of consecutive tables
-    # (empty paragraphs may sit between them) and take its leading prefix of
-    # member-qualifying tables; the first non-qualifying table ends both the
-    # window AND the run (the remainder never joins a title block). The
-    # prefix is a candidate when >=1 member table carries a title row.
+    # A cover laid out INSIDE tables — possibly interleaved with cover-material
+    # paragraphs (a mixed table/paragraph cover: 档号表 + 主标题段 + 发文机关表)
+    # or image-only paragraphs (a 印章 / logo between cover tables). Scan each
+    # run of consecutive tables and absorbable paragraphs (empty paragraphs may
+    # sit between them); the first non-qualifying record ends both the window
+    # AND the run (the remainder never joins a title block). The run is a
+    # candidate when >=1 member table carries a title row OR >=1 absorbed
+    # paragraph is a cover title line.
+
+    def _para_absorbable_in_cover(idx: int) -> bool:
+        """A run paragraph that reads as cover material: absorbed into the
+        table run as a member (source order) instead of breaking it. Pure
+        image placeholder(s) (印章/logo/二维码) always qualify; otherwise the
+        same bar a table cell clears in ``_table_member_ok`` — short,
+        non-body, no physical outline / real numbering, not a 版记 line — all
+        judged on the SEMANTIC text (drawing tags stripped): a mixed
+        "logo + 机关名" paragraph judges on the 机关名 alone, while rendering
+        keeps the original text so the image survives in the block."""
+        rec = records[idx]
+        if rec.kind != "para" or idx in skip_indices or idx in imprint_excluded:
+            # imprint_excluded: 版记 region members/preceding — the same
+            # neighbourhood protection the paragraph channels apply.
+            return False
+        if rec.is_toc_field or rec.is_toc_link or _is_real_heading(idx):
+            return False
+        if not (rec.text or "").strip():
+            return False
+        semantic = _cover_semantic_text(rec)
+        if not semantic:
+            return True  # pure image placeholder(s), any length
+        # Real-numbering check on the SEMANTIC text: _is_real_heading above
+        # classifies the RAW text, which a leading <drawing/> tag defeats —
+        # "<drawing/> 第一章 总则" is a genuine section heading and must break
+        # the run, not join the cover.
+        if _has_real_numbering(semantic, numbering_veto):
+            return False
+        if guardrails.weighted_char_length(semantic) > TITLE_LINE_MAX_WEIGHTED_CHARS:
+            return False
+        if strong_body(semantic) is not None:
+            return False
+        # Per-line 版记 backstop for lines outside any detected region (e.g.
+        # an isolated closer with no anchor above).
+        if imprint_marker(semantic) is not None or imprint_closer(semantic) is not None:
+            return False
+        return True
+
+    def _is_cover_title_line(idx: int) -> bool:
+        """An absorbed paragraph that can CARRY the cover title (so a mixed
+        cover with the main title in a paragraph, not a table row, still
+        stands). Length/emptiness judge the semantic text — a long drawing
+        tag sharing the line must not push the title over the cap; the size
+        is the paragraph's real effective size. A pure-image paragraph
+        (empty semantic) is decoration, never a title line."""
+        rec = records[idx]
+        size = effective_font_size_pt(rec)
+        semantic = _cover_semantic_text(rec)
+        return (
+            fs_base_pt is not None
+            and size is not None
+            and size >= fs_base_pt + MULTI_WINDOW_TITLE_DELTA_PT
+            and bool(semantic)
+            and guardrails.weighted_char_length(semantic)
+            <= TITLE_LINE_MAX_WEIGHTED_CHARS
+            and not rec.is_toc_field
+            and not rec.is_toc_link
+        )
 
     def _table_member_ok(idx: int) -> bool:
         """Membership gate: EVERY non-empty cell reads as title material —
@@ -588,17 +667,36 @@ def find_title_block_candidates(
             if r.kind == "empty_para":
                 j += 1
                 continue
-            if r.kind != "table" or j in skip_indices or not _table_member_ok(j):
+            if r.kind == "table" and j not in skip_indices and _table_member_ok(j):
+                members.append(j)
+            elif r.kind == "para" and _para_absorbable_in_cover(j):
+                members.append(j)  # absorbed cover material / image, in order
+            else:
                 break
-            members.append(j)
             j += 1
-        # The rest of the run (from the first non-qualifying table) is
+        # The rest of the run (from the first non-qualifying record) is
         # skipped outright — it never seeds another window.
         run_end = j
-        while run_end < n and records[run_end].kind in ("table", "empty_para"):
+        while run_end < n and (
+            records[run_end].kind in ("table", "empty_para")
+            or _para_absorbable_in_cover(run_end)
+        ):
             run_end += 1
         if members:
-            sizes = [s for s in map(_table_title_size, members) if s is not None]
+            # Title evidence from EITHER side of the mixed cover: a table
+            # title row, or an absorbed paragraph that is a cover title line.
+            sizes = []
+            for m in members:
+                if records[m].kind == "table":
+                    s = _table_title_size(m)
+                else:
+                    s = (
+                        effective_font_size_pt(records[m])
+                        if _is_cover_title_line(m)
+                        else None
+                    )
+                if s is not None:
+                    sizes.append(s)
             start, end = members[0], members[-1] + 1
             if sizes and _dominates_neighbor_headings(max(sizes), start, end):
                 candidates.append(
@@ -608,6 +706,7 @@ def find_title_block_candidates(
                         single=False,
                         trigger="table_window",
                         table=True,
+                        members=tuple(members),
                     )
                 )
                 covered.update(range(start, end))
@@ -749,12 +848,19 @@ Respond with JSON matching:
 
 def _render_window(
     records: Sequence[Any], candidate: TitleBlockCandidate, warnings: dict | None
-) -> tuple[str, list[int]]:
-    """Render the candidate window for the LLM; returns (text, index_map).
+) -> tuple[str, list[int], list[int]]:
+    """Render the candidate window for the LLM; returns
+    ``(text, index_map, image_paras)``.
 
     ``index_map[k]`` is the record index of window line ``[k]``. The window
     is token-capped (env DOCX_SMART_LLM_WINDOW_TOKENS); overflow truncates
     from the tail with a warning.
+
+    ``image_paras`` are the window's image-only paragraphs: they render NO
+    line (nothing judgeable to show, and skipping keeps a non-title partition
+    from having to classify an empty line), but a multi-window title verdict
+    must still count them as members — dropping them would re-emit the image
+    AFTER the block's members, breaking source order in assembly.
     """
     mandatory: int | None = None
     if candidate.single:
@@ -775,9 +881,14 @@ def _render_window(
     cap = _env_int("DOCX_SMART_LLM_WINDOW_TOKENS", DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS)
     # Reserve the mandatory candidate line's budget up front so surrounding
     # context can be trimmed without ever evicting the candidate.
-    reserve = _estimate_tokens(records[mandatory].text) if mandatory is not None else 0
+    reserve = (
+        _estimate_tokens(_cover_semantic_text(records[mandatory]))
+        if mandatory is not None
+        else 0
+    )
     lines: list[str] = []
     index_map: list[int] = []
+    image_paras: list[int] = []
     used = 0
     truncated = False
     for i in span:
@@ -787,7 +898,18 @@ def _render_window(
             continue
         if rec.kind != "para":
             continue
-        line = f"[{len(index_map)}] {rec.text}"
+        # The LLM sees the SEMANTIC text (drawing tags removed entirely —
+        # images carry no judgeable content, and a marker would only invite
+        # echoes); locate-back canons match the same text. An image-only
+        # paragraph thus renders nothing: skip it (no index_map entry, so a
+        # non-title partition never has to classify an empty line) but track
+        # it for membership — EXCEPT the mandatory single candidate, which
+        # must always be emitted.
+        semantic = _cover_semantic_text(rec)
+        if not semantic and i != mandatory:
+            image_paras.append(i)
+            continue
+        line = f"[{len(index_map)}] {semantic}"
         cost = _estimate_tokens(line)
         if i == mandatory:
             # Always emit the candidate; it was pre-reserved from the cap.
@@ -816,7 +938,7 @@ def _render_window(
             "tail content not shown to the LLM",
             cap,
         )
-    return "\n".join(lines), index_map
+    return "\n".join(lines), index_map, image_paras
 
 
 def _render_table_window(
@@ -825,35 +947,60 @@ def _render_table_window(
     """Render a TABLE candidate window for the LLM (§2.2.4 table channel).
 
     One indexed line per non-empty PHYSICAL cell, row by row across the
-    member tables. Returns ``(window_text, member_table_indices,
-    window_canon)`` — the canon concatenates the cell texts because the
-    table record's own ``text`` is a ``<table>{json}</table>`` placeholder
-    and useless for locate-back. Token-capped from the tail (same cap and
-    warning as the multi-paragraph window)."""
+    member tables — plus one line per absorbed cover-material paragraph (its
+    whole text: a mixed cover may carry the MAIN TITLE in a paragraph, so it
+    must reach the LLM window and the locate-back canon). Returns
+    ``(window_text, member_record_indices, window_canon)`` — the canon
+    concatenates the rendered texts because a table record's own ``text`` is
+    a ``<table>{json}</table>`` placeholder and useless for locate-back.
+    Token-capped from the tail (same cap and warning as the multi-paragraph
+    window).
+
+    Members come from ``candidate.members`` (filled by the table-run scan,
+    source order). An empty ``members`` falls back to scanning the range for
+    tables — the pre-``members`` behaviour, kept for hand-built candidates.
+    """
     cap = _env_int("DOCX_SMART_LLM_WINDOW_TOKENS", DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS)
     lines: list[str] = []
     canon_parts: list[str] = []
     members: list[int] = []
     used = 0
     truncated = False
-    for i in range(candidate.start, candidate.end):
+
+    def _emit(t: str) -> None:
+        nonlocal used, truncated
+        if not t or truncated:
+            return
+        line = f"[{len(lines)}] {t}"
+        cost = _estimate_tokens(line)
+        if used + cost > cap and lines:
+            truncated = True
+            return
+        used += cost
+        lines.append(line)
+        canon_parts.append(_canon(t))
+
+    member_iter = candidate.members or tuple(
+        i for i in range(candidate.start, candidate.end) if records[i].kind == "table"
+    )
+    for i in member_iter:
         rec = records[i]
-        if rec.kind != "table" or rec.table_cell_features is None:
-            continue
-        members.append(i)
-        for row in rec.table_cell_features:
-            for text, _size, _outline in row:
-                t = (text or "").strip()
-                if not t or truncated:
-                    continue
-                line = f"[{len(lines)}] {t}"
-                cost = _estimate_tokens(line)
-                if used + cost > cap and lines:
-                    truncated = True
-                    continue
-                used += cost
-                lines.append(line)
-                canon_parts.append(_canon(t))
+        if rec.kind == "table":
+            if rec.table_cell_features is None:
+                continue
+            members.append(i)
+            for row in rec.table_cell_features:
+                for text, _size, _outline in row:
+                    _emit((text or "").strip())
+        elif rec.kind == "para":
+            # Absorbed cover-material / image paragraph: keep it as a member
+            # (source-order assembly stays lossless) but show the LLM only the
+            # SEMANTIC text — drawing tags are removed entirely, so a pure
+            # image paragraph contributes NO window line (least prompt noise,
+            # nothing to echo back) while a mixed line reads clean
+            # ("某某管理办法") and locate-back matches it contiguously.
+            members.append(i)
+            _emit(_cover_semantic_text(rec))
     if truncated:
         if warnings is not None:
             warnings["title_block_window_truncated"] = (
@@ -914,16 +1061,24 @@ def judge_title_block(
             "none is configured (debug runs: build_debug_rag(extract_llm_func=…))"
         )
     if candidate.table:
-        # §2.2.4 table channel: the window is cell texts, and locate-back
-        # must run against them (the record text is a <table> placeholder).
-        window_text, member_tables, window_canon = _render_table_window(
+        # §2.2.4 table channel: the window is cell texts (plus any absorbed
+        # cover-material paragraphs), and locate-back must run against them
+        # (a table record's text is a <table> placeholder).
+        window_text, member_records, window_canon = _render_table_window(
             records, candidate, warnings
         )
         index_map = []
     else:
-        window_text, index_map = _render_window(records, candidate, warnings)
-        window_canon = "".join(_canon(records[i].text) for i in index_map)
-        member_tables = []
+        window_text, index_map, image_paras = _render_window(
+            records, candidate, warnings
+        )
+        # Semantic canon (drawing tags stripped): the window showed tag-free
+        # text, so the answer is tag-free — a raw canon would reject a title
+        # split by a mid-line image as non-contiguous.
+        window_canon = "".join(
+            _canon(_cover_semantic_text(records[i])) for i in index_map
+        )
+        member_records = []
     prompt = _USER_TEMPLATE.format(window=window_text)
     raw = llm_judge(prompt, system_prompt=_SYSTEM_PROMPT)
     data = _parse_llm_json(raw)
@@ -954,11 +1109,18 @@ def judge_title_block(
             # Hallucination guard scoped to the CANDIDATE paragraph only: the
             # heading is that line's text, so a main_title copied from a
             # reference-only context paragraph must not validate (review D4).
-            locate_scope = _canon(records[candidate.start].text)
+            # Semantic form for the same reason as the window canon above.
+            locate_scope = _canon(_cover_semantic_text(records[candidate.start]))
         else:
-            # Table windows: members are the TABLE records themselves.
+            # Table windows: members are the member records (tables + any
+            # absorbed cover-material paragraphs), in source order. Paragraph
+            # windows: the rendered lines PLUS the window's image-only
+            # paragraphs — unrendered, but membership keeps them emitted in
+            # source order by assembly instead of trailing the block.
             member_indices = (
-                tuple(member_tables) if candidate.table else tuple(index_map)
+                tuple(member_records)
+                if candidate.table
+                else tuple(sorted([*index_map, *image_paras]))
             )
             sub_title = _opt_str("sub_title")
             doc_number = _opt_str("doc_number")
