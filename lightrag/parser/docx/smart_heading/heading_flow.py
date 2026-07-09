@@ -217,9 +217,15 @@ def _log_physical_feature_summary(
 # step 1 — candidate gate
 # ---------------------------------------------------------------------------
 
-#: styleKeys whose strong-body check runs at recognition time; the rest
-#: defer to the post-merge sweep (§2.2.5 note / §2.2.7).
-EARLY_STRONG_BODY_KEYS = frozenset({CN_CHAPTER, EN_CHAPTER, "CnClause", "EnClause"})
+#: styleKeys whose strong-body check runs at recognition time — per-paragraph,
+#: with NO series propagation. Reserved for the CHAPTER classes: a chapter is
+#: almost always a real heading, so a single long chapter title must not drag
+#: its whole series to body via the post-merge CB2 majority rule; demoting only
+#: itself is safer. CLAUSE classes (条/款/项, Article/§) are NOT here — they
+#: defer to the post-merge sweep like CnParentNum / MultiLevelNum / EnNum, so a
+#: run of body-in-disguise clauses is demoted as a whole series and short
+#: colon-lead survivors don't leak through as headings (§2.2.5 note / §2.2.7).
+EARLY_STRONG_BODY_KEYS = frozenset({CN_CHAPTER, EN_CHAPTER})
 
 
 @dataclass
@@ -502,8 +508,9 @@ def gate_candidates(
             continue
 
         # Strong-body demotion at recognition time: unnumbered candidates
-        # and chapter/clause-class numbered ones; other numbered styleKeys
-        # defer to the post-merge sweep (§2.2.7).
+        # and chapter-class numbered ones; clause-class and all other numbered
+        # styleKeys defer to the post-merge sweep so CB2 series propagation can
+        # demote a body-in-disguise run as a whole (§2.2.7; EARLY_STRONG_BODY_KEYS).
         check_now = cls is None or cls.style_key in EARLY_STRONG_BODY_KEYS
         if check_now:
             reason = _strong(i)

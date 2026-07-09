@@ -1200,6 +1200,118 @@ def test_cb1_lookahead_propagates_demotion_across_partial_series(caplog) -> None
 
 
 # ---------------------------------------------------------------------------
+# clause-class numbering (条/款/项, Article/§) defers to the post-merge sweep
+# ---------------------------------------------------------------------------
+
+
+def test_early_strong_body_keys_covers_only_chapter_classes() -> None:
+    """Chapter classes are strong-body-checked at recognition (per-paragraph,
+    no propagation); clause classes are NOT — they defer to the post-merge
+    sweep so CB2 can demote a body-in-disguise run as a whole series."""
+    from lightrag.parser.docx.smart_heading.heading_flow import (
+        EARLY_STRONG_BODY_KEYS,
+    )
+    from lightrag.parser.docx.smart_heading.style_key import (
+        CN_CHAPTER,
+        CN_CLAUSE,
+        EN_CHAPTER,
+        EN_CLAUSE,
+    )
+
+    assert CN_CHAPTER in EARLY_STRONG_BODY_KEYS
+    assert EN_CHAPTER in EARLY_STRONG_BODY_KEYS
+    assert CN_CLAUSE not in EARLY_STRONG_BODY_KEYS
+    assert EN_CLAUSE not in EARLY_STRONG_BODY_KEYS
+
+
+def test_body_clause_series_demoted_via_post_merge_sweep() -> None:
+    """Regression (test8 应急管理部令第11号): a mostly-body 第X条 series is
+    demoted as a WHOLE by the post-merge CB2 sweep — including short colon-lead
+    survivors (第六/八条) that trip no strong-body rule on their own.
+
+    Must enter from the gate, NOT hand-built decisions: the bug is that CnClause
+    was strong-body-demoted at RECOGNITION (per-paragraph, no propagation), so
+    the body clauses left the candidate list before the sweep and could not act
+    as the CB2 hits that drag the survivors down. With CnClause early (buggy)
+    ``result.decisions`` keeps only the two colon survivors → no hits → they
+    leak as headings; with CnClause deferred (fixed) all clauses stay → the
+    。-ending ones are hits → CB2 (hit share 60% ≥ 20%, no outline) demotes the
+    whole series. This test is RED on the pre-fix code and GREEN after.
+    """
+    sentence = (
+        "为了加强安全生产领域信用体系建设，规范严重失信主体名单管理，依法制定本办法。"
+    )
+    survivor_six = "第六条  下列单位及其人员应当列入严重失信主体名单："
+    survivor_eight = "第八条  应急管理部门可以采取下列管理措施："
+    records = _body(20) + [
+        _para(f"第一条  {sentence}"),  # 。-ending → individual hit
+        _para(f"第二条  {sentence}"),  # 。-ending → individual hit
+        _para(f"第三条  {sentence}"),  # 。-ending → individual hit
+        _para(survivor_six),  # colon, < 60 chars → NOT an individual hit
+        _para(survivor_eight),  # colon, < 60 chars → NOT an individual hit
+    ]
+    warnings: dict = {}
+    result = _gate(records, warnings=warnings)
+    ds = result.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings=warnings)
+
+    by_text = {d.text: d for d in ds}
+    # The colon survivors are exactly what leaked pre-fix; CB2 must demote them.
+    assert by_text[survivor_six].is_heading is False
+    assert by_text[survivor_eight].is_heading is False
+    # No 第X条 survives as a heading at all.
+    assert not any(d.is_heading and "条" in d.text for d in ds)
+
+
+def test_short_bare_clause_series_survive_as_headings() -> None:
+    """Guard against over-demotion: a 第X条 series whose every member is a short
+    bare heading (no strong-body feature) has zero hits, so CB2 never
+    propagates and all survive. Passes both before and after the fix — the
+    safety net for the deferral change (cf. e2e regulation clauses)."""
+    records = _body(20) + [
+        _para("第一条"),
+        _para("第二条"),
+        _para("第三条"),
+        _para("第四条"),
+    ]
+    result = _gate(records)
+    ds = result.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings={})
+    assert {d.text for d in ds if d.is_heading} == {
+        "第一条",
+        "第二条",
+        "第三条",
+        "第四条",
+    }
+
+
+def test_body_article_series_demoted_via_post_merge_sweep() -> None:
+    """EnClause parity with CnClause: a mostly-body ``Article`` series demotes
+    as a whole, dragging a short colon-lead survivor down. Uses ``Article``
+    (not ``Section``/``Sec`` — those classify as EnChapter, which stays early)."""
+    long_en = (
+        "This article establishes the comprehensive requirements and the "
+        "detailed obligations applicable to all covered entities herein."
+    )  # > 60 chars → _stub length hit
+    survivor = "Article 5  introduces the following measures:"  # colon, < 60
+    records = _body(20) + [
+        _para(f"Article 1  {long_en}"),
+        _para(f"Article 2  {long_en}"),
+        _para(f"Article 3  {long_en}"),
+        _para(survivor),
+    ]
+    result = _gate(records)
+    ds = result.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings={})
+    by_text = {d.text: d for d in ds}
+    assert by_text[survivor].is_heading is False
+    assert not any(d.is_heading and d.text.startswith("Article") for d in ds)
+
+
+# ---------------------------------------------------------------------------
 # 公文版记 (imprint): strong-body rule 0 in the gate/sweep, and the
 # outline-only fallback exception
 # ---------------------------------------------------------------------------
