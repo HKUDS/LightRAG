@@ -986,11 +986,20 @@ def backfill_top_level(
     if not eligible:
         return
 
+    # EnNum's unconditional linkage boost (element A below) must not let it
+    # usurp a genuine chapter top when a CnChapter/EnChapter is also present:
+    # a real chapter class is the document's level-1, so EnNum stays a child of
+    # the MLN family. Suppressing the boost drops EnNum to the generic-linkage
+    # tier (element B) and the priority tie-break (element C, CnChapter=1 <
+    # EnNum=7). A DISTRACTOR chapter with no linkage still loses — EnNum with
+    # linkage beats it on element B — preserving G6-4.
+    chapter_present = any(k[0] in (CN_CHAPTER, EN_CHAPTER) for k, _m, _l in eligible)
+
     def _preference(item):
         key, members, linked = item
         max_size = max((d.font_size_pt or 0.0) for d in members)
         return (
-            0 if (linked >= 2 and key[0] == EN_NUM) else 1,
+            0 if (linked >= 2 and key[0] == EN_NUM and not chapter_present) else 1,
             0 if linked >= 2 else 1,
             STYLE_KEY_PRIORITY[key[0]],
             -max_size,
@@ -1735,6 +1744,123 @@ def correct_numbering_skeleton(
     return audit
 
 
+def _shift_subtree_unlocked(
+    decisions: list[HeadingDecision], pos: int, old_level: int, delta: int
+) -> None:
+    """Like :func:`_shift_subtree`, but never moves a PHYSICAL-OUTLINE descendant.
+
+    The subtree walk additionally stops at the first descendant carrying an
+    ``outline_level`` — those are pinned to the Word outline (I3: level ==
+    outlineLvl + 1) by :func:`anchor_outline_levels` (§2.2.6) and must not be
+    dragged along by a numbered-list re-nest.
+
+    It deliberately does NOT stop on ``anchored``: anchoring round 2 flags every
+    processed heading ``anchored=True`` as bookkeeping (not an outline lock), so
+    a genuine non-outline child would otherwise be stranded shallower than its
+    re-nested parent. Ordinary (non-outline) descendants move with the subtree.
+    """
+    if delta == 0:
+        return
+    decisions[pos].level = decisions[pos].level + delta
+    for k in range(pos + 1, len(decisions)):
+        d = decisions[k]
+        if d.level is None or d.level <= old_level or d.is_title_block:
+            break
+        if d.outline_level is not None:
+            break
+        d.level += delta
+
+
+def nest_numbered_under_parent(
+    decisions: list[HeadingDecision], *, warnings: dict | None = None
+) -> None:
+    """§2.2.8: nest a non-MultiLevelNum numbered heading under its structural
+    parent, in place. Runs AFTER outline anchoring + smoothing so parent levels
+    are final.
+
+    ``assign_levels_by_size`` gives each non-MLN numbering class a single flat
+    "class slot" near the MLN base level, while MLN raw levels advance on an
+    independent (deeper) track — so a same-font-size EnNum can land ABOVE the
+    deep MLN heading it should nest under. The size-band model is positional-
+    blind; this pass repairs it positionally.
+
+    Per heading ``d`` (heading, not title block, numbered, non-MLN, and NOT
+    outline-carrying — outlined paragraphs are anchoring/I3's job):
+
+    1. Same-list peer alignment: scan back (transparent non-heading rows are
+       skipped; a title block stops the scan), tracking the minimum level
+       ``running_min`` strictly between. The first same-``series_key`` heading
+       ``q`` is a same-list peer — align ``d`` to ``q.level`` — only when BOTH
+       ``q.level < running_min`` (only DEEPER children intervened; an
+       equal/shallower heading would have closed the scope) AND ``d.ordinal >
+       q.ordinal`` (the ordinal CONTINUES). A reset (``d.ordinal <= q.ordinal``)
+       is a new nested sublist, handled by step 2 (``1. A → a. child →
+       1. subitem`` nests under ``a. child``, not aligned to ``1. A``).
+    2. Else (first member of its list): the parent ``p`` is the first
+       non-transparent heading scanning back (a title block stops it; an
+       unnumbered heading is a valid parent too). Skip when there is no ``p`` or
+       ``d`` already sits deeper than ``p`` (``d.level > p.level``); otherwise
+       nest to ``p.level + 1``.
+
+    Level changes move ``d`` with its UNLOCKED subtree (see
+    :func:`_shift_subtree_unlocked`).
+    """
+    for i, d in enumerate(decisions):
+        if not d.is_heading or d.is_title_block or d.level is None:
+            continue
+        cls = d.numbering
+        if cls is None or cls.style_key == MULTI_LEVEL_NUM:
+            continue
+        if d.outline_level is not None:
+            continue
+
+        # 1) same-list peer alignment
+        key = cls.series_key()
+        peer: HeadingDecision | None = None
+        running_min = float("inf")
+        for j in range(i - 1, -1, -1):
+            p = decisions[j]
+            if not p.is_heading or p.level is None:
+                continue
+            if p.is_title_block:
+                break
+            if p.numbering is not None and p.numbering.series_key() == key:
+                # Peer only when (a) only DEEPER children intervened
+                # (``p.level < running_min``) AND (b) the ordinal CONTINUES
+                # (``cls.ordinal > p.ordinal``). A reset — the same or a smaller
+                # ordinal — starts a NEW nested sublist that must nest under the
+                # intervening deeper heading, not align to the outer item
+                # (``1. A → a. child → 1. subitem`` must NOT align to ``1. A``).
+                if (
+                    p.level < running_min
+                    and cls.ordinal is not None
+                    and p.numbering.ordinal is not None
+                    and cls.ordinal > p.numbering.ordinal
+                ):
+                    peer = p
+                break
+            running_min = min(running_min, p.level)
+        if peer is not None:
+            _shift_subtree_unlocked(decisions, i, d.level, peer.level - d.level)
+            d.note("nest_peer_align")
+            continue
+
+        # 2) first member of its list: nest under nearest preceding heading
+        parent: HeadingDecision | None = None
+        for j in range(i - 1, -1, -1):
+            p = decisions[j]
+            if not p.is_heading or p.level is None:
+                continue
+            if p.is_title_block:
+                break
+            parent = p
+            break
+        if parent is None or d.level > parent.level:
+            continue
+        _shift_subtree_unlocked(decisions, i, d.level, parent.level + 1 - d.level)
+        d.note("nest_under_parent")
+
+
 def clamp_deep_levels(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> None:
@@ -2183,6 +2309,10 @@ def run_smart_heading(
                     event["hash"] = _para_hash(ds[pos].text)
             audit["rule_events"].extend(skeleton_audit)
         align_numbering_series(ds, skip_anchored=True)  # §2.2.8 smoothing
+        # §2.2.8: nest same-size non-MLN numbered lists under their structural
+        # parent — AFTER smoothing (else series-align would overwrite it),
+        # before clamp.
+        nest_numbered_under_parent(ds, warnings=warnings)
         clamp_deep_levels(ds, warnings=warnings)
 
         sub_audit["headings"] = sum(1 for d in ds if d.is_heading)
