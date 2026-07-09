@@ -23,6 +23,7 @@ current_options_signature = cache_mod.current_options_signature
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "PADDLEOCR_VL_API_MODE",
+        "PADDLEOCR_VL_API_TOKEN",
         "PADDLEOCR_VL_ENDPOINT",
         "PADDLEOCR_VL_OFFICIAL_ENDPOINT",
         "PADDLEOCR_VL_LOCAL_ENDPOINT",
@@ -33,24 +34,34 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "PADDLEOCR_VL_USE_DOC_UNWARPING",
         "PADDLEOCR_VL_USE_LAYOUT_DETECTION",
         "PADDLEOCR_VL_USE_CHART_RECOGNITION",
+        "PADDLEOCR_VL_USE_SEAL_RECOGNITION",
+        "PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK",
         "PADDLEOCR_VL_LAYOUT_THRESHOLD",
         "PADDLEOCR_VL_LAYOUT_NMS",
         "PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO",
         "PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE",
         "PADDLEOCR_VL_LAYOUT_SHAPE_MODE",
         "PADDLEOCR_VL_PROMPT_LABEL",
+        "PADDLEOCR_VL_FORMAT_BLOCK_CONTENT",
         "PADDLEOCR_VL_REPETITION_PENALTY",
         "PADDLEOCR_VL_TEMPERATURE",
         "PADDLEOCR_VL_TOP_P",
         "PADDLEOCR_VL_MIN_PIXELS",
         "PADDLEOCR_VL_MAX_PIXELS",
+        "PADDLEOCR_VL_MAX_NEW_TOKENS",
+        "PADDLEOCR_VL_MERGE_LAYOUT_BLOCKS",
+        "PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS",
+        "PADDLEOCR_VL_VLM_EXTRA_ARGS",
         "PADDLEOCR_VL_SHOW_FORMULA_NUMBER",
+        "PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES",
         "PADDLEOCR_VL_RESTRUCTURE_PAGES",
         "PADDLEOCR_VL_MERGE_TABLES",
         "PADDLEOCR_VL_RELEVEL_TITLES",
         "PADDLEOCR_VL_PRETTIFY_MARKDOWN",
         "PADDLEOCR_VL_VISUALIZE",
         "PADDLEOCR_VL_ENGINE_VERSION",
+        "PADDLEOCR_VL_POLL_INTERVAL_SECONDS",
+        "PADDLEOCR_VL_MAX_POLLS",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PADDLEOCR_VL_ENDPOINT", "http://paddle.test/api/v2/ocr/jobs")
@@ -122,7 +133,9 @@ def test_parser_options_include_official_documented_parameters(
     monkeypatch.setenv("PADDLEOCR_VL_TOP_P", "0.9")
     monkeypatch.setenv("PADDLEOCR_VL_MIN_PIXELS", "1024")
     monkeypatch.setenv("PADDLEOCR_VL_MAX_PIXELS", "4096")
+    monkeypatch.setenv("PADDLEOCR_VL_MAX_NEW_TOKENS", "8192")
     monkeypatch.setenv("PADDLEOCR_VL_SHOW_FORMULA_NUMBER", "true")
+    monkeypatch.setenv("PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES", "false")
     monkeypatch.setenv("PADDLEOCR_VL_RESTRUCTURE_PAGES", "true")
     monkeypatch.setenv("PADDLEOCR_VL_MERGE_TABLES", "false")
     monkeypatch.setenv("PADDLEOCR_VL_RELEVEL_TITLES", "false")
@@ -149,7 +162,7 @@ def test_parser_options_include_official_documented_parameters(
     assert payload["useChartRecognition"] is True
     assert payload["layoutThreshold"] == 0.42
     assert payload["layoutNms"] is True
-    assert payload["layoutUnclipRatio"] == [1.0, 1.2]
+    assert payload["layoutUnclipRatio"] == (1.0, 1.2)
     assert payload["layoutMergeBboxesMode"] == "small"
     assert payload["layoutShapeMode"] == "quad"
     assert payload["promptLabel"] == "table"
@@ -158,7 +171,9 @@ def test_parser_options_include_official_documented_parameters(
     assert payload["topP"] == 0.9
     assert payload["minPixels"] == 1024
     assert payload["maxPixels"] == 4096
+    assert payload["maxNewTokens"] == 8192
     assert payload["showFormulaNumber"] is True
+    assert payload["returnMarkdownImages"] is False
     assert payload["restructurePages"] is True
     assert payload["mergeTables"] is False
     assert payload["relevelTitles"] is False
@@ -176,6 +191,20 @@ def test_parser_options_include_official_documented_parameters(
         "footnote",
         "aside_text",
     ]
+
+
+def test_parser_options_preserve_category_id_dicts_and_unclip_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_LAYOUT_THRESHOLD", '{"0": 0.1}')
+    monkeypatch.setenv("PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO", "[1.0, 1.2]")
+    monkeypatch.setenv("PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE", '{"0": "small"}')
+
+    payload = PaddleOCRVLParserOptions.from_env().request_payload()["optionalPayload"]
+
+    assert payload["layoutThreshold"] == {0: 0.1}
+    assert payload["layoutUnclipRatio"] == (1.0, 1.2)
+    assert payload["layoutMergeBboxesMode"] == {0: "small"}
 
 
 def test_parser_options_accept_per_file_overrides(
@@ -208,7 +237,7 @@ def test_parser_options_accept_per_file_overrides(
     assert payload["useSealRecognition"] is False
     assert payload["useOcrForImageBlock"] is True
     assert payload["layoutThreshold"] == 0.7
-    assert payload["layoutUnclipRatio"] == [1.0, 1.2]
+    assert payload["layoutUnclipRatio"] == (1.0, 1.2)
     assert payload["prettifyMarkdown"] is True
     # Default values are also present
     assert payload["useDocOrientationClassify"] is False
@@ -216,6 +245,7 @@ def test_parser_options_accept_per_file_overrides(
     assert payload["useChartRecognition"] is False
     assert payload["mergeTables"] is True
     assert payload["relevelTitles"] is True
+    assert payload["returnMarkdownImages"] is True
     assert payload["layoutShapeMode"] == "auto"
     assert payload["promptLabel"] == "ocr"
     assert payload["repetitionPenalty"] == 1
@@ -252,6 +282,27 @@ def test_parser_options_allow_none_page_range_alias() -> None:
     options = PaddleOCRVLParserOptions.from_env(overrides={"page_range": None})
 
     assert options.page_ranges is None
+
+
+def test_parser_options_reject_page_range_when_api_mode_is_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
+    monkeypatch.setenv("PADDLEOCR_VL_PAGE_RANGES", "1-3")
+
+    with pytest.raises(ValueError, match="PADDLEOCR_VL_API_MODE=official"):
+        PaddleOCRVLParserOptions.from_env()
+
+
+def test_parser_options_allow_page_range_when_api_mode_defaults_to_official(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PADDLEOCR_VL_API_MODE", raising=False)
+    monkeypatch.setenv("PADDLEOCR_VL_PAGE_RANGES", "1-3")
+
+    options = PaddleOCRVLParserOptions.from_env()
+
+    assert options.page_ranges == "1-3"
 
 
 def test_per_file_overrides_participate_in_cache_signature(

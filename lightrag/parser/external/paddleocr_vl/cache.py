@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -43,7 +43,9 @@ DEFAULT_PADDLEOCR_VL_TEMPERATURE = 0
 DEFAULT_PADDLEOCR_VL_TOP_P = 1
 DEFAULT_PADDLEOCR_VL_MIN_PIXELS = 147384
 DEFAULT_PADDLEOCR_VL_MAX_PIXELS = 2822400
+DEFAULT_PADDLEOCR_VL_MAX_NEW_TOKENS = None
 DEFAULT_PADDLEOCR_VL_SHOW_FORMULA_NUMBER = False
+DEFAULT_PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES = True
 DEFAULT_PADDLEOCR_VL_LAYOUT_NMS = True
 DEFAULT_PADDLEOCR_VL_RESTRUCTURE_PAGES = True
 DEFAULT_PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS: tuple[str, ...] = (
@@ -57,6 +59,11 @@ DEFAULT_PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS: tuple[str, ...] = (
 )
 _UNSET = object()
 _ValueT = TypeVar("_ValueT")
+_LayoutThreshold = float | dict[int, float] | None
+_LayoutUnclipRatio = (
+    float | tuple[float, float] | dict[int, float | tuple[float, float]] | None
+)
+_LayoutMergeBboxesMode = str | dict[int, str] | None
 
 
 def _current_api_mode() -> str:
@@ -157,6 +164,110 @@ def _coerce_value(
     raise TypeError(f"Unsupported PaddleOCR-VL option type: {value_type!r}")
 
 
+def _coerce_json_or_scalar(value: Any, *, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list, int, float, str)) and not isinstance(value, bool):
+        if not isinstance(value, str):
+            return value
+        raw = value.strip()
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+    return default
+
+
+def _coerce_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _coerce_int_key_dict(
+    value: Any,
+    value_coercer: Callable[[Any], Any],
+) -> dict[int, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[int, Any] = {}
+    for key, item in value.items():
+        if isinstance(key, bool):
+            return None
+        try:
+            category_id = int(key)
+        except (TypeError, ValueError):
+            return None
+        coerced = value_coercer(item)
+        if coerced is None:
+            return None
+        result[category_id] = coerced
+    return result
+
+
+def _coerce_unclip_value(value: Any) -> float | tuple[float, float] | None:
+    scalar = _coerce_float(value)
+    if scalar is not None:
+        return scalar
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        first = _coerce_float(value[0])
+        second = _coerce_float(value[1])
+        if first is not None and second is not None:
+            return (first, second)
+    return None
+
+
+def _coerce_threshold(value: Any) -> _LayoutThreshold:
+    value = _coerce_json_or_scalar(value)
+    scalar = _coerce_float(value)
+    if scalar is not None:
+        return scalar
+    return _coerce_int_key_dict(value, _coerce_float)
+
+
+def _coerce_unclip_ratio(value: Any) -> _LayoutUnclipRatio:
+    value = _coerce_json_or_scalar(value)
+    scalar_or_tuple = _coerce_unclip_value(value)
+    if scalar_or_tuple is not None:
+        return scalar_or_tuple
+    return _coerce_int_key_dict(value, _coerce_unclip_value)
+
+
+def _coerce_merge_bboxes_mode(value: Any) -> _LayoutMergeBboxesMode:
+    value = _coerce_json_or_scalar(value)
+    if isinstance(value, str):
+        return value
+    return _coerce_int_key_dict(value, _coerce_str)
+
+
+def _coerce_str(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _override_env_custom(
+    overrides: Mapping[str, Any],
+    *keys: str,
+    env_name: str,
+    value_coercer: Callable[[Any], Any],
+    default: Any = None,
+) -> Any:
+    value = _UNSET
+    for key in keys:
+        if key in overrides:
+            value = overrides[key]
+            break
+    if value is _UNSET:
+        value = os.getenv(env_name, _UNSET)
+    if value is _UNSET:
+        return default
+    coerced = value_coercer(value)
+    return coerced if coerced is not None else default
+
+
 def _override_env(
     value_type: type[_ValueT],
     overrides: Mapping[str, Any],
@@ -212,10 +323,10 @@ class DocParsingOptions:
     use_chart_recognition: bool | None
     use_seal_recognition: bool | None
     use_ocr_for_image_block: bool | None
-    layout_threshold: float | None
+    layout_threshold: _LayoutThreshold
     layout_nms: bool | None
-    layout_unclip_ratio: list[float] | None
-    layout_merge_bboxes_mode: str | None
+    layout_unclip_ratio: _LayoutUnclipRatio
+    layout_merge_bboxes_mode: _LayoutMergeBboxesMode
     layout_shape_mode: str | None
     prompt_label: str | None
     format_block_content: bool | None
@@ -224,11 +335,13 @@ class DocParsingOptions:
     top_p: float | None
     min_pixels: int | None
     max_pixels: int | None
+    max_new_tokens: int | None
     merge_layout_blocks: bool | None
     markdown_ignore_labels: list[str] | None
     vlm_extra_args: dict[str, Any] | None
     prettify_markdown: bool | None
     show_formula_number: bool | None
+    return_markdown_images: bool | None
     restructure_pages: bool | None
     merge_tables: bool | None
     relevel_titles: bool | None
@@ -284,11 +397,11 @@ class DocParsingOptions:
                 env_name="PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK",
                 default=DEFAULT_PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK,
             ),
-            layout_threshold=_override_env(
-                float,
+            layout_threshold=_override_env_custom(
                 overrides,
                 "layout_threshold",
                 env_name="PADDLEOCR_VL_LAYOUT_THRESHOLD",
+                value_coercer=_coerce_threshold,
             ),
             layout_nms=_override_env(
                 bool,
@@ -297,17 +410,17 @@ class DocParsingOptions:
                 env_name="PADDLEOCR_VL_LAYOUT_NMS",
                 default=DEFAULT_PADDLEOCR_VL_LAYOUT_NMS,
             ),
-            layout_unclip_ratio=_override_env(
-                list,
+            layout_unclip_ratio=_override_env_custom(
                 overrides,
                 "layout_unclip_ratio",
                 env_name="PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO",
+                value_coercer=_coerce_unclip_ratio,
             ),
-            layout_merge_bboxes_mode=_override_env(
-                str,
+            layout_merge_bboxes_mode=_override_env_custom(
                 overrides,
                 "layout_merge_bboxes_mode",
                 env_name="PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE",
+                value_coercer=_coerce_merge_bboxes_mode,
             ),
             layout_shape_mode=_override_env(
                 str,
@@ -365,6 +478,13 @@ class DocParsingOptions:
                 env_name="PADDLEOCR_VL_MAX_PIXELS",
                 default=DEFAULT_PADDLEOCR_VL_MAX_PIXELS,
             ),
+            max_new_tokens=_override_env(
+                int,
+                overrides,
+                "max_new_tokens",
+                env_name="PADDLEOCR_VL_MAX_NEW_TOKENS",
+                default=DEFAULT_PADDLEOCR_VL_MAX_NEW_TOKENS,
+            ),
             merge_layout_blocks=_override_env(
                 bool,
                 overrides,
@@ -398,6 +518,13 @@ class DocParsingOptions:
                 "show_formula_number",
                 env_name="PADDLEOCR_VL_SHOW_FORMULA_NUMBER",
                 default=DEFAULT_PADDLEOCR_VL_SHOW_FORMULA_NUMBER,
+            ),
+            return_markdown_images=_override_env(
+                bool,
+                overrides,
+                "return_markdown_images",
+                env_name="PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES",
+                default=DEFAULT_PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES,
             ),
             restructure_pages=_override_env(
                 bool,
@@ -458,6 +585,19 @@ class PaddleOCRVLParserOptions:
         mode = api_mode if api_mode is not None else _current_api_mode()
         overrides = overrides or {}
         optional_payload = DocParsingOptions.from_env(overrides=overrides)
+        page_ranges = _override_env(
+            str,
+            overrides,
+            "page_ranges",
+            "page_range",
+            env_name="PADDLEOCR_VL_PAGE_RANGES",
+        )
+        if mode == "local" and page_ranges:
+            raise ValueError(
+                "PaddleOCR-VL 'page_range' only applies to "
+                "PADDLEOCR_VL_API_MODE=official; local deployments do not support "
+                "pageRanges"
+            )
 
         return cls(
             api_mode=mode,
@@ -470,13 +610,7 @@ class PaddleOCRVLParserOptions:
                     default=DEFAULT_PADDLEOCR_VL_MODEL,
                 )
             ),
-            page_ranges=_override_env(
-                str,
-                overrides,
-                "page_ranges",
-                "page_range",
-                env_name="PADDLEOCR_VL_PAGE_RANGES",
-            ),
+            page_ranges=page_ranges,
             batch_id=_override_env(
                 str,
                 overrides,

@@ -39,6 +39,7 @@ DEFAULT_PAYLOAD = {
     ],
     "prettifyMarkdown": True,
     "showFormulaNumber": False,
+    "returnMarkdownImages": True,
     "restructurePages": True,
     "mergeTables": True,
     "relevelTitles": True,
@@ -210,20 +211,59 @@ def _install_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+_PADDLEOCR_VL_ENV_VARS = (
+    "PADDLEOCR_VL_API_MODE",
+    "PADDLEOCR_VL_API_TOKEN",
+    "PADDLEOCR_VL_ENDPOINT",
+    "PADDLEOCR_VL_OFFICIAL_ENDPOINT",
+    "PADDLEOCR_VL_LOCAL_ENDPOINT",
+    "PADDLEOCR_VL_MODEL",
+    "PADDLEOCR_VL_PAGE_RANGES",
+    "PADDLEOCR_VL_BATCH_ID",
+    "PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY",
+    "PADDLEOCR_VL_USE_DOC_UNWARPING",
+    "PADDLEOCR_VL_USE_LAYOUT_DETECTION",
+    "PADDLEOCR_VL_USE_CHART_RECOGNITION",
+    "PADDLEOCR_VL_USE_SEAL_RECOGNITION",
+    "PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK",
+    "PADDLEOCR_VL_LAYOUT_THRESHOLD",
+    "PADDLEOCR_VL_LAYOUT_NMS",
+    "PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO",
+    "PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE",
+    "PADDLEOCR_VL_LAYOUT_SHAPE_MODE",
+    "PADDLEOCR_VL_PROMPT_LABEL",
+    "PADDLEOCR_VL_FORMAT_BLOCK_CONTENT",
+    "PADDLEOCR_VL_REPETITION_PENALTY",
+    "PADDLEOCR_VL_TEMPERATURE",
+    "PADDLEOCR_VL_TOP_P",
+    "PADDLEOCR_VL_MIN_PIXELS",
+    "PADDLEOCR_VL_MAX_PIXELS",
+    "PADDLEOCR_VL_MAX_NEW_TOKENS",
+    "PADDLEOCR_VL_MERGE_LAYOUT_BLOCKS",
+    "PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS",
+    "PADDLEOCR_VL_VLM_EXTRA_ARGS",
+    "PADDLEOCR_VL_PRETTIFY_MARKDOWN",
+    "PADDLEOCR_VL_SHOW_FORMULA_NUMBER",
+    "PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES",
+    "PADDLEOCR_VL_RESTRUCTURE_PAGES",
+    "PADDLEOCR_VL_MERGE_TABLES",
+    "PADDLEOCR_VL_RELEVEL_TITLES",
+    "PADDLEOCR_VL_VISUALIZE",
+    "PADDLEOCR_VL_ENGINE_VERSION",
+    "PADDLEOCR_VL_POLL_INTERVAL_SECONDS",
+    "PADDLEOCR_VL_MAX_POLLS",
+)
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     global _RESULT_PAYLOAD
     _RESULT_PAYLOAD = None
+    for name in _PADDLEOCR_VL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "official")
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token-1")
     monkeypatch.setenv("PADDLEOCR_VL_ENDPOINT", "http://paddle.test/api/v2/ocr/jobs")
-    for name in (
-        "PADDLEOCR_VL_MODEL",
-        "PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY",
-        "PADDLEOCR_VL_USE_DOC_UNWARPING",
-        "PADDLEOCR_VL_USE_CHART_RECOGNITION",
-    ):
-        monkeypatch.delenv(name, raising=False)
 
 
 async def test_client_submits_polls_downloads_result_and_assets(
@@ -330,7 +370,9 @@ async def test_client_sends_documented_optional_payload(
     monkeypatch.setenv("PADDLEOCR_VL_TOP_P", "0.9")
     monkeypatch.setenv("PADDLEOCR_VL_MIN_PIXELS", "1024")
     monkeypatch.setenv("PADDLEOCR_VL_MAX_PIXELS", "4096")
+    monkeypatch.setenv("PADDLEOCR_VL_MAX_NEW_TOKENS", "8192")
     monkeypatch.setenv("PADDLEOCR_VL_SHOW_FORMULA_NUMBER", "true")
+    monkeypatch.setenv("PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES", "false")
     monkeypatch.setenv("PADDLEOCR_VL_RESTRUCTURE_PAGES", "true")
     monkeypatch.setenv("PADDLEOCR_VL_MERGE_TABLES", "false")
     monkeypatch.setenv("PADDLEOCR_VL_RELEVEL_TITLES", "false")
@@ -355,7 +397,9 @@ async def test_client_sends_documented_optional_payload(
         "topP": 0.9,
         "minPixels": 1024,
         "maxPixels": 4096,
+        "maxNewTokens": 8192,
         "showFormulaNumber": True,
+        "returnMarkdownImages": False,
         "mergeTables": False,
         "relevelTitles": False,
         "prettifyMarkdown": True,

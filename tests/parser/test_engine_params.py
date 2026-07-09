@@ -89,6 +89,32 @@ def test_parse_engine_params_paddleocr_vl_accepts_relative_end_page_range():
     assert parsed == {"page_range": "2--2"}
 
 
+def test_parse_engine_params_paddleocr_vl_page_range_rejected_local(monkeypatch):
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
+
+    parsed, errors = parse_engine_params(
+        "page_range=1-3",
+        engine="paddleocr_vl",
+        label="x",
+    )
+
+    assert "page_range" not in parsed
+    assert errors and "PADDLEOCR_VL_API_MODE=official" in errors[0]
+
+
+def test_parse_engine_params_paddleocr_vl_defaults_to_official(monkeypatch):
+    monkeypatch.delenv("PADDLEOCR_VL_API_MODE", raising=False)
+
+    parsed, errors = parse_engine_params(
+        "page_range=1-3",
+        engine="paddleocr_vl",
+        label="x",
+    )
+
+    assert errors == []
+    assert parsed == {"page_range": "1-3"}
+
+
 def test_parse_engine_params_paddleocr_vl_rejects_unregistered_params():
     _parsed, errors = parse_engine_params(
         "batch_id=batch-1,model=PaddleOCR-VL,use_layout_detection=false,"
@@ -202,6 +228,18 @@ def test_normalize_engine_params_accepts_paddleocr_vl_request_params(monkeypatch
         "use_seal_recognition": False,
         "use_doc_unwarping": True,
     }
+
+
+def test_normalize_engine_params_paddleocr_vl_page_range_rejected_local(monkeypatch):
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
+
+    norm, errors = normalize_engine_params(
+        "paddleocr_vl",
+        {"page_range": ["1-3"]},
+    )
+
+    assert "page_range" not in norm
+    assert errors and "PADDLEOCR_VL_API_MODE=official" in errors[0]
 
 
 def test_normalize_engine_params_rejects_unregistered_paddleocr_vl_params():

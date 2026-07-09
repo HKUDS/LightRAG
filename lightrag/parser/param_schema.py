@@ -435,6 +435,13 @@ def _mineru_api_mode_is_local() -> bool:
     return (os.getenv("MINERU_API_MODE", "") or "").strip().lower() != "official"
 
 
+def _paddleocr_vl_api_mode_is_local() -> bool:
+    """True when PaddleOCR-VL runs in local mode."""
+    return (
+        os.getenv("PADDLEOCR_VL_API_MODE", "official") or ""
+    ).strip().lower() == "local"
+
+
 def _validate_page_range_segments(engine: str, parts: list[str]) -> list[str]:
     """Validate page-range segment shape + the MinerU local single-segment rule.
 
@@ -499,6 +506,15 @@ def _coerce_engine_value(
         return None, (
             f"{label}: 'local_parse_method' only applies to "
             "MINERU_API_MODE=local (the default); the official API ignores it"
+        )
+    if (
+        engine == PARSER_ENGINE_PADDLEOCR_VL
+        and spec.canonical == "page_range"
+        and _paddleocr_vl_api_mode_is_local()
+    ):
+        return None, (
+            f"{label}: 'page_range' only applies to PADDLEOCR_VL_API_MODE=official; "
+            "local PaddleOCR-VL deployments do not support pageRanges"
         )
     if spec.kind == "bool":
         parsed = _parse_bool(value)
