@@ -328,6 +328,7 @@ _BOOL_FALSE = frozenset({"0", "false", "no", "off", "f", "n"})
 # A single page-range segment: ``N`` or ``N-M`` (validated for positivity /
 # ordering separately).
 _PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-\d+)?$")
+_PADDLEOCR_VL_PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-(?:\d+|-\d+))?$")
 
 
 @dataclass(frozen=True)
@@ -444,10 +445,19 @@ def _validate_page_range_segments(engine: str, parts: list[str]) -> list[str]:
     """
     errors: list[str] = []
     for seg in parts:
-        if not _PAGE_SEGMENT_RE.match(seg):
-            errors.append(
-                f"page_range segment {seg!r} must be a page 'N' or range 'N-M'"
-            )
+        if engine == PARSER_ENGINE_PADDLEOCR_VL:
+            pattern = _PADDLEOCR_VL_PAGE_SEGMENT_RE
+            shape = "page 'N', range 'N-M', or relative-end range 'N--M'"
+        else:
+            pattern = _PAGE_SEGMENT_RE
+            shape = "page 'N' or range 'N-M'"
+        if not pattern.match(seg):
+            errors.append(f"page_range segment {seg!r} must be a {shape}")
+            continue
+        if "--" in seg:
+            left, right = seg.split("--", maxsplit=1)
+            if int(left) < 1 or int(right) < 1:
+                errors.append(f"page_range segment {seg!r} must use positive pages")
             continue
         if "-" in seg:
             left, _, right = seg.partition("-")

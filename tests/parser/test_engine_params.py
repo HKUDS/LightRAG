@@ -80,6 +80,15 @@ def test_parse_engine_params_paddleocr_vl_top_level_request_params(monkeypatch):
     }
 
 
+def test_parse_engine_params_paddleocr_vl_accepts_relative_end_page_range():
+    parsed, errors = parse_engine_params(
+        "page_range=2--2", engine="paddleocr_vl", label="x"
+    )
+
+    assert errors == []
+    assert parsed == {"page_range": "2--2"}
+
+
 def test_parse_engine_params_paddleocr_vl_rejects_unregistered_params():
     _parsed, errors = parse_engine_params(
         "batch_id=batch-1,model=PaddleOCR-VL,use_layout_detection=false,"
