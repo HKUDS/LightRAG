@@ -173,6 +173,21 @@ def _is_set(value: str | None) -> bool:
 
 def _has_default_chain_credentials() -> bool:
     """Check the AWS default credential chain (IAM roles, IRSA, profiles)."""
+    # Env markers first: they need no botocore, which may not be installed
+    # yet at validation time (bedrock.py installs aioboto3 lazily at runtime).
+    # IRSA / web identity:
+    if _is_set(os.getenv("AWS_WEB_IDENTITY_TOKEN_FILE")) and _is_set(
+        os.getenv("AWS_ROLE_ARN")
+    ):
+        return True
+    # EKS Pod Identity / ECS task roles:
+    if _is_set(os.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")) or _is_set(
+        os.getenv("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+    ):
+        return True
+    if _is_set(os.getenv("AWS_PROFILE")):
+        return True
+    # Sources without env markers (shared config files, EC2 instance profiles):
     try:
         import botocore.session
 

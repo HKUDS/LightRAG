@@ -21,6 +21,11 @@ def _clear_bedrock_auth_env(monkeypatch):
         "AWS_BEARER_TOKEN_BEDROCK",
         "QUERY_AWS_ACCESS_KEY_ID",
         "QUERY_AWS_SECRET_ACCESS_KEY",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_PROFILE",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -94,6 +99,35 @@ def test_bedrock_binding_requires_sigv4_pair_or_bearer_token(monkeypatch):
 
     with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
         parse_args()
+
+
+def test_bedrock_binding_accepts_irsa_web_identity(monkeypatch):
+    """IRSA needs no botocore at validation time: env markers are enough."""
+    _clear_bedrock_auth_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("LLM_BINDING", "bedrock")
+    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+    monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/lightrag")
+
+    args = parse_args()
+
+    assert args.llm_binding == "bedrock"
+
+
+def test_bedrock_binding_accepts_container_credentials(monkeypatch):
+    """EKS Pod Identity / ECS task roles are detected via env markers."""
+    _clear_bedrock_auth_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    monkeypatch.setenv("LLM_BINDING", "bedrock")
+    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv(
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1/credentials"
+    )
+
+    args = parse_args()
+
+    assert args.llm_binding == "bedrock"
 
 
 def test_bedrock_binding_accepts_default_chain_credentials(monkeypatch):
