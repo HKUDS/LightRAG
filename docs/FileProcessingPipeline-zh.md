@@ -923,6 +923,19 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 
 `PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSON/JSONL。`local` 对接自部署、且兼容 LightRAG 请求约定的 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
 
+PaddleOCR-VL 默认把 `outputImages`、`inputImage`、`markdown.images`、
+`exports` 等二进制字段以 Base64 内联返回。当服务端启用
+`Serving.return_urls=true` 时，这些字段的结构不变，但值会变成预签名对象存储
+URL。PaddleOCR 当前的 URL 返回仅支持 BOS（百度智能云对象存储），因此
+LightRAG 只下载 host 为 `bj.bcebos.com` 或以 `.bj.bcebos.com` 结尾的 HTTPS
+图片 URL，例如：
+
+```bash
+https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/pp-ocr-vl-16-online/.../markdown_0/imgs/example.jpg?authorization=...
+```
+
+这些字段里的其他远程图片 URL 会被忽略；Base64 内联图片仍会正常解码。
+
 local 模式最小配置：
 
 ```bash

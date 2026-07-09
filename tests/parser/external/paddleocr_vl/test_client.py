@@ -77,6 +77,7 @@ class _Recorder:
 
 
 _CURRENT: dict[str, _Recorder] = {}
+_RESULT_PAYLOAD: dict[str, Any] | None = None
 
 
 class _FakeAsyncClient:
@@ -148,30 +149,53 @@ class _FakeAsyncClient:
                 }
             )
         if url == "http://files.test/result.jsonl":
-            return _Response(
-                text=json.dumps(
-                    {
-                        "result": {
-                            "layoutParsingResults": [
-                                {
-                                    "prunedResult": {"parsing_res_list": []},
-                                    "markdown": {
-                                        "text": "# hello",
-                                        "images": {
-                                            "imgs/fig.jpg": "http://files.test/fig.jpg"
-                                        },
-                                    },
-                                    "outputImages": {
-                                        "layout_det_res": "http://files.test/layout.jpg"
-                                    },
-                                }
-                            ]
+            result_payload = _RESULT_PAYLOAD or {
+                "result": {
+                    "layoutParsingResults": [
+                        {
+                            "prunedResult": {"parsing_res_list": []},
+                            "markdown": {
+                                "text": "# hello",
+                                "images": {
+                                    "imgs/fig.jpg": (
+                                        "https://pplines-online.bj.bcebos.com/"
+                                        "deploy/official/paddleocr/"
+                                        "pp-ocr-vl-16-online/default/"
+                                        "markdown_0/imgs/fig.jpg"
+                                    )
+                                },
+                            },
+                            "outputImages": {
+                                "layout_det_res": (
+                                    "https://pplines-online.bj.bcebos.com/"
+                                    "deploy/official/paddleocr/"
+                                    "pp-ocr-vl-16-online/default/"
+                                    "layout.jpg"
+                                )
+                            },
                         }
-                    }
-                )
-            )
-        if url in {"http://files.test/fig.jpg", "http://files.test/layout.jpg"}:
+                    ]
+                }
+            }
+            return _Response(text=json.dumps(result_payload))
+        if url in {
+            (
+                "https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/"
+                "pp-ocr-vl-16-online/default/markdown_0/imgs/fig.jpg"
+            ),
+            (
+                "https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/"
+                "pp-ocr-vl-16-online/default/layout.jpg"
+            ),
+        }:
             return _Response(content=b"\xff\xd8fake")
+        if url == (
+            "https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/"
+            "pp-ocr-vl-16-online/f74decfd-07d8-4cf9-aa27-4c4ddeaf309e/"
+            "markdown_0/imgs/img_in_image_box_93_222_125_263.jpg?"
+            "authorization=bce-auth-v1"
+        ):
+            return _Response(content=b"bos-fig")
         raise AssertionError(f"unexpected GET {url}")
 
 
@@ -188,6 +212,8 @@ def _install_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
+    global _RESULT_PAYLOAD
+    _RESULT_PAYLOAD = None
     monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "official")
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token-1")
     monkeypatch.setenv("PADDLEOCR_VL_ENDPOINT", "http://paddle.test/api/v2/ocr/jobs")
@@ -232,6 +258,56 @@ async def test_client_submits_polls_downloads_result_and_assets(
         raw_dir / "outputImages" / "layout_det_res_0.jpg"
     ).read_bytes() == b"\xff\xd8fake"
     assert (raw_dir / "_manifest.json").is_file()
+
+
+async def test_client_downloads_only_bos_remote_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    recorder = _Recorder()
+    _CURRENT["recorder"] = recorder
+    _RESULT_PAYLOAD = {
+        "result": {
+            "layoutParsingResults": [
+                {
+                    "prunedResult": {"parsing_res_list": []},
+                    "markdown": {
+                        "text": "# hello",
+                        "images": {
+                            "imgs/metadata.jpg": (
+                                "https://pplines-online.bj.bcebos.com/deploy/"
+                                "official/paddleocr/pp-ocr-vl-16-online/"
+                                "f74decfd-07d8-4cf9-aa27-4c4ddeaf309e/"
+                                "markdown_0/imgs/"
+                                "img_in_image_box_93_222_125_263.jpg?"
+                                "authorization=bce-auth-v1"
+                            )
+                        },
+                    },
+                    "outputImages": {"layout_det_res": "http://evil.test/layout.jpg"},
+                }
+            ]
+        }
+    }
+    _install_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.paddleocr_vl_raw"
+    await PaddleOCRVLRawClient().download_into(
+        raw_dir, source, upload_name="canonical.pdf"
+    )
+
+    urls = [call["url"] for call in recorder.get_calls]
+    assert (
+        "https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/"
+        "pp-ocr-vl-16-online/f74decfd-07d8-4cf9-aa27-4c4ddeaf309e/"
+        "markdown_0/imgs/img_in_image_box_93_222_125_263.jpg?"
+        "authorization=bce-auth-v1"
+    ) in urls
+    assert "http://evil.test/layout.jpg" not in urls
+    assert (raw_dir / "imgs" / "metadata.jpg").read_bytes() == b"bos-fig"
+    assert not (raw_dir / "outputImages" / "layout_det_res_0.jpg").exists()
 
 
 async def test_client_sends_documented_optional_payload(

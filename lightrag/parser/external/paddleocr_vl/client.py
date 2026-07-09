@@ -299,10 +299,14 @@ class PaddleOCRVLRawClient:
                     await self._materialize_one_image(client, value, raw_dir / rel)
 
     async def _materialize_one_image(
-        self, client: "httpx.AsyncClient", value: str, target: Path
+        self,
+        client: "httpx.AsyncClient",
+        value: str,
+        target: Path,
     ) -> None:
         if _looks_like_http_url(value):
-            await self._download_one_image(client, value, target)
+            if _is_bos_asset_url(value):
+                await self._download_one_image(client, value, target)
             return
         image_bytes = _decode_base64_payload(value)
         if image_bytes is None:
@@ -402,6 +406,15 @@ def _local_file_type(path: Path) -> int:
 def _looks_like_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_bos_asset_url(url: str) -> bool:
+    """Check if the given URL is a Baidu BOS asset URL."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").rstrip(".").lower()
+    return parsed.scheme == "https" and (
+        host == "bj.bcebos.com" or host.endswith(".bj.bcebos.com")
+    )
 
 
 def _decode_base64_payload(value: str) -> bytes | None:
