@@ -119,7 +119,9 @@ async def main():
     await vdb.index_done_callback()  # flush: embeds in batches and persists
 
     hits = await vdb.query(contents["chunk-3"], top_k=3)
-    print(f"vector query   -> top hit: {hits[0]['id']} (similarity={hits[0]['distance']:.3f})")
+    print(
+        f"vector query   -> top hit: {hits[0]['id']} (similarity={hits[0]['distance']:.3f})"
+    )
     fts_hits = await vdb.full_text_search("皇帝", top_k=5)
     print(f"FTS query 皇帝 -> {[hit['id'] for hit in fts_hits]}")
     fts_hits = await vdb.full_text_search("graph retrieval", top_k=5)
@@ -145,7 +147,9 @@ async def main():
     await graph.upsert_edge(
         "朱元璋", "明朝", {"weight": 1.0, "description": "建立", "keywords": "founder"}
     )
-    print(f"has_edge(明朝, 朱元璋) [undirected] -> {await graph.has_edge('明朝', '朱元璋')}")
+    print(
+        f"has_edge(明朝, 朱元璋) [undirected] -> {await graph.has_edge('明朝', '朱元璋')}"
+    )
     print(f"node_degree(朱元璋) -> {await graph.node_degree('朱元璋')}")
     print(f"search_labels('朱') -> {await graph.search_labels('朱')}")
     subgraph = await graph.get_knowledge_graph("朱元璋", max_depth=2)

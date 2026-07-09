@@ -1077,9 +1077,7 @@ class CleanupTool:
         # to local files that a running server cannot share safely.
         if storage_name in ("JsonKVStorage", "LanceDBKVStorage"):
             print("\n" + "=" * 60)
-            print(
-                f"{BOLD_RED}⚠️  IMPORTANT WARNING - {storage_name} Concurrency{RESET}"
-            )
+            print(f"{BOLD_RED}⚠️  IMPORTANT WARNING - {storage_name} Concurrency{RESET}")
             print("=" * 60)
             print(f"\n{storage_name} is a single-process backend that does NOT")
             print("support concurrent access to the same files by multiple programs.")
@@ -1147,7 +1145,9 @@ class CleanupTool:
                 print("     hosts = localhost:9200")
             elif storage_name == "LanceDBKVStorage":
                 print("     [lancedb]")
-                print("     uri = ./rag_storage/lancedb  # optional; defaults to WORKING_DIR/lancedb")
+                print(
+                    "     uri = ./rag_storage/lancedb  # optional; defaults to WORKING_DIR/lancedb"
+                )
 
             return None, None, None
 

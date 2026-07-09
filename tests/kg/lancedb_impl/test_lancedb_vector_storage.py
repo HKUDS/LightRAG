@@ -231,7 +231,9 @@ async def test_delete_cancels_pending_and_removes_rows(global_config, embedding_
     storage = _make_storage(global_config, embedding_func)
     await storage.initialize()
     try:
-        await storage.upsert({"ent-1": _entity("Alice", "a"), "ent-2": _entity("B", "b")})
+        await storage.upsert(
+            {"ent-1": _entity("Alice", "a"), "ent-2": _entity("B", "b")}
+        )
         await storage.index_done_callback()
         await storage.upsert({"ent-3": _entity("C", "c")})
         await storage.delete(["ent-1", "ent-3", "missing"])

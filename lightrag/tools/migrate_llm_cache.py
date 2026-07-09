@@ -1251,7 +1251,9 @@ class MigrationTool:
                 print("     hosts = localhost:9200")
             elif storage_name == "LanceDBKVStorage":
                 print("     [lancedb]")
-                print("     uri = ./rag_storage/lancedb  # optional; defaults to WORKING_DIR/lancedb")
+                print(
+                    "     uri = ./rag_storage/lancedb  # optional; defaults to WORKING_DIR/lancedb"
+                )
 
             return None, None, None, 0
 

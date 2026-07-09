@@ -75,9 +75,7 @@ class TestCleanupToolLanceDB:
                     "default:extract:1": {"content": "ignored"},
                 }
             )
-            counts = await CleanupTool().count_query_caches(
-                storage, "LanceDBKVStorage"
-            )
+            counts = await CleanupTool().count_query_caches(storage, "LanceDBKVStorage")
             assert counts["mix"] == {"query": 1, "keywords": 1}
             assert counts["hybrid"] == {"query": 1, "keywords": 0}
             assert counts["local"] == {"query": 0, "keywords": 1}

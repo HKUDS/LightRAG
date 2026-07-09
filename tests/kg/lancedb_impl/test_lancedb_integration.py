@@ -106,8 +106,7 @@ async def test_mini_insert_query_pipeline(global_config, embedding_func):
         await storage.initialize()
     try:
         doc_text = (
-            "Zhu Yuanzhang founded the Ming dynasty. "
-            "He made Nanjing the capital city."
+            "Zhu Yuanzhang founded the Ming dynasty. He made Nanjing the capital city."
         )
         doc_id = compute_mdhash_id(doc_text, prefix="doc-")
         chunk_id = compute_mdhash_id(f"{doc_id}:{doc_text}", prefix="chunk-")
@@ -291,9 +290,7 @@ async def test_multiple_source_ids_round_trip(global_config, embedding_func):
     await graph.initialize()
     try:
         source_id = f"chunk-1{GRAPH_FIELD_SEP}chunk-2"
-        await graph.upsert_node(
-            "Multi", {"entity_id": "Multi", "source_id": source_id}
-        )
+        await graph.upsert_node("Multi", {"entity_id": "Multi", "source_id": source_id})
         node = await graph.get_node("Multi")
         assert node["source_id"] == source_id
         assert node["source_id"].split(GRAPH_FIELD_SEP) == ["chunk-1", "chunk-2"]
