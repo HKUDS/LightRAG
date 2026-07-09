@@ -270,7 +270,7 @@ async def test_get_knowledge_graph_wildcard(storage, global_config):
 
 
 async def test_special_characters_in_ids(storage):
-    tricky = "O'Brien \"The Boss\" 朱元璋"
+    tricky = 'O\'Brien "The Boss" 朱元璋'
     other = "partner's node"
     await storage.upsert_node(tricky, _node(tricky))
     await storage.upsert_node(other, _node(other))
@@ -281,6 +281,18 @@ async def test_special_characters_in_ids(storage):
     assert await storage.node_degree(tricky) == 1
     await storage.remove_edges([(tricky, other)])
     assert not await storage.has_edge(tricky, other)
+
+
+async def test_hyphenated_ids_do_not_collide(storage):
+    # ("A-B", "C") and ("A", "B-C") must map to distinct edges even though
+    # a naive "-"-joined canonical string would be identical for both.
+    await storage.upsert_edge("A-B", "C", _edge(weight=1.0))
+    await storage.upsert_edge("A", "B-C", _edge(weight=2.0))
+    assert (await storage.get_edge("A-B", "C"))["weight"] == 1.0
+    assert (await storage.get_edge("A", "B-C"))["weight"] == 2.0
+    await storage.remove_edges([("A-B", "C")])
+    assert not await storage.has_edge("A-B", "C")
+    assert await storage.has_edge("A", "B-C")
 
 
 async def test_drop_resets_graph(storage):

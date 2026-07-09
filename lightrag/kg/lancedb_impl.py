@@ -227,8 +227,10 @@ def _doc_status_schema() -> pa.Schema:
 
 
 def _canonical_edge_id(source_node_id: str, target_node_id: str) -> str:
-    lo, hi = sorted((source_node_id, target_node_id))
-    return compute_mdhash_id(f"{lo}-{hi}", prefix="edge-")
+    # JSON-encode the sorted endpoints so IDs containing the separator
+    # (e.g. ("A-B", "C") vs ("A", "B-C")) cannot collide.
+    endpoints = json.dumps(sorted((source_node_id, target_node_id)))
+    return compute_mdhash_id(endpoints, prefix="edge-")
 
 
 class LanceDBClient:
@@ -401,7 +403,9 @@ async def _fetch_rows_by_ids(
         return []
     rows: list[dict[str, Any]] = []
     for chunk in _iter_chunks(ids):
-        rows.extend(await _fetch_rows(table, where=_sql_in(id_column, chunk), columns=columns))
+        rows.extend(
+            await _fetch_rows(table, where=_sql_in(id_column, chunk), columns=columns)
+        )
     return rows
 
 
@@ -460,7 +464,10 @@ class LanceDBKVStorage(BaseKVStorage):
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         rows = await _fetch_rows(
-            self._table(), where=f"id = {_sql_quote(id)}", columns=["id", "payload"], limit=1
+            self._table(),
+            where=f"id = {_sql_quote(id)}",
+            columns=["id", "payload"],
+            limit=1,
         )
         if not rows:
             return None
@@ -545,7 +552,9 @@ class LanceDBKVStorage(BaseKVStorage):
                     await table.delete(_sql_in("id", chunk))
                 self._client.bump_writes(self._table_name)
         except Exception as e:
-            logger.error(f"[{self.workspace}] Failed to delete from {self._table_name}: {e}")
+            logger.error(
+                f"[{self.workspace}] Failed to delete from {self._table_name}: {e}"
+            )
             raise
 
     async def is_empty(self) -> bool:
@@ -778,7 +787,9 @@ class LanceDBVectorStorage(BaseVectorStorage):
         snapshot = list(self._pending_docs.items())
         to_embed = [(doc_id, doc) for doc_id, doc in snapshot if doc.vector is None]
         if to_embed:
-            embeddings = await self._embed_contents([doc.content for _, doc in to_embed])
+            embeddings = await self._embed_contents(
+                [doc.content for _, doc in to_embed]
+            )
             for (_, doc), embedding in zip(to_embed, embeddings):
                 doc.vector = embedding.astype(np.float32).tolist()
         rows: list[dict[str, Any]] = []
@@ -865,7 +876,9 @@ class LanceDBVectorStorage(BaseVectorStorage):
             results.append(record)
         return results
 
-    async def full_text_search(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
+    async def full_text_search(
+        self, query: str, top_k: int = 10
+    ) -> list[dict[str, Any]]:
         """BM25 full-text search over the content column (extra capability).
 
         Not part of the LightRAG storage contract; requires the FTS index
@@ -945,7 +958,9 @@ class LanceDBVectorStorage(BaseVectorStorage):
                     result[record_id] = doc.vector
                 else:
                     remaining.append(record_id)
-        rows = await _fetch_rows_by_ids(self._table(), remaining, columns=["id", "vector"])
+        rows = await _fetch_rows_by_ids(
+            self._table(), remaining, columns=["id", "vector"]
+        )
         for row in rows:
             vector = row.get("vector")
             if vector is not None:
@@ -1086,9 +1101,7 @@ class LanceDBGraphStorage(BaseGraphStorage):
 
     async def node_degree(self, node_id: str) -> int:
         quoted = _sql_quote(node_id)
-        return await self._edges_table().count_rows(
-            f"src = {quoted} OR tgt = {quoted}"
-        )
+        return await self._edges_table().count_rows(f"src = {quoted} OR tgt = {quoted}")
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         src_degree, tgt_degree = await asyncio.gather(
@@ -1329,9 +1342,7 @@ class LanceDBGraphStorage(BaseGraphStorage):
 
     async def get_all_nodes(self) -> list[dict]:
         rows = await _fetch_rows(self._nodes_table())
-        return [
-            {**_json_loads(row.get("payload")), "id": row["id"]} for row in rows
-        ]
+        return [{**_json_loads(row.get("payload")), "id": row["id"]} for row in rows]
 
     async def get_all_edges(self) -> list[dict]:
         rows = await _fetch_rows(self._edges_table())
@@ -1380,7 +1391,9 @@ class LanceDBGraphStorage(BaseGraphStorage):
         return [label for label, _ in matches[:limit]]
 
     @staticmethod
-    def _construct_graph_node(node_id: str, node_data: dict[str, Any]) -> KnowledgeGraphNode:
+    def _construct_graph_node(
+        node_id: str, node_data: dict[str, Any]
+    ) -> KnowledgeGraphNode:
         return KnowledgeGraphNode(
             id=node_id, labels=[node_id], properties=dict(node_data)
         )
@@ -1498,7 +1511,9 @@ class LanceDBGraphStorage(BaseGraphStorage):
             await self._client.drop_and_recreate_table(
                 self._edges_table_name, _graph_edge_schema()
             )
-            logger.info(f"[{self.workspace}] Dropped graph tables {self.final_namespace}")
+            logger.info(
+                f"[{self.workspace}] Dropped graph tables {self.final_namespace}"
+            )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"[{self.workspace}] Failed to drop graph tables: {e}")
@@ -1781,7 +1796,9 @@ class LanceDBDocStatusStorage(DocStatusStorage):
             await self._client.drop_and_recreate_table(
                 self._table_name, _doc_status_schema()
             )
-            logger.info(f"[{self.workspace}] Dropped doc status table {self._table_name}")
+            logger.info(
+                f"[{self.workspace}] Dropped doc status table {self._table_name}"
+            )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"[{self.workspace}] Failed to drop {self._table_name}: {e}")
