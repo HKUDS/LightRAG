@@ -37,6 +37,10 @@ class NumberingResolver:
 
     def __init__(self, docx_path: str):
         self.abstract_nums: Dict[str, dict] = {}  # abstractNumId -> level definitions
+        # abstractNumId -> {styleId -> ilvl}: per-level w:pStyle links. Word ties
+        # a multilevel list's levels to heading styles here; used to recover a
+        # paragraph's ilvl when its (direct or style-inherited) numPr omits it.
+        self.abstract_pstyle: Dict[str, Dict[str, int]] = {}
         self.num_to_abstract: Dict[str, str] = {}  # numId -> abstractNumId
         self.counters: Dict[
             str, Dict[int, int]
@@ -69,9 +73,18 @@ class NumberingResolver:
                 for abstract in root.findall(".//w:abstractNum", NSMAP):
                     abstract_id = abstract.get(f"{{{NSMAP['w']}}}abstractNumId")
                     levels = {}
+                    pstyle_map: Dict[str, int] = {}
 
                     for lvl in abstract.findall("w:lvl", NSMAP):
                         ilvl = int(lvl.get(f"{{{NSMAP['w']}}}ilvl"))
+
+                        # Per-level style link (multilevel-list-linked-to-styles).
+                        # First binding wins on conflict; never raise on bad XML.
+                        pstyle_elem = lvl.find("w:pStyle", NSMAP)
+                        if pstyle_elem is not None:
+                            pstyle_val = pstyle_elem.get(f"{{{NSMAP['w']}}}val")
+                            if pstyle_val and pstyle_val not in pstyle_map:
+                                pstyle_map[pstyle_val] = ilvl
 
                         start_elem = lvl.find("w:start", NSMAP)
                         start = (
@@ -108,6 +121,8 @@ class NumberingResolver:
                         }
 
                     self.abstract_nums[abstract_id] = levels
+                    if pstyle_map:
+                        self.abstract_pstyle[abstract_id] = pstyle_map
 
                 # Parse num -> abstractNum mapping and startOverride
                 for num in root.findall(".//w:num", NSMAP):
@@ -164,10 +179,13 @@ class NumberingResolver:
 
                             if num_id_elem is not None:
                                 num_id = num_id_elem.get(f"{{{NSMAP['w']}}}val")
+                                # ilvl=None marks "absent" (distinct from an
+                                # explicit 0) so _get_numbering_from_style can
+                                # inherit an explicit ilvl from the basedOn chain.
                                 ilvl = (
                                     int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
                                     if ilvl_elem is not None
-                                    else 0
+                                    else None
                                 )
                                 self.style_numpr[style_id] = {
                                     "numId": num_id,
@@ -179,32 +197,66 @@ class NumberingResolver:
 
     def _get_numbering_from_style(self, style_id: str, visited=None) -> dict:
         """
-        Get numbering definition from style, following inheritance chain.
+        Get numbering definition from style, following the basedOn chain.
+
+        numId and ilvl are inherited INDEPENDENTLY (OOXML numPr child-level
+        merge): a derived style that overrides only numId still inherits the
+        parent's explicit ilvl. ``numId`` is taken from the nearest ancestor
+        (incl. self) that defines it; ``ilvl`` from the nearest ancestor that
+        defines it EXPLICITLY (styles that omit w:ilvl store ilvl=None).
 
         Args:
             style_id: Style ID to look up
             visited: Set of visited style IDs (to prevent circular references)
 
         Returns:
-            dict with 'numId' and 'ilvl', or None
+            dict with 'numId' and 'ilvl' (ilvl may be None), or None if no
+            style in the chain declares a numId.
         """
         if visited is None:
             visited = set()
 
-        # Prevent circular references
-        if style_id in visited:
+        num_id = None
+        ilvl = None
+        sid = style_id
+        while sid and sid not in visited:
+            visited.add(sid)
+            entry = self.style_numpr.get(sid)
+            if entry:
+                if num_id is None and entry.get("numId") is not None:
+                    num_id = entry["numId"]
+                if ilvl is None and entry.get("ilvl") is not None:
+                    ilvl = entry["ilvl"]
+            if num_id is not None and ilvl is not None:
+                break
+            sid = self.style_based_on.get(sid)
+
+        if num_id is None:
             return None
-        visited.add(style_id)
+        return {"numId": num_id, "ilvl": ilvl}
 
-        # Check if this style has numPr
-        if style_id in self.style_numpr:
-            return self.style_numpr[style_id]
+    def _resolve_ilvl_by_pstyle(self, num_id: str, style_id: str):
+        """
+        Recover ilvl from the abstractNum's per-level w:pStyle link.
 
-        # Check parent style
-        if style_id in self.style_based_on:
-            parent_id = self.style_based_on[style_id]
-            return self._get_numbering_from_style(parent_id, visited)
-
+        When a paragraph's numbering omits ilvl, Word derives it from the
+        multilevel list's style link: the level whose w:pStyle matches the
+        paragraph's style (or one of its basedOn ancestors). Returns the
+        matched ilvl, or None.
+        """
+        if not style_id:
+            return None
+        abstract_id = self.num_to_abstract.get(num_id)
+        pstyle_map = self.abstract_pstyle.get(abstract_id)
+        if not pstyle_map:
+            return None
+        sid = style_id
+        seen = set()
+        while sid and sid not in seen:
+            seen.add(sid)
+            if sid in pstyle_map:
+                return pstyle_map[sid]
+            sid = self.style_based_on.get(sid)
         return None
 
     def reset_tracking_state(self):
@@ -244,7 +296,7 @@ class NumberingResolver:
                 return ""
 
             num_id = None
-            ilvl = 0
+            ilvl = None  # None = "unresolved"; a real ilvl may legitimately be 0
             style_id = None
 
             # Get pStyle (if present)
@@ -252,7 +304,10 @@ class NumberingResolver:
             if pStyle is not None:
                 style_id = pStyle.get(f"{{{NSMAP['w']}}}val")
 
-            # Check for direct numPr in paragraph
+            # Check for direct numPr in paragraph. numId is the authoritative
+            # paragraph-local override; ilvl may be absent (kept None so the
+            # style-chain / pStyle-link fallbacks below can supply it — an
+            # explicit ilvl=0 is NOT treated as absent).
             numPr = pPr.find(f"{{{NSMAP['w']}}}numPr")
             if numPr is not None:
                 num_id_elem = numPr.find(f"{{{NSMAP['w']}}}numId")
@@ -260,27 +315,35 @@ class NumberingResolver:
 
                 if num_id_elem is not None:
                     num_id = num_id_elem.get(f"{{{NSMAP['w']}}}val")
-                    ilvl = (
-                        int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
-                        if ilvl_elem is not None
-                        else 0
-                    )
+                    if ilvl_elem is not None:
+                        ilvl = int(ilvl_elem.get(f"{{{NSMAP['w']}}}val"))
 
-            # If no direct numPr, fall back to style-inherited numbering.
-            # Direct numPr is a paragraph-local override in Word; it must not
-            # persist as a runtime default for the style, otherwise subsequent
-            # paragraphs that only carry pStyle will keep following the local
-            # override instead of the style's declared numPr.
-            if num_id is None and style_id:
-                style_num = self._get_numbering_from_style(style_id)
-                if style_num:
-                    num_id = style_num["numId"]
-                    ilvl = style_num["ilvl"]
+            # Fall back to style-inherited numbering for a MISSING numId AND/OR
+            # a missing ilvl. Gating on ``ilvl is None`` too (not just num_id)
+            # covers a direct numPr that carries numId but omits ilvl: the
+            # direct numId is preserved, only the ilvl is borrowed from the
+            # style's basedOn chain. Direct numPr stays a paragraph-local
+            # override — the tracking state below keys off the resolved num_id.
+            if num_id is None or ilvl is None:
+                if style_id:
+                    style_num = self._get_numbering_from_style(style_id)
+                    if style_num:
+                        if num_id is None:
+                            num_id = style_num["numId"]
+                        if ilvl is None:
+                            ilvl = style_num["ilvl"]
 
             # If still no numbering found, clear state and return empty
             if num_id is None:
                 # We should use list structure breaking logic to reset last_numId, last_abstract_id and last_style_id
                 return ""
+
+            # ilvl still unresolved: recover from the abstractNum's per-level
+            # pStyle link (multilevel-list-linked-to-styles), else default 0.
+            if ilvl is None:
+                ilvl = self._resolve_ilvl_by_pstyle(num_id, style_id)
+            if ilvl is None:
+                ilvl = 0
 
             # Get abstract definition
             abstract_id = self.num_to_abstract.get(num_id)

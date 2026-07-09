@@ -251,6 +251,13 @@ class GateResult:
     #: output-neutral (``use_raw_text`` off → same body rendering as no
     #: decision).
     demoted: list[HeadingDecision] = field(default_factory=list)
+    #: Paragraphs whose numbering identity was revoked by ``numbering_veto`` and
+    #: which then matched no promotion rule (silently dropped at recognition).
+    #: Rule-tagged output-neutral (``is_heading=False``) decisions carrying the
+    #: veto reason, kept purely so the audit ledger records WHY a would-be
+    #: numbered candidate became body — otherwise the veto leaves no trace.
+    #: Always non-outline (outline paragraphs are never numbering-vetoed, P3).
+    veto_suppressed: list[HeadingDecision] = field(default_factory=list)
 
 
 def _effective_size(rec: Any) -> float | None:
@@ -414,6 +421,7 @@ def gate_candidates(
 
     decisions: list[HeadingDecision] = []
     demoted: list[HeadingDecision] = []
+    veto_suppressed: list[HeadingDecision] = []
     admitted: set[int] = set()
 
     for i in para_indices:
@@ -475,6 +483,22 @@ def gate_candidates(
                     rule = "lowconf_center"
 
         if rule is None:
+            # A numbering veto revoked this paragraph's numbering identity and
+            # it then matched no promotion rule — otherwise a silent drop.
+            # Leave a rule-tagged, output-neutral ledger row so the audit
+            # records the veto reason (why a would-be numbered candidate became
+            # body). Non-outline only (outline paragraphs are never vetoed), so
+            # use_raw_text stays off → same body rendering as no decision.
+            if i in veto_notes:
+                supp = HeadingDecision(
+                    record_index=i,
+                    text=text,
+                    is_heading=False,
+                    outline_level=rec.outline_level,
+                )
+                supp.note(veto_notes[i])
+                supp.note("numbering_veto_suppressed")
+                veto_suppressed.append(supp)
             continue
 
         # Strong-body demotion at recognition time: unnumbered candidates
@@ -545,6 +569,7 @@ def gate_candidates(
         density=density,
         non_empty=non_empty,
         demoted=demoted,
+        veto_suppressed=veto_suppressed,
     )
 
 
@@ -2180,6 +2205,11 @@ def run_smart_heading(
         # anchoring, yet appear in the final decision map + audit ledger.
         for dem in gate.demoted:
             decisions.setdefault(dem.record_index, dem)
+        # Numbering-veto suppressions: same ledger-only treatment — record WHY
+        # a would-be numbered candidate became body. setdefault so a real
+        # decision for the same record (should not happen) always wins.
+        for supp in gate.veto_suppressed:
+            decisions.setdefault(supp.record_index, supp)
 
     # Sentinel decisions so the I2 retention check can tell a rule-tagged
     # absence from a silent drop: TOC-removed and title-block-member

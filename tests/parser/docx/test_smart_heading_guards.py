@@ -117,6 +117,54 @@ def test_date_paragraph_vetoed_but_plain_numbering_not() -> None:
     assert numbering_homophone_reason(cls_plain, plain) is None
 
 
+def test_ennum_dot_ordinal_overrides_any_ner_homophone_label(monkeypatch) -> None:
+    """An EnNum dot-ordinal ("4."/"12."/"2026.") is structurally never a
+    homophone number-phrase (MultiLevelNum already claimed "N.N"), so a spaCy
+    homophone label — whichever one it hallucinates — must NOT revoke its
+    numbering identity. The NER label is forced, so this runs without models.
+    """
+    from lightrag.parser.docx.smart_heading import guardrails, nlp
+
+    dot_ordinals = ["4. 制定实施方案", "12. 标题", "2026. 年度计划", "4、制定实施方案"]
+    for bogus in nlp.HOMOPHONE_ENTITY_LABELS:
+        monkeypatch.setattr(nlp, "leading_entity_label", lambda _t, _b=bogus: _b)
+        for text in dot_ordinals:
+            cls = classify_numbering(text)
+            assert cls is not None and cls.style_key == "EnNum"
+            assert guardrails.numbering_homophone_reason(cls, text) is None, (
+                f"{text!r} + spaCy label {bogus} should be un-vetoed"
+            )
+
+    # The carve-out is scoped to EnNum dot-ordinals: a non-dot EnNum and a
+    # MultiLevelNum keep the NER veto even with the same forced label.
+    monkeypatch.setattr(nlp, "leading_entity_label", lambda _t: "DATE")
+    glued = classify_numbering("2026计划说明")  # EnNum, no dot
+    assert glued is not None and glued.style_key == "EnNum"
+    assert guardrails.numbering_homophone_reason(glued, "2026计划说明") == (
+        "homophone_ner_entity"
+    )
+    multi = classify_numbering("1.2.3 项目说明")  # MultiLevelNum
+    assert multi is not None and multi.style_key == "MultiLevelNum"
+    assert guardrails.numbering_homophone_reason(multi, "1.2.3 项目说明") == (
+        "homophone_ner_entity"
+    )
+
+
+@requires_models
+def test_ennum_dot_ordinal_not_vetoed_real_spacy() -> None:
+    """Real-world: strings spaCy mislabels (observed: "4. …"→DATE,
+    "1. …制度"→PERCENT) must resolve to None. Robust across model versions —
+    the result is None whether spaCy vetoes-then-carves or labels CARDINAL."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        numbering_homophone_reason,
+    )
+
+    for text in ["4. 制定实施方案", "1. 建立上岗人员培训制度"]:
+        cls = classify_numbering(text)
+        assert cls is not None and cls.style_key == "EnNum"
+        assert numbering_homophone_reason(cls, text) is None
+
+
 @requires_models
 def test_version_shape_vetoed() -> None:
     from lightrag.parser.docx.smart_heading.guardrails import (

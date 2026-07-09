@@ -145,6 +145,32 @@ def test_non_outline_strong_body_demotion_is_audited_output_neutral() -> None:
     assert dem.outline_level is None
 
 
+def test_numbering_veto_suppression_is_audited_output_neutral() -> None:
+    """A paragraph whose numbering identity a veto revokes, and which then
+    matches no promotion rule, is NOT silently dropped: it leaves a rule-tagged
+    output-neutral ledger row carrying the veto reason so the audit records WHY
+    a would-be numbered candidate became body."""
+
+    def _veto_the_item(_cls, text):
+        return "homophone_ner_entity" if text.startswith("1. ") else None
+
+    records = _body(20) + [_para("1. 建立上岗人员培训制度", size=12.0)]
+    result = _gate(records, numbering_veto=_veto_the_item)
+
+    # Not admitted as a heading (its numbering was revoked, no other signal)…
+    assert "1. 建立上岗人员培训制度" not in _texts(result)
+    # …but recorded in the veto-suppression ledger, rule-tagged.
+    assert len(result.veto_suppressed) == 1
+    supp = result.veto_suppressed[0]
+    assert supp.record_index == len(records) - 1
+    assert supp.is_heading is False
+    assert "homophone_ner_entity" in supp.rule_trail
+    assert "numbering_veto_suppressed" in supp.rule_trail
+    # Non-outline → output-neutral: renders as plain body, same as no decision.
+    assert supp.use_raw_text is False
+    assert supp.outline_level is None
+
+
 def test_high_confidence_size_tiers() -> None:
     """G5-6: +1pt alone stands; +0.5pt needs companions; isolated fails."""
     records = _body(30)

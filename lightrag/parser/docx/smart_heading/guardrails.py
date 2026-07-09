@@ -143,6 +143,13 @@ def strong_body_reason(text: str) -> str | None:
 
 _VERSION_SHAPE_RE = re.compile(r"^\s*\d+(?:\.\d+)+\s*版")
 
+#: An EnNum ordinal terminated by a dot / 、 ("4." / "12." / "2026." / "4、").
+#: classify_numbering gives MultiLevelNum priority over "N.N", so an EnNum whose
+#: number is followed by a dot always has a NON-digit after it — a list-ordinal
+#: shape, never a date/time (which use 年/月/日, "-"/"/"/":"). The discriminator
+#: is the DOT, not the digit count.
+_EN_NUM_DOT_ORDINAL_RE = re.compile(r"^\s*\d+[.、]")
+
 
 def numbering_homophone_reason(
     classification: NumberingClassification, text: str
@@ -181,6 +188,19 @@ def numbering_homophone_reason(
 
     label = nlp.leading_entity_label(text)
     if label in nlp.HOMOPHONE_ENTITY_LABELS:
+        # spaCy mislabels EnNum dot-ordinals ("4. 制定实施方案"→DATE,
+        # "1. 建立…制度"→PERCENT) as homophone number-phrases, revoking a real
+        # list heading's numbering identity. That shape — number + dot +
+        # NON-digit — is structurally never a date/time/money/percent/quantity
+        # (MultiLevelNum already claimed "N.N"), so trust the structure over ANY
+        # NER label. Genuine homophones (2026年…, 100元…) are caught upstream by
+        # the unit blacklist and never reach here; real "%"/"$" phrases aren't
+        # EnNum dot-ordinals. MultiLevelNum keeps the NER veto.
+        if (
+            classification.style_key == EN_NUM
+            and _EN_NUM_DOT_ORDINAL_RE.match(text) is not None
+        ):
+            return None
         return "homophone_ner_entity"
     token_after = nlp.token_following_leading_number(text)
     if token_after == "版":
