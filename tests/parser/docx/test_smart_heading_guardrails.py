@@ -102,6 +102,8 @@ def test_ends_with_sentence_period_spares_abbreviation(monkeypatch) -> None:
         ("第3章 项目背景", "项目背景"),
         ("（一）建设目标", "建设目标"),
         ("没有编号的标题", "没有编号的标题"),  # no numbering → no-op
+        ("第二章 \xa0列入条件和管理措施", "列入条件和管理措施"),  # NBSP separator
+        ("第3章　项目背景", "项目背景"),  # full-width space separator
     ],
 )
 def test_strip_leading_numbering(text: str, expected: str) -> None:
@@ -127,6 +129,26 @@ def test_strong_body_spares_multi_level_numbered_heading() -> None:
     assert strong_body_reason("2.4.5 系统安全与容灾") is None
     # Real body (ends with a CJK terminator) is still demoted.
     assert strong_body_reason("本节介绍运维范围。") == "strong_body_sentence_end"
+
+
+def test_strong_body_spares_heading_with_nbsp_separator() -> None:
+    """Regression (test8 应急管理部令第11号): an NBSP after the numbering label
+    survived the separator strip, and zh spaCy counted the leading \\xa0 as its
+    own "sentence" — falsely demoting the chapter heading as multi-sentence
+    body. Both the strip (all Unicode whitespace) and sentence_count (ignore
+    whitespace-only sentences) must spare it."""
+    from lightrag.parser.docx.smart_heading import nlp
+    from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
+
+    if nlp.missing_spacy_models():
+        pytest.skip("spaCy models not installed")
+
+    assert strong_body_reason("第二章 \xa0列入条件和管理措施") is None
+    assert strong_body_reason("第三章 \xa0列入和移出程序") is None
+    # A whitespace-only pseudo-sentence never inflates the count on its own.
+    assert nlp.sentence_count("\xa0列入条件和管理措施") == 1
+    # Real body (ends with a CJK terminator) is still demoted.
+    assert strong_body_reason("本节介绍列入条件。") == "strong_body_sentence_end"
 
 
 # ---------------------------------------------------------------------------

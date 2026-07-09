@@ -86,7 +86,10 @@ def _strip_leading_numbering(text: str) -> str:
     head = text.lstrip()
     if head.startswith(cls.label_text):
         # Drop the label plus its trailing separator run (". 、:）" etc.).
-        return head[len(cls.label_text) :].lstrip(" \t、.。:：)）")
+        # \s (not a literal-space whitelist) so NBSP/full-width spaces go too —
+        # a leading \xa0 survives into the prose otherwise, and zh spaCy counts
+        # it as its own "sentence", falsely demoting the heading (test8 第二章).
+        return re.sub(r"^[\s、.。:：)）]+", "", head[len(cls.label_text) :])
     return text
 
 

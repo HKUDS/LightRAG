@@ -121,9 +121,15 @@ def analyze(text: str):
 
 
 def sentence_count(text: str) -> int:
-    """Number of sentences spaCy sees in ``text``."""
+    """Number of sentences spaCy sees in ``text``.
+
+    Whitespace-only "sentences" are not counted: the zh pipeline emits a
+    space token run (e.g. a stray NBSP) as its own sentence, which would
+    inflate the count and falsely demote a heading as multi-sentence body.
+    Whitespace-only input therefore counts 0 sentences.
+    """
     doc = analyze(text)
-    return sum(1 for _ in doc.sents)
+    return sum(1 for sent in doc.sents if sent.text.strip())
 
 
 def leading_entity_label(text: str) -> str | None:
