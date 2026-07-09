@@ -287,9 +287,15 @@ def test_imprint_closer_not_hit(text: str) -> None:
     assert imprint_closer_reason(text) is None
 
 
+@requires_models
 def test_imprint_closer_absent_from_strong_body() -> None:
     """The closer is region-scoped only: it must NOT demote a line per-line
-    via strong_body (that would defeat the "印发 after 抄送" gate)."""
+    via strong_body (that would defeat the "印发 after 抄送" gate).
+
+    Needs the pinned spaCy models: a bare prefix-印发 line has no sentence
+    terminator and is short, so strong_body_reason falls through to the
+    multi-sentence (spaCy) check to return None — exactly the path this test
+    asserts stays blind to the closer."""
     from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
 
     # A bare prefix-印发 line, no sentence terminator, short → strong_body is
