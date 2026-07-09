@@ -239,11 +239,65 @@ def test_non_title_verdict_classifies_every_paragraph() -> None:
     assert decision.body_indices == (1, 3)
 
 
-def test_non_title_verdict_incomplete_classification_hard_fails() -> None:
-    with pytest.raises(TitleBlockLLMError, match="exactly once"):
-        _judge_with({"is_title_block": False, "headings": [0], "body": [1]})
-    with pytest.raises(TitleBlockLLMError, match="exactly once"):
+def test_non_title_verdict_incomplete_partition_recovers() -> None:
+    """A well-formed but UNDER-specified partition (window index 2 left in
+    neither list) no longer hard-fails: the unmentioned paragraph abstains
+    (neither granted nor vetoed) and re-enters the normal flow; the omission
+    is counted via ``title_block_partition_incomplete``, not fatal."""
+    warnings: dict = {}
+    decision = _judge_with(
+        {"is_title_block": False, "headings": [0], "body": [1]},
+        warnings=warnings,
+    )
+    assert not decision.is_title_block
+    assert decision.heading_indices == (0,)  # granted
+    assert decision.body_indices == (1,)  # vetoed; window idx 2 (rec 3) abstains
+    assert warnings["title_block_partition_incomplete"] == 1
+
+
+def test_non_title_verdict_metadata_dropped_index_recovers() -> None:
+    """Regression (test9 国标范例): the LLM correctly rejects the title block
+    but routes the standard number into ``doc_number`` and forgets to place
+    its index in headings/body (headings=[1], body=[]). The dropped index now
+    abstains instead of failing the whole document."""
+    records = [
+        _para("GB/T 9704—2012", size=12.0),
+        _para("前　言", size=14.0),
+    ]
+    warnings: dict = {}
+    decision = _judge_with(
+        {
+            "is_title_block": False,
+            "headings": [1],
+            "body": [],
+            "doc_number": "GB/T 9704—2012",
+        },
+        records=records,
+        candidate=TitleBlockCandidate(
+            start=0, end=2, single=False, trigger="multi_window"
+        ),
+        warnings=warnings,
+    )
+    assert not decision.is_title_block
+    assert decision.heading_indices == (1,)  # 前言 granted
+    assert decision.body_indices == ()  # GB/T line (index 0) abstains, not vetoed
+    assert warnings["title_block_partition_incomplete"] == 1
+
+
+def test_non_title_verdict_malformed_partition_hard_fails() -> None:
+    """Only OMISSION is forgiven; malformed output is still loud. A missing or
+    null field, a non-int (incl. bool) index, an out-of-range index, or the
+    same index in both lists cannot be reconciled and hard-fails."""
+    with pytest.raises(TitleBlockLLMError, match="malformed"):  # heading∩body
         _judge_with({"is_title_block": False, "headings": [0, 1], "body": [1, 2]})
+    with pytest.raises(TitleBlockLLMError, match="malformed"):  # out of range
+        _judge_with({"is_title_block": False, "headings": [99], "body": []})
+    with pytest.raises(TitleBlockLLMError, match="must be"):  # missing fields
+        _judge_with({"is_title_block": False})
+    with pytest.raises(TitleBlockLLMError, match="must be"):  # explicit null
+        _judge_with({"is_title_block": False, "headings": None, "body": None})
+    with pytest.raises(TitleBlockLLMError, match="must be"):  # bool is not an index
+        _judge_with({"is_title_block": False, "headings": [True], "body": [1]})
 
 
 def test_outline_paragraph_never_demoted_by_llm(monkeypatch) -> None:
@@ -406,7 +460,7 @@ def test_single_candidate_false_verdict_leaves_context_untouched() -> None:
 def test_multi_verdict_rejects_duplicate_indices() -> None:
     """Review D5: a duplicate index inside one list is not a valid partition
     even though the deduped sets would appear to cover the window."""
-    with pytest.raises(TitleBlockLLMError, match="exactly once"):
+    with pytest.raises(TitleBlockLLMError, match="malformed"):
         _judge_with({"is_title_block": False, "headings": [0, 0], "body": [1, 2]})
 
 

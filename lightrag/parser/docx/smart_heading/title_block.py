@@ -7,11 +7,17 @@ isolated big line. An LLM (via the synchronous judge callable; this module
 never touches asyncio) then confirms and decomposes each candidate.
 
 LLM output is STRICTLY validated: the main/sub title must be locatable in
-the window text (concatenation allowed), a non-title verdict must classify
-every window paragraph, and paragraphs carrying a physical outline level are
-never demoted by an LLM "body" vote (invariant I2). Any unparseable or
-non-locatable answer raises :class:`TitleBlockLLMError` — LLM failures are
-loud, never silently degraded.
+the window text (concatenation allowed), and paragraphs carrying a physical
+outline level are never demoted by an LLM "body" vote (invariant I2). A
+non-title verdict's headings/body partition must be well-formed; a MALFORMED
+partition (missing/null field, out-of-range index, a duplicate within a list,
+or the same index voted both heading and body) raises
+:class:`TitleBlockLLMError`, as does any unparseable or non-locatable answer —
+those failures are loud, never silently degraded. An UNDER-SPECIFIED partition
+(two valid lists whose union merely omits some window indices) is instead
+recovered: the unmentioned paragraphs abstain (neither granted nor vetoed) and
+re-enter the normal flow, logged via ``title_block_partition_incomplete`` so a
+single local omission never fails the whole document.
 """
 
 from __future__ import annotations
@@ -838,8 +844,8 @@ _USER_TEMPLATE = """Paragraphs (indexed; [BLANK] marks an empty line in the orig
 {window}
 
 Rules:
-- "main_title" / "sub_title" / "doc_number" must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs).
-- If this is NOT a title block, classify EVERY index into exactly one of "headings" (a real section heading) or "body".
+- Fill "main_title" / "sub_title" / "doc_number" / "classification" / "publisher" / "date" ONLY when "is_title_block" is true; they must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs). When "is_title_block" is false, set ALL of them to null.
+- When "is_title_block" is false, classify EVERY index into exactly one of "headings" (a real section heading) or "body". Document numbers, dates, and publisher lines are NOT headings — put them in "body".
 - Use null for fields that are absent.
 
 Respond with JSON matching:
@@ -1169,10 +1175,21 @@ def judge_title_block(
             raw_response=raw,
         )
 
-    # Non-title verdict: every window index must be classified exactly once.
+    # Non-title verdict: the LLM partitions the window into headings (granted
+    # plain-heading identity) and body (vetoed). MALFORMED output is loud —
+    # a missing/null/non-int field, an out-of-range index, a duplicate inside
+    # one list, or the same index voted both heading AND body are corruption
+    # that cannot be reconciled. But an UNDER-SPECIFIED partition (two valid
+    # lists whose union merely misses some window indices) is recoverable: the
+    # LLM abstained on those paragraphs, so — exactly like the single/table
+    # non-title path (review D3) — we neither grant nor veto them and they
+    # re-enter the normal §2.2.5 flow. Loud (warning) but not fatal.
     def _indices(key: str) -> list[int]:
-        value = data.get(key) or []
-        # bool is a subclass of int — reject True/False masquerading as indexes.
+        value = data.get(key)
+        # Must be present and a list of plain ints. bool is a subclass of int —
+        # reject True/False masquerading as indexes. A missing key or null is
+        # NOT an empty list here (no `or []`): a non-title verdict must state
+        # both partitions, or it is malformed.
         if not isinstance(value, list) or not all(
             isinstance(v, int) and not isinstance(v, bool) for v in value
         ):
@@ -1181,17 +1198,39 @@ def judge_title_block(
 
     headings = _indices("headings")
     body = _indices("body")
+    h_set, b_set = set(headings), set(body)
     all_indices = set(range(len(index_map)))
-    # A true partition: exact cover, disjoint, AND no duplicates within a list
-    # (the length check catches [0, 0] which the set operations would hide).
+    # Malformed (unreconcilable) → hard fail. The length checks catch [0, 0]
+    # duplicates that the set operations would otherwise hide.
     if (
-        set(headings) | set(body) != all_indices
-        or set(headings) & set(body)
-        or len(headings) + len(body) != len(all_indices)
+        (h_set | b_set) - all_indices  # out-of-range index
+        or h_set & b_set  # same index in both lists
+        or len(headings) != len(h_set)  # duplicate within headings
+        or len(body) != len(b_set)  # duplicate within body
     ):
         raise TitleBlockLLMError(
-            "non-title verdict must classify every window paragraph exactly "
-            f"once (headings={headings}, body={body}, expected {sorted(all_indices)})"
+            "non-title verdict partition is malformed "
+            f"(headings={headings}, body={body}, window indices "
+            f"{sorted(all_indices)})"
+        )
+    # Under-specification is recoverable: unmentioned indices abstain (they
+    # enter neither heading_records nor body_records below, so they are
+    # neither granted nor vetoed downstream).
+    missing = all_indices - h_set - b_set
+    if missing:
+        if warnings is not None:
+            warnings["title_block_partition_incomplete"] = (
+                warnings.get("title_block_partition_incomplete", 0) + 1
+            )
+        logger.warning(
+            "[smart_heading] non-title verdict left %d window paragraph(s) "
+            "unclassified in candidate [%d, %d); leaving them to normal flow "
+            "(window indices %s, records %s)",
+            len(missing),
+            candidate.start,
+            candidate.end,
+            sorted(missing),
+            [index_map[k] for k in sorted(missing)],
         )
 
     heading_records: list[int] = [index_map[k] for k in headings]
