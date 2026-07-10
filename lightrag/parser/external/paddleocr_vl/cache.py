@@ -746,5 +746,6 @@ __all__ = [
     "MANIFEST_ENGINE",
     "VALID_PADDLEOCR_VL_API_MODES",
     "PaddleOCRVLParserOptions",
+    "snapshot_tunable_env",
     "is_bundle_valid",
 ]

@@ -474,6 +474,12 @@ def _normalize_bbox(bbox: Any) -> list[int] | None:
                 x_values = [values[0], values[2]]
                 y_values = [values[1], values[3]]
             elif len(values) >= 6 and len(values) % 2 == 0:
+                # Heuristic: a flat array of 6+ even-count numbers is read as
+                # [x1,y1, x2,y2, ...] polygon vertices (e.g. a skewed quad from
+                # PaddleOCR-VL's polygon layout mode) and reduced to its
+                # axis-aligned bounding rectangle. A malformed 6-element bbox
+                # would also land here, but collapsing to its min/max box is a
+                # safe degradation that only loosens positional precision.
                 x_values = values[0::2]
                 y_values = values[1::2]
             else:

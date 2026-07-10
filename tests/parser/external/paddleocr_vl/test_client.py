@@ -357,6 +357,114 @@ async def test_client_downloads_only_bos_remote_assets(
     assert not (raw_dir / "outputImages" / "layout_det_res_0.jpg").exists()
 
 
+async def test_mandatory_markdown_image_with_disallowed_host_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    recorder = _Recorder()
+    _CURRENT["recorder"] = recorder
+    # markdown.images URL on a non-allowed host -> mandatory -> must raise.
+    _RESULT_PAYLOAD = {
+        "result": {
+            "layoutParsingResults": [
+                {
+                    "prunedResult": {"parsing_res_list": []},
+                    "markdown": {
+                        "text": "# hello",
+                        "images": {"imgs/fig.jpg": "http://evil.test/fig.jpg"},
+                    },
+                }
+            ]
+        }
+    }
+    _install_httpx(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="not an allowed asset host"):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
+async def test_mandatory_markdown_image_with_undecodable_payload_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    _CURRENT["recorder"] = _Recorder()
+    _install_httpx(monkeypatch)
+    # markdown.images value that is neither a URL nor valid Base64 -> mandatory
+    # -> must raise.
+    _RESULT_PAYLOAD = {
+        "result": {
+            "layoutParsingResults": [
+                {
+                    "prunedResult": {"parsing_res_list": []},
+                    "markdown": {
+                        "text": "# hello",
+                        "images": {"imgs/fig.jpg": "!!!not-base64!!!"},
+                    },
+                }
+            ]
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="could not be decoded"):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
+async def test_allowed_asset_hosts_env_admits_custom_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    monkeypatch.setenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", ".my-cdn.example.com")
+
+    class _CdnFakeAsyncClient(_FakeAsyncClient):
+        async def get(self, url: str, **kwargs: Any) -> _Response:
+            if url == "https://assets.my-cdn.example.com/fig.jpg":
+                return _Response(content=b"cdn-fig")
+            return await super().get(url, **kwargs)
+
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
+        _CdnFakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
+        lambda *_, **__: None,
+    )
+    _CURRENT["recorder"] = _Recorder()
+    _RESULT_PAYLOAD = {
+        "result": {
+            "layoutParsingResults": [
+                {
+                    "prunedResult": {"parsing_res_list": []},
+                    "markdown": {
+                        "text": "# hello",
+                        "images": {
+                            "imgs/fig.jpg": "https://assets.my-cdn.example.com/fig.jpg"
+                        },
+                    },
+                }
+            ]
+        }
+    }
+
+    client = PaddleOCRVLRawClient()
+    assert ".my-cdn.example.com" in client.allowed_asset_host_suffixes
+    raw_dir = tmp_path / "demo.paddleocr_vl_raw"
+    await client.download_into(raw_dir, source)
+
+    assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"cdn-fig"
+
+
+
 async def test_client_sends_documented_optional_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -28,6 +28,7 @@ from lightrag.parser.external.paddleocr_vl.cache import (
     VALID_PADDLEOCR_VL_API_MODES,
     PaddleOCRVLParserOptions,
 )
+from lightrag.utils import logger
 
 if TYPE_CHECKING:
     import httpx
@@ -39,6 +40,11 @@ else:
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_MAX_POLLS = 600
+# Comma-separated hostname suffixes whose HTTPS URLs are safe to fetch as
+# remote assets. PaddleOCR-VL returns presigned BOS (Baidu Object Storage) URLs
+# under *.bcebos.com; other hosts are never fetched (SSRF guard). Override with
+# PADDLEOCR_VL_ALLOWED_ASSET_HOSTS to admit additional self-hosted domains.
+DEFAULT_ALLOWED_ASSET_HOST_SUFFIXES = (".bcebos.com",)
 
 
 class PaddleOCRVLRawClient:
@@ -103,6 +109,15 @@ class PaddleOCRVLRawClient:
             ).strip()
             or DEFAULT_PADDLEOCR_VL_ENGINE_VERSION
         )
+        self.allowed_asset_host_suffixes = self._load_allowed_asset_hosts()
+
+    @staticmethod
+    def _load_allowed_asset_hosts() -> tuple[str, ...]:
+        raw = os.getenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", "").strip()
+        if not raw:
+            return DEFAULT_ALLOWED_ASSET_HOST_SUFFIXES
+        suffixes = tuple(h.strip().lower() for h in raw.split(",") if h.strip())
+        return suffixes or DEFAULT_ALLOWED_ASSET_HOST_SUFFIXES
 
     async def download_into(
         self,
@@ -273,6 +288,9 @@ class PaddleOCRVLRawClient:
         return task_id, [p for p in pages if isinstance(p, dict)]
 
     def _local_request_payload(self, source_file_path: Path) -> dict[str, Any]:
+        # The local /layout-parsing API takes a JSON body, so the whole file is
+        # base64-encoded inline; this reads the entire source into memory (local
+        # mode is intended for single-page docs/images, not large multi-page PDFs).
         payload = dict(self._parser_options.optional_payload.request_payload())
         payload["file"] = base64.b64encode(source_file_path.read_bytes()).decode(
             "ascii"
@@ -290,15 +308,22 @@ class PaddleOCRVLRawClient:
             markdown = page.get("markdown") if isinstance(page, dict) else None
             images = markdown.get("images") if isinstance(markdown, dict) else None
             if isinstance(images, dict):
+                # markdown.images are referenced from the rendered document body
+                # (their paths appear in the parsing result and in the IR), so a
+                # missing/undecodable one breaks downstream rendering — materialize
+                # them as mandatory (errors propagate).
                 for rel_path, image_value in images.items():
                     await self._materialize_one_image(
                         client,
                         str(image_value),
                         raw_dir / _safe_relative_path(str(rel_path)),
+                        mandatory=True,
                     )
 
             output_images = page.get("outputImages") if isinstance(page, dict) else None
             if isinstance(output_images, dict):
+                # outputImages are diagnostic layout renderings; a missing one does
+                # not affect the parsed document, so failures are soft-skipped.
                 for name, image_value in output_images.items():
                     value = str(image_value)
                     suffix = _suffix_from_url(value) or ".jpg"
@@ -306,23 +331,42 @@ class PaddleOCRVLRawClient:
                         Path("outputImages")
                         / f"{_safe_name(str(name))}_{page_index}{suffix}"
                     )
-                    await self._materialize_one_image(client, value, raw_dir / rel)
+                    await self._materialize_one_image(
+                        client, value, raw_dir / rel, mandatory=False
+                    )
 
     async def _materialize_one_image(
         self,
         client: "httpx.AsyncClient",
         value: str,
         target: Path,
+        *,
+        mandatory: bool = False,
     ) -> None:
         if _looks_like_http_url(value):
-            if _is_bos_asset_url(value):
+            if self._is_allowed_asset_url(value):
                 await self._download_one_image(client, value, target)
+                return
+            if mandatory:
+                raise RuntimeError(
+                    f"PaddleOCR-VL markdown image URL is not an allowed asset host "
+                    f"(suffixes={list(self.allowed_asset_host_suffixes)}): {value!r}"
+                )
+            logger.warning("[paddleocr_vl] skipping non-allowed asset URL: %r", value)
             return
         image_bytes = _decode_base64_payload(value)
-        if image_bytes is None:
+        if image_bytes is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(image_bytes)
             return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(image_bytes)
+        if mandatory:
+            raise RuntimeError(
+                f"PaddleOCR-VL markdown image could not be decoded "
+                f"(neither HTTP nor valid Base64): {value[:80]!r}"
+            )
+        logger.warning(
+            "[paddleocr_vl] skipping undecodable image payload: %r", value[:80]
+        )
 
     async def _download_one_image(
         self, client: "httpx.AsyncClient", url: str, target: Path
@@ -333,6 +377,19 @@ class PaddleOCRVLRawClient:
         raise_for_status_with_detail(resp, f"PaddleOCR-VL image download {url!r}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(resp.content)
+
+    def _is_allowed_asset_url(self, url: str) -> bool:
+        """True iff ``url`` is an HTTPS URL on an allowed asset host.
+
+        Host suffixes come from ``self.allowed_asset_host_suffixes`` (default
+        ``*.bcebos.com``; overridable via ``PADDLEOCR_VL_ALLOWED_ASSET_HOSTS``).
+        Other remote hosts are never fetched (SSRF guard).
+        """
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            return False
+        host = (parsed.hostname or "").rstrip(".").lower()
+        return any(host.endswith(s) for s in self.allowed_asset_host_suffixes)
 
     def _write_manifest(
         self,
@@ -416,13 +473,6 @@ def _local_file_type(path: Path) -> int:
 def _looks_like_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-def _is_bos_asset_url(url: str) -> bool:
-    """Check if the given URL is a Baidu BOS asset URL."""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").rstrip(".").lower()
-    return parsed.scheme == "https" and host.endswith(".bcebos.com")
 
 
 def _decode_base64_payload(value: str) -> bytes | None:
