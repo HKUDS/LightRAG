@@ -21,7 +21,7 @@ from lightrag.utils import EmbeddingFunc, Tokenizer
 
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature
-current_options_signature = cache_mod.current_options_signature
+current_paddleocr_vl_options_signature = cache_mod.current_paddleocr_vl_options_signature
 
 
 async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
@@ -136,7 +136,7 @@ def _install_fake_download(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             total_size_bytes=result_size + asset.stat().st_size,
             task_id=f"fake-{counters['calls']}",
             endpoint_signature=current_endpoint_signature(),
-            options_signature=current_options_signature(),
+            options_signature=current_paddleocr_vl_options_signature(),
         )
         write_manifest(raw_dir, manifest)
         return manifest

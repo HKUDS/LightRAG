@@ -647,7 +647,7 @@ def snapshot_tunable_env(
     }
 
 
-def current_options_signature(
+def current_paddleocr_vl_options_signature(
     overrides: "Mapping[str, Any] | None" = None,
 ) -> str:
     return PaddleOCRVLParserOptions.from_env(overrides=overrides).signature()
@@ -702,7 +702,7 @@ def is_bundle_valid(
     if overrides and not manifest.options_signature:
         return False
     if manifest.options_signature:
-        if current_options_signature(overrides) != manifest.options_signature:
+        if current_paddleocr_vl_options_signature(overrides) != manifest.options_signature:
             return False
 
     cur_version = os.getenv("PADDLEOCR_VL_ENGINE_VERSION", "").strip()
@@ -738,6 +738,8 @@ def is_bundle_valid(
 
 __all__ = [
     "CONTENT_LIST_FILENAME",
+    "current_endpoint_signature",
+    "current_paddleocr_vl_options_signature",
     "DEFAULT_PADDLEOCR_VL_API_MODE",
     "DEFAULT_PADDLEOCR_VL_ENGINE_VERSION",
     "DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT",

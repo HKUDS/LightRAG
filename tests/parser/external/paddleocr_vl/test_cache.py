@@ -16,7 +16,7 @@ from lightrag.parser.external.paddleocr_vl.cache import (
 
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature
-current_options_signature = cache_mod.current_options_signature
+current_paddleocr_vl_options_signature = cache_mod.current_paddleocr_vl_options_signature
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +94,7 @@ def _bundle(
         options_signature=(
             options_signature
             if options_signature is not None
-            else current_options_signature()
+            else current_paddleocr_vl_options_signature()
         ),
     )
     write_manifest(raw_dir, manifest)
