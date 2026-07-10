@@ -975,10 +975,10 @@ class LanceDBVectorStorage(BaseVectorStorage):
             async with self._buffer_lock:
                 for record_id in ids:
                     self._pending_docs.pop(record_id, None)
-            async with self._client.table_lock(self._table_name):
-                for chunk in _iter_chunks(list(ids)):
-                    await table.delete(_sql_in("id", chunk))
-                self._client.bump_writes(self._table_name)
+                async with self._client.table_lock(self._table_name):
+                    for chunk in _iter_chunks(list(ids)):
+                        await table.delete(_sql_in("id", chunk))
+                    self._client.bump_writes(self._table_name)
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Failed to delete {len(ids)} vectors from {self._table_name}: {e}"
@@ -993,9 +993,6 @@ class LanceDBVectorStorage(BaseVectorStorage):
         quoted = _sql_quote(entity_name)
         table = self._table()
         try:
-            async with self._client.table_lock(self._table_name):
-                await table.delete(f"src_id = {quoted} OR tgt_id = {quoted}")
-                self._client.bump_writes(self._table_name)
             async with self._buffer_lock:
                 stale = [
                     doc_id
@@ -1005,6 +1002,9 @@ class LanceDBVectorStorage(BaseVectorStorage):
                 ]
                 for doc_id in stale:
                     self._pending_docs.pop(doc_id, None)
+                async with self._client.table_lock(self._table_name):
+                    await table.delete(f"src_id = {quoted} OR tgt_id = {quoted}")
+                    self._client.bump_writes(self._table_name)
         except Exception as e:
             logger.error(
                 f"[{self.workspace}] Failed to delete relations of {entity_name}: {e}"
