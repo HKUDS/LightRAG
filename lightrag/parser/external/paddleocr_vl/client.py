@@ -299,6 +299,8 @@ class PaddleOCRVLRawClient:
         pages: list[dict[str, Any]],
         raw_dir: Path,
     ) -> None:
+        mandatory: list = []
+        optional: list = []
         for page_index, page in enumerate(pages):
             markdown = page.get("markdown") if isinstance(page, dict) else None
             images = markdown.get("images") if isinstance(markdown, dict) else None
@@ -308,11 +310,13 @@ class PaddleOCRVLRawClient:
                 # missing/undecodable one breaks downstream rendering — materialize
                 # them as mandatory (errors propagate).
                 for rel_path, image_value in images.items():
-                    await self._materialize_one_image(
-                        client,
-                        str(image_value),
-                        raw_dir / _safe_relative_path(str(rel_path)),
-                        mandatory=True,
+                    mandatory.append(
+                        self._materialize_one_image(
+                            client,
+                            str(image_value),
+                            raw_dir / _safe_relative_path(str(rel_path)),
+                            mandatory=True,
+                        )
                     )
 
             output_images = page.get("outputImages") if isinstance(page, dict) else None
@@ -328,8 +332,24 @@ class PaddleOCRVLRawClient:
                         Path("outputImages")
                         / f"{_safe_name(str(name))}_{page_index}{suffix}"
                     )
-                    await self._materialize_one_image(
-                        client, value, raw_dir / rel, mandatory=False
+                    optional.append(
+                        self._materialize_one_image(
+                            client, value, raw_dir / rel, mandatory=False
+                        )
+                    )
+
+        # Mandatory images: fail hard on any error (no return_exceptions).
+        if mandatory:
+            await asyncio.gather(*mandatory)
+        # OutputImages: soft-skipped — errors are logged not raised.
+        if optional:
+            results = await asyncio.gather(*optional, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    logger.warning(
+                        "[paddleocr_vl] outputImages download failed: %s", result
                     )
 
     async def _materialize_one_image(
@@ -458,8 +478,14 @@ def _safe_relative_path(path: str) -> Path:
 
 
 def _safe_name(name: str) -> str:
-    cleaned = "".join(ch for ch in name if ord(ch) >= 32 and ch not in "/\\").strip()
-    return cleaned.strip(".") or "asset"
+    # Mirrors api/routers/document_routes.py::sanitize_filename: drop path
+    # separators, traversal sequences, control/null bytes and DEL, then strip
+    # leading/trailing dots and whitespace. Falls back to "asset" if empty.
+    cleaned = name.replace("/", "").replace("\\", "")
+    cleaned = cleaned.replace("..", "")
+    cleaned = "".join(ch for ch in cleaned if ord(ch) >= 32 and ch != "\x7f")
+    cleaned = cleaned.strip().strip(".")
+    return cleaned or "asset"
 
 
 def _suffix_from_url(url: str) -> str:

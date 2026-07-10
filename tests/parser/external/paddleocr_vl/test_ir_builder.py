@@ -533,3 +533,35 @@ def test_poly_bbox_image_uses_enclosing_rectangle_for_markdown_asset(
     drawing = ir.blocks[0].drawings[0]
     assert drawing.asset_ref == "imgs/img_in_image_box_8_18_42_60.jpg"
     assert ir.blocks[0].positions[-1].range == [8, 18, 42, 60]
+
+
+@pytest.mark.offline
+def test_paragraph_title_without_hash_defaults_to_level_2(tmp_path: Path) -> None:
+    # A paragraph_title with no markdown '#' prefix falls back to level 2.
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Doc Title",
+                            "block_bbox": [1, 2, 3, 4],
+                        },
+                        {
+                            "block_label": "paragraph_title",
+                            "block_content": "Bare Section Name",
+                            "block_bbox": [5, 6, 7, 8],
+                        },
+                    ]
+                }
+            }
+        ],
+    )
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+    assert len(ir.blocks) == 2
+    assert ir.blocks[1].level == 2
+    assert ir.blocks[1].parent_headings == ["Doc Title"]

@@ -192,14 +192,15 @@ class PaddleOCRVLIRBuilder:
                 if not text:
                     continue
 
-                heading_level = _heading_level(label, text)
-                if heading_level is not None:
-                    clean_heading = strip_heading_markdown_prefix(text)
+                heading_level = _detect_heading(label, text)
+                if heading_level > 0:
+                    heading_text = text.strip()
+                    clean_heading = strip_heading_markdown_prefix(heading_text)
                     heading_stack[:] = heading_stack[: max(heading_level - 1, 0)]
+                    open_block(clean_heading, heading_level, heading_text)
                     heading_stack.append(clean_heading)
-                    open_block(clean_heading, heading_level, text)
                     record_position(item, page_anchor)
-                    if not doc_title and heading_level == 1:
+                    if not doc_title and (heading_level == 1 or label == "doc_title"):
                         doc_title = clean_heading
                     continue
 
@@ -328,14 +329,29 @@ def _bbox_key(bbox: Any) -> tuple[int, int, int, int] | None:
     return (normalized[0], normalized[1], normalized[2], normalized[3])
 
 
-def _heading_level(label: str, text: str) -> int | None:
+def _detect_heading(label: str, raw_text: str) -> int:
+    """Return the heading level (1-6), or ``0`` when not a heading.
+
+    PaddleOCR-VL expresses headings through layout labels: ``doc_title`` is
+    always level 1; ``paragraph_title`` derives its level from the leading
+    markdown ``#`` count, clamped to ``[2, 6]`` (defaulting to 2 when no
+    ``#`` is present). All other labels are non-headings.
+
+    NOTE: PaddleOCR-VL will only recognize paragraph heading levels when
+    ``relevel_titles=True`` is set. Without this flag, all paragraph titles
+    will be treated as level 2 regardless of their actual Markdown prefix.
+    """
     if label == "doc_title":
         return 1
     if label == "paragraph_title":
-        stripped = text.lstrip()
-        hashes = len(stripped) - len(stripped.lstrip("#"))
-        return max(2, min(hashes or 2, 6))
-    return None
+        # Relaxed matching. Unlike strip_heading_markdown_prefix() which
+        # enforces r"^#{1,6} +", this function tolerates missing spaces (e.g.,
+        # "##heading") since the input is already known to be a heading.
+        # Heading level is derived from leading '#' count, clamped to [2, 6],
+        # defaulting to 2 when no '#' is present.
+        hashes = len(raw_text) - len(raw_text.lstrip("#"))
+        return min(max(hashes or 2, 2), 6)
+    return 0
 
 
 def _item_content(item: dict[str, Any]) -> str:

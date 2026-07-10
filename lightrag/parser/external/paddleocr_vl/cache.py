@@ -692,12 +692,12 @@ def is_bundle_valid(
     ):
         return False
 
-    # ``current_paddleocr_vl_options_signature`` always produces a non-empty
-    # value, so a non-empty manifest signature is compared against the current
-    # signature (computed with the same overrides); a mismatch invalidates.
-    if manifest.options_signature and (
-        current_paddleocr_vl_options_signature(overrides) != manifest.options_signature
-    ):
+    # Parser options. Old manifests did not record a signature and must miss so
+    # changes such as model/payload env cannot silently reuse stale output
+    # (mirrors MinerU's strict policy).
+    if not manifest.options_signature:
+        return False
+    if current_paddleocr_vl_options_signature(overrides) != manifest.options_signature:
         return False
 
     cur_version = os.getenv("PADDLEOCR_VL_ENGINE_VERSION", "").strip()

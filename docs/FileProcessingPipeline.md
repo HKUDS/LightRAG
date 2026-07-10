@@ -1004,6 +1004,11 @@ PADDLEOCR_VL_PRETTIFY_MARKDOWN=true
 PADDLEOCR_VL_VISUALIZE=false
 ```
 
+> **NOTE:** PaddleOCR-VL will only recognize paragraph heading levels (the
+> ``#`` prefix in ``paragraph_title`` blocks) when ``relevel_titles=True`` is set.
+> Without this flag, all ``paragraph_title`` blocks default to level 2 regardless
+> of their actual markdown heading depth.
+
 These additional official API parameters are omitted when unset so the service
 can use its deployment defaults:
 

@@ -7,9 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from lightrag.parser.external.paddleocr_vl.client import PaddleOCRVLRawClient
+from lightrag.parser.external.paddleocr_vl.client import _safe_name
 
 DEFAULT_PAYLOAD = {
     "useDocOrientationClassify": False,
@@ -725,3 +727,213 @@ async def test_local_mode_sends_image_file_type(
     )
 
     assert recorder.post_calls[0]["json"]["fileType"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _safe_name (mirrors api/routers/document_routes.py::sanitize_filename)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("normal.jpg", "normal.jpg"),
+        ("with/slash.jpg", "withslash.jpg"),
+        ("with\\backslash.jpg", "withbackslash.jpg"),
+        ("..traversal", "traversal"),
+        ("foo..bar", "foobar"),
+        ("name\x00null", "namenull"),
+        ("name\x7fdel", "namedel"),
+        (".leading", "leading"),
+        ("trailing.", "trailing"),
+        ("  spaced  ", "spaced"),
+        ("", "asset"),
+        ("...", "asset"),
+        ("..", "asset"),
+        ("/", "asset"),
+        ("\\", "asset"),
+    ],
+)
+def test_safe_name_strips_path_traversal_and_control(raw: str, expected: str) -> None:
+    assert _safe_name(raw) == expected
+
+
+def test_safe_name_preserves_normal_filename_with_dots() -> None:
+    # Dots inside a name (not leading/trailing, not "..") are preserved.
+    assert _safe_name("report.v2.pdf") == "report.v2.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Error-path coverage (httpx RequestError wrapping, HTTP non-2xx, failed state)
+# ---------------------------------------------------------------------------
+class _RequestErrorFakeAsyncClient:
+    """Fake that raises an httpx.RequestError on POST (upload)."""
+
+    def __init__(self, *_: Any, **__: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "_RequestErrorFakeAsyncClient":
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
+    async def post(self, url: str, **kwargs: Any) -> _Response:
+        raise httpx.ConnectError("connection refused")
+
+    async def get(self, url: str, **kwargs: Any) -> _Response:
+        raise AssertionError(f"unexpected GET {url}")
+
+
+async def test_client_wraps_httpx_request_error_with_endpoint_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fail")
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
+        _RequestErrorFakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
+        lambda *_, **__: None,
+    )
+
+    with pytest.raises(RuntimeError, match="PaddleOCR-VL backend request failed"):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
+class _HttpErrorFakeAsyncClient:
+    """Fake whose upload returns a non-2xx status."""
+
+    def __init__(self, *_: Any, **__: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "_HttpErrorFakeAsyncClient":
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
+    async def post(self, url: str, **kwargs: Any) -> _Response:
+        return _Response(status_code=503, text="service unavailable")
+
+    async def get(self, url: str, **kwargs: Any) -> _Response:
+        raise AssertionError(f"unexpected GET {url}")
+
+
+async def test_upload_http_error_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fail")
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
+        _HttpErrorFakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
+        lambda *_, **__: None,
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
+class _FailedStateFakeAsyncClient:
+    """Fake that reports a 'failed' job state during polling."""
+
+    def __init__(self, *_: Any, **__: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> "_FailedStateFakeAsyncClient":
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
+    async def post(self, url: str, **kwargs: Any) -> _Response:
+        return _Response(payload={"data": {"jobId": "job-fail"}})
+
+    async def get(self, url: str, **kwargs: Any) -> _Response:
+        if url.endswith("/job-fail"):
+            return _Response(
+                payload={
+                    "data": {
+                        "state": "failed",
+                        "errorMsg": "page count exceeded limit",
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected GET {url}")
+
+
+async def test_failed_poll_state_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fail")
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
+        _FailedStateFakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
+        lambda *_, **__: None,
+    )
+    # Avoid sleeping during the poll loop.
+    monkeypatch.setenv("PADDLEOCR_VL_POLL_INTERVAL_SECONDS", "0")
+
+    with pytest.raises(RuntimeError, match="job job-fail failed"):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
+# ---------------------------------------------------------------------------
+# Concurrent image download (mandatory error surfaces from gather)
+# ---------------------------------------------------------------------------
+async def test_concurrent_mandatory_image_error_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mandatory markdown image on a disallowed host must raise even though
+    # image materialization now runs concurrently via asyncio.gather.
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF bad-host")
+    recorder = _Recorder()
+    _CURRENT["recorder"] = recorder
+    _install_httpx(monkeypatch)
+    _RESULT_PAYLOAD = {
+        "result": {
+            "layoutParsingResults": [
+                {
+                    "prunedResult": {"parsing_res_list": []},
+                    "markdown": {
+                        "text": "# bad",
+                        "images": {
+                            "imgs/evil.jpg": "https://evil.test/not-allowed.jpg"
+                        },
+                    },
+                }
+            ]
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="not an allowed asset host"):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
+# ---------------------------------------------------------------------------
+# HTTPS-only gate for asset URLs
+# ---------------------------------------------------------------------------
+def test_asset_url_must_be_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", "evil.test")
+    client = PaddleOCRVLRawClient()
+    # Same host, but http:// is rejected regardless of host allowlist.
+    assert client._is_allowed_asset_url("http://evil.test/fig.jpg") is False
+    assert client._is_allowed_asset_url("https://evil.test/fig.jpg") is True

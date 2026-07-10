@@ -328,6 +328,10 @@ _BOOL_FALSE = frozenset({"0", "false", "no", "off", "f", "n"})
 # A single page-range segment: ``N`` or ``N-M`` (validated for positivity /
 # ordering separately).
 _PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-\d+)?$")
+# PaddleOCR-VL also supports a *relative-end* range ``N--M``: pages from ``N``
+# to the ``M``-th page from the end of the document (e.g. ``5--2`` = page 5
+# through second-to-last, ``1--1`` = the whole document). ``M`` counts from the
+# end, so it is always >= 1; there is no start/end ordering to enforce here.
 _PADDLEOCR_VL_PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-(?:\d+|-\d+))?$")
 
 
@@ -449,12 +453,22 @@ def _validate_page_range_segments(engine: str, parts: list[str]) -> list[str]:
     ``local`` accepts only a single page / range (mirrors
     ``cache.local_page_bounds``). Other engines that expose their own
     ``page_range`` / ``pageRanges`` field only share the segment-shape checks.
+
+    PaddleOCR-VL additionally supports a *relative-end* range ``N--M`` meaning
+    "from page ``N`` to the ``M``-th page from the end of the document" (e.g.
+    ``5--2`` = pages 5 through second-to-last). ``M`` counts from the end, so
+    ``--1`` is the last page and ``--2`` is the second-to-last. This mirrors
+    PaddleOCR-VL's own ``pageRanges`` convention.
     """
     errors: list[str] = []
     for seg in parts:
         if engine == PARSER_ENGINE_PADDLEOCR_VL:
             pattern = _PADDLEOCR_VL_PAGE_SEGMENT_RE
-            shape = "page 'N', range 'N-M', or relative-end range 'N--M'"
+            shape = (
+                "page 'N', range 'N-M', or relative-end range 'N--M' "
+                "(N is the start page, M counts from the end: 5--2 = page 5 "
+                "through second-to-last)"
+            )
         else:
             pattern = _PAGE_SEGMENT_RE
             shape = "page 'N' or range 'N-M'"

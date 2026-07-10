@@ -377,3 +377,29 @@ def test_result_corruption_invalidates_cache(tmp_path: Path, source_file: Path) 
     result = raw / "result.json"
     result.write_bytes(b"X" * result.stat().st_size)
     assert is_bundle_valid(raw, source_file) is False
+
+
+def test_missing_options_signature_invalidates_cache(
+    tmp_path: Path, source_file: Path
+) -> None:
+    # Old manifests did not record options_signature; per MinerU policy, a
+    # bundle lacking one must miss (env changes cannot silently reuse it).
+    raw = _bundle(tmp_path, source_file, options_signature="")
+    assert is_bundle_valid(raw, source_file) is False
+
+
+def test_official_signature_changes_when_model_or_batch_id_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Positive control for test_local_signature_ignores_official_only_options:
+    # in OFFICIAL mode changing model/batchId MUST change the signature.
+    monkeypatch.delenv("PADDLEOCR_VL_API_MODE", raising=False)
+    base = PaddleOCRVLParserOptions.from_env().signature()
+
+    monkeypatch.setenv("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.5")
+    changed_model = PaddleOCRVLParserOptions.from_env().signature()
+    assert changed_model != base
+
+    monkeypatch.setenv("PADDLEOCR_VL_BATCH_ID", "batch-xyz")
+    changed_batch = PaddleOCRVLParserOptions.from_env().signature()
+    assert changed_batch != changed_model

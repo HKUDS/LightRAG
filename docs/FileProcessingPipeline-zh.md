@@ -995,6 +995,10 @@ PADDLEOCR_VL_PRETTIFY_MARKDOWN=true
 PADDLEOCR_VL_VISUALIZE=false
 ```
 
+> **注意：** PaddleOCR-VL 仅在 ``relevel_titles=True`` 时才能根据
+> Markdown ``#`` 前缀识别段落标题级别。不开启该选项时，所有
+> ``paragraph_title`` 块均按 2 级标题处理，忽略其实际的 Markdown 标题深度。
+
 下面这些官方 API 参数未设置时不会传给服务，由服务端使用部署默认值：
 
 ```bash
