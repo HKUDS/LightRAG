@@ -109,7 +109,9 @@ def _resolve_workspace(workspace: str) -> str:
     """LANCEDB_WORKSPACE env override beats the constructor parameter."""
     env_workspace = _get_lancedb_env("LANCEDB_WORKSPACE")
     if env_workspace and env_workspace.strip():
-        return env_workspace.strip()
+        # Validate like the constructor path; _sanitize_table_name alone
+        # would silently fold path-traversal names instead of failing fast.
+        return validate_workspace(env_workspace.strip())
     return workspace or ""
 
 
@@ -294,10 +296,7 @@ class LanceDBClient:
         return table
 
     def table_lock(self, name: str) -> asyncio.Lock:
-        lock = self._table_locks.get(name)
-        if lock is None:
-            lock = self._table_locks.setdefault(name, asyncio.Lock())
-        return lock
+        return self._table_locks.setdefault(name, asyncio.Lock())
 
     async def get_or_create_table(self, name: str, schema: pa.Schema):
         table = self._tables.get(name)
@@ -313,11 +312,15 @@ class LanceDBClient:
         return table
 
     async def drop_and_recreate_table(self, name: str, schema: pa.Schema):
-        async with self._creation_lock:
-            await self._connection.drop_table(name, ignore_missing=True)
-            table = await self._connection.create_table(name, schema=schema)
-            self._tables[name] = table
-            self._writes_since_optimize[name] = 0
+        # table_lock waits out in-flight writers so the drop cannot yank the
+        # table from under a merge_insert; creation_lock serializes with
+        # get_or_create_table. Nothing acquires these in the reverse order.
+        async with self.table_lock(name):
+            async with self._creation_lock:
+                await self._connection.drop_table(name, ignore_missing=True)
+                table = await self._connection.create_table(name, schema=schema)
+                self._tables[name] = table
+                self._writes_since_optimize[name] = 0
         return table
 
     def bump_writes(self, name: str) -> None:
@@ -401,12 +404,13 @@ async def _fetch_rows_by_ids(
 ) -> list[dict[str, Any]]:
     if not ids:
         return []
-    rows: list[dict[str, Any]] = []
-    for chunk in _iter_chunks(ids):
-        rows.extend(
-            await _fetch_rows(table, where=_sql_in(id_column, chunk), columns=columns)
-        )
-    return rows
+    chunk_rows = await asyncio.gather(
+        *[
+            _fetch_rows(table, where=_sql_in(id_column, chunk), columns=columns)
+            for chunk in _iter_chunks(ids)
+        ]
+    )
+    return [row for rows in chunk_rows for row in rows]
 
 
 @final
@@ -414,22 +418,8 @@ async def _fetch_rows_by_ids(
 class LanceDBKVStorage(BaseKVStorage):
     """Key-value storage: JSON payload per id, workspace-prefixed table."""
 
-    def __init__(
-        self,
-        namespace: str,
-        global_config: dict[str, Any],
-        embedding_func=None,
-        workspace: str | None = None,
-    ):
-        super().__init__(
-            namespace=namespace,
-            workspace=workspace or "",
-            global_config=global_config,
-            embedding_func=embedding_func,
-        )
-        self.__post_init__()
-
     def __post_init__(self):
+        self.workspace = self.workspace or ""
         validate_workspace(self.workspace)
         self.workspace, self.final_namespace, self._table_name = _build_table_name(
             self.workspace, self.namespace
@@ -598,24 +588,8 @@ class LanceDBVectorStorage(BaseVectorStorage):
     records; ``query()`` only sees flushed data.
     """
 
-    def __init__(
-        self,
-        namespace: str,
-        global_config: dict[str, Any],
-        embedding_func=None,
-        workspace: str | None = None,
-        meta_fields: set[str] | None = None,
-    ):
-        super().__init__(
-            namespace=namespace,
-            workspace=workspace or "",
-            global_config=global_config,
-            embedding_func=embedding_func,
-            meta_fields=meta_fields or set(),
-        )
-        self.__post_init__()
-
     def __post_init__(self):
+        self.workspace = self.workspace or ""
         validate_workspace(self.workspace)
         self._validate_embedding_func()
         self.workspace, self.final_namespace, base_table_name = _build_table_name(
@@ -640,7 +614,14 @@ class LanceDBVectorStorage(BaseVectorStorage):
         self._buffer_lock = None
         self._pending_docs: dict[str, _PendingLanceVectorDoc] = {}
         fts_enabled_raw = _get_lancedb_env("LANCEDB_ENABLE_FTS", "true") or "true"
-        self._fts_enabled = fts_enabled_raw.strip().lower() == "true"
+        # Same truthy set as utils.get_env_value so LANCEDB_ENABLE_FTS=1/yes work.
+        self._fts_enabled = fts_enabled_raw.strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "t",
+            "on",
+        )
         self._fts_tokenizer = (
             _get_lancedb_env("LANCEDB_FTS_TOKENIZER", "ngram") or "ngram"
         ).strip()
@@ -834,7 +815,8 @@ class LanceDBVectorStorage(BaseVectorStorage):
             raise StorageNotInitializedError(type(self).__name__)
         async with self._buffer_lock:
             await self._flush_pending_locked()
-        await self._client.maybe_optimize(self._table_name)
+        if self._client is not None:
+            await self._client.maybe_optimize(self._table_name)
 
     async def drop_pending_index_ops(self) -> None:
         if self._buffer_lock is None:
@@ -884,6 +866,11 @@ class LanceDBVectorStorage(BaseVectorStorage):
         Not part of the LightRAG storage contract; requires the FTS index
         (enabled by default, CJK-friendly bigram tokenizer).
         """
+        if not self._fts_enabled:
+            raise RuntimeError(
+                "full_text_search requires the FTS index; it is disabled via "
+                "LANCEDB_ENABLE_FTS"
+            )
         table = self._table()
         rows = await (
             table.query()
@@ -1015,12 +1002,17 @@ class LanceDBVectorStorage(BaseVectorStorage):
         try:
             if self._client is None:
                 raise StorageNotInitializedError(type(self).__name__)
-            if self._buffer_lock is not None:
-                async with self._buffer_lock:
-                    self._pending_docs.clear()
-            table = await self._client.drop_and_recreate_table(
-                self._table_name, _vector_schema(self.embedding_func.embedding_dim)
-            )
+            if self._buffer_lock is None:
+                raise StorageNotInitializedError(type(self).__name__)
+            # Hold _buffer_lock across the recreate so an in-flight flush
+            # cannot re-persist pending docs between the clear and the drop
+            # (same serialization as delete/delete_entity_relation).
+            async with self._buffer_lock:
+                self._pending_docs.clear()
+                table = await self._client.drop_and_recreate_table(
+                    self._table_name,
+                    _vector_schema(self.embedding_func.embedding_dim),
+                )
             await self._ensure_fts_index(table)
             logger.info(f"[{self.workspace}] Dropped vector table {self._table_name}")
             return {"status": "success", "message": "data dropped"}
@@ -1040,22 +1032,8 @@ class LanceDBGraphStorage(BaseGraphStorage):
     payload (NetworkX/Mongo semantics).
     """
 
-    def __init__(
-        self,
-        namespace: str,
-        global_config: dict[str, Any],
-        embedding_func=None,
-        workspace: str | None = None,
-    ):
-        super().__init__(
-            namespace=namespace,
-            workspace=workspace or "",
-            global_config=global_config,
-            embedding_func=embedding_func,
-        )
-        self.__post_init__()
-
     def __post_init__(self):
+        self.workspace = self.workspace or ""
         validate_workspace(self.workspace)
         self.workspace, self.final_namespace, base_table_name = _build_table_name(
             self.workspace, self.namespace
@@ -1153,12 +1131,18 @@ class LanceDBGraphStorage(BaseGraphStorage):
         return {row["id"] for row in rows}
 
     async def _edges_touching(self, node_ids: list[str]) -> list[dict[str, Any]]:
-        """All edge rows with any endpoint in ``node_ids`` (deduped by id)."""
+        """Edge (id, src, tgt) rows with any endpoint in ``node_ids``, deduped by id.
+
+        Selects only the key columns — degree counting and BFS never need the
+        payload, which dominates row width.
+        """
         edges: dict[str, dict[str, Any]] = {}
         table = self._edges_table()
         for chunk in _iter_chunks(node_ids):
             rows = await _fetch_rows(
-                table, where=f"{_sql_in('src', chunk)} OR {_sql_in('tgt', chunk)}"
+                table,
+                where=f"{_sql_in('src', chunk)} OR {_sql_in('tgt', chunk)}",
+                columns=["id", "src", "tgt"],
             )
             for row in rows:
                 edges[row["id"]] = row
@@ -1525,22 +1509,8 @@ class LanceDBGraphStorage(BaseGraphStorage):
 class LanceDBDocStatusStorage(DocStatusStorage):
     """Document status storage with typed columns for status/dedup lookups."""
 
-    def __init__(
-        self,
-        namespace: str,
-        global_config: dict[str, Any],
-        embedding_func=None,
-        workspace: str | None = None,
-    ):
-        super().__init__(
-            namespace=namespace,
-            workspace=workspace or "",
-            global_config=global_config,
-            embedding_func=embedding_func,
-        )
-        self.__post_init__()
-
     def __post_init__(self):
+        self.workspace = self.workspace or ""
         validate_workspace(self.workspace)
         self.workspace, self.final_namespace, self._table_name = _build_table_name(
             self.workspace, self.namespace

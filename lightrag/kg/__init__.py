@@ -153,6 +153,16 @@ STORAGES = {
     "LanceDBDocStatusStorage": ".kg.lancedb_impl",
 }
 
+# Embedded storages whose write serialization is per-process; running them
+# under multiple workers (gunicorn) can commit duplicate rows. Launchers
+# check membership here instead of hard-coding implementation names.
+MULTIPROCESS_UNSAFE_STORAGES = {
+    "LanceDBKVStorage",
+    "LanceDBVectorStorage",
+    "LanceDBGraphStorage",
+    "LanceDBDocStatusStorage",
+}
+
 
 def verify_storage_implementation(storage_type: str, storage_name: str) -> None:
     """Verify if storage implementation is compatible with specified storage type
