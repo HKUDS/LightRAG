@@ -20,6 +20,7 @@ import json_repair
 import mimetypes
 import os
 import re
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from lightrag.exceptions import (
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
+from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
 from lightrag.parser.registry import (
     get_parser,
     parser_specs_snapshot,
@@ -212,6 +214,10 @@ class _BatchRunContext:
     parser_specs: dict
     q_analyze: asyncio.Queue
     q_process: asyncio.Queue
+    # Process-local bridge for the shared pipeline cancellation status. Native
+    # parser hooks run in worker threads, so they cannot await the async status
+    # lock directly while waiting on an LLM response.
+    pipeline_cancel_event: threading.Event | None = None
     processed_count: int = 0
 
 
@@ -1188,7 +1194,25 @@ class _PipelineMixin:
             parser_specs=parser_specs,
             q_analyze=asyncio.Queue(maxsize=self.queue_size_analyze),
             q_process=asyncio.Queue(maxsize=self.queue_size_insert),
+            pipeline_cancel_event=threading.Event(),
         )
+
+        async def _watch_pipeline_cancellation() -> None:
+            """Bridge shared cancellation state into native parser threads.
+
+            The status is guarded by an async lock and may be set by an API
+            request in another task. Native extractors are synchronous and may
+            be blocked in ``SyncLLMBridge``, so a thread-safe event is the
+            handoff point. This watcher belongs to this batch and is always
+            cancelled in the batch teardown below.
+            """
+            while True:
+                if await self._cancellation_requested(
+                    pipeline_status, pipeline_status_lock
+                ):
+                    ctx.pipeline_cancel_event.set()
+                    return
+                await asyncio.sleep(0.5)
 
         def _group_concurrency(group: str) -> int:
             # Built-in groups keep their existing LightRAG fields (env +
@@ -1239,6 +1263,7 @@ class _PipelineMixin:
             group: max(1, _group_concurrency(group)) for group in parse_queues
         }
 
+        cancellation_watcher = asyncio.create_task(_watch_pipeline_cancellation())
         workers: list[asyncio.Task] = []
         for group, queue in parse_queues.items():
             for _ in range(group_worker_counts[group]):
@@ -1304,9 +1329,14 @@ class _PipelineMixin:
             await ctx.q_analyze.join()
             await ctx.q_process.join()
         finally:
+            # Wake native parser bridges before cancelling worker tasks. Their
+            # underlying worker thread then stops waiting for an in-flight LLM
+            # response even if task cancellation reaches run_in_executor first.
+            ctx.pipeline_cancel_event.set()
+            cancellation_watcher.cancel()
             for w in workers:
                 w.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
+            await asyncio.gather(*workers, cancellation_watcher, return_exceptions=True)
 
         # If the batch aborted on an internal storage error, the shared
         # cross-file flush buffers may still hold records from the documents
@@ -1701,9 +1731,43 @@ class _PipelineMixin:
                         )
                 parsed_data_w = (
                     await parser.parse(
-                        ParseContext(self, doc_id_w, file_path_w, content_data_w)
+                        ParseContext(
+                            self,
+                            doc_id_w,
+                            file_path_w,
+                            content_data_w,
+                            pipeline_cancel_event=ctx.pipeline_cancel_event,
+                        )
                     )
                 ).to_dict()
+
+                # Mirror parse-stage LLM cache keys before the post-parse
+                # cancellation check. A cancellation flushes completed cache
+                # rows, and the FAILED status must retain their IDs so document
+                # deletion can purge them instead of leaving orphaned entries.
+                smartheading_ids_w = parsed_data_w.get("smartheading_llm_cache_ids")
+                if smartheading_ids_w:
+                    if not isinstance(status_doc_w.metadata, dict):
+                        status_doc_w.metadata = {}
+                    status_doc_w.metadata["smartheading_llm_cache_ids"] = (
+                        smartheading_ids_w
+                    )
+
+                # A cancellation can arrive after a title-block LLM call has
+                # completed but before its native parser returns. Do not stamp
+                # or enqueue a successful result once the batch is cancelled.
+                if await self._cancellation_requested(
+                    ctx.pipeline_status, ctx.pipeline_status_lock
+                ):
+                    await self._mark_doc_cancelled_in_stage(
+                        doc_id=doc_id_w,
+                        status_doc=status_doc_w,
+                        file_path=file_path_w,
+                        stage_label="parse",
+                        pipeline_status=ctx.pipeline_status,
+                        pipeline_status_lock=ctx.pipeline_status_lock,
+                    )
+                    continue
 
                 # Align the in-memory body with the sanitized copy that
                 # _persist_parsed_full_docs wrote to full_docs: a parser may
@@ -1728,17 +1792,6 @@ class _PipelineMixin:
                     if not isinstance(status_doc_w.metadata, dict):
                         status_doc_w.metadata = {}
                     status_doc_w.metadata["parse_warnings"] = parse_warnings_payload_w
-
-                # Mirror parse-stage LLM cache keys (docx smart_heading) so
-                # adelete_by_doc_id(delete_llm_cache=True) can purge them —
-                # parse-stage calls have no chunk llm_cache_list to ride.
-                smartheading_ids_w = parsed_data_w.get("smartheading_llm_cache_ids")
-                if smartheading_ids_w:
-                    if not isinstance(status_doc_w.metadata, dict):
-                        status_doc_w.metadata = {}
-                    status_doc_w.metadata["smartheading_llm_cache_ids"] = (
-                        smartheading_ids_w
-                    )
 
                 # Mirror raw-bundle cache-hit flag from mineru/docling; cache-
                 # miss runs (including parse_native, which has no cache
@@ -1836,18 +1889,29 @@ class _PipelineMixin:
                     file_path=file_path_w,
                 )
 
+                # smart-heading cache rows are created in the parse stage and
+                # otherwise wait for the much later PROCESS-level _insert_done.
+                # Commit them after their IDs are durable in doc_status, but
+                # keep a cache flush failure non-fatal to the parsed document.
+                if smartheading_ids_w:
+                    await self._persist_llm_response_cache_best_effort(
+                        stage_label="smart-heading parse",
+                        doc_id=doc_id_w,
+                    )
+
                 # Drop the heavy body from the queue payload; q_analyze /
                 # q_process now carry only lightweight metadata (blocks_path,
                 # parse_format, flags). process_single_document re-reads the
                 # body from full_docs by doc_id.
                 parsed_data_w.pop("content", None)
                 await ctx.q_analyze.put((doc_id_w, status_doc_w, parsed_data_w))
-            except PipelineCancelledException:
+            except (PipelineCancelledException, LLMBridgePipelineCancelled):
                 # Cancellation raised from inside the parse engine (future-
-                # proofing — engines don't currently call _raise_if_cancelled,
-                # but if they do, route through the same friendly message
-                # path as the boundary check above instead of the generic
-                # except block below.
+                # proofing — engines do not generally call
+                # _raise_if_cancelled, but native smart-heading's bridge raises
+                # LLMBridgePipelineCancelled while waiting on the batch cancel
+                # event. Parser-executor shutdown is intentionally a distinct
+                # exception and remains a generic parse failure for audit.
                 await self._mark_doc_cancelled_in_stage(
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
@@ -2862,6 +2926,31 @@ class _PipelineMixin:
         async with pipeline_status_lock:
             return bool(pipeline_status.get("cancellation_requested", False))
 
+    async def _persist_llm_response_cache_best_effort(
+        self,
+        *,
+        stage_label: str,
+        doc_id: str,
+    ) -> None:
+        """Commit pending LLM cache entries without failing document work.
+
+        Cache writes are valuable for cost and repeatability, but they are not
+        a prerequisite for a parser or multimodal result that has otherwise
+        succeeded. Stage-boundary callers use this narrow commit instead of
+        ``_insert_done()``, which would flush every KG/vector storage too.
+        """
+        if self.llm_response_cache is None:
+            return
+        try:
+            await self.llm_response_cache.index_done_callback()
+        except Exception as persist_error:
+            logger.error(
+                "Failed to persist LLM cache after %s for d-id %s: %s",
+                stage_label,
+                doc_id,
+                persist_error,
+            )
+
     async def _mark_doc_cancelled_in_stage(
         self,
         *,
@@ -2889,11 +2978,10 @@ class _PipelineMixin:
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = error_msg
             pipeline_status["history_messages"].append(error_msg)
-        if self.llm_response_cache:
-            try:
-                await self.llm_response_cache.index_done_callback()
-            except Exception as persist_error:
-                logger.error(f"Failed to persist LLM cache: {persist_error}")
+        await self._persist_llm_response_cache_best_effort(
+            stage_label=f"{stage_label} cancellation",
+            doc_id=doc_id,
+        )
         try:
             await self._upsert_doc_status_transition(
                 doc_id=doc_id,
@@ -2978,11 +3066,10 @@ class _PipelineMixin:
             if task and not task.done():
                 task.cancel()
 
-        if self.llm_response_cache:
-            try:
-                await self.llm_response_cache.index_done_callback()
-            except Exception as persist_error:
-                logger.error(f"Failed to persist LLM cache: {persist_error}")
+        await self._persist_llm_response_cache_best_effort(
+            stage_label=f"{stage_label} failure",
+            doc_id=doc_id,
+        )
 
         failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
         await self._upsert_doc_status_transition(
@@ -4202,16 +4289,20 @@ class _PipelineMixin:
                     # otherwise the sidecar references cache rows that
                     # haven't been persisted yet. Mirrors
                     # _finalize_doc_failure's PROCESS-stage behaviour.
-                    if self.llm_response_cache:
-                        try:
-                            await self.llm_response_cache.index_done_callback()
-                        except Exception as persist_error:
-                            logger.error(
-                                f"Failed to persist LLM cache after analyze "
-                                f"fail-fast: {persist_error}"
-                            )
+                    await self._persist_llm_response_cache_best_effort(
+                        stage_label="multimodal analyze fail-fast",
+                        doc_id=doc_id,
+                    )
                     raise fail_fast_exc
 
+            # Successful multimodal cache rows used to wait until the much
+            # later PROCESS-stage _insert_done. Commit after the analysis
+            # sidecar has been written so a restart can reuse the result as
+            # soon as this stage has completed.
+            await self._persist_llm_response_cache_best_effort(
+                stage_label="multimodal analyze",
+                doc_id=doc_id,
+            )
             parsed_data["multimodal_processed"] = True
             logger.info(f"[analyze_multimodal] completed for d-id: {doc_id}")
         except PipelineCancelledException:

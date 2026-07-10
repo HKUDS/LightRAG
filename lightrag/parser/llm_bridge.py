@@ -27,6 +27,14 @@ class LLMBridgeCancelled(RuntimeError):
     """The parse was cancelled (or the rag shut down) during an LLM wait."""
 
 
+class LLMBridgePipelineCancelled(LLMBridgeCancelled):
+    """The active document pipeline was cancelled by its caller."""
+
+
+class LLMBridgeShutdown(LLMBridgeCancelled):
+    """The RAG parser executor is shutting down."""
+
+
 class SyncLLMBridge:
     """Call an async LLM submit function from a synchronous worker thread.
 
@@ -37,9 +45,10 @@ class SyncLLMBridge:
         submit: Async callable ``(prompt, *, system_prompt=None) -> str``
             executed on ``loop`` (typically wrapping
             ``use_llm_func_with_cache``).
-        cancel_events: Events polled between waits — per-parse cancel and/or
-            the rag-level shutdown event. Any set event aborts the wait with
-            :class:`LLMBridgeCancelled` after at most one poll interval.
+        cancel_events: Events polled between waits. An entry may be an Event,
+            or an ``(Event, exception_type)`` pair when callers need the
+            cancellation source preserved. Any set event aborts the wait after
+            at most one poll interval.
         poll_interval: Seconds per ``future.result`` wait slice.
     """
 
@@ -48,20 +57,33 @@ class SyncLLMBridge:
         loop: asyncio.AbstractEventLoop,
         submit: Callable[..., Coroutine[Any, Any, str]],
         *,
-        cancel_events: tuple[threading.Event, ...] = (),
+        cancel_events: tuple[
+            threading.Event | tuple[threading.Event, type[LLMBridgeCancelled]], ...
+        ] = (),
         poll_interval: float = 1.0,
     ) -> None:
         self._loop = loop
         self._submit = submit
-        self._cancel_events = tuple(e for e in cancel_events if e is not None)
+        normalized_events: list[tuple[threading.Event, type[LLMBridgeCancelled]]] = []
+        for entry in cancel_events:
+            if isinstance(entry, tuple):
+                event, exception_type = entry
+            else:
+                event, exception_type = entry, LLMBridgeCancelled
+            if event is not None:
+                normalized_events.append((event, exception_type))
+        self._cancel_events = tuple(normalized_events)
         self._poll_interval = max(0.01, float(poll_interval))
         # The loop thread id at construction time. Calling the bridge from
         # that thread would block the loop the coroutine needs — a guaranteed
         # deadlock — so __call__ turns it into an immediate error.
         self._loop_thread_id = threading.get_ident()
 
-    def _cancelled(self) -> bool:
-        return any(event.is_set() for event in self._cancel_events)
+    def _cancellation_exception(self, message: str) -> LLMBridgeCancelled | None:
+        for event, exception_type in self._cancel_events:
+            if event.is_set():
+                return exception_type(message)
+        return None
 
     def __call__(self, prompt: str, *, system_prompt: str | None = None) -> str:
         if threading.get_ident() == self._loop_thread_id:
@@ -70,13 +92,19 @@ class SyncLLMBridge:
                 "deadlock waiting on the loop it is blocking. Call it only "
                 "from a worker thread (parser extract runs in one)."
             )
-        if self._cancelled():
-            raise LLMBridgeCancelled("parse cancelled before the LLM call")
+        cancellation = self._cancellation_exception(
+            "parse cancelled before the LLM call"
+        )
+        if cancellation is not None:
+            raise cancellation
         future = asyncio.run_coroutine_threadsafe(
             self._submit(prompt, system_prompt=system_prompt), self._loop
         )
         while True:
-            if self._cancelled():
+            cancellation = self._cancellation_exception(
+                "parse cancelled while awaiting the LLM"
+            )
+            if cancellation is not None:
                 # Propagates cancellation into the loop-side coroutine chain;
                 # whether the underlying provider request truly aborts is up
                 # to its implementation — the worker thread exits regardless.
@@ -88,7 +116,7 @@ class SyncLLMBridge:
                         future.exception()
                     except Exception:
                         pass
-                raise LLMBridgeCancelled("parse cancelled while awaiting the LLM")
+                raise cancellation
             try:
                 return future.result(timeout=self._poll_interval)
             except concurrent.futures.TimeoutError:

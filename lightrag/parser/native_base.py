@@ -220,13 +220,24 @@ class NativeParserBase(BaseParser):
                 ctx
             )
             if submit is not None:
-                from lightrag.parser.llm_bridge import SyncLLMBridge
+                from lightrag.parser.llm_bridge import (
+                    LLMBridgePipelineCancelled,
+                    LLMBridgeShutdown,
+                    SyncLLMBridge,
+                )
 
                 shutdown_event = getattr(ctx.rag, "_parser_shutdown_event", None)
                 llm_invoke = SyncLLMBridge(
                     asyncio.get_running_loop(),
                     submit,
-                    cancel_events=(cancel_event, shutdown_event),
+                    cancel_events=(
+                        cancel_event,
+                        (
+                            ctx.pipeline_cancel_event,
+                            LLMBridgePipelineCancelled,
+                        ),
+                        (shutdown_event, LLMBridgeShutdown),
+                    ),
                 )
         runtime = NativeExtractRuntime(
             engine_params=engine_params,

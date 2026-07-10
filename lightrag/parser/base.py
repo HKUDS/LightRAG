@@ -24,6 +24,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -53,6 +54,10 @@ class ParseContext:
     doc_id: str
     file_path: str
     content_data: dict[str, Any]
+    # Set by the active pipeline batch when the user requests cancellation.
+    # Native parsers pass it to their synchronous LLM bridge so a worker thread
+    # does not remain blocked on a slow title-block judgment.
+    pipeline_cancel_event: threading.Event | None = None
 
     def source_path(self, parser_engine: str) -> Path:
         """Resolve the on-disk source file for this document."""

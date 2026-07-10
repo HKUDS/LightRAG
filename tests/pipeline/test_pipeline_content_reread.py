@@ -34,6 +34,7 @@ from lightrag.constants import (
 )
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.pipeline import _BatchRunContext
+from lightrag.parser.base import ParseResult
 from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer, get_content_summary
 from lightrag.utils_pipeline import make_lightrag_doc_content
@@ -193,6 +194,204 @@ async def test_parse_worker_drops_body_and_sets_summary_length(tmp_path):
         # full_docs still holds the body for Layer 3 to re-read.
         stored = await rag.full_docs.get_by_id(doc_id)
         assert stored is not None and stored["content"] == body
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_parse_worker_flushes_smart_heading_cache_before_handoff(
+    tmp_path, monkeypatch
+):
+    """Parse-stage smart-heading cache IDs are durable before q_analyze."""
+    rag = _build_rag(tmp_path)
+    await rag.initialize_storages()
+    try:
+        ctx = await _make_ctx(rag)
+        doc_id = "doc-smart-heading"
+        cache_ids = ["default:smartheading:abc"]
+        events: list[str] = []
+
+        await rag.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": "source body",
+                    "file_path": f"{doc_id}.txt",
+                    "parse_format": FULL_DOCS_FORMAT_RAW,
+                }
+            }
+        )
+        await _seed_doc_status(rag, doc_id)
+
+        class _Parser:
+            async def parse(self, _ctx):
+                return ParseResult(
+                    doc_id=doc_id,
+                    file_path=f"{doc_id}.txt",
+                    parse_format=FULL_DOCS_FORMAT_RAW,
+                    content="parsed body",
+                    parse_engine="native",
+                    smartheading_llm_cache_ids=cache_ids,
+                )
+
+        class _CacheSpy:
+            async def index_done_callback(self):
+                row = await rag.doc_status.get_by_id(doc_id)
+                assert row is not None
+                assert row["metadata"]["smartheading_llm_cache_ids"] == cache_ids
+                events.append("cache")
+
+        async def _recording_put(item):
+            events.append("handoff")
+            await original_put(item)
+
+        original_put = ctx.q_analyze.put
+        ctx.q_analyze.put = _recording_put
+        original_cache = rag.llm_response_cache
+        rag.llm_response_cache = _CacheSpy()
+        monkeypatch.setattr("lightrag.pipeline.get_parser", lambda *_a, **_k: _Parser())
+        await ctx.parse_queues["native"].put(
+            (doc_id, _make_status_doc(doc_id, content_hash="hash-smart"))
+        )
+
+        worker = asyncio.create_task(
+            rag._parse_worker("native", ctx.parse_queues["native"], ctx)
+        )
+        try:
+            await asyncio.wait_for(ctx.parse_queues["native"].join(), timeout=2.0)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            rag.llm_response_cache = original_cache
+
+        assert events == ["cache", "handoff"]
+        assert ctx.q_analyze.qsize() == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_parse_cache_flush_error_does_not_block_handoff(tmp_path, monkeypatch):
+    rag = _build_rag(tmp_path)
+    await rag.initialize_storages()
+    try:
+        ctx = await _make_ctx(rag)
+        doc_id = "doc-smart-heading-cache-error"
+        await rag.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": "source body",
+                    "file_path": f"{doc_id}.txt",
+                    "parse_format": FULL_DOCS_FORMAT_RAW,
+                }
+            }
+        )
+        await _seed_doc_status(rag, doc_id)
+
+        class _Parser:
+            async def parse(self, _ctx):
+                return ParseResult(
+                    doc_id=doc_id,
+                    file_path=f"{doc_id}.txt",
+                    parse_format=FULL_DOCS_FORMAT_RAW,
+                    content="parsed body",
+                    smartheading_llm_cache_ids=["default:smartheading:def"],
+                )
+
+        class _FailingCache:
+            calls = 0
+
+            async def index_done_callback(self):
+                self.calls += 1
+                raise RuntimeError("cache unavailable")
+
+        original_cache = rag.llm_response_cache
+        failing_cache = _FailingCache()
+        rag.llm_response_cache = failing_cache
+        monkeypatch.setattr("lightrag.pipeline.get_parser", lambda *_a, **_k: _Parser())
+        await ctx.parse_queues["native"].put(
+            (doc_id, _make_status_doc(doc_id, content_hash="hash-smart-error"))
+        )
+
+        worker = asyncio.create_task(
+            rag._parse_worker("native", ctx.parse_queues["native"], ctx)
+        )
+        try:
+            await asyncio.wait_for(ctx.parse_queues["native"].join(), timeout=2.0)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            rag.llm_response_cache = original_cache
+
+        assert ctx.q_analyze.qsize() == 1
+        assert failing_cache.calls == 1
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_post_parse_cancellation_preserves_smart_heading_cache_ids(
+    tmp_path, monkeypatch
+):
+    """A cancellation after parse still leaves cache IDs deletable on FAILED."""
+    rag = _build_rag(tmp_path)
+    await rag.initialize_storages()
+    try:
+        ctx = await _make_ctx(rag)
+        doc_id = "doc-smart-heading-post-parse-cancel"
+        cache_ids = ["default:smartheading:cancelled"]
+        await rag.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": "source body",
+                    "file_path": f"{doc_id}.txt",
+                    "parse_format": FULL_DOCS_FORMAT_RAW,
+                }
+            }
+        )
+        await _seed_doc_status(rag, doc_id)
+
+        class _Parser:
+            async def parse(self, _ctx):
+                async with ctx.pipeline_status_lock:
+                    ctx.pipeline_status["cancellation_requested"] = True
+                return ParseResult(
+                    doc_id=doc_id,
+                    file_path=f"{doc_id}.txt",
+                    parse_format=FULL_DOCS_FORMAT_RAW,
+                    content="parsed body",
+                    smartheading_llm_cache_ids=cache_ids,
+                )
+
+        class _CacheSpy:
+            calls = 0
+
+            async def index_done_callback(self):
+                self.calls += 1
+
+        original_cache = rag.llm_response_cache
+        cache_spy = _CacheSpy()
+        rag.llm_response_cache = cache_spy
+        monkeypatch.setattr("lightrag.pipeline.get_parser", lambda *_a, **_k: _Parser())
+        await ctx.parse_queues["native"].put(
+            (doc_id, _make_status_doc(doc_id, content_hash="hash-smart-cancel"))
+        )
+
+        worker = asyncio.create_task(
+            rag._parse_worker("native", ctx.parse_queues["native"], ctx)
+        )
+        try:
+            await asyncio.wait_for(ctx.parse_queues["native"].join(), timeout=2.0)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            rag.llm_response_cache = original_cache
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row is not None
+        assert row["status"] == DocStatus.FAILED.value
+        assert row["metadata"]["smartheading_llm_cache_ids"] == cache_ids
+        assert cache_spy.calls == 1
+        assert ctx.q_analyze.empty()
     finally:
         await rag.finalize_storages()
 

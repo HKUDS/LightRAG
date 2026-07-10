@@ -11,7 +11,11 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from lightrag.parser.llm_bridge import LLMBridgeCancelled, SyncLLMBridge
+from lightrag.parser.llm_bridge import (
+    LLMBridgeCancelled,
+    LLMBridgeShutdown,
+    SyncLLMBridge,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -82,6 +86,24 @@ async def test_bridge_pre_cancelled_never_submits() -> None:
     with pytest.raises(LLMBridgeCancelled):
         await _call_bridge_in_thread(bridge, "p")
     assert calls == []
+
+
+async def test_bridge_preserves_shutdown_cancellation_source() -> None:
+    loop = asyncio.get_running_loop()
+    shutdown = threading.Event()
+    shutdown.set()
+
+    async def submit(prompt: str, *, system_prompt: str | None = None) -> str:
+        raise AssertionError("shutdown must prevent submission")
+
+    bridge = SyncLLMBridge(
+        loop,
+        submit,
+        cancel_events=((shutdown, LLMBridgeShutdown),),
+        poll_interval=0.05,
+    )
+    with pytest.raises(LLMBridgeShutdown):
+        await _call_bridge_in_thread(bridge, "p")
 
 
 async def test_bridge_loop_thread_call_raises() -> None:

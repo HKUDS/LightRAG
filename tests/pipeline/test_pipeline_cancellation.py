@@ -36,6 +36,7 @@ from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.pipeline import _BatchRunContext
+from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled, SyncLLMBridge
 from lightrag.parser.registry import parser_specs_snapshot
 from lightrag.utils import EmbeddingFunc, Tokenizer
 
@@ -233,6 +234,86 @@ async def test_parse_worker_drains_queue_when_cancelled_before_start(
             assert row is not None
             assert row.get("status") == DocStatus.FAILED.value
             assert "User cancelled during parse" in (row.get("error_msg") or "")
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cancel_interrupts_inflight_native_parser_llm(
+    tmp_path, monkeypatch
+):
+    """The batch watcher must unblock a native parser waiting on an LLM."""
+    rag = _build_rag(tmp_path)
+    await rag.initialize_storages()
+    try:
+        _ctx, pipeline_status, pipeline_status_lock = await _make_ctx(rag)
+        doc_id = "doc-inflight-smart-heading"
+        status_doc = _make_status_doc(doc_id)
+        await rag.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": "source",
+                    "file_path": status_doc.file_path,
+                }
+            }
+        )
+        await rag.doc_status.upsert(
+            {
+                doc_id: {
+                    "status": DocStatus.PENDING.value,
+                    "content_summary": status_doc.content_summary,
+                    "content_length": status_doc.content_length,
+                    "file_path": status_doc.file_path,
+                    "created_at": status_doc.created_at,
+                    "updated_at": status_doc.updated_at,
+                    "track_id": "t",
+                }
+            }
+        )
+
+        submit_started = asyncio.Event()
+
+        class _BlockingNativeParser:
+            async def parse(self, parse_ctx):
+                loop = asyncio.get_running_loop()
+
+                async def _submit(_prompt, **_kwargs):
+                    submit_started.set()
+                    await asyncio.Future()
+
+                bridge = SyncLLMBridge(
+                    loop,
+                    _submit,
+                    cancel_events=(
+                        (
+                            parse_ctx.pipeline_cancel_event,
+                            LLMBridgePipelineCancelled,
+                        ),
+                    ),
+                    poll_interval=0.02,
+                )
+                await asyncio.to_thread(bridge, "title block prompt")
+                raise AssertionError("bridge cancellation should interrupt parse")
+
+        monkeypatch.setattr(
+            "lightrag.pipeline.get_parser", lambda *_a, **_k: _BlockingNativeParser()
+        )
+        batch = asyncio.create_task(
+            rag._run_pipeline_batch(
+                {doc_id: status_doc},
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+        )
+        await asyncio.wait_for(submit_started.wait(), timeout=1.0)
+        async with pipeline_status_lock:
+            pipeline_status["cancellation_requested"] = True
+
+        await asyncio.wait_for(batch, timeout=2.0)
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row is not None
+        assert row["status"] == DocStatus.FAILED.value
+        assert "User cancelled during parse" in (row.get("error_msg") or "")
     finally:
         await rag.finalize_storages()
 
