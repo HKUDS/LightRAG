@@ -323,27 +323,47 @@ def imprint_closer_reason(text: str) -> str | None:
     return None
 
 
-#: A whole-line 成文日期 (document date): CJK-numeral (二○○九年七月六日) or
-#: Arabic (2009年7月6日). Zero is written 〇 / ○ (circle) / 零 in practice.
+#: A whole-line 成文日期 (document date): CJK-numeral (二○○九年七月六日),
+#: Arabic (2009年7月6日), or separator-style (2026.7.31 / 2026/7/31 /
+#: 2026-7-31; the separator must be consistent within one date). Zero is
+#: written 〇 / ○ (circle) / 零 in practice.
 _CN_DATE_DIGIT = "〇○零一二三四五六七八九十两廿"
 _DOCUMENT_DATE_CN = re.compile(
     rf"^[{_CN_DATE_DIGIT}]{{2,4}}年[{_CN_DATE_DIGIT}]{{1,3}}月[{_CN_DATE_DIGIT}]{{1,3}}日$"
 )
 _DOCUMENT_DATE_AR = re.compile(r"^\d{2,4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日$")
+_DOCUMENT_DATE_SEP = re.compile(r"^\d{4}([./\-])\d{1,2}\1\d{1,2}$")
 
 
 def is_document_date(text: str) -> bool:
     """True when the WHOLE line is a 成文日期 (a bare document date), e.g.
-    ``二○○九年七月六日`` or ``2009年7月6日``.
+    ``二○○九年七月六日``, ``2009年7月6日``, ``2026.7.31``, ``2026/7/31`` or
+    ``2026-7-31``.
 
     A line that merely CONTAINS a date (第十六条…自2009年7月1日起施行。) is NOT a
     document date — the ``^…$`` anchors demand the date be the entire line.
-    Used only to pull a mis-ordered 成文日期 trailing a 版记 into the region
-    (:func:`title_block.detect_imprint_regions`), never as a standalone
-    heading/body rule.
+    Two consumers: pulling a mis-ordered 成文日期 trailing a 版记 into the
+    region (:func:`title_block.detect_imprint_regions`), and excluding a bare
+    date line from the solo centered-heading channel (§2.2.5 gate) — a
+    centered 落款 date must never read as a heading.
     """
     s = text.strip()
-    return bool(_DOCUMENT_DATE_CN.match(s) or _DOCUMENT_DATE_AR.match(s))
+    return bool(
+        _DOCUMENT_DATE_CN.match(s)
+        or _DOCUMENT_DATE_AR.match(s)
+        or _DOCUMENT_DATE_SEP.match(s)
+    )
+
+
+def is_symbolic_line(text: str) -> bool:
+    """True when the line carries no letter at all — page numbers (``- 1 -``),
+    separators (``***`` / ``——``), bare figures. Positive detection: look for
+    a letter (``str.isalpha`` covers CJK ideographs and Latin alike) instead
+    of stripping a punctuation set, so full-width symbols can never slip
+    through an incomplete list. Used by the solo centered-heading channel
+    (§2.2.5 gate) — a centered decoration line must never read as a heading.
+    """
+    return not any(ch.isalpha() for ch in text)
 
 
 # ---------------------------------------------------------------------------

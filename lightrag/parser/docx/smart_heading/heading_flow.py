@@ -55,7 +55,7 @@ from .style_key import (
     unit_rank,
 )
 
-_CENTER_RUN_MAX = 4  # anti-poetry: longer centered runs lose the channel
+_CENTER_RUN_MAX = 4  # anti-poetry: runs of >= this many centered lines lose the channel
 
 #: §2.3.5 deviation: the re-judgment ledger normally stores only a content
 #: hash, never plaintext. This is the max character length of the plaintext
@@ -265,6 +265,16 @@ class GateResult:
     #: numbered candidate became body — otherwise the veto leaves no trace.
     #: Always non-outline (outline paragraphs are never numbering-vetoed, P3).
     veto_suppressed: list[HeadingDecision] = field(default_factory=list)
+    #: Paragraphs the title-block LLM named a heading (``llm_heading_grants``)
+    #: that then matched no promotion rule. The LLM vote is NOT an admission
+    #: rule (only its body veto has force), so these are ledger-only,
+    #: output-neutral decisions tagged ``llm_grant_rejected`` — the audit
+    #: records that an LLM heading vote was overruled by the normal gate.
+    #: A paragraph whose numbering was ALSO homophone-vetoed lands here (one
+    #: decision carrying both marks), not in ``veto_suppressed``. Grants
+    #: stopped earlier by the caption / LLM-body vetoes are deliberately NOT
+    #: recorded: those vetoes carry their own semantics.
+    grant_rejected: list[HeadingDecision] = field(default_factory=list)
 
 
 def _effective_size(rec: Any) -> float | None:
@@ -289,16 +299,20 @@ def gate_candidates(
     """§2.2.5 step 1 over one sub-document (``indices`` into ``records``).
 
     ``llm_heading_grants`` are record indices the title-block LLM classified
-    as plain headings — identity only, admitted as candidates but leveled by
-    the same downstream flow and still subject to strong-body demotion.
+    as plain headings. The vote carries NO admission force — a granted
+    paragraph must still pass the normal promotion rules below (an LLM
+    heading vote proved unreliable: running headers / TOC lines got granted).
+    The set is kept for auditing only: a grant that then matches no rule is
+    recorded in ``GateResult.grant_rejected``.
     ``llm_body_vetoes`` are indices the LLM classified as body — candidate
-    identity revoked (§2.2.4 "赋予或撤销"); outline paragraphs never appear
-    here (title_block already reroutes them per I2).
+    identity revoked (§2.2.4: only the veto side of the partition has force);
+    outline paragraphs never appear here (title_block already reroutes them
+    per I2).
 
     ``cb1_reestimate`` switches to the CB1 second-pass semantics (§2.3.3):
-    same-size composite paths (series / bold / centered companions) are all
-    disabled, while sizes strictly above the re-estimated FS_base remain
-    auto-admitted; outline pass-through and LLM grants are unaffected.
+    same-size composite paths (series / bold / centered) are all disabled,
+    while sizes strictly above the re-estimated FS_base remain auto-admitted;
+    outline pass-through is unaffected.
     """
     strong_body = strong_body or guardrails.strong_body_reason
     numbering_veto = numbering_veto or guardrails.numbering_homophone_reason
@@ -368,10 +382,23 @@ def gate_candidates(
             <= TITLE_LINE_MAX_WEIGHTED_CHARS
         )
 
-    # Centered-companion channel: base-shape lines grouped into runs
-    # (consecutive without an intervening body paragraph); runs longer than
-    # _CENTER_RUN_MAX lose the channel; companions must come from a
-    # DIFFERENT run (adjacent centered lines are never companions).
+    # Solo centered channel (§2.2.5): under a HIGH-confidence FS_base, a
+    # centered short line free of every body signal is heading-shaped on its
+    # own — no companion needed (a two-line centered title has none). The
+    # shape gate carries the exclusions that make solo admission safe: strong
+    # body, genuine numbering, captions (图*/表*), a bare 成文日期 (a centered
+    # 落款 date), and letter-free decoration lines (page numbers ``- 1 -``,
+    # separators ``***``). Known residue (documented, not coded around):
+    # a centered issuer/signature line or slogan is shape-identical to a real
+    # title — strong-body / LLM-veto / imprint-preceding cover most, and the
+    # CB1 density breaker backstops centered-heavy documents.
+    # Lines still group into runs (consecutive without an intervening body
+    # paragraph): a run of >= _CENTER_RUN_MAX centered lines is a poem /
+    # poster cluster and the whole run loses THIS channel — losing the
+    # channel is not a veto; outline / numbering / size / bold paths stay
+    # open. Under a LOW-confidence FS_base the companion requirement stands
+    # (require_companion=True): a same-size centered line from a DIFFERENT
+    # run (adjacent centered lines are never companions).
     centered_shape: dict[int, bool] = {}
     for i in para_indices:
         rec = records[i]
@@ -382,6 +409,8 @@ def gate_candidates(
             and _strong(i) is None
             and numbering[i] is None
             and caption_veto(records[i].text) is None
+            and not guardrails.is_document_date(records[i].text)
+            and not guardrails.is_symbolic_line(records[i].text)
         )
     runs: list[list[int]] = []
     current_run: list[int] = []
@@ -399,15 +428,17 @@ def gate_candidates(
         for i in run:
             run_of[i] = ridx
 
-    def _centered_channel(i: int) -> bool:
+    def _centered_channel(i: int, *, require_companion: bool = False) -> bool:
         if not centered_shape.get(i):
             return False
         my_run = run_of.get(i)
-        if my_run is None or len(runs[my_run]) > _CENTER_RUN_MAX:
-            return False
+        if my_run is None or len(runs[my_run]) >= _CENTER_RUN_MAX:
+            return False  # anti-poetry: a long centered cluster, whole run out
+        if not require_companion:
+            return True
         my_size = _effective_size(records[i])
         for ridx, run in enumerate(runs):
-            if ridx == my_run or len(run) > _CENTER_RUN_MAX:
+            if ridx == my_run or len(run) >= _CENTER_RUN_MAX:
                 continue
             for j in run:
                 if _effective_size(records[j]) == my_size:
@@ -429,6 +460,7 @@ def gate_candidates(
     decisions: list[HeadingDecision] = []
     demoted: list[HeadingDecision] = []
     veto_suppressed: list[HeadingDecision] = []
+    grant_rejected: list[HeadingDecision] = []
     admitted: set[int] = set()
 
     for i in para_indices:
@@ -448,8 +480,6 @@ def gate_candidates(
             continue  # §2.2.4: LLM body vote revokes candidate identity
         elif caption_veto(text) is not None:
             continue  # P3: never a heading
-        elif i in llm_heading_grants:
-            rule = "llm_grant"
         elif fs is None or size is None:
             rule = None
         elif cb1_reestimate:
@@ -486,26 +516,36 @@ def gate_candidates(
                     rule = "lowconf_series"
                 elif rec.all_bold and _short(i):
                     rule = "lowconf_bold"
-                elif _centered_channel(i):
+                elif _centered_channel(i, require_companion=True):
                     rule = "lowconf_center"
 
         if rule is None:
-            # A numbering veto revoked this paragraph's numbering identity and
-            # it then matched no promotion rule — otherwise a silent drop.
-            # Leave a rule-tagged, output-neutral ledger row so the audit
-            # records the veto reason (why a would-be numbered candidate became
-            # body). Non-outline only (outline paragraphs are never vetoed), so
-            # use_raw_text stays off → same body rendering as no decision.
-            if i in veto_notes:
+            # Two ledger-only cases, NEVER a silent drop (both output-neutral:
+            # use_raw_text stays off → same body rendering as no decision, and
+            # both are non-outline — outline paragraphs took rule="outline"):
+            # - a numbering veto revoked this paragraph's numbering identity
+            #   and it then matched no promotion rule → record WHY;
+            # - the title-block LLM named it a heading but the vote carries no
+            #   admission force and no normal rule matched → record that the
+            #   grant was overruled (``llm_grant_rejected``). A paragraph
+            #   hitting BOTH gets ONE decision carrying both marks (a second
+            #   decision would be dropped by the caller's setdefault merge)
+            #   and lands in ``grant_rejected``.
+            if i in veto_notes or i in llm_heading_grants:
                 supp = HeadingDecision(
                     record_index=i,
                     text=text,
                     is_heading=False,
                     outline_level=rec.outline_level,
                 )
-                supp.note(veto_notes[i])
-                supp.note("numbering_veto_suppressed")
-                veto_suppressed.append(supp)
+                if i in veto_notes:
+                    supp.note(veto_notes[i])
+                    supp.note("numbering_veto_suppressed")
+                if i in llm_heading_grants:
+                    supp.note("llm_grant_rejected")
+                    grant_rejected.append(supp)
+                else:
+                    veto_suppressed.append(supp)
             continue
 
         # Strong-body demotion at recognition time: unnumbered candidates
@@ -578,6 +618,7 @@ def gate_candidates(
         non_empty=non_empty,
         demoted=demoted,
         veto_suppressed=veto_suppressed,
+        grant_rejected=grant_rejected,
     )
 
 
@@ -1968,6 +2009,32 @@ def _estimate_record_tokens(records: Sequence[Any], indices: Sequence[int]) -> i
     )
 
 
+def _merge_ledger_only(
+    decisions: dict[int, HeadingDecision], gate: GateResult, warnings: dict
+) -> None:
+    """Merge the gate's ledger-only audit rows into the decision map.
+
+    ``veto_suppressed`` and ``grant_rejected`` are output-neutral and only
+    ever cover non-outline paragraphs; ``setdefault`` so a real decision for
+    the same record (should not happen) always wins. Runs on BOTH the normal
+    path and the CB1 density fallback — a fallback must not lose the audit
+    trail of vetoes/rejections that did happen.
+
+    The ``smart_llm_grant_rejected`` warning is counted HERE, once per FINAL
+    gate result — never inside ``gate_candidates``, whose first pass may be
+    discarded by a CB1 re-estimation (the count must not drift or double
+    with internal passes).
+    """
+    for supp in gate.veto_suppressed:
+        decisions.setdefault(supp.record_index, supp)
+    if gate.grant_rejected:
+        warnings["smart_llm_grant_rejected"] = warnings.get(
+            "smart_llm_grant_rejected", 0
+        ) + len(gate.grant_rejected)
+        for rej in gate.grant_rejected:
+            decisions.setdefault(rej.record_index, rej)
+
+
 def _outline_only_decisions(
     records: Sequence[Any],
     indices: Sequence[int],
@@ -2263,10 +2330,13 @@ def run_smart_heading(
             if doc_title is None:
                 doc_title = verdict.main_title
         else:
+            # §2.2.4: only the VETO side of the partition carries force —
+            # body votes revoke candidate identity (outline paragraphs never
+            # land here — title_block reroutes them to heading_indices per
+            # I2). Heading votes are collected for auditing only: a granted
+            # paragraph must still pass the normal gate rules, and a grant
+            # that matches none is recorded as ``llm_grant_rejected``.
             llm_grants.update(verdict.heading_indices)
-            # §2.2.4 "赋予或撤销": body votes revoke candidate identity
-            # (outline paragraphs never land here — title_block reroutes
-            # them to heading_indices per I2).
             llm_body_vetoes.update(verdict.body_indices)
 
     title_members: set[int] = set()
@@ -2357,6 +2427,14 @@ def run_smart_heading(
             fallback_subs += 1
             for d in _outline_only_decisions(records, sub_indices, warnings=warnings):
                 decisions[d.record_index] = d
+            # The fallback must not lose the gate's ledger-only audit rows:
+            # veto suppressions and rejected LLM grants are output-neutral
+            # and only ever cover non-outline paragraphs, so merging them
+            # after the outline-only decisions can never collide with one.
+            # ``gate.demoted`` is deliberately NOT merged — it carries
+            # ``use_raw_text`` output semantics from the abandoned pass, and
+            # merging it would fake a demotion sweep that never shipped.
+            _merge_ledger_only(decisions, gate, warnings)
             continue
 
         ds = gate.decisions
@@ -2406,11 +2484,10 @@ def run_smart_heading(
         # anchoring, yet appear in the final decision map + audit ledger.
         for dem in gate.demoted:
             decisions.setdefault(dem.record_index, dem)
-        # Numbering-veto suppressions: same ledger-only treatment — record WHY
-        # a would-be numbered candidate became body. setdefault so a real
-        # decision for the same record (should not happen) always wins.
-        for supp in gate.veto_suppressed:
-            decisions.setdefault(supp.record_index, supp)
+        # Numbering-veto suppressions and rejected LLM grants: ledger-only
+        # treatment — record WHY a would-be candidate became body (and count
+        # the grant rejections against the final gate result).
+        _merge_ledger_only(decisions, gate, warnings)
 
     # Sentinel decisions so the I2 retention check can tell a rule-tagged
     # absence from a silent drop: TOC-removed and title-block-member

@@ -370,6 +370,13 @@ def test_imprint_closer_env_override(monkeypatch) -> None:
         ("二〇二六年十二月三十一日", True),  # 〇 = ideographic zero
         ("2009年7月6日", True),
         ("  2026 年 12 月 31 日 ", True),  # padded / spaced
+        ("2026.7.31", True),  # separator-style: dots
+        ("2026/7/31", True),  # slashes
+        ("2026-12-31", True),  # hyphens
+        ("2026.7/31", False),  # mixed separators are not a date
+        ("35.240.20", False),  # an ICS code is not a date (2-digit "year")
+        ("1.0.0", False),  # a version number is not a date
+        ("会议纪要 2026.7.31", False),  # CONTAINS a date, not bare
         ("第十六条 本规程自2009年7月1日起施行。", False),  # CONTAINS a date, not bare
         ("2009年", False),  # no month/day
         ("某某办公室 2009年7月6日印发", False),  # a closer, not a bare date
@@ -382,6 +389,28 @@ def test_is_document_date(text: str, expected: bool) -> None:
     from lightrag.parser.docx.smart_heading.guardrails import is_document_date
 
     assert is_document_date(text) is expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("- 1 -", True),  # page number
+        ("***", True),  # separator
+        ("——", True),  # dash rule
+        ("……", True),
+        ("12 / 34", True),  # bare figures
+        ("", True),  # nothing to judge
+        ("完", False),  # a CJK ideograph is a letter
+        ("第 1 章", False),
+        ("Chapter 1", False),
+        ("图-1", False),  # mixed symbol + CJK
+    ],
+)
+def test_is_symbolic_line(text: str, expected: bool) -> None:
+    """Letter-free decoration lines (positive detection: no CJK, no Latin)."""
+    from lightrag.parser.docx.smart_heading.guardrails import is_symbolic_line
+
+    assert is_symbolic_line(text) is expected
 
 
 # ---------------------------------------------------------------------------

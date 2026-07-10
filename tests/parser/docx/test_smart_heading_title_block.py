@@ -275,15 +275,15 @@ def test_non_title_verdict_classifies_every_paragraph() -> None:
 def test_non_title_verdict_incomplete_partition_recovers() -> None:
     """A well-formed but UNDER-specified partition (window index 2 left in
     neither list) no longer hard-fails: the unmentioned paragraph abstains
-    (neither granted nor vetoed) and re-enters the normal flow; the omission
-    is counted via ``title_block_partition_incomplete``, not fatal."""
+    (named in neither list) and re-enters the normal flow; the omission is
+    counted via ``title_block_partition_incomplete``, not fatal."""
     warnings: dict = {}
     decision = _judge_with(
         {"is_title_block": False, "headings": [0], "body": [1]},
         warnings=warnings,
     )
     assert not decision.is_title_block
-    assert decision.heading_indices == (0,)  # granted
+    assert decision.heading_indices == (0,)  # named a heading (audit-only)
     assert decision.body_indices == (1,)  # vetoed; window idx 2 (rec 3) abstains
     assert warnings["title_block_partition_incomplete"] == 1
 
@@ -312,7 +312,7 @@ def test_non_title_verdict_metadata_dropped_index_recovers() -> None:
         warnings=warnings,
     )
     assert not decision.is_title_block
-    assert decision.heading_indices == (1,)  # 前言 granted
+    assert decision.heading_indices == (1,)  # 前言 named a heading (audit-only)
     assert decision.body_indices == ()  # GB/T line (index 0) abstains, not vetoed
     assert warnings["title_block_partition_incomplete"] == 1
 
@@ -975,11 +975,26 @@ def test_table_verdict_locates_against_cell_texts() -> None:
 
 
 def test_table_non_title_verdict_ignored() -> None:
-    """A non-title verdict for a table window grants/vetoes nothing (D3):
+    """A non-title verdict for a table window names/vetoes nothing (D3):
     cells are not paragraph records, so the partition is ignored even when
     it is malformed."""
     decision = _judge_with(
         {"is_title_block": False, "headings": [0, 0], "body": []},  # malformed
+        records=_TABLE_RECORDS,
+        candidate=_TABLE_CANDIDATE,
+    )
+    assert not decision.is_title_block
+    assert decision.heading_indices == () and decision.body_indices == ()
+
+
+def test_table_non_title_verdict_well_formed_partition_still_ignored() -> None:
+    """Guarantee boundary: even a WELL-FORMED non-empty partition never
+    escapes a table window — cell content can never be named a heading or
+    vetoed through this channel. The guarantee lives in judge_title_block's
+    short-circuit (before partition parsing), so it holds independent of any
+    downstream fallback path."""
+    decision = _judge_with(
+        {"is_title_block": False, "headings": [0, 1], "body": [2]},
         records=_TABLE_RECORDS,
         candidate=_TABLE_CANDIDATE,
     )
@@ -1638,6 +1653,20 @@ def test_imprint_region_absorbs_trailing_document_date() -> None:
         _para("抄送：各设区市城乡规划局", size=12.0),  # 0 anchor
         _para("河北省住房和城乡建设厅办公室   2009年7月6日印发", size=12.0),  # 1 closer
         _para("二○○九年七月六日", size=12.0),  # 2 成文日期 → absorbed
+        _para("正文从这里开始，以句号结尾。", size=12.0),  # 3 not a date → stop
+    ]
+    regs = _regions(records)
+    assert len(regs) == 1
+    assert regs[0].closer == 1 and regs[0].members == {0, 1, 2}
+
+
+def test_imprint_region_absorbs_trailing_separator_date() -> None:
+    """The widened is_document_date (separator-style 2026.7.31) feeds the
+    same trailing-date absorption — the second consumer of the predicate."""
+    records = [
+        _para("抄送：各有关单位", size=12.0),  # 0 anchor
+        _para("某某办公室   2026年7月30日印发", size=12.0),  # 1 closer
+        _para("2026.7.31", size=12.0),  # 2 separator-style date → absorbed
         _para("正文从这里开始，以句号结尾。", size=12.0),  # 3 not a date → stop
     ]
     regs = _regions(records)

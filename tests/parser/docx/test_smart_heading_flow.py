@@ -301,6 +301,93 @@ def test_centered_run_longer_than_four_loses_channel() -> None:
     assert "居中标题一" in texts and "居中标题二" in texts
 
 
+def test_solo_centered_line_is_heading_under_high_confidence() -> None:
+    """§2.2.5 solo centered channel: under a high-confidence FS_base a
+    centered base-size line free of every body signal is a heading on its
+    own — no cross-run companion needed."""
+    records = _body(30)
+    records.append(_para("孤立居中标题", size=12.0, alignment="center"))
+    result = _gate(records)
+    d = next(x for x in result.decisions if x.text == "孤立居中标题")
+    assert d.rule_trail[0] == "base_center"
+
+
+def test_two_line_centered_title_both_admitted() -> None:
+    """A two-line centered title (adjacent lines = one run, so it never had
+    a cross-run companion) is admitted whole; merge_split_headings later
+    joins the pair."""
+    records = _body(30)
+    records.append(
+        _para("广州市城市安全风险综合监测预警平台", size=12.0, alignment="center")
+    )
+    records.append(_para("建设的工作方案", size=12.0, alignment="center"))
+    result = _gate(records)
+    texts = _texts(result)
+    assert "广州市城市安全风险综合监测预警平台" in texts
+    assert "建设的工作方案" in texts
+
+
+def test_solo_centered_channel_exclusions() -> None:
+    """The solo channel's safety exclusions: a centered 成文日期 (every
+    format), a letter-free decoration line, and a caption never enter it."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    excluded = (
+        "二〇二六年七月六日",
+        "2026.7.31",
+        "2026/7/31",
+        "2026-7-31",
+        "- 1 -",
+        "***",
+        "——",
+        "图 1 系统架构",
+    )
+    records = _body(30)
+    for t in excluded:
+        records.append(_para(t, size=12.0, alignment="center"))
+        records += _body(2)  # separate runs: exclusion, not anti-poetry
+    result = _gate(records, caption_veto=guardrails.caption_prefix_reason)
+    texts = _texts(result)
+    for t in excluded:
+        assert t not in texts
+
+
+def test_centered_run_of_four_loses_channel_but_not_size_path() -> None:
+    """Anti-poetry tightened to >= 4: a 4-line centered cluster loses the
+    centered channel as a WHOLE run, but losing the channel is not a veto —
+    a big line inside the cluster still rises via size_strong."""
+    records = _body(30)
+    records.append(_para("居中簇一", size=12.0, alignment="center"))
+    records.append(_para("居中簇二", size=12.0, alignment="center"))
+    records.append(_para("大字号居中行", size=16.0, alignment="center"))
+    records.append(_para("居中簇四", size=12.0, alignment="center"))
+    result = _gate(records)
+    texts = _texts(result)
+    assert "居中簇一" not in texts
+    assert "居中簇二" not in texts
+    assert "居中簇四" not in texts
+    d = next(x for x in result.decisions if x.text == "大字号居中行")
+    assert d.rule_trail[0] == "size_strong"
+
+
+def test_lowconf_truly_isolated_centered_line_needs_companion() -> None:
+    """Low confidence keeps the companion requirement: a globally UNIQUE
+    centered-shape line (no same-size centered line in ANY other run —
+    unlike G5-7's "isolated" line, which has cross-run companions) is not
+    admitted."""
+    records = []
+    records += _body(6, size=10.0)
+    records += _body(5, size=12.0)
+    records += _body(4, size=14.0)
+    indices = list(range(len(records)))
+    fs = document_fs_base(records, indices)
+    assert not fs.confidence_high
+
+    records.append(_para("全局唯一居中行", size=14.0, alignment="center"))
+    result = _gate(records)
+    assert "全局唯一居中行" not in _texts(result)
+
+
 def test_cb1_reestimation_recovers_density(monkeypatch, caplog) -> None:
     """G3-4 branch 1: dominant fake-heading size folds into the body; the
     re-gated density collapses and the breaker does NOT trip."""
@@ -765,8 +852,9 @@ def test_caption_veto_spares_outline_paragraphs() -> None:
 
 
 def test_llm_body_veto_revokes_candidacy() -> None:
-    """A10 (§2.2.4 赋予或撤销): an LLM body vote strips an otherwise
-    strong-size candidate; without the vote it is admitted."""
+    """A10 (§2.2.4, the veto side — the only partition side with force): an
+    LLM body vote strips an otherwise strong-size candidate; without the
+    vote it is admitted."""
     records = _body(30)
     records.append(_para("被判为正文的大字号行", size=16.0))
     idx = len(records) - 1
@@ -776,6 +864,149 @@ def test_llm_body_veto_revokes_candidacy() -> None:
 
     vetoed = _gate(records, llm_body_vetoes={idx})
     assert "被判为正文的大字号行" not in _texts(vetoed)
+
+
+def test_llm_grant_carries_no_admission_force() -> None:
+    """An LLM heading vote is audit-only (the test9 regression: a
+    right-aligned running-header line the LLM named a heading became a
+    level-2 ghost): a granted base-size line with no normal signal stays
+    body and is recorded in ``grant_rejected``, output-neutral."""
+    records = _body(30)
+    records.append(_para("GB/T 9704—2012", size=12.0, alignment="right"))
+    idx = len(records) - 1
+
+    result = _gate(records, llm_heading_grants={idx})
+    assert "GB/T 9704—2012" not in _texts(result)
+    assert [d.record_index for d in result.grant_rejected] == [idx]
+    rej = result.grant_rejected[0]
+    assert rej.is_heading is False
+    assert rej.level is None
+    assert rej.use_raw_text is False  # output-neutral ledger row
+    assert "llm_grant_rejected" in rej.rule_trail
+
+
+def test_llm_grant_does_not_block_normal_admission() -> None:
+    """A granted paragraph that passes a normal rule is admitted under that
+    rule (the grant neither helps nor hinders) and is not 'rejected'."""
+    records = _body(30)
+    records.append(_para("真正的大字号标题", size=16.0))
+    idx = len(records) - 1
+
+    result = _gate(records, llm_heading_grants={idx})
+    d = next(x for x in result.decisions if x.record_index == idx)
+    assert d.rule_trail[0] == "size_strong"
+    assert result.grant_rejected == []
+
+
+def test_llm_grant_rejected_with_numbering_veto_single_ledger_row() -> None:
+    """A granted paragraph whose numbering was ALSO homophone-vetoed leaves
+    ONE ledger decision carrying both marks (a second row would be dropped
+    by the caller's setdefault merge), in ``grant_rejected`` — not doubled
+    into ``veto_suppressed``."""
+    records = _body(30)
+    records.append(_para("一、被撤销编号且被点名的行", size=12.0))
+    idx = len(records) - 1
+
+    result = _gate(
+        records,
+        llm_heading_grants={idx},
+        numbering_veto=lambda _c, _t: "homophone_stub",
+    )
+    assert "一、被撤销编号且被点名的行" not in _texts(result)
+    assert result.veto_suppressed == []
+    assert [d.record_index for d in result.grant_rejected] == [idx]
+    trail = result.grant_rejected[0].rule_trail
+    assert "homophone_stub" in trail
+    assert "numbering_veto_suppressed" in trail
+    assert "llm_grant_rejected" in trail
+
+
+def test_llm_grant_rejected_end_to_end_audit(monkeypatch) -> None:
+    """test9 国标范例 end-to-end: the LLM rejects the 目次-page window as a
+    title block but names every line a heading (headings=[0,1,2]). Only the
+    16pt 目次 line survives (size_strong, on its own signal); the base-size
+    running-header and TOC lines are rejected grants — counted once against
+    the final gate result and ledgered in ``audit["decisions"]`` as
+    output-neutral non-headings."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    records = [
+        _para("GB/T 9704—2012", size=10.5, alignment="right"),  # running header
+        _para("目  次", size=16.0, alignment="center"),
+        _para("前言", size=10.5),  # a plain-text TOC entry
+    ]
+    records += _body(30, size=10.5)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {
+                "is_title_block": False,
+                "main_title": None,
+                "sub_title": None,
+                "doc_number": None,
+                "classification": None,
+                "publisher": None,
+                "date": None,
+                "headings": [0, 1, 2],
+                "body": [],
+            },
+            ensure_ascii=False,
+        )
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.decisions[1].is_heading  # 目次: admitted by size_strong
+    for idx in (0, 2):  # granted base-size lines stay body, rule-tagged
+        d = result.decisions[idx]
+        assert d.is_heading is False
+        assert "llm_grant_rejected" in d.rule_trail
+    assert warnings["smart_llm_grant_rejected"] == 2
+    rows = [r for r in result.audit["decisions"] if "llm_grant_rejected" in r["rules"]]
+    assert len(rows) == 2
+    assert all(r["is_heading"] is False and r["level"] is None for r in rows)
+
+
+def test_merge_ledger_only_merges_and_counts_once() -> None:
+    """The ledger merge shared by the normal path and the CB1 fallback:
+    rows ``setdefault`` in (an existing real decision wins) and the
+    grant-rejected warning counts once per FINAL gate result."""
+    from lightrag.parser.docx.smart_heading.heading_flow import (
+        GateResult,
+        _merge_ledger_only,
+    )
+
+    records = _body(5)
+    fs = document_fs_base(records, range(len(records)))
+    rej = HeadingDecision(record_index=3, text="x", is_heading=False)
+    rej.note("llm_grant_rejected")
+    supp = HeadingDecision(record_index=4, text="y", is_heading=False)
+    supp.note("numbering_veto_suppressed")
+    gate = GateResult(
+        decisions=[],
+        fs_base=fs,
+        density=0.0,
+        veto_suppressed=[supp],
+        grant_rejected=[rej],
+    )
+    existing = HeadingDecision(record_index=3, text="real", is_heading=True)
+    decisions = {3: existing}
+    warnings: dict = {}
+    _merge_ledger_only(decisions, gate, warnings)
+    assert decisions[3] is existing
+    assert decisions[4] is supp
+    assert warnings["smart_llm_grant_rejected"] == 1
 
 
 def test_title_block_gate_uses_char_weighted_mode_not_mean(monkeypatch) -> None:
@@ -1473,7 +1704,8 @@ def test_imprint_outline_demotion_passes_i2() -> None:
 
 
 def test_postmerge_sweep_demotes_imprint_heading() -> None:
-    """Leak path (e.g. llm_grant): a surviving imprint heading is caught by
+    """Leak path (e.g. an outline/size-admitted line, or a merge whose joined
+    text newly reads as imprint): a surviving imprint heading is caught by
     the §2.2.7 sweep; unnumbered → no series propagation side effects."""
     from lightrag.parser.docx.smart_heading import guardrails
 

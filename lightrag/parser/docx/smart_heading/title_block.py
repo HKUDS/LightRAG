@@ -15,9 +15,12 @@ or the same index voted both heading and body) raises
 :class:`TitleBlockLLMError`, as does any unparseable or non-locatable answer —
 those failures are loud, never silently degraded. An UNDER-SPECIFIED partition
 (two valid lists whose union merely omits some window indices) is instead
-recovered: the unmentioned paragraphs abstain (neither granted nor vetoed) and
-re-enter the normal flow, logged via ``title_block_partition_incomplete`` so a
-single local omission never fails the whole document.
+recovered: the unmentioned paragraphs abstain (named in neither list, so
+neither audited as headings nor vetoed) and re-enter the normal flow, logged
+via ``title_block_partition_incomplete`` so a single local omission never
+fails the whole document. Of the two partition lists only the BODY side
+carries force (a veto revoking candidate identity); the headings side is
+retained for audit/reference and never admits a heading by itself.
 """
 
 from __future__ import annotations
@@ -163,7 +166,11 @@ class TitleBlockDecision:
     classification: str | None = None
     publisher: str | None = None
     date: str | None = None
-    # non-title verdicts: LLM-granted plain-heading identity / body text
+    # Non-title verdicts. ``heading_indices`` is the LLM's headings partition,
+    # retained for downstream audit/reference only — NOT an admission rule
+    # (the gate re-judges those paragraphs on its normal signals; a vote that
+    # matches none is logged as ``llm_grant_rejected``). ``body_indices`` is
+    # the veto side, which DOES carry force (candidate identity revoked).
     heading_indices: tuple[int, ...] = ()
     body_indices: tuple[int, ...] = ()
     raw_response: str = field(default="", repr=False)
@@ -1282,7 +1289,7 @@ def judge_title_block(
         )
 
     # Non-title verdict for a SINGLE candidate: the ±context was reference
-    # only, so we neither grant nor veto any of it (review D3). The candidate
+    # only, so none of it is named in either list (review D3). The candidate
     # simply re-enters the normal §2.2.5 flow on its own signals — it is not
     # demoted, and the surrounding context keeps whatever standing the gate
     # gives it. The LLM's headings/body partition over the context is ignored.
@@ -1299,14 +1306,15 @@ def judge_title_block(
             raw_response=raw,
         )
 
-    # Non-title verdict: the LLM partitions the window into headings (granted
-    # plain-heading identity) and body (vetoed). MALFORMED output is loud —
+    # Non-title verdict: the LLM partitions the window into headings (audit
+    # reference only — no admission force) and body (vetoed). MALFORMED
+    # output is loud —
     # a missing/null/non-int field, an out-of-range index, a duplicate inside
     # one list, or the same index voted both heading AND body are corruption
     # that cannot be reconciled. But an UNDER-SPECIFIED partition (two valid
     # lists whose union merely misses some window indices) is recoverable: the
     # LLM abstained on those paragraphs, so — exactly like the single/table
-    # non-title path (review D3) — we neither grant nor veto them and they
+    # non-title path (review D3) — they are named in neither list and
     # re-enter the normal §2.2.5 flow. Loud (warning) but not fatal.
     def _indices(key: str) -> list[int]:
         value = data.get(key)
@@ -1338,8 +1346,8 @@ def judge_title_block(
             f"{sorted(all_indices)})"
         )
     # Under-specification is recoverable: unmentioned indices abstain (they
-    # enter neither heading_records nor body_records below, so they are
-    # neither granted nor vetoed downstream).
+    # enter neither heading_records nor body_records below, so downstream
+    # sees neither an audit reference nor a veto for them).
     missing = all_indices - h_set - b_set
     if missing:
         if warnings is not None:
