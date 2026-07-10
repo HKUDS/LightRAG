@@ -7,6 +7,7 @@ primitives).
 """
 
 import asyncio
+import contextvars
 
 import pytest
 
@@ -846,5 +847,61 @@ async def test_maintenance_renews_held_leases(monkeypatch):
         assert await ss.global_concurrency_in_use(GROUP) == 1
         release.set()
         assert await task == "long"
+    finally:
+        await wrapped.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# contextvars propagation (#3382): persistent worker tasks must run each call
+# under the enqueuer's context, not the context frozen when the worker was
+# first created.
+# ---------------------------------------------------------------------------
+
+_ctx_var: contextvars.ContextVar = contextvars.ContextVar("ctx_var", default="unset")
+
+
+async def test_context_propagates_to_default_path_worker():
+    seen = []
+
+    async def record_ctx(value):
+        seen.append(_ctx_var.get())
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(2, queue_name="ctx default test")(
+        record_ctx
+    )
+    try:
+        # Force the persistent worker task to spin up while the contextvar
+        # is still at its default — this is the moment the bug snapshotted
+        # forever under the old (unpatched) worker.
+        assert await wrapped("prime") == "prime"
+        assert seen[-1] == "unset"
+
+        _ctx_var.set("request-1")
+        assert await wrapped("call") == "call"
+        assert seen[-1] == "request-1"
+    finally:
+        await wrapped.shutdown()
+
+
+async def test_context_propagates_to_global_limit_path_worker():
+    _init({GROUP: 2})
+    seen = []
+
+    async def record_ctx(value):
+        seen.append(_ctx_var.get())
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        2, queue_name="ctx global test", concurrency_group=GROUP
+    )(record_ctx)
+    try:
+        # Same priming step, but through the slot-pump / limited_worker path.
+        assert await wrapped("prime") == "prime"
+        assert seen[-1] == "unset"
+
+        _ctx_var.set("request-2")
+        assert await wrapped("call") == "call"
+        assert seen[-1] == "request-2"
     finally:
         await wrapped.shutdown()

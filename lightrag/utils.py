@@ -5,6 +5,7 @@ import sys
 
 import asyncio
 import bisect
+import contextvars
 import html
 import csv
 import inspect
@@ -1243,6 +1244,7 @@ def priority_limit_async_func_call(
                                 task_id,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
@@ -1270,13 +1272,23 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute function with timeout protection
+                            # Execute the call under the enqueuer's captured
+                            # context, not the worker's creation-time context
+                            # (asyncio.Task snapshots contextvars once, at
+                            # create_task() time, and this worker task is
+                            # long-lived — reused across many unrelated
+                            # calls). ctx.run(asyncio.ensure_future, ...)
+                            # schedules the coroutine as a fresh Task whose
+                            # own context is copied from ctx (works on
+                            # Python 3.10, unlike create_task's context=
+                            # kwarg which needs 3.11+).
+                            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs), timeout=max_execution_timeout
+                                    exec_task, timeout=max_execution_timeout
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                result = await exec_task
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1414,7 +1426,12 @@ def priority_limit_async_func_call(
                                     # compaction holds them): return the
                                     # slot immediately.
                                     break
-                                task_id, args, kwargs = item[2], item[3], item[4]
+                                task_id, args, kwargs, ctx = (
+                                    item[2],
+                                    item[3],
+                                    item[4],
+                                    item[5],
+                                )
                                 is_zombie = False
                                 async with task_states_lock:
                                     task_state = task_states.get(task_id)
@@ -1442,6 +1459,7 @@ def priority_limit_async_func_call(
                                             task_state,
                                             args,
                                             kwargs,
+                                            ctx,
                                         )
                                 if is_zombie:
                                     # Never call the provider for a zombie.
@@ -1494,6 +1512,7 @@ def priority_limit_async_func_call(
                                 task_state,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(
                                 dispatch_queue.get(), timeout=1.0
                             )
@@ -1511,13 +1530,17 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
+                            # Run under the enqueuer's captured context, not
+                            # this long-lived worker's creation-time context
+                            # — see the matching comment in worker().
+                            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs),
+                                    exec_task,
                                     timeout=max_execution_timeout,
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                result = await exec_task
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -1891,6 +1914,7 @@ def priority_limit_async_func_call(
                         task_state,
                         _args,
                         _kwargs,
+                        _ctx,
                     ) = dispatch_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
@@ -2010,9 +2034,16 @@ def priority_limit_async_func_call(
                     current_count = counter
                     counter += 1
 
+                # Capture the enqueuer's context (e.g. an active OpenTelemetry
+                # span) so the worker executes func() under it instead of the
+                # long-lived worker task's own creation-time context.
+                ctx = contextvars.copy_context()
+
                 # Unbounded physical queue: put_nowait never blocks, and the
                 # (priority, count, ...) tuple keeps heap ordering intact.
-                queue.put_nowait((_priority, current_count, task_id, args, kwargs))
+                queue.put_nowait(
+                    (_priority, current_count, task_id, args, kwargs, ctx)
+                )
                 submitted_total += 1
                 work_available.set()
                 await _publish_stats()
@@ -2139,6 +2170,12 @@ def priority_limit_async_func_call(
                     current_count = counter
                     counter += 1
 
+                # Capture the enqueuer's context (e.g. an active
+                # OpenTelemetry span) so the worker executes func() under
+                # it instead of the long-lived worker task's own
+                # creation-time context.
+                ctx = contextvars.copy_context()
+
                 # Queue the task with timeout handling
                 try:
                     if not accepting_new_tasks:
@@ -2147,13 +2184,13 @@ def priority_limit_async_func_call(
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
-                                (_priority, current_count, task_id, args, kwargs)
+                                (_priority, current_count, task_id, args, kwargs, ctx)
                             ),
                             timeout=_queue_timeout,
                         )
                     else:
                         await queue.put(
-                            (_priority, current_count, task_id, args, kwargs)
+                            (_priority, current_count, task_id, args, kwargs, ctx)
                         )
                     submitted_total += 1
                     await _publish_stats()
