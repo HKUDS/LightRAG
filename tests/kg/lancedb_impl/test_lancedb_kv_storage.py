@@ -232,6 +232,15 @@ async def test_lancedb_workspace_env_override(
     assert storage.final_namespace == "forced_full_docs"
 
 
+async def test_lancedb_workspace_env_override_is_validated(
+    global_config, embedding_func, monkeypatch
+):
+    """The env override must fail fast on unsafe names, like the constructor path."""
+    monkeypatch.setenv("LANCEDB_WORKSPACE", "../escape")
+    with pytest.raises(ValueError):
+        _make_storage(global_config, embedding_func, workspace="ignored")
+
+
 async def test_workspaces_differing_only_by_case_stay_isolated(
     global_config, embedding_func
 ):

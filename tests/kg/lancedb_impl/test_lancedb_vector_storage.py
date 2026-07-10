@@ -1,5 +1,8 @@
 """Unit tests for LanceDBVectorStorage: deferred embedding, query, deletes."""
 
+import asyncio
+
+import numpy as np
 import pytest
 
 pytest.importorskip("lancedb", reason="lancedb is required for LanceDB storage tests")
@@ -7,7 +10,7 @@ pytest.importorskip("lancedb", reason="lancedb is required for LanceDB storage t
 from lightrag.kg.lancedb_impl import LanceDBVectorStorage  # noqa: E402
 from lightrag.utils import EmbeddingFunc, compute_mdhash_id  # noqa: E402
 
-from .conftest import DIM, CountingEmbed  # noqa: E402
+from .conftest import DIM, CountingEmbed, text_vector  # noqa: E402
 
 pytestmark = pytest.mark.offline
 
@@ -400,5 +403,84 @@ async def test_drop_recreates_empty_table(global_config, embedding_func):
         await storage.upsert({"ent-2": _entity("Bob", "y")})
         await storage.index_done_callback()
         assert await storage.get_by_id("ent-2") is not None
+    finally:
+        await storage.finalize()
+
+
+def _gated_embedding_func():
+    """EmbeddingFunc that blocks inside the embedding call until released.
+
+    Lets tests hold an index_done_callback flush mid-embedding (with
+    _buffer_lock held) while another coroutine races against it.
+    """
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def gated_embed(texts, **kwargs):
+        entered.set()
+        await gate.wait()
+        return np.array([text_vector(t) for t in texts])
+
+    func = EmbeddingFunc(embedding_dim=DIM, max_token_size=512, func=gated_embed)
+    return func, entered, gate
+
+
+async def test_delete_entity_relation_serializes_with_inflight_flush(global_config):
+    """Regression: delete_entity_relation must not leave an orphaned relation
+    vector when it overlaps an in-flight flush (it used to delete table rows
+    before pruning the pending buffer, so the flush re-persisted the doc)."""
+    embedding_func, entered, gate = _gated_embedding_func()
+    storage = _make_storage(
+        global_config,
+        embedding_func,
+        namespace="relationships",
+        meta_fields=RELATION_META,
+    )
+    await storage.initialize()
+    try:
+        await storage.upsert(
+            {
+                "rel-1": {
+                    "content": "Alice likes Bob",
+                    "src_id": "Alice",
+                    "tgt_id": "Bob",
+                    "source_id": "chunk-1",
+                    "file_path": "test.txt",
+                }
+            }
+        )
+        flush = asyncio.create_task(storage.index_done_callback())
+        await entered.wait()  # flush holds _buffer_lock, blocked in embedding
+        delete = asyncio.create_task(storage.delete_entity_relation("Alice"))
+        await asyncio.sleep(0)  # let delete start and block behind the flush
+        gate.set()
+        await asyncio.gather(flush, delete)
+        rows = await storage._table().query().to_list()
+        assert not any(
+            row["src_id"] == "Alice" or row["tgt_id"] == "Alice" for row in rows
+        )
+    finally:
+        await storage.finalize()
+
+
+async def test_drop_serializes_with_inflight_flush(global_config):
+    """drop() holds _buffer_lock across the table recreate, so an overlapping
+    flush either lands before the drop (rows removed) or sees an empty buffer
+    afterwards — never a resurrected table."""
+    embedding_func, entered, gate = _gated_embedding_func()
+    storage = _make_storage(global_config, embedding_func)
+    await storage.initialize()
+    try:
+        await storage.upsert({"ent-1": _entity("Alice", "x")})
+        flush = asyncio.create_task(storage.index_done_callback())
+        await entered.wait()
+        drop = asyncio.create_task(storage.drop())
+        await asyncio.sleep(0)
+        gate.set()
+        results = await asyncio.gather(flush, drop)
+        assert results[1] == {"status": "success", "message": "data dropped"}
+        assert await storage._table().count_rows() == 0
+        async with storage._buffer_lock:
+            assert not storage._pending_docs
     finally:
         await storage.finalize()

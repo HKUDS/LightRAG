@@ -122,11 +122,13 @@ def main():
         print("=" * 80 + "\n")
         sys.exit(1)
 
-    # LanceDB is an embedded database whose write serialization is
-    # per-process; concurrent writers from multiple gunicorn workers can
-    # commit duplicate rows. Refuse to start multi-worker with it.
+    # Embedded backends listed in MULTIPROCESS_UNSAFE_STORAGES serialize
+    # writes per-process; concurrent writers from multiple gunicorn workers
+    # can commit duplicate rows. Refuse to start multi-worker with them.
     if global_args.workers > 1:
-        lancedb_storages = [
+        from lightrag.kg import MULTIPROCESS_UNSAFE_STORAGES
+
+        unsafe_storages = [
             name
             for name in (
                 global_args.kv_storage,
@@ -134,17 +136,17 @@ def main():
                 global_args.graph_storage,
                 global_args.vector_storage,
             )
-            if name.startswith("LanceDB")
+            if name in MULTIPROCESS_UNSAFE_STORAGES
         ]
-        if lancedb_storages:
+        if unsafe_storages:
             print("\n" + "=" * 80)
-            print("❌ ERROR: LanceDB storage does not support multi-worker mode!")
+            print("❌ ERROR: Configured storage does not support multi-worker mode!")
             print("=" * 80)
             print(
-                f"\nConfigured LanceDB storages: {', '.join(sorted(set(lancedb_storages)))}"
+                f"\nSingle-process storages: {', '.join(sorted(set(unsafe_storages)))}"
             )
             print(f"Workers: {global_args.workers}")
-            print("\nLanceDB is an embedded database; its write serialization is")
+            print("\nThese are embedded databases; their write serialization is")
             print("per-process, so concurrent gunicorn workers could commit")
             print("duplicate rows to the same tables.")
             print("\nHow to fix:")
