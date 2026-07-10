@@ -214,14 +214,24 @@ class PaddleOCRVLRawClient:
         if not stripped:
             return pages
         if stripped.startswith("["):
-            payload = json.loads(stripped)
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"PaddleOCR-VL result which starts with '[' was unparseable: {exc.msg}"
+                ) from exc
             if isinstance(payload, list):
                 return [p for p in payload if isinstance(p, dict)]
         for line in stripped.splitlines():
             line = line.strip()
             if not line:
                 continue
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"PaddleOCR-VL json result had an unparseable line: {exc.msg}"
+                ) from exc
             result = payload.get("result") if isinstance(payload, dict) else None
             page_items = (
                 result.get("layoutParsingResults") if isinstance(result, dict) else None
