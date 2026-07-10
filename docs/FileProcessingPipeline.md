@@ -928,8 +928,7 @@ PaddleOCR-VL returns binary fields such as `outputImages`, `inputImage`,
 configuration enables `Serving.return_urls=true`, those fields keep the same
 shape but contain presigned object-storage URLs instead. PaddleOCR currently
 supports URL returns only through BOS (Baidu Object Storage), so LightRAG only
-downloads HTTPS image URLs whose host is `bj.bcebos.com` or ends with
-`.bj.bcebos.com`, for example:
+downloads HTTPS image URLs whose host ends with `.bcebos.com`, for example:
 
 ```bash
 https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/pp-ocr-vl-16-online/.../markdown_0/imgs/example.jpg?authorization=...

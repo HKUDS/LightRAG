@@ -927,8 +927,7 @@ PaddleOCR-VL 默认把 `outputImages`、`inputImage`、`markdown.images`、
 `exports` 等二进制字段以 Base64 内联返回。当服务端启用
 `Serving.return_urls=true` 时，这些字段的结构不变，但值会变成预签名对象存储
 URL。PaddleOCR 当前的 URL 返回仅支持 BOS（百度智能云对象存储），因此
-LightRAG 只下载 host 为 `bj.bcebos.com` 或以 `.bj.bcebos.com` 结尾的 HTTPS
-图片 URL，例如：
+LightRAG 只下载 host 以 `.bcebos.com` 结尾的 HTTPS 图片 URL，例如：
 
 ```bash
 https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/pp-ocr-vl-16-online/.../markdown_0/imgs/example.jpg?authorization=...

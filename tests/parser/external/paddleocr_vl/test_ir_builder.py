@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lightrag.parser.external._manifest import Manifest, ManifestFile, write_manifest
 from lightrag.parser.external.paddleocr_vl import PaddleOCRVLIRBuilder
 
 
@@ -17,6 +18,23 @@ def _write_bundle(tmp_path: Path, payload: object) -> Path:
         json.dumps(payload, ensure_ascii=False), encoding="utf-8"
     )
     return raw_dir
+
+
+def _write_manifest(raw_dir: Path, *, page_ranges: str) -> None:
+    result = raw_dir / "content_list.json"
+    write_manifest(
+        raw_dir,
+        Manifest(
+            engine="paddleocr_vl",
+            source_content_hash="sha256:test",
+            source_size_bytes=1,
+            source_filename_at_parse="demo.pdf",
+            critical_file=ManifestFile("content_list.json", result.stat().st_size),
+            files=[],
+            total_size_bytes=result.stat().st_size,
+            extras={"page_ranges": page_ranges},
+        ),
+    )
 
 
 def _sample_payload() -> list[dict]:
@@ -444,3 +462,74 @@ def test_paddleocr_vl_known_labels_map_to_ir_actions(tmp_path: Path) -> None:
         "imgs/img_in_image_box_10_110_90_150.jpg",
         "imgs/img_in_image_box_10_160_90_190.jpg",
     ]
+
+
+@pytest.mark.offline
+def test_poly_bbox_is_normalized_to_enclosing_rectangle(tmp_path: Path) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Skewed",
+                            "block_bbox": [[10, 20], [30, 18], [42, 55], [8, 60]],
+                        }
+                    ]
+                }
+            }
+        ],
+    )
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    assert ir.blocks[0].positions[0].range == [8, 18, 42, 60]
+
+
+@pytest.mark.offline
+def test_poly_bbox_image_uses_enclosing_rectangle_for_markdown_asset(
+    tmp_path: Path,
+) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "doc_title",
+                            "block_content": "Skewed image",
+                            "block_bbox": [10, 20, 30, 40],
+                        },
+                        {
+                            "block_label": "image",
+                            "block_content": "",
+                            "block_bbox": [
+                                [10, 20],
+                                [30, 18],
+                                [42, 55],
+                                [8, 60],
+                            ],
+                        },
+                    ]
+                },
+                "markdown": {
+                    "images": {
+                        "imgs/img_in_image_box_8_18_42_60.jpg": "ignored-url",
+                    }
+                },
+            }
+        ],
+    )
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    drawing = ir.blocks[0].drawings[0]
+    assert drawing.asset_ref == "imgs/img_in_image_box_8_18_42_60.jpg"
+    assert ir.blocks[0].positions[-1].range == [8, 18, 42, 60]

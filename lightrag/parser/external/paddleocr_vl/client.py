@@ -412,9 +412,7 @@ def _is_bos_asset_url(url: str) -> bool:
     """Check if the given URL is a Baidu BOS asset URL."""
     parsed = urlparse(url)
     host = (parsed.hostname or "").rstrip(".").lower()
-    return parsed.scheme == "https" and (
-        host == "bj.bcebos.com" or host.endswith(".bj.bcebos.com")
-    )
+    return parsed.scheme == "https" and host.endswith(".bcebos.com")
 
 
 def _decode_base64_payload(value: str) -> bytes | None:

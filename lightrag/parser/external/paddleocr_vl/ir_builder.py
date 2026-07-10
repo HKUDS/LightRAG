@@ -144,12 +144,14 @@ class PaddleOCRVLIRBuilder:
             cb_parents = parents
             cb_lines.append(render_heading_line(level, raw_heading))
 
-        def record_position(item: dict[str, Any], page_index: int) -> None:
-            position = _position_from_item(item, page_index)
+        def record_position(item: dict[str, Any], page_anchor: str) -> None:
+            position = _position_from_item(item, page_anchor)
             if position is not None:
                 cb_positions.append(position)
 
         for page_index, page in enumerate(pages):
+            # Convert to 1-based page anchor like what ``MinerU`` does
+            page_anchor = str(page_index + 1)
             # Each item in items contains the following key-value pairs:
             # - block_bbox: (np.ndarray) Bounding box of the layout region
             # - block_label: (str) Label of the layout region, e.g., text, table, etc.
@@ -174,7 +176,7 @@ class PaddleOCRVLIRBuilder:
                 # Handle images first since they may have empty content
                 if label in _DRAWING_LABELS:
                     bbox = item.get("block_bbox") or item.get("bbox")
-                    src = page_images.get(tuple(bbox) if bbox else None, "")
+                    src = page_images.get(_bbox_key(bbox), "")
                     if not src:
                         src = _extract_image_src(text)
                     drawing, asset = _build_ir_drawing(
@@ -190,7 +192,7 @@ class PaddleOCRVLIRBuilder:
                         assets.append(asset)
                         asset_refs.add(asset.ref)
                     cb_lines.append(f"{{{{IMG:{drawing.placeholder_key}}}}}")
-                    record_position(item, page_index)
+                    record_position(item, page_anchor)
                     continue
 
                 if not text:
@@ -202,7 +204,7 @@ class PaddleOCRVLIRBuilder:
                     heading_stack[:] = heading_stack[: max(heading_level - 1, 0)]
                     heading_stack.append(clean_heading)
                     open_block(clean_heading, heading_level, text)
-                    record_position(item, page_index)
+                    record_position(item, page_anchor)
                     if not doc_title and heading_level == 1:
                         doc_title = clean_heading
                     continue
@@ -217,7 +219,7 @@ class PaddleOCRVLIRBuilder:
                     table.self_ref = f"{CONTENT_LIST_FILENAME}#/{page_index}/prunedResult/parsing_res_list/{item_index}"
                     cb_tables.append(table)
                     cb_lines.append(f"{{{{TBL:{table.placeholder_key}}}}}")
-                    record_position(item, page_index)
+                    record_position(item, page_anchor)
                     continue
 
                 if label in {"display_formula", "inline_formula"}:
@@ -236,16 +238,16 @@ class PaddleOCRVLIRBuilder:
                     cb_equations.append(equation)
                     token = "EQ" if is_block else "EQI"
                     cb_lines.append(f"{{{{{token}:{equation.placeholder_key}}}}}")
-                    record_position(item, page_index)
+                    record_position(item, page_anchor)
                     continue
 
                 if label in _TEXT_LABELS or not label:
                     cb_lines.append(text)
-                    record_position(item, page_index)
+                    record_position(item, page_anchor)
                     continue
 
                 cb_lines.append(text)
-                record_position(item, page_index)
+                record_position(item, page_anchor)
 
         flush()
         if not doc_title:
@@ -323,6 +325,13 @@ def _parse_bbox_from_image_path(path: str) -> tuple[int, int, int, int] | None:
     except (ValueError, TypeError):
         pass
     return None
+
+
+def _bbox_key(bbox: Any) -> tuple[int, int, int, int] | None:
+    normalized = _normalize_bbox(bbox)
+    if normalized is None:
+        return None
+    return (normalized[0], normalized[1], normalized[2], normalized[3])
 
 
 def _heading_level(label: str, text: str) -> int | None:
@@ -445,18 +454,48 @@ def _caption_preferred_media_label(caption: str) -> str:
     return ""
 
 
-def _position_from_item(item: dict[str, Any], page_index: int) -> IRPosition | None:
+def _position_from_item(item: dict[str, Any], page_anchor: str) -> IRPosition | None:
     bbox = item.get("block_bbox") or item.get("bbox")
-    if isinstance(bbox, list) and len(bbox) == 4:
-        try:
-            return IRPosition(
-                type="bbox",
-                anchor=str(page_index + 1),
-                range=[int(x) for x in bbox],
-            )
-        except (TypeError, ValueError):
-            logger.debug("[paddleocr_vl] skipping malformed bbox %r", bbox)
-    return IRPosition(type="bbox", anchor=str(page_index + 1))
+    normalized = _normalize_bbox(bbox)
+    if normalized is not None:
+        return IRPosition(type="bbox", anchor=page_anchor, range=normalized)
+    if bbox is not None:
+        logger.debug("[paddleocr_vl] skipping malformed bbox %r", bbox)
+    return IRPosition(type="bbox", anchor=page_anchor)
+
+
+def _normalize_bbox(bbox: Any) -> list[int] | None:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+        return None
+    try:
+        if all(not isinstance(value, (list, tuple)) for value in bbox):
+            values = [float(value) for value in bbox]
+            if len(values) == 4:
+                x_values = [values[0], values[2]]
+                y_values = [values[1], values[3]]
+            elif len(values) >= 6 and len(values) % 2 == 0:
+                x_values = values[0::2]
+                y_values = values[1::2]
+            else:
+                return None
+        else:
+            points = [
+                (float(point[0]), float(point[1]))
+                for point in bbox
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ]
+            if not points:
+                return None
+            x_values = [point[0] for point in points]
+            y_values = [point[1] for point in points]
+    except (TypeError, ValueError):
+        return None
+    return [
+        int(min(x_values)),
+        int(min(y_values)),
+        int(max(x_values)),
+        int(max(y_values)),
+    ]
 
 
 def _build_ir_table(item: dict[str, Any], *, caption: str = "") -> IRTable | None:

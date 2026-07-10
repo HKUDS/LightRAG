@@ -305,6 +305,16 @@ def test_parser_options_allow_page_range_when_api_mode_defaults_to_official(
     assert options.page_ranges == "1-3"
 
 
+def test_page_range_cache_uses_options_signature_without_manifest_extra(
+    tmp_path: Path, source_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_PAGE_RANGES", "4-6")
+    signature = PaddleOCRVLParserOptions.from_env().signature()
+    raw = _bundle(tmp_path, source_file, options_signature=signature)
+
+    assert is_bundle_valid(raw, source_file) is True
+
+
 def test_per_file_overrides_participate_in_cache_signature(
     tmp_path: Path, source_file: Path
 ) -> None:

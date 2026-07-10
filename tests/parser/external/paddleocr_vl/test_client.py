@@ -197,6 +197,13 @@ class _FakeAsyncClient:
             "authorization=bce-auth-v1"
         ):
             return _Response(content=b"bos-fig")
+        if url == (
+            "https://pplines-online.gz.bcebos.com/deploy/official/paddleocr/"
+            "pp-ocr-vl-16-online/f74decfd-07d8-4cf9-aa27-4c4ddeaf309e/"
+            "markdown_0/imgs/img_in_image_box_93_222_125_263.jpg?"
+            "authorization=bce-auth-v1"
+        ):
+            return _Response(content=b"gz-bos-fig")
         raise AssertionError(f"unexpected GET {url}")
 
 
