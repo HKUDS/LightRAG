@@ -100,6 +100,37 @@ def _canon(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
+def _is_cjk_char(ch: str) -> bool:
+    return "一" <= ch <= "鿿"
+
+
+def _join_heading_texts(left: str, right: str) -> str:
+    """CJK-aware join: no space between CJK boundaries, a space otherwise."""
+    if left and right and _is_cjk_char(left[-1]) and _is_cjk_char(right[0]):
+        return left + right
+    return f"{left} {right}"
+
+
+def flatten_heading_line(text: str) -> str:
+    """Render a heading that carries line breaks as ONE line.
+
+    A heading is a single title no matter how its source was line-wrapped
+    (soft ``<w:br>`` breaks, an LLM echoing a multi-paragraph cover title) —
+    left multi-line it leaks ``\\n`` into every descendant's
+    ``parent_headings``. ``splitlines()`` covers ``\\r\\n``/U+2028-style
+    breaks, not just ``\\n``; lines join CJK-aware so Chinese titles gain no
+    stray spaces.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return ""
+    joined = lines[0]
+    for ln in lines[1:]:
+        joined = _join_heading_texts(joined, ln)
+    return joined
+
+
 # ---------------------------------------------------------------------------
 # candidates
 # ---------------------------------------------------------------------------
@@ -1185,7 +1216,12 @@ def judge_title_block(
             return None
         if not isinstance(value, str):
             raise TitleBlockLLMError(f"title-block field {key!r} must be a string")
-        return value.strip() or None
+        # Title material must be single-line: the prompt lets the LLM
+        # concatenate consecutive paragraphs, and an echoed line break would
+        # ride main_title into the heading stack and every descendant's
+        # parent_headings. Locate-back below is unaffected (_canon strips
+        # ALL whitespace).
+        return flatten_heading_line(value) or None
 
     if is_title:
         main_title = _opt_str("main_title")

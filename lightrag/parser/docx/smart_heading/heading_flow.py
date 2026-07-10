@@ -41,6 +41,7 @@ from lightrag.utils import get_content_summary, logger
 
 from . import guardrails
 from .features import effective_font_size_pt
+from .title_block import _join_heading_texts
 from .style_key import (
     CN_CHAPTER,
     EN_CHAPTER,
@@ -1314,17 +1315,6 @@ def anchor_outline_levels(
 # ---------------------------------------------------------------------------
 
 _MERGE_MAX_LINES = 4
-
-
-def _is_cjk_char(ch: str) -> bool:
-    return "一" <= ch <= "鿿"
-
-
-def _join_heading_texts(left: str, right: str) -> str:
-    """CJK-aware join: no space between CJK boundaries, a space otherwise."""
-    if left and right and _is_cjk_char(left[-1]) and _is_cjk_char(right[0]):
-        return left + right
-    return f"{left} {right}"
 
 
 def merge_split_headings(

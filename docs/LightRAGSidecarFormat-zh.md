@@ -76,7 +76,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `doc_id` | `"doc-<md5>"` | 文档全局 id。sidecar item id（`im-/tb-/eq-`）使用 `doc_id` 去掉 `doc-` 前缀后的哈希部分，以缩短嵌入正文中的占位标签 |
 | `parse_engine` | `str` | 解析引擎`native/mineru/docling/legacy` |
 | `parse_time` | `str` | 解析完成时间; 格式：ISO-8601 UTC |
-| `doc_title` | `str` | 文档标题（通常为首个 H1）；可选 |
+| `doc_title` | `str` | 文档标题（通常为首个 H1）；可选。docx smart_heading 模式下为 LLM 识别的标题块主标题，未识别出标题块时为空字符串 |
 | `doc_summary` | `str` | 文档摘要；可选 |
 | `doc_attributes` | `object` | 文章扩展属性对象；可选 |
 | `bbox_attributes` | `object` | bbox possition全局属性；详见[§八](八、positions) |

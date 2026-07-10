@@ -76,7 +76,7 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
 | `doc_id` | `"doc-<md5>"` | Global document ID. Sidecar item IDs (`im-/tb-/eq-`) use the hash portion of `doc_id` with the `doc-` prefix removed, in order to shorten the placeholder tags embedded in body text. |
 | `parse_engine` | `str` | Parsing engine `native/mineru/docling/legacy` |
 | `parse_time` | `str` | Parse completion time; format: ISO-8601 UTC |
-| `doc_title` | `str` | Document title (usually the first H1); optional |
+| `doc_title` | `str` | Document title (usually the first H1); optional. Under docx smart_heading it is the LLM-identified title-block main title, and an empty string when no title block was identified |
 | `doc_summary` | `str` | Document summary; optional |
 | `doc_attributes` | `object` | Document extended attributes object; optional |
 | `bbox_attributes` | `object` | Global bbox position attributes; see [§8](#8-positions) |

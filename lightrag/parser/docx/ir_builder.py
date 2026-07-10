@@ -319,12 +319,18 @@ class NativeDocxIRBuilder:
                 )
             )
 
-        # doc_title: parse_metadata["first_heading"] when present, else file
-        # stem fallback (resolved here so the writer doesn't have to know).
-        first_heading = ""
-        if isinstance(parse_metadata, dict):
-            first_heading = str(parse_metadata.get("first_heading") or "")
-        doc_title = first_heading or (Path(document_name).stem or document_name)
+        # doc_title: an explicit parse_metadata["doc_title"] wins outright —
+        # the smart assembler writes it as its title-block verdict, and an
+        # EMPTY string is a real answer ("no title block identified"), not a
+        # missing one. Otherwise the legacy chain: first_heading, else file
+        # stem (resolved here so the writer doesn't have to know).
+        if isinstance(parse_metadata, dict) and "doc_title" in parse_metadata:
+            doc_title = str(parse_metadata["doc_title"])
+        else:
+            first_heading = ""
+            if isinstance(parse_metadata, dict):
+                first_heading = str(parse_metadata.get("first_heading") or "")
+            doc_title = first_heading or (Path(document_name).stem or document_name)
 
         return IRDoc(
             document_name=document_name,

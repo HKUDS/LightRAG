@@ -19,6 +19,7 @@ from lightrag.parser.docx.smart_heading.title_block import (
     compose_title_heading,
     detect_imprint_regions,
     find_title_block_candidates,
+    flatten_heading_line,
     judge_title_block,
 )
 
@@ -220,6 +221,38 @@ def test_title_verdict_concatenated_main_title_locates() -> None:
         candidate=TitleBlockCandidate(start=0, end=2, single=False, trigger="t"),
     )
     assert decision.main_title == "中华人民共和国某某管理办法"
+
+
+def test_title_verdict_multiline_fields_flattened() -> None:
+    """Title material renders single-line at verdict construction: an LLM
+    echoing a soft-break/multi-paragraph title must not ride ``\\n`` into the
+    heading stack (and thence every descendant's parent_headings). CJK
+    boundaries join without a space, others with one; locate-back still
+    passes (_canon strips ALL whitespace)."""
+    records = [
+        _para("中华人民共和国\n某某管理办法", size=22.0),
+        _para("Implementation\nGuide", size=16.0),
+        _para("正文开始。", size=12.0),
+    ]
+    decision = _judge_with(
+        {
+            "is_title_block": True,
+            "main_title": "中华人民共和国\n某某管理办法",
+            "sub_title": "Implementation\r\nGuide",
+        },
+        records=records,
+        candidate=TitleBlockCandidate(start=0, end=2, single=False, trigger="t"),
+    )
+    assert decision.main_title == "中华人民共和国某某管理办法"
+    assert decision.sub_title == "Implementation Guide"
+    assert "\n" not in compose_title_heading(decision)
+
+
+def test_flatten_heading_line_unicode_breaks() -> None:
+    assert flatten_heading_line("总则\u2028细则") == "总则细则"
+    assert flatten_heading_line("  Part A \n\n Part B ") == "Part A Part B"
+    assert flatten_heading_line("单行标题") == "单行标题"
+    assert flatten_heading_line("\n \n") == ""
 
 
 def test_title_verdict_hallucinated_title_hard_fails() -> None:

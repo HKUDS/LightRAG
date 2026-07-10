@@ -4,8 +4,9 @@ Each scenario describes:
 
 - ``blocks``      — what ``extract_docx_blocks`` would return (the synthetic
   block dicts that the adapter consumes).
-- ``parse_metadata`` — the dict the upstream parser fills in (only
-  ``first_heading`` is currently consumed by the adapter).
+- ``parse_metadata`` — the dict the upstream parser fills in (the adapter
+  consumes ``first_heading``, and ``doc_title`` — the smart assembler's
+  explicit verdict, empty string allowed — when the key is present).
 - ``assets``      — files the upstream extractor would have written into
   ``<base>.blocks.assets/`` before the IR builder runs. Maps relative names
   inside the asset dir → byte content.

@@ -824,6 +824,78 @@ def test_title_block_gate_uses_char_weighted_mode_not_mean(monkeypatch) -> None:
     assert any(d.is_title_block and d.level == 0 for d in result.decisions.values())
 
 
+def test_title_block_multiline_main_title_flattened(monkeypatch) -> None:
+    """A soft-break cover title echoed by the LLM with its ``\\n`` intact must
+    land single-line everywhere it fans out: result.doc_title, the meta
+    doc_title key, the block heading, and every descendant's
+    parent_headings."""
+    import json
+
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    records = [
+        _para("行业观察\n白皮书", size=14.0),
+        _para("某某研究院", size=12.0),
+    ]
+    records += _body(15, size=12.0)
+    records.append(_para("第一章 总则", size=12.0, outline_level=0))
+    records += _body(15, size=12.0)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "行业观察\n白皮书"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.doc_title == "行业观察白皮书"
+
+    meta: dict = {}
+    blocks = _assemble_blocks_smart(records, result, {}, meta)
+    assert meta["doc_title"] == "行业观察白皮书"
+    title = next(b for b in blocks if b.get("is_title_block"))
+    assert title["heading"] == "行业观察白皮书"
+    chapter = next(b for b in blocks if b["heading"] == "第一章 总则")
+    assert chapter["parent_headings"] == ["行业观察白皮书"]
+    for b in blocks:
+        assert "\n" not in b["heading"]
+        assert all("\n" not in h for h in b["parent_headings"])
+
+
+def test_assembler_doc_title_empty_without_title_block() -> None:
+    """Smart mode: the title block is the ONLY doc_title source. With no
+    title verdict the assembler records an explicitly EMPTY doc_title (a
+    "前言"-style first heading must not masquerade as the document title),
+    while first_heading keeps its legacy any-heading semantics."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+
+    records = [_para("前言", outline_level=0), _para("正文一句。")]
+    result = SmartHeadingResult(
+        decisions={
+            0: HeadingDecision(record_index=0, text="前言", is_heading=True, level=1)
+        },
+        toc_indices=set(),
+        doc_title=None,
+        audit={},
+    )
+    meta: dict = {}
+    _assemble_blocks_smart(records, result, {}, meta)
+    assert meta["doc_title"] == ""
+    assert meta["first_heading"] == "前言"
+
+
 def test_title_block_judge_receives_fs_base(monkeypatch) -> None:
     """Call-site guard: run_smart_heading must hand the global FS_base
     initial value to judge_title_block — the font-size evidence legend
@@ -1086,6 +1158,7 @@ def test_table_title_block_end_to_end_assembly(monkeypatch) -> None:
     for cell in ("产品标准化大纲", "某某模块", "某某电子股份有限公司"):
         assert cell in tb["content"]  # absorption is lossless
     assert meta["first_heading"] == "产品标准化大纲某某模块"
+    assert meta["doc_title"] == "产品标准化大纲某某模块"
 
     # No section heading separates the cover from the rest, so the whole
     # document is one title block: cover cells carried as PLAIN text (no

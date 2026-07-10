@@ -1176,6 +1176,9 @@ def extract_docx_blocks(
         warnings_sink["smart_fallback_baseline"] = 1
         if parse_metadata is not None:
             parse_metadata.pop("first_heading", None)
+            # Baseline output ships baseline doc_title semantics too — the
+            # smart-only explicit key must not survive the fallback.
+            parse_metadata.pop("doc_title", None)
         return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
 
     # ``smart_toc_removed_paragraphs`` is a content claim, so it lands only
@@ -1232,6 +1235,13 @@ def _assemble_blocks_smart(
     current_is_title_block = False
     first_heading_recorded = False
 
+    if parse_metadata is not None:
+        # Smart mode: the LLM title block is the ONLY doc_title source — no
+        # title block means an explicitly EMPTY title ("前言"-style first
+        # headings must not masquerade as the document title). The dedicated
+        # key overrides ir_builder's first_heading/stem fallback chain;
+        # first_heading below keeps its legacy any-heading semantics.
+        parse_metadata["doc_title"] = smart_result.doc_title or ""
     if smart_result.doc_title and parse_metadata is not None:
         parse_metadata["first_heading"] = smart_result.doc_title
         first_heading_recorded = True
@@ -1322,6 +1332,13 @@ def _assemble_blocks_smart(
             main_title = (
                 d.title_parts[0] if d.title_parts else (d.composed_heading or d.text)
             )
+            if "\n" in main_title:
+                # LLM verdicts are flattened at construction (_opt_str), but
+                # the d.text fallback (hand-built decisions) still carries raw
+                # soft breaks — same single-line rule as the plain branch.
+                from .smart_heading.title_block import flatten_heading_line
+
+                main_title = flatten_heading_line(main_title) or main_title
             title_heading = truncate_heading(main_title, rec.para_id)
             # Seed the block with the title cover; the following body joins the
             # SAME block so the title block OWNS its content up to the next
@@ -1363,13 +1380,9 @@ def _assemble_blocks_smart(
                 # §2.2.7: a heading that still carries soft-break lines is
                 # ONE title — render it as a single line (CJK-aware join),
                 # or the I1 source paragraph can never match any output row.
-                from .smart_heading.heading_flow import _join_heading_texts
+                from .smart_heading.title_block import flatten_heading_line
 
-                lines = [ln for ln in heading_text.split("\n") if ln.strip()]
-                if lines:
-                    heading_text = lines[0]
-                    for ln in lines[1:]:
-                        heading_text = _join_heading_texts(heading_text, ln)
+                heading_text = flatten_heading_line(heading_text) or heading_text
             truncated_text = truncate_heading(heading_text, heading_para_id)
             clean_heading_text = strip_heading_markdown_prefix(truncated_text)
 

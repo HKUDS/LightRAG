@@ -324,6 +324,7 @@ def test_redhead_document_structure(monkeypatch) -> None:
     sub = next(b for b in blocks if b["heading"] == "（一）提高认识")
     assert sub["parent_headings"] == ["某某市人民政府文件", "一、总体要求"]
     assert metadata["first_heading"] == "某某市人民政府文件"
+    assert metadata["doc_title"] == "某某市人民政府文件"
 
 
 def test_regulation_chapters_and_clauses(monkeypatch) -> None:
@@ -370,11 +371,13 @@ def test_question_bank_cb1_yields_no_phantom_headings(monkeypatch) -> None:
     excluding weight fix tipped it to 12pt, so the re-gate now converges to 0
     candidates instead of tripping. Both keep the bank heading-free — assert
     the engagement + outcome, not the branch."""
-    blocks, warnings, _ = _extract("question_bank", _make_llm({}), monkeypatch)
+    blocks, warnings, metadata = _extract("question_bank", _make_llm({}), monkeypatch)
     assert warnings.get("smart_cb1_reestimated") == 1
     # No phantom heading blocks: everything stays one preface block.
     assert all(not b.get("is_title_block") for b in blocks)
     assert {b["heading"] for b in blocks} == {"Preface/Uncategorized"}
+    # Accepted smart output with no title block: doc_title is explicitly empty.
+    assert metadata["doc_title"] == ""
 
 
 def test_spliced_articles_two_title_blocks(monkeypatch) -> None:
@@ -397,6 +400,7 @@ def test_spliced_articles_two_title_blocks(monkeypatch) -> None:
     ]
     assert all(t["level"] == 0 for t in titles)
     assert metadata["first_heading"] == "数字化转型研究综述"
+    assert metadata["doc_title"] == "数字化转型研究综述"
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +411,7 @@ def test_spliced_articles_two_title_blocks(monkeypatch) -> None:
 def test_short_document_skips_smart_with_zero_llm_calls(monkeypatch) -> None:
     """G12-2: below the whole-doc token gate smart never runs."""
     calls: list = []
-    blocks, warnings, _ = _extract(
+    blocks, warnings, metadata = _extract(
         "redhead",
         _make_llm(_REDHEAD_TITLE, counter=calls),
         monkeypatch,
@@ -415,6 +419,8 @@ def test_short_document_skips_smart_with_zero_llm_calls(monkeypatch) -> None:
     )
     assert warnings.get("smart_skipped_short_document") == 1
     assert calls == []  # zero LLM calls
+    # CB4 skip ships baseline output — baseline doc_title semantics with it.
+    assert "doc_title" not in metadata
     base_blocks, _w, _m = _baseline("redhead")
     assert _summary(blocks) == _summary(base_blocks)
 
@@ -516,6 +522,61 @@ def test_softbreak_heading_lands_single_line(monkeypatch, tmp_path) -> None:
     assert "# 年度工作总结与下年度展望" in joined
 
 
+def test_softbreak_title_block_lands_single_line(monkeypatch, tmp_path) -> None:
+    """A soft-break COVER title (no outline level — the LLM title-block
+    channel, not the plain-heading one) echoed by the LLM with its ``\\n``
+    intact must land single-line in the block heading, the meta doc_title
+    and every descendant's parent_headings."""
+    from docx import Document
+    from docx.enum.text import WD_BREAK
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    from lightrag.parser.docx.parse_document import extract_docx_blocks
+
+    doc = Document()
+    para = doc.add_paragraph()
+    r1 = para.add_run("年度述职")
+    r1.add_break(WD_BREAK.LINE)
+    r2 = para.add_run("报告")
+    for r in (r1, r2):
+        r.font.size = Pt(22)
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    para._p.get_or_add_pPr().append(jc)
+    # A strong-body line right after the title pins the single-paragraph
+    # title-block channel (same trick as the mixed G11-7 fixture).
+    _p(doc, "本篇为年度述职报告正文的开篇说明，请结合材料审阅。", size=12.0)
+    _p(doc, "一、工作回顾", size=14.0, bold=True)
+    _body_filler(doc, 6, prefix="工作回顾正文")
+    _p(doc, "二、来年计划", size=14.0, bold=True)
+    _body_filler(doc, 6, prefix="来年计划正文")
+    path = tmp_path / "softbreak_title.docx"
+    doc.save(str(path))
+
+    responses = {"年度述职": {"is_title_block": True, "main_title": "年度述职\n报告"}}
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "50")
+    monkeypatch.setenv("DOCX_SMART_SUBDOC_MIN_TOKENS", "50")
+    warnings: dict = {}
+    metadata: dict = {}
+    blocks = extract_docx_blocks(
+        str(path),
+        parse_warnings=warnings,
+        parse_metadata=metadata,
+        smart_heading_runtime=_Runtime(_make_llm(responses)),
+    )
+    assert "smart_fallback_baseline" not in warnings
+    title = next(b for b in blocks if b.get("is_title_block"))
+    assert title["heading"] == "年度述职报告"
+    assert metadata["doc_title"] == "年度述职报告"
+    sub = next(b for b in blocks if b["heading"] == "一、工作回顾")
+    assert sub["parent_headings"] == ["年度述职报告"]
+    for b in blocks:
+        assert "\n" not in b["heading"]
+        assert all("\n" not in h for h in b["parent_headings"])
+
+
 def test_extreme_length_fallback_g9_4(monkeypatch, tmp_path) -> None:
     """G9-4: smart output shrinking below 30% of the baseline (a TOC-
     dominated document) falls the WHOLE document back to baseline output —
@@ -533,15 +594,18 @@ def test_extreme_length_fallback_g9_4(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
     warnings: dict = {}
+    metadata: dict = {}
     blocks = extract_docx_blocks(
         str(path),
         parse_warnings=warnings,
-        parse_metadata={},
+        parse_metadata=metadata,
         smart_heading_runtime=_Runtime(_make_llm({})),
     )
     assert warnings.get("smart_fallback_baseline") == 1
     # Fallback output keeps the TOC, so the removal claim must not land.
     assert "smart_toc_removed_paragraphs" not in warnings
+    # The smart-only doc_title key must not survive the fallback either.
+    assert "doc_title" not in metadata
     joined = "\n".join(b["content"] for b in blocks)
     assert "第1章 目录条目标题" in joined  # baseline keeps the TOC lines
 
@@ -647,6 +711,7 @@ def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
     titles = [b["heading"] for b in blocks if b.get("is_title_block")]
     assert titles == ["管理工作指引手册", "附录题库"]  # neither block revoked
     assert metadata["first_heading"] == "管理工作指引手册"  # doc_title kept
+    assert metadata["doc_title"] == "管理工作指引手册"
 
     by_heading = {b["heading"]: b for b in blocks}
     assert "一、总体要求" in by_heading  # the healthy sub-doc kept smart
