@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,7 @@ from lightrag.parser._markdown import (
 )
 from lightrag.parser.external.paddleocr_vl.cache import (
     CONTENT_LIST_FILENAME,
-    DEFAULT_PADDLEOCR_VL_ENGINE_VERSION,
+    current_engine_version,
 )
 from lightrag.sidecar.ir import (
     AssetSpec,
@@ -64,12 +63,7 @@ _FIGURE_TITLE_LABEL = "figure_title"
 
 class PaddleOCRVLIRBuilder:
     def __init__(self) -> None:
-        self.engine_version = (
-            os.getenv(
-                "PADDLEOCR_VL_ENGINE_VERSION", DEFAULT_PADDLEOCR_VL_ENGINE_VERSION
-            ).strip()
-            or DEFAULT_PADDLEOCR_VL_ENGINE_VERSION
-        )
+        self.engine_version = current_engine_version()
         self.bbox_attributes = {"origin": "LEFTTOP"}
 
     def normalize_from_workdir(self, raw_dir: Path, *, document_name: str) -> IRDoc:

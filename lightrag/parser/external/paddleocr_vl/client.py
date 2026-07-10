@@ -22,11 +22,11 @@ from lightrag.parser.external._manifest import Manifest, ManifestFile, write_man
 from lightrag.parser.external.paddleocr_vl.cache import (
     CONTENT_LIST_FILENAME,
     DEFAULT_PADDLEOCR_VL_API_MODE,
-    DEFAULT_PADDLEOCR_VL_ENGINE_VERSION,
     DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT,
     MANIFEST_ENGINE,
     VALID_PADDLEOCR_VL_API_MODES,
     PaddleOCRVLParserOptions,
+    current_engine_version,
 )
 from lightrag.utils import logger
 
@@ -103,12 +103,7 @@ class PaddleOCRVLRawClient:
             "PADDLEOCR_VL_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS
         )
         self.max_polls = env_int("PADDLEOCR_VL_MAX_POLLS", DEFAULT_MAX_POLLS)
-        self.engine_version = (
-            os.getenv(
-                "PADDLEOCR_VL_ENGINE_VERSION", DEFAULT_PADDLEOCR_VL_ENGINE_VERSION
-            ).strip()
-            or DEFAULT_PADDLEOCR_VL_ENGINE_VERSION
-        )
+        self.engine_version = current_engine_version()
         self.allowed_asset_host_suffixes = self._load_allowed_asset_hosts()
 
     @staticmethod

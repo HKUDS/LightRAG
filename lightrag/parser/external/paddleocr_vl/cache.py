@@ -636,18 +636,6 @@ class PaddleOCRVLParserOptions:
         return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def snapshot_tunable_env(
-    overrides: "Mapping[str, Any] | None" = None,
-) -> dict[str, str]:
-    """Return effective request options that change parser output bytes."""
-    return {
-        key: json.dumps(value, ensure_ascii=False, sort_keys=True)
-        for key, value in asdict(
-            PaddleOCRVLParserOptions.from_env(overrides=overrides)
-        ).items()
-    }
-
-
 def current_paddleocr_vl_options_signature(
     overrides: "Mapping[str, Any] | None" = None,
 ) -> str:
@@ -700,11 +688,13 @@ def is_bundle_valid(
     ):
         return False
 
-    if overrides and not manifest.options_signature:
+    # ``current_paddleocr_vl_options_signature`` always produces a non-empty
+    # value, so a non-empty manifest signature is compared against the current
+    # signature (computed with the same overrides); a mismatch invalidates.
+    if manifest.options_signature and (
+        current_paddleocr_vl_options_signature(overrides) != manifest.options_signature
+    ):
         return False
-    if manifest.options_signature:
-        if current_paddleocr_vl_options_signature(overrides) != manifest.options_signature:
-            return False
 
     cur_version = os.getenv("PADDLEOCR_VL_ENGINE_VERSION", "").strip()
     if (
@@ -741,12 +731,12 @@ __all__ = [
     "CONTENT_LIST_FILENAME",
     "current_endpoint_signature",
     "current_paddleocr_vl_options_signature",
+    "current_engine_version",
     "DEFAULT_PADDLEOCR_VL_API_MODE",
     "DEFAULT_PADDLEOCR_VL_ENGINE_VERSION",
     "DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT",
     "MANIFEST_ENGINE",
     "VALID_PADDLEOCR_VL_API_MODES",
     "PaddleOCRVLParserOptions",
-    "snapshot_tunable_env",
     "is_bundle_valid",
 ]
