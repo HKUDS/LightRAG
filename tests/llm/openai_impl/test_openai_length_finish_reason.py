@@ -1,12 +1,27 @@
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.llm.openai import openai_complete_if_cache
+from lightrag.llm.openai import InvalidResponseError, openai_complete_if_cache
 
 
-def _make_completion(content: str, finish_reason: str = "stop"):
+def _make_completion(
+    content: str,
+    finish_reason: str = "stop",
+    reasoning_content: str = "",
+    reasoning_tokens: int | None = None,
+):
+    usage = SimpleNamespace(
+        prompt_tokens=10,
+        completion_tokens=20,
+        total_tokens=30,
+    )
+    if reasoning_tokens is not None:
+        usage.completion_tokens_details = SimpleNamespace(
+            reasoning_tokens=reasoning_tokens
+        )
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -14,15 +29,11 @@ def _make_completion(content: str, finish_reason: str = "stop"):
                 message=SimpleNamespace(
                     content=content,
                     parsed=None,
-                    reasoning_content="",
+                    reasoning_content=reasoning_content,
                 ),
             )
         ],
-        usage=SimpleNamespace(
-            prompt_tokens=10,
-            completion_tokens=20,
-            total_tokens=30,
-        ),
+        usage=usage,
     )
 
 
@@ -223,3 +234,88 @@ async def test_streaming_structured_output_disables_cot():
 
     assert "".join(chunks) == '{"answer":"ok"}'
     fake_client.close.assert_awaited_once()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_empty_content_reasoning_only_diagnostics(caplog):
+    """Reasoning-only responses surface finish_reason/usage/reasoning clues.
+
+    Thinking models served behind OpenAI-compatible APIs (e.g. vLLM with a
+    reasoning parser) can return all output in ``reasoning_content`` with an
+    empty ``content``. The raised ``InvalidResponseError`` and the ERROR log
+    must identify that failure mode instead of a bare "empty content".
+    """
+    reasoning_text = "thinking about the diagram..."
+    completion = _make_completion(
+        "",
+        finish_reason="stop",
+        reasoning_content=reasoning_text,
+        reasoning_tokens=800,
+    )
+    fake_client = _make_fake_client(completion)
+
+    lightrag_logger = logging.getLogger("lightrag")
+    caplog.set_level(logging.ERROR, logger="lightrag")
+    original_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with patch(
+            "lightrag.llm.openai.create_openai_async_client",
+            return_value=fake_client,
+        ):
+            # Call the undecorated coroutine to exercise the handler exactly
+            # once (bypasses the tenacity retry loop and its waits).
+            with pytest.raises(InvalidResponseError) as excinfo:
+                await openai_complete_if_cache.__wrapped__(
+                    model="test-model",
+                    prompt="Describe the image",
+                    response_format={"type": "json_object"},
+                )
+    finally:
+        lightrag_logger.propagate = original_propagate
+
+    message = str(excinfo.value)
+    assert "finish_reason=stop" in message
+    assert "reasoning_tokens=800" in message
+    assert f"reasoning_content_len={len(reasoning_text)}" in message
+    assert "reasoning-only" in caplog.text
+    fake_client.close.assert_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_empty_content_length_truncation_diagnostics(caplog):
+    """Token-limit truncation with no content is identified as such.
+
+    When thinking exhausts the completion budget before any content token is
+    emitted, the response has ``finish_reason="length"`` and empty content;
+    usage may lack ``completion_tokens_details`` entirely.
+    """
+    completion = _make_completion("", finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    lightrag_logger = logging.getLogger("lightrag")
+    caplog.set_level(logging.ERROR, logger="lightrag")
+    original_propagate = lightrag_logger.propagate
+    lightrag_logger.propagate = True
+    try:
+        with patch(
+            "lightrag.llm.openai.create_openai_async_client",
+            return_value=fake_client,
+        ):
+            with pytest.raises(InvalidResponseError) as excinfo:
+                await openai_complete_if_cache.__wrapped__(
+                    model="test-model",
+                    prompt="Describe the image",
+                    response_format={"type": "json_object"},
+                )
+    finally:
+        lightrag_logger.propagate = original_propagate
+
+    message = str(excinfo.value)
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=n/a" in message
+    assert "reasoning_content_len=0" in message
+    assert "hit the token limit" in caplog.text
+    fake_client.close.assert_awaited()
