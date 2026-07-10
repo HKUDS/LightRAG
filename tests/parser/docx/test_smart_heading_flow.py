@@ -1803,12 +1803,11 @@ def test_whole_doc_cb4_skip_leaves_imprint_to_baseline(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_imprint_region_demoted_when_title_block_follows(monkeypatch) -> None:
-    """公文汇编 boundary: a 抄送…印发 region whose closer is immediately followed
-    by a valid title block is confirmed 版记 — its outline lines are force-
-    demoted to body (use_raw_text, rule-tagged, I2-green). The 抄送 anchor is
-    body already (no outline) and is left alone; the closer is a TRAILING 印发
-    line the injected strong_body stub cannot see — only the region does."""
+def test_imprint_region_demoted_when_multi_line_title_block_follows(
+    monkeypatch,
+) -> None:
+    """A later multi-paragraph cover remains valid evidence for a 公文汇编
+    boundary, so the preceding 抄送…印发 region is force-demoted as before."""
     import json
 
     from lightrag.parser.docx.smart_heading.guardrails import (
@@ -1824,6 +1823,7 @@ def test_imprint_region_demoted_when_title_block_follows(monkeypatch) -> None:
         _para("某某办公室 2026年6月30日 印发", size=12.0, outline_level=1),  # closer
         ParagraphRecord(kind="empty_para"),
         _para("数字政府建设白皮书", size=18.0, page_break_before=True),  # doc2 cover
+        _para("（2026年版）", size=12.0),  # makes the cover a multi-window
     ]
     records = doc1 + region + _body(20)
     closer_idx = len(doc1) + 2
@@ -1856,6 +1856,51 @@ def test_imprint_region_demoted_when_title_block_follows(monkeypatch) -> None:
         verify_baseline_heading_retention(records, list(result.decisions.values()))
         == []
     )
+
+
+def test_imprint_region_not_demoted_for_later_single_line(monkeypatch) -> None:
+    """A page break followed by one big line no longer creates a title block,
+    so it cannot confirm the preceding 版记 region or demote its outline line."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    doc1 = _body(20)
+    records = (
+        doc1
+        + [
+            _para("抄送：各区人民政府", size=12.0),
+            _para("中间说明行不带大纲", size=12.0),
+            _para("某某办公室 2026年6月30日 印发", size=12.0, outline_level=1),
+            ParagraphRecord(kind="empty_para"),
+            _para("数字政府建设白皮书", size=18.0, page_break_before=True),
+        ]
+        + _body(20)
+    )
+    closer_idx = len(doc1) + 2
+    cover_idx = len(doc1) + 4
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "数字政府建设白皮书"},
+            ensure_ascii=False,
+        )
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.decisions[cover_idx].is_title_block is False
+    assert result.decisions[cover_idx].level >= 1
+    assert result.decisions[closer_idx].is_heading is True
+    assert "smart_imprint_region_demotions" not in warnings
 
 
 def test_imprint_region_veto_only_without_following_title_block(monkeypatch) -> None:

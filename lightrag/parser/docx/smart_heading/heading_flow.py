@@ -2267,7 +2267,6 @@ def run_smart_heading(
         strong_body=strong_body,
         numbering_veto=numbering_veto,
         imprint_excluded=imprint_excluded,
-        warnings=warnings,
         skip_indices=toc_indices,
     )
     decisions: dict[int, HeadingDecision] = {}

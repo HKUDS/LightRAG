@@ -224,8 +224,6 @@ DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS = 1000
 # Single-paragraph title-block gate: font size must exceed the global
 # FS_base mean by at least this many points.
 DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA = 2.0
-# Per-document cap on single-paragraph title-block LLM reviews.
-DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX = 20
 # Open numbering series: close a series after this many consecutive body
 # paragraphs (0 disables the auxiliary body-run break; the primary close
 # signal is the level returning to an ancestor scope).

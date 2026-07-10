@@ -380,8 +380,9 @@ def test_question_bank_cb1_yields_no_phantom_headings(monkeypatch) -> None:
     assert metadata["doc_title"] == ""
 
 
-def test_spliced_articles_two_title_blocks(monkeypatch) -> None:
-    """G11-5 / G4-10: two spliced articles → two pinned title blocks."""
+def test_spliced_articles_only_opening_line_is_title_block(monkeypatch) -> None:
+    """A page break in a spliced document does not create another level-0
+    root; the later large line remains an ordinary structural heading."""
     responses = {
         "数字化转型研究综述": {
             "is_title_block": True,
@@ -394,11 +395,11 @@ def test_spliced_articles_two_title_blocks(monkeypatch) -> None:
     }
     blocks, warnings, metadata = _extract("spliced", _make_llm(responses), monkeypatch)
     titles = [b for b in blocks if b.get("is_title_block")]
-    assert [t["heading"] for t in titles] == [
-        "数字化转型研究综述",
-        "供应链韧性分析报告",
-    ]
-    assert all(t["level"] == 0 for t in titles)
+    assert [t["heading"] for t in titles] == ["数字化转型研究综述"]
+    assert titles[0]["level"] == 0
+    second = next(b for b in blocks if b["heading"] == "供应链韧性分析报告")
+    assert not second.get("is_title_block")
+    assert second["level"] == 1
     assert metadata["first_heading"] == "数字化转型研究综述"
     assert metadata["doc_title"] == "数字化转型研究综述"
 
@@ -660,14 +661,9 @@ def test_toc_warning_only_on_accepted_smart_output(monkeypatch, tmp_path) -> Non
     assert "第一章 绪论" in "\n".join(b["content"] for b in skip_blocks)
 
 
-def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
-    """G11-7: two title-block sub-documents; the question-bank one engages CB1
-    (yielding no headings) while the other keeps its smart structure. Title
-    blocks, doc_title and parent_headings survive; the audit records the CB1
-    scope. Whether CB1 trips (outline-only fallback) or the re-estimation
-    converges to zero candidates depends on a near-tie FS_base — assert the
-    engagement + zero-heading outcome, not the branch (see the CB1 note in
-    test_question_bank_cb1_yields_no_phantom_headings)."""
+def test_mixed_document_keeps_one_title_root(monkeypatch, tmp_path) -> None:
+    """A later page-broken single line stays below the document title instead
+    of splitting the document into a second level-0 sub-document."""
     from docx import Document
 
     from lightrag.parser.docx.parse_document import extract_docx_blocks
@@ -709,38 +705,27 @@ def test_mixed_fallback_partial_smart_g11_7(monkeypatch, tmp_path) -> None:
     )
 
     titles = [b["heading"] for b in blocks if b.get("is_title_block")]
-    assert titles == ["管理工作指引手册", "附录题库"]  # neither block revoked
-    assert metadata["first_heading"] == "管理工作指引手册"  # doc_title kept
+    assert titles == ["管理工作指引手册"]
+    assert metadata["first_heading"] == "管理工作指引手册"
     assert metadata["doc_title"] == "管理工作指引手册"
 
     by_heading = {b["heading"]: b for b in blocks}
     assert "一、总体要求" in by_heading  # the healthy sub-doc kept smart
     assert by_heading["一、总体要求"]["level"] >= 1
 
-    # The question-bank sub-document fell back: its lines are body, not
-    # headings. With no headings of its own, that body is OWNED by its title
-    # block (parse-time block-boundary merge) — the question text lives inside
-    # the 附录题库 title block itself, so retrieval context still carries the
-    # sub-document's main title.
+    # Question lines remain body, owned by the ordinary appendix heading.
     assert "1. 下面关于某某概念的说法正确的是" not in by_heading
     appendix = by_heading["附录题库"]
-    assert appendix.get("is_title_block")
+    assert not appendix.get("is_title_block")
+    assert appendix["level"] >= 1
     assert "下面关于某某概念" in appendix["content"]
 
     audit = metadata["smart_audit"]
-    # CB1 engaged on the question-bank sub-document (re-estimation always runs
-    # before the trip check, so this holds whether it trips or converges).
+    # CB1 still protects the question-bank portion from phantom headings, but
+    # the whole document now has one structural scope rooted at the real title.
     assert warnings.get("smart_cb1_reestimated", 0) >= 1
-    # Locate that sub-document in the audit by its CB1 marks (converged → a
-    # cb1_reestimated_fs; tripped → a cb1_density fallback) and assert it
-    # contributed no headings either way.
-    qb_sub = next(
-        s
-        for s in audit["sub_documents"]
-        if s.get("cb1_reestimated_fs") is not None or s.get("fallback") == "cb1_density"
-    )
-    assert "range" in qb_sub
-    assert qb_sub.get("headings", 0) == 0
+    assert len(audit["sub_documents"]) == 1
+    assert audit["sub_documents"][0].get("headings") == 3
 
 
 def test_subdoc_gate_follows_lowered_whole_doc_gate(monkeypatch, tmp_path) -> None:

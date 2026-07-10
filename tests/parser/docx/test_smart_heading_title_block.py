@@ -87,23 +87,26 @@ def test_multi_window_requires_two_paragraphs_and_big_line() -> None:
     assert _find(records) == []
 
 
-def test_single_candidate_first_paragraph(monkeypatch) -> None:
-    """G4-9: a lone big first line is a single-paragraph candidate; a
-    digit-led title survives when the homophone veto revokes its numbering."""
+def test_single_candidate_first_eligible_paragraph() -> None:
+    """A lone big opening line is a single-paragraph candidate after leading
+    empty and recognized TOC paragraphs; a digit-led title survives when
+    the homophone veto revokes its numbering."""
     records = [
+        _empty(),
+        _para("第一章 目录条目............3", size=12.0, is_toc_field=True),
         _para("2026年度工作报告", size=18.0),
         _para("正文第一段说明了年度工作的总体情况。", size=12.0),
         _para("正文第二段继续说明。", size=12.0),
     ]
     cands = _find(records, numbering_veto=_stub_always_veto)
-    assert len(cands) == 1 and cands[0].single and cands[0].start == 0
+    assert len(cands) == 1 and cands[0].single and cands[0].start == 2
 
     # Without the veto the same line counts as genuinely numbered → excluded.
     assert _find(records, numbering_veto=_stub_no_veto) == []
 
 
-def test_single_candidate_requires_boundary_evidence() -> None:
-    """G4-11: mid-document big line without any hard boundary is rejected."""
+def test_single_candidate_does_not_scan_after_non_title_first_paragraph() -> None:
+    """A later big line is rejected when the first eligible paragraph is body."""
     body = [_para(f"正文段落{i}，以句号结尾。", size=12.0) for i in range(3)]
     records = (
         body
@@ -113,7 +116,7 @@ def test_single_candidate_requires_boundary_evidence() -> None:
     assert _find(records) == []
 
 
-def test_single_candidate_centered_with_blank_flanks() -> None:
+def test_mid_document_centered_line_with_blank_flanks_rejected() -> None:
     records = [
         _para("开头正文，以句号结尾。", size=12.0),
         _empty(),
@@ -121,18 +124,51 @@ def test_single_candidate_centered_with_blank_flanks() -> None:
         _empty(),
         _para("后续正文，以句号结尾。", size=12.0),
     ]
-    cands = _find(records)
-    assert len(cands) == 1 and cands[0].single and cands[0].start == 2
+    assert _find(records) == []
 
 
-def test_single_candidate_after_page_break() -> None:
+def test_mid_document_single_candidate_after_page_break_rejected() -> None:
     records = [
         _para("前一篇正文结束。", size=12.0),
         _para("另一篇文章的标题", size=18.0, page_break_before=True),
         _para("这一篇正文开始，以句号结尾。", size=12.0),
     ]
-    cands = _find(records)
-    assert len(cands) == 1 and cands[0].single and cands[0].start == 1
+    assert _find(records) == []
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [
+            _para("前文正文结束。", size=12.0),
+            _para(
+                "段内分页后的标题",
+                size=18.0,
+                has_leading_page_break_run=True,
+            ),
+            _para("后续正文开始。", size=12.0),
+        ],
+        [
+            _para("前文正文结束。", size=12.0),
+            ParagraphRecord(kind="section_break"),
+            _para("分节后的标题", size=18.0),
+            _para("后续正文开始。", size=12.0),
+        ],
+        [
+            _para("前文正文结束。", size=12.0, ends_section=True),
+            _para("段尾分节后的标题", size=18.0),
+            _para("后续正文开始。", size=12.0),
+        ],
+        [
+            _para("前文正文结束。", size=12.0),
+            _para("字号变化处的标题", size=18.0),
+            _para("后续正文开始。", size=10.5),
+        ],
+    ],
+    ids=["leading-page-run", "section-record", "paragraph-section", "font-change"],
+)
+def test_other_mid_document_boundaries_do_not_seed_single_candidate(records) -> None:
+    assert _find(records) == []
 
 
 def test_single_candidate_with_genuine_numbering_excluded() -> None:
@@ -146,17 +182,17 @@ def test_single_candidate_with_genuine_numbering_excluded() -> None:
     assert _find(records) == []
 
 
-def test_single_candidate_cap_truncates(monkeypatch) -> None:
-    """G4-11: candidates beyond the per-document cap are skipped + warned."""
+def test_single_channel_never_scans_past_first_eligible_paragraph(monkeypatch) -> None:
+    """The retired review-cap setting is ignored because the single channel
+    can now emit at most one candidate and never scans for later replacements."""
     monkeypatch.setenv("DOCX_SMART_SINGLE_TITLE_LLM_MAX", "2")
     records = []
     for i in range(4):
         records.append(_para(f"独立文章标题{i}", size=18.0, page_break_before=True))
         records.append(_para(f"文章{i}的正文，以句号结尾。", size=12.0))
-    warnings: dict = {}
-    cands = _find(records, warnings=warnings)
-    assert len(cands) == 2
-    assert warnings["title_block_single_candidates_truncated"] == 2
+    cands = _find(records)
+    assert len(cands) == 1
+    assert cands[0].start == 0
 
 
 # ---------------------------------------------------------------------------
@@ -775,17 +811,15 @@ def test_dominance_ignores_headings_beyond_flank_window(monkeypatch) -> None:
     assert len(cands) == 1 and (cands[0].start, cands[0].end) == (2, 4)
 
 
-def test_single_candidate_after_previous_paragraph_break_run() -> None:
-    """A8 (§2.2.4 evidence b): a w:br type="page" run in the PREVIOUS
-    paragraph is boundary evidence for the next paragraph; the paragraph
-    carrying only a trailing break run gains no self-evidence."""
+def test_mid_document_candidate_after_previous_page_break_run_rejected() -> None:
+    """A trailing page-break run in the previous paragraph must not turn the
+    next big line into a level-0 candidate."""
     records = [
         _para("上一篇的收尾正文，以句号结尾。", size=12.0, has_page_break_run=True),
         _para("下一篇文章的标题", size=18.0),
         _para("下一篇正文开始，以句号结尾。", size=12.0),
     ]
-    cands = _find(records)
-    assert len(cands) == 1 and cands[0].single and cands[0].start == 1
+    assert _find(records) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1188,20 +1222,15 @@ def test_imprint_breaks_multi_window_and_vetoes_two_neighbors() -> None:
 
 
 def test_imprint_line_never_single_candidate() -> None:
-    """Mirror of test_single_candidate_centered_with_blank_flanks: the same
-    boundary evidence yields a candidate for a plain line but never for an
-    imprint line (stub strong_body does NOT know imprint — the title_block
-    veto must hold on its own)."""
+    """Even at the only position eligible for the single channel, an imprint
+    line is vetoed (the strong-body stub deliberately does not recognize it)."""
     records = [
-        _para("开头正文，以句号结尾。", size=12.0),
-        _empty(),
         _para("抄送：各市人民政府", size=18.0, alignment="center"),
-        _empty(),
         _para("后续正文，以句号结尾。", size=12.0),
     ]
     assert _find(records) == []
     cands = _find(records, imprint_marker=lambda t: None)
-    assert len(cands) == 1 and cands[0].single and cands[0].start == 2
+    assert len(cands) == 1 and cands[0].single and cands[0].start == 0
 
 
 def test_imprint_neighbor_veto_blocks_single_candidate() -> None:

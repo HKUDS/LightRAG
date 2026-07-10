@@ -2,9 +2,9 @@
 
 Heuristics find CANDIDATE windows — runs of paragraphs lacking strong-body
 features that contain a visually dominant line — plus a single-paragraph
-channel for spliced multi-article documents whose per-article title is one
-isolated big line. An LLM (via the synchronous judge callable; this module
-never touches asyncio) then confirms and decomposes each candidate.
+channel limited to the document's first eligible paragraph. An LLM (via the
+synchronous judge callable; this module never touches asyncio) then confirms
+and decomposes each candidate.
 
 LLM output is STRICTLY validated: the main/sub title must be locatable in
 the window text (concatenation allowed), and paragraphs carrying a physical
@@ -35,7 +35,6 @@ from typing import Any
 from lightrag.constants import (
     DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS,
     DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS,
-    DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX,
     DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA,
 )
 from lightrag.utils import logger
@@ -51,7 +50,7 @@ LLMJudge = Callable[..., str]
 #: Max weighted chars for a candidate title line (30 CJK / 90 en; §2.2.4).
 TITLE_LINE_MAX_WEIGHTED_CHARS = 90
 
-_FLANK_WINDOW = 20  # K paragraphs on each side for the size-divergence gate
+_FLANK_WINDOW = 20  # paragraphs scanned per flank for nearby heading dominance
 _SINGLE_CONTEXT = 2  # paragraphs of context around a single candidate
 
 
@@ -203,21 +202,6 @@ def _has_real_numbering(
     if classification is None:
         return False
     return numbering_veto(classification, text) is None
-
-
-def _window_mode_size(records: Sequence[Any], indices: Sequence[int]) -> float | None:
-    weights: dict[float, int] = {}
-    for idx in indices:
-        rec = records[idx]
-        if rec.font_size_pt is None:
-            continue
-        w = len((rec.text or "").strip())
-        if w <= 0:
-            continue
-        weights[rec.font_size_pt] = weights.get(rec.font_size_pt, 0) + w
-    if not weights:
-        return None
-    return max(weights.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
 #: A title line must clear FS_base by at least this many points. BOTH
@@ -399,7 +383,6 @@ def find_title_block_candidates(
     imprint_closer: Callable[[str], str | None] | None = None,
     document_date: Callable[[str], bool] | None = None,
     imprint_excluded: set[int] | None = None,
-    warnings: dict | None = None,
     skip_indices: set[int] = frozenset(),
 ) -> list[TitleBlockCandidate]:
     """Find multi-paragraph windows and single-paragraph title candidates.
@@ -419,16 +402,19 @@ def find_title_block_candidates(
     delta = _env_float(
         "DOCX_SMART_TITLE_BLOCK_MIN_DELTA", DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA
     )
-    single_cap = _env_int(
-        "DOCX_SMART_SINGLE_TITLE_LLM_MAX", DEFAULT_DOCX_SMART_SINGLE_TITLE_LLM_MAX
-    )
     if imprint_excluded is None:
         imprint_excluded = _imprint_veto_indices(
             records, imprint_marker, imprint_closer, document_date, skip_indices
         )
 
     para_indices = [
-        i for i, r in enumerate(records) if r.kind == "para" and i not in skip_indices
+        i
+        for i, r in enumerate(records)
+        if r.kind == "para"
+        and bool((r.text or "").strip())
+        and i not in skip_indices
+        and not r.is_toc_field
+        and not r.is_toc_link
     ]
     strong_cache: dict[int, str | None] = {}
 
@@ -757,110 +743,35 @@ def find_title_block_candidates(
         i = max(run_end, i + 1)
 
     # --- single-paragraph channel -----------------------------------------
-    single_found = 0
-    single_truncated = 0
-    for pos, idx in enumerate(para_indices):
-        if idx in covered:
-            continue
+    # Only the document's first eligible paragraph may represent its main
+    # title.  Never scan forward for a replacement: page/section boundaries,
+    # centered blank-flanked lines, and body-font changes are common inside a
+    # document and promoting those lines to level-0 roots damages the chapter
+    # hierarchy.  ``para_indices`` already excludes leading empty paragraphs,
+    # TOC records, and caller-supplied skip indices.
+    if para_indices:
+        idx = para_indices[0]
         rec = records[idx]
-        if rec.is_toc_field or rec.is_toc_link:
-            continue
-        if _is_strong(idx):
-            continue
-        # Imprint veto before the LLM-review cap below: a vetoed line must
-        # not consume the per-document single-candidate budget.
-        if idx in imprint_excluded:
-            continue
-        if (
-            guardrails.weighted_char_length(rec.text.strip())
-            > TITLE_LINE_MAX_WEIGHTED_CHARS
-        ):
-            continue
-        if _is_real_heading(idx):
-            continue
         single_size = effective_font_size_pt(rec)
-        if not (
-            fs_base_pt is not None
+        if (
+            idx not in covered
+            and not _is_strong(idx)
+            and idx not in imprint_excluded
+            and guardrails.weighted_char_length(rec.text.strip())
+            <= TITLE_LINE_MAX_WEIGHTED_CHARS
+            and not _is_real_heading(idx)
+            and fs_base_pt is not None
             and single_size is not None
             and single_size >= fs_base_pt + delta
+            and _dominates_neighbor_headings(single_size, idx, idx + 1)
         ):
-            continue
-        if not _dominates_neighbor_headings(single_size, idx, idx + 1):
-            continue
-        if not _single_boundary_evidence(records, idx, pos, para_indices):
-            continue
-        if single_found >= single_cap:
-            single_truncated += 1
-            continue
-        single_found += 1
-        candidates.append(
-            TitleBlockCandidate(
-                start=idx, end=idx + 1, single=True, trigger="single_line"
+            candidates.append(
+                TitleBlockCandidate(
+                    start=idx, end=idx + 1, single=True, trigger="single_line"
+                )
             )
-        )
-    if single_truncated and warnings is not None:
-        warnings["title_block_single_candidates_truncated"] = (
-            warnings.get("title_block_single_candidates_truncated", 0)
-            + single_truncated
-        )
-        logger.warning(
-            "[smart_heading] %d single-line title candidates beyond the "
-            "per-document LLM review cap were skipped",
-            single_truncated,
-        )
     candidates.sort(key=lambda c: c.start)
     return candidates
-
-
-def _single_boundary_evidence(
-    records: Sequence[Any], idx: int, para_pos: int, para_indices: list[int]
-) -> bool:
-    """At least one hard boundary proof (§2.2.4 single-paragraph gate)."""
-    rec = records[idx]
-    # (a) first non-empty paragraph of the document
-    first_para = next(
-        (
-            i
-            for i in para_indices
-            if records[i].text.strip() or records[i].kind == "para"
-        ),
-        None,
-    )
-    if idx == first_para:
-        return True
-    # (b) right after an explicit page/section boundary: own pageBreakBefore,
-    # an own LEADING page-break run (Ctrl+Enter then typing on), a page-break
-    # run in the previous paragraph, or a section break (§2.2.4 evidence b).
-    if rec.page_break_before or getattr(rec, "has_leading_page_break_run", False):
-        return True
-    k = idx - 1
-    while k >= 0 and records[k].kind == "empty_para":
-        k -= 1
-    if k >= 0 and (
-        records[k].kind == "section_break"
-        or getattr(records[k], "ends_section", False)
-        or getattr(records[k], "has_page_break_run", False)
-    ):
-        return True
-    # (c) centered with >=1 empty paragraph on both sides
-    if rec.alignment == "center":
-        prev_empty = idx > 0 and records[idx - 1].kind == "empty_para"
-        next_empty = idx + 1 < len(records) and records[idx + 1].kind == "empty_para"
-        if prev_empty and next_empty:
-            return True
-    # (d) body font-size divergence across the flanks (K=20 paragraphs each)
-    before = para_indices[max(0, para_pos - _FLANK_WINDOW) : para_pos]
-    after = para_indices[para_pos + 1 : para_pos + 1 + _FLANK_WINDOW]
-    if before and after:
-        mode_before = _window_mode_size(records, before)
-        mode_after = _window_mode_size(records, after)
-        if (
-            mode_before is not None
-            and mode_after is not None
-            and mode_before != mode_after
-        ):
-            return True
-    return False
 
 
 # ---------------------------------------------------------------------------
