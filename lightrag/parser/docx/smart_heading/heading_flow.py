@@ -2232,7 +2232,9 @@ def run_smart_heading(
     audit["title_block_candidates"] = []
 
     for cand in candidates:
-        verdict = tb.judge_title_block(cand, records, judge, warnings=warnings)
+        verdict = tb.judge_title_block(
+            cand, records, judge, warnings=warnings, fs_base_pt=fs_initial
+        )
         audit["title_block_candidates"].append(
             {
                 "trigger": cand.trigger,

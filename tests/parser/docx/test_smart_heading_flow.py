@@ -824,6 +824,53 @@ def test_title_block_gate_uses_char_weighted_mode_not_mean(monkeypatch) -> None:
     assert any(d.is_title_block and d.level == 0 for d in result.decisions.values())
 
 
+def test_title_block_judge_receives_fs_base(monkeypatch) -> None:
+    """Call-site guard: run_smart_heading must hand the global FS_base
+    initial value to judge_title_block — the font-size evidence legend
+    depends on it, and a dropped kwarg silently renders the legend-free
+    prompt (the M1212 regression would come back unnoticed)."""
+    import json
+
+    from lightrag.parser.docx.smart_heading import title_block as tb
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    records = [
+        _para("行业观察白皮书", size=14.0),
+        _para("某某研究院", size=12.0),
+    ]
+    records += _body(30, size=12.0)
+
+    captured: dict = {}
+    real_judge = tb.judge_title_block
+
+    def _spy(candidate, recs, judge, **kw):
+        captured["fs_base_pt"] = kw.get("fs_base_pt")
+        return real_judge(candidate, recs, judge, **kw)
+
+    # run_smart_heading imports title_block function-locally, so patching the
+    # module attribute intercepts its call.
+    monkeypatch.setattr(tb, "judge_title_block", _spy)
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "行业观察白皮书"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert captured["fs_base_pt"] == 12.0  # the char-weighted body mode
+
+
 def test_seq_break_knob_splits_distant_series(monkeypatch) -> None:
     """A12 (DOCX_SMART_SEQ_BREAK_PARAS): a long body run between same-key
     members closes the open sequence; the default 0 keeps one series."""

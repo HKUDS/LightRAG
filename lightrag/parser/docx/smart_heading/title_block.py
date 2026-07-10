@@ -837,22 +837,68 @@ _SYSTEM_PROMPT = (
     "document number, classification, publisher and date — as opposed to "
     "ordinary section headings or body text. A title block must contain the "
     "document's own MAIN TITLE; metadata lines alone (a standard/document "
-    "number, a date) without the main title are NOT a title block. If "
-    "unsure, answer false. Answer with a single raw JSON object — no "
-    "markdown fences, no commentary."
+    "number, a date) without the main title are NOT a title block. When "
+    "font-size evidence is given, weigh it: a cover main title is normally "
+    "set in the largest font, and small same-sized lines around it are "
+    "usually form labels or metadata — their presence does not disqualify a "
+    "dominant title line. If unsure, answer false. Answer with a single raw "
+    "JSON object — no markdown fences, no commentary."
 )
 
 _USER_TEMPLATE = """Paragraphs (indexed; [BLANK] marks an empty line in the original):
 
 {window}
 
-Rules:
+{dominance}Rules:
 - First decide "is_title_block".
-- If true: fill "main_title" (required) plus any of "sub_title" / "doc_number" / "classification" / "publisher" / "date" that are present — each must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs); use null for absent fields, and set "headings" and "body" to [].
-- If false: set all six text fields to null, and classify EVERY index — {indices} — into exactly one of "headings" (a real section heading, e.g. 前言 / 第一章) or "body" (everything else; document numbers, dates and publisher lines are NOT headings — put them in "body"). Each index must appear in exactly one of the two arrays, as an integer (not a string).
+- If true: fill "main_title" (required; NEVER a front-matter/bookkeeping heading — 目录 / 目次 / 更改记录 / 修订记录 / 修改记录 / 变更记录 / 版本记录 / 更改页 / 修订页 / 前言 / 引言 / 摘要 / 编制说明, or English equivalents like Contents / Table of Contents / Revision History / Change Record / Change Log / Document History / Foreword / Abstract, case-insensitive, ignoring whitespace between Chinese characters; a longer title merely containing such a word, e.g. 更改记录管理规范, is acceptable) plus any of "sub_title" / "doc_number" / "classification" / "publisher" / "date" that are present — each must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs); use null for absent fields, and set "headings" and "body" to [].
+- If false: set all six text fields to null, and classify EVERY index — {indices} — into exactly one of "headings" (a real section heading, e.g. 前言 / 第一章 / 目录 / 更改记录) or "body" (everything else; document numbers, dates and publisher lines are NOT headings — put them in "body"). Each index must appear in exactly one of the two arrays, as an integer (not a string).
 
 Respond with JSON matching:
 {{"is_title_block": true|false, "main_title": string|null, "sub_title": string|null, "doc_number": string|null, "classification": string|null, "publisher": string|null, "date": string|null, "headings": [int, ...], "body": [int, ...]}}"""
+
+
+def _dominance_legend(
+    line_sizes: Sequence[float | None], fs_base_pt: float | None
+) -> str:
+    """Deterministic font-size evidence for the LLM window (§2.2.4).
+
+    ``line_sizes[k]`` is the effective size of prompt line ``[k]`` — ONLY
+    lines actually emitted have an entry, so a token-truncated line can never
+    appear in the legend. Lines at the title tier (FS_base + 2pt, the same
+    bar the candidate gates use) are listed, tiered so the LARGEST size —
+    the cue a human uses to spot the cover title — reads stronger than
+    merely-enlarged lines (e.g. an absorbed next-page section heading).
+    Rendered as a standalone line, never inside the indexed text lines, so
+    locate-back canons and verbatim echoes are untouched. Empty when no
+    baseline or no dominant line — the prompt is then byte-identical to the
+    pre-evidence form.
+    """
+    if fs_base_pt is None:
+        return ""
+    dominant = [
+        (k, s)
+        for k, s in enumerate(line_sizes)
+        if s is not None and s >= fs_base_pt + MULTI_WINDOW_TITLE_DELTA_PT
+    ]
+    if not dominant:
+        return ""
+    top = max(s for _, s in dominant)
+
+    def _fmt(items: list[tuple[int, float]]) -> str:
+        return ", ".join(f"[{k}]={s:g}pt" for k, s in items)
+
+    legend = "Font-size evidence — largest lines: " + _fmt(
+        [(k, s) for k, s in dominant if s == top]
+    )
+    others = [(k, s) for k, s in dominant if s != top]
+    if others:
+        legend += "; other enlarged lines: " + _fmt(others)
+    legend += (
+        f" (body ≈ {fs_base_pt:g}pt). The visually largest lines are "
+        "likely title-bearing if the window is a cover title block."
+    )
+    return legend
 
 
 def _render_window(
@@ -952,16 +998,19 @@ def _render_window(
 
 def _render_table_window(
     records: Sequence[Any], candidate: TitleBlockCandidate, warnings: dict | None
-) -> tuple[str, list[int], str]:
+) -> tuple[str, list[int], str, list[float | None]]:
     """Render a TABLE candidate window for the LLM (§2.2.4 table channel).
 
     One indexed line per non-empty PHYSICAL cell, row by row across the
     member tables — plus one line per absorbed cover-material paragraph (its
     whole text: a mixed cover may carry the MAIN TITLE in a paragraph, so it
     must reach the LLM window and the locate-back canon). Returns
-    ``(window_text, member_record_indices, window_canon)`` — the canon
-    concatenates the rendered texts because a table record's own ``text`` is
-    a ``<table>{json}</table>`` placeholder and useless for locate-back.
+    ``(window_text, member_record_indices, window_canon, line_sizes)`` — the
+    canon concatenates the rendered texts because a table record's own
+    ``text`` is a ``<table>{json}</table>`` placeholder and useless for
+    locate-back; ``line_sizes`` is parallel to the rendered lines (cell size
+    from ``table_cell_features``, paragraph size via
+    :func:`effective_font_size_pt`) and feeds the font-size legend.
     Token-capped from the tail (same cap and warning as the multi-paragraph
     window).
 
@@ -971,12 +1020,13 @@ def _render_table_window(
     """
     cap = _env_int("DOCX_SMART_LLM_WINDOW_TOKENS", DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS)
     lines: list[str] = []
+    line_sizes: list[float | None] = []
     canon_parts: list[str] = []
     members: list[int] = []
     used = 0
     truncated = False
 
-    def _emit(t: str) -> None:
+    def _emit(t: str, size: float | None) -> None:
         nonlocal used, truncated
         if not t or truncated:
             return
@@ -987,6 +1037,7 @@ def _render_table_window(
             return
         used += cost
         lines.append(line)
+        line_sizes.append(size)
         canon_parts.append(_canon(t))
 
     member_iter = candidate.members or tuple(
@@ -999,8 +1050,8 @@ def _render_table_window(
                 continue
             members.append(i)
             for row in rec.table_cell_features:
-                for text, _size, _outline in row:
-                    _emit((text or "").strip())
+                for text, size, _outline in row:
+                    _emit((text or "").strip(), size)
         elif rec.kind == "para":
             # Absorbed cover-material / image paragraph: keep it as a member
             # (source-order assembly stays lossless) but show the LLM only the
@@ -1009,7 +1060,7 @@ def _render_table_window(
             # nothing to echo back) while a mixed line reads clean
             # ("某某管理办法") and locate-back matches it contiguously.
             members.append(i)
-            _emit(_cover_semantic_text(rec))
+            _emit(_cover_semantic_text(rec), effective_font_size_pt(rec))
     if truncated:
         if warnings is not None:
             warnings["title_block_window_truncated"] = (
@@ -1020,7 +1071,7 @@ def _render_table_window(
             "tail content not shown to the LLM",
             cap,
         )
-    return "\n".join(lines), members, "".join(canon_parts)
+    return "\n".join(lines), members, "".join(canon_parts), line_sizes
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -1062,8 +1113,16 @@ def judge_title_block(
     llm_judge: LLMJudge,
     *,
     warnings: dict | None = None,
+    fs_base_pt: float | None = None,
 ) -> TitleBlockDecision:
-    """Run one candidate through the LLM and strictly validate the verdict."""
+    """Run one candidate through the LLM and strictly validate the verdict.
+
+    ``fs_base_pt`` (the global FS_base initial value, §2.2.2) turns on the
+    font-size evidence legend in the prompt — the visual-dominance cue a
+    human uses to spot a cover title, which the plain text lines cannot
+    carry. ``None`` (hand-built candidates, legacy tests) renders the
+    legend-free prompt.
+    """
     if llm_judge is None:
         raise TitleBlockLLMError(
             "smart_heading needs an LLM to judge a title-block candidate but "
@@ -1073,7 +1132,7 @@ def judge_title_block(
         # §2.2.4 table channel: the window is cell texts (plus any absorbed
         # cover-material paragraphs), and locate-back must run against them
         # (a table record's text is a <table> placeholder).
-        window_text, member_records, window_canon = _render_table_window(
+        window_text, member_records, window_canon, line_sizes = _render_table_window(
             records, candidate, warnings
         )
         index_map = []
@@ -1092,10 +1151,27 @@ def judge_title_block(
         )
         member_records = []
         line_count = len(index_map)
+        # Paragraph windows label lines by index_map position, so the size
+        # list is derived from it directly — emitted lines only, matching
+        # the table channel's emit-time collection.
+        line_sizes = [effective_font_size_pt(records[i]) for i in index_map]
+        if candidate.single:
+            # Single windows: the ±context lines are reference-only and a
+            # true verdict's main_title is validated against the CANDIDATE
+            # line alone — advertising a bigger context line as the largest
+            # title-bearing line would steer the LLM straight into a
+            # guaranteed locate-back failure. Only the candidate line may
+            # carry font-size evidence.
+            line_sizes = [
+                s if index_map[k] == candidate.start else None
+                for k, s in enumerate(line_sizes)
+            ]
     # Spell out the exact index set the partition must cover — a copyable
     # list is far harder to drop an index from than an implicit "EVERY".
+    dominance = _dominance_legend(line_sizes, fs_base_pt)
     prompt = _USER_TEMPLATE.format(
         window=window_text,
+        dominance=f"{dominance}\n\n" if dominance else "",
         indices=", ".join(str(k) for k in range(line_count)),
     )
     raw = llm_judge(prompt, system_prompt=_SYSTEM_PROMPT)

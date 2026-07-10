@@ -955,6 +955,162 @@ def test_table_non_title_verdict_ignored() -> None:
 
 
 # ---------------------------------------------------------------------------
+# font-size evidence legend (the M1212 regression: a metadata-heavy table
+# cover whose 22pt title the text-only window could not distinguish from
+# the surrounding form labels)
+# ---------------------------------------------------------------------------
+
+
+def _prompt_for(records, candidate, *, fs_base_pt=None, payload=None):
+    seen: dict = {}
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        seen["prompt"] = prompt
+        return json.dumps(
+            payload or {"is_title_block": False, "headings": [], "body": []},
+            ensure_ascii=False,
+        )
+
+    judge_title_block(candidate, records, _llm, warnings={}, fs_base_pt=fs_base_pt)
+    return seen["prompt"]
+
+
+def test_table_window_legend_tiers_largest_over_enlarged() -> None:
+    """M1212 regression shape: form-metadata tables + a 22pt title table +
+    a 16pt publisher table + an absorbed 16pt next-page heading. The legend
+    lists the 22pt lines as LARGEST and the 16pt lines one tier below, so
+    the enlarged-but-not-title lines never read as strongly."""
+    records = [
+        _table(
+            [
+                [("档 号", 10.5, False), ("", None, False)],
+                [("版 本 号", 10.5, False), ("1V1.0.0", 10.5, False)],
+            ]
+        ),
+        _table([[("产品标准化大纲", 22.0, False)], [("某某模块", 22.0, False)]]),
+        _table([[("某某电子股份有限公司", 16.0, False)]]),
+        _para("更 改 记 录", size=16.0),  # absorbed next-page heading
+    ]
+    candidate = TitleBlockCandidate(
+        start=0,
+        end=4,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2, 3),
+    )
+    prompt = _prompt_for(records, candidate, fs_base_pt=12.0)
+    # Window lines: [0] 档 号, [1] 版 本 号, [2] 1V1.0.0, [3] 产品标准化大纲,
+    # [4] 某某模块, [5] 某某电子股份有限公司, [6] 更 改 记 录.
+    assert "Font-size evidence — largest lines: [3]=22pt, [4]=22pt" in prompt
+    assert "other enlarged lines: [5]=16pt, [6]=16pt" in prompt
+    assert "(body ≈ 12pt)" in prompt
+
+
+def test_paragraph_window_legend_uses_indexed_lines() -> None:
+    """[BLANK] rows carry no index, so the legend must number by indexed
+    lines — a raw-row count would point at the wrong text."""
+    records = [
+        _para("公司数字化转型白皮书", size=22.0),
+        _empty(),
+        _para("（2026年版）", size=12.0),
+        _para("某某咨询公司发布", size=16.0),
+    ]
+    candidate = TitleBlockCandidate(
+        start=0, end=4, single=False, trigger="multi_window"
+    )
+    prompt = _prompt_for(records, candidate, fs_base_pt=12.0)
+    assert "Font-size evidence — largest lines: [0]=22pt" in prompt
+    # record 3 renders as indexed line [2] (the blank row shifts raw rows).
+    assert "other enlarged lines: [2]=16pt" in prompt
+
+
+def test_legend_absent_without_fs_base_or_dominant_line() -> None:
+    """No baseline (hand-built candidates) or no dominant line → the prompt
+    is legend-free, byte-identical to the pre-evidence form."""
+    records = [
+        _para("普通一行", size=12.0),
+        _para("另一行", size=12.0),
+    ]
+    candidate = TitleBlockCandidate(
+        start=0, end=2, single=False, trigger="multi_window"
+    )
+    assert "Font-size evidence" not in _prompt_for(records, candidate)
+    assert "Font-size evidence" not in _prompt_for(records, candidate, fs_base_pt=12.0)
+
+
+def test_single_window_legend_covers_only_the_candidate_line() -> None:
+    """Single candidates: the ±context lines are reference-only and a true
+    verdict's main_title is locate-back-scoped to the candidate line alone —
+    a LARGER context line must never be advertised as the largest line, or
+    the LLM would follow the cue into a guaranteed locate-back hard fail."""
+    records = [
+        _para("上一篇文档的巨大结尾行", size=26.0),  # bigger, but context-only
+        _para("独立主标题", size=18.0, page_break_before=True),
+        _para("正文从这里开始。", size=12.0),
+    ]
+    candidate = TitleBlockCandidate(start=1, end=2, single=True, trigger="single_line")
+    prompt = _prompt_for(
+        records,
+        candidate,
+        fs_base_pt=12.0,
+        payload={"is_title_block": True, "main_title": "独立主标题"},
+    )
+    assert "Font-size evidence — largest lines: [1]=18pt" in prompt
+    assert "26pt" not in prompt  # the context line carries no evidence
+
+
+def test_legend_skips_truncated_lines(monkeypatch) -> None:
+    """A token-truncated line is not emitted, so it must not surface in the
+    legend either — the legend only ever cites lines the LLM can see."""
+    monkeypatch.setenv("DOCX_SMART_LLM_WINDOW_TOKENS", "30")
+    records = [
+        _para("标题块第一行内容比较长" * 3, size=22.0),
+        _para("被截掉的大字号尾行" * 3, size=22.0),
+    ]
+    candidate = TitleBlockCandidate(
+        start=0, end=2, single=False, trigger="multi_window"
+    )
+    prompt = _prompt_for(
+        records,
+        candidate,
+        fs_base_pt=12.0,
+        payload={"is_title_block": True, "main_title": records[0].text},
+    )
+    assert "largest lines: [0]=22pt" in prompt
+    assert "[1]" not in prompt  # neither as window line nor in the legend
+
+
+def test_prompt_front_matter_negative_list() -> None:
+    """Guard the front-matter negative list against prompt refactors.
+
+    The list deliberately lives INSIDE the user template's "If true:
+    main_title" field rule — as a selection constraint only — and NOT in the
+    system prompt as a window-verdict rule: A/B probes against the deployed
+    judge showed any verdict-level phrasing flips genuine covers that merely
+    CONTAIN such a heading (the M1212 table window absorbs a trailing
+    更 改 记 录 line) to false, while the field constraint keeps every
+    verdict intact. The needles cover the listed names, the Chinese
+    whitespace-insensitivity note, and the substring-acceptable escape."""
+    from lightrag.parser.docx.smart_heading.title_block import (
+        _SYSTEM_PROMPT,
+        _USER_TEMPLATE,
+    )
+
+    for needle in (
+        "NEVER a front-matter/bookkeeping heading",
+        "目次",
+        "更改记录",
+        "Revision History",
+        "ignoring whitespace between Chinese characters",
+        "更改记录管理规范",
+    ):
+        assert needle in _USER_TEMPLATE, needle
+    # The verdict-level system prompt must stay list-free (see above).
+    assert "更改记录" not in _SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
 # 公文版记 (imprint) veto: the marker line and its 2 preceding non-blank
 # paragraphs are barred from every title-block channel
 # ---------------------------------------------------------------------------
