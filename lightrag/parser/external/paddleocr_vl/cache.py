@@ -20,6 +20,7 @@ DEFAULT_PADDLEOCR_VL_API_MODE = "official"
 DEFAULT_PADDLEOCR_VL_OFFICIAL_ENDPOINT = (
     "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
 )
+# PaddleOCR-VL-1.6 is the most recommended
 DEFAULT_PADDLEOCR_VL_MODEL = "PaddleOCR-VL-1.6"
 DEFAULT_PADDLEOCR_VL_ENGINE_VERSION = "PaddleOCR-VL-1.6"
 

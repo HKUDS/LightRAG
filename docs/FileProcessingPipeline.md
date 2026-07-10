@@ -951,6 +951,7 @@ through engine hints, while `batchId` and the default model remain global
 client configuration:
 
 ```bash
+# Recommended PaddleOCR-VL-1.6 and PaddleOCR-VL-1.5
 PADDLEOCR_VL_MODEL=PaddleOCR-VL-1.6
 PADDLEOCR_VL_PAGE_RANGES=
 PADDLEOCR_VL_BATCH_ID=

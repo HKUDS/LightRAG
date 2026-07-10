@@ -946,6 +946,7 @@ PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
 official 异步提交任务还支持顶层 `pageRanges` 和 `batchId` 字段。在 `official` 模式下，`pageRanges` 可通过引擎 hint 按文件覆盖，`batchId` 和默认模型则保留为全局 client 配置：
 
 ```bash
+# 推荐使用 PaddleOCR-VL-1.6 和 PaddleOCR-VL-1.5。
 PADDLEOCR_VL_MODEL=PaddleOCR-VL-1.6
 PADDLEOCR_VL_PAGE_RANGES=
 PADDLEOCR_VL_BATCH_ID=
