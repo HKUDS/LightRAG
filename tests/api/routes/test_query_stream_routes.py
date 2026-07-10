@@ -172,3 +172,117 @@ class TestQueryStreamResponseContentType:
             )
         finally:
             sys.argv = original_argv
+
+
+class TestQueryStreamProtocolOrder:
+    """Verify NDJSON line ordering: references must be the first line when
+    include_progress is False (default); progress lines may precede references
+    only when include_progress=True."""
+
+    @staticmethod
+    def _build_client_with_mock():
+        original_argv = sys.argv.copy()
+        sys.argv = ["lightrag-server"]
+        from lightrag.api.config import parse_args
+        from lightrag.api.lightrag_server import create_app
+
+        args = parse_args()
+
+        mock_rag = MagicMock()
+        mock_result = {
+            "llm_response": {
+                "is_streaming": False,
+                "content": "test response",
+            },
+            "data": {
+                "references": [
+                    {"reference_id": "1", "file_path": "/doc.pdf"}
+                ]
+            },
+        }
+
+        async def _fake_aquery(*a, **kw):
+            # If a progress_callback was passed, simulate one event.
+            cb = kw.get("progress_callback")
+            if cb:
+                await cb("extracting_keywords")
+            return mock_result
+
+        mock_rag.aquery_llm = MagicMock(side_effect=_fake_aquery)
+
+        with patch("lightrag.api.lightrag_server.LightRAG", return_value=mock_rag):
+            app = create_app(args)
+
+        client = TestClient(app)
+        return client, original_argv
+
+    @staticmethod
+    def _parse_ndjson(body: str) -> list[dict]:
+        lines = []
+        for line in body.strip().split("\n"):
+            line = line.strip()
+            if line:
+                lines.append(__import__("json").loads(line))
+        return lines
+
+    def test_references_first_without_progress(self):
+        """Default (include_progress=False): references must be the first line."""
+        client, original_argv = self._build_client_with_mock()
+        try:
+            response = client.post(
+                "/query/stream",
+                json={
+                    "query": "test",
+                    "mode": "mix",
+                    "include_references": True,
+                },
+            )
+            assert response.status_code == 200
+            lines = self._parse_ndjson(response.text)
+            assert len(lines) > 0
+            # First line must be references, NOT progress
+            assert "references" in lines[0], (
+                f"Default stream must start with references, got: {lines[0]}"
+            )
+            # No progress lines should appear
+            assert not any("progress" in item for item in lines), (
+                "Default stream must not contain progress lines"
+            )
+        finally:
+            sys.argv = original_argv
+
+    def test_progress_precedes_references_when_opted_in(self):
+        """include_progress=True: progress lines appear before references."""
+        client, original_argv = self._build_client_with_mock()
+        try:
+            response = client.post(
+                "/query/stream",
+                json={
+                    "query": "test",
+                    "mode": "mix",
+                    "include_references": True,
+                    "include_progress": True,
+                },
+            )
+            assert response.status_code == 200
+            lines = self._parse_ndjson(response.text)
+            assert len(lines) >= 2
+            # First line should be a progress event
+            assert "progress" in lines[0], (
+                f"include_progress stream should start with progress, got: {lines[0]}"
+            )
+            # A references line must exist after progress
+            ref_lines = [item for item in lines if "references" in item]
+            assert len(ref_lines) > 0, "references line must be present"
+            # The first progress line must come before the first references line
+            first_progress_idx = next(
+                i for i, item in enumerate(lines) if "progress" in item
+            )
+            first_ref_idx = next(
+                i for i, item in enumerate(lines) if "references" in item
+            )
+            assert first_progress_idx < first_ref_idx, (
+                "progress must precede references when include_progress=True"
+            )
+        finally:
+            sys.argv = original_argv

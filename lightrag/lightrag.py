@@ -2343,6 +2343,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
+        progress_callback=None,
     ) -> dict[str, Any]:
         """
         Asynchronous complete query API: returns structured retrieval results with LLM generation.
@@ -2377,6 +2378,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     chunks_vdb=self.chunks_vdb,
+                    progress_callback=progress_callback,
                 )
             elif param.mode == "naive":
                 query_result = await naive_query(
@@ -2387,6 +2389,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     hashing_kv=self.llm_response_cache,
                     system_prompt=system_prompt,
                     text_chunks_db=self.text_chunks,
+                    progress_callback=progress_callback,
                 )
             elif param.mode == "bypass":
                 # Bypass mode: directly use LLM without knowledge retrieval

@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import json_repair
-from typing import Any, AsyncIterator, overload, Literal
+from typing import Any, AsyncIterator, overload, Literal, Callable, Awaitable
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
@@ -90,6 +90,25 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+
+class QueryProgress:
+    """Progress event identifiers emitted during the retrieval pipeline.
+
+    These string constants are sent to the frontend via the progress_callback
+    so the UI can show which pipeline step is currently executing.
+    """
+
+    EXTRACTING_KEYWORDS = "extracting_keywords"
+    RETRIEVING_ENTITIES = "retrieving_entities"
+    RETRIEVING_RELATIONS = "retrieving_relations"
+    RETRIEVING_CHUNKS = "retrieving_chunks"
+    RERANKING = "reranking"
+    GENERATING_RESPONSE = "generating_response"
+
+
+# Type alias for the async progress callback: receives a QueryProgress event string.
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
@@ -3802,6 +3821,7 @@ async def kg_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     chunks_vdb: BaseVectorStorage = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> QueryResult | None:
     """
     Execute knowledge graph query and return unified QueryResult object.
@@ -3842,6 +3862,8 @@ async def kg_query(
     )
     llm_cache_identity = get_llm_cache_identity(global_config, "query")
 
+    if progress_callback:
+        await progress_callback(QueryProgress.EXTRACTING_KEYWORDS)
     hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
     )
@@ -3875,6 +3897,7 @@ async def kg_query(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        progress_callback=progress_callback,
     )
 
     if context_result is None:
@@ -3945,6 +3968,8 @@ async def kg_query(
         )
         response = cached_response
     else:
+        if progress_callback:
+            await progress_callback(QueryProgress.GENERATING_RESPONSE)
         response = await use_model_func(
             user_query,
             system_prompt=sys_prompt,
@@ -4330,6 +4355,7 @@ async def _perform_kg_search(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """
     Pure search logic that retrieves raw entities, relations, and vector chunks.
@@ -4406,6 +4432,8 @@ async def _perform_kg_search(
 
     # Handle local and global modes
     if query_param.mode == "local" and len(ll_keywords) > 0:
+        if progress_callback:
+            await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
         local_entities, local_relations = await _get_node_data(
             ll_keywords,
             knowledge_graph_inst,
@@ -4415,6 +4443,8 @@ async def _perform_kg_search(
         )
 
     elif query_param.mode == "global" and len(hl_keywords) > 0:
+        if progress_callback:
+            await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
         global_relations, global_entities = await _get_edge_data(
             hl_keywords,
             knowledge_graph_inst,
@@ -4425,6 +4455,8 @@ async def _perform_kg_search(
 
     else:  # hybrid or mix mode
         if len(ll_keywords) > 0:
+            if progress_callback:
+                await progress_callback(QueryProgress.RETRIEVING_ENTITIES)
             local_entities, local_relations = await _get_node_data(
                 ll_keywords,
                 knowledge_graph_inst,
@@ -4433,6 +4465,8 @@ async def _perform_kg_search(
                 query_embedding=ll_embedding,
             )
         if len(hl_keywords) > 0:
+            if progress_callback:
+                await progress_callback(QueryProgress.RETRIEVING_RELATIONS)
             global_relations, global_entities = await _get_edge_data(
                 hl_keywords,
                 knowledge_graph_inst,
@@ -4443,6 +4477,8 @@ async def _perform_kg_search(
 
         # Get vector chunks for mix mode
         if query_param.mode == "mix" and chunks_vdb:
+            if progress_callback:
+                await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
             vector_chunks = await _get_vector_context(
                 query,
                 chunks_vdb,
@@ -4854,6 +4890,7 @@ async def _build_context_str(
     chunk_tracking: dict = None,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
@@ -4937,6 +4974,7 @@ async def _build_context_str(
         global_config=global_config,
         source_type=query_param.mode,
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
+        progress_callback=progress_callback,
     )
 
     # Generate reference list from truncated chunks using the new common function
@@ -5039,6 +5077,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     chunks_vdb: BaseVectorStorage = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> QueryContextResult | None:
     """
     Main query context building function using the new 4-stage architecture:
@@ -5062,6 +5101,7 @@ async def _build_query_context(
         text_chunks_db,
         query_param,
         chunks_vdb,
+        progress_callback=progress_callback,
     )
 
     if not search_result["final_entities"] and not search_result["final_relations"]:
@@ -5111,6 +5151,7 @@ async def _build_query_context(
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
+        progress_callback=progress_callback,
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data
@@ -5753,6 +5794,7 @@ async def naive_query(
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
     text_chunks_db: BaseKVStorage | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> QueryResult | None:
     """
     Execute naive query and return unified QueryResult object.
@@ -5789,6 +5831,8 @@ async def naive_query(
         logger.error("Tokenizer not found in global configuration.")
         return QueryResult(content=PROMPTS["fail_response"])
 
+    if progress_callback:
+        await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
     if chunks is None or len(chunks) == 0:
@@ -5848,6 +5892,7 @@ async def naive_query(
         global_config=global_config,
         source_type="vector",
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
+        progress_callback=progress_callback,
     )
 
     # Generate reference list from processed chunks using the new common function

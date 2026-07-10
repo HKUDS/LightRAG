@@ -410,7 +410,17 @@
       "copyManualInstruction": "Будь ласка, виберіть та скопіюйте текст вручну",
       "thinking": "Мислення...",
       "thinkingTime": "Час мислення {{time}}с",
-      "thinkingInProgress": "Мислення в процесі..."
+      "thinkingInProgress": "Мислення в процесі...",
+      "responseTime": "Час відповіді {{time}}с",
+      "firstTokenTime": "Перший токен {{time}}с",
+      "progress": {
+        "extracting_keywords": "Вилучення ключових слів...",
+        "retrieving_entities": "Пошук сутностей...",
+        "retrieving_relations": "Пошук відношень...",
+        "retrieving_chunks": "Пошук фрагментів...",
+        "reranking": "Переранжування...",
+        "generating_response": "Генерування відповіді..."
+      }
     },
     "retrieval": {
       "startPrompt": "Почніть пошук, ввівши ваш запит нижче",

@@ -410,7 +410,17 @@
       "copyManualInstruction": "Bitte wählen Sie den Text manuell aus und kopieren Sie ihn",
       "thinking": "Denken...",
       "thinkingTime": "Denkzeit {{time}}s",
-      "thinkingInProgress": "Denken läuft..."
+      "thinkingInProgress": "Denken läuft...",
+      "responseTime": "Antwortzeit {{time}}s",
+      "firstTokenTime": "Erstes Token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Schlüsselwörter werden extrahiert...",
+        "retrieving_entities": "Entitäten werden abgerufen...",
+        "retrieving_relations": "Beziehungen werden abgerufen...",
+        "retrieving_chunks": "Textblöcke werden abgerufen...",
+        "reranking": "Ergebnisse werden neu bewertet...",
+        "generating_response": "Antwort wird generiert..."
+      }
     },
     "retrieval": {
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",

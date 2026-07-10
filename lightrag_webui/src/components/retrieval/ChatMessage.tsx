@@ -15,7 +15,7 @@ import { remarkFootnotes } from '@/utils/remarkFootnotes'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
-import { LoaderIcon, ChevronDownIcon } from 'lucide-react'
+import { LoaderIcon, ChevronDownIcon, ClockIcon, ZapIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 // KaTeX configuration options interface
@@ -48,10 +48,12 @@ export type MessageWithError = Message & {
 // Restore original component definition and export
 export const ChatMessage = ({
   message,
-  isTabActive = true
+  isTabActive = true,
+  activeProgress = null
 }: {
   message: MessageWithError
   isTabActive?: boolean
+  activeProgress?: string | null
 }) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
@@ -59,7 +61,7 @@ export const ChatMessage = ({
   const [isThinkingExpanded, setIsThinkingExpanded] = useState<boolean>(false)
 
   // Directly use props passed from the parent.
-  const { thinkingContent, displayContent, thinkingTime, isThinking } = message
+  const { thinkingContent, displayContent, thinkingTime, responseTime, firstTokenTime, isThinking } = message
 
   // Reset expansion state when new thinking starts.
   // Render-time comparison avoids cascading renders from setState-in-useEffect.
@@ -267,6 +269,31 @@ export const ChatMessage = ({
               {finalDisplayContent}
             </ReactMarkdown>
           </div>
+        </div>
+      )}
+      {/* Retrieval pipeline progress — shows which step is running (e.g.
+          "Extracting keywords...") while the query is in flight. Only shown
+          for the active assistant message before any content arrives. */}
+      {message.role === 'assistant' && activeProgress && !finalDisplayContent?.trim() && (
+        <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+          <LoaderIcon className="size-3 animate-spin" />
+          {t(`retrievePanel.chatMessage.progress.${activeProgress}`, activeProgress)}
+        </div>
+      )}
+      {/* Response time - live stopwatch while the query is in flight, frozen
+          to the final duration once it completes (assistant messages only). */}
+      {message.role === 'assistant' && typeof responseTime === 'number' && (
+        <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <ClockIcon className={cn('size-3', isThinking && 'animate-spin')} />
+            {t('retrievePanel.chatMessage.responseTime', { time: responseTime })}
+          </span>
+          {typeof firstTokenTime === 'number' && (
+            <span className="flex items-center gap-1">
+              <ZapIcon className="size-3" />
+              {t('retrievePanel.chatMessage.firstTokenTime', { time: firstTokenTime })}
+            </span>
+          )}
         </div>
       )}
       {/* User-terminated hint - response may be incomplete */}

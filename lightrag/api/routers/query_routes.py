@@ -2,7 +2,9 @@
 This module contains all query-related routes for the LightRAG API.
 """
 
+import asyncio
 import json
+import time
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
@@ -103,6 +105,15 @@ class QueryRequest(BaseModel):
         description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
     )
 
+    include_progress: Optional[bool] = Field(
+        default=False,
+        description="If True, emits retrieval pipeline progress events (e.g. "
+        "'extracting_keywords') as NDJSON lines before the response chunks. "
+        "Only applies to /query/stream. When False (default), the stream "
+        "preserves the original protocol order: references first, then "
+        "response chunks — ensuring backward compatibility for existing clients.",
+    )
+
     stream: Optional[bool] = Field(
         default=None,
         description="If True, enables streaming output. Defaults to False for /query, True for /query/stream.",
@@ -132,7 +143,8 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True,
+            exclude={"query", "include_chunk_content", "include_progress"},
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -160,6 +172,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
+    response_time: Optional[float] = Field(
+        default=None,
+        description="Total server-side processing time in seconds (retrieval + LLM generation)",
+    )
 
 
 class QueryDataResponse(BaseModel):
@@ -174,7 +190,22 @@ class QueryDataResponse(BaseModel):
 
 
 class StreamChunkResponse(BaseModel):
-    """Response model for streaming chunks in NDJSON format"""
+    """Response model for streaming chunks in NDJSON format.
+
+    Default stream order (``include_progress=False``):
+    1. ``references`` — the reference list (only when
+       ``include_references=True``), emitted once as the **first** line.
+    2. ``response`` — LLM response content chunks (streaming) or the
+       complete response (non-streaming).
+    3. ``error`` — error message if processing fails.
+    4. ``response_time`` — total server-side processing duration, emitted
+       once as the final line.
+
+    When the client opts in via ``include_progress=True``:
+    ``progress`` lines are emitted **before** ``references``, so clients
+    that depend on ``references`` being the first line should not enable
+    ``include_progress``.
+    """
 
     references: Optional[List[Dict[str, str]]] = Field(
         default=None,
@@ -185,6 +216,14 @@ class StreamChunkResponse(BaseModel):
     )
     error: Optional[str] = Field(
         default=None, description="Error message if processing fails"
+    )
+    progress: Optional[str] = Field(
+        default=None,
+        description="Retrieval pipeline step identifier (e.g. 'extracting_keywords'); only emitted when include_progress=True",
+    )
+    response_time: Optional[float] = Field(
+        default=None,
+        description="Total server-side processing time in seconds (only in the final metadata line)",
     )
 
 
@@ -409,7 +448,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
             # Unified approach: always use aquery_llm for both cases
+            start_time = time.perf_counter()
             result = await rag.aquery_llm(request.query, param=param)
+            response_time = round(time.perf_counter() - start_time, 3)
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
@@ -446,9 +487,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Return response with or without references based on request
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                return QueryResponse(
+                    response=response_content,
+                    references=references,
+                    response_time=response_time,
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                return QueryResponse(
+                    response=response_content,
+                    references=None,
+                    response_time=response_time,
+                )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -458,11 +507,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         result: dict[str, Any],
         include_references: bool,
         include_chunk_content: bool,
+        start_time: float,
     ):
         """Shared async generator that yields NDJSON lines for streaming responses.
 
         Used by ``/query/stream`` to format NDJSON output with consistent
-        error-handling behaviour.
+        error-handling behaviour. A final metadata line carrying
+        ``response_time`` is emitted after all content so the client can
+        display the total server-side processing duration.
         """
 
         async def _generate():
@@ -514,6 +566,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     complete_response["references"] = references
 
                 yield f"{json.dumps(complete_response)}\n"
+
+            # Final metadata line: total server-side processing time (retrieval
+            # + LLM generation). Emitted last so streaming clients can stamp
+            # the assistant message once the full response has been delivered.
+            yield f"{json.dumps({'response_time': round(time.perf_counter() - start_time, 3)})}\n"
 
         return _generate
 
@@ -606,9 +663,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         **Response Modes:**
         - Real-time response delivery as content is generated
         - NDJSON format: each line is a separate JSON object
-        - First line: `{"references": [...]}` (if include_references=True)
-        - Subsequent lines: `{"response": "content chunk"}`
-        - Error handling: `{"error": "error message"}`
+        - Default order (``include_progress=False``):
+          - First line: `{"references": [...]}` (if include_references=True)
+          - Subsequent lines: `{"response": "content chunk"}`
+          - Error handling: `{"error": "error message"}`
+        - With ``include_progress=True`` (opt-in):
+          - Progress lines: `{"progress": "step_name"}` emitted **before** references
+          - Then references, response chunks, and errors as above
+          - Clients that depend on references being the first line must not enable ``include_progress``
 
         > If stream parameter is False, or the query hit LLM cache, complete response delivered in a single streaming message.
 
@@ -660,6 +722,20 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         }
         ```
 
+        Streaming with retrieval progress (opt-in):
+        ```json
+        {
+            "query": "Explain neural networks",
+            "mode": "mix",
+            "stream": true,
+            "include_progress": true
+        }
+        ```
+        Progress lines (`{"progress": "extracting_keywords"}`, etc.) are emitted
+        before references and response chunks, letting the client show live
+        pipeline status. Omit ``include_progress`` (or set it to ``false``) to
+        keep the original protocol order where references is always the first line.
+
         Conversation with context:
         ```json
         {
@@ -700,6 +776,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **stream**: Enable streaming (True) or complete response (False)
                 - **include_references**: Whether to include source citations
+                - **include_progress**: If True, emit retrieval progress events before references (default: False)
                 - **response_type**: Format preference (e.g., "Multiple Paragraphs")
                 - **top_k**: Number of top entities/relations to retrieve
                 - **conversation_history**: Previous dialogue context for multi-turn conversations
@@ -708,6 +785,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         Returns:
             StreamingResponse: NDJSON streaming response containing:
                 - **Streaming mode**: Multiple JSON objects, one per line
+                  - Progress objects (only if include_progress=True): `{"progress": "step_name"}`
                   - References object (if requested): `{"references": [...]}`
                   - Content chunks: `{"response": "chunk content"}`
                   - Error objects: `{"error": "error message"}`
@@ -730,24 +808,93 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             from fastapi.responses import StreamingResponse
 
-            # Unified approach: always use aquery_llm for all cases
-            result = await rag.aquery_llm(request.query, param=param)
-            stream_gen = _build_stream_generator(
-                result=result,
-                include_references=request.include_references,
-                include_chunk_content=request.include_chunk_content,
-            )
+            start_time = time.perf_counter()
 
-            return StreamingResponse(
-                stream_gen(),
-                media_type="application/x-ndjson",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Content-Type": "application/x-ndjson",
-                    "X-Accel-Buffering": "no",  # Ensure proper handling of streaming response when proxied by Nginx
-                },
-            )
+            # When the client opts in via include_progress, run aquery_llm as a
+            # background task so progress events can be interleaved into the
+            # NDJSON stream before the response chunks. When include_progress
+            # is False (default), use the original blocking path that preserves
+            # the exact protocol order: references → response chunks → time.
+            include_progress = request.include_progress or False
+
+            if include_progress:
+                progress_queue: asyncio.Queue = asyncio.Queue()
+
+                async def progress_callback(event: str):
+                    await progress_queue.put(event)
+
+                query_task = asyncio.create_task(
+                    rag.aquery_llm(
+                        request.query, param=param, progress_callback=progress_callback
+                    )
+                )
+
+                include_references = request.include_references
+                include_chunk_content = request.include_chunk_content
+
+                async def merged_generator():
+                    try:
+                        # Phase 1: drain progress events while the retrieval task runs.
+                        while not query_task.done():
+                            try:
+                                event = await asyncio.wait_for(
+                                    progress_queue.get(), timeout=0.1
+                                )
+                                yield f"{json.dumps({'progress': event})}\n"
+                            except asyncio.TimeoutError:
+                                await asyncio.sleep(0)
+                        # Surface any exception from the task (e.g. LLM service error).
+                        result = await query_task
+
+                        # Phase 2: drain any remaining progress events that arrived
+                        # between the last poll and task completion.
+                        while not progress_queue.empty():
+                            event = progress_queue.get_nowait()
+                            yield f"{json.dumps({'progress': event})}\n"
+
+                        # Phase 3: yield references + LLM response chunks + response_time
+                        stream_gen = _build_stream_generator(
+                            result=result,
+                            include_references=include_references,
+                            include_chunk_content=include_chunk_content,
+                            start_time=start_time,
+                        )
+                        async for line in stream_gen():
+                            yield line
+                    finally:
+                        if not query_task.done():
+                            query_task.cancel()
+
+                return StreamingResponse(
+                    merged_generator(),
+                    media_type="application/x-ndjson",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Content-Type": "application/x-ndjson",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+            else:
+                # Default path: no progress events, original protocol order preserved.
+                result = await rag.aquery_llm(request.query, param=param)
+                stream_gen = _build_stream_generator(
+                    result=result,
+                    include_references=request.include_references,
+                    include_chunk_content=request.include_chunk_content,
+                    start_time=start_time,
+                )
+
+                return StreamingResponse(
+                    stream_gen(),
+                    media_type="application/x-ndjson",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Content-Type": "application/x-ndjson",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
         except Exception as e:
             logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
