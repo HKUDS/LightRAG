@@ -626,6 +626,10 @@ class PaddleOCRVLParserOptions:
 
     def signature(self) -> str:
         payload = asdict(self)
+        if self.api_mode == "local":
+            payload.pop("model")
+            payload.pop("page_ranges")
+            payload.pop("batch_id")
         payload["signature_version"] = 1
         raw = json.dumps(
             payload,

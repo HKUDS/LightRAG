@@ -40,11 +40,11 @@ else:
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_MAX_POLLS = 600
-# Comma-separated hostname suffixes whose HTTPS URLs are safe to fetch as
-# remote assets. PaddleOCR-VL returns presigned BOS (Baidu Object Storage) URLs
-# under *.bcebos.com; other hosts are never fetched (SSRF guard). Override with
-# PADDLEOCR_VL_ALLOWED_ASSET_HOSTS to admit additional self-hosted domains.
-DEFAULT_ALLOWED_ASSET_HOST_SUFFIXES = (".bcebos.com",)
+# Comma-separated host patterns whose HTTPS URLs are safe to fetch as remote
+# assets. A bare host matches exactly; a leading ``*.`` matches subdomains.
+# PaddleOCR-VL returns presigned BOS (Baidu Object Storage) URLs under
+# ``*.bcebos.com``; other hosts are never fetched (SSRF guard).
+DEFAULT_ALLOWED_ASSET_HOST_PATTERNS = ("*.bcebos.com",)
 
 
 class PaddleOCRVLRawClient:
@@ -104,15 +104,15 @@ class PaddleOCRVLRawClient:
         )
         self.max_polls = env_int("PADDLEOCR_VL_MAX_POLLS", DEFAULT_MAX_POLLS)
         self.engine_version = current_engine_version()
-        self.allowed_asset_host_suffixes = self._load_allowed_asset_hosts()
+        self.allowed_asset_host_patterns = self._load_allowed_asset_host_patterns()
 
     @staticmethod
-    def _load_allowed_asset_hosts() -> tuple[str, ...]:
+    def _load_allowed_asset_host_patterns() -> tuple[str, ...]:
         raw = os.getenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", "").strip()
         if not raw:
-            return DEFAULT_ALLOWED_ASSET_HOST_SUFFIXES
-        suffixes = tuple(h.strip().lower() for h in raw.split(",") if h.strip())
-        return suffixes or DEFAULT_ALLOWED_ASSET_HOST_SUFFIXES
+            return DEFAULT_ALLOWED_ASSET_HOST_PATTERNS
+        patterns = tuple(h.strip().lower() for h in raw.split(",") if h.strip())
+        return patterns or DEFAULT_ALLOWED_ASSET_HOST_PATTERNS
 
     async def download_into(
         self,
@@ -321,7 +321,9 @@ class PaddleOCRVLRawClient:
                 # not affect the parsed document, so failures are soft-skipped.
                 for name, image_value in output_images.items():
                     value = str(image_value)
-                    suffix = _suffix_from_url(value) or ".jpg"
+                    suffix = ".jpg"
+                    if _looks_like_http_url(value):
+                        suffix = _suffix_from_url(value) or suffix
                     rel = (
                         Path("outputImages")
                         / f"{_safe_name(str(name))}_{page_index}{suffix}"
@@ -345,7 +347,7 @@ class PaddleOCRVLRawClient:
             if mandatory:
                 raise RuntimeError(
                     f"PaddleOCR-VL markdown image URL is not an allowed asset host "
-                    f"(suffixes={list(self.allowed_asset_host_suffixes)}): {value!r}"
+                    f"(patterns={list(self.allowed_asset_host_patterns)}): {value!r}"
                 )
             logger.warning("[paddleocr_vl] skipping non-allowed asset URL: %r", value)
             return
@@ -376,15 +378,23 @@ class PaddleOCRVLRawClient:
     def _is_allowed_asset_url(self, url: str) -> bool:
         """True iff ``url`` is an HTTPS URL on an allowed asset host.
 
-        Host suffixes come from ``self.allowed_asset_host_suffixes`` (default
+        Host patterns come from ``self.allowed_asset_host_patterns`` (default
         ``*.bcebos.com``; overridable via ``PADDLEOCR_VL_ALLOWED_ASSET_HOSTS``).
-        Other remote hosts are never fetched (SSRF guard).
+        Bare patterns match exactly; ``*.`` patterns match subdomains. Other
+        remote hosts are never fetched (SSRF guard).
         """
         parsed = urlparse(url)
         if parsed.scheme != "https":
             return False
         host = (parsed.hostname or "").rstrip(".").lower()
-        return any(host.endswith(s) for s in self.allowed_asset_host_suffixes)
+        for pattern in self.allowed_asset_host_patterns:
+            if pattern.startswith("*."):
+                parent_domain = pattern[2:].rstrip(".")
+                if parent_domain and host.endswith(f".{parent_domain}"):
+                    return True
+            elif host == pattern.rstrip("."):
+                return True
+        return False
 
     def _write_manifest(
         self,

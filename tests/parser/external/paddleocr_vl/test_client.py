@@ -423,7 +423,7 @@ async def test_allowed_asset_hosts_env_admits_custom_domain(
     global _RESULT_PAYLOAD
     source = tmp_path / "demo.pdf"
     source.write_bytes(b"%PDF fake")
-    monkeypatch.setenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", ".my-cdn.example.com")
+    monkeypatch.setenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", "*.my-cdn.example.com")
 
     class _CdnFakeAsyncClient(_FakeAsyncClient):
         async def get(self, url: str, **kwargs: Any) -> _Response:
@@ -457,12 +457,34 @@ async def test_allowed_asset_hosts_env_admits_custom_domain(
     }
 
     client = PaddleOCRVLRawClient()
-    assert ".my-cdn.example.com" in client.allowed_asset_host_suffixes
+    assert "*.my-cdn.example.com" in client.allowed_asset_host_patterns
     raw_dir = tmp_path / "demo.paddleocr_vl_raw"
     await client.download_into(raw_dir, source)
 
     assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"cdn-fig"
 
+
+@pytest.mark.parametrize(
+    ("configured_host", "asset_url", "expected"),
+    [
+        ("example.com", "https://example.com/fig.jpg", True),
+        ("example.com", "https://assets.example.com/fig.jpg", False),
+        ("*.example.com", "https://example.com/fig.jpg", False),
+        ("*.example.com", "https://assets.example.com/fig.jpg", True),
+        ("*.example.com", "https://nested.assets.example.com/fig.jpg", True),
+        ("*.example.com", "https://notexample.com/fig.jpg", False),
+    ],
+)
+def test_allowed_asset_hosts_distinguish_exact_and_wildcard_patterns(
+    configured_host: str,
+    asset_url: str,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", configured_host)
+    client = PaddleOCRVLRawClient()
+
+    assert client._is_allowed_asset_url(asset_url) is expected
 
 
 async def test_client_sends_documented_optional_payload(

@@ -21,7 +21,9 @@ from lightrag.utils import EmbeddingFunc, Tokenizer
 
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature
-current_paddleocr_vl_options_signature = cache_mod.current_paddleocr_vl_options_signature
+current_paddleocr_vl_options_signature = (
+    cache_mod.current_paddleocr_vl_options_signature
+)
 
 
 async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):

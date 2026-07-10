@@ -926,16 +926,24 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 PaddleOCR-VL returns binary fields such as `outputImages`, `inputImage`,
 `markdown.images`, and `exports` as inline Base64 by default. When the serving
 configuration enables `Serving.return_urls=true`, those fields keep the same
-shape but contain presigned object-storage URLs instead. PaddleOCR currently
-supports URL returns only through BOS (Baidu Object Storage), so LightRAG only
-downloads HTTPS image URLs whose host ends with `.bcebos.com`, for example:
+shape but contain presigned object-storage URLs instead. LightRAG materializes
+the `markdown.images` and `outputImages` resources. The default
+`*.bcebos.com` pattern downloads HTTPS image URLs on BOS (Baidu Object Storage)
+subdomains, for example:
 
 ```bash
 https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/pp-ocr-vl-16-online/.../markdown_0/imgs/example.jpg?authorization=...
 ```
 
-Other remote image URLs returned in these fields are ignored. Inline Base64
-images are still decoded normally.
+Set `PADDLEOCR_VL_ALLOWED_ASSET_HOSTS` to a comma-separated list of exact or
+wildcard host patterns to admit additional self-hosted asset URLs. A bare
+pattern such as `example.com` matches only that exact host. A wildcard pattern
+such as `*.example.com` matches subdomains such as `assets.example.com` and
+`nested.assets.example.com`, but not the bare `example.com` or the lookalike
+`notexample.com`. A `markdown.images` resource that is outside the allowlist or
+cannot be decoded fails the document because the parsed body references it.
+`outputImages` are diagnostic resources, so their failures are logged and
+skipped. Inline Base64 images are decoded normally.
 
 Minimal local configuration:
 

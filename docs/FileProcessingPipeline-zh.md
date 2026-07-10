@@ -926,14 +926,22 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 PaddleOCR-VL 默认把 `outputImages`、`inputImage`、`markdown.images`、
 `exports` 等二进制字段以 Base64 内联返回。当服务端启用
 `Serving.return_urls=true` 时，这些字段的结构不变，但值会变成预签名对象存储
-URL。PaddleOCR 当前的 URL 返回仅支持 BOS（百度智能云对象存储），因此
-LightRAG 只下载 host 以 `.bcebos.com` 结尾的 HTTPS 图片 URL，例如：
+URL。LightRAG 会落盘 `markdown.images` 和 `outputImages` 资源；默认的
+`*.bcebos.com` pattern 只下载 BOS（百度智能云对象存储）子域名上的 HTTPS
+图片 URL，例如：
 
 ```bash
 https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/pp-ocr-vl-16-online/.../markdown_0/imgs/example.jpg?authorization=...
 ```
 
-这些字段里的其他远程图片 URL 会被忽略；Base64 内联图片仍会正常解码。
+可通过 `PADDLEOCR_VL_ALLOWED_ASSET_HOSTS` 配置逗号分隔的精确或 wildcard
+host pattern，放行额外的自部署资源地址。裸 pattern（如 `example.com`）只匹配
+完全相同的 host；wildcard pattern（如 `*.example.com`）可匹配
+`assets.example.com`、`nested.assets.example.com` 等子域名，但不匹配裸
+`example.com` 或形似的 `notexample.com`。`markdown.images` 资源若不在
+allowlist 中或无法解码，会因为正文引用该资源而使文档解析失败；
+`outputImages` 仅用于诊断，其下载或解码失败只记录日志并跳过。Base64 内联图片
+仍会正常解码。
 
 local 模式最小配置：
 

@@ -1,4 +1,4 @@
-"""PaddleOCR-VL engine adapter."""
+"""PaddleOCR-VL engine adapter (implements ExternalParserBase hooks)."""
 
 from __future__ import annotations
 

@@ -16,7 +16,9 @@ from lightrag.parser.external.paddleocr_vl.cache import (
 
 # Access internal test helpers via module object (not in __all__)
 current_endpoint_signature = cache_mod.current_endpoint_signature
-current_paddleocr_vl_options_signature = cache_mod.current_paddleocr_vl_options_signature
+current_paddleocr_vl_options_signature = (
+    cache_mod.current_paddleocr_vl_options_signature
+)
 
 
 @pytest.fixture(autouse=True)
@@ -292,6 +294,18 @@ def test_parser_options_reject_page_range_when_api_mode_is_local(
 
     with pytest.raises(ValueError, match="PADDLEOCR_VL_API_MODE=official"):
         PaddleOCRVLParserOptions.from_env()
+
+
+def test_local_signature_ignores_official_only_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_API_MODE", "local")
+    original = PaddleOCRVLParserOptions.from_env().signature()
+
+    monkeypatch.setenv("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.5")
+    monkeypatch.setenv("PADDLEOCR_VL_BATCH_ID", "batch-for-official-api")
+
+    assert PaddleOCRVLParserOptions.from_env().signature() == original
 
 
 def test_parser_options_allow_page_range_when_api_mode_defaults_to_official(
