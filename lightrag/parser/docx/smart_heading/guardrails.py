@@ -133,7 +133,10 @@ def strong_body_reason(text: str) -> str | None:
         runs. (The 印发-family CLOSER is region-scoped and deliberately NOT
         part of strong_body; see :func:`imprint_closer_reason`.);
       - ``strong_body_length``: weighted length > 180 en-equivalent chars;
-      - ``strong_body_multi_sentence``: spaCy sees ≥2 sentences;
+      - ``strong_body_multi_sentence``: spaCy sees ≥2 sentences AND a visible
+        internal sentence terminator corroborates the split — the spaCy vote
+        alone is not trusted (the pinned zh model hallucinates mid-word breaks
+        on short title fragments: 索菲|亚, 承诺|书);
       - ``strong_body_sentence_end``: ends with a sentence terminator
         (stepping over closing quotes/brackets); a trailing English period
         counts only when spaCy segmentation says it closes a sentence.
@@ -163,8 +166,24 @@ def strong_body_reason(text: str) -> str | None:
     # Judge sentence shape over the title PROSE, not a leading numbering label:
     # spaCy splits multi-level numbers ("3.1.1") into pseudo-sentences, which
     # would falsely demote every dotted-numbered heading to body.
+    #
+    # The spaCy ≥2 vote is NECESSARY but not SUFFICIENT: the pinned zh model's
+    # dependency parser hallucinates sentence boundaries mid-word on short
+    # heading fragments (广州市增城区“7.19”索菲亚… splits at 索菲|亚, 承诺书 at
+    # 承诺|书), and a bigger model just relocates the errors (zh_core_web_lg is
+    # no better than _sm). So a DETERMINISTIC corroborator CONSTRAINS (does not
+    # replace) the model vote: still require spaCy's ≥2, but trust it only when
+    # a visible internal sentence terminator (。！？…；;.!?, decimals excluded)
+    # corroborates the split — a mid-word pseudo-split never produces one.
+    # Known tradeoff: punctuation-less multi-clause prose (e.g. a lead-in ending
+    # in “：”) also loses the verdict; accepted as body-vs-heading rarely hinges
+    # on it and length / sentence-end rules still cover genuine long prose.
     prose = _strip_leading_numbering(stripped)
-    if prose and nlp.sentence_count(prose) >= 2:
+    if (
+        prose
+        and nlp.sentence_count(prose) >= 2
+        and has_explicit_internal_sentence_boundary(stripped)
+    ):
         return "strong_body_multi_sentence"
     return None
 

@@ -172,6 +172,38 @@ def test_strong_body_spares_heading_with_nbsp_separator() -> None:
     assert strong_body_reason("本节介绍列入条件。") == "strong_body_sentence_end"
 
 
+def test_strong_body_multi_sentence_needs_explicit_terminator() -> None:
+    """Regression (test13 事故调查报告): the pinned zh model's parser
+    hallucinates a mid-word sentence break on short title fragments — a cover
+    lead-in (广州市增城区"7.19"索菲亚定制家居项目, split at 索菲|亚) and a bare
+    title phrase (投标单位廉洁自律承诺书, split at 承诺|书) both score ≥2 spaCy
+    sentences without any visible terminator. The multi-sentence verdict is now
+    gated on a deterministic internal terminator, so these are NOT strong body
+    (the cover lead-in then joins its title block instead of being demoted),
+    while genuine prose carrying an internal "。" still trips."""
+    from lightrag.parser.docx.smart_heading import nlp
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        has_explicit_internal_sentence_boundary,
+        strong_body_reason,
+    )
+
+    if nlp.missing_spacy_models():
+        pytest.skip("spaCy models not installed")
+
+    lead_in = "广州市增城区“7.19”索菲亚定制家居项目"
+    phrase = "投标单位廉洁自律承诺书"
+    # The pseudo-split is real (≥2 spaCy sentences) but has no visible terminator.
+    assert nlp.sentence_count(lead_in) >= 2
+    assert not has_explicit_internal_sentence_boundary(lead_in)
+    assert strong_body_reason(lead_in) is None
+    assert strong_body_reason(phrase) is None
+    # Genuine multi-sentence prose (internal "。") is still demoted.
+    assert (
+        strong_body_reason("项目背景已经说明。后续要求继续执行")
+        == "strong_body_multi_sentence"
+    )
+
+
 # ---------------------------------------------------------------------------
 # TOC two-channel detection (G9-1 / G9-2 / G9-5)
 # ---------------------------------------------------------------------------

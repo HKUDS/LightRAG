@@ -92,6 +92,14 @@ def _strong_body_with_outline_context(
     physical outline outweighs that NLP-only signal unless the title prose
     also contains a visible internal sentence terminator. All other
     strong-body reasons retain their original force.
+
+    NOTE: as of the same-terminator gate added to
+    :func:`guardrails.strong_body_reason`, the DEFAULT ``strong_body`` never
+    returns ``strong_body_multi_sentence`` without a visible internal
+    terminator, so this guard's sparing branch is unreachable on the default
+    path (the same corroboration now runs at the source, and covers non-outline
+    lines too). It is retained as defense-in-depth for INJECTED ``strong_body``
+    callbacks (e.g. test stubs) that bypass the source gate.
     """
     reason = strong_body(text)
     spared = (

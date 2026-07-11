@@ -233,11 +233,21 @@ def test_post_merge_outline_nlp_only_multisentence_is_spared() -> None:
     assert "strong_body_demoted" in explicit.rule_trail
 
 
-def test_outline_multisentence_guard_real_spacy_end_to_end(monkeypatch) -> None:
-    """test11 regression through real NLP and the block assembler: the
-    outline-1 ``2.3`` title survives a dependency-ROOT pseudo split, while a
-    non-outline body lead and an outline paragraph with a visible sentence
-    boundary retain their strong-body demotions."""
+def test_source_multisentence_gate_real_spacy_end_to_end(monkeypatch) -> None:
+    """test11 regression through real NLP and the block assembler, now via the
+    source-level multi-sentence gate in ``strong_body_reason`` (a spaCy ≥2 vote
+    counts only WITH a visible internal terminator):
+
+    - the outline-1 ``2.3   投标单位廉洁自律承诺书`` survives the model's
+      dependency-ROOT pseudo split (承诺|书) and stays a level-2 heading — the
+      pseudo split now yields ``strong_body_reason is None`` at the source, so it
+      is never demoted (no ``outline_multisentence_spared`` detour needed);
+    - a non-outline body lead-in (no visible terminator) is likewise not strong
+      body and simply stays plain body content (it is body-font, so it is not
+      promoted to a heading either);
+    - an outline paragraph carrying a genuine internal ``。`` still trips
+      ``strong_body_multi_sentence`` and is demoted.
+    """
     import json
 
     from lightrag.parser.docx.parse_document import _assemble_blocks_smart
@@ -255,17 +265,22 @@ def test_outline_multisentence_guard_real_spacy_end_to_end(monkeypatch) -> None:
     )
     explicit = "项目背景已经说明。后续要求继续执行"
 
-    assert guardrails.strong_body_reason(target) == "strong_body_multi_sentence"
+    # target/body_lead: spaCy pseudo-splits without any visible terminator →
+    # the source gate returns None (previously target was a false multi_sentence
+    # rescued only by the outline-context wrapper).
     assert not guardrails.has_explicit_internal_sentence_boundary(target)
-    assert guardrails.strong_body_reason(body_lead) == "strong_body_multi_sentence"
+    assert guardrails.strong_body_reason(target) is None
+    assert guardrails.strong_body_reason(body_lead) is None
+    # explicit: a genuine internal terminator corroborates the ≥2 vote.
     assert guardrails.has_explicit_internal_sentence_boundary(explicit)
+    assert guardrails.strong_body_reason(explicit) == "strong_body_multi_sentence"
 
     records = _body(20) + [
         _para("2 商务文件", size=16.0, outline_level=0),
         *_body(5),
         _para("2.2   中标服务费承诺函", size=14.0, outline_level=1),
         *_body(5),
-        _para(body_lead, size=14.0),
+        _para(body_lead),  # body-font lead-in (a real one is not heading-sized)
         _para(target, size=14.0, outline_level=1),
         *_body(5),
         _para("2.4   公司实力", size=14.0, outline_level=1),
@@ -284,13 +299,14 @@ def test_outline_multisentence_guard_real_spacy_end_to_end(monkeypatch) -> None:
     result = run_smart_heading(records, llm_judge=_llm, warnings=warnings)
     assert result is not None
     blocks = _assemble_blocks_smart(records, result, {}, {})
-    assert warnings["smart_outline_multisentence_spared"] == 1
+    # No spared detour anymore — the source gate handles it silently.
+    assert "smart_outline_multisentence_spared" not in warnings
 
     target_decision = next(d for d in result.decisions.values() if d.text == target)
     assert target_decision.is_heading and target_decision.level == 2
-    assert "outline_multisentence_spared" in target_decision.rule_trail
     assert "homophone_ner_entity" in target_decision.rule_trail
     assert "strong_body_demoted" not in target_decision.rule_trail
+    assert "outline_multisentence_spared" not in target_decision.rule_trail
 
     target_block = next(b for b in blocks if b.get("heading") == target)
     assert target_block["level"] == 2
@@ -300,12 +316,17 @@ def test_outline_multisentence_guard_real_spacy_end_to_end(monkeypatch) -> None:
         assert block["level"] == 2
         assert block["parent_headings"] == ["2 商务文件"]
 
-    body_decision = next(d for d in result.decisions.values() if d.text == body_lead)
+    # body_lead is not strong and body-font → plain body, never a heading, and
+    # not fetched from the demotion ledger (it produces no HeadingDecision).
+    assert not any(d.text == body_lead for d in result.decisions.values())
+    assert not any(b.get("heading") == body_lead for b in blocks)
+    assert any(body_lead in (b.get("content") or "") for b in blocks)
+
+    # explicit: genuine multi-sentence prose is still demoted.
     explicit_decision = next(d for d in result.decisions.values() if d.text == explicit)
-    assert not body_decision.is_heading
-    assert "strong_body_multi_sentence" in body_decision.rule_trail
     assert not explicit_decision.is_heading
     assert "strong_body_multi_sentence" in explicit_decision.rule_trail
+    assert "strong_body_demoted" in explicit_decision.rule_trail
 
 
 def test_non_outline_strong_body_demotion_is_audited_output_neutral() -> None:

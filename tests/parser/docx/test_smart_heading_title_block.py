@@ -87,6 +87,43 @@ def test_multi_window_requires_two_paragraphs_and_big_line() -> None:
     assert _find(records) == []
 
 
+def test_two_line_cover_with_decimal_lead_in_forms_window() -> None:
+    """Regression (test13 事故调查报告): a two-line 22pt cover whose first line
+    is a lead-in carrying a decimal (广州市增城区"7.19"…) must form ONE
+    multi-window together with the main title. The pinned zh model pseudo-splits
+    that lead-in into ≥2 sentences (mid-word 索菲|亚); before the deterministic
+    internal-terminator gate in ``strong_body_reason`` it read as strong body,
+    was excluded from the window seed, and got demoted to Preface body while the
+    main title became a lone level-0 title.
+
+    Uses the REAL ``strong_body_reason`` on purpose — the default ``_stub_strong_body``
+    never marks the (short, non-terminated) lead-in strong, so it cannot
+    reproduce the bug and would pass against the old implementation too.
+    """
+    from lightrag.parser.docx.smart_heading import nlp
+
+    if nlp.missing_spacy_models():
+        pytest.skip("spaCy models not installed")
+
+    records = [
+        _para("广州市增城区“7.19”索菲亚定制家居项目", size=22.0),  # lead-in (引题)
+        _para("建筑工地塔式起重机坍塌较大事故调查报告", size=22.0),  # main title
+        _para("2015年7月19日发生塔式起重机坍塌事故，造成4人死亡。", size=16.0),
+    ]
+    cands = find_title_block_candidates(
+        records,
+        fs_base_pt=16.0,
+        strong_body=guardrails.strong_body_reason,
+        numbering_veto=lambda _cls, _t: None,
+    )
+    # Old implementation: lead-in is strong → seed skips it → the lone main
+    # title cannot form a multi-window and the strong-body body line blocks the
+    # single-line channel → NO candidate at all.
+    assert len(cands) == 1
+    c = cands[0]
+    assert (c.start, c.end, c.single, c.trigger) == (0, 2, False, "multi_window")
+
+
 def test_single_candidate_first_eligible_paragraph() -> None:
     """A lone big opening line is a single-paragraph candidate after leading
     empty and recognized TOC paragraphs; a digit-led title survives when
@@ -223,6 +260,54 @@ def _judge_with(payload: dict | str, records=None, candidate=None, warnings=None
         _llm,
         warnings=warnings if warnings is not None else {},
     )
+
+
+_COLON_LEAD_IN = (
+    "为确保本项目产品的售后服务需求得以及时响应和解决，公司将组建该项目"
+    "售后服务团队，具体负责人员事项如下表："
+)
+
+
+def test_body_font_colon_lead_in_never_forms_title_block() -> None:
+    """Stability guard for the multi-sentence gate change (test13): a long
+    multi-clause colon lead-in at BODY font, in a body context, is never a
+    title-block candidate — it is not a title line, so it can neither seed nor
+    grow a qualifying window. Behaviour is identical before and after the gate
+    (this asserts the fix does NOT newly promote body-region lead-ins)."""
+    records = [
+        _para("2015年7月19日发生事故，造成4人死亡。", size=16.0),
+        _para(_COLON_LEAD_IN, size=16.0),
+        _para("事故原因分析如下。", size=16.0),
+    ]
+    assert _find(records, fs_base_pt=16.0) == []
+
+
+def test_title_font_colon_lead_in_absorbed_but_llm_gate_rejects() -> None:
+    """The multi-sentence gate change means a colon lead-in that spaCy used to
+    pseudo-split is no longer strong body. When such a lead-in is ALSO at title
+    font and sits right after the main title, it now joins the multi-window
+    (a known edge the fix introduces). The mandatory LLM judge is the backstop:
+    given an ``is_title_block: false`` verdict the candidate is rejected wholesale.
+
+    The default ``_stub_strong_body`` returns None for this short, non-terminated
+    lead-in, mirroring the post-fix ``strong_body_reason`` verdict, so the
+    candidate here reflects the real post-fix behaviour."""
+    records = [
+        _para("建筑工地塔式起重机坍塌较大事故调查报告", size=22.0),  # main title
+        _para(_COLON_LEAD_IN, size=22.0),  # colon lead-in at TITLE font (edge)
+        _para("正文从这里开始。", size=16.0),
+    ]
+    cands = _find(records, fs_base_pt=16.0)
+    # The lead-in is absorbed into the cover window (documented edge).
+    assert len(cands) == 1
+    assert (cands[0].start, cands[0].end, cands[0].single) == (0, 2, False)
+    # Mandatory LLM gate rejects the whole candidate → nothing promoted.
+    decision = _judge_with(
+        {"is_title_block": False, "headings": [0], "body": [1]},
+        records=records,
+        candidate=cands[0],
+    )
+    assert not decision.is_title_block
 
 
 def test_title_verdict_parsed_and_composed() -> None:
