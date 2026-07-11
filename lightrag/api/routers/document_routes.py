@@ -2333,11 +2333,17 @@ async def background_delete_documents(
         # old direct path only for compatibility with minimal in-process test
         # doubles and third-party subclasses that have not adopted it yet.
         if hasattr(rag, "working_dir"):
+
+            async def cancellation_requested() -> bool:
+                async with pipeline_status_lock:
+                    return pipeline_status.get("cancellation_requested", False)
+
             batch_result = await run_deferred_batch_delete(
                 rag,
                 doc_ids,
                 delete_llm_cache=delete_llm_cache,
                 delete_file=delete_file,
+                cancellation_requested=cancellation_requested,
             )
             if batch_result.stage is DeferredDeletionStage.COMMITTED:
                 await cleanup_deferred_delete_files(

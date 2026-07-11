@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from types import SimpleNamespace
+from typing import Awaitable, Callable, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -204,6 +205,56 @@ async def test_initial_commit_uses_the_same_durable_file_cleanup_helper_once(tmp
         )
 
     cleanup.assert_awaited_once_with(rag, doc_manager, "initial-commit")
+
+
+@pytest.mark.asyncio
+async def test_deferred_batch_observes_pipeline_cancellation_between_documents(
+    tmp_path,
+):
+    rag = _Rag(str(tmp_path))
+    doc_manager = SimpleNamespace(input_dir=tmp_path / "input")
+    pipeline_status = {
+        "busy": True,
+        "destructive_busy": True,
+        "history_messages": [],
+        "cancellation_requested": False,
+        "request_pending": False,
+    }
+
+    cancellation_check = None
+
+    async def deferred_delete_with_cancellation(_rag, _doc_ids, **kwargs):
+        nonlocal cancellation_check
+        cancellation_check = kwargs.get("cancellation_requested")
+        return SimpleNamespace(
+            batch_id="cancelled-batch",
+            stage=DeferredDeletionStage.FAILED_RETRYABLE,
+            error_detail="document deletion cancelled by user",
+        )
+
+    with (
+        patch(
+            "lightrag.kg.shared_storage.get_namespace_data",
+            new=AsyncMock(return_value=pipeline_status),
+        ),
+        patch(
+            "lightrag.kg.shared_storage.get_namespace_lock",
+            return_value=__import__("asyncio").Lock(),
+        ),
+        patch(
+            "lightrag.api.routers.document_routes.run_deferred_batch_delete",
+            side_effect=deferred_delete_with_cancellation,
+        ) as deferred_delete,
+    ):
+        await _document_routes.background_delete_documents(
+            rag, doc_manager, ["doc-a", "doc-b"]
+        )
+
+    deferred_delete.assert_awaited_once()
+    assert cancellation_check is not None
+    pipeline_status["cancellation_requested"] = True
+    cancellation_check = cast(Callable[[], Awaitable[bool]], cancellation_check)
+    assert await cancellation_check() is True
 
 
 @pytest.mark.asyncio

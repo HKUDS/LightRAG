@@ -137,6 +137,93 @@ async def test_two_document_batch_runs_one_rebuild_then_finalizes_metadata(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_not_found_document_is_checkpointed_and_batch_still_rebuilds(tmp_path):
+    """A stale ID is a completed no-op, not an ambiguous destructive failure."""
+    from lightrag.deferred_delete import run_deferred_batch_delete
+
+    rag = _rag(tmp_path)
+    rag.doc_status.get_by_id = AsyncMock(
+        side_effect=[
+            {"file_path": "a.pdf", "chunks_list": ["chunk-a"]},
+            None,
+        ]
+    )
+    rag.adelete_by_doc_id = AsyncMock(
+        side_effect=[
+            DeletionResult(
+                status="success",
+                doc_id="doc-a",
+                message="prepared",
+                entities_to_rebuild={"Shared": ["chunk-a"]},
+                relationships_to_rebuild={},
+            ),
+            DeletionResult(
+                status="not_found",
+                doc_id="stale-doc",
+                message="Document stale-doc not found.",
+                status_code=404,
+            ),
+        ]
+    )
+
+    with (
+        patch(
+            "lightrag.deferred_delete.get_namespace_data",
+            new_callable=AsyncMock,
+            return_value=_pipeline_status(),
+        ),
+        patch(
+            "lightrag.deferred_delete.get_namespace_lock",
+            return_value=asyncio.Lock(),
+        ),
+        patch(
+            "lightrag.deferred_delete.rebuild_knowledge_from_chunks",
+            new_callable=AsyncMock,
+        ) as rebuild,
+    ):
+        result = await run_deferred_batch_delete(rag, ["doc-a", "stale-doc"])
+
+    assert result.stage is DeferredDeletionStage.COMMITTED
+    rebuild.assert_awaited_once()
+    journal = DeferredDeletionJournalStore(tmp_path, "default").load(result.batch_id)
+    assert journal is not None
+    assert journal.current_document_index == 2
+    assert journal.entities_to_rebuild == {"Shared": ["chunk-a"]}
+    assert journal.document_delete_checkpoints["stale-doc"]["state"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_stops_before_next_destructive_delete(tmp_path):
+    from lightrag.deferred_delete import run_deferred_batch_delete
+
+    rag = _rag(tmp_path)
+    rag.doc_status.get_by_id = AsyncMock(
+        side_effect=[
+            {"file_path": "a.pdf", "chunks_list": ["chunk-a"]},
+            {"file_path": "b.pdf", "chunks_list": ["chunk-b"]},
+        ]
+    )
+    checks = iter([False, True])
+
+    async def cancellation_requested() -> bool:
+        return next(checks)
+
+    result = await run_deferred_batch_delete(
+        rag,
+        ["doc-a", "doc-b"],
+        cancellation_requested=cancellation_requested,
+    )
+
+    assert result.stage is DeferredDeletionStage.FAILED_RETRYABLE
+    assert result.error_detail == "document deletion cancelled by user"
+    rag.adelete_by_doc_id.assert_awaited_once()
+    journal = DeferredDeletionJournalStore(tmp_path, "default").load(result.batch_id)
+    assert journal is not None
+    assert journal.current_document_index == 1
+    assert "doc-b" not in journal.document_delete_checkpoints
+
+
+@pytest.mark.asyncio
 async def test_finalization_deletes_cache_ids_persisted_in_status_metadata(tmp_path):
     """The deferred path must honor LightRAG's durable retry-state schema."""
     from lightrag.deferred_delete import run_deferred_batch_delete

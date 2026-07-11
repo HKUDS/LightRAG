@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -114,7 +115,9 @@ async def _rebuild_once(rag: Any, journal: DeferredDeletionJournal) -> None:
 
 
 async def _continue(
-    rag: Any, journal: DeferredDeletionJournal
+    rag: Any,
+    journal: DeferredDeletionJournal,
+    cancellation_requested: Callable[[], Awaitable[bool]] | None = None,
 ) -> DeferredDeletionResult:
     store = _store(rag)
     if journal.stage is DeferredDeletionStage.FAILED_RETRYABLE:
@@ -139,6 +142,12 @@ async def _continue(
         }
         while journal.current_document_index < len(journal.document_ids):
             doc_id = journal.document_ids[journal.current_document_index]
+            if cancellation_requested is not None and await cancellation_requested():
+                journal.mark_failed_retryable("document deletion cancelled by user")
+                store.save(journal)
+                return DeferredDeletionResult(
+                    journal.batch_id, journal.stage, journal.error_detail
+                )
             checkpoint = journal.document_delete_checkpoints.get(doc_id)
             if checkpoint is not None:
                 if checkpoint.get("state") == "INTENT":
@@ -181,7 +190,7 @@ async def _continue(
                 return DeferredDeletionResult(
                     journal.batch_id, journal.stage, journal.error_detail
                 )
-            if result.status != "success":
+            if result.status not in {"success", "not_found"}:
                 journal.mark_failed_retryable(result.message)
                 store.save(journal)
                 return DeferredDeletionResult(
@@ -189,8 +198,12 @@ async def _continue(
                 )
             journal.record_document_delete_completed(
                 doc_id,
-                entities=result.entities_to_rebuild or {},
-                relationships=result.relationships_to_rebuild or {},
+                entities=(result.entities_to_rebuild or {})
+                if result.status == "success"
+                else {},
+                relationships=(result.relationships_to_rebuild or {})
+                if result.status == "success"
+                else {},
             )
             journal.current_document_index += 1
             store.save(journal)
@@ -229,6 +242,7 @@ async def run_deferred_batch_delete(
     document_ids: list[str],
     delete_llm_cache: bool = False,
     delete_file: bool = False,
+    cancellation_requested: Callable[[], Awaitable[bool]] | None = None,
 ) -> DeferredDeletionResult:
     """Record intent before destructive work, then delete/rebuild/finalize once."""
     journal = DeferredDeletionJournal.new(
@@ -245,7 +259,7 @@ async def run_deferred_batch_delete(
         persisted = store.load(journal.batch_id)
         if persisted is None:  # defensive: an external operator removed intent
             raise RuntimeError(f"deletion journal {journal.batch_id!r} disappeared")
-        return await _continue(rag, persisted)
+        return await _continue(rag, persisted, cancellation_requested)
 
 
 async def resume_deferred_batch_delete(
