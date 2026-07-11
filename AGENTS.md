@@ -328,4 +328,4 @@ Comments, backend code, log messages, and Git commit messages in English. Fronte
 
 - If this repo is a fork of `HKUDS/LightRAG`. Target to `HKUDS/LightRAG` when creating PRs, not the fork's own repo.
 - PR descriptions should include: summary, motivation, linked issues if applyed, what's changed, what's broken and how it works.
-- Write commit messages (subject and body) in English. Commit messages are repository artifacts — like code comments and log messages — not conversational replies, so they follow the English code-style rule above regardless of any per-conversation working language. This keeps history consistent with the `HKUDS/LightRAG` target.
+- Write commit messages (subject and body) in English. Commit messages are repository artifacts — like code comments and log messages — not conversational replies, so they follow the English code-style rule above regardless of any per-conversation working language.
