@@ -2189,22 +2189,32 @@ def _demote_confirmed_imprint_regions(
     records: Sequence[Any],
     decisions: dict[int, HeadingDecision],
     regions: Sequence[Any],
-    title_starts: Sequence[int],
+    title_indices: Sequence[int],
     warnings: dict | None,
+    skip_indices: set[int] = frozenset(),
 ) -> None:
     """Force a confirmed 公文版记 region's lines to body (§版记 conditional).
 
     A region is CONFIRMED — 100% 版记, not a false imprint hit — only when its
-    closer is IMMEDIATELY followed by a valid title block: the first structural
-    record after the closer (blank paragraphs / section breaks skipped) starts
-    a title block, i.e. the next document's cover in a 公文汇编. Then every
-    region member that is STILL a heading is demoted to body with a rule-tagged
-    decision (``strong_body_demoted`` keeps invariant I2 green); members already
-    body are output-neutral and left untouched. The preceding signature/date
+    closer is IMMEDIATELY followed by a valid title block: the first CONTENT
+    record after the region tail (blanks / section breaks / TOC lines / pure
+    ``<drawing/>`` logo paragraphs skipped — ``title_block.is_content_record``,
+    the SAME eyes the ``imprint_single`` walk and the position gate use; a
+    cover those walks admit must also confirm its region, or the 版记 lines
+    silently stay headings) BELONGS to a title block. ``title_indices`` is the
+    full member-index set: a multi window that opens on an image paragraph
+    keys its decision on that image, so the first CONTENT record the scan
+    lands on is the block's title line, a member — matching starts only
+    would silently fail to confirm. Then every region member that is STILL a
+    heading is demoted to body with a rule-tagged decision
+    (``strong_body_demoted`` keeps invariant I2 green); members already body
+    are output-neutral and left untouched. The preceding signature/date
     lines (``reg.preceding``) are NEVER demoted — they are the previous
     document's own content, only vetoed from title-block absorption.
     """
-    valid_starts = set(title_starts)
+    from . import title_block as tb
+
+    valid_indices = set(title_indices)
     n = len(records)
     for reg in regions:
         if reg.closer is None:
@@ -2212,13 +2222,9 @@ def _demote_confirmed_imprint_regions(
         # Scan from the region's LAST member (a trailing 成文日期 absorbed after
         # the closer extends the region past reg.closer), not the closer itself.
         j = max(reg.members) + 1
-        while j < n and records[j].kind in (
-            "empty_para",
-            "empty_table",
-            "section_break",
-        ):
+        while j < n and not tb.is_content_record(j, records[j], skip_indices):
             j += 1
-        if j >= n or j not in valid_starts:
+        if j >= n or j not in valid_indices:
             continue  # no title block right after → veto-only, not confirmed
         for idx in sorted(reg.members):
             existing = decisions.get(idx)
@@ -2639,8 +2645,15 @@ def run_smart_heading(
 
     # §版记: a 抄送…印发 region whose closer is immediately followed by a valid
     # title block is a confirmed 公文汇编 boundary — force its lines to body.
+    # Match against the FULL member set (title_members includes each block's
+    # main position): see the member-vs-start note in the demotion helper.
     _demote_confirmed_imprint_regions(
-        records, decisions, imprint_regions, title_starts, warnings
+        records,
+        decisions,
+        imprint_regions,
+        title_members,
+        warnings,
+        skip_indices=toc_indices,
     )
 
     # §2.3.5: the full re-judgment ledger — one row per paragraph that any

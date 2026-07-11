@@ -2263,3 +2263,20 @@ def test_head_zone_default_tolerates_leading_cover_material() -> None:
         ("multi_window", 9),
         ("table_window", 8),
     ]
+
+
+def test_head_zone_closes_at_first_body_sentence_under_default() -> None:
+    """Review regression (production default zone): a SHORT document whose
+    top is ordinary body prose must not reopen the gate the record-count cap
+    guards on long documents — the first body sentence closes the head zone,
+    so the test11 shape behind only 3 body paragraphs still suppresses."""
+    records = [_para(f"正文第{i}段，本段以句号结尾。", size=12.0) for i in range(3)] + [
+        _para("填报单位：某某公司", size=12.0),
+        _para("外购外协价格明细表", size=16.0),
+    ]
+    ev: list = []
+    cands = _find(records, suppressed_events=ev)  # production default zone
+    assert cands == []
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("multi_window", 3, 5)
+    ]

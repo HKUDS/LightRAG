@@ -2728,3 +2728,105 @@ def test_title_block_candidate_audit_records_verdict_content(monkeypatch) -> Non
     assert row2["is_title_block"] is False
     assert row2["main_title"] is None
     assert row2["body_vetoes"] == 2
+
+
+def test_imprint_single_cover_behind_logo_confirms_region(monkeypatch) -> None:
+    """Review regression: the imprint confirm scan must walk with the SAME
+    eyes as the imprint_single channel — a pure logo paragraph + section
+    break between the 版记 tail and the single-line cover must not stop the
+    scan, or the confirmed cover leaves the region undemoted."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    doc1 = _body(20)
+    records = (
+        doc1
+        + [
+            _para("抄送：各区人民政府", size=12.0),
+            _para("中间说明行不带大纲", size=12.0),
+            _para("某某办公室 2026年6月30日 印发", size=12.0, outline_level=1),
+            _para('<drawing id="seal-1" />', size=12.0, visible_char_count=0),
+            ParagraphRecord(kind="section_break"),
+        ]
+        + [_para("数字政府建设白皮书", size=18.0)]
+        + _body(20)
+    )
+    closer_idx = len(doc1) + 2
+    cover_idx = len(doc1) + 5
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "数字政府建设白皮书"},
+            ensure_ascii=False,
+        )
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    d_cover = result.decisions[cover_idx]
+    assert d_cover.is_title_block and d_cover.level == 0
+    assert "title_block:imprint_single" in d_cover.rule_trail
+    dem = result.decisions[closer_idx]
+    assert dem.is_heading is False and dem.use_raw_text is True
+    assert dem.rule_trail[-2:] == ["imprint_region", "strong_body_demoted"]
+    assert warnings["smart_imprint_region_demotions"] == 1
+
+
+def test_logo_led_multi_cover_still_confirms_region(monkeypatch) -> None:
+    """A multi window that OPENS on a seal/logo image paragraph keys its
+    decision on that image; the confirm scan (which skips non-content
+    records) lands on the block's title LINE — matching the full member set
+    keeps the 版记 confirmation working (matching starts only would not)."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    doc1 = _body(20)
+    records = (
+        doc1
+        + [
+            _para("抄送：各区人民政府", size=12.0),
+            _para("中间说明行不带大纲", size=12.0),
+            _para("某某办公室 2026年6月30日 印发", size=12.0, outline_level=1),
+            ParagraphRecord(kind="empty_para"),
+            _para('<drawing id="seal-1" />', size=12.0, visible_char_count=0),
+            _para("数字政府建设白皮书", size=18.0),
+        ]
+        + _body(20)
+    )
+    closer_idx = len(doc1) + 2
+    logo_idx = len(doc1) + 4
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "数字政府建设白皮书"},
+            ensure_ascii=False,
+        )
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    d_cover = result.decisions[logo_idx]  # image-led window keys on the logo
+    assert d_cover.is_title_block and d_cover.level == 0
+    assert "title_block:multi_window" in d_cover.rule_trail
+    dem = result.decisions[closer_idx]
+    assert dem.is_heading is False
+    assert dem.rule_trail[-2:] == ["imprint_region", "strong_body_demoted"]
+    assert warnings["smart_imprint_region_demotions"] == 1

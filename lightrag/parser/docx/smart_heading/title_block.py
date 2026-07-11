@@ -222,6 +222,13 @@ _ATTACHMENT_OPENER = re.compile(
     r"^附\s*件\s*[一二三四五六七八九十0-9１-９]{0,3}\s*[:：]?$"
 )
 
+#: Sentence-terminal punctuation marking a BODY line (head-zone terminator):
+#: cover material (titles, issuers, doc numbers, dates) is never punctuated
+#: like prose. Deterministic on purpose — spaCy falsely splits decimal-bearing
+#: cover titles into "multi-sentence" strong verdicts, so strong_body must
+#: not close the zone.
+_BODY_SENTENCE_ENDERS = ("。", "！", "？", "；", ".", "!", "?", ";")
+
 
 @dataclass
 class ImprintRegion:
@@ -260,6 +267,27 @@ def _page_boundary_between(prev: Any, cur: Any) -> bool:
         or cur.has_leading_page_break_run
         or prev.has_nonleading_page_break_run
         or prev.ends_section
+    )
+
+
+def is_content_record(idx: int, rec: Any, skip_indices: set[int]) -> bool:
+    """A record that carries document CONTENT: a table, or a paragraph with
+    non-empty SEMANTIC text. Blank/whitespace paragraphs, empty tables,
+    section breaks, TOC lines, caller-skipped records and pure ``<drawing/>``
+    logo/seal paragraphs are all transparent. The head-zone measure, the
+    ``imprint_single`` forward walk AND the imprint confirm scan in
+    ``heading_flow._demote_confirmed_imprint_regions`` share this single
+    predicate — a cover the walk can find must be a cover the confirm scan
+    can also reach, or a 版记 region silently stays undemoted."""
+    if idx in skip_indices:
+        return False
+    if rec.kind == "table":
+        return True
+    return (
+        rec.kind == "para"
+        and not rec.is_toc_field
+        and not rec.is_toc_link
+        and bool(_cover_semantic_text(rec))
     )
 
 
@@ -458,20 +486,7 @@ def find_title_block_candidates(
     n = len(records)
 
     def _is_content_record(idx: int, r: Any) -> bool:
-        """A record that ends the document HEAD ZONE: a table, or a paragraph
-        with non-empty SEMANTIC text (a pure ``<drawing/>`` logo/seal
-        paragraph is decoration, not content — a table-led cover behind a
-        logo paragraph must still count as head-zone)."""
-        if idx in skip_indices:
-            return False
-        if r.kind == "table":
-            return True
-        return (
-            r.kind == "para"
-            and not r.is_toc_field
-            and not r.is_toc_link
-            and bool(_cover_semantic_text(r))
-        )
+        return is_content_record(idx, r, skip_indices)
 
     if head_zone_records is None:
         head_zone_records = _env_int(
@@ -492,25 +507,54 @@ def find_title_block_candidates(
             _ATTACHMENT_OPENER.match(_cover_semantic_text(r).strip())
         )
 
+    # First BODY-SIGNAL content paragraph: a sentence-terminated line or a
+    # real (outline/genuinely numbered) heading marks where document prose /
+    # structure starts — a cover never follows it. DELIBERATELY punctuation-
+    # based, not strong_body-based: spaCy falsely splits decimal-bearing
+    # cover titles (“7.19”) into "multi-sentence" strong verdicts, and one
+    # false-strong line at the top would close the zone on a real cover.
+    # Computed lazily and cached; ``n`` = no signal anywhere (tiny
+    # cover-only documents).
+    _body_signal_cache: list[int | None] = [None]
+
+    def _first_body_signal() -> int:
+        if _body_signal_cache[0] is None:
+            sig = n
+            for i2, r2 in enumerate(records):
+                if (
+                    r2.kind == "para"
+                    and _is_content_record(i2, r2)
+                    and (
+                        _cover_semantic_text(r2)
+                        .rstrip()
+                        .endswith(_BODY_SENTENCE_ENDERS)
+                        or _is_real_heading(i2)
+                    )
+                ):
+                    sig = i2
+                    break
+            _body_signal_cache[0] = sig
+        return _body_signal_cache[0]
+
     def _window_position_allowed(start: int) -> bool:
         """§2.2.4 mid-document gate: a multi/table window opens freely in the
-        document head zone (fewer than ``head_zone_records`` content records
-        before it — blanks/TOC/section breaks/logo paragraphs don't count);
-        past that it needs document-boundary evidence — the window starts on
-        a bare 附件 marker line, or its preceding non-blank record (blanks /
-        empty tables / section breaks / TOC lines skipped, same walk as the
-        imprint confirm scan) is an imprint-region tail or an attachment
-        marker paragraph."""
-        if content_before[start] < head_zone_records:
+        document head zone — fewer than ``head_zone_records`` content records
+        before it (blanks/TOC/section breaks/logo paragraphs don't count) AND
+        no body prose (strong-body line / real heading) started yet: a couple
+        of leading cover tables or long title lines keep the zone open, but a
+        single body sentence at the top closes it (a 3-paragraph preamble
+        must not reopen the door the record-count cap guards on long
+        documents). Past the zone a window needs document-boundary evidence —
+        it starts on a bare 附件 marker line, or its preceding non-blank
+        record (non-content records skipped, same eyes as the imprint confirm
+        scan) is an imprint-region tail or an attachment marker paragraph."""
+        if content_before[start] < head_zone_records and start <= _first_body_signal():
             return True
         if _is_attachment_marker(start):
             return True
         k = start - 1
         while k >= 0:
-            r = records[k]
-            if r.kind in ("empty_table", "section_break") or _blank_or_skipped(
-                r, k, skip_indices
-            ):
+            if not _is_content_record(k, records[k]):
                 k -= 1
                 continue
             return k in imprint_boundary_indices or _is_attachment_marker(k)
