@@ -660,6 +660,7 @@ class ParagraphRecord:
     page_break_before: bool = False  # w:pPr/w:pageBreakBefore only
     has_page_break_run: bool = False  # w:br type="page" run inside this para
     has_leading_page_break_run: bool = False  # page-break run before any text
+    has_nonleading_page_break_run: bool = False  # page-break run AFTER text
     is_toc_field: bool = False  # TOC field instruction inside the paragraph
     is_toc_link: bool = False  # hyperlink to a _Toc bookmark
     size_trace_failed: bool = False  # font-size cascade found nothing (CB5)
@@ -729,7 +730,33 @@ def _read_document_records(
             )
             para_text = para_text.strip()
             if not para_text:
-                records.append(ParagraphRecord(kind="empty_para"))
+                # A blank line still carries page/section-boundary evidence
+                # the smart title-block pass reads (page breaks often live on
+                # empty paragraphs). No visible text, so any w:br page here
+                # is a LEADING break (never nonleading).
+                rec = ParagraphRecord(kind="empty_para")
+                w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+                for br in element.iter(f"{w_ns}br"):
+                    if br.get(f"{w_ns}type") == "page":
+                        rec.has_page_break_run = True
+                        rec.has_leading_page_break_run = True
+                        break
+                pPr = element.find(f"{w_ns}pPr")
+                if pPr is not None:
+                    pbb = pPr.find(f"{w_ns}pageBreakBefore")
+                    # OOXML on/off: absent val means on.
+                    if pbb is not None and pbb.get(f"{w_ns}val") not in (
+                        "0",
+                        "false",
+                        "none",
+                    ):
+                        rec.page_break_before = True
+                    if pPr.find(f"{w_ns}sectPr") is not None:
+                        # Section boundary on a blank paragraph: same
+                        # numbering-reset semantics as a non-empty one.
+                        resolver.reset_tracking_state()
+                        rec.ends_section = True
+                records.append(rec)
                 continue
 
             # Get numbering label using our resolver
@@ -808,6 +835,7 @@ def _read_document_records(
                 rec.page_break_before = phys.page_break_before
                 rec.has_page_break_run = phys.has_page_break_run
                 rec.has_leading_page_break_run = phys.has_leading_page_break_run
+                rec.has_nonleading_page_break_run = phys.has_nonleading_page_break_run
                 rec.is_toc_field = phys.is_toc_field
                 rec.is_toc_link = phys.is_toc_link
                 rec.size_trace_failed = phys.size_trace_failed

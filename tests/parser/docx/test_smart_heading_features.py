@@ -641,3 +641,89 @@ def test_table_cell_features_captured_on_table_records(tmp_path) -> None:
         style_attributes=None,
     )
     assert [r.table_cell_features for r in records_off if r.kind == "table"] == [None]
+
+
+def test_empty_para_records_carry_page_and_section_evidence(tmp_path) -> None:
+    """0-A: empty paragraphs are boundary carriers — a w:br page inside an
+    empty para (always LEADING: no text), an empty para with pageBreakBefore,
+    and an empty para holding a sectPr must all surface on the record; the
+    sectPr one must also reset numbering tracking (the same semantics a
+    non-empty sectPr paragraph gets), observable as the auto-number sequence
+    restarting after the blank section break."""
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+
+    doc = Document()
+    doc.add_paragraph("第一段正文，以句号结尾。")
+    # (1) empty para whose run holds a page break
+    p_br = doc.add_paragraph()
+    br_run = p_br.add_run()
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    br_run._r.append(br)
+    # (2) empty para with w:pageBreakBefore
+    p_pbb = doc.add_paragraph()
+    pbb = OxmlElement("w:pageBreakBefore")
+    p_pbb._p.get_or_add_pPr().append(pbb)
+    # (3) empty para carrying a paragraph-level sectPr
+    p_sect = doc.add_paragraph()
+    p_sect._p.get_or_add_pPr().append(OxmlElement("w:sectPr"))
+    doc.add_paragraph("末尾正文，以句号结尾。")
+    path = _save(doc, tmp_path)
+
+    doc2 = Document(str(path))
+    records = _read_document_records(
+        doc2,
+        NumberingResolver(str(path)),
+        parse_styles_outline_levels(str(path)),
+        None,
+        {},
+        style_attributes=parse_styles_attributes(str(path)),
+    )
+    empties = [r for r in records if r.kind == "empty_para"]
+    assert len(empties) == 3
+    r_br, r_pbb, r_sect = empties
+    assert r_br.has_page_break_run and r_br.has_leading_page_break_run
+    assert not r_br.has_nonleading_page_break_run  # no text → always leading
+    assert r_pbb.page_break_before
+    assert r_sect.ends_section
+
+
+def test_empty_para_sectpr_reset_parity_with_nonempty(tmp_path) -> None:
+    """0-A numbering-reset consistency: an EMPTY sectPr paragraph must drive
+    the resolver exactly like a NON-EMPTY sectPr paragraph does (the reset
+    clears continuity tracking, not the numId counters — Word numbering
+    continues across sections by numId; what must not differ is the reset
+    call itself). Asserted as label parity between the two shapes."""
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+
+    def _labels(sect_para_text: str, name: str) -> list[str]:
+        doc = Document()
+        for text in ("甲项条目", "乙项条目"):
+            doc.add_paragraph(text, style="List Number")
+        p_sect = doc.add_paragraph(sect_para_text)
+        p_sect._p.get_or_add_pPr().append(OxmlElement("w:sectPr"))
+        doc.add_paragraph("丙项条目", style="List Number")
+        path = tmp_path / f"{name}.docx"
+        doc.save(str(path))
+        doc2 = Document(str(path))
+        records = _read_document_records(
+            doc2,
+            NumberingResolver(str(path)),
+            parse_styles_outline_levels(str(path)),
+            None,
+            {},
+            style_attributes=parse_styles_attributes(str(path)),
+        )
+        sect_recs = [r for r in records if r.ends_section]
+        assert len(sect_recs) == 1  # the sectPr carrier, empty or not
+        return [r.label for r in records if r.text.endswith("条目")]
+
+    assert _labels("", "empty_sect") == _labels("分节说明文字", "nonempty_sect")

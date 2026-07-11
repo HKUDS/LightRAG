@@ -2353,14 +2353,34 @@ def run_smart_heading(
     for reg in imprint_regions:
         imprint_excluded |= reg.members
         imprint_excluded |= reg.preceding
+    # Each region's LAST member (closer or its absorbed 成文日期): the
+    # document-boundary evidence the mid-document window gate accepts.
+    imprint_boundary_indices = {
+        max(reg.members) for reg in imprint_regions if reg.closer is not None
+    }
+    suppressed_windows: list[dict] = []
     candidates = tb.find_title_block_candidates(
         records,
         fs_base_pt=fs_initial,
         strong_body=strong_body,
         numbering_veto=numbering_veto,
         imprint_excluded=imprint_excluded,
+        imprint_boundary_indices=imprint_boundary_indices,
         skip_indices=toc_indices,
+        suppressed_events=suppressed_windows,
     )
+    if suppressed_windows:
+        # Deterministic (pure ints/strs, scan order) — §2.3.5 audit red line.
+        audit["rule_events"].extend(suppressed_windows)
+        warnings["smart_mid_document_window_suppressed"] = warnings.get(
+            "smart_mid_document_window_suppressed", 0
+        ) + len(suppressed_windows)
+        logger.info(
+            "[smart_heading] %d mid-document title window(s) suppressed "
+            "(no document-boundary evidence): %s",
+            len(suppressed_windows),
+            [(e["trigger"], e["start"]) for e in suppressed_windows],
+        )
     decisions: dict[int, HeadingDecision] = {}
     llm_grants: set[int] = set()
     llm_body_vetoes: set[int] = set()
@@ -2387,8 +2407,15 @@ def run_smart_heading(
             {
                 "trigger": cand.trigger,
                 "start": cand.start,
+                "end": cand.end,
                 "single": cand.single,
                 "is_title_block": verdict.is_title_block,
+                # LLM verdict content (§2.3.5 replayability): the accepted
+                # main title, and the partition strength of a false verdict.
+                # All deterministic; the raw response is NOT stored.
+                "main_title": verdict.main_title,
+                "heading_grants": len(verdict.heading_indices),
+                "body_vetoes": len(verdict.body_indices),
             }
         )
         if verdict.is_title_block:

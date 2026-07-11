@@ -1858,11 +1858,17 @@ def test_imprint_region_demoted_when_multi_line_title_block_follows(
     )
 
 
-def test_imprint_region_not_demoted_for_later_single_line(monkeypatch) -> None:
-    """A page break followed by one big line no longer creates a title block,
-    so it cannot confirm the preceding 版记 region or demote its outline line."""
+def test_imprint_region_demoted_for_later_single_line_cover(monkeypatch) -> None:
+    """用户裁决翻转（原 test_imprint_region_not_demoted_for_later_single_line）：
+    版记收尾是强文档边界信号，其后的单行大字号标题（版记吸收中间的换页/
+    空段）经 ``imprint_single`` 通道成为候选；LLM 判真 → title block 确认、
+    版记区域按 §版记 条件降级——:1806 多行封面链路的单行镜像。无版记的
+    "换页+单行"仍不成候选（title_block 层 B8 测试承接原负面语义）。"""
     import json
 
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
     from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
 
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
@@ -1897,10 +1903,19 @@ def test_imprint_region_not_demoted_for_later_single_line(monkeypatch) -> None:
         caption_veto=_stub_no_caption,
     )
     assert result is not None
-    assert result.decisions[cover_idx].is_title_block is False
-    assert result.decisions[cover_idx].level >= 1
-    assert result.decisions[closer_idx].is_heading is True
-    assert "smart_imprint_region_demotions" not in warnings
+    d_cover = result.decisions[cover_idx]
+    assert d_cover.is_title_block and d_cover.level == 0
+    assert "title_block:imprint_single" in d_cover.rule_trail
+    # The trailing 印发 outline line is force-demoted: the confirmed title
+    # block immediately follows the region (the 公文汇编 boundary).
+    dem = result.decisions[closer_idx]
+    assert dem.is_heading is False and dem.use_raw_text is True
+    assert dem.rule_trail[-2:] == ["imprint_region", "strong_body_demoted"]
+    assert warnings["smart_imprint_region_demotions"] == 1
+    assert (
+        verify_baseline_heading_retention(records, list(result.decisions.values()))
+        == []
+    )
 
 
 def test_imprint_region_veto_only_without_following_title_block(monkeypatch) -> None:
@@ -2611,3 +2626,105 @@ def test_zero_weight_llm_grant_leaves_rejected_ledger() -> None:
     _merge_ledger_only(decisions, result, warnings)
     assert warnings["smart_llm_grant_rejected"] == 1
     assert decisions[idx] is result.grant_rejected[0]
+
+
+# ---------------------------------------------------------------------------
+# mid-document title-block gate: end-to-end + audit enrichment
+# ---------------------------------------------------------------------------
+
+
+def test_mid_document_isolated_title_never_reaches_llm(monkeypatch) -> None:
+    """The test11 shape end to end: a page-break 16pt caption line beside a
+    metadata line must not form any title-block window — zero LLM calls, no
+    candidates, no doc_title; the line stands as an ordinary size_strong
+    level-1 heading and the document stays ONE sub-document."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = (
+        _body(20)
+        + [
+            _para("填报单位：某某公司", size=12.0),
+            _para("外购外协价格明细表", size=16.0, page_break_before=True),
+        ]
+        + _body(20)
+    )
+    title_idx = 21
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        raise AssertionError("LLM must not be called for a gated document")
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    assert result.audit["llm_calls"] == 0
+    assert result.audit["title_block_candidates"] == []
+    assert result.doc_title is None
+    d = result.decisions[title_idx]
+    assert d.is_heading and not d.is_title_block
+    assert d.level == 1
+    assert "size_strong" in d.rule_trail
+    assert len(result.audit["sub_documents"]) == 1
+
+
+def test_title_block_candidate_audit_records_verdict_content(monkeypatch) -> None:
+    """Audit enrichment: each candidate row carries the window end, the LLM's
+    main_title (true verdicts) and the partition strength (false verdicts)."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    records = [
+        _para("产品发布白皮书", size=22.0),
+        _para("（2026年版）", size=12.0),
+    ] + _body(30)
+
+    def _true_llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": True, "main_title": "产品发布白皮书"},
+            ensure_ascii=False,
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_true_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    (row,) = result.audit["title_block_candidates"]
+    assert row["trigger"] == "multi_window"
+    assert (row["start"], row["end"]) == (0, 2)
+    assert row["is_title_block"] is True
+    assert row["main_title"] == "产品发布白皮书"
+    assert row["heading_grants"] == 0 and row["body_vetoes"] == 0
+
+    def _false_llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": False, "headings": [], "body": [0, 1]},
+            ensure_ascii=False,
+        )
+
+    result2 = run_smart_heading(
+        records,
+        llm_judge=_false_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result2 is not None
+    (row2,) = result2.audit["title_block_candidates"]
+    assert row2["is_title_block"] is False
+    assert row2["main_title"] is None
+    assert row2["body_vetoes"] == 2

@@ -243,7 +243,7 @@ def caption_prefix_reason(text: str) -> str | None:
 # opens a 版记 region and vetoes title-block membership for itself + its 2
 # preceding non-blank paragraphs; a CLOSER (印发-family, incl. 印发机关) ends the
 # region but is only recognized region-side, in an anchor's forward window. See
-# title_block.detect_imprint_regions / _imprint_veto_indices.
+# title_block.detect_imprint_regions.
 # ---------------------------------------------------------------------------
 
 #: Whitespace allowed to interleave/pad a prefix: justified official-document

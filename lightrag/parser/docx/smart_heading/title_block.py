@@ -36,6 +36,7 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS,
     DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS,
     DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA,
+    DEFAULT_DOCX_SMART_TITLE_HEAD_ZONE_RECORDS,
 )
 from lightrag.utils import logger
 
@@ -214,6 +215,13 @@ def _has_real_numbering(
 #: leveraged into regional structural errors, so ties go to "not a title").
 MULTI_WINDOW_TITLE_DELTA_PT = 2.0
 
+#: 裸附件标记行（附件 / 附件： / 附件三：）——mid-document 封面窗口的第二类
+#: 文档边界证据（公文附件封面）。semantic 整行匹配（drawing tag 已剥），
+#: "附件：见下表"式正文绝不匹配。
+_ATTACHMENT_OPENER = re.compile(
+    r"^附\s*件\s*[一二三四五六七八九十0-9１-９]{0,3}\s*[:：]?$"
+)
+
 
 @dataclass
 class ImprintRegion:
@@ -236,6 +244,23 @@ class ImprintRegion:
     closer: int | None
     members: set[int]
     preceding: set[int]
+
+
+def _page_boundary_between(prev: Any, cur: Any) -> bool:
+    """页/节边界落在 prev 与 cur 之间：title block 是单页单元（§2.2.4）。
+
+    cur 侧看"段前"证据（pageBreakBefore / 行首换页），prev 侧看"段后"证据
+    （正文之后的换页 / 段落级 sectPr）。行首换页只算 cur 侧——
+    ``has_nonleading_page_break_run`` 才是 prev 侧证据，防止同一个换页符
+    既在标题前断窗、又在其副标题前再断一次。table 记录的边界字段默认
+    False，证据来自相邻 paragraph 一侧即生效。
+    """
+    return bool(
+        cur.page_break_before
+        or cur.has_leading_page_break_run
+        or prev.has_nonleading_page_break_run
+        or prev.ends_section
+    )
 
 
 def _blank_or_skipped(rec: Any, idx: int, skip_indices: set[int]) -> bool:
@@ -351,28 +376,6 @@ def detect_imprint_regions(
     return regions
 
 
-def _imprint_veto_indices(
-    records: Sequence[Any],
-    imprint_marker: Callable[[str], str | None],
-    imprint_closer: Callable[[str], str | None],
-    document_date: Callable[[str], bool],
-    skip_indices: set[int],
-) -> set[int]:
-    """Record indices barred from every title-block channel by 公文版记 —
-    the union of every region's members and preceding neighbours."""
-    veto: set[int] = set()
-    for reg in detect_imprint_regions(
-        records,
-        imprint_marker=imprint_marker,
-        imprint_closer=imprint_closer,
-        document_date=document_date,
-        skip_indices=skip_indices,
-    ):
-        veto |= reg.members
-        veto |= reg.preceding
-    return veto
-
-
 def find_title_block_candidates(
     records: Sequence[Any],
     *,
@@ -383,16 +386,35 @@ def find_title_block_candidates(
     imprint_closer: Callable[[str], str | None] | None = None,
     document_date: Callable[[str], bool] | None = None,
     imprint_excluded: set[int] | None = None,
+    imprint_boundary_indices: set[int] | None = None,
     skip_indices: set[int] = frozenset(),
+    suppressed_events: list[dict] | None = None,
+    head_zone_records: int | None = None,
 ) -> list[TitleBlockCandidate]:
     """Find multi-paragraph windows and single-paragraph title candidates.
 
     ``strong_body`` / ``numbering_veto`` / ``imprint_marker`` / ``imprint_closer``
     / ``document_date`` default to the guardrails implementations and are
-    injectable for NLP-free tests. ``imprint_excluded`` (the 版记 veto set) is
-    computed internally via :func:`detect_imprint_regions` when not supplied;
-    ``run_smart_heading`` passes a precomputed set so it can reuse the same
-    regions for demotion.
+    injectable for NLP-free tests. ``imprint_excluded`` (the 版记 veto set)
+    and ``imprint_boundary_indices`` (each region's LAST member — closer or
+    its absorbed 成文日期 line, the 公文汇编 document-boundary evidence) are
+    both derived from ONE internal :func:`detect_imprint_regions` call when
+    either is None, so test and production callers share the same semantics;
+    ``run_smart_heading`` passes precomputed sets to reuse its regions.
+
+    Mid-document gate (§2.2.4): a multi/table window whose start lies past
+    the document HEAD ZONE — more than ``head_zone_records`` CONTENT records
+    (semantic-text paragraphs / tables; blanks, TOC lines, section breaks
+    and pure-drawing logo paragraphs don't count) precede it — is only
+    admitted when it carries document-boundary evidence: its preceding
+    non-blank record is an imprint-region tail or a bare 附件 marker line,
+    or the window opens on such a marker. A rejected window is appended to
+    ``suppressed_events`` (when provided) instead of becoming a candidate;
+    it never reaches the LLM and never joins ``covered`` (the single channel
+    keeps its take-over chance). ``head_zone_records`` defaults to the
+    ``DOCX_SMART_TITLE_HEAD_ZONE_RECORDS`` env knob — real covers may sit
+    behind a few leading tables or long title lines, never ~a page of
+    content.
     """
     strong_body = strong_body or guardrails.strong_body_reason
     numbering_veto = numbering_veto or guardrails.numbering_homophone_reason
@@ -402,10 +424,26 @@ def find_title_block_candidates(
     delta = _env_float(
         "DOCX_SMART_TITLE_BLOCK_MIN_DELTA", DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA
     )
-    if imprint_excluded is None:
-        imprint_excluded = _imprint_veto_indices(
-            records, imprint_marker, imprint_closer, document_date, skip_indices
+    if imprint_excluded is None or imprint_boundary_indices is None:
+        regions = detect_imprint_regions(
+            records,
+            imprint_marker=imprint_marker,
+            imprint_closer=imprint_closer,
+            document_date=document_date,
+            skip_indices=skip_indices,
         )
+        if imprint_excluded is None:
+            imprint_excluded = set()
+            for reg in regions:
+                imprint_excluded |= reg.members
+                imprint_excluded |= reg.preceding
+        if imprint_boundary_indices is None:
+            # A region's LAST member (closer or the trailing 成文日期 it
+            # absorbed) — same walk origin as the confirm scan in
+            # _demote_confirmed_imprint_regions (max(members) + 1).
+            imprint_boundary_indices = {
+                max(reg.members) for reg in regions if reg.closer is not None
+            }
 
     para_indices = [
         i
@@ -416,6 +454,79 @@ def find_title_block_candidates(
         and not r.is_toc_field
         and not r.is_toc_link
     ]
+
+    n = len(records)
+
+    def _is_content_record(idx: int, r: Any) -> bool:
+        """A record that ends the document HEAD ZONE: a table, or a paragraph
+        with non-empty SEMANTIC text (a pure ``<drawing/>`` logo/seal
+        paragraph is decoration, not content — a table-led cover behind a
+        logo paragraph must still count as head-zone)."""
+        if idx in skip_indices:
+            return False
+        if r.kind == "table":
+            return True
+        return (
+            r.kind == "para"
+            and not r.is_toc_field
+            and not r.is_toc_link
+            and bool(_cover_semantic_text(r))
+        )
+
+    if head_zone_records is None:
+        head_zone_records = _env_int(
+            "DOCX_SMART_TITLE_HEAD_ZONE_RECORDS",
+            DEFAULT_DOCX_SMART_TITLE_HEAD_ZONE_RECORDS,
+        )
+    # Prefix counts of content records: content_before[i] = how many content
+    # records precede record i.
+    content_before = [0] * (n + 1)
+    for i, r in enumerate(records):
+        content_before[i + 1] = content_before[i] + (
+            1 if _is_content_record(i, r) else 0
+        )
+
+    def _is_attachment_marker(idx: int) -> bool:
+        r = records[idx]
+        return r.kind == "para" and bool(
+            _ATTACHMENT_OPENER.match(_cover_semantic_text(r).strip())
+        )
+
+    def _window_position_allowed(start: int) -> bool:
+        """§2.2.4 mid-document gate: a multi/table window opens freely in the
+        document head zone (fewer than ``head_zone_records`` content records
+        before it — blanks/TOC/section breaks/logo paragraphs don't count);
+        past that it needs document-boundary evidence — the window starts on
+        a bare 附件 marker line, or its preceding non-blank record (blanks /
+        empty tables / section breaks / TOC lines skipped, same walk as the
+        imprint confirm scan) is an imprint-region tail or an attachment
+        marker paragraph."""
+        if content_before[start] < head_zone_records:
+            return True
+        if _is_attachment_marker(start):
+            return True
+        k = start - 1
+        while k >= 0:
+            r = records[k]
+            if r.kind in ("empty_table", "section_break") or _blank_or_skipped(
+                r, k, skip_indices
+            ):
+                k -= 1
+                continue
+            return k in imprint_boundary_indices or _is_attachment_marker(k)
+        return True
+
+    def _suppress(trigger: str, start: int, end: int) -> None:
+        if suppressed_events is not None:
+            suppressed_events.append(
+                {
+                    "rule": "mid_document_window_suppressed",
+                    "trigger": trigger,
+                    "start": start,
+                    "end": end,
+                }
+            )
+
     strong_cache: dict[int, str | None] = {}
 
     def _is_strong(idx: int) -> bool:
@@ -504,7 +615,6 @@ def find_title_block_candidates(
 
     # --- multi-paragraph windows -----------------------------------------
     i = 0
-    n = len(records)
     while i < n:
         rec = records[i]
         if (
@@ -521,13 +631,26 @@ def find_title_block_candidates(
         # Grow the window: consecutive paragraphs without strong-body
         # features; empty paragraphs stay inside, tables / section breaks /
         # TOC lines / strong-body paragraphs / real section headings
-        # (physical outline or genuine numbering) end it.
+        # (physical outline or genuine numbering) end it. A page/section
+        # boundary BETWEEN scanned records also ends it (a title block is a
+        # single-page unit); the boundary-carrying record becomes the next
+        # seed via ``i = max(end, i + 1)`` — reset, not swallowed. The seed
+        # itself carrying a leading break is fine (a 公文汇编 second cover
+        # opens on a page break).
         start = i
         window_paras = []
         j = i
+        prev_rec = None
         while j < n:
             r = records[j]
+            if (
+                window_paras
+                and prev_rec is not None
+                and _page_boundary_between(prev_rec, r)
+            ):
+                break
             if r.kind == "empty_para":
+                prev_rec = r
                 j += 1
                 continue
             if (
@@ -541,6 +664,7 @@ def find_title_block_candidates(
             ):
                 break
             window_paras.append(j)
+            prev_rec = r
             j += 1
         end = j
         title_line_sizes = [
@@ -553,12 +677,15 @@ def find_title_block_candidates(
             and title_line_sizes
             and _dominates_neighbor_headings(max(title_line_sizes), start, end)
         ):
-            candidates.append(
-                TitleBlockCandidate(
-                    start=start, end=end, single=False, trigger="multi_window"
+            if _window_position_allowed(start):
+                candidates.append(
+                    TitleBlockCandidate(
+                        start=start, end=end, single=False, trigger="multi_window"
+                    )
                 )
-            )
-            covered.update(range(start, end))
+                covered.update(range(start, end))
+            else:
+                _suppress("multi_window", start, end)
         i = max(end, i + 1)
 
     # --- table windows (§2.2.4 table channel) ------------------------------
@@ -692,9 +819,18 @@ def find_title_block_candidates(
             continue
         members: list[int] = []
         j = i
+        prev_rec = None
+        boundary_break = False
         while j < n:
             r = records[j]
+            # Page/section boundary between adjacent scanned records ends the
+            # run BEFORE the boundary record — which then reseeds a new run
+            # (checked on every prev/cur pair incl. table↔para adjacency).
+            if prev_rec is not None and _page_boundary_between(prev_rec, r):
+                boundary_break = True
+                break
             if r.kind == "empty_para":
+                prev_rec = r
                 j += 1
                 continue
             if r.kind == "table" and j not in skip_indices and _table_member_ok(j):
@@ -703,15 +839,23 @@ def find_title_block_candidates(
                 members.append(j)  # absorbed cover material / image, in order
             else:
                 break
+            prev_rec = r
             j += 1
         # The rest of the run (from the first non-qualifying record) is
-        # skipped outright — it never seeds another window.
+        # skipped outright — it never seeds another window. A boundary break
+        # skips the sweep entirely (the boundary record starts a NEW run),
+        # and the sweep itself also stops at boundaries for the same reason.
         run_end = j
-        while run_end < n and (
-            records[run_end].kind in ("table", "empty_para")
-            or _para_absorbable_in_cover(run_end)
-        ):
-            run_end += 1
+        if not boundary_break:
+            while run_end < n and (
+                records[run_end].kind in ("table", "empty_para")
+                or _para_absorbable_in_cover(run_end)
+            ):
+                if run_end > i and _page_boundary_between(
+                    records[run_end - 1], records[run_end]
+                ):
+                    break
+                run_end += 1
         if members:
             # Title evidence from EITHER side of the mixed cover: a table
             # title row, or an absorbed paragraph that is a cover title line.
@@ -729,18 +873,50 @@ def find_title_block_candidates(
                     sizes.append(s)
             start, end = members[0], members[-1] + 1
             if sizes and _dominates_neighbor_headings(max(sizes), start, end):
-                candidates.append(
-                    TitleBlockCandidate(
-                        start=start,
-                        end=end,
-                        single=False,
-                        trigger="table_window",
-                        table=True,
-                        members=tuple(members),
+                if _window_position_allowed(start):
+                    candidates.append(
+                        TitleBlockCandidate(
+                            start=start,
+                            end=end,
+                            single=False,
+                            trigger="table_window",
+                            table=True,
+                            members=tuple(members),
+                        )
                     )
-                )
-                covered.update(range(start, end))
+                    covered.update(range(start, end))
+                else:
+                    _suppress("table_window", start, end)
         i = max(run_end, i + 1)
+
+    # --- imprint-single channel (版记后单行标题) ----------------------------
+    # An imprint-region tail is STRONG document-boundary evidence (user
+    # ruling): the 公文汇编 next-document cover right after it may be a
+    # SINGLE big line (page/section breaks and logo paragraphs absorbed by
+    # the walk), exempt from the multi-window >=2-member requirement. The
+    # candidate reuses single=True judge semantics (± context window; a
+    # false verdict's partition carries no force). Windows the multi/table
+    # scans already covered are not re-emitted.
+    for b in sorted(imprint_boundary_indices):
+        f = b + 1
+        while f < n and not _is_content_record(f, records[f]):
+            f += 1
+        if f >= n or f in covered:
+            continue
+        r = records[f]
+        if (
+            r.kind == "para"
+            and f not in imprint_excluded
+            and not _is_strong(f)
+            and not _is_real_heading(f)
+            and _is_title_line(r)
+        ):
+            candidates.append(
+                TitleBlockCandidate(
+                    start=f, end=f + 1, single=True, trigger="imprint_single"
+                )
+            )
+            covered.update({f})
 
     # --- single-paragraph channel -----------------------------------------
     # Only the document's first eligible paragraph may represent its main

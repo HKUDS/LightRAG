@@ -743,24 +743,30 @@ def test_multi_window_rejected_when_not_dominant_over_headings() -> None:
         _para("第二章 概览", size=18.0, outline_level_raw=0),  # heading after
     ]
     # window is [2, 4): 强调小标题(14) + 配套的说明行(12); flanked by 18pt
-    # headings on both sides → 14 is not dominant → no candidate.
-    assert _find(records) == []
+    # headings on both sides → 14 is not dominant → no candidate. The empty
+    # suppression ledger proves DOMINANCE rejected it, not the position gate.
+    ev: list = []
+    assert _find(records, suppressed_events=ev) == []
+    assert ev == []
 
 
 def test_multi_window_admitted_when_dominant_over_one_flank() -> None:
-    """OR semantics: dominating the heading on EITHER flank is enough."""
+    """OR semantics: dominating the heading on EITHER flank is enough. The
+    window sits mid-document, so a real 抄送→印发 imprint tail precedes it to
+    clear the position gate (doubling as an imprint-adjacency opening test)."""
     records = [
         _para("第一章 绪论", size=20.0, outline_level_raw=0),  # bigger flank
-        _para("一段以句号结尾的正文内容，用来隔开上一个标题。", size=12.0),
+        _para("抄送：各相关单位", size=12.0),  # imprint anchor
+        _para("某某办公室 2026年6月30日 印发", size=12.0),  # imprint closer
         _para("某某产品发布公告", size=18.0),  # title line
         _para("配套的说明行", size=12.0),
         _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
         _para("第二章 概览", size=16.0, outline_level_raw=0),  # smaller flank
     ]
     # 18pt beats the 16pt following heading (though not the 20pt preceding
-    # one) → dominant on one flank → candidate over [2, 4).
+    # one) → dominant on one flank → candidate over [3, 5).
     cands = _find(records)
-    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (2, 4)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (3, 5)
 
 
 def test_multi_window_dominance_passes_without_neighbor_headings() -> None:
@@ -787,35 +793,45 @@ def test_dominance_reference_includes_numbered_headings() -> None:
         _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
     ]
     # Only flank heading is numbered (no outline) but still bounds dominance;
-    # 14 < 18 and no other neighbour → not dominant → no candidate.
-    assert _find(records) == []
+    # 14 < 18 and no other neighbour → not dominant → no candidate. The empty
+    # suppression ledger proves DOMINANCE rejected it, not the position gate.
+    ev: list = []
+    assert _find(records, suppressed_events=ev) == []
+    assert ev == []
 
 
 def test_dominance_ignores_headings_beyond_flank_window(monkeypatch) -> None:
     """Section headings farther than K=20 paragraphs from the window are not
     compared against; with a small K the distant big heading is ignored and
-    the window (no near neighbour) passes on the fallback."""
+    the window (no near neighbour) passes on the fallback. The window sits at
+    the document head so the mid-document position gate stays out of play."""
     import lightrag.parser.docx.smart_heading.title_block as tb
 
     monkeypatch.setattr(tb, "_FLANK_WINDOW", 1)
     records = [
-        _para("第一章 绪论", size=20.0, outline_level_raw=0),  # 2 paras away
-        _para("一段以句号结尾的正文内容，用来隔开。", size=12.0),
         _para("某某产品发布公告", size=14.0),  # title line, +2pt over body
         _para("配套的说明行", size=12.0),
         _para("一段以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
+        _para("第一章 绪论", size=20.0, outline_level_raw=0),  # 2 paras away
     ]
-    # With K=1 the 20pt heading (2 body paras before the window start) is out
-    # of reach → no comparable neighbour → dominance passes → candidate.
+    # With K=1 the 20pt heading (2 records past the window end) is out of
+    # reach → no comparable neighbour → dominance passes → candidate.
     cands = _find(records)
-    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (2, 4)
+    assert len(cands) == 1 and (cands[0].start, cands[0].end) == (0, 2)
 
 
 def test_mid_document_candidate_after_previous_page_break_run_rejected() -> None:
     """A trailing page-break run in the previous paragraph must not turn the
-    next big line into a level-0 candidate."""
+    next big line into a level-0 candidate. The trailing break is expressed
+    on BOTH the aggregate and the nonleading field — the boundary helper
+    reads only ``has_nonleading_page_break_run``."""
     records = [
-        _para("上一篇的收尾正文，以句号结尾。", size=12.0, has_page_break_run=True),
+        _para(
+            "上一篇的收尾正文，以句号结尾。",
+            size=12.0,
+            has_page_break_run=True,
+            has_nonleading_page_break_run=True,
+        ),
         _para("下一篇文章的标题", size=18.0),
         _para("下一篇正文开始，以句号结尾。", size=12.0),
     ]
@@ -1246,7 +1262,10 @@ def test_imprint_neighbor_veto_blocks_single_candidate() -> None:
     ]
     assert _find(records) == []
     # Control: drop the imprint line → the signature line is a candidate.
-    cands = _find(records[:-1])
+    # The window is mid-document; a stub boundary index (the last body
+    # paragraph) props the position gate open so the control isolates the
+    # preceding-veto behavior under test, not the gate.
+    cands = _find(records[:-1], imprint_boundary_indices={2})
     assert len(cands) == 1 and cands[0].start == 4
 
 
@@ -1389,14 +1408,16 @@ def test_cover_material_para_with_formula_absorbed() -> None:
 
 def test_body_para_still_breaks_table_run() -> None:
     """Control: a strong-body paragraph between tables still splits the run —
-    absorption is for cover material only."""
+    absorption is for cover material only. A stub boundary index (the body
+    paragraph) props the mid-document gate open for the second run so the
+    assertion isolates run-splitting, not the position gate."""
     records = [
         _table([[("产品标准化大纲", 22.0, False)]]),
         _para("这是一段以句号结尾的正文。", size=12.0),
         _table(_PUB_TABLE_ROWS),
         _para("正文从这里开始，以句号结尾。", size=12.0),
     ]
-    cands = _find(records)
+    cands = _find(records, imprint_boundary_indices={1})
     assert [(c.start, c.end) for c in cands] == [(0, 1), (2, 3)]
 
 
@@ -1754,5 +1775,491 @@ def test_imprint_forward_region_vetoes_middle_single_candidate() -> None:
     assert _find(records) == []
     # Control: no-op closer → region is anchor-only → idx 3 leads a candidate
     # (a tail window absorbing the 版记 material — exactly the bug being fixed).
-    cands = _find(records, imprint_closer=lambda t: None)
+    # A stub boundary index props the mid-document gate open (the anchor line
+    # precedes the window) so the control isolates the forward-region veto.
+    cands = _find(records, imprint_closer=lambda t: None, imprint_boundary_indices={1})
     assert len(cands) == 1 and cands[0].start == 3
+
+
+# ---------------------------------------------------------------------------
+# A 组：页/节边界断窗（title block 是单页单元）
+# ---------------------------------------------------------------------------
+
+
+def _ev(records, **kw):
+    """_find + suppression ledger, returned as (candidates, events).
+
+    ``head_zone_records=1`` pins the STRICT head-zone semantics (a window
+    with ANY content record before it is mid-document) so these small
+    synthetic shapes exercise the gate itself; the production default
+    (DOCX_SMART_TITLE_HEAD_ZONE_RECORDS=8, corpus-calibrated so real covers
+    behind a few leading tables/title lines stay head-zone) is covered by
+    test_head_zone_default_tolerates_leading_cover_material."""
+    ev: list = []
+    kw.setdefault("head_zone_records", 1)
+    cands = _find(records, suppressed_events=ev, **kw)
+    return cands, ev
+
+
+def test_page_break_splits_multi_window() -> None:
+    """A1: a page break BEFORE a paragraph ends the open window; the two
+    fragments are separate windows — the reseeded mid-doc pair reaches the
+    position gate (suppressed, event visible) instead of joining the first."""
+    records = [
+        _para("正文内容以句号结尾。", size=12.0),
+        _para("短行材料", size=12.0),
+        _para("十六磅大标题行", size=16.0, page_break_before=True),
+        _para("配套副行", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert cands == []
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("multi_window", 2, 4)
+    ]
+
+
+def test_page_break_seed_still_opens_imprint_cover() -> None:
+    """A2: the seed itself carrying a page break is NOT a boundary — a 公文汇编
+    second cover opens on a page break right after the imprint tail."""
+    records = [
+        _para("正文一以句号结尾。", size=12.0),
+        _para("抄送：各单位", size=12.0),
+        _para("某某办公室 2026年6月30日 印发", size=12.0),
+        _para("新文档大标题", size=18.0, page_break_before=True),
+        _para("（2026年版）", size=12.0),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end, c.trigger) for c in cands] == [(3, 5, "multi_window")]
+    assert ev == []
+
+
+def test_empty_para_page_break_splits_window() -> None:
+    """A3: a page break carried on an EMPTY paragraph splits the window: the
+    head cover stays intact, the post-break pair reseeds and hits the gate."""
+    records = [
+        _para("二十磅标题行", size=20.0),
+        _para("副行材料", size=12.0),
+        ParagraphRecord(
+            kind="empty_para",
+            has_page_break_run=True,
+            has_leading_page_break_run=True,
+        ),
+        _para("另一大行", size=20.0),
+        _para("配套副行", size=12.0),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end) for c in cands] == [(0, 2)]
+    assert [(e["start"], e["end"]) for e in ev] == [(3, 5)]
+
+
+def test_ends_section_breaks_window_after_member() -> None:
+    """A4: a paragraph-level sectPr ends the window AFTER that member — the
+    next-section line never joins it (a head-zone (0,3) window would form
+    otherwise)."""
+    records = [
+        _para("二十磅标题行", size=20.0, ends_section=True),
+        _para("次页大行", size=20.0),
+        _para("副行", size=12.0),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    # The lone pre-boundary line falls to the single channel — proof it never
+    # joined the (1,3) window; that window reseeds and hits the gate.
+    assert [(c.start, c.end, c.trigger) for c in cands] == [(0, 1, "single_line")]
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("multi_window", 1, 3)
+    ]
+
+
+def test_table_run_resets_after_page_boundary() -> None:
+    """A5a: a page boundary ends the table run BEFORE the boundary record and
+    the remainder reseeds a NEW run (run_end must not swallow it) — here the
+    second run carries attachment evidence, so BOTH become candidates."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("档案编号 2026-001", size=12.0),
+        _para("附件：", size=12.0, page_break_before=True),
+        _table([[("附件封面标题", 22.0, False)]]),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end, c.members) for c in cands] == [
+        (0, 2, (0, 1)),
+        (3, 4, (3,)),
+    ]
+    assert ev == []
+
+
+def test_table_run_reset_without_evidence_suppressed() -> None:
+    """A5b: same split, but the post-boundary run has no imprint/attachment
+    evidence — the first run stands, the second leaves a suppression event
+    (visible, not silently dropped)."""
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("档案编号 2026-001", size=12.0),
+        _para("普通说明行", size=12.0, page_break_before=True),
+        _table([[("第二个大标题表", 22.0, False)]]),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end) for c in cands] == [(0, 2)]
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("table_window", 3, 4)
+    ]
+
+
+def test_multi_windows_on_both_sides_of_boundary() -> None:
+    """A6: two covers split by a page break — the imprint-backed first window
+    opens, the evidence-less second window suppresses (A/B interplay plus
+    reset completeness in one shape)."""
+    records = [
+        _para("正文一以句号结尾。", size=12.0),
+        _para("抄送：各单位", size=12.0),
+        _para("某某办公室 2026年6月30日 印发", size=12.0),
+        _para("汇编另一份文档标题", size=18.0, page_break_before=True),
+        _para("（甲份副题行）", size=12.0),
+        _para("再一份文档标题", size=18.0, page_break_before=True),
+        _para("（乙份副题行）", size=12.0),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end) for c in cands] == [(3, 5)]
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("multi_window", 5, 7)
+    ]
+
+
+def test_leading_break_title_keeps_subtitle_in_window(tmp_path) -> None:
+    """A7 (real DOCX): a leading w:br page inside the title run must count as
+    ONE boundary (before the title), not two — the subtitle stays in the same
+    window (asserted via the suppression event span; the pair is mid-document
+    without evidence, so the gate rejects it as one unit). A second break
+    AFTER the title text is a genuine trailing boundary: the subtitle is cut
+    off and neither fragment can form a window."""
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+    from lightrag.parser.docx.smart_heading.features import parse_styles_attributes
+
+    def _build(trailing_break: bool):
+        doc = Document()
+        for i in range(2):
+            doc.add_paragraph(f"正文第{i}段，本段以句号结尾。").runs
+        title = doc.add_paragraph()
+        run = title.add_run("换页后的主标题")
+        run.font.size = Pt(18)
+        br = OxmlElement("w:br")
+        br.set(qn("w:type"), "page")
+        run._r.insert(0, br)
+        if trailing_break:
+            tail = OxmlElement("w:br")
+            tail.set(qn("w:type"), "page")
+            run._r.append(tail)
+        doc.add_paragraph("配套副标题行")
+        path = tmp_path / f"lead_{trailing_break}.docx"
+        doc.save(str(path))
+        doc2 = Document(str(path))
+        return _read_document_records(
+            doc2,
+            NumberingResolver(str(path)),
+            parse_styles_outline_levels(str(path)),
+            None,
+            {},
+            style_attributes=parse_styles_attributes(str(path)),
+        )
+
+    records = _build(trailing_break=False)
+    title_idx = next(i for i, r in enumerate(records) if "主标题" in r.text)
+    assert records[title_idx].has_leading_page_break_run
+    assert not records[title_idx].has_nonleading_page_break_run
+    cands, ev = _ev(records)
+    assert cands == []
+    assert [(e["start"], e["end"]) for e in ev] == [(title_idx, title_idx + 2)]
+
+    records2 = _build(trailing_break=True)
+    title_idx2 = next(i for i, r in enumerate(records2) if "主标题" in r.text)
+    assert records2[title_idx2].has_nonleading_page_break_run
+    cands2, ev2 = _ev(records2)
+    assert cands2 == [] and ev2 == []  # both fragments are lone lines
+
+
+def test_table_para_adjacency_boundaries_split_runs() -> None:
+    """A8: boundary evidence on the PARAGRAPH side of a table↔para adjacency
+    still splits the run — table records carry default-False fields but must
+    not shield their neighbours."""
+    # ends_section on the absorbed paragraph: run keeps it, drops table 2.
+    records = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("档案编号 2026-001", size=12.0, ends_section=True),
+        _table([[("第二个大标题表", 22.0, False)]]),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end, c.members) for c in cands] == [(0, 2, (0, 1))]
+    assert [(e["trigger"], e["start"]) for e in ev] == [("table_window", 2)]
+
+    # pageBreakBefore on the paragraph: run ends at table 1 alone.
+    records2 = [
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("档案编号 2026-001", size=12.0, page_break_before=True),
+        _table([[("第二个大标题表", 22.0, False)]]),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands2, ev2 = _ev(records2)
+    assert [(c.start, c.end, c.members) for c in cands2] == [(0, 1, (0,))]
+    assert [(e["trigger"], e["start"]) for e in ev2] == [("table_window", 2)]
+
+
+# ---------------------------------------------------------------------------
+# B 组：mid-document 位置门（形状不带换页，隔离 B 层）
+# ---------------------------------------------------------------------------
+
+
+def test_mid_document_windows_suppressed_without_evidence() -> None:
+    """B1 (the test11 shape, sans page breaks): a mid-doc metadata line + big
+    table caption pairs into a multi window AND a mixed table run — both are
+    suppressed with scan-ordered events, and neither reaches the LLM."""
+    records = [
+        _para("正文内容以句号结尾。", size=12.0),
+        _table([[("数据", 12.0, False)]]),
+        _para("填报单位：某某公司", size=12.0),
+        _para("外购外协价格明细表", size=16.0),
+        _table([[("数据2", 12.0, False)]]),
+    ]
+    cands, ev = _ev(records)
+    assert cands == []
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("multi_window", 2, 4),
+        ("table_window", 1, 5),
+    ]
+
+
+def test_imprint_tail_adjacency_opens_mid_document_window() -> None:
+    """B2: an imprint tail right above (blank absorbed) opens the mid-doc
+    window; disabling the closer detector removes the evidence and the same
+    shape suppresses."""
+    records = [
+        _para("正文一以句号结尾。", size=12.0),
+        _para("正文二以句号结尾。", size=12.0),
+        _para("抄送：各区人民政府", size=12.0),
+        _para("某某办公室 2026年6月30日 印发", size=12.0),
+        _empty(),
+        _para("新文档标题", size=18.0),
+        _para("（副题行）", size=12.0),
+        _para("正文三以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end) for c in cands] == [(5, 7)]
+    assert ev == []
+    cands2, ev2 = _ev(records, imprint_closer=lambda t: None)
+    assert cands2 == []
+    assert len(ev2) == 1
+
+
+def test_head_zone_reaches_past_blank_toc_and_section_records() -> None:
+    """B3: empties, TOC lines and section breaks before the first window do
+    not end the head zone — the cover stays gate-free."""
+    records = [
+        _empty(),
+        _para("目 录", size=12.0, is_toc_field=True),
+        ParagraphRecord(kind="section_break"),
+        _para("大标题", size=22.0),
+        _para("副题行", size=12.0),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end) for c in cands] == [(3, 5)]
+    assert ev == []
+
+
+def test_logo_paragraph_keeps_table_cover_in_head_zone() -> None:
+    """B4: a pure <drawing/> logo paragraph is decoration, not content — the
+    table cover behind it still counts as the document head."""
+    records = [
+        _para('<drawing id="1" />', size=12.0, visible_char_count=0),
+        _table([[("产品标准化大纲", 22.0, False)]]),
+        _para("正文以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.trigger) for c in cands] == [(1, "table_window")]
+    assert ev == []
+
+
+def test_mid_document_table_window_suppressed() -> None:
+    """B5: a lone mid-doc title table is suppressed with a visible event."""
+    records = [
+        _para("正文内容以句号结尾。", size=12.0),
+        _table([[("大标题表", 22.0, False)]]),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert cands == []
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("table_window", 1, 2)
+    ]
+
+
+def test_attachment_opener_admits_mid_document_window() -> None:
+    """B6: a bare 附件 marker line opening the window is document-boundary
+    evidence; an attachment-like BODY phrase is not."""
+    records = [
+        _para("正文以句号结尾。", size=12.0),
+        _para("附件：", size=12.0),
+        _para("附件方案大标题", size=18.0),
+        _para("（附件副题）", size=12.0),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end) for c in cands] == [(1, 4)]
+    assert ev == []
+
+    records2 = [
+        _para("正文以句号结尾。", size=12.0),
+        _para("附件：见附表", size=12.0),
+        _para("附件方案大标题", size=18.0),
+        _para("（附件副题）", size=12.0),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands2, ev2 = _ev(records2)
+    assert cands2 == []
+    assert len(ev2) == 1
+
+
+def test_imprint_single_line_candidate_after_boundary() -> None:
+    """B7: the imprint tail absorbs page/section breaks and admits the SINGLE
+    big line after it (user ruling: 版记 is strong boundary evidence, exempt
+    from the >=2-member requirement)."""
+    records = [
+        _para("正文一以句号结尾。", size=12.0),
+        _para("抄送：各区人民政府", size=12.0),
+        _para("某某办公室 2026年6月30日 印发", size=12.0),
+        ParagraphRecord(kind="section_break"),
+        ParagraphRecord(
+            kind="empty_para",
+            has_page_break_run=True,
+            has_leading_page_break_run=True,
+        ),
+        _para("新文档单行标题", size=18.0),
+        _table([[("数据", 12.0, False)]]),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.end, c.single, c.trigger) for c in cands] == [
+        (5, 6, True, "imprint_single")
+    ]
+
+    # Without the imprint: nothing (no channel admits the lone line).
+    no_imprint = records[:1] + records[3:]
+    cands2, _ = _ev(no_imprint)
+    assert cands2 == []
+
+    # A multi window already covering the line wins; no duplicate emission.
+    covered = records[:6] + [_para("（副题行）", size=12.0)] + records[6:]
+    cands3, _ = _ev(covered)
+    assert [(c.start, c.trigger) for c in cands3] == [(5, "multi_window")]
+
+
+def test_imprint_single_walk_skips_logo_paragraph() -> None:
+    """B7-logo: a pure <drawing/> seal/logo between the imprint tail and the
+    title is decoration — the cover after it is still found (here the logo
+    joins the window as an absorbed member, exactly like a head-zone cover)."""
+    records = [
+        _para("正文一以句号结尾。", size=12.0),
+        _para("抄送：各区人民政府", size=12.0),
+        _para("某某办公室 2026年6月30日 印发", size=12.0),
+        ParagraphRecord(
+            kind="empty_para",
+            has_page_break_run=True,
+            has_leading_page_break_run=True,
+        ),
+        _para('<drawing id="1" />', size=12.0, visible_char_count=0),
+        _para("新文档单行标题", size=18.0),
+        _table([[("数据", 12.0, False)]]),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, _ = _ev(records)
+    title_idx = 5
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.start <= title_idx < c.end
+
+
+def test_page_break_single_line_without_imprint_never_candidate() -> None:
+    """B8: the original flow:1861 negative — a page break + one big line with
+    NO imprint stays a plain paragraph (no candidate, no event: the lone
+    fragment never forms a window)."""
+    records = [
+        _para("正文一以句号结尾。", size=12.0),
+        _para("孤立大标题", size=18.0, page_break_before=True),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert cands == [] and ev == []
+
+
+def test_attachment_opener_admits_following_table_cover() -> None:
+    """B9: an attachment marker right above a title TABLE opens the table
+    window (the marker is not members[0], so the preceding-record walk must
+    recognize it); a plain phrase does not."""
+    records = [
+        _para("正文以句号结尾。", size=12.0),
+        _para("附件：", size=12.0),
+        _table([[("附件封面大标题", 22.0, False)]]),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands, ev = _ev(records)
+    assert [(c.start, c.trigger) for c in cands] == [(2, "table_window")]
+    assert ev == []
+
+    records2 = [
+        _para("正文以句号结尾。", size=12.0),
+        _para("普通说明行", size=12.0),
+        _table([[("附件封面大标题", 22.0, False)]]),
+        _para("正文二以句号结尾。", size=12.0),
+    ]
+    cands2, ev2 = _ev(records2)
+    assert cands2 == []
+    assert len(ev2) == 1
+
+
+def test_head_zone_default_tolerates_leading_cover_material() -> None:
+    """Default head zone (8 content records): a cover window behind a couple
+    of leading tables / long title lines (the test9 国标 / test13 报告 head
+    shapes) still opens without boundary evidence; the same window behind a
+    page's worth of content is mid-document and suppresses."""
+    cover = [
+        _table([[("GB", 10.5, False)]]),
+        _para("ICS 35.240.20", size=10.5),
+        _para("大标题封面行", size=22.0),
+        _para("（副题行）", size=12.0),
+        _para("正文从这里开始，以句号结尾。", size=12.0),
+    ]
+    ev: list = []
+    cands = _find(cover, suppressed_events=ev)  # production default zone
+    # Both channels open in the head zone: the GB label table absorbs the
+    # cover paragraphs (table run) AND the paragraph pair forms a window.
+    assert {(c.start, c.end, c.trigger) for c in cands} == {
+        (0, 4, "table_window"),
+        (1, 4, "multi_window"),
+    }
+    assert ev == []
+
+    deep = [
+        _para(f"垫层正文第{i}段，本段以句号结尾。", size=12.0) for i in range(8)
+    ] + cover
+    ev2: list = []
+    cands2 = _find(deep, suppressed_events=ev2)
+    assert cands2 == []
+    assert [(e["trigger"], e["start"]) for e in ev2] == [
+        ("multi_window", 9),
+        ("table_window", 8),
+    ]

@@ -224,6 +224,14 @@ DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS = 1000
 # Single-paragraph title-block gate: font size must exceed the global
 # FS_base mean by at least this many points.
 DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA = 2.0
+# Document head zone for multi/table title-block windows: a window whose
+# start is preceded by at least this many CONTENT records (paragraphs with
+# semantic text / tables; blanks, TOC lines, section breaks and pure-drawing
+# logo paragraphs do not count) is mid-document and needs document-boundary
+# evidence (imprint tail / attachment marker). Calibrated on the corpus: a
+# real cover may sit behind a few leading tables or long title lines
+# (national-standard covers, report covers), but never ~a page of content.
+DEFAULT_DOCX_SMART_TITLE_HEAD_ZONE_RECORDS = 8
 # Open numbering series: close a series after this many consecutive body
 # paragraphs (0 disables the auxiliary body-run break; the primary close
 # signal is the level returning to an ancestor scope).

@@ -298,6 +298,11 @@ class ParagraphPhysicalFeatures:
     # w:br type="page" BEFORE the first visible character — the Ctrl+Enter
     # then-keep-typing shape; equivalent to pageBreakBefore for THIS para.
     has_leading_page_break_run: bool
+    # w:br type="page" AFTER visible text — "the NEXT paragraph starts a new
+    # page". Kept separate from the aggregate has_page_break_run so a leading
+    # break is never double-counted as both a before-THIS and after-THIS
+    # boundary (title-block window breaking reads exactly one side).
+    has_nonleading_page_break_run: bool
     is_toc_field: bool
     is_toc_link: bool
     size_trace_failed: bool  # no run had a resolvable size (CB5 input)
@@ -479,6 +484,7 @@ def extract_paragraph_physical_features(
     is_toc_link = False
     has_page_break_run = False
     has_leading_page_break_run = False
+    has_nonleading_page_break_run = False
     text_seen = False
 
     # Depth-first walk in document order, pruning opaque subtrees (drawings /
@@ -489,7 +495,8 @@ def extract_paragraph_physical_features(
     # stable across passes and a skip-set silently mis-prunes.
     def _walk(node) -> None:
         nonlocal is_toc_field, is_toc_link
-        nonlocal has_page_break_run, has_leading_page_break_run, text_seen
+        nonlocal has_page_break_run, has_leading_page_break_run
+        nonlocal has_nonleading_page_break_run, text_seen
         tag = node.tag
         if tag in _PRUNE_SUBTREE_TAGS:
             return
@@ -517,6 +524,8 @@ def extract_paragraph_physical_features(
                     has_page_break_run = True
                     if not text_seen:
                         has_leading_page_break_run = True
+                    else:
+                        has_nonleading_page_break_run = True
                 elif child.tag == _w("t") and (child.text or "").strip():
                     text_seen = True
             if text.strip():
@@ -565,6 +574,7 @@ def extract_paragraph_physical_features(
         page_break_before=page_break_before,
         has_page_break_run=has_page_break_run,
         has_leading_page_break_run=has_leading_page_break_run,
+        has_nonleading_page_break_run=has_nonleading_page_break_run,
         is_toc_field=is_toc_field,
         is_toc_link=is_toc_link,
         size_trace_failed=size_trace_failed,
