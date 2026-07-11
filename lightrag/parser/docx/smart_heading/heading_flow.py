@@ -77,6 +77,36 @@ def _env_int(env_name: str, default: int) -> int:
         return default
 
 
+_OUTLINE_MULTISENTENCE_SPARED = "outline_multisentence_spared"
+
+
+def _strong_body_with_outline_context(
+    text: str,
+    outline_level: int | None,
+    strong_body: Callable[[str], str | None],
+) -> tuple[str | None, bool]:
+    """Apply the narrow physical-outline guard to a strong-body verdict.
+
+    Pinned spaCy models sometimes create sentence boundaries from dependency
+    ROOTs alone (``承诺`` | ``书``, ``总`` | ``则``, ``AD_`` fragments). A
+    physical outline outweighs that NLP-only signal unless the title prose
+    also contains a visible internal sentence terminator. All other
+    strong-body reasons retain their original force.
+    """
+    reason = strong_body(text)
+    spared = (
+        outline_level is not None
+        and reason == "strong_body_multi_sentence"
+        and not guardrails.has_explicit_internal_sentence_boundary(text)
+    )
+    return (None, True) if spared else (reason, False)
+
+
+def _note_once(decision: HeadingDecision, rule: str) -> None:
+    if rule not in decision.rule_trail:
+        decision.note(rule)
+
+
 def _para_hash(text: str) -> str:
     """Audit hash for one paragraph (same shape as the TOC audit rows)."""
     import hashlib
@@ -373,12 +403,24 @@ def gate_candidates(
         cls = numbering[i]
         return cls is not None and series_count.get(cls.series_key(), 0) >= 2
 
-    strong_cache: dict[int, str | None] = {}
+    # The EFFECTIVE verdict is cached deliberately: an outline paragraph
+    # spared from an NLP-only pseudo split also participates as valid evidence
+    # in centered/weak-size companion checks below. That is a narrow behavioral
+    # spillover, but it is consistent with treating the physical-outline line
+    # as a genuine heading rather than strong-body evidence.
+    strong_cache: dict[int, tuple[str | None, bool]] = {}
 
     def _strong(i: int) -> str | None:
         if i not in strong_cache:
-            strong_cache[i] = strong_body(records[i].text)
-        return strong_cache[i]
+            rec = records[i]
+            strong_cache[i] = _strong_body_with_outline_context(
+                rec.text, rec.outline_level, strong_body
+            )
+        return strong_cache[i][0]
+
+    def _outline_multisentence_spared(i: int) -> bool:
+        cached = strong_cache.get(i)
+        return cached is not None and cached[1]
 
     def _short(i: int) -> bool:
         # Candidate shortness reuses the strong-body length cap.
@@ -675,6 +717,8 @@ def gate_candidates(
         decision.note(rule)
         if i in veto_notes:
             decision.note(veto_notes[i])
+        if _outline_multisentence_spared(i):
+            decision.note(_OUTLINE_MULTISENTENCE_SPARED)
         decisions.append(decision)
         admitted.add(i)
 
@@ -1531,7 +1575,11 @@ def demote_strong_body_headings(
     for pos, d in enumerate(decisions):
         if not d.is_heading or d.is_title_block:
             continue
-        reason = strong_body(d.text)
+        reason, spared = _strong_body_with_outline_context(
+            d.text, d.outline_level, strong_body
+        )
+        if spared:
+            _note_once(d, _OUTLINE_MULTISENTENCE_SPARED)
         if reason is not None:
             hits.add(pos)
             d.note(reason)
@@ -2679,6 +2727,17 @@ def run_smart_heading(
         warnings,
         skip_indices=toc_indices,
     )
+
+    # Aggregate the FINAL per-record ledger, not provisional CB1 gate passes or
+    # scratch look-aheads, so one paragraph contributes exactly once.
+    outline_multisentence_spared = sum(
+        1 for d in decisions.values() if _OUTLINE_MULTISENTENCE_SPARED in d.rule_trail
+    )
+    if outline_multisentence_spared:
+        warnings["smart_outline_multisentence_spared"] = (
+            warnings.get("smart_outline_multisentence_spared", 0)
+            + outline_multisentence_spared
+        )
 
     # §2.3.5: the full re-judgment ledger — one row per paragraph that any
     # rule touched (hash + rule trail + final level), replayable offline.

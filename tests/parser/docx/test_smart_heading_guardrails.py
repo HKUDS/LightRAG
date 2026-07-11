@@ -112,6 +112,27 @@ def test_strip_leading_numbering(text: str, expected: str) -> None:
     assert _strip_leading_numbering(text) == expected
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("2.3   投标单位廉洁自律承诺书", False),
+        ("第一章\xa0总 则", False),
+        ("3.2.2.2.2.4   禁限用工艺", False),
+        ("3.2.2.1.1.1.3   4路AD_1～AD_4信号高速采集电路设计", False),
+        ("第一阶段已经完成。下一阶段继续推进", True),
+        ("第一阶段已经完成。” 下一阶段继续推进", True),
+        ("Version 2.0 design overview", False),
+        ("项目范围：", False),
+    ],
+)
+def test_explicit_internal_sentence_boundary(text: str, expected: bool) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        has_explicit_internal_sentence_boundary,
+    )
+
+    assert has_explicit_internal_sentence_boundary(text) is expected
+
+
 def test_strong_body_spares_multi_level_numbered_heading() -> None:
     """Regression: zh spaCy splits a dotted multi-level number ("3.1.1 X" →
     "3.1." | "1 X") into two pseudo-sentences, which falsely demoted numbered

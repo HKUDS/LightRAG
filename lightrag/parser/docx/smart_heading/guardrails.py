@@ -42,6 +42,10 @@ SENTENCE_END_CHARS = frozenset("。？！…；;")
 # Closing wrappers to step over before the terminal check (P4): a sentence
 # may legitimately end inside quotes/brackets — 他说："明天见。"
 _CLOSING_WRAPPERS = frozenset("\"'”’」』〉》】）)]}")
+# Internal sentence-boundary evidence. Unlike ``SENTENCE_END_CHARS`` this
+# includes ASCII ``.!?`` because the boundary is only accepted when more
+# semantic text follows; spaCy has already supplied the multi-sentence vote.
+_INTERNAL_SENTENCE_END_CHARS = SENTENCE_END_CHARS | frozenset(".!?")
 
 
 def _env_items(env_name: str, default: str) -> tuple[str, ...]:
@@ -91,6 +95,32 @@ def _strip_leading_numbering(text: str) -> str:
         # it as its own "sentence", falsely demoting the heading (test8 第二章).
         return re.sub(r"^[\s、.。:：)）]+", "", head[len(cls.label_text) :])
     return text
+
+
+def has_explicit_internal_sentence_boundary(text: str) -> bool:
+    """Whether title prose contains a visible sentence boundary before more text.
+
+    This is deterministic corroboration for spaCy's ``>=2`` sentence vote,
+    not a sentence splitter of its own. Leading structural numbering is
+    removed first, decimal dots are ignored, and a terminator only counts
+    when later alphanumeric/CJK content exists. Quotes, brackets, whitespace,
+    and punctuation may sit between the terminator and that later content.
+    """
+    prose = _strip_leading_numbering(text.strip())
+    for pos, char in enumerate(prose):
+        if char not in _INTERNAL_SENTENCE_END_CHARS:
+            continue
+        if (
+            char == "."
+            and pos > 0
+            and pos + 1 < len(prose)
+            and prose[pos - 1].isdigit()
+            and prose[pos + 1].isdigit()
+        ):
+            continue
+        if any(ch.isalnum() for ch in prose[pos + 1 :]):
+            return True
+    return False
 
 
 def strong_body_reason(text: str) -> str | None:

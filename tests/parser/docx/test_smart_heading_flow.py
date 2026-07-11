@@ -114,6 +114,200 @@ def test_outline_strong_body_demotion_is_rule_tagged() -> None:
     assert verify_baseline_heading_retention(records, merged) == []
 
 
+def test_outline_nlp_only_multisentence_is_spared_contextually() -> None:
+    """An outline candidate beats an NLP-only multi-sentence vote, while the
+    same text without outline and an outline paragraph with visible sentence
+    punctuation retain the original strong-body demotion semantics."""
+
+    def _multi(_text: str) -> str:
+        return "strong_body_multi_sentence"
+
+    spared_text = "2.3   投标单位廉洁自律承诺书"
+    non_outline_text = "投标单位廉洁自律承诺书"
+    explicit_text = "项目背景已经说明。后续要求继续执行"
+    records = _body(20) + [
+        _para(spared_text, size=14.0, outline_level=1),
+        _para(non_outline_text, size=14.0),
+        _para(explicit_text, size=14.0, outline_level=1),
+    ]
+    result = _gate(
+        records,
+        strong_body=_multi,
+        numbering_veto=lambda _cls, text: (
+            "homophone_ner_entity" if text == spared_text else None
+        ),
+    )
+
+    spared = next(d for d in result.decisions if d.text == spared_text)
+    assert spared.is_heading
+    assert "outline_multisentence_spared" in spared.rule_trail
+    assert "strong_body_demoted" not in spared.rule_trail
+
+    demoted = {d.text: d for d in result.demoted}
+    assert not demoted[non_outline_text].is_heading
+    assert "strong_body_demoted" in demoted[non_outline_text].rule_trail
+    assert not demoted[explicit_text].is_heading
+    assert "strong_body_demoted" in demoted[explicit_text].rule_trail
+
+
+def test_outline_other_strong_body_reasons_keep_full_force() -> None:
+    """The outline guard is exact to multi-sentence: length and terminal
+    punctuation remain direct, explicit demotion evidence."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    length_text = "这是一段确实超过标题长度上限的正文内容" * 8
+    terminal_text = "这段正文被误加了物理大纲级别，但仍然以句号结束。"
+    records = _body(30) + [
+        _para(length_text, size=14.0, outline_level=1),
+        _para(terminal_text, size=14.0, outline_level=1),
+    ]
+    result = _gate(records, strong_body=guardrails.strong_body_reason)
+    demoted = {d.text: d for d in result.demoted}
+
+    assert "strong_body_length" in demoted[length_text].rule_trail
+    assert "strong_body_sentence_end" in demoted[terminal_text].rule_trail
+    assert all("strong_body_demoted" in d.rule_trail for d in demoted.values())
+
+
+def test_cb1_projection_keeps_outline_multisentence_spared_candidates(
+    monkeypatch,
+) -> None:
+    """CB1's scratch demotion uses the same outline guard: spared candidates
+    remain in projected density instead of falsely recovering the overflow by
+    projecting them all away."""
+
+    def _multi_for_candidates(text: str) -> str | None:
+        return "strong_body_multi_sentence" if text.startswith("候选标题") else None
+
+    monkeypatch.setenv("DOCX_SMART_MIN_INTER_HEADING_CHARS", "0")
+    records = _body(5) + [
+        _para(f"候选标题{i}", size=14.0, outline_level=1) for i in range(5)
+    ]
+    fs = document_fs_base(records, range(len(records)))
+    warnings: dict = {}
+    result = gate_with_cb1(
+        records,
+        list(range(len(records))),
+        fs_base=fs,
+        warnings=warnings,
+        strong_body=_multi_for_candidates,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+
+    assert result.cb1_tripped
+    assert not result.cb1_strong_body_recovered
+    assert len(result.decisions) == 5
+    assert all("outline_multisentence_spared" in d.rule_trail for d in result.decisions)
+
+
+def test_post_merge_outline_nlp_only_multisentence_is_spared() -> None:
+    """The same outline guard applies when numbered headings defer their
+    strong-body judgment to the authoritative post-merge sweep."""
+
+    def _multi(_text: str) -> str:
+        return "strong_body_multi_sentence"
+
+    spared = HeadingDecision(
+        record_index=0,
+        text="2.3 投标单位廉洁自律承诺书",
+        is_heading=True,
+        level=2,
+        outline_level=1,
+        numbering=classify_numbering("2.3 投标单位廉洁自律承诺书"),
+    )
+    explicit = HeadingDecision(
+        record_index=1,
+        text="2.4 项目背景已经说明。后续要求继续执行",
+        is_heading=True,
+        level=2,
+        outline_level=1,
+        numbering=classify_numbering("2.4 项目背景已经说明。后续要求继续执行"),
+    )
+
+    demote_strong_body_headings([spared, explicit], strong_body=_multi, warnings={})
+
+    assert spared.is_heading
+    assert spared.rule_trail == ["outline_multisentence_spared"]
+    assert not explicit.is_heading
+    assert "strong_body_demoted" in explicit.rule_trail
+
+
+def test_outline_multisentence_guard_real_spacy_end_to_end(monkeypatch) -> None:
+    """test11 regression through real NLP and the block assembler: the
+    outline-1 ``2.3`` title survives a dependency-ROOT pseudo split, while a
+    non-outline body lead and an outline paragraph with a visible sentence
+    boundary retain their strong-body demotions."""
+    import json
+
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading import guardrails, nlp
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    if nlp.missing_spacy_models():
+        pytest.skip("spaCy models not installed")
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    target = "2.3   投标单位廉洁自律承诺书"
+    body_lead = (
+        "为确保本项目产品的售后服务需求得以及时响应和解决，公司将组建该项目"
+        "售后服务团队，具体负责人员事项如下表："
+    )
+    explicit = "项目背景已经说明。后续要求继续执行"
+
+    assert guardrails.strong_body_reason(target) == "strong_body_multi_sentence"
+    assert not guardrails.has_explicit_internal_sentence_boundary(target)
+    assert guardrails.strong_body_reason(body_lead) == "strong_body_multi_sentence"
+    assert guardrails.has_explicit_internal_sentence_boundary(explicit)
+
+    records = _body(20) + [
+        _para("2 商务文件", size=16.0, outline_level=0),
+        *_body(5),
+        _para("2.2   中标服务费承诺函", size=14.0, outline_level=1),
+        *_body(5),
+        _para(body_lead, size=14.0),
+        _para(target, size=14.0, outline_level=1),
+        *_body(5),
+        _para("2.4   公司实力", size=14.0, outline_level=1),
+        *_body(5),
+        _para(explicit, size=14.0, outline_level=1),
+        *_body(5),
+    ]
+
+    def _llm(_prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": False, "headings": [], "body": []},
+            ensure_ascii=False,
+        )
+
+    warnings: dict = {}
+    result = run_smart_heading(records, llm_judge=_llm, warnings=warnings)
+    assert result is not None
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+    assert warnings["smart_outline_multisentence_spared"] == 1
+
+    target_decision = next(d for d in result.decisions.values() if d.text == target)
+    assert target_decision.is_heading and target_decision.level == 2
+    assert "outline_multisentence_spared" in target_decision.rule_trail
+    assert "homophone_ner_entity" in target_decision.rule_trail
+    assert "strong_body_demoted" not in target_decision.rule_trail
+
+    target_block = next(b for b in blocks if b.get("heading") == target)
+    assert target_block["level"] == 2
+    assert target_block["parent_headings"] == ["2 商务文件"]
+    for sibling in ("2.2   中标服务费承诺函", "2.4   公司实力"):
+        block = next(b for b in blocks if b.get("heading") == sibling)
+        assert block["level"] == 2
+        assert block["parent_headings"] == ["2 商务文件"]
+
+    body_decision = next(d for d in result.decisions.values() if d.text == body_lead)
+    explicit_decision = next(d for d in result.decisions.values() if d.text == explicit)
+    assert not body_decision.is_heading
+    assert "strong_body_multi_sentence" in body_decision.rule_trail
+    assert not explicit_decision.is_heading
+    assert "strong_body_multi_sentence" in explicit_decision.rule_trail
+
+
 def test_non_outline_strong_body_demotion_is_audited_output_neutral() -> None:
     """Every recognition-time strong-body demotion is audited, not just the
     I2 outline ones: a NON-outline candidate that the check demotes leaves a
