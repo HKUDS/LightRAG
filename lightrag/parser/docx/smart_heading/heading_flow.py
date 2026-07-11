@@ -1050,11 +1050,17 @@ def backfill_top_level(
     if not groups:
         return
 
-    def _ordinal_linkage(members: list[HeadingDecision]) -> int:
-        """Count parent ordinals whose scope holds top-value-matching
-        MultiLevelNum members; 0 on any counter-example."""
+    def _ordinal_linkage(members: list[HeadingDecision]) -> set[int]:
+        """The record indices of parents whose scope holds top-value-matching
+        MultiLevelNum members; empty set on any counter-example.
+
+        Returns parent RECORD INDICES (identity), not ordinal values: bare
+        ordinals collide (a real top ``1/2/3`` and a body list ``1./2./3.``
+        share the values), so a value-membership test would misidentify body
+        items as linked parents. The per-member backfill gate keys on this
+        identity set."""
         ordered = sorted(members, key=lambda d: d.record_index)
-        linked = set()
+        linked: set[int] = set()
         for pos, parent in enumerate(ordered):
             n = parent.numbering.ordinal
             if n is None:
@@ -1074,24 +1080,24 @@ def backfill_top_level(
             if not tops:
                 continue
             if tops == {n}:
-                linked.add(n)
+                linked.add(parent.record_index)
             else:
-                return 0  # counter-example: foreign top value in scope
-        return len(linked)
+                return set()  # counter-example: foreign top value in scope
+        return linked
 
     from .style_key import STYLE_KEY_PRIORITY
 
     # Two admission channels per class: size threshold OR ≥2 ordinal-linkage
     # pairs (waives the size gate). Exactly one linked pair never waives —
     # too weak, surfaced as a warning.
-    eligible: list[tuple[tuple, list[HeadingDecision], int]] = []
+    eligible: list[tuple[tuple, list[HeadingDecision], set[int]]] = []
     for key, members in groups.items():
         sizes = [d.font_size_pt for d in members if d.font_size_pt is not None]
         size_ok = bool(sizes) and max(sizes) >= threshold
         linked = _ordinal_linkage(members)
-        if size_ok or linked >= 2:
+        if size_ok or len(linked) >= 2:
             eligible.append((key, members, linked))
-        elif linked == 1:
+        elif len(linked) == 1:
             if warnings is not None:
                 warnings["smart_backfill_single_linkage"] = (
                     warnings.get("smart_backfill_single_linkage", 0) + 1
@@ -1117,18 +1123,36 @@ def backfill_top_level(
         key, members, linked = item
         max_size = max((d.font_size_pt or 0.0) for d in members)
         return (
-            0 if (linked >= 2 and key[0] == EN_NUM and not chapter_present) else 1,
-            0 if linked >= 2 else 1,
+            0 if (len(linked) >= 2 and key[0] == EN_NUM and not chapter_present) else 1,
+            0 if len(linked) >= 2 else 1,
             STYLE_KEY_PRIORITY[key[0]],
             -max_size,
         )
 
     eligible.sort(key=_preference)
-    _key, members, _linked = eligible[0]
+    _key, members, linked_records = eligible[0]
 
     from dataclasses import replace as _replace
 
+    def _is_top_level_member(d: HeadingDecision) -> bool:
+        """Only the class's genuine TOP-level parents are absorbed as MLN raw
+        level 1 — a nested body list sharing the bare numbering key is not.
+        Three channels: a linkage-confirmed parent (its scope holds matching
+        MLN children — by record identity, not colliding ordinal value); a
+        shallowest physical outline (``== 0``, not any level — a deep
+        outline-2/3 heading is not a top-level parent); or, as the heuristic
+        fallback that mirrors the class-level size gate, a size at/above the
+        threshold. A member failing all three (a smaller-font, non-outlined,
+        unlinked body list item) keeps its original class/level."""
+        return (
+            d.record_index in linked_records
+            or d.outline_level == 0
+            or (d.font_size_pt is not None and d.font_size_pt >= threshold)
+        )
+
     for d in members:
+        if not _is_top_level_member(d):
+            continue
         d.numbering = _replace(
             d.numbering,
             style_key=MULTI_LEVEL_NUM,

@@ -642,6 +642,144 @@ def test_backfill_counter_example_blocks_linkage() -> None:
     assert ds[0].numbering.style_key == "EnNum"  # linkage refuted, size too low
 
 
+def test_backfill_only_promotes_top_level_roots() -> None:
+    """test11 bug: backfill must absorb ONLY the genuine top-level parents,
+    not a nested body list sharing the bare numbering key. The gate keys the
+    linkage channel on the parent RECORD IDENTITY (not the ordinal value): a
+    body list ``1./2.`` COLLIDES ordinals with the real roots ``1./2.``, so
+    an ordinal-membership test would wrongly promote it. Here the roots are
+    10.5pt (< the 14pt child-size threshold) and carry no outline, so ONLY
+    the record-index linkage channel can lift them — isolating the fix."""
+    specs = [
+        # (text, size, outline_level, level)
+        ("1. 价格文件", 10.5, None, 4),  # root: linked (scope holds 1.1), no outline
+        ("1.1 开标一览表", 14.0, None, 3),  # MLN child (top_ordinal 1)
+        ("2. 商务文件", 10.5, None, 4),  # root: linked (scope holds 2.1)
+        ("2.1 投标函", 14.0, None, 3),  # MLN child (top_ordinal 2)
+        (
+            "1. 我方按招标文件递交投标文件正本。",
+            10.5,
+            None,
+            6,
+        ),  # body, ordinal 1 COLLIDES
+        (
+            "2. 我方承认招标人有权决定中标人。",
+            10.5,
+            None,
+            6,
+        ),  # body, ordinal 2 COLLIDES
+    ]
+    ds = []
+    for i, (text, size, outline, level) in enumerate(specs):
+        d = _decision(text, size=size, idx=i)
+        d.level = level
+        d.outline_level = outline
+        ds.append(d)
+    backfill_top_level(ds, warnings={})
+    # The two roots (linked by record identity) are absorbed as MLN raw 1.
+    for r in (ds[0], ds[2]):
+        assert r.numbering.style_key == "MultiLevelNum" and r.numbering.raw_level == 1
+        assert "backfill_top_level" in r.rule_trail
+    # The body list — colliding ordinals 1/2 — is NOT promoted (would be, if
+    # the gate matched ordinal VALUES instead of parent record identity).
+    for b in (ds[4], ds[5]):
+        assert b.numbering.style_key == "EnNum"
+        assert "backfill_top_level" not in b.rule_trail
+    assert sum("backfill_top_level" in d.rule_trail for d in ds) == 2
+
+
+def test_outlined_part_root_survives_end_to_end(monkeypatch) -> None:
+    """test11 shape end to end (through the assembler, where parent_headings
+    is generated): outline-0 EnNum part roots with same-key body lists under
+    their sub-sections must SURVIVE as headings — the body lists demote, the
+    roots do not. Sizes are cleanly banded (root 16 > child 14 > body 12) so
+    the nesting is deterministic; the same-size test11 shape is covered by the
+    real-doc rerun in verification."""
+    import json
+
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    def _sents(n, p):
+        return [
+            _para(
+                f"{p}第{i}段正常长度的正文内容，用来撑起基准字号统计，本段以句号结尾。",
+                size=12.0,
+            )
+            for i in range(n)
+        ]
+
+    records = (
+        _sents(15, "引")
+        + [_para("1. 价格文件", size=16.0, outline_level=0)]
+        + _sents(6, "价")
+        + [_para("1.1 开标一览表", size=14.0)]
+        + _sents(6, "开")
+        + [_para("2. 商务文件", size=16.0, outline_level=0)]
+        + _sents(6, "商")
+        + [_para("2.1 投标函", size=14.0)]
+        + [
+            _para("1. 我方按招标文件递交投标文件正本以及相关材料。", size=12.0),
+            _para("2. 我方承认招标人有权决定中标人的相关权利。", size=12.0),
+        ]
+        + _sents(6, "尾")
+    )
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps(
+            {"is_title_block": False, "headings": [], "body": []}, ensure_ascii=False
+        )
+
+    result = run_smart_heading(
+        records,
+        llm_judge=_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    meta: dict = {}
+    blocks = _assemble_blocks_smart(records, result, {}, meta)
+
+    def _block(needle):
+        return next(b for b in blocks if needle in (b.get("heading") or ""))
+
+    assert _block("1. 价格文件")["level"] == 1
+    assert _block("2. 商务文件")["level"] == 1
+    assert _block("1.1 开标一览表")["parent_headings"] == ["1. 价格文件"]
+    assert _block("2.1 投标函")["parent_headings"] == ["2. 商务文件"]
+    # The body EnNum lists never became headings, and never got the top-level
+    # backfill / outline-anchor rules.
+    assert not any(
+        (b.get("heading") or "").startswith(("1. 我方", "2. 我方")) for b in blocks
+    )
+    for idx, r in enumerate(records):
+        if r.text.startswith(("1. 我方", "2. 我方")):
+            d = result.decisions.get(idx)
+            assert d is None or (
+                not d.is_heading
+                and "backfill_top_level" not in d.rule_trail
+                and "anchor_outline_series" not in d.rule_trail
+            )
+
+
+def test_backfill_noop_without_mln() -> None:
+    """No MultiLevelNum headings → backfill is a no-op (guards the legal-doc
+    corpus test8/test9, which have no MLN and must be untouched)."""
+    ds = [
+        _decision("1. 总则", size=14.0, idx=0),
+        _decision("2. 附则", size=14.0, idx=1),
+    ]
+    for d in ds:
+        d.level = 2
+    backfill_top_level(ds, warnings={})
+    assert all(d.numbering.style_key == "EnNum" for d in ds)
+    assert all("backfill_top_level" not in d.rule_trail for d in ds)
+
+
 def test_fs_base_excludes_toc_lines() -> None:
     records = _body(10, size=12.0)
     records += [
