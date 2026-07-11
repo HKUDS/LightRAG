@@ -1001,6 +1001,10 @@ class DeletionResult:
     message: str
     status_code: int = 200
     file_path: str | None = None
+    # Deferred batch deletion returns affected targets to its coordinator so it
+    # can execute one rebuild for the entire batch.
+    entities_to_rebuild: dict[str, list[str]] | None = None
+    relationships_to_rebuild: dict[tuple[str, str], list[str]] | None = None
 
 
 # Unified Query Result Data Structures for Reference List Support

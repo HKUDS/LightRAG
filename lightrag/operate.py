@@ -965,13 +965,29 @@ async def rebuild_knowledge_from_chunks(
     )
 
     if not cached_results:
+        # A rebuild is the safety barrier before deferred source metadata can be
+        # finalized.  Returning successfully here would allow the coordinator to
+        # commit a destructive batch without rebuilding its surviving graph data.
         status_message = "No cached extraction results found, cannot rebuild"
-        logger.warning(status_message)
+        logger.error(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = status_message
                 pipeline_status["history_messages"].append(status_message)
-        return
+        raise RuntimeError(status_message)
+
+    missing_cache_chunk_ids = all_referenced_chunk_ids.difference(cached_results)
+    if missing_cache_chunk_ids:
+        status_message = (
+            "Missing cached extraction results for chunk IDs: "
+            + ", ".join(sorted(missing_cache_chunk_ids))
+        )
+        logger.error(status_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = status_message
+                pipeline_status["history_messages"].append(status_message)
+        raise RuntimeError(status_message)
 
     # Process cached results to get entities and relationships for each chunk
     chunk_entities = {}  # chunk_id -> {entity_name: [entity_data]}
@@ -1190,6 +1206,8 @@ async def rebuild_knowledge_from_chunks(
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
+    if failed_entities_count > 0 or failed_relationships_count > 0:
+        raise RuntimeError(status_message)
 
 
 async def _get_cached_extraction_results(

@@ -1150,3 +1150,37 @@ This endpoint provides comprehensive status information including:
 * Content summary and metadata
 * Error messages if processing failed
 * Timestamps for creation and updates
+
+## Durable Deferred Batch Deletion Recovery
+
+`DELETE /documents/delete_document` records a durable journal before it begins a multi-document destructive delete. The journal is stored under `<working_dir>/deletion_journals/<workspace>/`; therefore `working_dir` must be persistent and shared with the server instance that will perform recovery. Do not use an ephemeral container filesystem if operators must be able to resume a failed deletion after restart.
+
+For a batch delete, LightRAG first prepares every document, performs **one** rebuild of the affected graph targets, verifies the rebuild, and only then removes source metadata. If any step fails, the journal remains unfinished and no failed batch is reported as a successful delete. The lifecycle stages are:
+
+- `PREPARED` — durable intent and source metadata snapshot exist; document preparation may still be resumed.
+- `REBUILD_PENDING` — all documents are prepared; the single aggregate rebuild is required.
+- `FINALIZATION_PENDING` — rebuild completed; source metadata finalization is required.
+- `FAILED_RETRYABLE` — an operator must explicitly resume the stored recovery stage.
+- `COMMITTED` — rebuild and metadata verification completed. Committed journals are not returned by the unfinished-batch list.
+
+All endpoints use the normal document API authentication (for example, `X-API-Key`). They expose no retained source-document metadata:
+
+```bash
+# List unfinished batches in the active workspace.
+curl -H "X-API-Key: $LIGHTRAG_API_KEY" \
+  http://localhost:9621/documents/delete_document/deferred
+
+# Inspect the stage, document IDs, error, and aggregate rebuild targets.
+curl -H "X-API-Key: $LIGHTRAG_API_KEY" \
+  http://localhost:9621/documents/delete_document/deferred/<batch_id>
+
+# Explicitly retry one batch after resolving its underlying storage/cache error.
+curl -X POST -H "X-API-Key: $LIGHTRAG_API_KEY" \
+  http://localhost:9621/documents/delete_document/<batch_id>/resume
+```
+
+The list response contains `batch_id`, stage, progress index, attempt count, error detail, and aggregate-target counts. The detail response additionally includes document IDs, `delete_llm_cache`, and the aggregate entity/relation rebuild targets. Unknown batch IDs return `404`; a resume may return `status="busy"` when another destructive pipeline job owns the workspace.
+
+Resume runs as a destructive pipeline job and restores the pipeline busy state before continuing. It is intentionally **not** automatic at process startup: inspect the error and restore the dependency that failed (such as cache or storage availability), then issue the explicit `POST .../resume` request. Concurrent resumes for the same batch are serialized, and a committed batch is not rebuilt again.
+
+When the original delete request used `delete_file=true`, the journal retains the normalized source-file paths. LightRAG performs best-effort source file cleanup only after `COMMITTED`, for both the initial completion and a later resume; duplicate paths are cleaned at most once per batch.

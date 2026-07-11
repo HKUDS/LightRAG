@@ -3109,7 +3109,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ) from e
 
     async def adelete_by_doc_id(
-        self, doc_id: str, delete_llm_cache: bool = False
+        self,
+        doc_id: str,
+        delete_llm_cache: bool = False,
+        skip_rebuild: bool = False,
+        batch_chunk_ids: set[str] | None = None,
     ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
@@ -3142,6 +3146,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
                 associated with the document. Defaults to False.
+            skip_rebuild (bool): Internal batch-coordinator mode. It removes this
+                document's derived data but retains source metadata and returns
+                affected rebuild targets. The coordinator must rebuild and verify
+                before it finalizes the metadata deletion.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
@@ -3285,8 +3293,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             )
             chunk_ids_set = set(chunk_ids)
+            source_chunk_ids_to_remove = batch_chunk_ids or chunk_ids_set
 
             if not chunk_ids:
+                if skip_rebuild:
+                    return DeletionResult(
+                        status="success",
+                        doc_id=doc_id,
+                        message=f"Document {doc_id} prepared for deferred finalization",
+                        status_code=202,
+                        file_path=file_path,
+                    )
                 logger.warning(f"No chunks found for document {doc_id}")
                 # Mark that deletion operations have started
                 deletion_operations_started = True
@@ -3529,14 +3546,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         entity_chunk_updates[node_label] = []
                         continue
 
-                    remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
-                    # `existing_sources` comes from chunk-tracking storage when available, but
-                    # graph `source_id` can still be stale after a failed prior delete. If the
-                    # graph still references any chunk being deleted in this attempt, force a
-                    # rebuild/delete so the graph metadata gets synchronized instead of being
-                    # left untouched with orphaned source references.
+                    remaining_sources = subtract_source_ids(
+                        existing_sources, source_chunk_ids_to_remove
+                    )
                     graph_references_deleted_chunks = bool(
-                        graph_sources and set(graph_sources) & chunk_ids_set
+                        graph_sources
+                        and set(graph_sources) & source_chunk_ids_to_remove
                     )
 
                     if not remaining_sources:
@@ -3605,13 +3620,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         relation_chunk_updates[edge_tuple] = []
                         continue
 
-                    remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
-                    # Same as the entity path above: even when relation chunk-tracking is already
-                    # correct, the graph edge may still carry a stale `source_id` that mentions a
-                    # chunk deleted in this attempt. Treat that as an affected relation so retry
-                    # deletion can repair the graph metadata rather than skipping it as "untouched".
+                    remaining_sources = subtract_source_ids(
+                        existing_sources, source_chunk_ids_to_remove
+                    )
                     graph_references_deleted_chunks = bool(
-                        graph_sources and set(graph_sources) & chunk_ids_set
+                        graph_sources
+                        and set(graph_sources) & source_chunk_ids_to_remove
                     )
 
                     if not remaining_sources:
@@ -3836,6 +3850,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             except Exception as e:
                 logger.error(f"Failed to persist pre-rebuild changes: {e}")
                 raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
+
+            if skip_rebuild:
+                # A durable batch journal has already recorded the document
+                # metadata and will aggregate these targets across all documents.
+                # Do not claim final success or delete source metadata until the
+                # coordinator completes its single rebuild and verification.
+                return DeletionResult(
+                    status="success",
+                    doc_id=doc_id,
+                    message=f"Document {doc_id} prepared for deferred batch rebuild",
+                    status_code=202,
+                    file_path=file_path,
+                    entities_to_rebuild={
+                        entity: list(chunk_ids)
+                        for entity, chunk_ids in entities_to_rebuild.items()
+                    },
+                    relationships_to_rebuild={
+                        relation: list(chunk_ids)
+                        for relation, chunk_ids in relationships_to_rebuild.items()
+                    },
+                )
 
             # 8. Rebuild entities and relationships from remaining chunks
             if entities_to_rebuild or relationships_to_rebuild:

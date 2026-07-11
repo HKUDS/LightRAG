@@ -30,6 +30,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.deferred_delete import (
+    resume_deferred_batch_delete,
+    run_deferred_batch_delete,
+)
+from lightrag.deletion_journal import (
+    DeferredDeletionJournalStore,
+    DeferredDeletionStage,
+)
 from lightrag.constants import (
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_PENDING_PARSE,
@@ -972,6 +980,52 @@ class PipelineStatusResponse(BaseModel):
         return format_datetime(value)
 
     model_config = ConfigDict(extra="allow")
+
+
+class DeferredDeletionJournalSummaryResponse(BaseModel):
+    """Operator-safe progress summary for one durable deletion batch."""
+
+    batch_id: str
+    stage: DeferredDeletionStage
+    document_count: int
+    current_document_index: int
+    attempt_count: int
+    error_detail: Optional[str]
+    entities_to_rebuild_count: int
+    relationships_to_rebuild_count: int
+    created_at: str
+    updated_at: str
+
+
+class DeferredDeletionJournalListResponse(BaseModel):
+    """All unfinished durable deletion batches in the current workspace."""
+
+    journals: List[DeferredDeletionJournalSummaryResponse]
+    total_count: int
+
+
+class DeferredDeletionJournalDetailResponse(DeferredDeletionJournalSummaryResponse):
+    """Read-only batch detail excluding retained source-document metadata."""
+
+    document_ids: List[str]
+    delete_llm_cache: bool
+    entities_to_rebuild: Dict[str, List[str]]
+    relationships_to_rebuild: List[Dict[str, Any]]
+
+
+def _deferred_deletion_summary(journal) -> dict[str, Any]:
+    return {
+        "batch_id": journal.batch_id,
+        "stage": journal.stage,
+        "document_count": len(journal.document_ids),
+        "current_document_index": journal.current_document_index,
+        "attempt_count": journal.attempt_count,
+        "error_detail": journal.error_detail,
+        "entities_to_rebuild_count": len(journal.entities_to_rebuild),
+        "relationships_to_rebuild_count": len(journal.relationships_to_rebuild),
+        "created_at": journal.created_at,
+        "updated_at": journal.updated_at,
+    }
 
 
 class DocumentManager:
@@ -2275,6 +2329,44 @@ async def background_delete_documents(
             )
 
     try:
+        # Production LightRAG has a persistent working directory. Retain the
+        # old direct path only for compatibility with minimal in-process test
+        # doubles and third-party subclasses that have not adopted it yet.
+        if hasattr(rag, "working_dir"):
+            batch_result = await run_deferred_batch_delete(
+                rag,
+                doc_ids,
+                delete_llm_cache=delete_llm_cache,
+                delete_file=delete_file,
+            )
+            if batch_result.stage is DeferredDeletionStage.COMMITTED:
+                await cleanup_deferred_delete_files(
+                    rag, doc_manager, batch_result.batch_id
+                )
+                successful_deletions.extend(doc_ids)
+                completion_detail = (
+                    f"Deferred batch {batch_result.batch_id} committed after one rebuild "
+                    "and metadata verification"
+                )
+                logger.info(completion_detail)
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = completion_detail
+                    pipeline_status["history_messages"].append(completion_detail)
+            else:
+                # Do not report a partial destructive operation as success. The
+                # durable journal survives restart and is the source of truth for a
+                # future explicit resume action.
+                failed_deletions.extend(doc_ids)
+                retry_detail = (
+                    f"Deferred batch {batch_result.batch_id} is "
+                    f"{batch_result.stage.value}: {batch_result.error_detail}"
+                )
+                logger.error(retry_detail)
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = retry_detail
+                    pipeline_status["history_messages"].append(retry_detail)
+            return
+
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
             # Check for cancellation at the start of each document deletion
@@ -2423,6 +2515,105 @@ async def background_delete_documents(
                 await rag.apipeline_process_enqueue_documents()
             except Exception as e:
                 logger.error(f"Error processing pending documents after deletion: {e}")
+
+
+async def cleanup_deferred_delete_files(
+    rag: LightRAG, doc_manager: DocumentManager, batch_id: str
+) -> None:
+    """Delete durable source-file snapshots after a committed batch, including resume."""
+    store = DeferredDeletionJournalStore(rag.working_dir, rag.workspace)
+    async with store.batch_lock(batch_id):
+        journal = store.load(batch_id)
+        if (
+            not journal
+            or not journal.delete_file
+            or journal.source_file_cleanup_claimed
+        ):
+            return
+        # Claim before touching the filesystem. Retrying after an uncertain
+        # crash could otherwise delete a newly recreated source file.
+        journal.source_file_cleanup_claimed = True
+        store.save(journal)
+    source_file_paths = journal.source_file_paths or {
+        doc_id: (journal.document_metadata.get(doc_id, {}).get("doc_status") or {}).get(
+            "file_path"
+        )
+        for doc_id in journal.document_ids
+    }
+    # A batch can contain multiple document records originating from the same
+    # file. Cleanup is post-commit and intentionally best-effort, but each
+    # canonical source path must be attempted once, whether this is the initial
+    # completion or an explicit restart/resume.
+    for file_path in dict.fromkeys(source_file_paths.values()):
+        if not file_path or file_path == UNKNOWN_FILE_SOURCE:
+            continue
+        try:
+            deleted_files, file_delete_errors = delete_file_variants_by_file_path(
+                doc_manager.input_dir, file_path
+            )
+            for file_delete_error in file_delete_errors:
+                logger.warning(file_delete_error)
+            if deleted_files:
+                logger.info(
+                    "Successfully deleted source files: %s", ", ".join(deleted_files)
+                )
+        except Exception as file_error:
+            logger.error(
+                "Failed to delete file %s after batch %s: %s",
+                file_path,
+                batch_id,
+                file_error,
+            )
+
+
+async def background_resume_deferred_delete(
+    rag: LightRAG, doc_manager: DocumentManager, batch_id: str
+) -> None:
+    """Resume one durable delete journal after an operator-approved retry."""
+    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    journal = DeferredDeletionJournalStore(rag.working_dir, rag.workspace).load(
+        batch_id
+    )
+    total_docs = len(journal.document_ids) if journal else 1
+    async with pipeline_status_lock:
+        pipeline_status.update(
+            {
+                "busy": True,
+                "destructive_busy": True,
+                "job_name": f"Deleting {total_docs} Documents",
+                "job_start": datetime.now().isoformat(),
+                "docs": total_docs,
+                "batchs": total_docs,
+                "cur_batch": 0,
+                "latest_message": "Resuming deferred document deletion process",
+            }
+        )
+        pipeline_status.setdefault("history_messages", []).append(
+            "Resuming deferred document deletion process"
+        )
+    try:
+        result = await resume_deferred_batch_delete(rag, batch_id)
+        if result.stage is DeferredDeletionStage.COMMITTED:
+            await cleanup_deferred_delete_files(rag, doc_manager, batch_id)
+        message = f"Deferred batch {batch_id} resumed as {result.stage.value}"
+        if result.error_detail:
+            message = f"{message}: {result.error_detail}"
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = message
+            pipeline_status["history_messages"].append(message)
+    finally:
+        async with pipeline_status_lock:
+            pipeline_status["busy"] = False
+            pipeline_status["destructive_busy"] = False
+            pipeline_status["pending_requests"] = False
+            pipeline_status["cancellation_requested"] = False
 
 
 def create_document_routes(
@@ -3564,6 +3755,118 @@ def create_document_routes(
             # so the next reservation / scan / enqueue can proceed.
             if slot_acquired:
                 await _release_destructive_busy(rag)
+
+    @router.get(
+        "/delete_document/deferred",
+        response_model=DeferredDeletionJournalListResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="List unfinished durable deferred document deletion batches.",
+    )
+    async def list_deferred_document_deletions() -> DeferredDeletionJournalListResponse:
+        if not hasattr(rag, "working_dir"):
+            raise HTTPException(
+                status_code=503,
+                detail="Deferred deletion journals require a persistent working directory",
+            )
+        journals = DeferredDeletionJournalStore(
+            rag.working_dir, rag.workspace
+        ).list_unfinished()
+        summaries = [
+            DeferredDeletionJournalSummaryResponse(
+                **_deferred_deletion_summary(journal)
+            )
+            for journal in journals
+        ]
+        return DeferredDeletionJournalListResponse(
+            journals=summaries, total_count=len(summaries)
+        )
+
+    @router.get(
+        "/delete_document/deferred/{batch_id}",
+        response_model=DeferredDeletionJournalDetailResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Get read-only status and rebuild targets for a deferred deletion batch.",
+    )
+    async def get_deferred_document_deletion(
+        batch_id: str,
+    ) -> DeferredDeletionJournalDetailResponse:
+        if not hasattr(rag, "working_dir"):
+            raise HTTPException(
+                status_code=503,
+                detail="Deferred deletion journals require a persistent working directory",
+            )
+        journal = DeferredDeletionJournalStore(rag.working_dir, rag.workspace).load(
+            batch_id
+        )
+        if journal is None:
+            raise HTTPException(
+                status_code=404, detail="Deferred deletion batch was not found"
+            )
+        detail = _deferred_deletion_summary(journal)
+        detail.update(
+            document_ids=journal.document_ids,
+            delete_llm_cache=journal.delete_llm_cache,
+            entities_to_rebuild=journal.entities_to_rebuild,
+            relationships_to_rebuild=[
+                {"source": source, "target": target, "chunk_ids": chunk_ids}
+                for (
+                    source,
+                    target,
+                ), chunk_ids in journal.relationships_to_rebuild.items()
+            ],
+        )
+        return DeferredDeletionJournalDetailResponse(**detail)
+
+    class ResumeDeferredDeleteResponse(BaseModel):
+        status: Literal["resume_started", "busy"]
+        message: str
+        batch_id: str
+
+    @router.post(
+        "/delete_document/{batch_id}/resume",
+        response_model=ResumeDeferredDeleteResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Resume a durable deferred document deletion batch.",
+    )
+    async def resume_delete_document(
+        batch_id: str, background_tasks: BackgroundTasks
+    ) -> ResumeDeferredDeleteResponse:
+        if not hasattr(rag, "working_dir"):
+            raise HTTPException(
+                status_code=503,
+                detail="Deferred deletion journals require a persistent working directory",
+            )
+        try:
+            journal = DeferredDeletionJournalStore(rag.working_dir, rag.workspace).load(
+                batch_id
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=404, detail="Deferred deletion batch was not found"
+            ) from exc
+        if journal is None:
+            raise HTTPException(
+                status_code=404, detail="Deferred deletion batch was not found"
+            )
+        acquired, reason = await _acquire_destructive_busy(rag)
+        if not acquired:
+            return ResumeDeferredDeleteResponse(
+                status="busy",
+                message=reason or "Cannot resume deletion while pipeline is busy",
+                batch_id=batch_id,
+            )
+        try:
+            background_tasks.add_task(
+                background_resume_deferred_delete, rag, doc_manager, batch_id
+            )
+        except Exception:
+            await _release_destructive_busy(rag)
+            raise
+        return ResumeDeferredDeleteResponse(
+            status="resume_started",
+            message="Deferred deletion resume has been scheduled in the background.",
+            batch_id=batch_id,
+        )
 
     @router.post(
         "/clear_cache",
