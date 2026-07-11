@@ -133,6 +133,90 @@ def test_szcs_only_run_uses_szcs(tmp_path) -> None:
     assert _features_for(path, 0).font_size_pt == 15.0
 
 
+def _style_set_szcs_only(style, half_points: int) -> None:
+    """Give a style an rPr carrying ONLY ``w:szCs`` (no ``w:sz``)."""
+    rpr = style.element.get_or_add_rPr()
+    szcs = OxmlElement("w:szCs")
+    szcs.set(qn("w:val"), str(half_points))
+    rpr.append(szcs)
+
+
+def test_style_chain_szcs_does_not_mask_ancestor_sz(tmp_path) -> None:
+    """A mid-chain szCs-only style must NOT shadow an ancestor's sz — the sz
+    track resolves independently along basedOn (the test11 "10 图片及图题"
+    shape: child szCs=28 over Normal sz=24 renders 12pt in WPS, not 14pt)."""
+    doc = Document()
+    base = doc.styles.add_style("SzBase", WD_STYLE_TYPE.PARAGRAPH)
+    base.font.size = Pt(12)  # sz=24
+    child = doc.styles.add_style("CsChild", WD_STYLE_TYPE.PARAGRAPH)
+    child.base_style = base
+    _style_set_szcs_only(child, 28)  # szCs=28, no sz
+    doc.add_paragraph("图题样式段落", style="CsChild")
+
+    path = _save(doc, tmp_path)
+    styles = parse_styles_attributes(str(path))
+    assert styles.style_size_half_points("CsChild") == 24
+    assert _features_for(path, 0).font_size_pt == 12.0
+
+
+def test_style_chain_three_level_sz_track(tmp_path) -> None:
+    """szCs never inserts itself into the sz-track walk: A(sz=20) ← B(szCs
+    only) ← C(nothing) resolve to 20 at every level below A."""
+    doc = Document()
+    a = doc.styles.add_style("SzA", WD_STYLE_TYPE.PARAGRAPH)
+    a.font.size = Pt(10)  # sz=20
+    b = doc.styles.add_style("CsB", WD_STYLE_TYPE.PARAGRAPH)
+    b.base_style = a
+    _style_set_szcs_only(b, 36)
+    c = doc.styles.add_style("EmptyC", WD_STYLE_TYPE.PARAGRAPH)
+    c.base_style = b
+
+    path = _save(doc, tmp_path)
+    styles = parse_styles_attributes(str(path))
+    assert styles.style_size_half_points("CsB") == 20
+    assert styles.style_size_half_points("EmptyC") == 20
+
+
+def test_style_chain_szcs_fallback_precedes_existing_docdefaults_fallback(
+    tmp_path,
+) -> None:
+    """DELIBERATE compatibility behavior, not full OOXML cascading: a style
+    chain with NO sz at any level still resolves to its szCs (F3, the
+    CJK-only style-chain shape), and that synthesized style size outranks
+    the docDefaults sz in the run fallback cascade."""
+    doc = Document()
+    _set_doc_default_size(doc, 21)  # docDefaults sz=21 (10.5pt)
+    cjk = doc.styles.add_style("CjkOnly", WD_STYLE_TYPE.PARAGRAPH)
+    _style_set_szcs_only(cjk, 28)  # whole chain has no sz
+    doc.add_paragraph("中文字号样式", style="CjkOnly")
+
+    path = _save(doc, tmp_path)
+    styles = parse_styles_attributes(str(path))
+    assert styles.style_size_half_points("CjkOnly") == 28
+    assert _features_for(path, 0).font_size_pt == 14.0
+
+
+def test_object_only_paragraph_zero_chars_and_chain_size(tmp_path) -> None:
+    """The test11 offender shape end to end at the features level: a run with
+    no rPr and only a ``w:object`` (embedded OLE image) yields zero visible
+    chars, and its synthesized size comes from the paragraph style's sz
+    TRACK (12pt), not the style's own szCs (14pt)."""
+    doc = Document()
+    base = doc.styles.add_style("SzBase", WD_STYLE_TYPE.PARAGRAPH)
+    base.font.size = Pt(12)  # sz=24
+    child = doc.styles.add_style("CsChild", WD_STYLE_TYPE.PARAGRAPH)
+    child.base_style = base
+    _style_set_szcs_only(child, 28)
+    para = doc.add_paragraph(style="CsChild")
+    run = para.add_run()
+    run._r.append(OxmlElement("w:object"))
+
+    path = _save(doc, tmp_path)
+    feats = _features_for(path, 0)
+    assert feats.visible_char_count == 0
+    assert feats.font_size_pt == 12.0
+
+
 # ---------------------------------------------------------------------------
 # G1-3: whole-paragraph bold
 # ---------------------------------------------------------------------------
@@ -475,7 +559,7 @@ def test_fractional_size_values_round_to_nearest_half_point() -> None:
 
     raw = _RawStyle()
     _read_rpr(rpr, raw)
-    assert raw.size_half_points == 44
+    assert raw.sz_half_points == 44
 
     exact = ET.fromstring(f'<w:rPr xmlns:w="{w}"><w:sz w:val="43"/></w:rPr>')
     assert _element_direct_size(exact) == 43  # integer values untouched

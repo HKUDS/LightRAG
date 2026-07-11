@@ -770,3 +770,65 @@ def test_subdoc_gate_follows_lowered_whole_doc_gate(monkeypatch, tmp_path) -> No
     # size/bold headings survived.
     assert "一、总体要求" in by_heading
     assert "二、工作安排" in by_heading
+
+
+def test_object_only_paragraph_stays_body_at_chain_sz(monkeypatch, tmp_path) -> None:
+    """The test11 offender end to end, on a freshly built docx (no committed
+    fixture needed): a paragraph whose style carries only ``w:szCs=28`` over
+    a basedOn parent with ``w:sz=24``, holding a single bare ``w:object`` run
+    (embedded OLE image, no rPr, no text). It must stay body content (I1) —
+    never a heading block — and the audit must carry no promoted placeholder
+    row: its size resolves through the sz TRACK to 12pt (= FS_base), and the
+    zero-visible-char gate rejects every promotion channel regardless."""
+    from docx import Document
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    from lightrag.parser.docx.parse_document import extract_docx_blocks
+
+    doc = Document()
+    base = doc.styles.add_style("SzBase", WD_STYLE_TYPE.PARAGRAPH)
+    base.font.size = Pt(12)  # sz=24
+    caption = doc.styles.add_style("CsCaption", WD_STYLE_TYPE.PARAGRAPH)
+    caption.base_style = base
+    rpr = caption.element.get_or_add_rPr()
+    szcs = OxmlElement("w:szCs")
+    szcs.set(qn("w:val"), "28")  # szCs only — the "10 图片及图题" shape
+    rpr.append(szcs)
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    caption.element.get_or_add_pPr().append(jc)
+
+    _p(doc, "装配流程说明", size=16.0, outline=0)
+    _body_filler(doc, 6)
+    obj_para = doc.add_paragraph(style="CsCaption")
+    obj_para.add_run()._r.append(OxmlElement("w:object"))
+    _body_filler(doc, 6, prefix="后续")
+    path = tmp_path / "object_only.docx"
+    doc.save(str(path))
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    warnings: dict = {}
+    metadata: dict = {}
+    blocks = extract_docx_blocks(
+        str(path),
+        parse_warnings=warnings,
+        parse_metadata=metadata,
+        smart_heading_runtime=_Runtime(_make_llm({})),
+    )
+    assert "smart_fallback_baseline" not in warnings  # I1 held
+    # Never a heading block…
+    assert all(not b["heading"].lstrip().startswith("<drawing") for b in blocks)
+    # …but the placeholder tag itself survives in body content (I1).
+    joined = "\n".join(b["content"] for b in blocks)
+    assert "<drawing" in joined
+    # No audit row promoted the placeholder (no size_strong/base_center row).
+    audit = metadata["smart_audit"]
+    placeholder_rows = [
+        r
+        for r in audit["decisions"]
+        if r["summary"].lstrip().startswith(("<drawing", "<equation"))
+    ]
+    assert all(r["is_heading"] is False for r in placeholder_rows)

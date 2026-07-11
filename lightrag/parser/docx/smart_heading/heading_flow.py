@@ -313,6 +313,16 @@ def gate_candidates(
     same-size composite paths (series / bold / centered) are all disabled,
     while sizes strictly above the re-estimated FS_base remain auto-admitted;
     outline pass-through is unaffected.
+
+    Zero-visible-char paragraphs (pure ``<drawing>``/``<object>``/
+    ``<equation>`` placeholder lines) are never candidates and never lend
+    companion evidence (numbering series / weak pair / centered runs).
+    Non-outline ones are skipped silently (output-neutral) — EXCEPT a
+    granted one, which still lands in ``grant_rejected`` with a
+    ``zero_visible_chars`` mark. Outline ones take an explicit rule-tagged
+    ``placeholder_demoted`` decision in ``demoted`` (I2); the caller counts
+    and logs those at final adoption, since this gate may run twice per
+    sub-document under CB1.
     """
     strong_body = strong_body or guardrails.strong_body_reason
     numbering_veto = numbering_veto or guardrails.numbering_homophone_reason
@@ -330,9 +340,16 @@ def gate_candidates(
     ]
 
     # Pre-classify numbering (with homophone veto) for every paragraph.
+    # Zero-visible-char paragraphs (pure <drawing>/<object>/<equation>
+    # placeholders) classify as None: an auto-numbered image line must not
+    # lend a second series vote to an otherwise-singleton numbered paragraph
+    # (base_series / weak_plus_series / lowconf_series).
     numbering: dict[int, NumberingClassification | None] = {}
     veto_notes: dict[int, str] = {}
     for i in para_indices:
+        if _record_weight(records[i]) <= 0:
+            numbering[i] = None
+            continue
         cls = classify_numbering(records[i].text)
         if cls is not None:
             veto = numbering_veto(cls, records[i].text)
@@ -404,6 +421,12 @@ def gate_candidates(
         rec = records[i]
         centered_shape[i] = (
             rec.alignment == "center"
+            # A zero-visible-char placeholder is not a centered "line": it
+            # neither takes the channel nor joins a centered run (a decorative
+            # image between title lines must not push the run over the
+            # anti-poetry cap). It does not BREAK runs either — the run-build
+            # loop below only breaks on weighted paragraphs.
+            and _record_weight(rec) > 0
             and i not in llm_body_vetoes  # confirmed body is no companion
             and _title_short(i)
             and _strong(i) is None
@@ -454,7 +477,14 @@ def gate_candidates(
     if fs is not None:
         for i in para_indices:
             size = _effective_size(records[i])
-            if size is not None and size == fs + 0.5 and _strong(i) is None:
+            if (
+                size is not None
+                and size == fs + 0.5
+                and _strong(i) is None
+                # A placeholder's synthesized style size is no weak-signal
+                # evidence — it cannot be the companion vote.
+                and _record_weight(records[i]) > 0
+            ):
                 weak_size_count[size] = weak_size_count.get(size, 0) + 1
 
     decisions: list[HeadingDecision] = []
@@ -470,11 +500,50 @@ def gate_candidates(
         cls = numbering[i]
         rule: str | None = None
 
+        if _record_weight(rec) <= 0:
+            # Zero visible source characters — a pure <drawing>/<object>/
+            # <equation> placeholder paragraph. It carries no textual heading
+            # evidence: its "font size" is style metadata synthesized by the
+            # fallback cascade, not measured off text (§2.2.2). Never a
+            # heading, including outline members (user ruling) — but an
+            # outline member was a baseline heading, so it takes an EXPLICIT
+            # I2 demotion (use_raw_text re-renders the tag as body), never a
+            # silent skip. Counting/logging happens at the FINAL adoption
+            # merge, not here: gate_with_cb1 may run this gate twice.
+            if rec.outline_level is not None:
+                dem = HeadingDecision(
+                    record_index=i,
+                    text=text,
+                    is_heading=False,
+                    outline_level=rec.outline_level,
+                    use_raw_text=True,
+                )
+                dem.note("zero_visible_chars")
+                dem.note("placeholder_demoted")
+                demoted.append(dem)
+            elif i in llm_heading_grants:
+                # LLM audit contract: a granted line that gets no rule must
+                # land in grant_rejected, not vanish silently.
+                supp = HeadingDecision(
+                    record_index=i,
+                    text=text,
+                    is_heading=False,
+                    outline_level=None,
+                )
+                supp.note("zero_visible_chars")
+                supp.note("llm_grant_rejected")
+                grant_rejected.append(supp)
+            # Other non-outline placeholders: silent continue, output-neutral
+            # (the caption_veto P3 precedent — body rendering is unchanged).
+            continue
+
         if rec.outline_level is not None:
-            # P3 never vetoes an outline paragraph: silently skipping it here
-            # would strip a baseline heading without a decision/warning and
-            # trip the I2 machine check (A5). Wrong captions with an outline
-            # fall to the strong-body / guardrail path like any outline para.
+            # P3 never vetoes an outline paragraph — the one exception is the
+            # zero-visible-char demotion above, which is rule-tagged and I2-
+            # explicit, not a silent skip. Silently skipping here would strip
+            # a baseline heading without a decision/warning and trip the I2
+            # machine check (A5). Wrong captions with an outline fall to the
+            # strong-body / guardrail path like any outline para.
             rule = "outline"
         elif i in llm_body_vetoes:
             continue  # §2.2.4: LLM body vote revokes candidate identity
@@ -2046,18 +2115,41 @@ def _outline_only_decisions(
     (the baseline rule); global actions (title blocks, TOC removal,
     doc_title) are NOT undone (§3.4 mixed-output rules).
 
-    公文版记 (imprint) lines are the one exception to the baseline revert: an
-    outline paragraph opening with an imprint marker is demoted to body with
+    公文版记 (imprint) lines and zero-visible-char placeholder paragraphs are
+    the two exceptions to the baseline revert: an outline paragraph opening
+    with an imprint marker, or one with no visible source text (a pure
+    ``<drawing>``/``<object>``/``<equation>`` line), is demoted to body with
     an explicit rule-tagged decision — skipping it silently would read as an
     I2 violation (a baseline heading with no decision). Only the pure-regex
     imprint rule applies here; the fallback must not grow the full NLP
-    strong-body demotion surface.
+    strong-body demotion surface. This is a terminal path (called once per
+    fallback sub-document), so placeholder demotions count and log here.
     """
     imprint_marker = imprint_marker or guardrails.imprint_marker_reason
     out = []
     for i in indices:
         rec = records[i]
         if rec.kind != "para" or rec.outline_level is None:
+            continue
+        if _record_weight(rec) <= 0:
+            if warnings is not None:
+                warnings["smart_placeholder_demotions"] = (
+                    warnings.get("smart_placeholder_demotions", 0) + 1
+                )
+            dem = HeadingDecision(
+                record_index=i,
+                text=rec.text,
+                is_heading=False,
+                outline_level=rec.outline_level,
+                use_raw_text=True,
+            )
+            dem.note("zero_visible_chars")
+            dem.note("placeholder_demoted")
+            logger.warning(
+                "[smart_heading] I2: zero-visible-char outline paragraph "
+                "(placeholder) demoted to body in sub-document fallback"
+            )
+            out.append(dem)
             continue
         reason = imprint_marker(rec.text)
         if reason is not None:
@@ -2481,7 +2573,22 @@ def run_smart_heading(
         # I2 audit trail for recognition-time outline demotions (review C2):
         # merged in AFTER the candidate loop so they never reach leveling /
         # anchoring, yet appear in the final decision map + audit ledger.
+        # Placeholder demotions count HERE — the single final-adoption point —
+        # not inside gate_candidates, which CB1 may run twice per sub-document
+        # with the same warnings dict (the abandoned first pass must not
+        # count). Only an actually-inserted decision counts.
         for dem in gate.demoted:
+            if (
+                "placeholder_demoted" in dem.rule_trail
+                and dem.record_index not in decisions
+            ):
+                warnings["smart_placeholder_demotions"] = (
+                    warnings.get("smart_placeholder_demotions", 0) + 1
+                )
+                logger.warning(
+                    "[smart_heading] I2: zero-visible-char outline paragraph "
+                    "(placeholder) demoted to body"
+                )
             decisions.setdefault(dem.record_index, dem)
         # Numbering-veto suppressions and rejected LLM grants: ledger-only
         # treatment — record WHY a would-be candidate became body (and count

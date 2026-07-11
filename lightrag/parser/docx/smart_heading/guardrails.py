@@ -544,6 +544,7 @@ def verify_baseline_heading_retention(
         {
             "strong_body_demoted",
             "clamp_gt9_demoted",
+            "placeholder_demoted",
             "toc_removed",
             "title_block_member",
             "merged_absorbed",

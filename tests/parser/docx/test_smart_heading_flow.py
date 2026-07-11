@@ -2375,3 +2375,239 @@ def test_gap_close_end_to_end_bold_sections_reach_level_2(monkeypatch) -> None:
     for i in range(1, 9):
         d = result.decisions.get(i)
         assert d is None or not d.is_heading
+
+
+# ---------------------------------------------------------------------------
+# Zero-visible-char placeholder paragraphs (pure <drawing>/<object>/<equation>)
+# ---------------------------------------------------------------------------
+# Production records for placeholder-only paragraphs carry
+# ``visible_char_count == 0`` (placeholder markup never enters run_features).
+# Manually built test records MUST set it explicitly: the default None makes
+# ``_record_weight`` fall back to ``len(text.strip())`` and the placeholder
+# tag text would count as visible characters.
+
+
+def test_zero_weight_placeholder_not_size_promoted() -> None:
+    """The test11 offender: a 14pt drawing-only paragraph over FS_base=12
+    must not take size_strong — its size is synthesized style metadata, not
+    measured text."""
+    records = _body(20) + [
+        _para('<drawing id="1" path="x.emf" />', size=14.0, visible_char_count=0)
+    ]
+    result = _gate(records)
+    assert result.decisions == []
+    assert result.demoted == []
+    assert result.veto_suppressed == []
+
+
+def test_zero_weight_placeholder_not_center_promoted() -> None:
+    """Even at FS_base (the post-fix test11 size), a centered short
+    placeholder must not take the base_center channel."""
+    records = _body(20) + [
+        _para('<drawing id="1" />', size=12.0, alignment="center", visible_char_count=0)
+    ]
+    result = _gate(records)
+    assert result.decisions == []
+
+
+def test_pure_equation_paragraph_never_candidate() -> None:
+    """Invariant pin: a pure-OMML paragraph (no w-namespace runs → size=None,
+    zero visible chars) is never a candidate on any channel."""
+    records = _body(20) + [
+        _para(
+            "<equation>E=mc^2</equation>",
+            size=None,
+            alignment="center",
+            visible_char_count=0,
+        )
+    ]
+    result = _gate(records)
+    assert result.decisions == []
+    assert result.demoted == []
+
+
+def test_zero_weight_not_weak_companion() -> None:
+    """A placeholder at fs+0.5 is no weak-pair companion: the lone real
+    12.5pt line must NOT be admitted via weak_pair on the placeholder's
+    synthesized-size second vote."""
+    records = _body(20) + [
+        _para("候选标题甲", size=12.5),
+        _para('<drawing id="1" />', size=12.5, visible_char_count=0),
+    ]
+    result = _gate(records)
+    assert "候选标题甲" not in _texts(result)
+
+
+def test_zero_weight_placeholder_not_numbering_series_companion() -> None:
+    """An auto-numbered image line must not lend the second series vote: the
+    lone real numbered line stays a singleton (no base_series admission)."""
+    records = _body(20) + [
+        _para("3.1 真实编号标题", size=12.0),
+        _para('3.2 <drawing id="1" />', size=12.0, visible_char_count=0),
+    ]
+    result = _gate(records)
+    assert "3.1 真实编号标题" not in _texts(result)
+    assert "3.2 " not in " ".join(_texts(result))
+
+
+def test_zero_weight_placeholder_transparent_in_centered_run() -> None:
+    """A decorative centered placeholder between centered title lines is
+    TRANSPARENT: it neither joins the centered run (which would push a
+    3-line cluster over the anti-poetry cap) nor breaks it."""
+    records = _body(20) + [
+        _para("居中标题一", size=12.0, alignment="center"),
+        _para(
+            '<drawing id="1" />', size=12.0, alignment="center", visible_char_count=0
+        ),
+        _para("居中标题二", size=12.0, alignment="center"),
+        _para("居中标题三", size=12.0, alignment="center"),
+    ]
+    result = _gate(records)
+    texts = _texts(result)
+    for t in ("居中标题一", "居中标题二", "居中标题三"):
+        assert t in texts, t
+    assert '<drawing id="1" />' not in texts
+
+
+def test_outline_zero_weight_placeholder_demoted() -> None:
+    """User ruling: an author-styled (outlineLvl) placeholder paragraph is
+    NOT a heading either — it takes an explicit I2 demotion decision, and the
+    retention check accepts the ``placeholder_demoted`` tag."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    records = _body(20) + [
+        _para('<drawing id="1" />', size=14.0, outline_level=0, visible_char_count=0)
+    ]
+    result = _gate(records)
+    assert result.decisions == []
+    assert len(result.demoted) == 1
+    dem = result.demoted[0]
+    assert dem.is_heading is False
+    assert dem.use_raw_text is True
+    assert "placeholder_demoted" in dem.rule_trail
+    assert "zero_visible_chars" in dem.rule_trail
+    merged = list(result.decisions) + result.demoted
+    assert verify_baseline_heading_retention(records, merged) == []
+
+
+def test_outline_only_fallback_demotes_placeholder(caplog) -> None:
+    """The CB4/CB1 fallback path (_outline_only_decisions) demotes a
+    zero-weight outline paragraph instead of reverting it to a heading, and
+    counts + logs exactly once (it is a terminal path)."""
+    from lightrag.parser.docx.smart_heading.heading_flow import (
+        _outline_only_decisions,
+    )
+
+    records = _body(5) + [
+        _para("正常大纲标题", size=12.0, outline_level=0),
+        _para('<drawing id="1" />', size=12.0, outline_level=0, visible_char_count=0),
+    ]
+    warnings: dict = {}
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        out = _outline_only_decisions(records, range(len(records)), warnings=warnings)
+    by_idx = {d.record_index: d for d in out}
+    real = by_idx[len(records) - 2]
+    assert real.is_heading and "subdoc_fallback_outline_only" in real.rule_trail
+    dem = by_idx[len(records) - 1]
+    assert dem.is_heading is False
+    assert dem.use_raw_text is True
+    assert "placeholder_demoted" in dem.rule_trail
+    assert warnings["smart_placeholder_demotions"] == 1
+    logs = [m for m in _log_messages(caplog) if "placeholder" in m]
+    assert len(logs) == 1
+
+
+@pytest.mark.parametrize("cb1_terminal", ["converged", "tripped"])
+def test_placeholder_demotion_counted_once_across_cb1(
+    monkeypatch, caplog, cb1_terminal
+) -> None:
+    """``smart_placeholder_demotions`` counts at the FINAL adoption point
+    only: CB1 runs gate_candidates twice with the same warnings dict, and an
+    eager in-gate count would double. Both CB1 terminal states — (i) the
+    re-estimated second pass is adopted, (ii) the breaker trips and the
+    sub-document falls back to _outline_only_decisions — must count the one
+    outline placeholder exactly once and emit exactly one I2 log line."""
+    import json
+
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+
+    if cb1_terminal == "converged":
+        # 30 bare 12pt lines over a 10.5pt body: CB1 re-estimates FS_base to
+        # 12 and the second pass converges (test_cb1_reestimation shape).
+        records = _body(60, size=10.5)
+        records += [_para(f"伪标题短语{i}", size=12.0) for i in range(30)]
+    else:
+        # Question-bank shape: density stays over the bar after re-estimation
+        # → the breaker trips and the sub-document falls back.
+        records = []
+        for i in range(40):
+            records.append(_para(f"{i + 1}. 选择题题干第{i}题", size=12.0))
+            records.append(_para("A. 选项甲  B. 选项乙", size=10.5))
+    records.append(
+        _para('<drawing id="1" />', size=12.0, outline_level=0, visible_char_count=0)
+    )
+    placeholder_idx = len(records) - 1
+
+    def _llm(prompt: str, *, system_prompt: str | None = None) -> str:
+        return json.dumps({"is_title_block": False}, ensure_ascii=False)
+
+    warnings: dict = {}
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        result = run_smart_heading(
+            records,
+            llm_judge=_llm,
+            warnings=warnings,
+            strong_body=_stub_strong_body,
+            numbering_veto=_stub_no_veto,
+            caption_veto=_stub_no_caption,
+        )
+    assert result is not None
+    # Pin the ACTUAL terminal state: a future drift in the fixture shapes
+    # that stops reaching the target branch must fail loudly, not pass
+    # vacuously. Both states prove CB1 re-estimated (two gate passes ran —
+    # the double-count premise); they differ in the adoption path.
+    sub_docs = result.audit["sub_documents"]
+    assert any("cb1_reestimated_fs" in s for s in sub_docs)
+    if cb1_terminal == "tripped":
+        assert any(s.get("fallback") == "cb1_density" for s in sub_docs)
+    else:
+        assert not any(s.get("fallback") == "cb1_density" for s in sub_docs)
+    assert warnings["smart_placeholder_demotions"] == 1
+    dem = result.decisions[placeholder_idx]
+    assert dem.is_heading is False
+    assert "placeholder_demoted" in dem.rule_trail
+    i2_logs = [
+        m for m in _log_messages(caplog) if "zero-visible-char outline paragraph" in m
+    ]
+    assert len(i2_logs) == 1
+
+
+def test_zero_weight_llm_grant_leaves_rejected_ledger() -> None:
+    """LLM audit contract for zero-weight paragraphs: a granted placeholder
+    line must land in ``grant_rejected`` (not vanish silently), and the
+    final-adoption merge counts it once and inserts the ledger row.
+
+    Layered on purpose: a pure-drawing line cannot obtain a grant through
+    the full run_smart_heading — the title-block window strips drawing tags
+    (no semantic text → not in the LLM index_map) — so the grant is injected
+    at the gate layer and the merge layer is exercised directly."""
+    from lightrag.parser.docx.smart_heading.heading_flow import _merge_ledger_only
+
+    records = _body(20) + [_para('<drawing id="1" />', size=14.0, visible_char_count=0)]
+    idx = len(records) - 1
+    result = _gate(records, llm_heading_grants={idx})
+    assert result.decisions == []
+    assert [d.record_index for d in result.grant_rejected] == [idx]
+    trail = result.grant_rejected[0].rule_trail
+    assert "zero_visible_chars" in trail
+    assert "llm_grant_rejected" in trail
+
+    decisions: dict = {}
+    warnings: dict = {}
+    _merge_ledger_only(decisions, result, warnings)
+    assert warnings["smart_llm_grant_rejected"] == 1
+    assert decisions[idx] is result.grant_rejected[0]

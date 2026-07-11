@@ -54,7 +54,11 @@ _PRUNE_SUBTREE_TAGS = frozenset(
 @dataclass
 class _RawStyle:
     based_on: str | None = None
-    size_half_points: int | None = None
+    #: w:sz and w:szCs are SEPARATE tracks: each inherits independently along
+    #: the basedOn chain (a child style carrying only szCs must not shadow an
+    #: ancestor's sz — the ASCII/East-Asian size WPS/Word actually renders).
+    sz_half_points: int | None = None
+    szcs_half_points: int | None = None
     bold: bool | None = None
     alignment: str | None = None
 
@@ -77,7 +81,9 @@ class StyleAttributes:
     default_para_style_id: str | None = None
 
     def style_size_half_points(self, style_id: str | None) -> int | None:
-        """Effective ``w:sz`` (half-points) for a style chain, else None."""
+        """Compatibility-synthesized size (half-points) for a style chain:
+        the basedOn-chain-resolved ``w:sz``, falling back to the chain's
+        ``w:szCs`` only when NO level defines sz. Not raw ``w:sz``."""
         if not style_id:
             return None
         return self._resolved_size.get(style_id)
@@ -133,11 +139,18 @@ def _rpr_size_half_points(rpr) -> int | None:
 
 
 def _read_rpr(rpr, raw: _RawStyle) -> None:
+    """Read sz and szCs into their SEPARATE _RawStyle tracks.
+
+    A bare ``<w:sz/>`` (no usable val) writes nothing: it neither shadows this
+    level's szCs track nor interrupts an ancestor's sz track (review F3)."""
     if rpr is None:
         return
-    size = _rpr_size_half_points(rpr)
-    if size is not None:
-        raw.size_half_points = size
+    for tag, attr in (("sz", "sz_half_points"), ("szCs", "szcs_half_points")):
+        node = rpr.find(_w(tag))
+        if node is not None:
+            size = _grid_half_points(node.get(_w("val")))
+            if size is not None:
+                setattr(raw, attr, size)
     b = rpr.find(_w("b"))
     if b is not None:
         raw.bold = _parse_bool_attr(b)
@@ -175,7 +188,13 @@ def parse_styles_attributes(
                 if rpr_default is not None:
                     raw = _RawStyle()
                     _read_rpr(rpr_default.find(_w("rPr")), raw)
-                    attrs.default_size_half_points = raw.size_half_points
+                    # docDefaults is a single level: within-level merge (sz
+                    # preferred, szCs fallback) matches _rpr_size_half_points.
+                    attrs.default_size_half_points = (
+                        raw.sz_half_points
+                        if raw.sz_half_points is not None
+                        else raw.szcs_half_points
+                    )
                     attrs.default_bold = raw.bold
                 ppr_default = doc_defaults.find(_w("pPrDefault"))
                 if ppr_default is not None:
@@ -238,7 +257,18 @@ def parse_styles_attributes(
         return None
 
     for style_id in raw_styles:
-        attrs._resolved_size[style_id] = _resolve(style_id, "size_half_points")
+        # Two-track size resolution WITHIN the basedOn chain: the sz track is
+        # resolved over the whole chain first, and only when NO level defines
+        # sz does the szCs track apply (a mid-chain szCs-only style — e.g. a
+        # CJK caption style — must not shadow an ancestor's sz, which is the
+        # size Word/WPS actually renders for ASCII/East-Asian text). This is
+        # deliberately NOT full OOXML property-wise cascading: the resolved
+        # style-chain szCs still outranks docDefaults sz in _fallback_size
+        # (the pre-existing cross-layer compatibility fallback, review F3).
+        sz = _resolve(style_id, "sz_half_points")
+        attrs._resolved_size[style_id] = (
+            sz if sz is not None else _resolve(style_id, "szcs_half_points")
+        )
         attrs._resolved_bold[style_id] = _resolve(style_id, "bold")
         attrs._resolved_alignment[style_id] = _resolve(style_id, "alignment")
     return attrs
