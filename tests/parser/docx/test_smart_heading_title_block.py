@@ -2280,3 +2280,38 @@ def test_head_zone_closes_at_first_body_sentence_under_default() -> None:
     assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
         ("multi_window", 3, 5)
     ]
+
+
+def test_head_zone_closes_at_body_data_table_under_default() -> None:
+    """Review regression (production default zone): a DATA table — cells the
+    cover-material gate rejects (full sentences) — is body evidence exactly
+    like a sentence paragraph; the test11 shape right behind one must
+    suppress even though fewer than 8 content records precede it."""
+    records = [
+        _table([[("本表第一格是完整的正文句子，明确以句号结尾。", 12.0, False)]]),
+        _para("填报单位：某某公司", size=12.0),
+        _para("外购外协价格明细表", size=16.0),
+    ]
+    ev: list = []
+    cands = _find(records, suppressed_events=ev)  # production default zone
+    assert cands == []
+    assert [(e["trigger"], e["start"], e["end"]) for e in ev] == [
+        ("multi_window", 1, 3)
+    ]
+
+    # Control: a COVER-shaped table (short label cells) is not body evidence —
+    # the same window stays head-zone under the default.
+    records2 = [
+        _table([[("档 号", 10.5, False)]]),
+        _para("填报单位：某某公司", size=12.0),
+        _para("外购外协价格明细表", size=16.0),
+    ]
+    ev2: list = []
+    cands2 = _find(records2, suppressed_events=ev2)
+    # Head zone stays open: the paragraph window opens AND the cover table
+    # absorbs the pair into a table window — both reach the LLM.
+    assert {(c.start, c.end, c.trigger) for c in cands2} == {
+        (0, 3, "table_window"),
+        (1, 3, "multi_window"),
+    }
+    assert ev2 == []

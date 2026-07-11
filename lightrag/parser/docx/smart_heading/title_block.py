@@ -507,29 +507,64 @@ def find_title_block_candidates(
             _ATTACHMENT_OPENER.match(_cover_semantic_text(r).strip())
         )
 
-    # First BODY-SIGNAL content paragraph: a sentence-terminated line or a
-    # real (outline/genuinely numbered) heading marks where document prose /
-    # structure starts — a cover never follows it. DELIBERATELY punctuation-
-    # based, not strong_body-based: spaCy falsely splits decimal-bearing
-    # cover titles (“7.19”) into "multi-sentence" strong verdicts, and one
-    # false-strong line at the top would close the zone on a real cover.
-    # Computed lazily and cached; ``n`` = no signal anywhere (tiny
-    # cover-only documents).
+    def _table_member_ok(idx: int) -> bool:
+        """Membership gate: EVERY non-empty cell reads as title material —
+        no strong-body feature, no 版记 (imprint) marker OR 印发-family closer,
+        within the title length cap, no physical outline. A data table
+        (sentence / long cells) can never join, which is what makes absorbing
+        member tables content-safe. Defined ahead of the head-zone block: the
+        body-signal scan uses its INVERSE (a table that cannot be cover
+        material is body evidence)."""
+        cf = records[idx].table_cell_features
+        if cf is None:
+            return False
+        for row in cf:
+            for text, _size, has_outline in row:
+                t = (text or "").strip()
+                if not t:
+                    continue
+                if has_outline:
+                    return False
+                if guardrails.weighted_char_length(t) > TITLE_LINE_MAX_WEIGHTED_CHARS:
+                    return False
+                if strong_body(t) is not None:
+                    return False
+                # Imprint check on the RAW cell text: the whitespace after a
+                # closer prefix (印发机关␣…) is the match evidence and a stripped
+                # copy would erase it. A short imprint cell is not necessarily
+                # caught by the strong-body rules. BOTH the anchor (抄送 / 主题词)
+                # and closer (印发 / …印发) shapes are checked per-cell — a table
+                # channel has no "anchor above" context, so a 版记 cell must veto
+                # on its own here.
+                if imprint_marker(text) is not None or imprint_closer(text) is not None:
+                    return False
+        return True
+
+    # First BODY-SIGNAL content record: a sentence-terminated paragraph, a
+    # real (outline/genuinely numbered) heading, or a DATA table (one that
+    # cannot be cover material — sentence/long/outline cells) marks where
+    # document prose / structure starts — a cover never follows it. The
+    # paragraph check is DELIBERATELY punctuation-based, not strong_body-
+    # based: spaCy falsely splits decimal-bearing cover titles (“7.19”) into
+    # "multi-sentence" strong verdicts, and one false-strong line at the top
+    # would close the zone on a real cover. Computed lazily and cached;
+    # ``n`` = no signal anywhere (tiny cover-only documents).
     _body_signal_cache: list[int | None] = [None]
 
     def _first_body_signal() -> int:
         if _body_signal_cache[0] is None:
             sig = n
             for i2, r2 in enumerate(records):
-                if (
-                    r2.kind == "para"
-                    and _is_content_record(i2, r2)
-                    and (
-                        _cover_semantic_text(r2)
-                        .rstrip()
-                        .endswith(_BODY_SENTENCE_ENDERS)
-                        or _is_real_heading(i2)
-                    )
+                if not _is_content_record(i2, r2):
+                    continue
+                if r2.kind == "table":
+                    if not _table_member_ok(i2):
+                        sig = i2
+                        break
+                    continue
+                if r2.kind == "para" and (
+                    _cover_semantic_text(r2).rstrip().endswith(_BODY_SENTENCE_ENDERS)
+                    or _is_real_heading(i2)
                 ):
                     sig = i2
                     break
@@ -540,11 +575,11 @@ def find_title_block_candidates(
         """§2.2.4 mid-document gate: a multi/table window opens freely in the
         document head zone — fewer than ``head_zone_records`` content records
         before it (blanks/TOC/section breaks/logo paragraphs don't count) AND
-        no body prose (strong-body line / real heading) started yet: a couple
-        of leading cover tables or long title lines keep the zone open, but a
-        single body sentence at the top closes it (a 3-paragraph preamble
-        must not reopen the door the record-count cap guards on long
-        documents). Past the zone a window needs document-boundary evidence —
+        no body signal (sentence-punctuated line / real heading / data table)
+        yet: a couple of leading cover tables or long title lines keep the
+        zone open, but a single body sentence or data table at the top closes
+        it (a short preamble must not reopen the door the record-count cap
+        guards on long documents). Past the zone a window needs document-boundary evidence —
         it starts on a bare 附件 marker line, or its preceding non-blank
         record (non-content records skipped, same eyes as the imprint confirm
         scan) is an imprint-region tail or an attachment marker paragraph."""
@@ -800,36 +835,9 @@ def find_title_block_candidates(
             and not rec.is_toc_link
         )
 
-    def _table_member_ok(idx: int) -> bool:
-        """Membership gate: EVERY non-empty cell reads as title material —
-        no strong-body feature, no 版记 (imprint) marker OR 印发-family closer,
-        within the title length cap, no physical outline. A data table
-        (sentence / long cells) can never join, which is what makes absorbing
-        member tables content-safe."""
-        cf = records[idx].table_cell_features
-        if cf is None:
-            return False
-        for row in cf:
-            for text, _size, has_outline in row:
-                t = (text or "").strip()
-                if not t:
-                    continue
-                if has_outline:
-                    return False
-                if guardrails.weighted_char_length(t) > TITLE_LINE_MAX_WEIGHTED_CHARS:
-                    return False
-                if strong_body(t) is not None:
-                    return False
-                # Imprint check on the RAW cell text: the whitespace after a
-                # closer prefix (印发机关␣…) is the match evidence and a stripped
-                # copy would erase it. A short imprint cell is not necessarily
-                # caught by the strong-body rules. BOTH the anchor (抄送 / 主题词)
-                # and closer (印发 / …印发) shapes are checked per-cell — a table
-                # channel has no "anchor above" context, so a 版记 cell must veto
-                # on its own here.
-                if imprint_marker(text) is not None or imprint_closer(text) is not None:
-                    return False
-        return True
+    # _table_member_ok is defined earlier (above the head-zone block): the
+    # body-signal scan needs its inverse — a table that cannot be cover
+    # material is body evidence.
 
     def _table_title_size(idx: int) -> float | None:
         """Max size over this table's title rows (None = no title row).
