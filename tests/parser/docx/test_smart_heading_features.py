@@ -1,7 +1,8 @@
 """G1 tests: physical paragraph features for smart heading discovery.
 
-Covers the font-size cascade (run rPr > paragraph-mark rPr > style chain >
-docDefaults), szCs fallback, whole-paragraph bold, alignment resolution,
+Covers the font-size cascade (run rPr > style chain > docDefaults; the
+paragraph-mark rPr styles the ¶ glyph only and never feeds text runs),
+szCs fallback, whole-paragraph bold, alignment resolution,
 char-weighted dominant size with label/markup exclusion, first-line re-stat
 for soft-break split headings, page-break and TOC evidence, and the
 record-level wiring through ``_read_document_records``.
@@ -91,7 +92,10 @@ def test_font_size_cascade_run_over_style_over_default(tmp_path) -> None:
     doc.add_paragraph("style level", style="Big28")
     # (2) docDefaults only
     doc.add_paragraph("default level")
-    # (3) paragraph-mark rPr beats style chain
+    # (3) a paragraph-MARK rPr size does NOT feed the text run: the run has no
+    # direct size, so it resolves to the paragraph STYLE (Big28 = 14pt), not
+    # the ¶-mark's 18pt. Per ECMA-376 §17.3.1.29 the paragraph-mark rPr styles
+    # the ¶ glyph only; WPS/Word render the text at the style size.
     p3 = doc.add_paragraph("para mark level", style="Big28")
     ppr = p3._p.get_or_add_pPr()
     mark_rpr = OxmlElement("w:rPr")
@@ -104,7 +108,7 @@ def test_font_size_cascade_run_over_style_over_default(tmp_path) -> None:
     assert _features_for(path, 0).font_size_pt == 12.0
     assert _features_for(path, 1).font_size_pt == 14.0
     assert _features_for(path, 2).font_size_pt == 10.5
-    assert _features_for(path, 3).font_size_pt == 18.0
+    assert _features_for(path, 3).font_size_pt == 14.0  # style, NOT ¶-mark 18pt
 
 
 def test_style_chain_based_on_inheritance(tmp_path) -> None:
@@ -727,3 +731,70 @@ def test_empty_para_sectpr_reset_parity_with_nonempty(tmp_path) -> None:
         return [r.label for r in records if r.text.endswith("条目")]
 
     assert _labels("", "empty_sect") == _labels("分节说明文字", "nonempty_sect")
+
+
+def test_paragraph_mark_size_does_not_feed_text_run(tmp_path) -> None:
+    """Regression (test11 外购、外协价格明细表): a caption whose TEXT run is
+    unsized while its ¶-mark rPr AND a text-less page-break run carry a large
+    size must resolve to the paragraph STYLE size, not the ¶-mark size —
+    matching what WPS renders. The old cascade read the ¶-mark's 16pt and
+    made the line the document's largest text (a phantom level-0 heading)."""
+    doc = Document()
+    _set_doc_default_size(doc, 21)  # docDefaults 10.5pt (never reached here)
+    # Normal is 12pt so the run resolves there.
+    doc.styles["Normal"].font.size = Pt(12)  # sz=24
+
+    para = doc.add_paragraph()
+    ppr = para._p.get_or_add_pPr()
+    mark_rpr = OxmlElement("w:rPr")
+    mark_sz = OxmlElement("w:sz")
+    mark_sz.set(qn("w:val"), "32")  # ¶-mark 16pt — must be ignored for text
+    mark_rpr.append(mark_sz)
+    ppr.append(mark_rpr)
+    # A text-LESS page-break run at 18pt (weight 0, must not drive dominant).
+    br_run = para.add_run()
+    br_rpr = br_run._r.get_or_add_rPr()
+    br_sz = OxmlElement("w:sz")
+    br_sz.set(qn("w:val"), "36")
+    br_rpr.append(br_sz)
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    br_run._r.append(br)
+    # The actual text run: NO direct size.
+    para.add_run("外购、外协价格明细表")
+
+    path = _save(doc, tmp_path)
+    assert _features_for(path, 0).font_size_pt == 12.0
+
+
+def test_toc_entry_field_reference_flags_toc(tmp_path) -> None:
+    """A field-based TOC entry (auto TOC: HYPERLINK/PAGEREF to a _Toc
+    bookmark, tab + page number — no dot leader, no <w:hyperlink> element,
+    no 'TOC' instruction) must be flagged is_toc_field, else it evades TOC
+    removal and — once its unsized runs resolve to the heading-sized TOC
+    style — is mis-promoted to a heading (test2 目次 regression)."""
+    from lightrag.parser.docx.smart_heading.features import _is_toc_instr
+
+    assert _is_toc_instr('HYPERLINK \\L "_TOC114570378"')
+    assert _is_toc_instr("PAGEREF _TOC114570378 \\H")
+    assert _is_toc_instr("TOC \\O 1-3 \\H")
+    # A body cross-reference to a non-TOC bookmark is NOT a TOC entry.
+    assert not _is_toc_instr("PAGEREF _REF456 \\H")
+    assert not _is_toc_instr('HYPERLINK "HTTP://EXAMPLE.COM"')
+
+    doc = Document()
+    para = doc.add_paragraph()
+    r1 = para.add_run()
+    instr = OxmlElement("w:instrText")
+    instr.text = ' HYPERLINK \\l "_Toc114570378" '
+    r1._r.append(instr)
+    para.add_run("1.1")
+    para.add_run(" 任务来源")
+    r2 = para.add_run()
+    instr2 = OxmlElement("w:instrText")
+    instr2.text = " PAGEREF _Toc114570378 \\h "
+    r2._r.append(instr2)
+    para.add_run("1")
+
+    path = _save(doc, tmp_path)
+    assert _features_for(path, 0).is_toc_field is True

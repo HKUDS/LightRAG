@@ -327,6 +327,21 @@ def _weight(text: str) -> int:
     return sum(1 for ch in text if not ch.isspace())
 
 
+def _is_toc_instr(instr_upper: str) -> bool:
+    """True for a field instruction that marks a TOC paragraph (§2.2.2).
+
+    Two shapes: the ``TOC`` field itself (the generator), and a TOC-ENTRY
+    field — an auto-generated entry references a ``_Toc`` bookmark via
+    ``PAGEREF``/``HYPERLINK`` (Word/WPS reserve the ``_Toc`` prefix for TOC
+    targets, so a body cross-reference points at ``_Ref…``/named bookmarks
+    instead). The entry paragraph carries neither a ``TOC`` instruction nor a
+    ``<w:hyperlink>`` element — only these field codes — so without this it
+    evades detection and, once its runs resolve to the (heading-sized) TOC
+    style, is mis-promoted to a heading. ``instr_upper`` is already uppercased.
+    """
+    return instr_upper.startswith("TOC") or "_TOC" in instr_upper
+
+
 def effective_font_size_pt(rec: Any) -> float | None:
     """Candidate-facing paragraph size (§2.2.2 / §3.1).
 
@@ -450,17 +465,22 @@ def extract_paragraph_physical_features(
     if alignment is None:
         alignment = styles.default_alignment
 
-    # Paragraph-level fallbacks shared by every run (cascade: run rPr >
-    # paragraph-mark rPr > style chain > docDefaults; spec §3.2).
-    para_mark_size = _element_direct_size(para_mark_rpr)
+    # Paragraph-level fallbacks shared by every run.
     para_mark_bold = _element_direct_bold(para_mark_rpr)
     para_style_size = styles.style_size_half_points(para_style_id)
     para_style_bold = styles.style_bold(para_style_id)
 
     def _fallback_size(run_style_id: str | None) -> int | None:
+        # A text run with no direct w:sz resolves rStyle (character style) >
+        # paragraph style > docDefaults — the OOXML run-property chain. The
+        # paragraph-MARK rPr (``w:pPr/w:rPr``) is DELIBERATELY excluded: per
+        # ECMA-376 §17.3.1.29 it formats the paragraph-mark glyph (¶) only,
+        # NOT the text runs, and WPS/Word render such a run at the paragraph
+        # style size accordingly. Consulting it here inflated a caption whose
+        # text run was unsized but whose ¶ mark carried a larger sz, making it
+        # the document's largest text and a phantom top-level heading.
         for candidate in (
             styles.style_size_half_points(run_style_id),
-            para_mark_size,
             para_style_size,
             styles.default_size_half_points,
         ):
@@ -533,12 +553,12 @@ def extract_paragraph_physical_features(
             # Fall through to descend so a field-code w:instrText nested in
             # this run is still seen; standalone w:t/w:br carry no branch.
         elif tag == _w("instrText"):
-            instr = (node.text or "").strip()
-            if instr.upper().startswith("TOC"):
+            instr = (node.text or "").strip().upper()
+            if _is_toc_instr(instr):
                 is_toc_field = True
         elif tag == _w("fldSimple"):
-            instr = (node.get(_w("instr")) or "").strip()
-            if instr.upper().startswith("TOC"):
+            instr = (node.get(_w("instr")) or "").strip().upper()
+            if _is_toc_instr(instr):
                 is_toc_field = True
         elif tag == _w("hyperlink"):
             anchor = node.get(_w("anchor")) or ""
