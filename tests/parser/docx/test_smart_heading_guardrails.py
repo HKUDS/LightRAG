@@ -7,8 +7,11 @@ import pytest
 
 from lightrag.parser.docx.parse_document import ParagraphRecord
 from lightrag.parser.docx.smart_heading.guardrails import (
+    TOC_ELLIPSIS,
+    TocOutputPlan,
     canonicalize_paragraph_text,
     detect_toc_records,
+    plan_toc_output,
     shadow_baseline_diff,
     smart_output_length_ok,
     toc_audit_entries,
@@ -466,6 +469,111 @@ def test_toc_third_channel_english_contents_casefold() -> None:
 
 
 # ---------------------------------------------------------------------------
+# TOC retention: plan_toc_output (§2.3)
+# ---------------------------------------------------------------------------
+
+
+def _toc(*texts: str) -> tuple[list[ParagraphRecord], set[int]]:
+    """Para records that are ALL in the TOC set (document index order)."""
+    recs = [_p(t) for t in texts]
+    return recs, set(range(len(recs)))
+
+
+def test_plan_toc_output_under_budget_keeps_all_no_ellipsis() -> None:
+    recs, toc = _toc("第一章 绪论……3", "第二章 方法……12")
+    plan = plan_toc_output(recs, toc, keep_lines=5)
+    assert isinstance(plan, TocOutputPlan)
+    assert plan.kept_text == {0: "第一章 绪论……3", 1: "第二章 方法……12"}
+    assert plan.ellipsis_anchor is None
+    assert (plan.kept_lines, plan.removed_lines) == (2, 0)
+
+
+def test_plan_toc_output_exactly_at_budget_no_ellipsis() -> None:
+    recs, toc = _toc("1", "2", "3", "4", "5")
+    plan = plan_toc_output(recs, toc, keep_lines=5)
+    assert set(plan.kept_text) == {0, 1, 2, 3, 4}
+    assert plan.ellipsis_anchor is None
+    assert (plan.kept_lines, plan.removed_lines) == (5, 0)
+
+
+def test_plan_toc_output_over_budget_truncates_with_ellipsis() -> None:
+    recs, toc = _toc(*[f"第{i} 条……{i}" for i in range(8)])
+    plan = plan_toc_output(recs, toc, keep_lines=5)
+    assert set(plan.kept_text) == {0, 1, 2, 3, 4}
+    assert plan.ellipsis_anchor == 4  # one "……" after the last kept record
+    assert (plan.kept_lines, plan.removed_lines) == (5, 3)
+    assert all(i not in plan.kept_text for i in (5, 6, 7))
+    assert plan.fully_removed_records == 3  # records 5-7 kept nothing
+
+
+def test_plan_toc_output_straddling_soft_break_paragraph() -> None:
+    """A single paragraph with 8 soft-break lines, budget 5: keep the first 5
+    lines, count the 3-line tail as removed, anchor is that same record. This
+    is why the budget must be per visible line, not per record."""
+    recs, toc = _toc("\n".join(f"第{i} 条……{i}" for i in range(8)))
+    plan = plan_toc_output(recs, toc, keep_lines=5)
+    assert plan.kept_text == {0: "\n".join(f"第{i} 条……{i}" for i in range(5))}
+    assert plan.ellipsis_anchor == 0
+    assert (plan.kept_lines, plan.removed_lines) == (5, 3)
+    assert plan.fully_removed_records == 0  # partly kept ≠ fully removed
+
+
+def test_plan_toc_output_keep_zero_collapses_to_ellipsis() -> None:
+    recs, toc = _toc("第一章……3", "第二章……12", "第三章……25")
+    plan = plan_toc_output(recs, toc, keep_lines=0)
+    assert plan.kept_text == {}
+    assert plan.ellipsis_anchor == 0  # the first visible record
+    assert (plan.kept_lines, plan.removed_lines) == (0, 3)
+    assert plan.fully_removed_records == 3
+
+
+def test_plan_toc_output_negative_budget_clamps_to_zero() -> None:
+    recs, toc = _toc("第一章……3", "第二章……12")
+    plan = plan_toc_output(recs, toc, keep_lines=-3)
+    assert plan.kept_text == {}
+    assert plan.ellipsis_anchor == 0
+    assert plan.removed_lines == 2
+
+
+def test_plan_toc_output_non_contiguous_segments_single_anchor() -> None:
+    """Two TOC runs (目录 + 图目录) share ONE global budget and ONE ellipsis;
+    a body record between them is excluded from toc_indices."""
+    recs = [_p(t) for t in ("A", "B", "sep-body", "C", "D", "E")]
+    toc = {0, 1, 3, 4, 5}  # index 2 is body
+    plan = plan_toc_output(recs, toc, keep_lines=3)
+    assert set(plan.kept_text) == {0, 1, 3}  # first 3 lines across BOTH runs
+    assert plan.ellipsis_anchor == 3
+    assert (plan.kept_lines, plan.removed_lines) == (3, 2)
+
+
+def test_plan_toc_output_skips_whitespace_and_strips() -> None:
+    recs = [_p("   "), _p("  第一章 绪论……3  "), _p("第二章……12")]
+    plan = plan_toc_output(recs, {0, 1, 2}, keep_lines=5)
+    assert 0 not in plan.kept_text  # whitespace-only record skipped entirely
+    assert plan.kept_text[1] == "第一章 绪论……3"  # visible text, surrounding space gone
+    assert (plan.kept_lines, plan.removed_lines) == (2, 0)
+    assert plan.ellipsis_anchor is None
+    assert plan.fully_removed_records == 0  # a whitespace record is not "removed"
+
+
+def test_plan_toc_output_counts_demoted_tail_as_removed() -> None:
+    """A TOC record carrying a ``demoted_body_text`` tail (oversize soft-break
+    remainder from the read pass): the tail is never re-emitted by the TOC
+    branch, so its visible lines count as removed and raise the ellipsis even
+    when every ``text`` line fits the budget."""
+    rec = ParagraphRecord(
+        kind="para",
+        text="第一章 绪论……3",
+        demoted_body_text="尾部第一行\n尾部第二行",
+    )
+    plan = plan_toc_output([rec], {0}, keep_lines=5)
+    assert plan.kept_text == {0: "第一章 绪论……3"}
+    assert (plan.kept_lines, plan.removed_lines) == (1, 2)  # tail lines removed
+    assert plan.ellipsis_anchor == 0  # elided tail alone raises the marker
+    assert plan.fully_removed_records == 0
+
+
+# ---------------------------------------------------------------------------
 # I1 content preservation (G9-3)
 # ---------------------------------------------------------------------------
 
@@ -525,6 +633,69 @@ def test_i1_whitelists_toc_indices_only() -> None:
     assert verify_content_preservation(records, blocks, toc_indices={0}) == []
     # Without the whitelist the same absence is a violation.
     assert verify_content_preservation(records, blocks) != []
+
+
+def test_i1_subtracts_injected_toc_copy_reveals_body_loss() -> None:
+    """§2.3 TOC retention: a retained TOC copy of a body heading must NOT mask
+    that heading actually going missing from the output. The injected copy is
+    subtracted from the output multiset first, so the lost body line surfaces.
+    (Multiset SUBTRACTION, not mere canonicalization: proven by the paired
+    'body present' case below returning [].)"""
+    records = [
+        _para("第一章 绪论", is_toc_link=True),  # leaderless TOC entry (same canon)
+        _para("第一章 绪论"),  # the real body heading
+        _para("正文段落。"),
+    ]
+    # Output has ONLY ONE "第一章 绪论" line (the retained TOC copy); the body
+    # heading was lost by an assembler bug.
+    blocks = _blocks("第一章 绪论\n正文段落。")
+    missing = verify_content_preservation(
+        records, blocks, toc_indices={0}, ignored_output_texts=["第一章 绪论"]
+    )
+    assert missing == [canonicalize_paragraph_text("第一章 绪论")]
+
+
+def test_i1_injected_toc_copy_ok_when_body_copy_present() -> None:
+    """Paired control: with the body heading present the output has two copies,
+    the injected one is subtracted, and the body one still satisfies I1."""
+    records = [
+        _para("第一章 绪论", is_toc_link=True),
+        _para("第一章 绪论"),
+        _para("正文段落。"),
+    ]
+    blocks = _blocks("第一章 绪论\n# 第一章 绪论\n正文段落。")
+    assert (
+        verify_content_preservation(
+            records, blocks, toc_indices={0}, ignored_output_texts=["第一章 绪论"]
+        )
+        == []
+    )
+
+
+def test_i1_subtracts_ellipsis_without_masking_a_source_ellipsis() -> None:
+    """The injected ellipsis is subtracted; a genuine body '……' line still
+    needs its own output copy."""
+    records = [
+        _para("目录条目……3", is_toc_link=True),
+        _para(TOC_ELLIPSIS),  # a REAL body paragraph that happens to be "……"
+    ]
+    # One ellipsis in output = the injected one; the source ellipsis is lost.
+    assert verify_content_preservation(
+        records,
+        _blocks(TOC_ELLIPSIS),
+        toc_indices={0},
+        ignored_output_texts=[TOC_ELLIPSIS],
+    ) == [canonicalize_paragraph_text(TOC_ELLIPSIS)]
+    # Two ellipses (injected + real source) → subtract one, pass.
+    assert (
+        verify_content_preservation(
+            records,
+            _blocks(f"{TOC_ELLIPSIS}\n{TOC_ELLIPSIS}"),
+            toc_indices={0},
+            ignored_output_texts=[TOC_ELLIPSIS],
+        )
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1186,7 +1186,20 @@ def extract_docx_blocks(
     baseline_blocks = _assemble_blocks_legacy(records, None, shadow_meta)
     all_decisions = list(smart_result.decisions.values())
     i1_missing = _guards.verify_content_preservation(
-        records, smart_blocks, toc_indices=smart_result.toc_indices
+        records,
+        smart_blocks,
+        toc_indices=smart_result.toc_indices,
+        # Retained TOC body + the ellipsis are output lines that come from no
+        # record; subtract them so an injected copy can't mask a lost source
+        # line (§2.3 TOC retention).
+        ignored_output_texts=[
+            *smart_result.toc_kept_text.values(),
+            *(
+                [_guards.TOC_ELLIPSIS]
+                if smart_result.toc_ellipsis_anchor is not None
+                else []
+            ),
+        ],
     )
     i2_violations = _guards.verify_baseline_heading_retention(records, all_decisions)
     i3_violations = _guards.verify_anchor_semantics(all_decisions)
@@ -1212,11 +1225,23 @@ def extract_docx_blocks(
             parse_metadata.pop("doc_title", None)
         return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
 
-    # ``smart_toc_removed_paragraphs`` is a content claim, so it lands only
-    # now that the smart output is accepted — the CB4 skip and the guardrail
-    # fallback above both ship baseline output with the TOC intact.
-    if smart_result.toc_indices:
-        warnings_sink["smart_toc_removed_paragraphs"] = len(smart_result.toc_indices)
+    # These are content claims, so they land only now that the smart output is
+    # accepted — the CB4 skip and the guardrail fallback above both ship
+    # baseline output with the TOC intact. Line-level counts are exact (the keep
+    # budget is per visible line). ``smart_toc_removed_paragraphs`` keeps its
+    # name to ease migration but its meaning NARROWS to "fully-dropped visible
+    # TOC paragraphs" (a straddling, partly-kept record counts as kept, not
+    # removed); the precise removal count is ``smart_toc_removed_lines``. All
+    # three counts come from guardrails.plan_toc_output — the single visibility
+    # / disposition source — never re-derived here.
+    if smart_result.toc_removed_lines:
+        warnings_sink["smart_toc_removed_lines"] = smart_result.toc_removed_lines
+    if smart_result.toc_kept_lines:
+        warnings_sink["smart_toc_kept_lines"] = smart_result.toc_kept_lines
+    if smart_result.toc_fully_removed_paragraphs:
+        warnings_sink["smart_toc_removed_paragraphs"] = (
+            smart_result.toc_fully_removed_paragraphs
+        )
 
     audit = dict(smart_result.audit)
     audit["shadow_diff"] = _guards.shadow_baseline_diff(smart_blocks, baseline_blocks)
@@ -1235,15 +1260,24 @@ def _assemble_blocks_smart(
     """Smart (pass3) assembly: rebuild blocks from records + HeadingDecisions.
 
     Same state machine as the legacy assembler; the differences are exactly
-    the smart products — TOC paragraphs are dropped, a title block seeds a
-    level-0 block flagged ``is_title_block`` (heading = the plain main title)
-    that then OWNS the following body up to the next heading / title / EOF
-    (like an ordinary section heading owns its body), heading/level come from
-    the decisions (merged texts, demotions to ``full_text_raw``), and
-    ``parent_headings`` chains rebuild naturally from the final levels.
+    the smart products — a detected TOC keeps its first few visible lines as
+    body and collapses the rest to a single ``……`` (§2.3 TOC retention), a
+    title block seeds a level-0 block flagged ``is_title_block`` (heading = the
+    plain main title) that then OWNS the following body up to the next heading
+    / title / EOF (like an ordinary section heading owns its body),
+    heading/level come from the decisions (merged texts, demotions to
+    ``full_text_raw``), and ``parent_headings`` chains rebuild naturally from
+    the final levels.
     """
+    # Module-level function: ``_guards`` is a local of extract_docx_blocks and
+    # out of scope here, so import the shared ellipsis constant locally (mirrors
+    # the flatten_heading_line import below; keeps smart-off from loading it).
+    from .smart_heading.guardrails import TOC_ELLIPSIS
+
     decisions = smart_result.decisions
     toc_indices = smart_result.toc_indices
+    kept_toc_text = smart_result.toc_kept_text
+    toc_ellipsis_anchor = smart_result.toc_ellipsis_anchor
 
     # Non-lead members of every title block are emitted as part of their
     # lead record's composite block; their standalone rows must be skipped.
@@ -1292,6 +1326,19 @@ def _assemble_blocks_smart(
 
     for i, rec in enumerate(records):
         if i in toc_indices:
+            # §2.3 TOC retention: a TOC line is KEPT (first visible lines as
+            # body), the ellipsis anchor also emits one ``……``, and the rest
+            # are DROPPED. Every branch ``continue``s before any heading /
+            # title / table branch, so a retained line is never a heading.
+            kept = kept_toc_text.get(i)
+            if kept:
+                current_paragraphs.append(
+                    {"text": kept, "para_id": rec.para_id, "is_table": False}
+                )
+            if i == toc_ellipsis_anchor:
+                current_paragraphs.append(
+                    {"text": TOC_ELLIPSIS, "para_id": rec.para_id, "is_table": False}
+                )
             continue
         if i in title_member_skip:
             continue  # non-lead title-block member, emitted with the lead

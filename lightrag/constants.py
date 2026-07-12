@@ -191,6 +191,12 @@ DEFAULT_DOCX_SMART_IMPRINT_CLOSER_TRAILING = "印发"
 DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS = 3
 # Heuristic TOC evidence: at least this many consecutive dot-leader lines.
 DEFAULT_DOCX_SMART_TOC_MIN_LINES = 3
+# TOC retention: keep at most this many VISIBLE LINES of a detected TOC as body
+# (the rest collapse to a single "……") so a 目录 heading is not orphaned from
+# its entries. Counted globally by visible line (each soft-break line counts as
+# one). 0 keeps none (one "……" replaces the whole TOC); negatives clamp to 0;
+# a very large value keeps the entire TOC.
+DEFAULT_DOCX_SMART_TOC_KEEP_LINES = 5
 # CB1 heading-density ceiling (headings / non-empty paragraphs): the floor of
 # the effective threshold. The threshold is baseline-aware — a document with a
 # rich physical outline naturally admits more candidates, so the effective

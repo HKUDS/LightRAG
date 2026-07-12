@@ -633,11 +633,11 @@ def test_extreme_length_fallback_g9_4(monkeypatch, tmp_path) -> None:
     ]
 
 
-def test_toc_warning_only_on_accepted_smart_output(monkeypatch, tmp_path) -> None:
-    """``smart_toc_removed_paragraphs`` is a content claim: it lands exactly
-    when the smart output (which drops the TOC) ships, and never on the CB4
-    short-document skip, whose baseline output keeps the TOC. (The guardrail
-    fallback side is pinned by test_extreme_length_fallback_g9_4.)"""
+def test_toc_retention_short_toc_kept_as_body(monkeypatch, tmp_path) -> None:
+    """§2.3 TOC retention: a 3-line TOC (≤ the keep budget) is kept ENTIRELY as
+    body — no removal claim, no ellipsis, and none of its entries becomes a
+    heading. The CB4 short-document skip still ships baseline output (TOC
+    intact) with no content claims. (Fallback side: test_extreme_length_...)"""
     from docx import Document
 
     from lightrag.parser.docx.parse_document import extract_docx_blocks
@@ -659,12 +659,17 @@ def test_toc_warning_only_on_accepted_smart_output(monkeypatch, tmp_path) -> Non
         smart_heading_runtime=_Runtime(_make_llm({})),
     )
     assert "smart_fallback_baseline" not in warnings
-    assert warnings.get("smart_toc_removed_paragraphs") == 3
+    # 3 ≤ keep(5): all kept as body, nothing removed, no ellipsis.
+    assert "smart_toc_removed_paragraphs" not in warnings
+    assert "smart_toc_removed_lines" not in warnings
+    assert warnings.get("smart_toc_kept_lines") == 3
     joined = "\n".join(b["content"] for b in blocks)
-    assert "第一章 绪论" not in joined  # smart output dropped the TOC lines
+    assert "第一章 绪论" in joined  # retained as body, not dropped
+    assert "……" not in joined  # nothing elided → no ellipsis line
+    assert all(b["heading"] != "第一章 绪论............3" for b in blocks)
 
-    # CB4 skip on the same document: baseline output keeps the TOC, so the
-    # removal claim must not appear even though detection saw the TOC run.
+    # CB4 skip on the same document: baseline output keeps the TOC, so no
+    # content claim appears even though detection saw the TOC run.
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "100000")
     skip_warnings: dict = {}
     skip_blocks = extract_docx_blocks(
@@ -675,7 +680,48 @@ def test_toc_warning_only_on_accepted_smart_output(monkeypatch, tmp_path) -> Non
     )
     assert skip_warnings.get("smart_skipped_short_document") == 1
     assert "smart_toc_removed_paragraphs" not in skip_warnings
+    assert "smart_toc_kept_lines" not in skip_warnings
     assert "第一章 绪论" in "\n".join(b["content"] for b in skip_blocks)
+
+
+def test_toc_retention_long_toc_truncates_with_ellipsis(monkeypatch, tmp_path) -> None:
+    """A TOC longer than the keep budget keeps its first 5 lines as body under
+    the 目录 heading and collapses the tail to a single '……'; the removal claim
+    is line-accurate (5 kept, 3 removed lines, 3 fully-dropped paragraphs)."""
+    from docx import Document
+
+    from lightrag.parser.docx.parse_document import extract_docx_blocks
+
+    doc = Document()
+    _p(doc, "目录", size=16.0)
+    for i in range(8):
+        _p(doc, f"第{i + 1}章 标题............{i + 3}", size=12.0)
+    _body_filler(doc, 12)
+    path = tmp_path / "toc_long.docx"
+    doc.save(str(path))
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    warnings: dict = {}
+    blocks = extract_docx_blocks(
+        str(path),
+        parse_warnings=warnings,
+        parse_metadata={},
+        smart_heading_runtime=_Runtime(_make_llm({})),
+    )
+    assert "smart_fallback_baseline" not in warnings
+    assert warnings.get("smart_toc_kept_lines") == 5
+    assert warnings.get("smart_toc_removed_lines") == 3
+    assert warnings.get("smart_toc_removed_paragraphs") == 3
+    lines = [ln for b in blocks for ln in b["content"].split("\n")]
+    kept = [ln for ln in lines if ln.startswith("第") and "章 标题" in ln]
+    assert len(kept) == 5
+    assert any(ln.startswith("第1章") for ln in kept)
+    assert any(ln.startswith("第5章") for ln in kept)
+    assert not any(ln.startswith("第6章") for ln in lines)  # 6-8 elided
+    assert lines.count("……") == 1  # a single standalone ellipsis line
+    # retained entries land under the 目录 heading, not orphaned
+    toc_block = next(b for b in blocks if b["heading"] == "目录")
+    assert "……" in toc_block["content"]
 
 
 def test_mixed_document_keeps_one_title_root(monkeypatch, tmp_path) -> None:

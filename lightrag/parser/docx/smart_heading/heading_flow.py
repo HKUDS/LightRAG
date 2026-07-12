@@ -2418,13 +2418,24 @@ def clamp_deep_levels(
 
 @dataclass
 class SmartHeadingResult:
-    """Per-record decisions plus document-level artifacts for assembly."""
+    """Per-record decisions plus document-level artifacts for assembly.
+
+    ``toc_indices`` is the set excluded from the heading pipeline; some of those
+    lines are still re-emitted as body per ``toc_kept_text`` /
+    ``toc_ellipsis_anchor`` (§2.3 TOC retention), so the set is NOT the same as
+    "dropped from final output".
+    """
 
     decisions: dict[int, HeadingDecision]
     toc_indices: set[int]
     doc_title: str | None
     audit: dict
     fallback_sub_docs: int = 0
+    toc_kept_text: dict[int, str] = field(default_factory=dict)
+    toc_ellipsis_anchor: int | None = None
+    toc_kept_lines: int = 0
+    toc_removed_lines: int = 0
+    toc_fully_removed_paragraphs: int = 0
 
 
 def _estimate_record_tokens(records: Sequence[Any], indices: Sequence[int]) -> int:
@@ -2651,6 +2662,7 @@ def run_smart_heading(
     from lightrag.constants import (
         DEFAULT_DOCX_SMART_MIN_TOKENS,
         DEFAULT_DOCX_SMART_SUBDOC_MIN_TOKENS,
+        DEFAULT_DOCX_SMART_TOC_KEEP_LINES,
     )
 
     from . import guardrails as g
@@ -2691,6 +2703,19 @@ def run_smart_heading(
     audit["toc_removed"] = g.toc_audit_entries(records, toc_indices)
     if toc_events:
         audit["rule_events"].extend(toc_events)
+
+    # §2.3 TOC retention: keep the first DOCX_SMART_TOC_KEEP_LINES visible TOC
+    # lines as body (the rest collapse to one "……") so a 目录 heading is not
+    # orphaned from its entries. This is output-only — toc_indices stays the
+    # full heading-pipeline exclusion set below.
+    keep_lines = _env_int(
+        "DOCX_SMART_TOC_KEEP_LINES", DEFAULT_DOCX_SMART_TOC_KEEP_LINES
+    )
+    toc_plan = g.plan_toc_output(records, toc_indices, keep_lines=keep_lines)
+    audit["toc_kept"] = sorted(toc_plan.kept_text)
+    audit["toc_ellipsis_anchor"] = toc_plan.ellipsis_anchor
+    audit["toc_kept_lines"] = toc_plan.kept_lines
+    audit["toc_removed_lines"] = toc_plan.removed_lines
 
     body_indices = [
         i
@@ -3017,8 +3042,10 @@ def run_smart_heading(
         _merge_ledger_only(decisions, gate, warnings)
 
     # Sentinel decisions so the I2 retention check can tell a rule-tagged
-    # absence from a silent drop: TOC-removed and title-block-member
-    # paragraphs are legitimate non-headings.
+    # absence from a silent drop: TOC and title-block-member paragraphs are
+    # legitimate non-headings. The "toc_removed" tag means "excluded from the
+    # heading pipeline" — NOT "dropped from output": some TOC lines are still
+    # re-emitted as body (§2.3 TOC retention), but none is ever a heading.
     for i in toc_indices:
         if i not in decisions:
             sentinel = HeadingDecision(record_index=i, text="")
@@ -3083,4 +3110,9 @@ def run_smart_heading(
         doc_title=doc_title,
         audit=audit,
         fallback_sub_docs=fallback_subs,
+        toc_kept_text=toc_plan.kept_text,
+        toc_ellipsis_anchor=toc_plan.ellipsis_anchor,
+        toc_kept_lines=toc_plan.kept_lines,
+        toc_removed_lines=toc_plan.removed_lines,
+        toc_fully_removed_paragraphs=toc_plan.fully_removed_records,
     )

@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from lightrag.constants import (
@@ -540,6 +541,11 @@ _TOC_ANCHOR_MAX_LONG_PARAS_BEFORE = 3
 # The TOC's max font size is established from this many leading members; a later
 # member strictly larger than that ends the run (the body's first heading).
 _TOC_SIZE_PROBE_MEMBERS = 3
+# Placeholder marking the elided tail of a retained TOC (§2.3 TOC retention).
+# Shared by the assembler (emits it as a body line) and I1 (subtracts it from
+# the output multiset): a single source-of-truth prevents the two from drifting
+# apart, which would silently defeat the I1 subtraction.
+TOC_ELLIPSIS = "……"
 
 
 def canonicalize_paragraph_text(text: str) -> str:
@@ -555,8 +561,12 @@ def canonicalize_paragraph_text(text: str) -> str:
     return re.sub(r"\s+", "", stripped)
 
 
+def _visible_text_lines(text: str | None) -> list[str]:
+    return [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+
+
 def _visible_lines(rec: Any) -> list[str]:
-    return [ln.strip() for ln in (rec.text or "").split("\n") if ln.strip()]
+    return _visible_text_lines(rec.text)
 
 
 def _detect_plain_numbered_toc(
@@ -729,8 +739,90 @@ def detect_toc_records(records: Sequence[Any]) -> tuple[set[int], list[dict]]:
     return toc, events
 
 
+@dataclass(frozen=True)
+class TocOutputPlan:
+    """How a detected TOC is rendered into body output (§2.3 TOC retention).
+
+    ``toc_indices`` stays the full heading-pipeline exclusion set; this plan
+    only decides which of those excluded lines are nonetheless re-emitted as
+    body, so a 目录 heading keeps a few of its entries instead of being
+    orphaned. Budget is counted in VISIBLE LINES (soft-break lines count
+    individually), matching DOCX_SMART_TOC_KEEP_LINES.
+    """
+
+    kept_text: dict[
+        int, str
+    ]  # record index -> body text (its first kept visible lines)
+    ellipsis_anchor: (
+        int | None
+    )  # emit one TOC_ELLIPSIS body line after this record; None = nothing elided
+    kept_lines: int  # visible lines retained as body
+    removed_lines: int  # visible lines elided (straddle tails + demoted_body_text)
+    fully_removed_records: int  # records with visible text and NOTHING kept
+
+
+def plan_toc_output(
+    records: Sequence[Any], toc_indices: set[int], *, keep_lines: int
+) -> TocOutputPlan:
+    """Decide which leading TOC lines to keep as body and where the single
+    ``TOC_ELLIPSIS`` marker goes; count the line-level keep/drop.
+
+    Pure over ``(records, toc_indices, keep_lines)`` — the env read lives in
+    the caller (``run_smart_heading``), so this stays trivially unit-testable
+    with an explicit budget. Records absent from ``kept_text`` are dropped
+    whole; a straddling record (one crossing the budget boundary) keeps its
+    first lines and counts the remainder in ``removed_lines``. Invisible
+    (whitespace-only) TOC records are skipped entirely — neither kept nor
+    counted nor eligible as the ellipsis anchor. A record's
+    ``demoted_body_text`` tail (oversize soft-break remainder from the read
+    pass) is never re-emitted by the TOC branch, so its visible lines always
+    count as removed — an elided tail alone still raises the ellipsis.
+
+    This is the single source for every disposition count the caller reports
+    (``fully_removed_records`` included) — keep any new count here rather than
+    re-deriving it at a call site, or the visibility definitions drift.
+    """
+    ordered = [i for i in sorted(toc_indices) if records[i].kind == "para"]
+    kept_text: dict[int, str] = {}
+    remaining = max(0, keep_lines)
+    kept_lines = 0
+    removed_lines = 0
+    fully_removed = 0
+    last_kept: int | None = None
+    first_visible: int | None = None
+    for i in ordered:
+        removed_lines += len(_visible_text_lines(records[i].demoted_body_text))
+        lines = _visible_lines(records[i])
+        if not lines:
+            continue
+        if first_visible is None:
+            first_visible = i
+        if remaining <= 0:
+            removed_lines += len(lines)
+            fully_removed += 1
+            continue
+        take = min(len(lines), remaining)
+        kept_text[i] = "\n".join(lines[:take])
+        kept_lines += take
+        removed_lines += len(lines) - take
+        last_kept = i
+        remaining -= take
+    if removed_lines > 0:
+        ellipsis_anchor = last_kept if last_kept is not None else first_visible
+    else:
+        ellipsis_anchor = None
+    return TocOutputPlan(
+        kept_text, ellipsis_anchor, kept_lines, removed_lines, fully_removed
+    )
+
+
 def toc_audit_entries(records: Sequence[Any], toc_indices: set[int]) -> list[dict]:
-    """Audit rows for removed TOC paragraphs (count + text hash, §2.3.5)."""
+    """Audit rows for detected TOC paragraphs (count + text hash, §2.3.5).
+
+    Legacy-named: since TOC retention (§2.3) these indices are the DETECTED
+    TOC records, some of which may be re-emitted as body (see
+    :func:`plan_toc_output`) — they are no longer all "removed".
+    """
     import hashlib
 
     entries = []
@@ -750,6 +842,7 @@ def verify_content_preservation(
     blocks: Sequence[dict],
     *,
     toc_indices: set[int] = frozenset(),
+    ignored_output_texts: Sequence[str] = (),
 ) -> list[str]:
     """I1 multiset check: every pass1-read paragraph's text must appear in
     the union of the output blocks' content∪heading. Returns the canonical
@@ -761,8 +854,14 @@ def verify_content_preservation(
     order, each consumed at most once (covers §2.2.7 heading merges).
     One-directional substring containment is not accepted: it would let a
     genuinely lost short paragraph hide inside an unrelated longer line.
-    Only the TOC whitelist (indices from the two-channel judgment) may be
+    Only the TOC whitelist (indices from the three-channel judgment) may be
     absent entirely.
+
+    ``ignored_output_texts`` are output lines this call injected that do NOT
+    come from any record (retained TOC lines + the ``TOC_ELLIPSIS`` marker);
+    they are subtracted from the output multiset before matching so an injected
+    copy cannot mask a genuinely lost source line (a leaderless TOC entry can
+    canonicalize identically to its body heading).
 
     Source paragraphs are split on ``\n`` before canonicalizing so a body
     paragraph carrying soft breaks (``w:br`` → ``"\n"``, emitted verbatim as
@@ -790,6 +889,15 @@ def verify_content_preservation(
             canon = canonicalize_paragraph_text(line)
             if canon:
                 out_lines[canon] = out_lines.get(canon, 0) + 1
+
+    # Subtract the lines this call injected (retained TOC body + the ellipsis)
+    # at the same \n-split granularity as out_lines, so an injected copy cannot
+    # satisfy a source line the assembler actually lost.
+    for text in ignored_output_texts:
+        for line in (text or "").split("\n"):
+            canon = canonicalize_paragraph_text(line)
+            if canon and out_lines.get(canon, 0) > 0:
+                out_lines[canon] -= 1
 
     missing: list[str] = []
     leftovers_src: list[str] = []

@@ -55,6 +55,17 @@ def _stub_no_caption(_t) -> str | None:
     return None
 
 
+def _no_title_llm(prompt: str, *, system_prompt: str | None = None) -> str:
+    """Deterministic judge that says 'not a title block, everything is body'."""
+    import json
+    import re
+
+    ids = [int(m) for m in re.findall(r"^\[(\d+)\]", prompt, re.M)]
+    return json.dumps(
+        {"is_title_block": False, "headings": [], "body": ids}, ensure_ascii=False
+    )
+
+
 def _gate(records, *, fs_base=None, **kw):
     indices = list(range(len(records)))
     fs = fs_base or document_fs_base(records, indices)
@@ -1836,6 +1847,135 @@ def test_assembler_doc_title_empty_without_title_block() -> None:
     _assemble_blocks_smart(records, result, {}, meta)
     assert meta["doc_title"] == ""
     assert meta["first_heading"] == "前言"
+
+
+def test_assembler_toc_retention_keeps_first_lines_as_body() -> None:
+    """§2.3 TOC retention: the first N TOC lines are emitted as body under the
+    目录 heading, the rest collapse to a single '……', and NO retained line is
+    ever a heading (the toc_indices branch continues before any heading path)."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.guardrails import TOC_ELLIPSIS
+    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+
+    entries = [
+        "第一章 绪论……3",
+        "第二章 方法……12",
+        "第三章 实验……25",
+        "第四章 结果……40",
+        "第五章 讨论……55",
+        "第六章 结论……70",
+        "参考文献……80",
+        "附录……90",
+    ]
+    records = [_para("目录")]
+    records += [_para(t) for t in entries]  # records[1..8]
+    records.append(_para("这是正文第一段，跟在目录后面。"))
+    toc_indices = set(range(1, 9))
+
+    def _sentinel(i: int) -> HeadingDecision:
+        d = HeadingDecision(record_index=i, text="")
+        d.note("toc_removed")
+        return d
+
+    result = SmartHeadingResult(
+        decisions={
+            0: HeadingDecision(record_index=0, text="目录", is_heading=True, level=1),
+            **{i: _sentinel(i) for i in range(1, 9)},
+        },
+        toc_indices=toc_indices,
+        doc_title=None,
+        audit={},
+        toc_kept_text={i: records[i].text for i in range(1, 6)},  # first 5
+        toc_ellipsis_anchor=5,
+        toc_kept_lines=5,
+        toc_removed_lines=3,
+    )
+
+    blocks = _assemble_blocks_smart(records, result, {}, {})
+    lines = [ln for b in blocks for ln in b["content"].split("\n")]
+
+    # first 5 entries survive as body lines (verbatim, dot leaders + page nos)
+    for i in range(1, 6):
+        assert records[i].text in lines
+    # entries 6-8 are dropped
+    for i in range(6, 9):
+        assert records[i].text not in lines
+    # exactly one standalone ellipsis line, right after the last kept entry
+    assert lines.count(TOC_ELLIPSIS) == 1
+    assert lines.index(TOC_ELLIPSIS) == lines.index(records[5].text) + 1
+    # never a heading: no block heading equals a TOC entry, no kept line is
+    # rendered with a markdown heading prefix, and each sentinel is non-heading
+    assert not ({b["heading"] for b in blocks} & set(entries))
+    assert not any(ln.startswith("# 第") for ln in lines)
+    for i in range(1, 6):
+        assert result.decisions[i].is_heading is False
+    # the retained entries land under the 目录 section, not orphaned
+    toc_block = next(b for b in blocks if b["heading"] == "目录")
+    assert "第一章 绪论……3" in toc_block["content"]
+    assert "这是正文第一段，跟在目录后面。" in toc_block["content"]
+
+
+def _run_toc(records, monkeypatch):
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    monkeypatch.setenv("DOCX_SMART_SUBDOC_MIN_TOKENS", "10")
+    return run_smart_heading(
+        records,
+        llm_judge=_no_title_llm,
+        warnings={},
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+
+
+def test_toc_keep_lines_env_wiring(monkeypatch) -> None:
+    """DOCX_SMART_TOC_KEEP_LINES must be read through run_smart_heading (not
+    just the pure planner): default when unset, _env_int fallback on garbage,
+    negative clamps to 0, huge keeps all. Eight one-line dot-leader TOC paras."""
+    records = [_para(f"第{i}章 标题............{i}", size=12.0) for i in range(8)]
+    records += _body(20, size=12.0)
+
+    monkeypatch.delenv("DOCX_SMART_TOC_KEEP_LINES", raising=False)
+    r = _run_toc(records, monkeypatch)
+    assert r is not None and r.toc_indices == set(range(8))
+    assert (r.toc_kept_lines, r.toc_removed_lines) == (5, 3)  # unset → default 5
+
+    monkeypatch.setenv("DOCX_SMART_TOC_KEEP_LINES", "2")
+    r = _run_toc(records, monkeypatch)
+    assert (r.toc_kept_lines, r.toc_removed_lines) == (2, 6)
+
+    monkeypatch.setenv("DOCX_SMART_TOC_KEEP_LINES", "not-an-int")
+    r = _run_toc(records, monkeypatch)
+    assert r.toc_kept_lines == 5  # _env_int falls back to the default
+
+    monkeypatch.setenv("DOCX_SMART_TOC_KEEP_LINES", "-3")
+    r = _run_toc(records, monkeypatch)
+    assert (r.toc_kept_lines, r.toc_removed_lines) == (0, 8)  # clamped to 0
+
+    monkeypatch.setenv("DOCX_SMART_TOC_KEEP_LINES", "9999")
+    r = _run_toc(records, monkeypatch)
+    assert (r.toc_kept_lines, r.toc_removed_lines) == (8, 0)
+    assert r.toc_ellipsis_anchor is None  # nothing elided
+
+
+def test_toc_retention_straddling_paragraph_line_accurate(monkeypatch) -> None:
+    """A single paragraph carrying 8 soft-break (\\n) dot-leader lines, keep 5:
+    the record keeps its first 5 lines and the 3-line tail counts as removed —
+    proving the budget/warning are per visible LINE, not per record."""
+    toc_para = _para(
+        "\n".join(f"第{i}章 标题............{i}" for i in range(8)), size=12.0
+    )
+    records = [toc_para] + _body(20, size=12.0)
+
+    monkeypatch.delenv("DOCX_SMART_TOC_KEEP_LINES", raising=False)  # default 5
+    r = _run_toc(records, monkeypatch)
+    assert r is not None and r.toc_indices == {0}
+    assert (r.toc_kept_lines, r.toc_removed_lines) == (5, 3)
+    assert r.toc_ellipsis_anchor == 0  # the straddling record itself
+    kept = r.toc_kept_text[0].split("\n")
+    assert len(kept) == 5 and kept[0] == "第0章 标题............0"
 
 
 def test_title_block_judge_receives_fs_base(monkeypatch) -> None:
