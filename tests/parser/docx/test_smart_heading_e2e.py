@@ -297,24 +297,29 @@ def _baseline(name: str):
 # ---------------------------------------------------------------------------
 
 _REDHEAD_TITLE = {
-    "某某市人民政府文件": {
+    # Red-header: the masthead 某某市人民政府文件 is the largest line but names
+    # the issuing agency — it belongs in "publisher"; the real (smaller) title
+    # line is the main title (the masthead clause steers the judge here).
+    "关于加强某某管理的通知": {
         "is_title_block": True,
-        "main_title": "某某市人民政府文件",
-        "sub_title": "关于加强某某管理的通知",
+        "main_title": "关于加强某某管理的通知",
         "doc_number": "某政发〔2026〕5号",
+        "publisher": "某某市人民政府文件",
     }
 }
 
 
 def test_redhead_document_structure(monkeypatch) -> None:
-    """G11-1: title block + 一、/（一） hierarchy."""
+    """G11-1: title block + 一、/（一） hierarchy.
+
+    Red-header masthead → publisher; the block heading is the plain main title
+    (doc-number / publisher ride the composed heading, not the block heading).
+    """
     blocks, warnings, metadata = _extract(
         "redhead", _make_llm(_REDHEAD_TITLE), monkeypatch
     )
     summary = _summary(blocks)
-    # heading is the plain main title now (subtitle / doc-number live in the
-    # block content); the sub-heading parent chain below still references it.
-    assert summary[0] == ("某某市人民政府文件", 0, True)
+    assert summary[0] == ("关于加强某某管理的通知", 0, True)
     by_heading = {h: (lv, tb) for h, lv, tb in summary}
     assert by_heading["一、总体要求"] == (1, False)
     assert by_heading["二、工作重点"] == (1, False)
@@ -322,9 +327,9 @@ def test_redhead_document_structure(monkeypatch) -> None:
     assert by_heading["（二）加强领导"] == (2, False)
     # parent chains: （一） under 一、 under the main title
     sub = next(b for b in blocks if b["heading"] == "（一）提高认识")
-    assert sub["parent_headings"] == ["某某市人民政府文件", "一、总体要求"]
-    assert metadata["first_heading"] == "某某市人民政府文件"
-    assert metadata["doc_title"] == "某某市人民政府文件"
+    assert sub["parent_headings"] == ["关于加强某某管理的通知", "一、总体要求"]
+    assert metadata["first_heading"] == "关于加强某某管理的通知"
+    assert metadata["doc_title"] == "关于加强某某管理的通知"
 
 
 def test_regulation_chapters_and_clauses(monkeypatch) -> None:

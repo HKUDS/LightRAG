@@ -1185,9 +1185,214 @@ def test_table_window_legend_tiers_largest_over_enlarged() -> None:
     prompt = _prompt_for(records, candidate, fs_base_pt=12.0)
     # Window lines: [0] 档 号, [1] 版 本 号, [2] 1V1.0.0, [3] 产品标准化大纲,
     # [4] 某某模块, [5] 某某电子股份有限公司, [6] 更 改 记 录.
-    assert "Font-size evidence — largest lines: [3]=22pt, [4]=22pt" in prompt
-    assert "other enlarged lines: [5]=16pt, [6]=16pt" in prompt
+    assert "Font-size evidence — largest tier: [3]=22pt, [4]=22pt" in prompt
+    assert "second tier: [5]=16pt, [6]=16pt" in prompt
     assert "(body ≈ 12pt)" in prompt
+
+
+def test_dominance_legend_three_tiers() -> None:
+    """Three distinct enlarged sizes split into largest / second / other."""
+    records = [
+        _table([[("最大标题", 22.0, False)]]),
+        _table([[("第二大行", 16.0, False)]]),
+        _table([[("第三档行", 14.0, False)]]),
+    ]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=3,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2),
+    )
+    prompt = _prompt_for(records, cand, fs_base_pt=12.0)
+    assert "Font-size evidence — largest tier: [0]=22pt" in prompt
+    assert "second tier: [1]=16pt" in prompt
+    assert "other enlarged: [2]=14pt" in prompt
+    assert "two largest tiers" in prompt
+
+
+def test_table_window_separators_isolate_each_frame() -> None:
+    """Each member table renders as its own region, delimited by an unindexed
+    separator, so the title frame stands alone (the M1212 fix). Indices stay
+    global/contiguous over emitted cells; separators carry no index and never
+    enter the canon."""
+    from lightrag.parser.docx.smart_heading.title_block import (
+        _TABLE_REGION_SEPARATOR,
+        _render_table_window,
+    )
+
+    records = [
+        _table([[("档 号", 12.0, False)], [("版 本 号", 12.0, False)]]),
+        _table([[("M1212(ML001) 模块", 22.0, False)], [("标准化大纲", 22.0, False)]]),
+        _table([[("长沙电子股份有限公司", 16.0, False)]]),
+    ]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=3,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2),
+    )
+    window, members, canon, sizes, separated = _render_table_window(records, cand, {})
+    assert separated is True
+    assert window.count(_TABLE_REGION_SEPARATOR) == 2  # three frames, two gaps
+    # the title cells sit alone between two separators
+    assert "----------\n[2] M1212(ML001) 模块\n[3] 标准化大纲\n----------" in window
+    assert len(sizes) == 5  # 档号,版本号,标题,副标题,机关 — separators unindexed
+    assert not window.endswith(_TABLE_REGION_SEPARATOR)  # never dangling
+    assert _TABLE_REGION_SEPARATOR not in canon
+    # {indices} the LLM must classify counts emitted CELLS only (0..4), not the
+    # raw 7 lines — pre-fix splitlines() would have inflated to 0..6.
+    prompt = _prompt_for(records, cand, fs_base_pt=12.0)
+    assert "— 0, 1, 2, 3, 4 —" in prompt
+    assert "0, 1, 2, 3, 4, 5" not in prompt
+
+
+def test_table_window_pure_image_gap_yields_one_separator() -> None:
+    """table → pure-<drawing/> paragraph → table: the image renders nothing,
+    yet the two text tables keep EXACTLY ONE boundary (pending-boundary state
+    machine, not a naive adjacent-region check that would drop it)."""
+    from lightrag.parser.docx.smart_heading.title_block import (
+        _TABLE_REGION_SEPARATOR,
+        _render_table_window,
+    )
+
+    records = [
+        _table([[("甲表内容", 12.0, False)]]),
+        _para('<drawing id="1" name="印章"/>', size=12.0),  # renders no line
+        _table([[("乙表内容", 12.0, False)]]),
+    ]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=3,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2),
+    )
+    window, members, canon, sizes, separated = _render_table_window(records, cand, {})
+    assert window.count(_TABLE_REGION_SEPARATOR) == 1
+    assert len(sizes) == 2  # only the two table cells are indexed
+    assert list(members) == [0, 1, 2]  # image paragraph stays a member
+
+
+def test_table_window_consecutive_paras_share_one_region() -> None:
+    """A run of consecutive absorbed paragraphs is ONE frame (inter-table text
+    flow): only the table↔paragraph transition opens a boundary, so no
+    separator falls between the two paragraphs."""
+    from lightrag.parser.docx.smart_heading.title_block import (
+        _TABLE_REGION_SEPARATOR,
+        _render_table_window,
+    )
+
+    records = [
+        _table([[("表格行", 12.0, False)]]),
+        _para("封面材料段一", size=12.0),
+        _para("封面材料段二", size=12.0),
+    ]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=3,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1, 2),
+    )
+    window, _members, _canon, _sizes, _sep = _render_table_window(records, cand, {})
+    assert window.count(_TABLE_REGION_SEPARATOR) == 1  # table -> para-run only
+    assert "[1] 封面材料段一\n[2] 封面材料段二" in window  # paras not separated
+
+
+def test_table_window_single_table_no_separator_no_note() -> None:
+    """A single-table window carries neither a separator nor the layout note —
+    it reads exactly as before the region change."""
+    from lightrag.parser.docx.smart_heading.title_block import (
+        _TABLE_LAYOUT_NOTE,
+        _TABLE_REGION_SEPARATOR,
+        _render_table_window,
+    )
+
+    records = [_table([[("某某公司管理办法", 22.0, False)]])]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=1,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0,),
+    )
+    window, _m, _c, _s, separated = _render_table_window(records, cand, {})
+    assert separated is False
+    assert _TABLE_REGION_SEPARATOR not in window
+    assert _TABLE_LAYOUT_NOTE not in _prompt_for(records, cand, fs_base_pt=12.0)
+
+
+def test_table_window_layout_note_only_when_separated() -> None:
+    """The frame-layout note precedes the font-size legend, and only when the
+    window actually carries a separator."""
+    from lightrag.parser.docx.smart_heading.title_block import _TABLE_LAYOUT_NOTE
+
+    records = [
+        _table([[("档 号", 12.0, False)]]),
+        _table([[("某某白皮书", 22.0, False)]]),
+    ]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=2,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1),
+    )
+    prompt = _prompt_for(records, cand, fs_base_pt=12.0)
+    assert _TABLE_LAYOUT_NOTE in prompt
+    assert prompt.index(_TABLE_LAYOUT_NOTE) < prompt.index("Font-size evidence")
+
+
+def test_table_window_truncation_at_boundary_drops_separator_whole() -> None:
+    """A cap hit at a region boundary drops the separator AND its following
+    line together — never a dangling separator; the index count stays equal to
+    the emitted-cell count and the canon is separator-free."""
+    from lightrag.parser.docx.smart_heading.title_block import (
+        _TABLE_REGION_SEPARATOR,
+        _render_table_window,
+    )
+
+    records = [
+        _table([[("甲", 12.0, False)]]),
+        _table([[("乙表内容较长足以触发截断的一行文本", 12.0, False)]]),
+    ]
+    cand = TitleBlockCandidate(
+        start=0,
+        end=2,
+        single=False,
+        trigger="table_window",
+        table=True,
+        members=(0, 1),
+    )
+    monkey_cap = "5"
+    import os
+
+    prev = os.environ.get("DOCX_SMART_LLM_WINDOW_TOKENS")
+    os.environ["DOCX_SMART_LLM_WINDOW_TOKENS"] = monkey_cap
+    try:
+        warnings: dict = {}
+        window, _m, canon, sizes, separated = _render_table_window(
+            records, cand, warnings
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("DOCX_SMART_LLM_WINDOW_TOKENS", None)
+        else:
+            os.environ["DOCX_SMART_LLM_WINDOW_TOKENS"] = prev
+    assert separated is False  # boundary dropped whole with its line
+    assert _TABLE_REGION_SEPARATOR not in window
+    assert not window.endswith(_TABLE_REGION_SEPARATOR)
+    assert len(window.splitlines()) == len(sizes) == 1  # only 甲 survived
+    assert _TABLE_REGION_SEPARATOR not in canon
+    assert warnings.get("title_block_window_truncated") == 1
 
 
 def test_paragraph_window_legend_uses_indexed_lines() -> None:
@@ -1203,9 +1408,9 @@ def test_paragraph_window_legend_uses_indexed_lines() -> None:
         start=0, end=4, single=False, trigger="multi_window"
     )
     prompt = _prompt_for(records, candidate, fs_base_pt=12.0)
-    assert "Font-size evidence — largest lines: [0]=22pt" in prompt
+    assert "Font-size evidence — largest tier: [0]=22pt" in prompt
     # record 3 renders as indexed line [2] (the blank row shifts raw rows).
-    assert "other enlarged lines: [2]=16pt" in prompt
+    assert "second tier: [2]=16pt" in prompt
 
 
 def test_legend_absent_without_fs_base_or_dominant_line() -> None:
@@ -1239,7 +1444,7 @@ def test_single_window_legend_covers_only_the_candidate_line() -> None:
         fs_base_pt=12.0,
         payload={"is_title_block": True, "main_title": "独立主标题"},
     )
-    assert "Font-size evidence — largest lines: [1]=18pt" in prompt
+    assert "Font-size evidence — largest tier: [1]=18pt" in prompt
     assert "26pt" not in prompt  # the context line carries no evidence
 
 
@@ -1260,7 +1465,7 @@ def test_legend_skips_truncated_lines(monkeypatch) -> None:
         fs_base_pt=12.0,
         payload={"is_title_block": True, "main_title": records[0].text},
     )
-    assert "largest lines: [0]=22pt" in prompt
+    assert "largest tier: [0]=22pt" in prompt
     assert "[1]" not in prompt  # neither as window line nor in the legend
 
 
@@ -1287,10 +1492,17 @@ def test_prompt_front_matter_negative_list() -> None:
         "Revision History",
         "ignoring whitespace between Chinese characters",
         "更改记录管理规范",
+        # org-name is a last-resort title (not banned — 机构简介 covers exist)
+        "LAST-RESORT main_title",
+        # red-header masthead (发文机关…文件) belongs in publisher, not title
+        "red-header masthead",
     ):
         assert needle in _USER_TEMPLATE, needle
-    # The verdict-level system prompt must stay list-free (see above).
+    # These selection constraints live in the field rule, never the verdict
+    # level (a verdict-level phrasing flips genuine covers — see above).
     assert "更改记录" not in _SYSTEM_PROMPT
+    assert "LAST-RESORT" not in _SYSTEM_PROMPT
+    assert "masthead" not in _SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------

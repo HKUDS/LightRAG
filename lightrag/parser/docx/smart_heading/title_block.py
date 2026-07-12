@@ -1028,7 +1028,7 @@ _USER_TEMPLATE = """Paragraphs (indexed; [BLANK] marks an empty line in the orig
 
 {dominance}Rules:
 - First decide "is_title_block".
-- If true: fill "main_title" (required; NEVER a front-matter/bookkeeping heading — 目录 / 目次 / 更改记录 / 修订记录 / 修改记录 / 变更记录 / 版本记录 / 更改页 / 修订页 / 前言 / 引言 / 摘要 / 编制说明, or English equivalents like Contents / Table of Contents / Revision History / Change Record / Change Log / Document History / Foreword / Abstract, case-insensitive, ignoring whitespace between Chinese characters; a longer title merely containing such a word, e.g. 更改记录管理规范, is acceptable) plus any of "sub_title" / "doc_number" / "classification" / "publisher" / "date" that are present — each must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs); use null for absent fields, and set "headings" and "body" to [].
+- If true: fill "main_title" (required; NEVER a front-matter/bookkeeping heading — 目录 / 目次 / 更改记录 / 修订记录 / 修改记录 / 变更记录 / 版本记录 / 更改页 / 修订页 / 前言 / 引言 / 摘要 / 编制说明, or English equivalents like Contents / Table of Contents / Revision History / Change Record / Change Log / Document History / Foreword / Abstract, case-insensitive, ignoring whitespace between Chinese characters; a longer title merely containing such a word, e.g. 更改记录管理规范, is acceptable; an organization/company/agency name is a LAST-RESORT main_title — prefer any other suitable line from the largest font tiers; but when the enlarged lines offer no better candidate, the organization name IS the main title and the window IS a title block (an organization line accompanying a real title belongs in "publisher" instead); NEVER a red-header masthead line (an issuing-agency line ending with 文件, e.g. 某某市人民政府文件) — it names the issuing organization and belongs in "publisher") plus any of "sub_title" / "doc_number" / "classification" / "publisher" / "date" that are present — each must be verbatim text taken from the paragraphs above (the main title may concatenate consecutive paragraphs); use null for absent fields, and set "headings" and "body" to [].
 - If false: set all six text fields to null, and classify EVERY index — {indices} — into exactly one of "headings" (a real section heading, e.g. 前言 / 第一章 / 目录 / 更改记录) or "body" (everything else; document numbers, dates and publisher lines are NOT headings — put them in "body"). Each index must appear in exactly one of the two arrays, as an integer (not a string).
 
 Respond with JSON matching:
@@ -1042,40 +1042,44 @@ def _dominance_legend(
 
     ``line_sizes[k]`` is the effective size of prompt line ``[k]`` — ONLY
     lines actually emitted have an entry, so a token-truncated line can never
-    appear in the legend. Lines at the title tier (FS_base + 2pt, the same
-    bar the candidate gates use) are listed, tiered so the LARGEST size —
-    the cue a human uses to spot the cover title — reads stronger than
-    merely-enlarged lines (e.g. an absorbed next-page section heading).
-    Rendered as a standalone line, never inside the indexed text lines, so
-    locate-back canons and verbatim echoes are untouched. Empty when no
-    baseline or no dominant line — the prompt is then byte-identical to the
-    pre-evidence form.
+    appear in the legend. Enlarged lines (≥ FS_base + 2pt, the same bar the
+    candidate gates use) are grouped into THREE tiers by distinct font size
+    — the largest tier, the second-largest tier, and everything else — so
+    the LARGEST sizes (the cue a human uses to spot the cover title) read
+    stronger than merely-enlarged lines (e.g. an absorbed next-page section
+    heading), and the legend tells the LLM the title normally sits in the two
+    largest tiers. Rendered as a standalone line, never inside the indexed
+    text lines, so locate-back canons and verbatim echoes are untouched.
+    Empty when no baseline or no enlarged line — the prompt is then
+    byte-identical to the pre-evidence form.
     """
     if fs_base_pt is None:
         return ""
-    dominant = [
+    enlarged = [
         (k, s)
         for k, s in enumerate(line_sizes)
         if s is not None and s >= fs_base_pt + MULTI_WINDOW_TITLE_DELTA_PT
     ]
-    if not dominant:
+    if not enlarged:
         return ""
-    top = max(s for _, s in dominant)
+    # Distinct sizes, largest first: tier[0] = largest, tier[1] = second.
+    tiers = sorted({s for _, s in enlarged}, reverse=True)
 
     def _fmt(items: list[tuple[int, float]]) -> str:
         return ", ".join(f"[{k}]={s:g}pt" for k, s in items)
 
-    legend = "Font-size evidence — largest lines: " + _fmt(
-        [(k, s) for k, s in dominant if s == top]
+    parts = ["largest tier: " + _fmt([p for p in enlarged if p[1] == tiers[0]])]
+    if len(tiers) > 1:
+        parts.append("second tier: " + _fmt([p for p in enlarged if p[1] == tiers[1]]))
+    rest = [p for p in enlarged if p[1] not in tiers[:2]]
+    if rest:
+        parts.append("other enlarged: " + _fmt(rest))
+    return (
+        "Font-size evidence — "
+        + "; ".join(parts)
+        + f" (body ≈ {fs_base_pt:g}pt). The main title is normally found "
+        "among the two largest tiers."
     )
-    others = [(k, s) for k, s in dominant if s != top]
-    if others:
-        legend += "; other enlarged lines: " + _fmt(others)
-    legend += (
-        f" (body ≈ {fs_base_pt:g}pt). The visually largest lines are "
-        "likely title-bearing if the window is a cover title block."
-    )
-    return legend
 
 
 def _render_window(
@@ -1173,23 +1177,51 @@ def _render_window(
     return "\n".join(lines), index_map, image_paras
 
 
+#: Standalone marker line delimiting physically distinct tables/frames in the
+#: table-channel window (§2.2.4). Carries NO index and never enters
+#: ``line_sizes``/``canon_parts`` — it is a layout cue for the LLM only, so the
+#: indexed cell numbering, the font-size legend and locate-back stay unchanged.
+_TABLE_REGION_SEPARATOR = "----------"
+
+#: Injected before the font-size legend when (and only when) the table window
+#: actually carries a separator, so the LLM reads the dashed lines as frame
+#: boundaries. Wording is A/B-validated (weak + production models); do not
+#: paraphrase without re-running the probes.
+_TABLE_LAYOUT_NOTE = (
+    f"A dashed line ({_TABLE_REGION_SEPARATOR}) separates physically distinct "
+    "tables/text frames on the page — the lines between two dashed lines "
+    "belong to one table or frame. A document's own main title is typically a "
+    "frame of its own set in the largest font, distinct from surrounding "
+    "metadata/form frames (archive numbers, signatures, dates). Judge the "
+    "title block from the frame layout together with the font-size evidence — "
+    "do not rely on font size alone."
+)
+
+
 def _render_table_window(
     records: Sequence[Any], candidate: TitleBlockCandidate, warnings: dict | None
-) -> tuple[str, list[int], str, list[float | None]]:
+) -> tuple[str, list[int], str, list[float | None], bool]:
     """Render a TABLE candidate window for the LLM (§2.2.4 table channel).
 
     One indexed line per non-empty PHYSICAL cell, row by row across the
     member tables — plus one line per absorbed cover-material paragraph (its
     whole text: a mixed cover may carry the MAIN TITLE in a paragraph, so it
-    must reach the LLM window and the locate-back canon). Returns
-    ``(window_text, member_record_indices, window_canon, line_sizes)`` — the
-    canon concatenates the rendered texts because a table record's own
-    ``text`` is a ``<table>{json}</table>`` placeholder and useless for
-    locate-back; ``line_sizes`` is parallel to the rendered lines (cell size
-    from ``table_cell_features``, paragraph size via
-    :func:`effective_font_size_pt`) and feeds the font-size legend.
-    Token-capped from the tail (same cap and warning as the multi-paragraph
-    window).
+    must reach the LLM window and the locate-back canon). Physically distinct
+    frames are delimited by an unindexed ``_TABLE_REGION_SEPARATOR`` line so
+    the LLM can see the title as a frame of its own: each member table is a
+    region, and a run of consecutive absorbed paragraphs is one region (they
+    are one inter-table text flow). Returns ``(window_text,
+    member_record_indices, window_canon, line_sizes, separated)`` — the canon
+    concatenates the rendered texts because a table record's own ``text`` is a
+    ``<table>{json}</table>`` placeholder and useless for locate-back;
+    ``line_sizes`` is parallel to the indexed lines only (separators excluded;
+    cell size from ``table_cell_features``, paragraph size via
+    :func:`effective_font_size_pt`) and feeds the font-size legend;
+    ``separated`` is True iff at least one separator was emitted (the caller
+    injects the layout note only then). Token-capped from the tail (same cap
+    and warning as the multi-paragraph window; a separator's own tokens count
+    against the cap and a boundary that cannot fit with its following line is
+    dropped whole, so no dangling separator is ever emitted).
 
     Members come from ``candidate.members`` (filled by the table-run scan,
     source order). An empty ``members`` falls back to scanning the range for
@@ -1202,16 +1234,33 @@ def _render_table_window(
     members: list[int] = []
     used = 0
     truncated = False
+    # Pending-boundary state: a region boundary was crossed and a separator is
+    # OWED before the region's first emitted line. Emitting it lazily (rather
+    # than on region entry) means a region that renders nothing — e.g. a pure
+    # image paragraph — never leaves a dangling separator, yet two text-bearing
+    # tables across such a gap still keep their boundary (table→image→table
+    # yields exactly one separator). ``line_sizes`` being non-empty stands in
+    # for "content has been emitted", so a leading region gets no separator.
+    pending_separator = False
+    separated = False
 
     def _emit(t: str, size: float | None) -> None:
-        nonlocal used, truncated
+        nonlocal used, truncated, pending_separator, separated
         if not t or truncated:
             return
-        line = f"[{len(lines)}] {t}"
+        sep_cost = _estimate_tokens(_TABLE_REGION_SEPARATOR) if pending_separator else 0
+        line = f"[{len(line_sizes)}] {t}"
         cost = _estimate_tokens(line)
-        if used + cost > cap and lines:
+        # The boundary and its following line stand or fall together, so a cap
+        # hit here drops both — never a separator with no line under it.
+        if used + sep_cost + cost > cap and line_sizes:
             truncated = True
             return
+        if pending_separator:
+            lines.append(_TABLE_REGION_SEPARATOR)
+            used += sep_cost
+            pending_separator = False
+            separated = True
         used += cost
         lines.append(line)
         line_sizes.append(size)
@@ -1220,24 +1269,33 @@ def _render_table_window(
     member_iter = candidate.members or tuple(
         i for i in range(candidate.start, candidate.end) if records[i].kind == "table"
     )
+    prev_kind: str | None = None
     for i in member_iter:
         rec = records[i]
         if rec.kind == "table":
             if rec.table_cell_features is None:
-                continue
+                continue  # skipped table: contributes nothing, no boundary
+            if line_sizes:  # each table is its own region
+                pending_separator = True
             members.append(i)
             for row in rec.table_cell_features:
                 for text, size, _outline in row:
                     _emit((text or "").strip(), size)
+            prev_kind = "table"
         elif rec.kind == "para":
             # Absorbed cover-material / image paragraph: keep it as a member
             # (source-order assembly stays lossless) but show the LLM only the
             # SEMANTIC text — drawing tags are removed entirely, so a pure
             # image paragraph contributes NO window line (least prompt noise,
             # nothing to echo back) while a mixed line reads clean
-            # ("某某管理办法") and locate-back matches it contiguously.
+            # ("某某管理办法") and locate-back matches it contiguously. A run
+            # of consecutive paragraphs is ONE region (only a table↔paragraph
+            # transition opens a new frame).
+            if prev_kind != "para" and line_sizes:
+                pending_separator = True
             members.append(i)
             _emit(_cover_semantic_text(rec), effective_font_size_pt(rec))
+            prev_kind = "para"
     if truncated:
         if warnings is not None:
             warnings["title_block_window_truncated"] = (
@@ -1248,7 +1306,7 @@ def _render_table_window(
             "tail content not shown to the LLM",
             cap,
         )
-    return "\n".join(lines), members, "".join(canon_parts), line_sizes
+    return "\n".join(lines), members, "".join(canon_parts), line_sizes, separated
 
 
 def _parse_llm_json(raw: str) -> dict:
@@ -1309,17 +1367,24 @@ def judge_title_block(
         # §2.2.4 table channel: the window is cell texts (plus any absorbed
         # cover-material paragraphs), and locate-back must run against them
         # (a table record's text is a <table> placeholder).
-        window_text, member_records, window_canon, line_sizes = _render_table_window(
-            records, candidate, warnings
+        window_text, member_records, window_canon, line_sizes, separated = (
+            _render_table_window(records, candidate, warnings)
         )
         index_map = []
         # Table windows render one indexed line per emitted cell/paragraph and
-        # never a [BLANK] line, so the rendered line count IS the index count.
-        line_count = len(window_text.splitlines())
+        # never a [BLANK] line; region separators are unindexed, so the emitted
+        # cell count (== len(line_sizes)) — NOT the raw line count — is the
+        # index count the partition must cover.
+        line_count = len(line_sizes)
+        # The frame-layout note rides in only when the window actually carries
+        # a separator; a single-table window reads exactly as before.
+        layout_note = _TABLE_LAYOUT_NOTE if separated else ""
     else:
         window_text, index_map, image_paras = _render_window(
             records, candidate, warnings
         )
+        # Paragraph windows are one text flow — no frames, no layout note.
+        layout_note = ""
         # Semantic canon (drawing tags stripped): the window showed tag-free
         # text, so the answer is tag-free — a raw canon would reject a title
         # split by a mid-line image as non-contiguous.
@@ -1345,10 +1410,18 @@ def judge_title_block(
             ]
     # Spell out the exact index set the partition must cover — a copyable
     # list is far harder to drop an index from than an implicit "EVERY".
+    # The layout note (frame boundaries) precedes the font-size legend so the
+    # LLM reads structure first, then the dominance cue; both share the
+    # template's ``{dominance}`` preface slot.
     dominance = _dominance_legend(line_sizes, fs_base_pt)
+    preface = ""
+    if layout_note:
+        preface += f"{layout_note}\n\n"
+    if dominance:
+        preface += f"{dominance}\n\n"
     prompt = _USER_TEMPLATE.format(
         window=window_text,
-        dominance=f"{dominance}\n\n" if dominance else "",
+        dominance=preface,
         indices=", ".join(str(k) for k in range(line_count)),
     )
     raw = llm_judge(prompt, system_prompt=_SYSTEM_PROMPT)
