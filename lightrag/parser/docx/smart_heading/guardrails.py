@@ -265,7 +265,17 @@ def strong_body_reason(text: str) -> str | None:
 # the paragraph's size/bold/outline paths stay open.
 # ---------------------------------------------------------------------------
 
-_VERSION_SHAPE_RE = re.compile(r"^\s*\d+(?:\.\d+)+\s*版")
+# A version-number shape "3.14 版" — a MultiLevelNum opener whose trailing
+# unit word is 版. The negative lookahead keeps 公文 headings "5.2 版面" /
+# "7.2 版头" / "7.4 版记" OUT of the veto: those have a CJK character right
+# after 版 (版面/版头/版记), so 版 is the head of a real word, not a bare
+# version-unit token. "3.14 版" (end of line) and "3.14版 v2" still veto.
+_VERSION_SHAPE_RE = re.compile(r"^\s*\d+(?:\.\d+)+\s*版(?![一-龥])")
+
+#: MLN NER escape ceiling: a MultiLevelNum whose leading component is <= this
+#: is a plausible section number (chapters rarely exceed 99); a larger leading
+#: component (2026.3.5) is almost certainly a real date and keeps its veto.
+_MLN_NER_QUANTITY_ESCAPE_MAX_TOP = 99
 
 #: An EnNum ordinal terminated by a dot / 、 ("4." / "12." / "2026." / "4、").
 #: classify_numbering gives MultiLevelNum priority over "N.N", so an EnNum whose
@@ -323,6 +333,23 @@ def numbering_homophone_reason(
         if (
             classification.style_key == EN_NUM
             and _EN_NUM_DOT_ORDINAL_RE.match(text) is not None
+        ):
+            return None
+        # A MultiLevelNum with a small leading component ("7.2.1 份号",
+        # "7.2 版头") that spaCy tags QUANTITY is a real section number, not a
+        # measure: 版/份/号 read as quantifier units in isolation, so the NER
+        # sees "7.2 <unit>". Trust the numbering structure and let the size /
+        # bold / series channels judge it. DATE/TIME/MONEY/PERCENT keep their
+        # veto — a two-digit-year date ("12.31.25 项目日期") or a point-time
+        # ("12.30.45 会议纪要") also classifies as MultiLevelNum top<=99 and is
+        # structurally indistinguishable from a section number, so only the
+        # QUANTITY label (the one that empirically misfires on 公文 headings)
+        # is exempted.
+        if (
+            classification.style_key == MULTI_LEVEL_NUM
+            and label == "QUANTITY"
+            and classification.top_ordinal is not None
+            and classification.top_ordinal <= _MLN_NER_QUANTITY_ESCAPE_MAX_TOP
         ):
             return None
         return "homophone_ner_entity"

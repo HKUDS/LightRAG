@@ -171,10 +171,85 @@ def test_version_shape_vetoed() -> None:
         numbering_homophone_reason,
     )
 
-    text = "3.14 版更新说明"
-    cls = classify_numbering(text)
+    # A bare version number "3.14 版" (unit word at end of line) still vetoes.
+    for text in ["3.14 版", "3.14版"]:
+        cls = classify_numbering(text)
+        assert cls is not None and cls.style_key == "MultiLevelNum"
+        assert numbering_homophone_reason(cls, text) == "homophone_version_shape"
+
+    # Fix-proof: 公文 headings whose 版 heads a real CJK word (版面/版头/版记)
+    # are NOT version numbers — the CJK negative lookahead keeps them out of
+    # the veto so they can be recognized as same-size numbered headings.
+    for text in ["5.2 版面", "7.2 版头", "7.4 版记", "7.2.7 版头中的分隔线"]:
+        cls = classify_numbering(text)
+        assert cls is not None and cls.style_key == "MultiLevelNum"
+        assert numbering_homophone_reason(cls, text) is None, text
+
+    # Contract change (documented): a version-release note "3.14 版更新说明"
+    # is no longer regex-vetoed (a real heading; the CJK follows 版). The
+    # token channel also does not fire (token after the number is ".").
+    note = "3.14 版更新说明"
+    cls = classify_numbering(note)
     assert cls is not None and cls.style_key == "MultiLevelNum"
-    assert numbering_homophone_reason(cls, text) == "homophone_version_shape"
+    assert numbering_homophone_reason(cls, note) is None
+
+
+def test_mln_ner_veto_quantity_escape(monkeypatch) -> None:
+    """A MultiLevelNum with a small leading component ("7.2.1 份号") that spaCy
+    mislabels QUANTITY is a real section number, not a measure — the veto is
+    lifted so its size/bold/series channels can judge it. The escape is scoped
+    to QUANTITY and to a leading component <= 99: every other homophone label
+    (DATE/TIME/MONEY/PERCENT) and a large leading component (a real date like
+    "2026.3.5") keep the veto. The NER label is forced, so no models needed.
+    """
+    from lightrag.parser.docx.smart_heading import guardrails, nlp
+
+    # QUANTITY on a small-top MLN is lifted (rl2 and rl3 alike).
+    monkeypatch.setattr(nlp, "leading_entity_label", lambda _t: "QUANTITY")
+    for text in ["7.2 版头", "7.2.1 份号", "7.3.2 主送机关", "99.2.1 说明"]:
+        cls = classify_numbering(text)
+        assert cls is not None and cls.style_key == "MultiLevelNum"
+        assert guardrails.numbering_homophone_reason(cls, text) is None, text
+
+    # top > 99 keeps the veto even under QUANTITY (a real date shape).
+    for text in ["100.2.3 说明", "2026.3.5 印发说明"]:
+        cls = classify_numbering(text)
+        assert cls is not None and cls.top_ordinal is not None
+        assert cls.top_ordinal > 99
+        assert guardrails.numbering_homophone_reason(cls, text) == (
+            "homophone_ner_entity"
+        ), text
+
+    # Every OTHER homophone label keeps the veto on a small-top MLN — a
+    # two-digit-year date / point-time is MLN top<=99 and structurally
+    # indistinguishable from a section number, so only QUANTITY is exempted.
+    for label in nlp.HOMOPHONE_ENTITY_LABELS - {"QUANTITY"}:
+        monkeypatch.setattr(nlp, "leading_entity_label", lambda _t, _l=label: _l)
+        for text in ["7.2.1 份号", "12.31.25 项目日期", "12.30.45 会议纪要"]:
+            cls = classify_numbering(text)
+            assert cls is not None and cls.style_key == "MultiLevelNum"
+            assert guardrails.numbering_homophone_reason(cls, text) == (
+                "homophone_ner_entity"
+            ), f"{text!r} + {label} should keep veto"
+
+    # A "%" phrase never even reaches the NER veto — classify_numbering
+    # rejects it at the structural layer (MLN shape claims it, "%" is not a
+    # legal separator, no title after → body).
+    assert classify_numbering("7.2.1% 增长率") is None
+
+
+@requires_models
+def test_mln_section_number_quantity_not_vetoed_real_spacy() -> None:
+    """Real-world: the 公文 headings whose double-space form spaCy tags
+    QUANTITY ("7.2.1  份号", "7.3.2  主送机关") must resolve to None."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        numbering_homophone_reason,
+    )
+
+    for text in ["7.2.1  份号", "7.3.2  主送机关"]:
+        cls = classify_numbering(text)
+        assert cls is not None and cls.style_key == "MultiLevelNum"
+        assert numbering_homophone_reason(cls, text) is None, text
 
 
 @requires_models
