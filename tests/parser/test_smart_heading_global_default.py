@@ -19,6 +19,7 @@ import pytest
 from lightrag.parser.docx.smart_heading import nlp
 from lightrag.parser.routing import (
     ParserRoutingConfigError,
+    _validate_smart_heading_max_chars,
     encode_parse_engine,
     resolve_parser_directives,
     seed_smart_heading_param,
@@ -30,6 +31,7 @@ from lightrag.parser.routing import (
 @pytest.fixture(autouse=True)
 def _clean_switch(monkeypatch):
     monkeypatch.delenv("DOCX_SMART_HEADING", raising=False)
+    monkeypatch.delenv("DOCX_SMART_HEADING_MAX_CHARS", raising=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -232,3 +234,60 @@ def test_missing_spacy_models_reports_uninstalled(monkeypatch) -> None:
     spacy_util = pytest.importorskip("spacy.util")
     monkeypatch.setattr(spacy_util, "is_package", lambda name: name == "en_core_web_sm")
     assert nlp.missing_spacy_models() == ["zh_core_web_sm"]
+
+
+# --------------------------------------------------------------------------- #
+# DOCX_SMART_HEADING_MAX_CHARS: startup validation (loud on invalid, warn tiny)
+# --------------------------------------------------------------------------- #
+
+
+def test_max_chars_unset_and_sane_values_ok(monkeypatch) -> None:
+    # Unset -> uses the default; explicit sane values pass silently.
+    _validate_smart_heading_max_chars()
+    for good in ("180", "90", "300"):
+        monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", good)
+        _validate_smart_heading_max_chars()
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", "12x"])
+def test_max_chars_non_integer_raises(monkeypatch, bad) -> None:
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", bad)
+    with pytest.raises(ParserRoutingConfigError, match="DOCX_SMART_HEADING_MAX_CHARS"):
+        _validate_smart_heading_max_chars()
+
+
+@pytest.mark.parametrize("bad", ["2", "1", "0", "-5"])
+def test_max_chars_below_minimum_raises(monkeypatch, bad) -> None:
+    """A cap < 3 cannot hold the '...' marker (same boundary heading_max_chars
+    floors at runtime); reject it loudly at startup."""
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", bad)
+    with pytest.raises(ParserRoutingConfigError, match="too small"):
+        _validate_smart_heading_max_chars()
+
+
+def test_max_chars_low_value_warns_not_raises(monkeypatch) -> None:
+    """A usable-but-tiny cap (below the title-line width) warns, does not fail."""
+    from lightrag.parser import routing
+
+    calls: list = []
+    monkeypatch.setattr(routing.logger, "warning", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "50")
+    _validate_smart_heading_max_chars()  # no raise
+    assert calls, "expected a warning for a below-title-width cap"
+
+
+def test_startup_check_validates_max_chars_when_enabled(monkeypatch) -> None:
+    """The MAX_CHARS check runs (and fails fast) before the spaCy model check
+    when smart_heading is enabled."""
+    monkeypatch.setenv("DOCX_SMART_HEADING", "true")
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "2")
+    monkeypatch.setattr(nlp, "missing_spacy_models", lambda: [])
+    with pytest.raises(ParserRoutingConfigError, match="too small"):
+        validate_smart_heading_dependencies(parser_rules="")
+
+
+def test_startup_check_ignores_max_chars_when_disabled(monkeypatch) -> None:
+    """A bad MAX_CHARS is not surfaced for deployments that never enable
+    smart_heading (the knob is never read there)."""
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "2")
+    validate_smart_heading_dependencies(parser_rules="")  # switch off -> silent

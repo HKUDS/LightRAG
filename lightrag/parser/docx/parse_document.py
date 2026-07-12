@@ -19,6 +19,7 @@ except ImportError as exc:
         "python-docx not installed. Run: pip install python-docx"
     ) from exc
 
+from lightrag.constants import MAX_HEADING_LENGTH
 from lightrag.parser._markdown import (
     render_heading_line,
     strip_heading_markdown_prefix,
@@ -33,8 +34,10 @@ from .drawing_image_extractor import (
 )
 
 
-# Constants for content validation (character-based for UI/display)
-MAX_HEADING_LENGTH = 200  # Maximum heading length in characters (UI constraint)
+# MAX_HEADING_LENGTH is imported from lightrag.constants above (a raw-char UI
+# ceiling shared with the smart-heading synthesis path); the module-level import
+# re-exports it so existing ``from ...parse_document import MAX_HEADING_LENGTH``
+# call sites (e.g. tests) keep working.
 
 # OOXML tracked-change/comment tags whose subtree must be dropped so we only
 # surface the *final* revised text. w:ins / w:moveTo are kept via default
@@ -1358,7 +1361,10 @@ def _assemble_blocks_smart(
                 current_is_title_block = False
                 continue
             main_title = (
-                d.title_parts[0] if d.title_parts else (d.composed_heading or d.text)
+                d.doc_title_heading
+                or (d.title_parts[0] if d.title_parts else None)
+                or d.composed_heading
+                or d.text
             )
             if "\n" in main_title:
                 # LLM verdicts are flattened at construction (_opt_str), but

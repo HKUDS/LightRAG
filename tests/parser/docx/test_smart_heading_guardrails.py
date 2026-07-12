@@ -459,3 +459,114 @@ def test_i1_tolerates_demoted_body_text_soft_break() -> None:
     ]
     blocks = _blocks("超长标题首行\n余部第一行\n余部第二行")
     assert verify_content_preservation(records, blocks) == []
+
+
+# ---------------------------------------------------------------------------
+# heading length cap reader + weighted truncation (merged doc-title support)
+# ---------------------------------------------------------------------------
+
+
+def test_heading_max_chars_reads_env_and_floors_below_three(monkeypatch) -> None:
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    from lightrag.parser.docx.smart_heading.guardrails import heading_max_chars
+
+    monkeypatch.delenv("DOCX_SMART_HEADING_MAX_CHARS", raising=False)
+    assert heading_max_chars() == DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "250")
+    assert heading_max_chars() == 250
+    # A cap below 3 cannot hold a "..." and is treated as invalid -> default.
+    for bad in ("2", "0", "-5"):
+        monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", bad)
+        assert heading_max_chars() == DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+
+
+def test_truncate_to_heading_length_short_string_unchanged(monkeypatch) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        truncate_to_heading_length,
+    )
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "180")
+    assert truncate_to_heading_length("广州市平台  建设方案") == "广州市平台  建设方案"
+
+
+def test_truncate_to_heading_length_weighted_cap(monkeypatch) -> None:
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        truncate_to_heading_length,
+        weighted_char_length,
+    )
+
+    monkeypatch.setenv(
+        "DOCX_SMART_HEADING_MAX_CHARS", str(DEFAULT_DOCX_SMART_HEADING_MAX_CHARS)
+    )
+    out = truncate_to_heading_length("标" * 80)  # weighted 240 > 180
+    assert weighted_char_length(out) <= DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    assert out.endswith("...")
+
+
+def test_truncate_to_heading_length_floors_tiny_cap(monkeypatch) -> None:
+    """A cap below 3 must not make the helper emit a bare '...' whose weighted
+    length exceeds the cap; heading_max_chars floors it to the default."""
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        truncate_to_heading_length,
+        weighted_char_length,
+    )
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "2")
+    out = truncate_to_heading_length("标" * 100)
+    assert out != "..."
+    assert weighted_char_length(out) <= DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+
+
+def test_truncate_to_heading_length_raw_ceiling_above_cap(monkeypatch) -> None:
+    """When the env cap exceeds MAX_HEADING_LENGTH, a long ASCII heading is
+    still bounded by the hard raw 200-char ceiling (so the H1 truncate_heading
+    stays a no-op and the four title-block landing sites never split)."""
+    from lightrag.constants import MAX_HEADING_LENGTH
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        truncate_to_heading_length,
+    )
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "300")
+    out = truncate_to_heading_length("x" * 250)  # weighted=raw=250 <= 300, > 200 raw
+    assert len(out) == MAX_HEADING_LENGTH
+    assert out.endswith("...")
+
+
+def test_strong_body_length_floors_tiny_cap(monkeypatch) -> None:
+    """strong_body_reason shares heading_max_chars: a nonsensical cap<3 must
+    not demote an ordinary short heading via the length rule."""
+    from lightrag.parser.docx.smart_heading import nlp
+    from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
+
+    if nlp.missing_spacy_models():
+        pytest.skip("spaCy models not installed")
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "2")
+    # Weighted 30 (10 CJK); with the floor (180) the length rule spares it.
+    assert strong_body_reason("某某管理办法实施细则条例") is None
+
+
+def test_validate_heading_max_chars_env_returns_parsed(monkeypatch) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        validate_heading_max_chars_env,
+    )
+
+    monkeypatch.delenv("DOCX_SMART_HEADING_MAX_CHARS", raising=False)
+    assert validate_heading_max_chars_env() is None  # unset -> default downstream
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "180")
+    assert validate_heading_max_chars_env() == 180
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "50")
+    assert validate_heading_max_chars_env() == 50  # usable-but-tiny: no raise here
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", "2", "0", "-5"])
+def test_validate_heading_max_chars_env_raises_on_invalid(monkeypatch, bad) -> None:
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        validate_heading_max_chars_env,
+    )
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", bad)
+    with pytest.raises(ValueError, match="DOCX_SMART_HEADING_MAX_CHARS"):
+        validate_heading_max_chars_env()

@@ -348,12 +348,23 @@ def test_regulation_chapters_and_clauses(monkeypatch) -> None:
         "第一章 总则": {"is_title_block": False, "headings": [0, 1], "body": []},
         "第二章 管理规范": {"is_title_block": False, "headings": [0, 1], "body": []},
     }
-    blocks, warnings, _ = _extract("regulation", _make_llm(responses), monkeypatch)
+    blocks, warnings, metadata = _extract(
+        "regulation", _make_llm(responses), monkeypatch
+    )
     by_heading = {b["heading"]: b["level"] for b in blocks}
-    assert by_heading["第一章 总则"] == 1
     assert by_heading["第二章 管理规范"] == 1
     for clause in ("第一条", "第二条", "第三条", "第四条"):
         assert by_heading[clause] == 2, by_heading
+    # The sub-title merges into the level-0 doc title with a double-space
+    # separator, and fans out consistently to the meta doc_title and every
+    # descendant's parent_headings root.
+    merged = "某某管理条例  （2026年修订）"
+    title = next(b for b in blocks if b.get("is_title_block"))
+    assert (title["heading"], title["level"]) == (merged, 0)
+    assert metadata["doc_title"] == merged
+    chapter = next(b for b in blocks if b["heading"] == "第一章 总则")
+    assert chapter["level"] == 1
+    assert chapter["parent_headings"] == [merged]
 
 
 def test_outline_intact_structure_equivalent(monkeypatch) -> None:

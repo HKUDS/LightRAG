@@ -238,6 +238,11 @@ DEFAULT_DOCX_SMART_TITLE_HEAD_ZONE_RECORDS = 8
 DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS = 0
 # Strong-body length threshold in English-equivalent chars (1 CJK ≈ 3).
 DEFAULT_DOCX_SMART_HEADING_MAX_CHARS = 180
+# Hard raw-character ceiling for a rendered heading (UI/display constraint,
+# NOT env-configurable). Shared by parse_document (truncate_heading /
+# validate_heading_length) and the smart-heading synthesis path so a merged
+# main+sub title can never exceed what any other heading may reach.
+MAX_HEADING_LENGTH = 200
 
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]

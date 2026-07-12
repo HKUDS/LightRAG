@@ -10,6 +10,7 @@ from typing import Any
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
     DEFAULT_DOCX_SMART_HEADING,
+    DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
     DEFAULT_R_SEPARATORS,
     DEFAULT_SENTENCE_SPLIT_REGEX,
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -1099,12 +1100,46 @@ def validate_smart_heading_dependencies(parser_rules: str | None = None) -> None
         or (rules and _rules_enable_smart_heading(rules))
     ):
         return
+    _validate_smart_heading_max_chars()
     # Lazy import: only configurations that enable smart_heading pay for it.
     from lightrag.parser.docx.smart_heading.nlp import ensure_spacy_models_installed
 
     ensure_spacy_models_installed(
         "smart_heading is enabled by DOCX_SMART_HEADING or a LIGHTRAG_PARSER rule"
     )
+
+
+def _validate_smart_heading_max_chars() -> None:
+    """Startup check for ``DOCX_SMART_HEADING_MAX_CHARS`` (only when smart_heading
+    is enabled).
+
+    The structural rule (reject non-integer / ``< 3``) is the shared single
+    source :func:`~lightrag.parser.docx.smart_heading.guardrails.validate_heading_max_chars_env`,
+    used here AND at the parse-time entry (``run_smart_heading``) so a bad cap is
+    rejected identically however smart_heading was enabled; here it is re-raised
+    as a config error so the API refuses to start. On top of that, warn (startup
+    only, to avoid a per-document log storm) on a usable-but-tiny cap: below the
+    per-line title width even accepted title lines exceed it, so almost every
+    heading would be demoted to body — usable, but almost certainly a misconfig.
+    """
+    from lightrag.parser.docx.smart_heading import guardrails
+    from lightrag.parser.docx.smart_heading.title_block import (
+        TITLE_LINE_MAX_WEIGHTED_CHARS,
+    )
+
+    try:
+        value = guardrails.validate_heading_max_chars_env()
+    except ValueError as exc:
+        raise ParserRoutingConfigError(str(exc)) from exc
+    if value is not None and value < TITLE_LINE_MAX_WEIGHTED_CHARS:
+        logger.warning(
+            "DOCX_SMART_HEADING_MAX_CHARS=%d is below the title-line width (%d "
+            "en-equivalent chars); most real headings will be demoted to body. "
+            "This is usually a misconfiguration — the default is %d.",
+            value,
+            TITLE_LINE_MAX_WEIGHTED_CHARS,
+            DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
+        )
 
 
 def _matching_rule_directives(

@@ -25,6 +25,7 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_IMPRINT_CLOSER_TRAILING,
     DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES,
     DEFAULT_DOCX_SMART_TOC_MIN_LINES,
+    MAX_HEADING_LENGTH,
 )
 
 from . import nlp
@@ -68,6 +69,80 @@ def weighted_char_length(text: str) -> int:
     for ch in text:
         total += 3 if "一" <= ch <= "鿿" else 1
     return total
+
+
+def heading_max_chars() -> int:
+    """Strong-body / heading weighted length cap (en-equivalent), env-overridable
+    via ``DOCX_SMART_HEADING_MAX_CHARS``. Single source for
+    :func:`strong_body_reason` and :func:`truncate_to_heading_length`.
+
+    ``cap < 3`` (too small to even hold a ``...`` ellipsis) falls back to the
+    default — a runtime BACKSTOP. The loud check is :func:`validate_heading_max_chars_env`
+    (raises on the same ``< 3`` boundary), run at every smart_heading entry point
+    (API startup AND ``run_smart_heading``); this floor only matters for callers
+    that bypass both (tests / library embedding)."""
+    cap = _env_int("DOCX_SMART_HEADING_MAX_CHARS", DEFAULT_DOCX_SMART_HEADING_MAX_CHARS)
+    return cap if cap >= 3 else DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+
+
+def validate_heading_max_chars_env() -> int | None:
+    """Structurally validate ``DOCX_SMART_HEADING_MAX_CHARS`` and return its
+    parsed value (``None`` when unset).
+
+    Raises ``ValueError`` on a non-integer or a value ``< 3`` (too small to even
+    hold the ``...`` truncation marker — the same boundary :func:`heading_max_chars`
+    floors at runtime). This is the SINGLE source shared by every smart_heading
+    entry point — the API startup check (``routing._validate_smart_heading_max_chars``,
+    which re-raises as a config error and adds a startup-only low-value warning)
+    and the parse-time entry (``run_smart_heading``, where it hard-fails the
+    parse) — so a bad cap is rejected identically regardless of how smart_heading
+    was enabled. ``heading_max_chars`` keeps its floor only as a last-resort
+    backstop for callers that bypass both.
+    """
+    raw = os.getenv("DOCX_SMART_HEADING_MAX_CHARS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"Invalid DOCX_SMART_HEADING_MAX_CHARS value {raw!r}; expected a "
+            f"positive integer (en-equivalent chars, default "
+            f"{DEFAULT_DOCX_SMART_HEADING_MAX_CHARS})"
+        ) from None
+    if value < 3:
+        raise ValueError(
+            f"DOCX_SMART_HEADING_MAX_CHARS={value} is too small; the minimum is 3 "
+            f"(the width of the '...' truncation marker). Use the default "
+            f"{DEFAULT_DOCX_SMART_HEADING_MAX_CHARS} unless you have a specific reason."
+        )
+    return value
+
+
+def truncate_to_heading_length(text: str) -> str:
+    """Bound a synthesized heading to BOTH the strong-body weighted cap
+    (:func:`heading_max_chars`) AND the hard raw ceiling ``MAX_HEADING_LENGTH``,
+    appending ``...`` when either is exceeded. The raw ceiling keeps
+    ``parse_document.truncate_heading`` a no-op so the four landing sites of a
+    title block (H1 / doc_title / first_heading / every descendant's
+    parent_headings root) never split, even when the env cap is set above 200."""
+    cap = heading_max_chars()
+    if weighted_char_length(text) <= cap and len(text) <= MAX_HEADING_LENGTH:
+        return text
+    w_budget = max(cap - 3, 0)  # reserve the "..." (weight 3)
+    r_budget = MAX_HEADING_LENGTH - 3
+    used_w = used_r = 0
+    out: list[str] = []
+    for ch in text:
+        w = 3 if "一" <= ch <= "鿿" else 1
+        if used_w + w > w_budget or used_r + 1 > r_budget:
+            break
+        out.append(ch)
+        used_w += w
+        used_r += 1
+    # rstrip so a cut landing right after the "  " separator does not leave
+    # "词  ..." with a dangling double space.
+    return "".join(out).rstrip() + "..."
 
 
 # ---------------------------------------------------------------------------
@@ -149,10 +224,7 @@ def strong_body_reason(text: str) -> str | None:
     stripped = text.strip()
     if not stripped:
         return None
-    max_chars = _env_int(
-        "DOCX_SMART_HEADING_MAX_CHARS", DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
-    )
-    if weighted_char_length(stripped) > max_chars:
+    if weighted_char_length(stripped) > heading_max_chars():
         return "strong_body_length"
 
     tail = stripped

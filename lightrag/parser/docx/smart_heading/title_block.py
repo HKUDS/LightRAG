@@ -190,6 +190,20 @@ def compose_title_heading(decision: TitleBlockDecision) -> str:
     return head
 
 
+def compose_doc_title(main_title: str, sub_title: str | None) -> str:
+    """The document display heading = main title + sub title, joined by a DOUBLE
+    space so the two components (a title split across lines) stay visually
+    distinct, then bounded to the strong-body weighted heading-length cap AND the
+    raw ``MAX_HEADING_LENGTH`` ceiling (:func:`guardrails.truncate_to_heading_length`).
+
+    Both inputs are already single-lined at verdict construction (``_opt_str``);
+    this does NOT flatten. ``sub_title`` empty/None → just the (bounded) main
+    title, no trailing space.
+    """
+    merged = f"{main_title}  {sub_title}" if sub_title else main_title
+    return guardrails.truncate_to_heading_length(merged)
+
+
 def _has_real_numbering(
     text: str, numbering_veto: Callable[[Any, str], str | None]
 ) -> bool:

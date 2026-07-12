@@ -3183,3 +3183,125 @@ def test_logo_led_multi_cover_still_confirms_region(monkeypatch) -> None:
     assert dem.is_heading is False
     assert dem.rule_trail[-2:] == ["imprint_region", "strong_body_demoted"]
     assert warnings["smart_imprint_region_demotions"] == 1
+
+
+# ---------------------------------------------------------------------------
+# merged doc-title length bounding — four-way consistency (H1 / doc_title /
+# first_heading / descendant parent_headings root) under truncation
+# ---------------------------------------------------------------------------
+
+
+def _assemble_bounded_title(monkeypatch, cap_env: str, main: str, sub):
+    """Drive the assembler for a level-0 title block whose composed doc-title is
+    (potentially) truncated, plus one child heading, and return
+    (doc_heading, blocks, meta)."""
+    from lightrag.parser.docx.parse_document import _assemble_blocks_smart
+    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+    from lightrag.parser.docx.smart_heading.title_block import compose_doc_title
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", cap_env)
+    doc_heading = compose_doc_title(main, sub)
+
+    records = [
+        _para(main, size=22.0),  # 0: title-block lead
+        _para("封面说明正文一句。", size=12.0),  # 1: body owned by the title block
+        _para("第一章 总则", size=14.0),  # 2: child heading
+        _para("章节正文一句。", size=12.0),  # 3: body under the child
+    ]
+    result = SmartHeadingResult(
+        decisions={
+            0: HeadingDecision(
+                record_index=0,
+                text=main,
+                is_heading=True,
+                is_title_block=True,
+                level=0,
+                doc_title_heading=doc_heading,
+                member_indices=(0,),
+            ),
+            2: HeadingDecision(
+                record_index=2, text="第一章 总则", is_heading=True, level=1
+            ),
+        },
+        toc_indices=set(),
+        doc_title=doc_heading,
+        audit={},
+    )
+    meta: dict = {}
+    blocks = _assemble_blocks_smart(records, result, {}, meta)
+    return doc_heading, blocks, meta
+
+
+def _assert_four_way(doc_heading, blocks, meta) -> None:
+    title = next(b for b in blocks if b.get("is_title_block"))
+    child = next(b for b in blocks if b["heading"] == "第一章 总则")
+    assert title["heading"] == doc_heading
+    assert meta["doc_title"] == doc_heading
+    assert meta["first_heading"] == doc_heading
+    assert child["parent_headings"][0] == doc_heading
+
+
+def test_merged_doc_title_weighted_truncation_four_way(monkeypatch) -> None:
+    """A merged CJK doc title over the default weighted cap truncates with '...'
+    and the same value lands at all four sites."""
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    from lightrag.parser.docx.smart_heading.guardrails import weighted_char_length
+
+    doc_heading, blocks, meta = _assemble_bounded_title(
+        monkeypatch,
+        str(DEFAULT_DOCX_SMART_HEADING_MAX_CHARS),
+        "标" * 60,  # weighted 180
+        "案" * 30,  # merged weighted 180 + 2 + 90 = 272 -> truncated
+    )
+    assert doc_heading.endswith("...")
+    assert weighted_char_length(doc_heading) <= DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    _assert_four_way(doc_heading, blocks, meta)
+
+
+def test_merged_doc_title_raw_ceiling_above_cap_four_way(monkeypatch) -> None:
+    """Even with the env cap set above 200, a long ASCII title is bounded by the
+    raw MAX_HEADING_LENGTH ceiling so the H1 truncate_heading stays a no-op and
+    the four sites never split (the pre-fix bug)."""
+    from lightrag.constants import MAX_HEADING_LENGTH
+
+    doc_heading, blocks, meta = _assemble_bounded_title(
+        monkeypatch,
+        "300",
+        "x" * 130,
+        "y" * 130,  # merged 262 raw ASCII
+    )
+    assert len(doc_heading) == MAX_HEADING_LENGTH
+    assert doc_heading.endswith("...")
+    _assert_four_way(doc_heading, blocks, meta)
+
+
+def test_main_only_long_doc_title_truncated_four_way(monkeypatch) -> None:
+    """Unified handling (user ruling): a concatenated main_title with no sub is
+    bounded the same way, and stays consistent across the four sites."""
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    from lightrag.parser.docx.smart_heading.guardrails import weighted_char_length
+
+    doc_heading, blocks, meta = _assemble_bounded_title(
+        monkeypatch,
+        str(DEFAULT_DOCX_SMART_HEADING_MAX_CHARS),
+        "则" * 70,  # weighted 210 > 180, no sub
+        None,
+    )
+    assert doc_heading.endswith("...")
+    assert weighted_char_length(doc_heading) <= DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    _assert_four_way(doc_heading, blocks, meta)
+
+
+def test_run_smart_heading_rejects_invalid_max_chars_env(monkeypatch) -> None:
+    """Parse-time entry check: a structurally invalid DOCX_SMART_HEADING_MAX_CHARS
+    hard-fails the parse on EVERY entry point (library / per-file hint), matching
+    the API startup check, instead of silently defaulting."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "2")
+    with pytest.raises(ValueError, match="DOCX_SMART_HEADING_MAX_CHARS"):
+        run_smart_heading([], llm_judge=None, warnings={})
+
+    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "abc")
+    with pytest.raises(ValueError, match="DOCX_SMART_HEADING_MAX_CHARS"):
+        run_smart_heading([], llm_judge=None, warnings={})

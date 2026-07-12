@@ -16,6 +16,7 @@ from lightrag.parser.docx.smart_heading import guardrails
 from lightrag.parser.docx.smart_heading.title_block import (
     TitleBlockCandidate,
     TitleBlockLLMError,
+    compose_doc_title,
     compose_title_heading,
     detect_imprint_regions,
     find_title_block_candidates,
@@ -344,12 +345,19 @@ def test_title_verdict_concatenated_main_title_locates() -> None:
     assert decision.main_title == "中华人民共和国某某管理办法"
 
 
-def test_title_verdict_multiline_fields_flattened() -> None:
+def test_title_verdict_multiline_fields_flattened(monkeypatch) -> None:
     """Title material renders single-line at verdict construction: an LLM
     echoing a soft-break/multi-paragraph title must not ride ``\\n`` into the
     heading stack (and thence every descendant's parent_headings). CJK
     boundaries join without a space, others with one; locate-back still
     passes (_canon strips ALL whitespace)."""
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+
+    # compose_doc_title reads the (configurable) length cap live; pin it so the
+    # exact-value assertion below is deterministic regardless of ambient env.
+    monkeypatch.setenv(
+        "DOCX_SMART_HEADING_MAX_CHARS", str(DEFAULT_DOCX_SMART_HEADING_MAX_CHARS)
+    )
     records = [
         _para("中华人民共和国\n某某管理办法", size=22.0),
         _para("Implementation\nGuide", size=16.0),
@@ -367,6 +375,44 @@ def test_title_verdict_multiline_fields_flattened() -> None:
     assert decision.main_title == "中华人民共和国某某管理办法"
     assert decision.sub_title == "Implementation Guide"
     assert "\n" not in compose_title_heading(decision)
+    # The doc-title heading feeds off the already-flattened fields, so it is
+    # single-line too (compose_doc_title does NOT flatten on its own).
+    doc_title = compose_doc_title(decision.main_title, decision.sub_title)
+    assert doc_title == "中华人民共和国某某管理办法  Implementation Guide"
+    assert "\n" not in doc_title
+
+
+def test_compose_doc_title_joins_with_double_space(monkeypatch) -> None:
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+
+    # Pin the live length cap so these exact-value assertions do not truncate
+    # under a small (but legal) ambient DOCX_SMART_HEADING_MAX_CHARS.
+    monkeypatch.setenv(
+        "DOCX_SMART_HEADING_MAX_CHARS", str(DEFAULT_DOCX_SMART_HEADING_MAX_CHARS)
+    )
+    assert compose_doc_title("广州市平台", "建设方案") == "广州市平台  建设方案"
+    # No sub-title -> just the main title, no trailing space.
+    assert compose_doc_title("广州市平台", "") == "广州市平台"
+    assert compose_doc_title("广州市平台", None) == "广州市平台"
+
+
+def test_compose_doc_title_bounds_length(monkeypatch) -> None:
+    """Both the merged and the main-only paths are bounded to the strong-body
+    weighted cap (unified handling, user ruling)."""
+    from lightrag.constants import DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+
+    monkeypatch.setenv(
+        "DOCX_SMART_HEADING_MAX_CHARS", str(DEFAULT_DOCX_SMART_HEADING_MAX_CHARS)
+    )
+    cap = DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
+    merged = compose_doc_title("标" * 40, "案" * 40)  # weighted 120+2+120 = 242
+    assert guardrails.weighted_char_length(merged) <= cap
+    assert merged.endswith("...")
+    # A concatenated main_title alone can exceed the cap too (the 90-per-line
+    # limit does not bound the concatenated whole).
+    main_only = compose_doc_title("则" * 70, None)  # weighted 210 > 180
+    assert guardrails.weighted_char_length(main_only) <= cap
+    assert main_only.endswith("...")
 
 
 def test_flatten_heading_line_unicode_breaks() -> None:

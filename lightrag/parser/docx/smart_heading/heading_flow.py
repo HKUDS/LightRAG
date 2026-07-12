@@ -33,7 +33,6 @@ from lightrag.constants import (
     DEFAULT_DOCX_SMART_CONFIDENCE_RATIO,
     DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN,
     DEFAULT_DOCX_SMART_DENSITY_MAX,
-    DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
     DEFAULT_DOCX_SMART_MIN_INTER_HEADING_CHARS,
     DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS,
 )
@@ -144,6 +143,9 @@ class HeadingDecision:
     pre_anchor_level: int | None = None  # level before round-1 anchoring
     is_title_block: bool = False
     composed_heading: str | None = None  # title block: the compound heading
+    #: title block: main + sub, double-space joined and length-bounded — the
+    #: value that lands as the H1 and the doc_title (see compose_doc_title).
+    doc_title_heading: str | None = None
     title_parts: tuple[str, ...] = ()
     member_indices: tuple[int, ...] = ()
     use_raw_text: bool = False
@@ -432,14 +434,10 @@ def gate_candidates(
 
     def _short(i: int) -> bool:
         # Candidate shortness reuses the strong-body length cap.
-        try:
-            cap = int(
-                os.getenv("DOCX_SMART_HEADING_MAX_CHARS", "")
-                or DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
-            )
-        except ValueError:
-            cap = DEFAULT_DOCX_SMART_HEADING_MAX_CHARS
-        return guardrails.weighted_char_length(records[i].text.strip()) <= cap
+        return (
+            guardrails.weighted_char_length(records[i].text.strip())
+            <= guardrails.heading_max_chars()
+        )
 
     def _title_short(i: int) -> bool:
         from .title_block import TITLE_LINE_MAX_WEIGHTED_CHARS
@@ -2377,6 +2375,12 @@ def run_smart_heading(
     from . import guardrails as g
     from . import title_block as tb
 
+    # Parse-time entry check for DOCX_SMART_HEADING_MAX_CHARS: the shared single
+    # source with the API startup check, so a structurally invalid cap hard-fails
+    # this document's parse even on entry points that bypass startup validation
+    # (library calls, per-file filename hints) instead of silently defaulting.
+    g.validate_heading_max_chars_env()
+
     # Two CB4 gates: the whole-document gate (below) decides whether smart runs
     # at all; the per-sub-document gate (in the sub-document loop) decides
     # whether an individual sub-document gets size-based leveling or falls back
@@ -2506,6 +2510,10 @@ def run_smart_heading(
         )
         if verdict.is_title_block:
             heading = tb.compose_title_heading(verdict)
+            # main + sub, double-space joined and length-bounded — the value that
+            # actually lands as the H1 and the doc_title (compose_title_heading
+            # above stays the full audit compound with doc_number/meta).
+            doc_heading = tb.compose_doc_title(verdict.main_title, verdict.sub_title)
             main_pos = verdict.member_indices[0]
             d = HeadingDecision(
                 record_index=main_pos,
@@ -2514,6 +2522,7 @@ def run_smart_heading(
                 is_title_block=True,
                 level=0,
                 composed_heading=heading,
+                doc_title_heading=doc_heading,
                 title_parts=tuple(
                     p
                     for p in (
@@ -2532,7 +2541,7 @@ def run_smart_heading(
             decisions[main_pos] = d
             title_starts.append(main_pos)
             if doc_title is None:
-                doc_title = verdict.main_title
+                doc_title = doc_heading
         else:
             # §2.2.4: only the VETO side of the partition carries force —
             # body votes revoke candidate identity (outline paragraphs never
