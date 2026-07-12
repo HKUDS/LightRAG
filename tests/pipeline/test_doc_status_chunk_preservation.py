@@ -1599,3 +1599,173 @@ async def test_deletion_fully_completed_prevents_success_override_in_finally(
         finally:
             monkeypatch.undo()
             await rag.finalize_storages()
+
+
+async def _seed_no_chunk_smartheading_doc(
+    rag: LightRAG, doc_id: str, cache_ids: list[str]
+) -> None:
+    """Seed a chunk-less doc whose doc_status.metadata records parse-stage
+    smart_heading LLM cache keys, plus the matching cache entries.
+
+    Mirrors the real FAILED state a docx leaves when parse succeeds (writing
+    smart_heading cache) but a later pipeline stage fails before any chunk is
+    produced — the cache keys then live only in doc_status.metadata.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    await rag.full_docs.upsert(
+        {doc_id: {"content": "smart heading doc", "file_path": "sh.docx"}}
+    )
+    await rag.doc_status.upsert(
+        {
+            doc_id: {
+                "status": DocStatus.FAILED,
+                "content_summary": "smart heading",
+                "content_length": 17,
+                "chunks_count": 0,
+                "chunks_list": [],
+                "created_at": now,
+                "updated_at": now,
+                "file_path": "sh.docx",
+                "track_id": f"track-{doc_id}",
+                "error_msg": "parse-stage failure",
+                "metadata": {"smartheading_llm_cache_ids": cache_ids},
+            }
+        }
+    )
+    await rag.llm_response_cache.upsert(
+        {
+            cid: {"cache_type": "smartheading", "return": f"cached-{cid}"}
+            for cid in cache_ids
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_smartheading_metadata_cache_deleted_on_delete_with_no_chunks(tmp_path):
+    """delete_llm_cache=True purges smart_heading cache keys that ride only in
+    doc_status.metadata (no chunk llm_cache_list to carry them).
+
+    Locks the no-chunk deletion branch: the metadata merge in
+    ``adelete_by_doc_id`` (smartheading_llm_cache_ids -> deletion pool) followed
+    by the delete + verify on the chunk-less path.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_no_chunk_cache", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-smartheading-no-chunk"
+        cache_ids = ["default:smartheading:h1", "default:smartheading:h2"]
+        await _seed_no_chunk_smartheading_doc(rag, doc_id, cache_ids)
+
+        result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert result.status == "success"
+        remaining = [await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids]
+        assert all(item is None for item in remaining)
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_smartheading_metadata_cache_preserved_when_delete_llm_cache_disabled(
+    tmp_path,
+):
+    """delete_llm_cache=False deletes the doc but must leave the smart_heading
+    cache entries intact — proving the flag gates the metadata merge/delete
+    rather than the cache being wiped unconditionally.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_no_chunk_cache_kept", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-smartheading-keep-cache"
+        cache_ids = ["default:smartheading:k1", "default:smartheading:k2"]
+        await _seed_no_chunk_smartheading_doc(rag, doc_id, cache_ids)
+
+        result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=False)
+
+        assert result.status == "success"
+        remaining = [await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids]
+        assert all(item is not None for item in remaining)
+        assert await rag.doc_status.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_smartheading_metadata_cache_deleted_alongside_chunk_cache(
+    tmp_path, monkeypatch
+):
+    """For a chunk-backed doc, delete_llm_cache=True must purge BOTH the
+    parse-stage smart_heading cache (from doc_status.metadata) and the chunk
+    llm_cache_list entries in one deletion.
+
+    Locks the chunk-backed consumption of the metadata merge: the deletion pool
+    is seeded from metadata_cache_ids before chunk llm_cache_list is appended.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_with_chunk_cache", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-smartheading-chunk-cache"
+        keep_chunk_id = "chunk-keep"
+        drop_chunk_id = "chunk-drop"
+        smartheading_cache_id = "default:smartheading:h3"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[keep_chunk_id, drop_chunk_id],
+            chunk_owners={keep_chunk_id: "doc-keep", drop_chunk_id: doc_id},
+            metadata={"smartheading_llm_cache_ids": [smartheading_cache_id]},
+        )
+        chunk_cache_ids = await _seed_chunk_cache_entries(
+            rag, [drop_chunk_id], "smartheading-chunk"
+        )
+        await rag.llm_response_cache.upsert(
+            {
+                smartheading_cache_id: {
+                    "cache_type": "smartheading",
+                    "return": "cached-heading",
+                }
+            }
+        )
+
+        monkeypatch.setattr(
+            lightrag_module,
+            "rebuild_knowledge_from_chunks",
+            _succeed_rebuild_from_remaining_chunks,
+        )
+        result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert result.status == "success"
+        assert await rag.llm_response_cache.get_by_id(smartheading_cache_id) is None
+        assert await rag.llm_response_cache.get_by_id(chunk_cache_ids[0]) is None
+        assert await rag.doc_status.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_smartheading_cache_cleared_by_aclear_cache(tmp_path):
+    """The 'clear documents + clear cache' UI flow calls aclear_cache() ->
+    drop(), which wipes the whole llm_response_cache regardless of cache_type,
+    so smart_heading entries are cleared too.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_aclear_cache", _deterministic_chunking
+    )
+    try:
+        cache_id = "default:smartheading:hx"
+        await rag.llm_response_cache.upsert(
+            {cache_id: {"cache_type": "smartheading", "return": "cached-heading"}}
+        )
+        assert await rag.llm_response_cache.get_by_id(cache_id) is not None
+
+        await rag.aclear_cache()
+
+        assert await rag.llm_response_cache.get_by_id(cache_id) is None
+    finally:
+        await rag.finalize_storages()
