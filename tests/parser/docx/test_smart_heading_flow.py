@@ -670,6 +670,311 @@ def test_cb1_extreme_sample_trips_breaker(monkeypatch, caplog) -> None:
 
 
 # ---------------------------------------------------------------------------
+# CB1 graduated demotion (§2.3.3): peel same-size candidates one evidence tier
+# at a time instead of the blanket re-estimation wiping every same-size heading.
+# ---------------------------------------------------------------------------
+
+# ~70-CJK body paragraph — long enough that a couple between candidates keeps
+# average inter-heading spacing above DOCX_SMART_MIN_INTER_HEADING_CHARS (200),
+# so density (not sparsity) is the binding CB1 constraint in these fixtures.
+_GRAD_BODY = (
+    "本段为用于支撑基准字号统计权重并拉开相邻标题间距的正文内容占位文字总长约七十"
+    "余个汉字确保标题间平均正文字符数稳定高于阈值不触发稀疏条件仅让密度成为约束若干"
+)
+
+
+def _grad_body_para() -> ParagraphRecord:
+    return _para(_GRAD_BODY, size=12.0)
+
+
+def _gbt_shape_records(*, ennum_root: bool = True) -> list[ParagraphRecord]:
+    """A GB/T-shaped sub-document: same-size (12pt = FS_base) numbered headings
+    of several tiers, spread among long body so density is ~0.49 (over the 0.35
+    bar) but spacing is healthy. ``ennum_root`` controls whether the EnNum
+    ordinals cover the MultiLevelNum leading components (making EnNum the
+    family root) or not.
+    """
+    cands: list[ParagraphRecord] = []
+    ennum_labels = range(1, 11) if ennum_root else range(101, 111)
+    for n in ennum_labels:  # 10 EnNum "1 …" (root parents 5.1 / 5.1.1 when 1..10)
+        cands.append(_para(f"{n} 概述章节{n}", size=12.0))
+    for i in range(8):  # 8 MultiLevelNum raw-level 2, tops 1..8
+        cands.append(_para(f"{i + 1}.1 子节标题{i}", size=12.0))
+    for i in range(14):  # 14 MultiLevelNum raw-level 3, tops cycle 1..7
+        cands.append(_para(f"{(i % 7) + 1}.1.{i + 1} 细则条目{i}", size=12.0))
+    for i in range(6):  # 6 EnSingleParen list items "a) …"
+        cands.append(_para(f"a) 列表项目内容{i}", size=12.0))
+    recs = [_grad_body_para(), _grad_body_para()]
+    for c in cands:
+        recs.append(c)
+        recs.append(_grad_body_para())
+    return recs
+
+
+def _grad_gate(records, warnings):
+    idx = list(range(len(records)))
+    return gate_with_cb1(
+        records,
+        idx,
+        fs_base=document_fs_base(records, idx),
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+
+
+def test_cb1_graduated_recovers_same_size_numbered_headings(caplog) -> None:
+    """Fix-proof: same-size numbered headings that the blanket re-estimation
+    would wipe are recovered by peeling the weak tiers (list items + deepest
+    MLN). The EnNum root and the mln raw-2 tier survive; CB1 does NOT trip."""
+    records = _gbt_shape_records(ennum_root=True)
+    warnings: dict = {}
+    with caplog.at_level(logging.INFO, logger="lightrag"):
+        result = _grad_gate(records, warnings)
+
+    # No blanket re-estimation / trip / look-ahead recovery — the graduated
+    # path handled it.
+    assert not result.cb1_reestimated
+    assert not result.cb1_tripped
+    assert not result.cb1_strong_body_recovered
+    # Weakest body-prior tier first, then deepest MLN; EnNum root deferred so it
+    # is NOT reached (stops before it).
+    assert result.cb1_graduated_stages == ["en_single_paren", "mln_raw3"]
+    assert result.cb1_graduated_ennum_root is True
+    assert result.cb1_graduated_demoted == 20  # 6 list items + 14 mln raw-3
+
+    kept = {d.record_index: d for d in result.decisions}
+    styles = sorted(d.numbering.style_key for d in kept.values())
+    assert styles == ["EnNum"] * 10 + ["MultiLevelNum"] * 8  # root + raw-2 kept
+
+    # Demoted members: original admitting rule kept, plus the two audit marks,
+    # output-neutral (never re-rendered from raw text — they are not outline).
+    demoted = [d for d in result.demoted if "cb1_graduated_demoted" in d.rule_trail]
+    assert len(demoted) == 20
+    for d in demoted:
+        assert not d.is_heading
+        assert d.use_raw_text is False
+        assert any(t.startswith("cb1_stage:") for t in d.rule_trail)
+        assert d.rule_trail[0] in {"base_series", "base_bold", "base_center"}
+    assert warnings["smart_cb1_graduated_demotions"] == 20
+
+    # The two densities are DISTINCT semantics: result.density is the real
+    # decisions ratio (18/78); cb1_graduated_density is the projection basis.
+    assert result.density == pytest.approx(18 / 78, abs=1e-4)
+    assert result.cb1_graduated_density == pytest.approx(18 / 78, abs=1e-4)
+    assert result.cb1_graduated_inter_chars is not None
+    assert result.cb1_graduated_inter_chars >= 200
+    assert any("CB1 graduated" in m for m in _log_messages(caplog))
+
+
+def test_cb1_graduated_ladder_orders_mln_last_and_ennum_root_deferred() -> None:
+    """The ladder fixes the demotion order: weakest body-prior first, then MLN
+    deepest-raw-level-first, and the EnNum root relocated to the very end."""
+    from lightrag.parser.docx.smart_heading.heading_flow import _cb1_ladder
+
+    present = {
+        "en_single_paren": [],
+        "en_num": [],
+        "cn_num": [],
+        "mln_raw2": [],
+        "mln_raw3": [],
+    }
+    assert _cb1_ladder(present, ennum_root=False) == [
+        "en_single_paren",
+        "en_num",
+        "cn_num",
+        "mln_raw3",
+        "mln_raw2",
+    ]
+    assert _cb1_ladder(present, ennum_root=True) == [
+        "en_single_paren",
+        "cn_num",
+        "mln_raw3",
+        "mln_raw2",
+        "en_num",
+    ]
+
+
+def test_cb1_graduated_ennum_root_detection() -> None:
+    """EnNum is the MLN root only with >= 2 distinct overlapping ordinals AND
+    >= half the MLN leading components covered — a lone {1} overlap is too weak.
+    """
+    from lightrag.parser.docx.smart_heading.heading_flow import (
+        _cb1_ennum_is_mln_root,
+    )
+
+    def _mln(top: int) -> HeadingDecision:
+        return HeadingDecision(
+            record_index=top,
+            text=f"{top}.1 子节",
+            is_heading=True,
+            numbering=classify_numbering(f"{top}.1 子节"),
+        )
+
+    def _en(ordinal: int) -> HeadingDecision:
+        return HeadingDecision(
+            record_index=1000 + ordinal,
+            text=f"{ordinal} 章节",
+            is_heading=True,
+            numbering=classify_numbering(f"{ordinal} 章节"),
+        )
+
+    mlns = [_mln(t) for t in (1, 2, 3, 4)]
+    assert _cb1_ennum_is_mln_root(mlns, [_en(o) for o in (1, 2, 3, 4)]) is True
+    assert _cb1_ennum_is_mln_root(mlns, [_en(1)]) is False  # single {1} overlap
+    assert _cb1_ennum_is_mln_root(mlns, [_en(o) for o in (90, 91)]) is False  # none
+    assert _cb1_ennum_is_mln_root([], [_en(1), _en(2)]) is False  # no MLN family
+
+
+def test_cb1_graduated_ennum_root_not_demoted_before_mln() -> None:
+    """Contrast: when the EnNum ordinals do NOT cover the MLN tops, EnNum is not
+    the root and is demoted at its base-ladder position (before MLN); the MLN
+    tiers survive instead."""
+    records = _gbt_shape_records(ennum_root=False)
+    warnings: dict = {}
+    result = _grad_gate(records, warnings)
+
+    assert result.cb1_graduated_ennum_root is False
+    assert result.cb1_graduated_stages == ["en_single_paren", "en_num"]
+    styles = sorted(d.numbering.style_key for d in result.decisions)
+    assert styles == ["MultiLevelNum"] * 22  # all MLN kept, EnNum demoted
+
+
+def test_cb1_graduated_sparse_only_trigger() -> None:
+    """CB1 can trigger on spacing alone (density under the bar). A packed run of
+    same-size list items makes the mean inter-heading spacing sparse; peeling
+    that one tier restores spacing without touching the real headings."""
+    records = [_grad_body_para(), _grad_body_para()]
+    for i in range(4):  # 4 well-spaced MLN headings
+        records += [
+            _para(f"{i + 1}.1 子节标题{i}", size=12.0),
+            _grad_body_para(),
+            _grad_body_para(),
+        ]
+    records.append(_grad_body_para())
+    for i in range(6):  # a packed run of list items — no body between them
+        records.append(_para(f"a) 列表项{i}", size=12.0))
+    records += [_grad_body_para(), _grad_body_para()]
+
+    warnings: dict = {}
+    result = _grad_gate(records, warnings)
+
+    assert not result.cb1_reestimated and not result.cb1_tripped
+    assert result.cb1_graduated_stages == ["en_single_paren"]
+    # Density was already within bounds; spacing was the trigger and recovered.
+    assert result.cb1_graduated_density is not None
+    assert result.cb1_graduated_density <= 0.35
+    assert result.cb1_graduated_inter_chars >= 200
+    assert sorted(d.numbering.style_key for d in result.decisions) == (
+        ["MultiLevelNum"] * 4
+    )
+
+
+def test_cb1_graduated_exhausted_falls_back_to_blanket() -> None:
+    """When no ladder prefix converges (exempt outline candidates hold density
+    over the bar), the ladder leaves the result untouched and CB1 falls back to
+    blanket re-estimation — proving the simulation is side-effect free."""
+    records = [_para(_GRAD_BODY, size=10.5) for _ in range(20)]
+    for i in range(30):  # exempt outline headings keep density high
+        records.append(_para(f"大纲标题{i}", size=10.5, outline_level=0))
+    for i in range(10):  # the only demotable tier
+        records.append(_para(f"a) 列表项{i}", size=10.5))
+
+    warnings: dict = {}
+    result = _grad_gate(records, warnings)
+
+    # Ladder ran (a demotable tier existed) but found no converging prefix:
+    # no graduated state, no graduated demotions, blanket path taken instead.
+    assert result.cb1_graduated_stages == []
+    assert result.cb1_graduated_demoted == 0
+    assert "smart_cb1_graduated_demotions" not in warnings
+    assert result.cb1_reestimated
+    assert not any("cb1_graduated_demoted" in d.rule_trail for d in result.demoted)
+
+
+def test_cb1_graduated_outline_and_larger_size_exempt() -> None:
+    """Outline headings and candidates whose size is above FS_base are never
+    demoted by the ladder — only same-size non-outline tiers are."""
+    from lightrag.parser.docx.smart_heading.heading_flow import _cb1_stage_tag
+
+    outline = HeadingDecision(
+        record_index=0,
+        text="1 大纲",
+        is_heading=True,
+        font_size_pt=12.0,
+        outline_level=0,
+        numbering=classify_numbering("1 大纲"),
+    )
+    outline.note("outline")
+    bigger = HeadingDecision(
+        record_index=1,
+        text="1) 列表",
+        is_heading=True,
+        font_size_pt=14.0,
+        numbering=classify_numbering("1) 列表"),
+    )
+    bigger.note("size_strong")
+    same_size = HeadingDecision(
+        record_index=2,
+        text="a) 列表",
+        is_heading=True,
+        font_size_pt=12.0,
+        numbering=classify_numbering("a) 列表"),
+    )
+    same_size.note("base_series")
+
+    assert _cb1_stage_tag(outline, 12.0) is None
+    assert _cb1_stage_tag(bigger, 12.0) is None
+    assert _cb1_stage_tag(same_size, 12.0) == "en_single_paren"
+
+
+def test_cb1_graduated_flows_through_downstream_leveling() -> None:
+    """After graduated demotion the kept candidates are ordinary headings: the
+    normal leveling / backfill pipeline runs over them without incident and the
+    EnNum root is promoted to the shallowest level."""
+    records = _gbt_shape_records(ennum_root=True)
+    warnings: dict = {}
+    result = _grad_gate(records, warnings)
+
+    ds = result.decisions
+    assign_levels_by_size(ds)
+    backfill_top_level(ds, warnings=warnings)
+    align_numbering_series(ds)
+    assert ds  # non-empty
+    assert all(d.is_heading and d.level is not None and d.level >= 1 for d in ds)
+    root_levels = [d.level for d in ds if d.text.startswith("1 概述")]
+    assert root_levels and min(d.level for d in ds) in root_levels
+
+
+def test_cb1_graduated_audit_fields(monkeypatch) -> None:
+    """run_smart_heading surfaces the graduated-demotion audit block."""
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
+    monkeypatch.setenv("DOCX_SMART_SUBDOC_MIN_TOKENS", "10")
+    records = _gbt_shape_records(ennum_root=True)
+
+    warnings: dict = {}
+    result = run_smart_heading(
+        records,
+        llm_judge=None,
+        warnings=warnings,
+        strong_body=_stub_strong_body,
+        numbering_veto=_stub_no_veto,
+        caption_veto=_stub_no_caption,
+    )
+    assert result is not None
+    subs = result.audit["sub_documents"]
+    grad = next(s["cb1_graduated"] for s in subs if "cb1_graduated" in s)
+    assert grad["stages_applied"] == ["en_single_paren", "mln_raw3"]
+    assert grad["ennum_root"] is True
+    assert grad["demoted_count"] == 20
+    assert grad["projected_density"] == pytest.approx(18 / 78, abs=1e-3)
+    assert grad["projected_inter_chars"] >= 200
+
+
+# ---------------------------------------------------------------------------
 # G6: leveling / backfill / alignment
 # ---------------------------------------------------------------------------
 

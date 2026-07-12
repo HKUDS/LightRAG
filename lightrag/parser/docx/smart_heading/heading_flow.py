@@ -43,9 +43,17 @@ from .features import effective_font_size_pt
 from .title_block import _join_heading_texts
 from .style_key import (
     CN_CHAPTER,
+    CN_CLAUSE,
+    CN_NUM,
+    CN_PARENT_NUM,
+    EN_ALPHA,
     EN_CHAPTER,
+    EN_CLAUSE,
+    EN_DOUBLE_PAREN,
     EN_NUM,
+    EN_SINGLE_PAREN,
     MULTI_LEVEL_NUM,
+    ROMAN_NUM,
     FsBase,
     NumberingClassification,
     classify_numbering,
@@ -315,6 +323,24 @@ class GateResult:
     #: stopped earlier by the caption / LLM-body vetoes are deliberately NOT
     #: recorded: those vetoes carry their own semantics.
     grant_rejected: list[HeadingDecision] = field(default_factory=list)
+    #: CB1 graduated demotion (§2.3.3): the ladder stages actually applied, in
+    #: demotion order. Empty unless the ladder ran AND found a converging prefix
+    #: (see ``_try_cb1_graduated_demotion``). When non-empty the four CB1
+    #: booleans above stay False — the first-pass result is kept and the normal
+    #: downstream sweep runs; the ladder's members are moved into ``demoted``.
+    cb1_graduated_stages: list[str] = field(default_factory=list)
+    cb1_graduated_demoted: int = 0  # count of candidates the ladder demoted
+    #: Projected density / mean inter-heading body chars at the ladder's
+    #: stopping point (measured on the strong-body+CB2 projection — the DECISION
+    #: basis). Deliberately NOT written back to ``density``, which keeps its
+    #: real-decisions definition (the projection can drop more than the real
+    #: result, whose remaining strong-body candidates the downstream sweep
+    #: handles).
+    cb1_graduated_density: float | None = None
+    cb1_graduated_inter_chars: float | None = None
+    #: The same-size EnNum series was folded into the MLN family as its implicit
+    #: level-1 root and demoted last (see ``_cb1_ennum_is_mln_root``).
+    cb1_graduated_ennum_root: bool = False
 
 
 def _effective_size(rec: Any) -> float | None:
@@ -763,6 +789,234 @@ def _avg_inter_heading_body_chars(
     return body_chars / (len(cand) - 1)
 
 
+# ---------------------------------------------------------------------------
+# CB1 graduated demotion (§2.3.3)
+# ---------------------------------------------------------------------------
+# When CB1 would otherwise blanket-re-estimate FS_base and wipe EVERY same-size
+# numbered heading (the "1 范围 / 5.2 版面 / 7.2.1 份号" GB/T shape), demote
+# same-size candidates ONE evidence tier at a time in a fixed order (weakest
+# body-prior first), re-checking density + inter-heading spacing after each
+# tier, and STOP at the first prefix that brings both back within bounds.
+# Deterministic: fixed ladder, no LLM. MultiLevelNum is demoted LAST and
+# deepest-raw-level-first, so a numbered outline never loses a whole set at
+# once (demoting "5" while keeping "5.2" would orphan the sub-levels).
+
+#: Non-MLN, non-chapter styleKey -> ladder stage tag.
+_CB1_STAGE_BY_STYLE: dict[str, str] = {
+    EN_SINGLE_PAREN: "en_single_paren",
+    EN_DOUBLE_PAREN: "en_double_paren",
+    EN_ALPHA: "en_alpha",
+    ROMAN_NUM: "roman_num",
+    EN_NUM: "en_num",
+    CN_PARENT_NUM: "cn_parent_num",
+    CN_NUM: "cn_num",
+    CN_CLAUSE: "clause",
+    EN_CLAUSE: "clause",
+}
+
+#: Fixed non-MLN ladder order (weakest body-prior first). ``mln_raw{k}`` stages
+#: are appended dynamically (deepest first) after this base; ``en_num`` moves to
+#: the very end when it is the MLN family's implicit root (see below).
+_CB1_BASE_LADDER: tuple[str, ...] = (
+    "en_single_paren",
+    "en_double_paren",
+    "en_alpha",
+    "center",
+    "bold",
+    "roman_num",
+    "en_num",
+    "cn_parent_num",
+    "cn_num",
+    "clause",
+)
+
+#: EnNum-as-MLN-root needs >= 2 distinct overlapping ordinals AND >= half the
+#: MLN leading components covered. The >=2 floor mirrors ``backfill_top_level``
+#: ("exactly one linked pair never waives — too weak"); a lone {1} overlap is
+#: near-zero evidence (every document starts at 1).
+_CB1_ROOT_MIN_OVERLAP = 2
+_CB1_ROOT_OVERLAP_RATIO = 0.5
+
+
+def _cb1_stage_tag(d: HeadingDecision, fs: float | None) -> str | None:
+    """The graduated-demotion ladder stage for a candidate, or ``None`` if it is
+    EXEMPT (never demoted by the ladder):
+
+    - a physical-outline heading (I2 — outline is never CB1-demoted);
+    - a candidate whose size is strictly above FS_base (real size evidence, and
+      exactly what a blanket re-estimation would itself keep);
+    - a chapter-class numbered heading (strongest numbering evidence, already
+      guarded at recognition time by EARLY_STRONG_BODY_KEYS);
+    - anything that maps to no stage (fail-safe: keep it, fall back to blanket).
+
+    Numbering is authoritative over the admitting rule: a numbered candidate is
+    binned by its styleKey regardless of whether series / bold / centered
+    admitted it (a bold list item is still a list item).
+    """
+    if d.rule_trail and d.rule_trail[0] == "outline":
+        return None
+    if d.font_size_pt is not None and fs is not None and d.font_size_pt > fs:
+        return None
+    cls = d.numbering
+    if cls is not None:
+        if cls.style_key in (CN_CHAPTER, EN_CHAPTER):
+            return None
+        if cls.style_key == MULTI_LEVEL_NUM:
+            return f"mln_raw{cls.raw_level or 2}"
+        return _CB1_STAGE_BY_STYLE.get(cls.style_key)
+    rule = d.rule_trail[0] if d.rule_trail else ""
+    if rule.endswith("_center"):
+        return "center"
+    if rule.endswith("_bold"):
+        return "bold"
+    return None
+
+
+def _cb1_ennum_is_mln_root(
+    survivors: Sequence[HeadingDecision],
+    ennum_members: Sequence[HeadingDecision],
+) -> bool:
+    """True when the same-size EnNum series is the implicit level-1 root of the
+    MultiLevelNum family (``1 范围`` parents ``5.2``/``7.2.1``): its ordinals
+    cover the MLN leading components. Such a root must be demoted LAST, after
+    the whole MLN family — demoting it first orphans every sub-level.
+    """
+    tops = {
+        d.numbering.top_ordinal
+        for d in survivors
+        if d.numbering is not None
+        and d.numbering.style_key == MULTI_LEVEL_NUM
+        and d.numbering.top_ordinal is not None
+    }
+    if not tops:
+        return False
+    ennums = {
+        d.numbering.ordinal
+        for d in ennum_members
+        if d.numbering is not None and d.numbering.ordinal is not None
+    }
+    overlap = tops & ennums
+    return (
+        len(overlap) >= _CB1_ROOT_MIN_OVERLAP
+        and len(overlap) / len(tops) >= _CB1_ROOT_OVERLAP_RATIO
+    )
+
+
+def _cb1_ladder(stage_members: dict[str, list], ennum_root: bool) -> list[str]:
+    """Order the non-empty stages: fixed base order, then MLN raw levels deepest
+    first, with ``en_num`` relocated to the very end when it is the MLN root."""
+    ladder = [t for t in _CB1_BASE_LADDER if t in stage_members]
+    if ennum_root and "en_num" in ladder:
+        ladder.remove("en_num")
+    ladder += sorted(
+        (t for t in stage_members if t.startswith("mln_raw")),
+        key=lambda t: -int(t[len("mln_raw") :]),
+    )
+    if ennum_root and "en_num" in stage_members:
+        ladder.append("en_num")
+    return ladder
+
+
+def _try_cb1_graduated_demotion(
+    records: Sequence[Any],
+    indices: Sequence[int],
+    result: GateResult,
+    survivors: list[HeadingDecision],
+    *,
+    fs_base: FsBase,
+    threshold: float,
+    min_inter: int,
+    warnings: dict | None = None,
+) -> bool:
+    """§2.3.3 graduated demotion, run after the look-ahead fails and before the
+    blanket re-estimation. Demote same-size candidates one evidence tier at a
+    time (fixed weakest-first ladder) on the strong-body+CB2 PROJECTION
+    (``survivors``), re-checking density + inter-heading spacing after each tier.
+
+    On the first prefix that brings BOTH back within bounds, materialize those
+    demotions on the REAL ``result`` (move them from ``decisions`` to
+    ``demoted``, output-neutral, tagged for audit) and return True — the caller
+    keeps the first-pass result and lets the normal downstream sweep run. Return
+    False (leaving ``result`` untouched) when no prefix converges, so the caller
+    falls back to blanket re-estimation.
+    """
+    fs = fs_base.size_pt
+    stage_of: dict[int, str] = {}
+    stage_members: dict[str, list[HeadingDecision]] = {}
+    for d in survivors:
+        tag = _cb1_stage_tag(d, fs)
+        if tag is None:
+            continue
+        stage_of[d.record_index] = tag
+        stage_members.setdefault(tag, []).append(d)
+    if not stage_members:
+        return False  # every candidate is exempt — nothing to graduate
+
+    ennum_root = _cb1_ennum_is_mln_root(survivors, stage_members.get("en_num", []))
+    ladder = _cb1_ladder(stage_members, ennum_root)
+
+    remaining = {d.record_index: d for d in survivors}
+    non_empty = result.non_empty
+    applied: list[str] = []
+    for tag in ladder:
+        for d in stage_members[tag]:
+            remaining.pop(d.record_index, None)
+        applied.append(tag)
+        proj_density = (len(remaining) / non_empty) if non_empty else 0.0
+        proj = GateResult(
+            decisions=sorted(remaining.values(), key=lambda d: d.record_index),
+            fs_base=fs_base,
+            density=proj_density,
+        )
+        proj_inter = _avg_inter_heading_body_chars(records, indices, proj)
+        proj_sparse = proj_inter is not None and proj_inter < min_inter
+        if proj_density > threshold or proj_sparse:
+            continue
+
+        # Converged — materialize the demotions on the real first-pass result.
+        # The loop above never mutated ``result``, so a non-converging exit
+        # leaves it byte-for-byte intact for the blanket fallback.
+        demoted_idx = {d.record_index for tg in applied for d in stage_members[tg]}
+        kept: list[HeadingDecision] = []
+        for d in result.decisions:
+            if d.record_index in demoted_idx:
+                # Output-neutral: non-outline (exempt), so use_raw_text stays
+                # off → same body rendering as no decision. The rule trail keeps
+                # the original admitting rule plus the demotion marks so the
+                # per-paragraph audit ledger explains WHY it became body.
+                d.is_heading = False
+                d.note("cb1_graduated_demoted")
+                d.note(f"cb1_stage:{stage_of[d.record_index]}")
+                result.demoted.append(d)
+            else:
+                kept.append(d)
+        result.decisions = kept
+        result.density = (len(kept) / non_empty) if non_empty else 0.0
+        result.cb1_graduated_stages = applied
+        result.cb1_graduated_demoted = len(demoted_idx)
+        result.cb1_graduated_density = proj_density
+        result.cb1_graduated_inter_chars = proj_inter
+        result.cb1_graduated_ennum_root = ennum_root
+        if warnings is not None:
+            warnings["smart_cb1_graduated_demotions"] = warnings.get(
+                "smart_cb1_graduated_demotions", 0
+            ) + len(demoted_idx)
+        logger.info(
+            "[smart_heading] CB1 graduated: demoted %d candidate(s) over stages "
+            "%s%s, projected density %.0f%%->%.0f%% (threshold %.0f%%), inter %s "
+            "— kept first-pass result",
+            len(demoted_idx),
+            applied,
+            " (en_num=mln-root)" if ennum_root else "",
+            result.density * 100,  # informational; real ratio after demotion
+            proj_density * 100,
+            threshold * 100,
+            f"{proj_inter:.0f}" if proj_inter is not None else "n/a",
+        )
+        return True
+    return False
+
+
 def gate_with_cb1(
     records: Sequence[Any],
     indices: Sequence[int],
@@ -786,7 +1040,14 @@ def gate_with_cb1(
        first-pass decisions (``cb1_strong_body_recovered``), and let the normal
        sweep do the real demotion. Genuine same-size numbered headings (``一、``)
        survive instead of being wiped by the blanket re-estimation below.
-    2. Otherwise re-estimate FS_base once by folding the candidates' dominant
+    2. Graduated demotion: if the projection still overflows, demote same-size
+       candidates one evidence tier at a time (weakest body-prior first;
+       MultiLevelNum last and deepest-level-first) until density + spacing fall
+       back within bounds, keeping the first-pass result. This recovers the
+       upper tiers of a numbered outline whose lower tiers pushed density over
+       the bar (the ``1 范围 / 5.2 版面`` GB/T shape) instead of losing them
+       all. See ``_try_cb1_graduated_demotion``.
+    3. Otherwise re-estimate FS_base once by folding the candidates' dominant
        size into the body and re-gate in ``cb1_reestimate`` mode (composite
        same-size paths off, sizes above the new body size still auto-admit).
        Still over the density threshold → mark the breaker tripped.
@@ -856,6 +1117,24 @@ def gate_with_cb1(
             threshold * 100,
             proj_density * 100,
         )
+        return result
+
+    # Graduated demotion (§2.3.3 step 2): the projection still overflows, but a
+    # numbered outline may be over-dense only because its LOWER tiers (list
+    # items, deep MLN levels) crowd the upper ones. Peel same-size candidates
+    # off one evidence tier at a time until density + spacing recover, keeping
+    # the first-pass result and its upper tiers, instead of the blanket
+    # re-estimation below which wipes every same-size numbered heading.
+    if _try_cb1_graduated_demotion(
+        records,
+        indices,
+        result,
+        survivors,
+        fs_base=fs_base,
+        threshold=threshold,
+        min_inter=min_inter,
+        warnings=warnings,
+    ):
         return result
 
     # CB1: the dominant "heading" size is body in disguise. Fold it in:
@@ -2635,6 +2914,22 @@ def run_smart_heading(
             )
         if gate.cb1_strong_body_recovered:  # §2.3.3 look-ahead spared the trip
             sub_audit["cb1_strong_body_recovered"] = True
+        if gate.cb1_graduated_stages:  # §2.3.3 graduated demotion (per-tier)
+            sub_audit["cb1_graduated"] = {
+                "stages_applied": list(gate.cb1_graduated_stages),
+                "demoted_count": gate.cb1_graduated_demoted,
+                "ennum_root": gate.cb1_graduated_ennum_root,
+                "projected_density": (
+                    round(gate.cb1_graduated_density, 4)
+                    if gate.cb1_graduated_density is not None
+                    else None
+                ),
+                "projected_inter_chars": (
+                    round(gate.cb1_graduated_inter_chars, 1)
+                    if gate.cb1_graduated_inter_chars is not None
+                    else None
+                ),
+            }
         if gate.cb1_tripped:
             sub_audit["fallback"] = "cb1_density"
             fallback_subs += 1

@@ -381,14 +381,15 @@ def test_question_bank_cb1_yields_no_phantom_headings(monkeypatch) -> None:
     """G11-4: the CB1 breaker keeps a question bank heading-free.
 
     The invariant is "CB1 engages and no phantom heading survives", NOT the
-    specific mechanism. Whether CB1 trips (falls back to outline-only) or the
-    re-estimation converges to zero candidates depends on FS_base, which is a
-    near-tie here (12pt stems vs 10.5pt option lines); the §2.2.2 whitespace-
-    excluding weight fix tipped it to 12pt, so the re-gate now converges to 0
-    candidates instead of tripping. Both keep the bank heading-free — assert
-    the engagement + outcome, not the branch."""
+    specific mechanism. CB1 may recover via graduated demotion (peel the en_num
+    question-number tier off — the path taken here, 0 candidates remain), via
+    blanket re-estimation, or by tripping to outline-only; all keep the bank
+    heading-free. Assert the engagement + outcome, not the branch."""
     blocks, warnings, metadata = _extract("question_bank", _make_llm({}), monkeypatch)
-    assert warnings.get("smart_cb1_reestimated") == 1
+    assert (
+        warnings.get("smart_cb1_reestimated", 0) >= 1
+        or warnings.get("smart_cb1_graduated_demotions", 0) >= 1
+    )
     # No phantom heading blocks: everything stays one preface block.
     assert all(not b.get("is_title_block") for b in blocks)
     assert {b["heading"] for b in blocks} == {"Preface/Uncategorized"}
@@ -739,7 +740,11 @@ def test_mixed_document_keeps_one_title_root(monkeypatch, tmp_path) -> None:
     audit = metadata["smart_audit"]
     # CB1 still protects the question-bank portion from phantom headings, but
     # the whole document now has one structural scope rooted at the real title.
-    assert warnings.get("smart_cb1_reestimated", 0) >= 1
+    # Recovery may be graduated demotion (en_num tier) or blanket re-estimation.
+    assert (
+        warnings.get("smart_cb1_reestimated", 0) >= 1
+        or warnings.get("smart_cb1_graduated_demotions", 0) >= 1
+    )
     assert len(audit["sub_documents"]) == 1
     assert audit["sub_documents"][0].get("headings") == 3
 
