@@ -687,12 +687,19 @@ def _grad_body_para() -> ParagraphRecord:
     return _para(_GRAD_BODY, size=12.0)
 
 
-def _gbt_shape_records(*, ennum_root: bool = True) -> list[ParagraphRecord]:
+def _gbt_shape_records(
+    *, ennum_root: bool = True, strong_body_clauses: int = 0
+) -> list[ParagraphRecord]:
     """A GB/T-shaped sub-document: same-size (12pt = FS_base) numbered headings
     of several tiers, spread among long body so density is ~0.49 (over the 0.35
     bar) but spacing is healthy. ``ennum_root`` controls whether the EnNum
     ordinals cover the MultiLevelNum leading components (making EnNum the
     family root) or not.
+
+    ``strong_body_clauses`` adds N CnClause candidates whose text ends in a
+    period, so they are admitted first-pass (clause defers strong-body to the
+    post-merge sweep) but removed by the look-ahead projection — used to force
+    ``density`` (real) and ``cb1_graduated_density`` (projection) apart.
     """
     cands: list[ParagraphRecord] = []
     ennum_labels = range(1, 11) if ennum_root else range(101, 111)
@@ -704,6 +711,13 @@ def _gbt_shape_records(*, ennum_root: bool = True) -> list[ParagraphRecord]:
         cands.append(_para(f"{(i % 7) + 1}.1.{i + 1} 细则条目{i}", size=12.0))
     for i in range(6):  # 6 EnSingleParen list items "a) …"
         cands.append(_para(f"a) 列表项目内容{i}", size=12.0))
+    for i in range(strong_body_clauses):  # strong-body CnClause (body-in-disguise)
+        cands.append(
+            _para(
+                f"第{'一二三四五六'[i]}条 本条为伪装成标题的正文内容以句号结尾说明。",
+                size=12.0,
+            )
+        )
     recs = [_grad_body_para(), _grad_body_para()]
     for c in cands:
         recs.append(c)
@@ -759,13 +773,52 @@ def test_cb1_graduated_recovers_same_size_numbered_headings(caplog) -> None:
         assert d.rule_trail[0] in {"base_series", "base_bold", "base_center"}
     assert warnings["smart_cb1_graduated_demotions"] == 20
 
-    # The two densities are DISTINCT semantics: result.density is the real
-    # decisions ratio (18/78); cb1_graduated_density is the projection basis.
+    # With no strong-body candidates the real ratio and the projection basis
+    # coincide (18/78); their DIVERGENCE is exercised separately in
+    # test_cb1_graduated_density_reflects_real_decisions_not_projection.
     assert result.density == pytest.approx(18 / 78, abs=1e-4)
     assert result.cb1_graduated_density == pytest.approx(18 / 78, abs=1e-4)
     assert result.cb1_graduated_inter_chars is not None
     assert result.cb1_graduated_inter_chars >= 200
     assert any("CB1 graduated" in m for m in _log_messages(caplog))
+
+
+def test_cb1_graduated_density_reflects_real_decisions_not_projection() -> None:
+    """``result.density`` keeps its real-decisions definition; the projection
+    basis is a SEPARATE field. Strong-body clause candidates are admitted
+    first-pass (so they stay in ``decisions``) but removed by the look-ahead
+    projection — so the two densities genuinely diverge, and writing the
+    projection value back to ``density`` would be caught here. The authoritative
+    post-merge sweep then demotes the clauses, converging the final heading
+    count on the projection."""
+    records = _gbt_shape_records(ennum_root=True, strong_body_clauses=4)
+    warnings: dict = {}
+    result = _grad_gate(records, warnings)
+
+    assert result.cb1_graduated_stages == ["en_single_paren", "mln_raw3"]
+    # The 4 strong-body clauses survive the first-pass gate (clause defers
+    # strong-body) and are NOT touched by the ladder, so the real ratio counts
+    # them while the projection ratio does not — a strict inequality.
+    clauses = [
+        d
+        for d in result.decisions
+        if d.numbering is not None and d.numbering.style_key == "CnClause"
+    ]
+    assert len(clauses) == 4 and all(d.is_heading for d in clauses)
+    assert result.cb1_graduated_density is not None
+    assert result.density > result.cb1_graduated_density
+
+    # The authoritative post-merge sweep demotes the body-in-disguise clauses;
+    # the final heading count matches the projection the ladder decided on.
+    ds = result.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings=warnings)
+    assert not any(
+        d.numbering is not None and d.numbering.style_key == "CnClause" and d.is_heading
+        for d in ds
+    )
+    final_headings = sum(1 for d in ds if d.is_heading)
+    assert final_headings == round(result.cb1_graduated_density * result.non_empty)
 
 
 def test_cb1_graduated_ladder_orders_mln_last_and_ennum_root_deferred() -> None:

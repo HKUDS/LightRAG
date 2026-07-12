@@ -325,9 +325,11 @@ class GateResult:
     grant_rejected: list[HeadingDecision] = field(default_factory=list)
     #: CB1 graduated demotion (§2.3.3): the ladder stages actually applied, in
     #: demotion order. Empty unless the ladder ran AND found a converging prefix
-    #: (see ``_try_cb1_graduated_demotion``). When non-empty the four CB1
-    #: booleans above stay False — the first-pass result is kept and the normal
-    #: downstream sweep runs; the ladder's members are moved into ``demoted``.
+    #: (see ``_try_cb1_graduated_demotion``). When non-empty the three
+    #: breaker/recovery flags above (``cb1_reestimated`` / ``cb1_tripped`` /
+    #: ``cb1_strong_body_recovered``) stay False — the first-pass result is kept
+    #: and the normal downstream sweep runs; the ladder's members move into
+    #: ``demoted``.
     cb1_graduated_stages: list[str] = field(default_factory=list)
     cb1_graduated_demoted: int = 0  # count of candidates the ladder demoted
     #: Projected density / mean inter-heading body chars at the ladder's
