@@ -1,9 +1,10 @@
 """Defensive judgments for smart heading discovery (spec §2.2.5 / §2.3.4).
 
 Pure-function layer: consumed by ``title_block`` / ``heading_flow`` /
-``extract``, depends only on :mod:`.nlp` and :mod:`.style_key` — never the
-reverse. Every rule here votes AGAINST heading-ness (do-no-harm: ties break
-toward "not a heading").
+``extract``, depends only on :mod:`.nlp`, :mod:`.style_key`, and
+:mod:`.features` (the last for the TOC third channel's font-size termination) —
+never the reverse. Every rule here votes AGAINST heading-ness (do-no-harm: ties
+break toward "not a heading").
 
 Env-tunable knobs follow the live-read pattern of the CHUNK_P_REFERENCES_*
 constants: DEFAULT_* lives in ``lightrag.constants``; the matching env var
@@ -29,6 +30,7 @@ from lightrag.constants import (
 )
 
 from . import nlp
+from .features import effective_font_size_pt
 from .style_key import (
     EN_NUM,
     MULTI_LEVEL_NUM,
@@ -523,6 +525,22 @@ _HEADING_PREFIX_RE = re.compile(r"^#{1,6}\s*")
 # (one … renders as three dots; Chinese TOCs typically use ……).
 _TOC_DOT_LEADER_RE = re.compile(r"(?:…[.…·]*|[.·]{3,})\s*\d+\s*$")
 
+# --- TOC third channel: a plain (leaderless) numbered run under a 目次 title ---
+# A standalone 目次 / 目录 / (Table of) Contents line anchors the channel.
+_TOC_TITLE_RE = re.compile(
+    r"^\s*(?:目\s*次|目\s*录|(?:table\s+of\s+)?contents)\s*$", re.IGNORECASE
+)
+# Trailing page number after ≥1 space/tab/ideographic-space, stripped before the
+# duplicate-line comparison (a TOC entry "1 范围　3" matches body "1 范围").
+_TOC_TRAILING_PAGENO_RE = re.compile(r"[ \t　]+\d{1,4}\s*$")
+# Anchor front-part limit: a 目次 title is only accepted while fewer than this
+# many long (body) paragraphs have been seen — a mid/late-document "Contents"
+# heading must not anchor the channel.
+_TOC_ANCHOR_MAX_LONG_PARAS_BEFORE = 3
+# The TOC's max font size is established from this many leading members; a later
+# member strictly larger than that ends the run (the body's first heading).
+_TOC_SIZE_PROBE_MEMBERS = 3
+
 
 def canonicalize_paragraph_text(text: str) -> str:
     """Whitespace-free, markdown-prefix-free canonical form (I1 comparisons).
@@ -537,15 +555,140 @@ def canonicalize_paragraph_text(text: str) -> str:
     return re.sub(r"\s+", "", stripped)
 
 
-def detect_toc_records(records: Sequence[Any]) -> set[int]:
-    """Two-channel TOC detection (§2.2.2): structural evidence (TOC field
-    instructions / _Toc bookmark links on the paragraph) plus the heuristic
-    channel — a run of ≥ DOCX_SMART_TOC_MIN_LINES consecutive leader LINES
-    ending in a dot leader + page number. Lines are counted, not paragraphs:
-    the run spans standalone paragraphs AND the soft-break lines inside one
-    paragraph (§2.2.2 "含独立段落或段内软回车拆出的行"), so a TOC typed as a
-    single multi-line paragraph is caught too. An isolated single line is
-    never evidence. Returns the record indices to remove from smart output.
+def _visible_lines(rec: Any) -> list[str]:
+    return [ln.strip() for ln in (rec.text or "").split("\n") if ln.strip()]
+
+
+def _detect_plain_numbered_toc(
+    records: Sequence[Any], min_lines: int
+) -> tuple[set[int], list[dict]]:
+    """Third TOC channel: a leaderless run of short numbered lines under a
+    standalone 目次 / 目录 / (Table of) Contents title, confirmed by every line
+    having a duplicate later in the body (a GB/T-style TOC typed as plain text
+    with no dot leaders). See the four safety constraints below — this channel
+    deletes real content (``toc_indices`` is the I1 whitelist), so it errs
+    toward false negatives (a short/unusual TOC is left as candidates, which
+    CB1 handles) rather than deleting body.
+    """
+    # Line-level inverted index: canon(line).casefold() -> record indices where
+    # it appears. Line-level (not paragraph-level) so soft-broken TOCs match,
+    # and casefold so an English TOC entry matches a differently-cased heading.
+    canon_at: dict[str, list[int]] = {}
+    for i, rec in enumerate(records):
+        if rec.kind != "para":
+            continue
+        for ln in _visible_lines(rec):
+            key = canonicalize_paragraph_text(ln).casefold()
+            if key:
+                canon_at.setdefault(key, []).append(i)
+
+    def _copy_after(line: str, after: int) -> bool:
+        for variant in (line, _TOC_TRAILING_PAGENO_RE.sub("", line)):
+            key = canonicalize_paragraph_text(variant).casefold()
+            if key and any(idx > after for idx in canon_at.get(key, ())):
+                return True
+        return False
+
+    cap = heading_max_chars()
+    toc: set[int] = set()
+    events: list[dict] = []
+    long_paras_seen = 0
+    n = len(records)
+    i = 0
+    while i < n:
+        rec = records[i]
+        if rec.kind == "para":
+            lines = _visible_lines(rec)
+            is_long = any(weighted_char_length(ln) > cap for ln in lines)
+            if is_long:
+                long_paras_seen += 1
+            is_anchor = (
+                len(lines) == 1
+                and _TOC_TITLE_RE.match(lines[0]) is not None
+                and long_paras_seen < _TOC_ANCHOR_MAX_LONG_PARAS_BEFORE
+            )
+            if not is_anchor:
+                i += 1
+                continue
+
+            # Collect the maximal run of short, forward-duplicated members after
+            # the anchor. Stop at the first paragraph that breaks any rule —
+            # incrementally, so the body's first heading (whose only copy is the
+            # TOC entry ABOVE it) ends the run instead of being swallowed.
+            block: list[int] = []
+            block_lines = 0
+            probe_sizes: list[float] = []
+            toc_max_size: float | None = None
+            j = i + 1
+            while j < n:
+                r = records[j]
+                if r.kind == "empty_para":
+                    j += 1
+                    continue
+                if r.kind != "para":
+                    break
+                mlines = _visible_lines(r)
+                if not mlines or any(weighted_char_length(ln) > cap for ln in mlines):
+                    break
+                # Font-size termination: a member strictly larger than the TOC's
+                # established max size is the body's first heading. The max is
+                # locked from the first probe MEMBERS' known sizes; if all of
+                # those are None, size termination stays disabled (other rules
+                # gate).
+                size = effective_font_size_pt(r)
+                if (
+                    toc_max_size is not None
+                    and size is not None
+                    and size > toc_max_size
+                ):
+                    break
+                if not all(_copy_after(ln, j) for ln in mlines):
+                    break
+                block.append(j)
+                block_lines += len(mlines)
+                if toc_max_size is None and len(block) <= _TOC_SIZE_PROBE_MEMBERS:
+                    if size is not None:
+                        probe_sizes.append(size)
+                    if len(block) == _TOC_SIZE_PROBE_MEMBERS:
+                        toc_max_size = max(probe_sizes) if probe_sizes else None
+                j += 1
+
+            # all-or-nothing: every member line must have a copy strictly after
+            # the whole block, and the block must clear the line threshold.
+            end = block[-1] if block else i
+            confirmed = block_lines >= min_lines and all(
+                _copy_after(ln, end) for k in block for ln in _visible_lines(records[k])
+            )
+            if confirmed:
+                toc.update(block)
+                events.append(
+                    {
+                        "rule": "toc_plain_numbered_run",
+                        "anchor": i,
+                        "start": block[0],
+                        "end": end,
+                    }
+                )
+                i = end + 1
+                continue
+        i += 1
+    return toc, events
+
+
+def detect_toc_records(records: Sequence[Any]) -> tuple[set[int], list[dict]]:
+    """Three-channel TOC detection (§2.2.2). Returns ``(indices, events)`` — the
+    record indices to remove from smart output, and third-channel audit events.
+
+    1. Structural: TOC field instructions / _Toc bookmark links on a paragraph.
+    2. Dot-leader run: ≥ DOCX_SMART_TOC_MIN_LINES consecutive leader LINES
+       ending in a dot leader + page number. Lines are counted, not paragraphs:
+       the run spans standalone paragraphs AND the soft-break lines inside one
+       paragraph (§2.2.2 "含独立段落或段内软回车拆出的行"), so a TOC typed as a
+       single multi-line paragraph is caught too. An isolated single line is
+       never evidence.
+    3. Plain numbered run: a leaderless run of short numbered lines under a
+       目次 / 目录 / (Table of) Contents title, every line duplicated later in
+       the body (see :func:`_detect_plain_numbered_toc`).
 
     Detection only — the ``smart_toc_removed_paragraphs`` warning is a
     content claim, so the caller records it once the smart output (which
@@ -581,7 +724,9 @@ def detect_toc_records(records: Sequence[Any]) -> set[int]:
         _flush_run()
     _flush_run()
 
-    return toc
+    plain, events = _detect_plain_numbered_toc(records, min_lines)
+    toc.update(plain)
+    return toc, events
 
 
 def toc_audit_entries(records: Sequence[Any], toc_indices: set[int]) -> list[dict]:

@@ -2685,8 +2685,10 @@ def run_smart_heading(
     # Whole-document TOC judgment feeds BOTH the CB4 counting scope and the
     # smart output removal set (§2.3.3: the token count excludes TOC lines
     # so a long-TOC + short-body doc takes the same short path).
-    toc_indices = g.detect_toc_records(records)
+    toc_indices, toc_events = g.detect_toc_records(records)
     audit["toc_removed"] = g.toc_audit_entries(records, toc_indices)
+    if toc_events:
+        audit["rule_events"].extend(toc_events)
 
     body_indices = [
         i

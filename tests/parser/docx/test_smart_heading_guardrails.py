@@ -215,7 +215,7 @@ def test_structural_toc_evidence() -> None:
         _para("第一章 绪论……3", is_toc_link=True),
         _para("普通正文段落。"),
     ]
-    toc = detect_toc_records(records)
+    toc, _events = detect_toc_records(records)
     assert toc == {0, 1}
     entries = toc_audit_entries(records, toc)
     assert len(entries) == 2 and all("hash" in e for e in entries)
@@ -230,7 +230,7 @@ def test_heuristic_toc_needs_three_consecutive_leader_lines() -> None:
         _para("第四章 结论·····31"),
     ]
     records = run + [_para("正文开始。"), _para("附录 A............99")]
-    toc = detect_toc_records(records)
+    toc, _events = detect_toc_records(records)
     assert toc == {0, 1, 2, 3}  # the isolated trailing line survives
 
 
@@ -243,7 +243,7 @@ def test_heuristic_toc_single_paragraph_soft_breaks() -> None:
         ),
         _para("正文开始。"),
     ]
-    toc = detect_toc_records(records)
+    toc, _events = detect_toc_records(records)
     assert toc == {0}
 
 
@@ -253,7 +253,7 @@ def test_heuristic_toc_single_paragraph_two_lines_not_enough() -> None:
         _para("第一章 绪论............3\n第二章 方法............12"),
         _para("正文开始。"),
     ]
-    assert detect_toc_records(records) == set()
+    assert detect_toc_records(records)[0] == set()
 
 
 def test_toc_similar_body_not_whitelisted() -> None:
@@ -264,8 +264,205 @@ def test_toc_similar_body_not_whitelisted() -> None:
         _para("第三章 实验............25"),
         _para("以下正文引用了第一章 绪论的内容。"),
     ]
-    toc = detect_toc_records(records)
+    toc, _events = detect_toc_records(records)
     assert 3 not in toc
+
+
+# ---------------------------------------------------------------------------
+# TOC third channel: plain (leaderless) numbered run under a 目次 title
+# ---------------------------------------------------------------------------
+
+_LONG_BODY = "这是用于分隔目录与正文的较长正文段落其加权字符数明显超过标题长度上限以确保它不会被误判为目录成员并作为一个天然的分隔项目描述若干"
+
+
+def _p(text: str, size: float = 10.5) -> ParagraphRecord:
+    return ParagraphRecord(kind="para", text=text, font_size_pt=size)
+
+
+def test_toc_third_channel_detects_plain_numbered_run() -> None:
+    """Fix-proof (GB/T shape): a leaderless numbered run under 目次, every entry
+    duplicated later in the body, is removed; the 目次 title itself stays."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),
+        _p(_LONG_BODY),  # separator: long → ends the run
+        _p("1 范围", 14.0),
+        _p("本章规定了适用范围。"),
+        _p("2 规范性引用文件", 14.0),
+        _p("下列引用文件适用。"),
+        _p("3 术语和定义", 14.0),
+        _p("下列术语和定义适用。"),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == {1, 2, 3}
+    assert 0 not in toc  # the 目次 title is a real heading
+    assert events == [
+        {"rule": "toc_plain_numbered_run", "anchor": 0, "start": 1, "end": 3}
+    ]
+
+
+def test_toc_third_channel_truncates_before_body_first_heading() -> None:
+    """Review regression: the TOC is immediately followed by the body's first
+    heading with NO long separator, at the SAME size as the TOC entries. The
+    body heading's only copy is the TOC entry ABOVE it, so it has no forward
+    duplicate and must END the run rather than be swallowed."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),
+        # body starts immediately, same 10.5pt size (size termination is inert)
+        _p("1 范围"),
+        _p("本章规定了适用范围。"),
+        _p("2 规范性引用文件"),
+        _p("下列引用文件适用。"),
+        _p("3 术语和定义"),
+        _p("下列术语和定义适用。"),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == {1, 2, 3}
+    assert 4 not in toc and 6 not in toc and 8 not in toc  # body headings stay
+    assert events[0]["end"] == 3
+
+
+def test_toc_third_channel_font_size_terminates_run() -> None:
+    """A member strictly larger than the TOC's established max size (the body's
+    first heading, e.g. a 16pt 前言) ends the run."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),
+        _p("前  言", 16.0),  # bigger → run ends here
+        _p("前  言", 16.0),
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == {1, 2, 3}
+    assert 4 not in toc
+
+
+def test_toc_third_channel_all_or_nothing() -> None:
+    """If any run member has no forward duplicate, the WHOLE block is rejected
+    (a partial TOC is not confidently a TOC)."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),  # this one has NO body copy
+        _p(_LONG_BODY),
+        _p("1 范围", 14.0),
+        _p("正文。"),
+        _p("2 规范性引用文件", 14.0),
+        _p("正文。"),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == set()
+    assert events == []
+
+
+def test_toc_third_channel_anchor_front_part_limit() -> None:
+    """A 目录/Contents heading deep in the body (after several long body
+    paragraphs) does not anchor the channel."""
+    records = [_p(_LONG_BODY) for _ in range(3)]  # 3 long body paras up front
+    records += [
+        _p("Contents", 16.0),  # a mid-document "Contents" — too late to anchor
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),
+        _p(_LONG_BODY),
+        _p("1 范围", 14.0),
+        _p("2 规范性引用文件", 14.0),
+        _p("3 术语和定义", 14.0),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == set()
+    assert events == []
+
+
+def test_toc_third_channel_soft_break_member_counts_lines() -> None:
+    """A run member typed as one paragraph with soft-break lines is matched and
+    counted line-by-line (line-level inverted index)."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围\n2 规范性引用文件\n3 术语和定义"),  # one paragraph, 3 lines
+        _p(_LONG_BODY),
+        _p("1 范围", 14.0),
+        _p("2 规范性引用文件", 14.0),
+        _p("3 术语和定义", 14.0),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == {1}  # the single multi-line paragraph
+    assert events[0]["start"] == 1 and events[0]["end"] == 1
+
+
+def test_toc_third_channel_below_min_lines_not_detected() -> None:
+    """Fewer than DOCX_SMART_TOC_MIN_LINES members → not a TOC (false negatives
+    are acceptable here — CB1 handles a small stray run)."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p(_LONG_BODY),
+        _p("1 范围", 14.0),
+        _p("2 规范性引用文件", 14.0),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == set()
+
+
+def test_toc_third_channel_needs_title_anchor() -> None:
+    """A numbered run with body duplicates but NO 目次/Contents title is not
+    removed — the anchor is mandatory."""
+    records = [
+        _p("1 范围"),
+        _p("2 规范性引用文件"),
+        _p("3 术语和定义"),
+        _p(_LONG_BODY),
+        _p("1 范围", 14.0),
+        _p("2 规范性引用文件", 14.0),
+        _p("3 术语和定义", 14.0),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == set()
+
+
+def test_toc_third_channel_strips_trailing_pageno() -> None:
+    """A TOC entry with a trailing page number matches the body heading without
+    it (the page number is stripped before the duplicate comparison)."""
+    records = [
+        _p("目  次", 16.0),
+        _p("1 范围　3"),
+        _p("2 规范性引用文件　5"),
+        _p("3 术语和定义　8"),
+        _p(_LONG_BODY),
+        _p("1 范围", 14.0),
+        _p("2 规范性引用文件", 14.0),
+        _p("3 术语和定义", 14.0),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == {1, 2, 3}
+
+
+def test_toc_third_channel_english_contents_casefold() -> None:
+    """English TOCs anchor on Table of Contents / CONTENTS and match body
+    headings case-insensitively."""
+    records = [
+        _p("Table of Contents", 16.0),
+        _p("1 Scope"),
+        _p("2 Normative References"),
+        _p("3 Terms and Definitions"),
+        _p(_LONG_BODY),
+        _p("1 SCOPE", 14.0),  # different case in the body
+        _p("2 normative references", 14.0),
+        _p("3 Terms and Definitions", 14.0),
+    ]
+    toc, events = detect_toc_records(records)
+    assert toc == {1, 2, 3}
 
 
 # ---------------------------------------------------------------------------
