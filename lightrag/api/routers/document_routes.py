@@ -631,6 +631,13 @@ class DeleteDocRequest(BaseModel):
         return validated_ids
 
 
+# doc_status.metadata keys that are internal pipeline bookkeeping and must
+# never reach the frontend. smartheading_llm_cache_ids is a deletion-time
+# LLM-cache purge list (written by the parse pipeline at pipeline.py:1748,
+# consumed only by adelete_by_doc_id).
+_INTERNAL_METADATA_KEYS = frozenset({"smartheading_llm_cache_ids"})
+
+
 class DocStatusResponse(BaseModel):
     id: str = Field(description="Document identifier")
     content_summary: str = Field(description="Summary of document content")
@@ -651,6 +658,21 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+
+    @field_validator("metadata", mode="after")
+    @classmethod
+    def _strip_internal_metadata(
+        cls, metadata: Optional[dict[str, Any]]
+    ) -> Optional[dict[str, Any]]:
+        """Never expose internal pipeline bookkeeping to API clients."""
+        if not isinstance(metadata, dict):
+            return metadata  # None / (defensively) non-dict pass through
+        if not _INTERNAL_METADATA_KEYS.intersection(metadata):
+            return metadata  # common case: nothing to strip, no copy
+        # Copy-then-strip — the source DocProcessingStatus.metadata is shared
+        # with the deletion path and carry-over; mutating it in place would
+        # remove the field adelete_by_doc_id needs.
+        return {k: v for k, v in metadata.items() if k not in _INTERNAL_METADATA_KEYS}
 
     model_config = ConfigDict(
         json_schema_extra={
