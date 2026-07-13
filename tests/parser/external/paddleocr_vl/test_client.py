@@ -239,6 +239,24 @@ def _install_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+class _StaticGetClient:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def get(self, url: str) -> _Response:
+        return _Response(text=self._text)
+
+
+async def test_jsonl_result_rejects_non_object_records() -> None:
+    client = PaddleOCRVLRawClient()
+    response = json.dumps([{"prunedResult": {"parsing_res_list": []}}])
+
+    with pytest.raises(RuntimeError, match="JSONL line 1 must be an object"):
+        await client._download_json_result(
+            _StaticGetClient(response), "http://files.test/result.jsonl"
+        )
+
+
 _PADDLEOCR_VL_ENV_VARS = (
     "PADDLEOCR_VL_API_MODE",
     "PADDLEOCR_VL_API_TOKEN",
@@ -343,9 +361,10 @@ async def test_mandatory_images_with_same_bbox_are_scoped_by_page_index(
             "layoutParsingResults": [
                 {
                     "markdown": {
+                        "text": (f'<img src="{image_path}" alt="Image" />'),
                         "images": {
                             image_path: base64.b64encode(payload).decode("ascii")
-                        }
+                        },
                     }
                 }
                 for payload in (b"page-zero", b"page-one")
@@ -363,6 +382,10 @@ async def test_mandatory_images_with_same_bbox_are_scoped_by_page_index(
     assert not (raw_dir / image_path).exists()
     assert list(pages[0]["markdown"]["images"]) == [first_ref]
     assert list(pages[1]["markdown"]["images"]) == [second_ref]
+    assert first_ref in pages[0]["markdown"]["text"]
+    assert second_ref in pages[1]["markdown"]["text"]
+    assert image_path not in pages[0]["markdown"]["text"]
+    assert image_path not in pages[1]["markdown"]["text"]
 
 
 async def test_client_downloads_only_bos_remote_assets(

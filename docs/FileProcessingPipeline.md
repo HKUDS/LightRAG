@@ -921,7 +921,7 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 # PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode uses PaddleOCR's cloud async API: submit a job to `PADDLEOCR_VL_OFFICIAL_ENDPOINT`, poll until it finishes, then download the result JSON/JSONL. The `local` mode uses a self-hosted PaddleOCR-VL service that is compatible with LightRAG's request contract and sends a synchronous JSON request to `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing`; the call returns only after the document has been parsed. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
+`PADDLEOCR_VL_API_MODE` accepts `official` and `local`. The `official` mode uses PaddleOCR's cloud async API: submit a job to `PADDLEOCR_VL_OFFICIAL_ENDPOINT`, poll until it finishes, then download the result JSONL. The `local` mode uses a self-hosted PaddleOCR-VL service that is compatible with LightRAG's request contract and sends a synchronous JSON request to `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing`; the call returns only after the document has been parsed. `PADDLEOCR_VL_ENDPOINT` remains a backwards-compatible alias for `PADDLEOCR_VL_OFFICIAL_ENDPOINT`.
 
 PaddleOCR-VL returns binary fields such as `outputImages`, `inputImage`,
 `markdown.images`, and `exports` as inline Base64 by default. When the serving

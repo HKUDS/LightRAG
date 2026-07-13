@@ -7,6 +7,7 @@ import base64
 import binascii
 import json
 import os
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -223,16 +224,7 @@ class PaddleOCRVLRawClient:
         stripped = text.strip()
         if not stripped:
             return pages
-        if stripped.startswith("["):
-            try:
-                payload = json.loads(stripped)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"PaddleOCR-VL result which starts with '[' was unparseable: {exc.msg}"
-                ) from exc
-            if isinstance(payload, list):
-                return [p for p in payload if isinstance(p, dict)]
-        for line in stripped.splitlines():
+        for line_number, line in enumerate(stripped.splitlines(), start=1):
             line = line.strip()
             if not line:
                 continue
@@ -240,9 +232,14 @@ class PaddleOCRVLRawClient:
                 payload = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise RuntimeError(
-                    f"PaddleOCR-VL json result had an unparseable line: {exc.msg}"
+                    "PaddleOCR-VL JSONL result had an unparseable line "
+                    f"{line_number}: {exc.msg}"
                 ) from exc
-            result = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                raise RuntimeError(
+                    f"PaddleOCR-VL JSONL line {line_number} must be an object"
+                )
+            result = payload.get("result")
             page_items = (
                 result.get("layoutParsingResults") if isinstance(result, dict) else None
             )
@@ -304,16 +301,19 @@ class PaddleOCRVLRawClient:
         for page_index, page in enumerate(pages):
             markdown = page.get("markdown") if isinstance(page, dict) else None
             images = markdown.get("images") if isinstance(markdown, dict) else None
-            if isinstance(images, dict):
+            if isinstance(markdown, dict) and isinstance(images, dict):
                 # markdown.images are referenced from the rendered document body
                 # (their paths appear in the parsing result and in the IR), so a
                 # missing/undecodable one breaks downstream rendering — materialize
                 # them as mandatory (errors propagate).
                 indexed_images: dict[str, Any] = {}
+                image_path_replacements: dict[str, str] = {}
                 for rel_path, image_value in images.items():
                     value = str(image_value)
-                    rel = _indexed_image_path(str(rel_path), value, page_index)
+                    original_path = str(rel_path)
+                    rel = _indexed_image_path(original_path, value, page_index)
                     indexed_images[rel.as_posix()] = image_value
+                    image_path_replacements[original_path] = rel.as_posix()
                     mandatory.append(
                         self._materialize_one_image(
                             client,
@@ -324,6 +324,11 @@ class PaddleOCRVLRawClient:
                     )
                 images.clear()
                 images.update(indexed_images)
+                markdown_text = markdown.get("text")
+                if isinstance(markdown_text, str):
+                    markdown["text"] = _replace_image_references(
+                        markdown_text, image_path_replacements
+                    )
 
             output_images = page.get("outputImages") if isinstance(page, dict) else None
             if isinstance(output_images, dict):
@@ -507,6 +512,17 @@ def _indexed_image_path(
     suffix = suffix or path.suffix or ".jpg"
     path = path.with_suffix(suffix)
     return path.with_name(f"{path.stem}_{page_index}{path.suffix}")
+
+
+def _replace_image_references(text: str, replacements: Mapping[str, str]) -> str:
+    if not replacements:
+        return text
+    pattern = re.compile(
+        "|".join(
+            re.escape(path) for path in sorted(replacements, key=len, reverse=True)
+        )
+    )
+    return pattern.sub(lambda match: replacements[match.group(0)], text)
 
 
 def _suffix_from_url(url: str) -> str:

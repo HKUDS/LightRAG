@@ -921,7 +921,7 @@ PADDLEOCR_VL_API_TOKEN=<your_access_token>
 # PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 ```
 
-`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSON/JSONL。`local` 对接自部署、且兼容 LightRAG 请求约定的 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
+`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSONL。`local` 对接自部署、且兼容 LightRAG 请求约定的 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
 
 PaddleOCR-VL 默认把 `outputImages`、`inputImage`、`markdown.images`、
 `exports` 等二进制字段以 Base64 内联返回。当服务端启用
