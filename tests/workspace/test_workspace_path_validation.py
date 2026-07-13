@@ -98,7 +98,7 @@ def _import_document_manager():
     original_argv = sys.argv.copy()
     try:
         sys.argv = ["lightrag-server"]
-        from lightrag.api.routers.document_routes import DocumentManager
+        from lightrag.api.document_manager import DocumentManager
 
         return DocumentManager
     finally:

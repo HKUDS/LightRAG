@@ -19,7 +19,12 @@ from fastapi import HTTPException, Security, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args, get_env_value
+from .config import (
+    ollama_server_infos,
+    global_args,
+    get_env_value,
+    validate_workspace_name,
+)
 
 logger = logging.getLogger("lightrag")
 
@@ -39,6 +44,49 @@ _TOKEN_RENEWAL_SKIP_PATHS = [
     "/documents/paginated",
     "/documents/pipeline_status",
 ]
+
+
+def get_workspace_from_request(
+    request: Request,
+    default_workspace: str | None = None,
+) -> str:
+    """Extract and validate workspace from HTTP request.
+
+    Priority:
+    1. ``LIGHTRAG-WORKSPACE`` header present → validate → use it.
+    2. No header + ``default_workspace`` provided → use ``default_workspace``.
+    3. Neither → HTTP 400.
+
+    Args:
+        request: FastAPI Request object.
+        default_workspace: Fallback workspace when the header is absent.
+            Typically ``args.workspace`` from server startup.
+
+    Returns:
+        A validated workspace name (always non-empty).
+
+    Raises:
+        HTTPException(400): Invalid or missing workspace.
+    """
+    raw = request.headers.get("LIGHTRAG-WORKSPACE")
+
+    if raw is not None:
+        # Header is present — even if empty or blank, the client
+        # explicitly sent it.  Do NOT silently fall back to the
+        # default workspace; a malformed multi-workspace request
+        # should not accidentally route to the wrong data.
+        workspace = raw.strip()
+        if not workspace:
+            raise HTTPException(400, "LIGHTRAG-WORKSPACE header must not be empty")
+        return validate_workspace_name(workspace)
+
+    if default_workspace:
+        return validate_workspace_name(default_workspace)
+
+    raise HTTPException(
+        400,
+        "LIGHTRAG-WORKSPACE header required (no default workspace configured)",
+    )
 
 
 def check_env_file():

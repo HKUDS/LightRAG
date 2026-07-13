@@ -48,7 +48,9 @@ pipeline_index_files = _document_routes.pipeline_index_files
 pipeline_index_texts = _document_routes.pipeline_index_texts
 pipeline_enqueue_file = _document_routes.pipeline_enqueue_file
 run_scanning_process = _document_routes.run_scanning_process
-DocumentManager = _document_routes.DocumentManager
+DocumentManager = importlib.import_module(
+    "lightrag.api.document_manager"
+).DocumentManager
 create_document_routes = _document_routes.create_document_routes
 
 pytestmark = pytest.mark.offline

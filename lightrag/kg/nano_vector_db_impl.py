@@ -346,11 +346,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 f"(batch_num={self._max_batch_size})"
             )
             try:
+                # Throttle concurrent embedding calls — asyncio.gather on
+                # hundreds of batches can overwhelm the embedding backend
+                # (e.g. Ollama returning 502).  Cap at 4 concurrent calls.
+                _sem = asyncio.Semaphore(4)
+
+                async def _embed_one(batch):
+                    async with _sem:
+                        return await self.embedding_func(batch, context="document")
+
                 embeddings_list = await asyncio.gather(
-                    *[
-                        self.embedding_func(batch, context="document")
-                        for batch in batches
-                    ]
+                    *[_embed_one(batch) for batch in batches]
                 )
             except Exception as e:
                 logger.error(
@@ -802,11 +808,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     contents[i : i + self._max_batch_size]
                     for i in range(0, len(contents), self._max_batch_size)
                 ]
+                # Throttle concurrent embedding calls (see _flush_pending_locked).
+                _sem = asyncio.Semaphore(4)
+
+                async def _embed_one(batch):
+                    async with _sem:
+                        return await self.embedding_func(batch, context="document")
+
                 embeddings_list = await asyncio.gather(
-                    *[
-                        self.embedding_func(batch, context="document")
-                        for batch in batches
-                    ]
+                    *[_embed_one(batch) for batch in batches]
                 )
                 embeddings = np.concatenate(embeddings_list)
                 if len(embeddings) != len(to_embed):

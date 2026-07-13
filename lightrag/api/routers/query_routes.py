@@ -4,7 +4,7 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 from typing import Any, Dict, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
@@ -188,12 +188,24 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(
+    rag_pool,
+    api_key: Optional[str] = None,
+    top_k: int = 60,
+    default_workspace: str | None = None,
+):
     # Fresh router per call. A module-level instance would accumulate
     # duplicate routes when the factory is invoked more than once in the
     # same process (e.g. across tests), which triggers FastAPI's
     # "Duplicate Operation ID" warnings.
+    from lightrag.api.utils_api import get_workspace_from_request
+
     router = APIRouter(tags=["query"])
+
+    async def _resolve_rag(request: Request):
+        """Resolve the LightRAG instance for the workspace in *request*."""
+        ws = get_workspace_from_request(request, default_workspace=default_workspace)
+        return await rag_pool.get(ws)
 
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -326,7 +338,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text(request: QueryRequest):
+    async def query_text(_req: Request, request: QueryRequest):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
@@ -402,6 +414,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 400: Invalid input parameters (e.g., query too short)
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
+        rag = await _resolve_rag(_req)
         try:
             param = request.to_query_params(
                 False
@@ -596,7 +609,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text_stream(request: QueryRequest):
+    async def query_text_stream(_req: Request, request: QueryRequest):
         """
         Advanced RAG query endpoint with flexible streaming response.
 
@@ -723,6 +736,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             This endpoint is ideal for applications requiring flexible response delivery.
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
         """
+        rag = await _resolve_rag(_req)
         try:
             # Use the stream parameter from the request, defaulting to True if not specified
             stream_mode = request.stream if request.stream is not None else True
@@ -1048,7 +1062,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_data(request: QueryRequest):
+    async def query_data(_req: Request, request: QueryRequest):
         """
         Advanced data retrieval endpoint for structured RAG analysis.
 
@@ -1151,6 +1165,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             This endpoint always includes references regardless of the include_references parameter,
             as structured data analysis typically requires source attribution.
         """
+        rag = await _resolve_rag(_req)
         try:
             param = request.to_query_params(False)  # No streaming for data endpoint
             response = await rag.aquery_data(request.query, param=param)
