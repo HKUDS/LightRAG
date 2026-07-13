@@ -346,6 +346,24 @@ async def test_client_submits_polls_downloads_result_and_assets(
     assert (raw_dir / "_manifest.json").is_file()
 
 
+async def test_client_rejects_empty_pages_before_writing_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    _CURRENT["recorder"] = _Recorder()
+    _RESULT_PAYLOAD = {"result": {"layoutParsingResults": []}}
+    _install_httpx(monkeypatch)
+    raw_dir = tmp_path / "demo.paddleocr_vl_raw"
+
+    with pytest.raises(RuntimeError, match="returned no pages"):
+        await PaddleOCRVLRawClient().download_into(raw_dir, source)
+
+    assert not (raw_dir / "content_list.json").exists()
+    assert not (raw_dir / "_manifest.json").exists()
+
+
 async def test_mandatory_images_with_same_bbox_are_scoped_by_page_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

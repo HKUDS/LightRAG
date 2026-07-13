@@ -142,6 +142,8 @@ class PaddleOCRVLRawClient:
                     task_id, pages = await self._download_local(
                         client, source_file_path
                     )
+                if not pages:
+                    raise RuntimeError("PaddleOCR-VL returned no pages")
                 await self._download_referenced_images(client, pages, raw_dir)
         except httpx.RequestError as exc:
             raise RuntimeError(
