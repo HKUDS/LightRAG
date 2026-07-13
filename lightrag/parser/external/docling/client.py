@@ -24,6 +24,10 @@ that happens, the client materializes the nested ``document.json_content``
 its ``ExportDocumentResponse`` wrapper are not treated as document content. A
 JSON envelope whose own conversion ``status`` is not ``success`` is rejected
 rather than materialized, so a partial conversion never becomes a cache hit.
+Because the JSON path cannot deliver the ``artifacts/`` files that
+``image_export_mode=referenced`` produces, a ``json_content`` that references
+external images (rather than embedding them as ``data:`` URIs) is rejected too,
+so silent image loss can't hide behind a success manifest.
 """
 
 from __future__ import annotations
@@ -376,6 +380,25 @@ def _materialize_json_result(
         raise RuntimeError(_format_failure(task_id, status, payload))
 
     document, markdown = _extract_document_payload(payload)
+
+    # ``image_export_mode=referenced`` makes docling reference picture bytes by
+    # relative ``artifacts/...`` path. Those files ship inside the zip, never
+    # inside the JSON envelope — so the JSON path, which writes only
+    # ``<stem>.json`` (+ optional markdown), cannot deliver them. The IR builder
+    # would then silently drop every such picture yet the bundle would still be
+    # cached as a success. Fail loudly instead so image loss can't hide behind a
+    # cache hit. Embedded (``data:``) and remote (``http(s)://``) images carry
+    # their own bytes and are unaffected.
+    referenced = _referenced_image_uris(document)
+    if referenced:
+        sample = ", ".join(referenced[:5])
+        raise RuntimeError(
+            f"Docling JSON result references external image artifacts the JSON "
+            f"result path cannot deliver (only <stem>.json/<stem>.md are "
+            f"written): {sample}. Configure docling-serve to return a zip bundle "
+            f"or embed images as data URIs for this deployment."
+        )
+
     stem = Path(upload_filename).stem
     (raw_dir / f"{stem}.json").write_text(
         json.dumps(document, ensure_ascii=False, indent=2),
@@ -423,6 +446,31 @@ def _extract_document_payload(payload: Any) -> tuple[dict[str, Any], Any | None]
 
 def _looks_like_docling_document(payload: dict[str, Any]) -> bool:
     return any(key in payload for key in ("schema_name", "body", "texts", "tables"))
+
+
+def _referenced_image_uris(document: dict[str, Any]) -> list[str]:
+    """Relative picture image URIs in a ``DoclingDocument`` — i.e. neither
+    ``data:`` nor ``http(s)://``. These name companion ``artifacts/`` files the
+    JSON result path never writes, so their presence means images would be lost.
+
+    Mirrors the IR builder's URI classification (``_build_ir_drawing``): only a
+    non-empty, non-data, non-remote ``image.uri`` needs a local file.
+    """
+    pictures = document.get("pictures")
+    if not isinstance(pictures, list):
+        return []
+    referenced: list[str] = []
+    for pic in pictures:
+        if not isinstance(pic, dict):
+            continue
+        image = pic.get("image")
+        if not isinstance(image, dict):
+            continue
+        uri = str(image.get("uri") or "")
+        if not uri or uri.startswith(("data:", "http://", "https://")):
+            continue
+        referenced.append(uri)
+    return referenced
 
 
 def _format_failure(task_id: str, status: str, payload: Any) -> str:
