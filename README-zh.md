@@ -218,6 +218,24 @@ make env-security-check # 可选：审计当前 .env 中的安全风险
 
 设置向导工具的详细说明请参阅 [docs/InteractiveSetup.md](./docs/InteractiveSetup.md)。
 
+### 可选：docx smart_heading 的 spaCy 模型
+
+Native docx 解析器的可选引擎参数 `smart_heading` 使用 spaCy 做分句/NER 启发式判断。spaCy 运行时已包含在 `api` extra 中——只有两个钉定版本的语言模型（`zh_core_web_sm` / `en_core_web_sm` 3.8.0，GitHub release wheel，未发布到 PyPI）需要额外一步安装：
+
+```bash
+lightrag-download-cache --spacy --spacy-install
+```
+
+可以按文件/规则启用 smart_heading（如 `LIGHTRAG_PARSER=docx:native(smart_heading=true)`），也可以在 `.env` 中全局启用：
+
+```bash
+# 路由到 native 引擎的 .docx 文件默认启用 smart_heading；
+# 单个文件/规则可用显式 native(smart_heading=false) 关闭。
+DOCX_SMART_HEADING=true
+```
+
+全局开关开启（或 `LIGHTRAG_PARSER` 规则携带 `native(smart_heading=true)`）时，服务器会在启动阶段校验模型并在缺失时立即报错（附安装指引）。从不启用 smart_heading 的部署无需安装模型。Docker 主镜像已内置模型（lite 镜像不含）；离线环境请参阅[离线部署指南](./docs/OfflineDeployment.md)。
+
 ## 关于LightRAG
 
 ### 基于图的轻量级RAG框架

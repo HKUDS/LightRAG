@@ -27,6 +27,9 @@ _ENV_VARS_TO_ISOLATE = (
     "LIGHTRAG_VECTOR_STORAGE",
     "LIGHTRAG_GRAPH_STORAGE",
     "LIGHTRAG_DOC_STATUS_STORAGE",
+    "AUTH_ACCOUNTS",
+    "TOKEN_SECRET",
+    "WHITELIST_PATHS",
 )
 
 
@@ -36,6 +39,18 @@ def _isolate_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    monkeypatch.setenv("AUTH_ACCOUNTS", "")
+    monkeypatch.setenv("TOKEN_SECRET", "")
+    monkeypatch.setenv("LIGHTRAG_API_KEY", "")
+
+    # auth.py/utils_api.py derive module-level state from .env at import time.
+    # If another test imported them first, make this route test explicitly open.
+    auth_module = sys.modules.get("lightrag.api.auth")
+    if auth_module is not None:
+        monkeypatch.setattr(auth_module.auth_handler, "accounts", {}, raising=False)
+    utils_api_module = sys.modules.get("lightrag.api.utils_api")
+    if utils_api_module is not None:
+        monkeypatch.setattr(utils_api_module, "auth_configured", False, raising=False)
 
 
 def _build_client():

@@ -218,6 +218,24 @@ make env-security-check # Optional: audit the current .env for security risks
 
 For full description of every target see [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
 
+### Optional: spaCy Models for docx smart_heading
+
+The native docx parser's opt-in `smart_heading` engine parameter uses spaCy for sentence/NER heuristics. The spaCy runtime is already included in the `api` extra — only the two pinned language models (`zh_core_web_sm` / `en_core_web_sm` 3.8.0, GitHub release wheels not published on PyPI) need one extra step:
+
+```bash
+lightrag-download-cache --spacy --spacy-install
+```
+
+Enable smart_heading per file/rule (e.g. `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), or globally in `.env`:
+
+```bash
+# .docx files routed to the native engine get smart_heading by default;
+# opt a file back out with an explicit native(smart_heading=false) rule/hint.
+DOCX_SMART_HEADING=true
+```
+
+When the global switch is on (or a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)`), the server verifies the models at startup and fails fast with install guidance if they are missing. Deployments that never enable smart_heading need no models. The main Docker image ships the models pre-installed (the lite image does not); for air-gapped hosts see the [Offline Deployment Guide](./docs/OfflineDeployment.md).
+
 ## About LightRAG
 
 ### A Lightweight, Graph-Based RAG Framework
