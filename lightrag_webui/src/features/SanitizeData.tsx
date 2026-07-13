@@ -1,6 +1,7 @@
 // lightrag_webui/src/features/SanitizeData.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import pLimit from 'p-limit';
 
 // const API_BASE = 'http://localhost:9621';
 const API_BASE = `${window.location.protocol}//${window.location.hostname}:9621`;
@@ -132,34 +133,59 @@ export default function SanitizeData() {
     );
   };
 
-  // Build entityTypeMap and entityOrphanMap with single fetch per entity
+
+  // Build entityTypeMap and entityOrphanMap with controlled concurrency
   const fetchEntityDetails = async (entityList: string[]) => {
+    if (!entityList || entityList.length === 0) {
+      setEntityTypeMap({});
+      setEntityOrphanMap({});
+      setTypesLoading(false);
+      return;
+    }
+
     try {
+      setTypesLoading(true);
+
       const typeMap: Record<string, string> = {};
       const orphanMap: Record<string, boolean> = {};
-      await Promise.all(
-        entityList.map(async (name: string) => {
-          try {
-            const detailRes = await axios.get(
-              `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
-            );
-            // Find main node by id (robust to order)
-            const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
-            const type = mainNode?.properties?.entity_type || '';
-            typeMap[name] = type;
 
-            // Detect orphan from the same response
-            const isOrphan = (detailRes.data.nodes?.length || 0) <= 1 && (detailRes.data.edges?.length || 0) === 0;
-            orphanMap[name] = isOrphan;
-          } catch (err) {
-            console.error(`Error fetching details for ${name}:`, err);
-          }
-        })
+      // Limit concurrency to avoid ERR_INSUFFICIENT_RESOURCES
+      const limit = pLimit(12); // 12 is safe for most machines; try 8-20
+
+      await Promise.all(
+        entityList.map((name: string) =>
+          limit(async () => {
+            try {
+              const detailRes = await axios.get(
+                `${API_BASE}/graphs?label=${encodeURIComponent(name)}&max_depth=1&max_nodes=2`
+              );
+
+              // Find main node by id (robust to order)
+              const mainNode = detailRes.data.nodes?.find((node: any) => node.id === name);
+              const type = mainNode?.properties?.entity_type || '';
+              typeMap[name] = type;
+
+              // Detect orphan from the same response
+              const isOrphan =
+                (detailRes.data.nodes?.length || 0) <= 1 &&
+                (detailRes.data.edges?.length || 0) === 0;
+
+              orphanMap[name] = isOrphan;
+            } catch (err: any) {
+              console.error(`Error fetching details for ${name}:`, err.message || err);
+              // Optional: set defaults on failure
+              typeMap[name] = '';
+              orphanMap[name] = true;
+            }
+          })
+        )
       );
+
       setEntityTypeMap(typeMap);
       setEntityOrphanMap(orphanMap);
-      // console.log('Types loaded:', Object.keys(typeMap).length); // Debug
-      // console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length); // Debug
+
+      // console.log('Types loaded:', Object.keys(typeMap).length);
+      // console.log('Orphans loaded:', Object.values(orphanMap).filter(Boolean).length);
     } catch (err) {
       console.error('Failed to fetch entity details:', err);
     } finally {

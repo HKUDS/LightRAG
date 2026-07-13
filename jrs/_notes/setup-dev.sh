@@ -102,6 +102,10 @@
 # For better security, define API keys in the .bashrc file in you home directory rather than in your .env file.
 # The following line should be in your .env file, or for better security in your .bashrc file.
 #export OPENAI_API_KEY="My_API_Key"
+
+# The following file, around line 37 is where we expose or hid the WebUI tabs.
+# /home/js/LightRAG-Dev/lightrag_webui/src/features/SiteHeader.tsx
+
 #*******************End of Notes*********************
 
 
