@@ -35,7 +35,9 @@ from lightrag.utils import logger
 PREFACE_HEADING = "Preface/Uncategorized"
 _IMG_SRC_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']", re.I)
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
-_IMG_IN_IMAGE_BOX_RE = re.compile(r"^img_in_image_box_(\d+)_(\d+)_(\d+)_(\d+)$", re.I)
+_IMG_IN_IMAGE_BOX_RE = re.compile(
+    r"^img_in_image_box_(\d+)_(\d+)_(\d+)_(\d+)(?:_\d+)?$", re.I
+)
 _SKIP_LABELS = {
     "number",
     "formula_number",

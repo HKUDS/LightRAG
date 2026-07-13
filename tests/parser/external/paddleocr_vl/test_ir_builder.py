@@ -536,6 +536,42 @@ def test_poly_bbox_image_uses_enclosing_rectangle_for_markdown_asset(
 
 
 @pytest.mark.offline
+def test_page_indexed_image_name_preserves_bbox_mapping_and_asset(
+    tmp_path: Path,
+) -> None:
+    image_ref = "imgs/img_in_image_box_10_20_30_40_0.jpg"
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "image",
+                            "block_content": "",
+                            "block_bbox": [10, 20, 30, 40],
+                        }
+                    ]
+                },
+                "markdown": {"images": {image_ref: "ignored-url"}},
+            }
+        ],
+    )
+    image_path = raw_dir / image_ref
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"page-zero")
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    drawing = ir.blocks[0].drawings[0]
+    assert drawing.asset_ref == image_ref
+    asset = next(asset for asset in ir.assets if asset.ref == image_ref)
+    assert asset.source == image_path
+
+
+@pytest.mark.offline
 def test_paragraph_title_without_hash_defaults_to_level_2(tmp_path: Path) -> None:
     # A paragraph_title with no markdown '#' prefix falls back to level 2.
     raw_dir = _write_bundle(

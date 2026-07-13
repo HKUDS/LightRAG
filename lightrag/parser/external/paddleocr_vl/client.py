@@ -309,15 +309,21 @@ class PaddleOCRVLRawClient:
                 # (their paths appear in the parsing result and in the IR), so a
                 # missing/undecodable one breaks downstream rendering — materialize
                 # them as mandatory (errors propagate).
+                indexed_images: dict[str, Any] = {}
                 for rel_path, image_value in images.items():
+                    value = str(image_value)
+                    rel = _indexed_image_path(str(rel_path), value, page_index)
+                    indexed_images[rel.as_posix()] = image_value
                     mandatory.append(
                         self._materialize_one_image(
                             client,
-                            str(image_value),
-                            raw_dir / _safe_relative_path(str(rel_path)),
+                            value,
+                            raw_dir / rel,
                             mandatory=True,
                         )
                     )
+                images.clear()
+                images.update(indexed_images)
 
             output_images = page.get("outputImages") if isinstance(page, dict) else None
             if isinstance(output_images, dict):
@@ -325,12 +331,11 @@ class PaddleOCRVLRawClient:
                 # not affect the parsed document, so failures are soft-skipped.
                 for name, image_value in output_images.items():
                     value = str(image_value)
-                    suffix = ".jpg"
-                    if _looks_like_http_url(value):
-                        suffix = _suffix_from_url(value) or suffix
-                    rel = (
-                        Path("outputImages")
-                        / f"{_safe_name(str(name))}_{page_index}{suffix}"
+                    rel = _indexed_image_path(
+                        str(name),
+                        value,
+                        page_index,
+                        parent=Path("outputImages"),
                     )
                     optional.append(
                         self._materialize_one_image(
@@ -486,6 +491,22 @@ def _safe_name(name: str) -> str:
     cleaned = "".join(ch for ch in cleaned if ord(ch) >= 32 and ch != "\x7f")
     cleaned = cleaned.strip().strip(".")
     return cleaned or "asset"
+
+
+def _indexed_image_path(
+    name: str,
+    value: str,
+    page_index: int,
+    *,
+    parent: Path | None = None,
+) -> Path:
+    path = _safe_relative_path(name)
+    if parent is not None:
+        path = parent / path
+    suffix = _suffix_from_url(value) if _looks_like_http_url(value) else ""
+    suffix = suffix or path.suffix or ".jpg"
+    path = path.with_suffix(suffix)
+    return path.with_name(f"{path.stem}_{page_index}{path.suffix}")
 
 
 def _suffix_from_url(url: str) -> str:

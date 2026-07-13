@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from lightrag.parser.external.paddleocr_vl.client import PaddleOCRVLRawClient
+from lightrag.parser.external.paddleocr_vl.client import _indexed_image_path
 from lightrag.parser.external.paddleocr_vl.client import _safe_name
 
 DEFAULT_PAYLOAD = {
@@ -47,6 +48,24 @@ DEFAULT_PAYLOAD = {
     "relevelTitles": True,
     "visualize": False,
 }
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "expected"),
+    [
+        (
+            "imgs/figure.jpg",
+            "https://example.test/figure.png",
+            "imgs/figure_2.png",
+        ),
+        ("imgs/figure.webp", "base64-payload", "imgs/figure_2.webp"),
+        ("layout_det_res", "base64-payload", "layout_det_res_2.jpg"),
+    ],
+)
+def test_indexed_image_path_uses_url_then_name_then_jpg_suffix(
+    name: str, value: str, expected: str
+) -> None:
+    assert _indexed_image_path(name, value, 2).as_posix() == expected
 
 
 class _Response:
@@ -302,11 +321,48 @@ async def test_client_submits_polls_downloads_result_and_assets(
     )
 
     assert (raw_dir / "content_list.json").is_file()
-    assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"\xff\xd8fake"
+    assert (raw_dir / "imgs" / "fig_0.jpg").read_bytes() == b"\xff\xd8fake"
     assert (
         raw_dir / "outputImages" / "layout_det_res_0.jpg"
     ).read_bytes() == b"\xff\xd8fake"
     assert (raw_dir / "_manifest.json").is_file()
+
+
+async def test_mandatory_images_with_same_bbox_are_scoped_by_page_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global _RESULT_PAYLOAD
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    _CURRENT["recorder"] = _Recorder()
+    _install_httpx(monkeypatch)
+    raw_dir = tmp_path / "demo.paddleocr_vl_raw"
+    image_path = "imgs/img_in_image_box_10_20_30_40.jpg"
+    _RESULT_PAYLOAD = {
+        "result": {
+            "layoutParsingResults": [
+                {
+                    "markdown": {
+                        "images": {
+                            image_path: base64.b64encode(payload).decode("ascii")
+                        }
+                    }
+                }
+                for payload in (b"page-zero", b"page-one")
+            ]
+        }
+    }
+
+    await PaddleOCRVLRawClient().download_into(raw_dir, source)
+
+    pages = json.loads((raw_dir / "content_list.json").read_text(encoding="utf-8"))
+    first_ref = "imgs/img_in_image_box_10_20_30_40_0.jpg"
+    second_ref = "imgs/img_in_image_box_10_20_30_40_1.jpg"
+    assert (raw_dir / first_ref).read_bytes() == b"page-zero"
+    assert (raw_dir / second_ref).read_bytes() == b"page-one"
+    assert not (raw_dir / image_path).exists()
+    assert list(pages[0]["markdown"]["images"]) == [first_ref]
+    assert list(pages[1]["markdown"]["images"]) == [second_ref]
 
 
 async def test_client_downloads_only_bos_remote_assets(
@@ -355,7 +411,7 @@ async def test_client_downloads_only_bos_remote_assets(
         "authorization=bce-auth-v1"
     ) in urls
     assert "http://evil.test/layout.jpg" not in urls
-    assert (raw_dir / "imgs" / "metadata.jpg").read_bytes() == b"bos-fig"
+    assert (raw_dir / "imgs" / "metadata_0.jpg").read_bytes() == b"bos-fig"
     assert not (raw_dir / "outputImages" / "layout_det_res_0.jpg").exists()
 
 
@@ -463,7 +519,7 @@ async def test_allowed_asset_hosts_env_admits_custom_domain(
     raw_dir = tmp_path / "demo.paddleocr_vl_raw"
     await client.download_into(raw_dir, source)
 
-    assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"cdn-fig"
+    assert (raw_dir / "imgs" / "fig_0.jpg").read_bytes() == b"cdn-fig"
 
 
 @pytest.mark.parametrize(
@@ -693,7 +749,7 @@ async def test_local_mode_posts_synchronous_layout_parsing_json(
             "markdown": {
                 "text": "# local",
                 "images": {
-                    "imgs/fig.jpg": base64.b64encode(b"local-fig").decode("ascii")
+                    "imgs/fig_0.jpg": base64.b64encode(b"local-fig").decode("ascii")
                 },
             },
             "outputImages": {
@@ -701,7 +757,7 @@ async def test_local_mode_posts_synchronous_layout_parsing_json(
             },
         }
     ]
-    assert (raw_dir / "imgs" / "fig.jpg").read_bytes() == b"local-fig"
+    assert (raw_dir / "imgs" / "fig_0.jpg").read_bytes() == b"local-fig"
     assert (raw_dir / "outputImages" / "layout_det_res_0.jpg").read_bytes() == (
         b"local-layout"
     )
