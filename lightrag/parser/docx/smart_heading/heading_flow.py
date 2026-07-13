@@ -147,7 +147,14 @@ class HeadingDecision:
     numbering: NumberingClassification | None = None
     centered: bool = False
     all_bold: bool = False
-    anchored: bool = False  # outline-locked (set by §2.2.6)
+    anchored: bool = False  # outline-locked bookkeeping (both §2.2.6 rounds)
+    #: level derives from PHYSICAL OUTLINE evidence — set only by §2.2.6 round 1
+    #: (a member of a numbered series that has ≥1 outlined member, so the whole
+    #: series is anchored to the outline mode). Distinct from ``anchored``,
+    #: which also covers round-2 size-only propagation. Used as a hard boundary
+    #: by the §2.2.7 subtree demotion so an outline-anchored series is not split
+    #: (a no-outline member 1) is not demoted while its outlined 2)/3) survive).
+    outline_anchored: bool = False
     pre_anchor_level: int | None = None  # level before round-1 anchoring
     is_title_block: bool = False
     composed_heading: str | None = None  # title block: the compound heading
@@ -1695,6 +1702,10 @@ def anchor_outline_levels(
             m.pre_anchor_level = m.level
             m.level = mode
             m.anchored = True
+            # whole series' level derives from physical outline evidence — a
+            # no-outline member (1) must not be split off by the §2.2.7 subtree
+            # demotion while its outlined siblings (2)/3) survive.
+            m.outline_anchored = True
             m.note("anchor_outline_series")
 
     # --- round 2 -----------------------------------------------------------
@@ -1849,7 +1860,18 @@ def demote_strong_body_headings(
     strong-body features; hits demote to body. A numbered hit propagates the
     demotion to its whole same-series group unless CB2 trips (fewer than 20%
     of the group hit, or ≥50% of the group carries a physical outline) — a
-    tripped breaker demotes only the hits themselves, with a warning."""
+    tripped breaker demotes only the hits themselves, with a warning.
+
+    Finally each demoted heading takes its NUMBERED subtree (the deeper
+    numbered headings it parents) down with it — an orphaned deeper numbered
+    child would otherwise re-anchor to the wrong parent and swallow the
+    following content. An unnumbered deeper heading is NOT cascaded (its depth
+    is only a size/style heuristic — it is left to close_unnumbered_level_gaps
+    §2.2.8); a heading with physical-outline evidence (its own outlineLvl, or a
+    same-series member anchored to the outline in §2.2.6 round 1) is a hard
+    boundary that is never demoted by ancestor propagation nor split off from
+    its series (it keeps only whatever its own strong-body / CB2 evidence
+    already gave it). The scan stops at either kind of boundary."""
     strong_body = strong_body or guardrails.strong_body_reason
     body_ratio = _env_float(
         "DOCX_SMART_CB2_BODY_RATIO", DEFAULT_DOCX_SMART_CB2_BODY_RATIO
@@ -1904,6 +1926,49 @@ def demote_strong_body_headings(
             warnings["smart_cb2_propagations"] = (
                 warnings.get("smart_cb2_propagations", 0) + 1
             )
+
+    # §2.2.7: an ancestor demotion takes its NUMBERED subtree down with it — an
+    # orphaned deeper NUMBERED child would re-anchor to the wrong parent and
+    # swallow the following content (test14: 一、句号-demoted, （一）/（二） left
+    # as orphan L2). Scan forward from each already-demoted heading (CB2
+    # snapshot; newly folded-in descendants need not be roots — their span is
+    # already covered by the ancestor). Boundaries that stop the scan:
+    #   - a title block / level-0 member (sub-document boundary);
+    #   - a sibling or shallower heading (level <= parent);
+    #   - a member with physical-outline evidence — its own outlineLvl OR a
+    #     same-series member anchored to the outline in §2.2.6 round 1
+    #     (outline_anchored, so a no-outline 1) is not split off while its
+    #     outlined 2)/3) survive) — kept, never demoted by ancestor propagation
+    #     (keeps only its own evidence, never discard());
+    #   - an UNNUMBERED heading: its deeper level is only a size/style heuristic
+    #     (§2.2.5 step 2 sinks unnumbered non-centered below same-size numbered),
+    #     NOT a reliable subtree link (test7: EnNum claims demoted, the
+    #     independent "技术领域"/"背景技术" sections must survive and rise to L2 via
+    #     close_unnumbered_level_gaps §2.2.8, not cascade with the claims).
+    for pos in sorted(demote):
+        parent = decisions[pos]
+        if parent.level is None:
+            continue
+        for cpos in range(pos + 1, len(decisions)):
+            child = decisions[cpos]
+            if child.is_title_block or child.level == 0:
+                break  # sub-document / title-block hard boundary
+            if not child.is_heading:
+                continue  # body between headings never breaks a subtree
+            if child.level is None or child.level <= parent.level:
+                break  # subtree ends (sibling or shallower)
+            if child.outline_level is not None or child.outline_anchored:
+                break  # outline evidence (own, or same-series §2.2.6 round-1
+                # propagation) = hard boundary, kept — never split a series
+            if child.numbering is None:
+                break  # unnumbered: heuristic depth, leave it to gap-close
+            if cpos not in demote:
+                demote.add(cpos)
+                child.note("subtree_demoted")
+                if warnings is not None:
+                    warnings["smart_subtree_demotions"] = (
+                        warnings.get("smart_subtree_demotions", 0) + 1
+                    )
 
     for pos in demote:
         d = decisions[pos]
@@ -2563,7 +2628,7 @@ def _demote_confirmed_imprint_regions(
     warnings: dict | None,
     skip_indices: set[int] = frozenset(),
 ) -> None:
-    """Force a confirmed 公文版记 region's lines to body (§版记 conditional).
+    """Force a confirmed 公文版记 region's lines to body (§2.2.9 conditional).
 
     A region is CONFIRMED — 100% 版记, not a false imprint hit — only when its
     closer is IMMEDIATELY followed by a valid title block: the first CONTENT
@@ -2737,7 +2802,7 @@ def run_smart_heading(
     # §2.2.4: the title-block gate baseline is the GLOBAL FS_base initial
     # value — the char-weighted dominant size (§2.2.2), not a weighted mean.
     fs_initial = doc_fs.size_pt
-    # §版记: map imprint regions ONCE (抄送 anchor → 印发 closer, + preceding
+    # §2.2.9: map imprint regions ONCE (抄送 anchor → 印发 closer, + preceding
     # signature/date lines). The union is the title-block veto set; the regions
     # themselves are reused after title judgment for the conditional demotion
     # (a region followed by a valid title block is a 公文汇编 boundary).
@@ -3058,7 +3123,7 @@ def run_smart_heading(
                 sentinel.note("title_block_member")
                 decisions[m] = sentinel
 
-    # §版记: a 抄送…印发 region whose closer is immediately followed by a valid
+    # §2.2.9: a 抄送…印发 region whose closer is immediately followed by a valid
     # title block is a confirmed 公文汇编 boundary — force its lines to body.
     # Match against the FULL member set (title_members includes each block's
     # main position): see the member-vs-start note in the demotion helper.

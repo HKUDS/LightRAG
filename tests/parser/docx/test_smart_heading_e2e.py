@@ -194,6 +194,46 @@ def _build_oversize_outline():
     return doc
 
 
+def _build_demoted_parent():
+    """test14 shape: 句号-terminated CnNum parents (一、/二、) demote in the
+    post-merge sweep; their non-strong CnParentNum children (（一）/（二）) must
+    cascade down with them instead of surviving as orphan level-2 headings."""
+    from docx import Document
+
+    doc = Document()
+    _p(doc, "某某税费优惠通知", size=18.0, center=True)
+    _p(doc, "为落实税费优惠政策，现将有关事项通知如下。", size=12.0)
+    _p(doc, "一、对节能汽车，减半征收车船税。", size=14.0, bold=True)
+    _p(
+        doc,
+        "（一）减半征收车船税的节能乘用车应同时符合以下标准：",
+        size=12.0,
+        bold=True,
+    )
+    _body_filler(doc, 5, prefix="乘用车标准")
+    _p(
+        doc,
+        "（二）减半征收车船税的节能商用车应同时符合以下标准：",
+        size=12.0,
+        bold=True,
+    )
+    _body_filler(doc, 5, prefix="商用车标准")
+    _p(doc, "二、对新能源车船，免征车船税。", size=14.0, bold=True)
+    _body_filler(doc, 5, prefix="免征说明")
+    return doc
+
+
+def _build_demoted_parent_survivor():
+    """Same as demoted_parent plus a shallower surviving heading (larger font,
+    no numbering, no 句号 → its own level-1 band, above the demoted 14pt
+    chapters): the title block must own the content up to it, and it opens its
+    own block — the subtree cascade must not reach a same-or-shallower sibling."""
+    doc = _build_demoted_parent()
+    _p(doc, "综合说明", size=16.0, bold=True)
+    _body_filler(doc, 5, prefix="综合说明")
+    return doc
+
+
 SCENARIOS = {
     "redhead": _build_redhead,
     "regulation": _build_regulation,
@@ -201,6 +241,8 @@ SCENARIOS = {
     "question_bank": _build_question_bank,
     "spliced": _build_spliced,
     "oversize_outline": _build_oversize_outline,
+    "demoted_parent": _build_demoted_parent,
+    "demoted_parent_survivor": _build_demoted_parent_survivor,
 }
 
 
@@ -330,6 +372,74 @@ def test_redhead_document_structure(monkeypatch) -> None:
     assert sub["parent_headings"] == ["关于加强某某管理的通知", "一、总体要求"]
     assert metadata["first_heading"] == "关于加强某某管理的通知"
     assert metadata["doc_title"] == "关于加强某某管理的通知"
+
+
+_DEMOTED_PARENT_TITLE = {
+    "某某税费优惠通知": {
+        "is_title_block": True,
+        "main_title": "某某税费优惠通知",
+    }
+}
+
+
+def test_demoted_parent_cascades_to_subtree(monkeypatch) -> None:
+    """test14 regression: 句号-terminated CnNum parents (一、/二、) demote in the
+    post-merge sweep and take their non-strong （一）/（二） children down with
+    them. Without the cascade the orphan level-2 children survive, re-anchor to
+    the L0 title block, and the last one swallows everything to EOF.
+
+    Every numbered heading demotes and no surviving heading follows, so the
+    assembler (a title block owns its content until the next surviving heading
+    or EOF) correctly places the whole body in the single L0 title block — the
+    fix's point is that no （二） structural block is left to swallow it.
+    """
+    blocks, warnings, metadata = _extract(
+        "demoted_parent", _make_llm(_DEMOTED_PARENT_TITLE), monkeypatch
+    )
+    summary = _summary(blocks)
+    # every numbered heading demoted ⇒ the sole block is the title block
+    assert summary == [("某某税费优惠通知", 0, True)]
+    tb = blocks[0]
+    assert tb["parent_headings"] == []
+    # no orphan structural block opened by any numbered heading
+    assert not any(
+        mark in (b["heading"] or "")
+        for b in blocks
+        for mark in ("（一）", "（二）", "一、", "二、")
+    )
+    # content intact and in order, all under the title block
+    assert "（二）减半征收车船税的节能商用车" in tb["content"]
+    assert "二、对新能源车船，免征车船税。" in tb["content"]
+    assert tb["content"].index("（二）") < tb["content"].index("二、")
+    # only （一）/（二） cascaded via subtree; 一、/二、 demoted by own/CB2 evidence
+    assert warnings.get("smart_subtree_demotions") == 2
+    assert "smart_fallback_baseline" not in warnings  # smart did not fall back
+    assert metadata["doc_title"] == "某某税费优惠通知"
+
+
+def test_demoted_parent_subtree_stops_at_surviving_sibling(monkeypatch) -> None:
+    """The cascade stops at a same-or-shallower surviving sibling: the title
+    block owns the demoted 一、…二、 span, and 综合说明 (a shallower 16pt heading)
+    opens its own block instead of being swallowed."""
+    blocks, warnings, metadata = _extract(
+        "demoted_parent_survivor", _make_llm(_DEMOTED_PARENT_TITLE), monkeypatch
+    )
+    summary = _summary(blocks)
+    assert summary == [("某某税费优惠通知", 0, True), ("综合说明", 1, False)]
+    assert not any(
+        mark in (b["heading"] or "")
+        for b in blocks
+        for mark in ("（一）", "（二）", "一、", "二、")
+    )
+    tb, surv = blocks[0], blocks[1]
+    # demoted span (incl. 二、 and its filler) belongs to the title block
+    assert "二、对新能源车船，免征车船税。" in tb["content"]
+    assert "免征说明" in tb["content"]
+    # the surviving sibling opens its own block and does not swallow the span
+    assert "综合说明第0段" in surv["content"]
+    assert "免征说明" not in surv["content"]
+    assert warnings.get("smart_subtree_demotions") == 2
+    assert "smart_fallback_baseline" not in warnings
 
 
 def test_regulation_chapters_and_clauses(monkeypatch) -> None:

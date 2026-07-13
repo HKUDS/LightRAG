@@ -10,6 +10,7 @@ from lightrag.parser.docx.parse_document import ParagraphRecord
 from lightrag.parser.docx.smart_heading.heading_flow import (
     HeadingDecision,
     align_numbering_series,
+    anchor_outline_levels,
     assign_levels_by_size,
     backfill_top_level,
     close_unnumbered_level_gaps,
@@ -242,6 +243,190 @@ def test_post_merge_outline_nlp_only_multisentence_is_spared() -> None:
     assert spared.rule_trail == ["outline_multisentence_spared"]
     assert not explicit.is_heading
     assert "strong_body_demoted" in explicit.rule_trail
+
+
+def _hd(
+    idx: int,
+    text: str,
+    level: int,
+    *,
+    outline_level: int | None = None,
+    is_title_block: bool = False,
+) -> HeadingDecision:
+    return HeadingDecision(
+        record_index=idx,
+        text=text,
+        is_heading=True,
+        level=level,
+        outline_level=outline_level,
+        is_title_block=is_title_block,
+        numbering=classify_numbering(text),
+    )
+
+
+def test_postmerge_demotion_cascades_to_subtree() -> None:
+    """test14 regression: a parent heading demoted for strong body (句号) takes
+    its non-strong subtree (（一）/（二）) down with it, so no orphan level-2
+    heading survives to swallow the following section's content."""
+    decs = [
+        _hd(0, "一、对节能汽车，减半征收车船税。", 1),
+        _hd(1, "（一）减半征收车船税的节能乘用车应同时符合以下标准：", 2),
+        _hd(2, "（二）减半征收车船税的节能商用车应同时符合以下标准：", 2),
+        _hd(3, "二、对新能源车船，免征车船税。", 1),
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert [d.is_heading for d in decs] == [False, False, False, False]
+    for child in (decs[1], decs[2]):
+        assert "subtree_demoted" in child.rule_trail
+        assert "strong_body_demoted" in child.rule_trail
+        assert child.use_raw_text
+    # the 句号 parents were demoted by their own strong-body evidence, not subtree
+    assert "subtree_demoted" not in decs[0].rule_trail
+    assert "subtree_demoted" not in decs[3].rule_trail
+    assert warnings["smart_subtree_demotions"] == 2
+
+
+def test_subtree_demotion_stops_at_outline_member() -> None:
+    """An outline-bearing subtree member is a hard boundary: ancestor
+    propagation does not demote it, and it shields the deeper headings
+    after it."""
+    decs = [
+        _hd(0, "一、总体要求。", 1),
+        _hd(1, "（一）明确目标", 2, outline_level=1),  # outline hard boundary
+        _hd(2, "1）具体分工", 3),  # shielded by the boundary above
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[0].is_heading  # 句号 parent demoted
+    assert decs[1].is_heading  # outline member kept
+    assert "subtree_demoted" not in decs[1].rule_trail
+    assert decs[2].is_heading  # not reached (scan stopped at the boundary)
+    assert "smart_subtree_demotions" not in warnings
+
+
+def test_outline_subtree_member_still_demoted_by_own_evidence() -> None:
+    """The outline boundary only blocks *ancestor* propagation — an outline
+    member that hits strong body on its own is still demoted (existing I2
+    semantics), tagged strong_body_demoted rather than subtree_demoted."""
+    decs = [
+        _hd(0, "一、总体要求。", 1),
+        _hd(1, "（一）本项要求已经明确。", 2, outline_level=1),  # 句号 → own hit
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[1].is_heading
+    assert "strong_body_demoted" in decs[1].rule_trail
+    assert "subtree_demoted" not in decs[1].rule_trail
+
+
+def test_subtree_demotion_stops_at_title_block_boundary() -> None:
+    """A title block (level 0) is a sub-document hard boundary: an ancestor
+    demotion in one sub-document never cascades past it."""
+    decs = [
+        _hd(0, "一、总体要求。", 1),
+        _hd(1, "第二篇 附件材料", 0, is_title_block=True),
+        _hd(2, "（一）附件要点", 2),
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[0].is_heading
+    assert decs[1].is_heading  # title block untouched
+    assert decs[2].is_heading  # beyond the boundary, kept
+    assert "smart_subtree_demotions" not in warnings
+
+
+def test_subtree_demotion_follows_cb2_propagation() -> None:
+    """A parent demoted only via CB2 same-series propagation (not its own
+    strong body) still cascades to its own subtree."""
+    decs = [
+        _hd(0, "一、对节能汽车减半征收车船税。", 1),  # 句号 → own hit
+        _hd(1, "（一）节能乘用车标准", 2),  # subtree of 一、
+        _hd(2, "二、对新能源车船免征车船税", 1),  # no 句号 → demoted only via CB2
+        _hd(3, "（二）新能源汽车标准", 2),  # subtree of 二、
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert [d.is_heading for d in decs] == [False, False, False, False]
+    assert "strong_body_demoted" in decs[2].rule_trail  # via CB2, not own hit
+    assert "subtree_demoted" not in decs[2].rule_trail
+    assert "subtree_demoted" in decs[1].rule_trail
+    assert "subtree_demoted" in decs[3].rule_trail
+    assert warnings["smart_subtree_demotions"] == 2
+
+
+def test_subtree_demotion_leaves_unnumbered_child_to_gap_close() -> None:
+    """Only numbered children cascade; an unnumbered deeper heading is left to
+    close_unnumbered_level_gaps (§2.2.8) rather than demoted with the parent —
+    its deeper level is a size/style heuristic, not a reliable subtree link
+    (test7: EnNum claims demoted, the independent sections survive, rise to
+    L2)."""
+    decs = [
+        _hd(0, "一、总体要求。", 1),  # 句号 → hit
+        _hd(1, "实施要点", 2),  # unnumbered deeper heading (numbering is None)
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[0].is_heading
+    assert decs[1].is_heading  # unnumbered child kept, left to gap-close
+    assert "subtree_demoted" not in decs[1].rule_trail
+    assert "smart_subtree_demotions" not in warnings
+
+
+def test_subtree_demotion_multilevel_and_sibling_boundary() -> None:
+    """Cascade reaches grandchildren in one pass; a same-level sibling of a
+    different series is not part of the subtree and survives."""
+    decs = [
+        _hd(0, "一、总体安排。", 1),  # 句号 → hit
+        _hd(1, "（一）职责分工", 2),  # child
+        _hd(2, "（1）牵头单位", 3),  # grandchild
+        _hd(3, "第一章 概述", 1),  # sibling, different series, no 句号
+    ]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[0].is_heading
+    assert "subtree_demoted" in decs[1].rule_trail  # child
+    assert "subtree_demoted" in decs[2].rule_trail  # grandchild, same pass
+    assert decs[3].is_heading  # sibling kept (not in the subtree)
+    assert "subtree_demoted" not in decs[3].rule_trail
+    assert warnings["smart_subtree_demotions"] == 2
+
+
+def test_subtree_demotion_keeps_outline_anchored_series_together() -> None:
+    """§2.2.6 round 1 anchors a whole numbered series (with ≥1 outlined member)
+    to the outline; a no-outline member (outline_anchored) must NOT be split off
+    by the parent's subtree demotion while its outlined siblings survive — else
+    the series ends up part body / part heading (violates §2.1 same-series
+    consistency). 1）no outline, 2）/3）outline."""
+    decs = [
+        _hd(0, "一、总体安排。", 1),  # 句号 → hit
+        _hd(1, "1）甲项内容", 2),  # EnSingleParen, no own outline
+        _hd(2, "2）乙项内容", 2, outline_level=1),
+        _hd(3, "3）丙项内容", 2, outline_level=1),
+    ]
+    anchor_outline_levels(decs, warnings={})
+    assert decs[1].outline_anchored  # propagated from the series' outlined members
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[0].is_heading  # parent demoted by its own 句号
+    assert [d.is_heading for d in decs[1:]] == [True, True, True]  # series intact
+    assert "subtree_demoted" not in decs[1].rule_trail
+    assert "smart_subtree_demotions" not in warnings
+
+
+def test_subtree_demotion_ignores_plain_anchored_child() -> None:
+    """Only physical-outline evidence (outline_anchored) exempts a numbered
+    child — bare ``anchored`` bookkeeping (set by round-2 size-only propagation,
+    no outline evidence) does NOT: such a child is still cascaded."""
+    child = _hd(1, "（一）标准甲", 2)
+    child.anchored = True  # round-2 size-propagation bookkeeping
+    child.outline_anchored = False  # but no physical-outline evidence
+    decs = [_hd(0, "一、对节能汽车，减半征收车船税。", 1), child]
+    warnings: dict = {}
+    demote_strong_body_headings(decs, strong_body=_stub_strong_body, warnings=warnings)
+    assert not decs[0].is_heading
+    assert not child.is_heading  # cascaded despite anchored=True
+    assert "subtree_demoted" in child.rule_trail
 
 
 def test_source_multisentence_gate_real_spacy_end_to_end(monkeypatch) -> None:

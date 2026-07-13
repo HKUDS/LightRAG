@@ -324,7 +324,7 @@ def detect_imprint_regions(
     document_date: Callable[[str], bool] | None = None,
     skip_indices: set[int] = frozenset(),
 ) -> list[ImprintRegion]:
-    """Map every 公文版记 region: an imprint anchor with its neighbourhood.
+    """Map every 公文版记 region (§2.2.9): an imprint anchor with its neighbourhood.
 
     For each anchor (:func:`guardrails.imprint_marker_reason`, e.g. 抄送 /
     主题词; TOC lines cannot anchor) two bounded walks run:
