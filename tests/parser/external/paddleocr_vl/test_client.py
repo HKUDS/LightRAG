@@ -989,6 +989,44 @@ async def test_failed_poll_state_raises(
         )
 
 
+class _UnexpectedStateFakeAsyncClient(_FailedStateFakeAsyncClient):
+    """Fake that reports an unsupported job state during polling."""
+
+    async def post(self, url: str, **kwargs: Any) -> _Response:
+        return _Response(payload={"data": {"jobId": "job-unexpected"}})
+
+    async def get(self, url: str, **kwargs: Any) -> _Response:
+        if url.endswith("/job-unexpected"):
+            return _Response(
+                payload={"code": 0, "data": {"state": "cancelled"}}
+            )
+        raise AssertionError(f"unexpected GET {url}")
+
+
+async def test_unexpected_poll_state_raises_immediately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF unexpected state")
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
+        _UnexpectedStateFakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
+        lambda *_, **__: None,
+    )
+    monkeypatch.setenv("PADDLEOCR_VL_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("PADDLEOCR_VL_MAX_POLLS", "1")
+
+    with pytest.raises(
+        RuntimeError, match="job job-unexpected returned unexpected state 'cancelled'"
+    ):
+        await PaddleOCRVLRawClient().download_into(
+            tmp_path / "demo.paddleocr_vl_raw", source
+        )
+
+
 # ---------------------------------------------------------------------------
 # Concurrent image download (mandatory error surfaces from gather)
 # ---------------------------------------------------------------------------

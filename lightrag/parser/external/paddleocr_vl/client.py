@@ -213,6 +213,11 @@ class PaddleOCRVLRawClient:
             if state == "failed":
                 err = (data or {}).get("errorMsg") or (data or {}).get("error") or data
                 raise RuntimeError(f"PaddleOCR-VL job {job_id} failed: {err}")
+            if state not in {"pending", "running"}:
+                raise RuntimeError(
+                    f"PaddleOCR-VL job {job_id} returned unexpected state "
+                    f"{state!r}: {payload}"
+                )
             await asyncio.sleep(max(self.poll_interval, 0))
         raise TimeoutError(f"PaddleOCR-VL job polling timeout: {job_id}")
 
