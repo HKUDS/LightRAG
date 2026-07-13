@@ -348,6 +348,7 @@ _PADDLEOCR_VL_ENV_VARS = (
     "PADDLEOCR_VL_RELEVEL_TITLES",
     "PADDLEOCR_VL_VISUALIZE",
     "PADDLEOCR_VL_ENGINE_VERSION",
+    "PADDLEOCR_VL_TIMEOUT_SECONDS",
     "PADDLEOCR_VL_POLL_INTERVAL_SECONDS",
     "PADDLEOCR_VL_MAX_POLLS",
 )
@@ -396,6 +397,44 @@ async def test_client_submits_polls_downloads_result_and_assets(
         raw_dir / "outputImages" / "layout_det_res_0.jpg"
     ).read_bytes() == b"\xff\xd8fake"
     assert (raw_dir / "_manifest.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("configured_timeout", "expected_timeout"),
+    [(None, 120), ("345", 345)],
+)
+async def test_client_configures_request_timeout_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_timeout: str | None,
+    expected_timeout: int,
+) -> None:
+    source = tmp_path / "demo.pdf"
+    source.write_bytes(b"%PDF fake")
+    _CURRENT["recorder"] = _Recorder()
+    timeout_calls: list[tuple[float, float]] = []
+
+    def record_timeout(timeout: float, *, connect: float) -> None:
+        timeout_calls.append((timeout, connect))
+
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "lightrag.parser.external.paddleocr_vl.client.httpx.Timeout",
+        record_timeout,
+    )
+    if configured_timeout is None:
+        monkeypatch.delenv("PADDLEOCR_VL_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("PADDLEOCR_VL_TIMEOUT_SECONDS", configured_timeout)
+
+    await PaddleOCRVLRawClient().download_into(
+        tmp_path / "demo.paddleocr_vl_raw", source
+    )
+
+    assert timeout_calls == [(expected_timeout, 30.0)]
 
 
 async def test_client_rejects_empty_pages_before_writing_cache(

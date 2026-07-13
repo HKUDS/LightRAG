@@ -41,6 +41,7 @@ else:
 
 DEFAULT_POLL_INTERVAL_SECONDS = 5
 DEFAULT_MAX_POLLS = 600
+DEFAULT_TIMEOUT_SECONDS = 120
 # Comma-separated host patterns whose HTTPS URLs are safe to fetch as remote
 # assets. A bare host matches exactly; a leading ``*.`` matches subdomains.
 # PaddleOCR-VL returns presigned BOS (Baidu Object Storage) URLs under
@@ -104,6 +105,9 @@ class PaddleOCRVLRawClient:
             "PADDLEOCR_VL_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS
         )
         self.max_polls = env_int("PADDLEOCR_VL_MAX_POLLS", DEFAULT_MAX_POLLS)
+        self.request_timeout = env_int(
+            "PADDLEOCR_VL_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS
+        )
         self.engine_version = current_engine_version()
         self.allowed_asset_host_patterns = self._load_allowed_asset_host_patterns()
 
@@ -131,7 +135,7 @@ class PaddleOCRVLRawClient:
             Path(upload_name or source_file_path.name).name or source_file_path.name
         )
 
-        timeout = httpx.Timeout(120.0, connect=30.0)
+        timeout = httpx.Timeout(self.request_timeout, connect=30.0)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if self.api_mode == "official":
