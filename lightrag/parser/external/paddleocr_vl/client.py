@@ -224,6 +224,10 @@ class PaddleOCRVLRawClient:
     async def _download_json_result(
         self, client: "httpx.AsyncClient", json_url: str
     ) -> list[dict[str, Any]]:
+        if not _is_allowed_official_result_url(json_url):
+            raise RuntimeError(
+                f"PaddleOCR-VL official result URL is not allowed: {json_url!r}"
+            )
         resp = await client.get(json_url)
         raise_for_status_with_detail(resp, "PaddleOCR-VL json result download")
         text = resp.text or resp.content.decode("utf-8")
@@ -515,8 +519,10 @@ def _indexed_image_path(
     path = _safe_relative_path(name)
     if parent is not None:
         path = parent / path
-    suffix = _suffix_from_url(value) if _looks_like_http_url(value) else ""
-    suffix = suffix or path.suffix or ".jpg"
+    suffix = path.suffix
+    if not suffix and _looks_like_http_url(value):
+        suffix = _suffix_from_url(value)
+    suffix = suffix or ".jpg"
     path = path.with_suffix(suffix)
     return path.with_name(f"{path.stem}_{page_index}{path.suffix}")
 
@@ -548,6 +554,14 @@ def _local_file_type(path: Path) -> int:
 def _looks_like_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_allowed_official_result_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").rstrip(".").lower()
+    return host == "bcebos.com" or host.endswith(".bcebos.com")
 
 
 def _decode_base64_payload(value: str) -> bytes | None:

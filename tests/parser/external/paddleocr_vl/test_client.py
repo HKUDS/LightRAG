@@ -56,13 +56,14 @@ DEFAULT_PAYLOAD = {
         (
             "imgs/figure.jpg",
             "https://example.test/figure.png",
-            "imgs/figure_2.png",
+            "imgs/figure_2.jpg",
         ),
+        ("imgs/figure", "https://example.test/figure.png", "imgs/figure_2.png"),
         ("imgs/figure.webp", "base64-payload", "imgs/figure_2.webp"),
         ("layout_det_res", "base64-payload", "layout_det_res_2.jpg"),
     ],
 )
-def test_indexed_image_path_uses_url_then_name_then_jpg_suffix(
+def test_indexed_image_path_uses_name_then_url_then_jpg_suffix(
     name: str, value: str, expected: str
 ) -> None:
     assert _indexed_image_path(name, value, 2).as_posix() == expected
@@ -100,6 +101,7 @@ class _Recorder:
 
 _CURRENT: dict[str, _Recorder] = {}
 _RESULT_PAYLOAD: dict[str, Any] | None = None
+_OFFICIAL_JSON_URL = "https://pplines-online.bj.bcebos.com/result.jsonl"
 
 
 class _FakeAsyncClient:
@@ -166,11 +168,11 @@ class _FakeAsyncClient:
                     "data": {
                         "state": "done",
                         "extractProgress": {"extractedPages": 1},
-                        "resultUrl": {"jsonUrl": "http://files.test/result.jsonl"},
+                        "resultUrl": {"jsonUrl": _OFFICIAL_JSON_URL},
                     }
                 }
             )
-        if url == "http://files.test/result.jsonl":
+        if url == _OFFICIAL_JSON_URL:
             result_payload = _RESULT_PAYLOAD or {
                 "result": {
                     "layoutParsingResults": [
@@ -228,6 +230,56 @@ class _FakeAsyncClient:
         raise AssertionError(f"unexpected GET {url}")
 
 
+class _OfficialResultURLClient:
+    def __init__(self) -> None:
+        self.get_calls: list[str] = []
+
+    async def get(self, url: str) -> _Response:
+        self.get_calls.append(url)
+        return _Response(
+            text=json.dumps(
+                {"result": {"layoutParsingResults": [{"prunedResult": {}}]}}
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://bcebos.com/result.jsonl",
+        "https://bucket.bcebos.com/result.jsonl",
+    ],
+)
+async def test_official_result_url_accepts_only_bos_hosts(url: str) -> None:
+    transport = _OfficialResultURLClient()
+
+    pages = await PaddleOCRVLRawClient()._download_json_result(transport, url)
+
+    assert len(pages) == 1
+    assert transport.get_calls == [url]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://bucket.bcebos.com/result.jsonl",
+        "https://notbcebos.com/result.jsonl",
+        "https://bcebos.com.evil.test/result.jsonl",
+        "https://evil.test/result.jsonl",
+    ],
+)
+async def test_official_result_url_rejects_disallowed_hosts_before_request(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PADDLEOCR_VL_ALLOWED_ASSET_HOSTS", "evil.test")
+    transport = _OfficialResultURLClient()
+
+    with pytest.raises(RuntimeError, match="official result URL is not allowed"):
+        await PaddleOCRVLRawClient()._download_json_result(transport, url)
+
+    assert transport.get_calls == []
+
+
 def _install_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "lightrag.parser.external.paddleocr_vl.client.httpx.AsyncClient",
@@ -253,7 +305,7 @@ async def test_jsonl_result_rejects_non_object_records() -> None:
 
     with pytest.raises(RuntimeError, match="JSONL line 1 must be an object"):
         await client._download_json_result(
-            _StaticGetClient(response), "http://files.test/result.jsonl"
+            _StaticGetClient(response), _OFFICIAL_JSON_URL
         )
 
 
@@ -997,9 +1049,7 @@ class _UnexpectedStateFakeAsyncClient(_FailedStateFakeAsyncClient):
 
     async def get(self, url: str, **kwargs: Any) -> _Response:
         if url.endswith("/job-unexpected"):
-            return _Response(
-                payload={"code": 0, "data": {"state": "cancelled"}}
-            )
+            return _Response(payload={"code": 0, "data": {"state": "cancelled"}})
         raise AssertionError(f"unexpected GET {url}")
 
 
