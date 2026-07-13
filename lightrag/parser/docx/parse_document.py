@@ -625,7 +625,7 @@ def _flush_current_block(
 
 @dataclass
 class ParagraphRecord:
-    """Engine-neutral snapshot of one body element (spec §3.1 pass1).
+    """Engine-neutral snapshot of one body element (pass1).
 
     The single read pass emits these; the assembly passes (legacy or smart)
     consume them. Records hold only normalized feature fields — never lxml
@@ -654,7 +654,7 @@ class ParagraphRecord:
     font_size_pt: float | None = None  # char-weighted dominant (0.5pt grid)
     # Visible source-text char count (w:t only; excludes auto-numbering labels
     # and <sup>/<equation>/<drawing>/<table> placeholder markup). Feeds FS_base
-    # char weighting so generated text cannot skew the body-size mode (§2.2.2).
+    # char weighting so generated text cannot skew the body-size mode.
     # None means "not computed" (smart-off / manually built records).
     visible_char_count: int | None = None
     first_line_font_size_pt: float | None = None  # before first soft break
@@ -669,7 +669,7 @@ class ParagraphRecord:
     size_trace_failed: bool = False  # font-size cascade found nothing (CB5)
     # Table only (smart-only): per-row PHYSICAL cells as
     # (text, effective_size_pt, has_outline) tuples — one entry per w:tc, so a
-    # gridSpan-merged full-width row is ONE cell. Feeds the §2.2.4 title-block
+    # gridSpan-merged full-width row is ONE cell. Feeds the title-block
     # table channel; None when smart is off.
     table_cell_features: list | None = None
 
@@ -683,7 +683,7 @@ def _read_document_records(
     *,
     style_attributes=None,
 ) -> list:
-    """Single read pass over the document body (spec §3.1 read step).
+    """Single read pass over the document body (pass1 read step).
 
     Shared by BOTH assembly modes, and physically unrepeatable: the numbering
     resolver is stateful and the drawing/table extractors export asset bytes,
@@ -1158,7 +1158,7 @@ def extract_docx_blocks(
     if not smart_enabled:
         return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
 
-    # --- smart path (§2.2 pipeline + §2.3 landing guardrails) ---------------
+    # --- smart path (pipeline + landing guardrails) ---------------
     from lightrag.parser.docx.smart_heading import guardrails as _guards
     from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
 
@@ -1179,7 +1179,7 @@ def extract_docx_blocks(
     )
 
     # Landing guardrails: any violation abandons the smart output for THIS
-    # document and re-runs the baseline assembly (§2.3.2). The shadow
+    # document and re-runs the baseline assembly. The shadow
     # baseline is synthesized from the SAME pass1 records in memory — no
     # extra IO, no re-parse.
     shadow_meta: dict = {}
@@ -1191,7 +1191,7 @@ def extract_docx_blocks(
         toc_indices=smart_result.toc_indices,
         # Retained TOC body + the ellipsis are output lines that come from no
         # record; subtract them so an injected copy can't mask a lost source
-        # line (§2.3 TOC retention).
+        # line (TOC retention).
         ignored_output_texts=[
             *smart_result.toc_kept_text.values(),
             *(
@@ -1205,7 +1205,7 @@ def extract_docx_blocks(
     i3_violations = _guards.verify_anchor_semantics(all_decisions)
     length_ok = _guards.smart_output_length_ok(smart_blocks, baseline_blocks)
     if i1_missing or i2_violations or i3_violations or not length_ok:
-        # §2.3.2 mandates an ERROR *log* (not a bare stderr print) so the
+        # Emit an ERROR *log* (not a bare stderr print) so the
         # event is visible to the repo's caplog-based assertions and any
         # structured log routing.
         logger.error(
@@ -1261,7 +1261,7 @@ def _assemble_blocks_smart(
 
     Same state machine as the legacy assembler; the differences are exactly
     the smart products — a detected TOC keeps its first few visible lines as
-    body and collapses the rest to a single ``……`` (§2.3 TOC retention), a
+    body and collapses the rest to a single ``……`` (TOC retention), a
     title block seeds a level-0 block flagged ``is_title_block`` (heading = the
     plain main title) that then OWNS the following body up to the next heading
     / title / EOF (like an ordinary section heading owns its body),
@@ -1282,8 +1282,8 @@ def _assemble_blocks_smart(
     # Non-lead members of every title block are emitted as part of their
     # lead record's composite block; their standalone rows must be skipped.
     # (Their sentinel decisions are NOT ``is_title_block``, so checking the
-    # decision flag on each record misses them and double-emits the text —
-    # review C3.) Populated lazily when a title lead is SUCCESSFULLY seeded
+    # decision flag on each record misses them and double-emits the text.)
+    # Populated lazily when a title lead is SUCCESSFULLY seeded
     # (below): a title verdict rejected for empty members must not silently
     # skip its members. A title lead's own index is always < its non-lead
     # member indices (single = (start,), multi = ascending index_map, table =
@@ -1326,7 +1326,7 @@ def _assemble_blocks_smart(
 
     for i, rec in enumerate(records):
         if i in toc_indices:
-            # §2.3 TOC retention: a TOC line is KEPT (first visible lines as
+            # TOC retention: a TOC line is KEPT (first visible lines as
             # body), the ellipsis anchor also emits one ``……``, and the rest
             # are DROPPED. Every branch ``continue``s before any heading /
             # title / table branch, so a retained line is never a heading.
@@ -1349,7 +1349,7 @@ def _assemble_blocks_smart(
         if d is not None and d.absorbed:
             continue  # text already merged into a preceding heading
         # The title-block lead branch must run BEFORE the plain-table branch:
-        # a §2.2.4 TABLE-channel lead is itself a table record — emitting it
+        # a TABLE-channel lead is itself a table record — emitting it
         # as body content would discard the composed heading and drop every
         # non-lead member via title_member_skip.
         if d is not None and d.is_title_block and i == d.member_indices[0]:
@@ -1367,7 +1367,7 @@ def _assemble_blocks_smart(
                     )
                 elif mrec.kind == "table" and mrec.table_cell_features:
                     # Absorbed cover table: its cell texts ARE the title
-                    # material (every cell passed the §2.2.4 membership gate:
+                    # material (every cell passed the membership gate:
                     # short, non-body, no outline), so the block carries them
                     # verbatim and the <table> placeholder is dropped. I1
                     # only audits kind=="para" records — this explicit
@@ -1458,7 +1458,7 @@ def _assemble_blocks_smart(
             heading_para_id = rec.para_id
             heading_text = d.text
             if "\n" in heading_text:
-                # §2.2.7: a heading that still carries soft-break lines is
+                # A heading that still carries soft-break lines is
                 # ONE title — render it as a single line (CJK-aware join),
                 # or the I1 source paragraph can never match any output row.
                 from .smart_heading.title_block import flatten_heading_line

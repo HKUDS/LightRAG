@@ -158,7 +158,7 @@ def extract_paragraph_content_table(
 
 
 def _extract_cell_features(tc, qn_func, style_attributes, styles_outline) -> tuple:
-    """Physical-cell features for the smart title-block table channel (§2.2.4).
+    """Physical-cell features for the smart title-block table channel.
 
     Returns ``(text, effective_size_pt, has_outline)`` computed from the
     cell's OWN ``w:p`` children (direct children only — nested tables are

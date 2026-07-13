@@ -1,4 +1,4 @@
-"""Physical paragraph features for smart heading discovery (spec §2.2.1/§2.2.2).
+"""Physical paragraph features for smart heading discovery.
 
 Two layers:
 
@@ -16,7 +16,7 @@ Two layers:
 
 Font sizes are stored in half-points exactly as OOXML does and only converted
 to pt at the edge, so the 0.5pt grid comparison stays exact (no float
-tolerance — spec §2.2.1 mandates precise grid equality).
+tolerance — precise grid equality is required).
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _w(tag: str) -> str:
 
 #: Subtrees the baseline treats as opaque placeholders — it never recurses into
 #: them, so their inner runs / field codes / hyperlinks are NOT part of the
-#: paragraph's visible text. §2.2.2 likewise excludes 文本框 (textboxes) from all
+#: paragraph's visible text. 文本框 (textboxes) are likewise excluded from all
 #: stats. ``extract_paragraph_physical_features`` must prune them too; otherwise
 #: ``iter()`` would descend into a decorative textbox and let its font size,
 #: bold state, or an embedded TOC field pollute the host paragraph's features
@@ -110,7 +110,7 @@ def _parse_bool_attr(elem) -> bool:
 def _grid_half_points(val: str | None) -> int | None:
     """Parse a w:sz/w:szCs val to the nearest 0.5pt-grid half-point, or None.
 
-    Nearest-grid rounding (§2.2.1): theme sources may emit fractional
+    Nearest-grid rounding: theme sources may emit fractional
     half-points; truncation would bias 21.5pt down to 21pt.
     """
     if not val:
@@ -126,7 +126,7 @@ def _rpr_size_half_points(rpr) -> int | None:
 
     A bare ``<w:sz/>`` (element present, no ``w:val``) must NOT mask a valid
     ``<w:szCs w:val=…/>`` — the ASCII size being unspecified does not void the
-    complex-script size (review F3)."""
+    complex-script size."""
     if rpr is None:
         return None
     for tag in ("sz", "szCs"):
@@ -142,7 +142,7 @@ def _read_rpr(rpr, raw: _RawStyle) -> None:
     """Read sz and szCs into their SEPARATE _RawStyle tracks.
 
     A bare ``<w:sz/>`` (no usable val) writes nothing: it neither shadows this
-    level's szCs track nor interrupts an ancestor's sz track (review F3)."""
+    level's szCs track nor interrupts an ancestor's sz track."""
     if rpr is None:
         return
     for tag, attr in (("sz", "sz_half_points"), ("szCs", "szcs_half_points")):
@@ -166,7 +166,7 @@ def parse_styles_attributes(
     failures are then counted by the caller toward the CB5 confidence gate.
     Unlike the legacy ``parse_styles_outline_levels`` this does NOT swallow a
     parse failure silently — it records a warning so a document-wide style
-    degradation is observable (spec §3.2, review F2).
+    degradation is observable.
     """
     try:
         from defusedxml import ElementTree as ET
@@ -230,7 +230,7 @@ def parse_styles_attributes(
         # A broken styles part degrades to "no style info" rather than failing
         # the parse — but, unlike parse_styles_outline_levels, it is surfaced:
         # every paragraph then loses its style-chain size and the whole doc
-        # slides toward CB5 low confidence, which should not be silent (F2).
+        # slides toward CB5 low confidence, which should not be silent.
         if warnings is not None:
             warnings["smart_styles_xml_parse_failed"] = (
                 warnings.get("smart_styles_xml_parse_failed", 0) + 1
@@ -263,8 +263,8 @@ def parse_styles_attributes(
         # CJK caption style — must not shadow an ancestor's sz, which is the
         # size Word/WPS actually renders for ASCII/East-Asian text). This is
         # deliberately NOT full OOXML property-wise cascading: the resolved
-        # style-chain szCs still outranks docDefaults sz in _fallback_size
-        # (the pre-existing cross-layer compatibility fallback, review F3).
+        # style-chain szCs still outranks docDefaults sz in _fallback_size,
+        # preserving the existing cross-layer compatibility fallback.
         sz = _resolve(style_id, "sz_half_points")
         attrs._resolved_size[style_id] = (
             sz if sz is not None else _resolve(style_id, "szcs_half_points")
@@ -313,7 +313,7 @@ class ParagraphPhysicalFeatures:
     def visible_char_count(self) -> int:
         """Visible source-text characters (w:t only), for FS_base weighting.
 
-        §2.2.2 forbids weighting FS_base by parser-generated text — auto-
+        FS_base must not be weighted by parser-generated text — auto-
         numbering labels, ``<sup>`` wrappers and ``<equation>``/``<drawing>``
         /``<table>`` placeholders. ``run_features`` already holds only source
         ``w:t`` text (labels/placeholders never enter it), so the visible
@@ -328,7 +328,7 @@ def _weight(text: str) -> int:
 
 
 def _is_toc_instr(instr_upper: str) -> bool:
-    """True for a field instruction that marks a TOC paragraph (§2.2.2).
+    """True for a field instruction that marks a TOC paragraph.
 
     Two shapes: the ``TOC`` field itself (the generator), and a TOC-ENTRY
     field — an auto-generated entry references a ``_Toc`` bookmark via
@@ -343,7 +343,7 @@ def _is_toc_instr(instr_upper: str) -> bool:
 
 
 def effective_font_size_pt(rec: Any) -> float | None:
-    """Candidate-facing paragraph size (§2.2.2 / §3.1).
+    """Candidate-facing paragraph size.
 
     A soft-break-split heading line re-stats its FIRST line's characters —
     the whole-paragraph dominant size would be swamped by the demoted body
@@ -358,8 +358,8 @@ def effective_font_size_pt(rec: Any) -> float | None:
 
 
 def _element_direct_size(rpr) -> int | None:
-    # Shared sz/szCs resolution (prefers a usable w:sz, falls back to szCs so a
-    # bare <w:sz/> cannot mask a valid <w:szCs> — review F3).
+    # Shared sz/szCs resolution prefers a usable w:sz and falls back to szCs,
+    # so a bare <w:sz/> cannot mask a valid <w:szCs>.
     return _rpr_size_half_points(rpr)
 
 
@@ -376,8 +376,8 @@ def _run_visible_text(run) -> str:
     """Visible text of one run: w:t contents, soft breaks as newline.
 
     Counts only source OOXML text — numbering labels, ``<sup>`` wrappers and
-    placeholder tokens the extractor synthesizes never appear here (spec
-    §2.2.2 forbids counting rendered/synthetic characters).
+    placeholder tokens the extractor synthesizes never appear here
+    (rendered/synthetic characters are never counted).
     """
     parts: list[str] = []
     for child in run:
@@ -510,7 +510,7 @@ def extract_paragraph_physical_features(
     # Depth-first walk in document order, pruning opaque subtrees (drawings /
     # pictures / objects / textboxes) so their inner runs, field codes and
     # hyperlinks never contribute to THIS paragraph's features — baseline
-    # parity plus §2.2.2 textbox exclusion. Deliberately NOT ``iter()`` + an
+    # parity plus textbox exclusion. Deliberately NOT ``iter()`` + an
     # id() skip-set: lxml element proxies are transient, so their id() is not
     # stable across passes and a skip-set silently mis-prunes.
     def _walk(node) -> None:
@@ -565,7 +565,7 @@ def extract_paragraph_physical_features(
             if anchor.startswith("_Toc"):
                 is_toc_link = True
         elif tag == _w("docPartGallery"):
-            # §2.2.2 / §3.4 structural evidence: an in-paragraph SDT whose
+            # Structural evidence: an in-paragraph SDT whose
             # docPartObj gallery is "Table of Contents" marks a TOC field.
             # (Body-level TOC SDTs are not read at all — baseline invariant.)
             if (node.get(_w("val")) or "").strip() == "Table of Contents":
@@ -587,7 +587,7 @@ def extract_paragraph_physical_features(
         font_size_pt=half_points_to_pt(dominant),
         all_bold=all_bold,
         alignment=alignment,
-        # Kept apart on purpose (§2.2.4 evidence b): pageBreakBefore means
+        # Kept apart on purpose (title-block evidence b): pageBreakBefore means
         # THIS paragraph starts a page; a page-break run inside a paragraph
         # means the NEXT one does — conflating them points the single-title
         # boundary evidence at the wrong paragraph.

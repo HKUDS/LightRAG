@@ -1,4 +1,4 @@
-"""Title-block (document main title) discovery and LLM judgment (spec §2.2.4).
+"""Title-block (document main title) discovery and LLM judgment.
 
 Heuristics find CANDIDATE windows — runs of paragraphs lacking strong-body
 features that contain a visually dominant line — plus a single-paragraph
@@ -48,7 +48,7 @@ from .style_key import classify_numbering
 #: Synchronous LLM judge protocol — matches SyncLLMBridge.__call__.
 LLMJudge = Callable[..., str]
 
-#: Max weighted chars for a candidate title line (30 CJK / 90 en; §2.2.4).
+#: Max weighted chars for a candidate title line (30 CJK / 90 en).
 TITLE_LINE_MAX_WEIGHTED_CHARS = 90
 
 _FLANK_WINDOW = 20  # paragraphs scanned per flank for nearby heading dominance
@@ -145,7 +145,7 @@ class TitleBlockCandidate:
     end: int
     single: bool
     trigger: str  # audit rule id
-    #: §2.2.4 table channel: a cover laid out inside tables; tables render
+    #: Table channel: a cover laid out inside tables; tables render
     #: cell-by-cell for the LLM. ``members`` below carries the member records.
     table: bool = False
     #: Table-channel member records in source order: the qualifying tables
@@ -209,7 +209,7 @@ def _has_real_numbering(
 ) -> bool:
     """True when the paragraph opens with a GENUINE numbering prefix.
 
-    Shares the §2.2.5 homophone exclusion: a date/amount/version opener
+    Shares the homophone exclusion: a date/amount/version opener
     (2026年度工作报告) has its numbering identity revoked first, so it does
     NOT disqualify a title candidate.
     """
@@ -221,11 +221,11 @@ def _has_real_numbering(
 
 #: A title line must clear FS_base by at least this many points. BOTH
 #: channels require +2pt: the multi-paragraph window used to admit the
-#: §2.2.2 strong-signal tier (+1pt), but that deliberately let ordinary
-#: section-heading-sized lines open windows (A7/B17). Tightening to +2pt —
+#: strong-signal tier (+1pt), but that deliberately let ordinary
+#: section-heading-sized lines open windows. Tightening to +2pt —
 #: matching the single-paragraph channel (DOCX_SMART_TITLE_BLOCK_MIN_DELTA) —
 #: demands genuine cover-title dominance over body and aligns with the
-#: §2.2.4 conservative-preference principle (a title-block false positive is
+#: conservative-preference principle (a title-block false positive is
 #: leveraged into regional structural errors, so ties go to "not a title").
 MULTI_WINDOW_TITLE_DELTA_PT = 2.0
 
@@ -268,7 +268,7 @@ class ImprintRegion:
 
 
 def _page_boundary_between(prev: Any, cur: Any) -> bool:
-    """页/节边界落在 prev 与 cur 之间：title block 是单页单元（§2.2.4）。
+    """页/节边界落在 prev 与 cur 之间：title block 是单页单元。
 
     cur 侧看"段前"证据（pageBreakBefore / 行首换页），prev 侧看"段后"证据
     （正文之后的换页 / 段落级 sectPr）。行首换页只算 cur 侧——
@@ -308,7 +308,7 @@ def is_content_record(idx: int, rec: Any, skip_indices: set[int]) -> bool:
 def _blank_or_skipped(rec: Any, idx: int, skip_indices: set[int]) -> bool:
     """A record the imprint walks step over WITHOUT spending budget: a blank
     paragraph or a TOC line (``skip_indices``). TOC lines never count toward
-    the 2-preceding / forward window and never join a region (N2)."""
+    the 2-preceding / forward window and never join a region."""
     return (
         rec.kind == "empty_para"
         or (rec.kind == "para" and not rec.text.strip())
@@ -324,7 +324,7 @@ def detect_imprint_regions(
     document_date: Callable[[str], bool] | None = None,
     skip_indices: set[int] = frozenset(),
 ) -> list[ImprintRegion]:
-    """Map every 公文版记 region (§2.2.9): an imprint anchor with its neighbourhood.
+    """Map every 公文版记 region: an imprint anchor with its neighbourhood.
 
     For each anchor (:func:`guardrails.imprint_marker_reason`, e.g. 抄送 /
     主题词; TOC lines cannot anchor) two bounded walks run:
@@ -444,7 +444,7 @@ def find_title_block_candidates(
     either is None, so test and production callers share the same semantics;
     ``run_smart_heading`` passes precomputed sets to reuse its regions.
 
-    Mid-document gate (§2.2.4): a multi/table window whose start lies past
+    Mid-document gate: a multi/table window whose start lies past
     the document HEAD ZONE — more than ``head_zone_records`` CONTENT records
     (semantic-text paragraphs / tables; blanks, TOC lines, section breaks
     and pure-drawing logo paragraphs don't count) precede it — is only
@@ -586,7 +586,7 @@ def find_title_block_candidates(
         return _body_signal_cache[0]
 
     def _window_position_allowed(start: int) -> bool:
-        """§2.2.4 mid-document gate: a multi/table window opens freely in the
+        """Mid-document gate: a multi/table window opens freely in the
         document head zone — fewer than ``head_zone_records`` content records
         before it (blanks/TOC/section breaks/logo paragraphs don't count) AND
         no body signal (sentence-punctuated line / real heading / data table)
@@ -781,7 +781,7 @@ def find_title_block_candidates(
                 _suppress("multi_window", start, end)
         i = max(end, i + 1)
 
-    # --- table windows (§2.2.4 table channel) ------------------------------
+    # --- table windows (table channel) -------------------------------------
     # A cover laid out INSIDE tables — possibly interleaved with cover-material
     # paragraphs (a mixed table/paragraph cover: 档号表 + 主标题段 + 发文机关表)
     # or image-only paragraphs (a 印章 / logo between cover tables). Scan each
@@ -1052,7 +1052,7 @@ Respond with JSON matching:
 def _dominance_legend(
     line_sizes: Sequence[float | None], fs_base_pt: float | None
 ) -> str:
-    """Deterministic font-size evidence for the LLM window (§2.2.4).
+    """Deterministic font-size evidence for the LLM window.
 
     ``line_sizes[k]`` is the effective size of prompt line ``[k]`` — ONLY
     lines actually emitted have an entry, so a token-truncated line can never
@@ -1116,7 +1116,7 @@ def _render_window(
     if candidate.single:
         # The single paragraph plus N context paragraphs on each side. The
         # candidate itself is MANDATORY: context is reference-only, so tail
-        # truncation must never drop the candidate line (review D2) — else a
+        # truncation must never drop the candidate line — else a
         # true verdict would compose a level-0 heading from context alone.
         para_positions = [i for i, r in enumerate(records) if r.kind == "para"]
         pos = para_positions.index(candidate.start)
@@ -1171,7 +1171,7 @@ def _render_window(
         if used + cost + reserve > cap and index_map:
             truncated = True
             if mandatory is None:
-                break  # multi-paragraph window: tail truncation (spec §2.2.4)
+                break  # multi-paragraph window: tail truncation
             # Single window: skip this reference-only context line but keep
             # scanning so the mandatory candidate (and smaller context) land.
             continue
@@ -1192,7 +1192,7 @@ def _render_window(
 
 
 #: Standalone marker line delimiting physically distinct tables/frames in the
-#: table-channel window (§2.2.4). Carries NO index and never enters
+#: table-channel window. Carries NO index and never enters
 #: ``line_sizes``/``canon_parts`` — it is a layout cue for the LLM only, so the
 #: indexed cell numbering, the font-size legend and locate-back stay unchanged.
 _TABLE_REGION_SEPARATOR = "----------"
@@ -1215,7 +1215,7 @@ _TABLE_LAYOUT_NOTE = (
 def _render_table_window(
     records: Sequence[Any], candidate: TitleBlockCandidate, warnings: dict | None
 ) -> tuple[str, list[int], str, list[float | None], bool]:
-    """Render a TABLE candidate window for the LLM (§2.2.4 table channel).
+    """Render a TABLE candidate window for the LLM (table channel).
 
     One indexed line per non-empty PHYSICAL cell, row by row across the
     member tables — plus one line per absorbed cover-material paragraph (its
@@ -1366,7 +1366,7 @@ def judge_title_block(
 ) -> TitleBlockDecision:
     """Run one candidate through the LLM and strictly validate the verdict.
 
-    ``fs_base_pt`` (the global FS_base initial value, §2.2.2) turns on the
+    ``fs_base_pt`` (the global FS_base initial value) turns on the
     font-size evidence legend in the prompt — the visual-dominance cue a
     human uses to spot a cover title, which the plain text lines cannot
     carry. ``None`` (hand-built candidates, legacy tests) renders the
@@ -1378,7 +1378,7 @@ def judge_title_block(
             "none is configured (debug runs: build_debug_rag(extract_llm_func=…))"
         )
     if candidate.table:
-        # §2.2.4 table channel: the window is cell texts (plus any absorbed
+        # Table channel: the window is cell texts (plus any absorbed
         # cover-material paragraphs), and locate-back must run against them
         # (a table record's text is a <table> placeholder).
         window_text, member_records, window_canon, line_sizes, separated = (
@@ -1464,14 +1464,14 @@ def judge_title_block(
             )
         # A single-line candidate's block is ONLY that line — the window
         # context around it was shown to the LLM for judgment, not for
-        # inclusion; its heading is the main title alone (§2.2.4).
+        # inclusion; its heading is the main title alone.
         if candidate.single:
             member_indices = (candidate.start,)
             sub_title = doc_number = None
             classification = publisher = date = None
             # Hallucination guard scoped to the CANDIDATE paragraph only: the
             # heading is that line's text, so a main_title copied from a
-            # reference-only context paragraph must not validate (review D4).
+            # reference-only context paragraph must not validate.
             # Semantic form for the same reason as the window canon above.
             locate_scope = _canon(_cover_semantic_text(records[candidate.start]))
         else:
@@ -1515,10 +1515,11 @@ def judge_title_block(
         )
 
     # Non-title verdict for a SINGLE candidate: the ±context was reference
-    # only, so none of it is named in either list (review D3). The candidate
-    # simply re-enters the normal §2.2.5 flow on its own signals — it is not
-    # demoted, and the surrounding context keeps whatever standing the gate
-    # gives it. The LLM's headings/body partition over the context is ignored.
+    # only, so none of it is named in either list. The candidate
+    # simply re-enters the normal heading-discovery flow on its own signals —
+    # it is not demoted, and the surrounding context keeps whatever standing
+    # the gate gives it. The LLM's headings/body partition over the context is
+    # ignored.
     #
     # A TABLE candidate takes the same path: cells are not paragraph records,
     # so a headings/body partition has nothing to land on — the member tables
@@ -1540,8 +1541,8 @@ def judge_title_block(
     # that cannot be reconciled. But an UNDER-SPECIFIED partition (two valid
     # lists whose union merely misses some window indices) is recoverable: the
     # LLM abstained on those paragraphs, so — exactly like the single/table
-    # non-title path (review D3) — they are named in neither list and
-    # re-enter the normal §2.2.5 flow. Loud (warning) but not fatal.
+    # non-title path — they are named in neither list and
+    # re-enter the normal heading-discovery flow. Loud (warning) but not fatal.
     def _indices(key: str) -> list[int]:
         value = data.get(key)
         # Must be present and a list of plain ints. bool is a subclass of int —

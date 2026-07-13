@@ -1,4 +1,4 @@
-"""Defensive judgments for smart heading discovery (spec §2.2.5 / §2.3.4).
+"""Defensive judgments for smart heading discovery.
 
 Pure-function layer: consumed by ``title_block`` / ``heading_flow`` /
 ``extract``, depends only on :mod:`.nlp`, :mod:`.style_key`, and
@@ -67,7 +67,7 @@ def _env_int(env_name: str, default: int) -> int:
 
 
 def weighted_char_length(text: str) -> int:
-    """English-equivalent length: 1 CJK char counts as 3 (spec §2.2.4)."""
+    """English-equivalent length: 1 CJK char counts as 3."""
     total = 0
     for ch in text:
         total += 3 if "一" <= ch <= "鿿" else 1
@@ -149,7 +149,7 @@ def truncate_to_heading_length(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Strong-body features (spec §2.2.5 step 1; hard demotion evidence)
+# Strong-body features (hard demotion evidence)
 # ---------------------------------------------------------------------------
 
 
@@ -170,7 +170,7 @@ def _strip_leading_numbering(text: str) -> str:
         # Drop the label plus its trailing separator run (". 、:）" etc.).
         # \s (not a literal-space whitelist) so NBSP/full-width spaces go too —
         # a leading \xa0 survives into the prose otherwise, and zh spaCy counts
-        # it as its own "sentence", falsely demoting the heading (test8 第二章).
+        # it as its own "sentence", falsely demoting headings such as 第二章.
         return re.sub(r"^[\s、.。:：)）]+", "", head[len(cls.label_text) :])
     return text
 
@@ -294,7 +294,7 @@ def numbering_homophone_reason(
     """Why this "numbering" is actually a date/amount/version/unit phrase.
 
     - NER veto: the paragraph opens with a DATE/TIME/MONEY/PERCENT/QUANTITY
-      entity (2026年3月5日…, $100…) — spec §2.2.5;
+      entity (2026年3月5日…, $100…);
     - version-token veto: the token after a leading number is 版;
     - P1 blacklist (NER blind-spot backstop): an EnNum digit run directly
       followed by a blacklisted CJK unit/measure word (2026年 / 1个 / 1条);
@@ -495,7 +495,7 @@ def is_document_date(text: str) -> bool:
     document date — the ``^…$`` anchors demand the date be the entire line.
     Two consumers: pulling a mis-ordered 成文日期 trailing a 版记 into the
     region (:func:`title_block.detect_imprint_regions`), and excluding a bare
-    date line from the solo centered-heading channel (§2.2.5 gate) — a
+    date line from the solo centered-heading channel — a
     centered 落款 date must never read as a heading.
     """
     s = text.strip()
@@ -511,14 +511,14 @@ def is_symbolic_line(text: str) -> bool:
     separators (``***`` / ``——``), bare figures. Positive detection: look for
     a letter (``str.isalpha`` covers CJK ideographs and Latin alike) instead
     of stripping a punctuation set, so full-width symbols can never slip
-    through an incomplete list. Used by the solo centered-heading channel
-    (§2.2.5 gate) — a centered decoration line must never read as a heading.
+    through an incomplete list. Used by the solo centered-heading channel —
+    a centered decoration line must never read as a heading.
     """
     return not any(ch.isalpha() for ch in text)
 
 
 # ---------------------------------------------------------------------------
-# Landing guardrails: canonicalization, I1/I2/I3 machine checks, TOC (§2.3)
+# Landing guardrails: canonicalization, I1/I2/I3 machine checks, TOC
 # ---------------------------------------------------------------------------
 
 _HEADING_PREFIX_RE = re.compile(r"^#{1,6}\s*")
@@ -541,7 +541,7 @@ _TOC_ANCHOR_MAX_LONG_PARAS_BEFORE = 3
 # The TOC's max font size is established from this many leading members; a later
 # member strictly larger than that ends the run (the body's first heading).
 _TOC_SIZE_PROBE_MEMBERS = 3
-# Placeholder marking the elided tail of a retained TOC (§2.3 TOC retention).
+# Placeholder marking the elided tail of a retained TOC.
 # Shared by the assembler (emits it as a body line) and I1 (subtracts it from
 # the output multiset): a single source-of-truth prevents the two from drifting
 # apart, which would silently defeat the I1 subtraction.
@@ -686,16 +686,15 @@ def _detect_plain_numbered_toc(
 
 
 def detect_toc_records(records: Sequence[Any]) -> tuple[set[int], list[dict]]:
-    """Three-channel TOC detection (§2.2.2). Returns ``(indices, events)`` — the
+    """Three-channel TOC detection. Returns ``(indices, events)`` — the
     record indices to remove from smart output, and third-channel audit events.
 
     1. Structural: TOC field instructions / _Toc bookmark links on a paragraph.
     2. Dot-leader run: ≥ DOCX_SMART_TOC_MIN_LINES consecutive leader LINES
        ending in a dot leader + page number. Lines are counted, not paragraphs:
        the run spans standalone paragraphs AND the soft-break lines inside one
-       paragraph (§2.2.2 "含独立段落或段内软回车拆出的行"), so a TOC typed as a
-       single multi-line paragraph is caught too. An isolated single line is
-       never evidence.
+       paragraph, so a TOC typed as a single multi-line paragraph is caught
+       too. An isolated single line is never evidence.
     3. Plain numbered run: a leaderless run of short numbered lines under a
        目次 / 目录 / (Table of) Contents title, every line duplicated later in
        the body (see :func:`_detect_plain_numbered_toc`).
@@ -741,7 +740,7 @@ def detect_toc_records(records: Sequence[Any]) -> tuple[set[int], list[dict]]:
 
 @dataclass(frozen=True)
 class TocOutputPlan:
-    """How a detected TOC is rendered into body output (§2.3 TOC retention).
+    """How a detected TOC is rendered into body output.
 
     ``toc_indices`` stays the full heading-pipeline exclusion set; this plan
     only decides which of those excluded lines are nonetheless re-emitted as
@@ -817,9 +816,9 @@ def plan_toc_output(
 
 
 def toc_audit_entries(records: Sequence[Any], toc_indices: set[int]) -> list[dict]:
-    """Audit rows for detected TOC paragraphs (count + text hash, §2.3.5).
+    """Audit rows for detected TOC paragraphs (count + text hash).
 
-    Legacy-named: since TOC retention (§2.3) these indices are the DETECTED
+    Legacy-named: since TOC retention these indices are the DETECTED
     TOC records, some of which may be re-emitted as body (see
     :func:`plan_toc_output`) — they are no longer all "removed".
     """
@@ -851,7 +850,7 @@ def verify_content_preservation(
     Exact line-level multiset matching first; leftovers get one merge
     tolerance pass — every leftover OUTPUT line must be exactly the
     concatenation of consecutive leftover source paragraphs in document
-    order, each consumed at most once (covers §2.2.7 heading merges).
+    order, each consumed at most once (covers heading merges).
     One-directional substring containment is not accepted: it would let a
     genuinely lost short paragraph hide inside an unrelated longer line.
     Only the TOC whitelist (indices from the three-channel judgment) may be
@@ -977,8 +976,8 @@ def verify_anchor_semantics(decisions: Sequence[Any]) -> list[int]:
     """I3 (decidable subset): a non-numbered anchored heading that survived
     must sit exactly at outlineLvl+1; and level 0 is reserved for title-block
     roots — a non-title-block heading at level 0 is a construction bug (the
-    single-root-per-sub-document invariant, machine-checked as an assertion
-    per §2.3.2). Returns violating record indices."""
+    single-root-per-sub-document invariant, machine-checked as an assertion).
+    Returns violating record indices."""
     violations: list[int] = []
     for d in decisions:
         if (
@@ -1002,7 +1001,7 @@ def smart_output_length_ok(
     *,
     min_ratio: float = 0.30,
 ) -> bool:
-    """§2.3.6: smart content shorter than 30% of baseline → fall back."""
+    """Smart content shorter than 30% of baseline → fall back."""
     smart_len = sum(len(b.get("content") or "") for b in smart_blocks)
     base_len = sum(len(b.get("content") or "") for b in baseline_blocks)
     if base_len <= 0:
@@ -1013,7 +1012,7 @@ def smart_output_length_ok(
 def shadow_baseline_diff(
     smart_blocks: Sequence[dict], baseline_blocks: Sequence[dict]
 ) -> dict:
-    """Shadow A/B summary for metrics (§2.3.5): heading-count change, level
+    """Shadow A/B summary for metrics: heading-count change, level
     distribution change, and total content char delta."""
 
     def _levels(blocks: Sequence[dict]) -> dict[int, int]:

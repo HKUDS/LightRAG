@@ -1,4 +1,4 @@
-"""Heading candidacy, font-size leveling, and numbering alignment (§2.2.5).
+"""Heading candidacy, font-size leveling, and numbering alignment.
 
 This module hosts the per-sub-document pipeline steps:
 
@@ -15,8 +15,8 @@ This module hosts the per-sub-document pipeline steps:
   step 4  same-series numbering level alignment (open-interval series,
           level mode with shallow tie-break, subtree shift).
 
-Anchoring (two-round outline locking, §2.2.6), merge/demote (§2.2.7) and
-skeleton correction (§2.2.8) build on these decisions in later steps.
+Anchoring (two-round outline locking), merge/demote and skeleton
+correction build on these decisions in later steps.
 """
 
 from __future__ import annotations
@@ -64,9 +64,8 @@ from .style_key import (
 
 _CENTER_RUN_MAX = 4  # anti-poetry: runs of >= this many centered lines lose the channel
 
-#: §2.3.5 deviation: the re-judgment ledger normally stores only a content
-#: hash, never plaintext. This is the max character length of the plaintext
-#: preview added alongside that hash for human-readable auditing.
+#: The re-judgment ledger stores a bounded plaintext preview alongside each
+#: content hash for human-readable auditing. This is its maximum length.
 _AUDIT_SUMMARY_CHARS = 60
 
 
@@ -147,12 +146,14 @@ class HeadingDecision:
     numbering: NumberingClassification | None = None
     centered: bool = False
     all_bold: bool = False
-    anchored: bool = False  # outline-locked bookkeeping (both §2.2.6 rounds)
-    #: level derives from PHYSICAL OUTLINE evidence — set only by §2.2.6 round 1
+    anchored: bool = False  # outline-locked bookkeeping (both anchoring rounds)
+    #: level derives from PHYSICAL OUTLINE evidence — set only by
+    #: anchor_outline_levels round 1
     #: (a member of a numbered series that has ≥1 outlined member, so the whole
     #: series is anchored to the outline mode). Distinct from ``anchored``,
     #: which also covers round-2 size-only propagation. Used as a hard boundary
-    #: by the §2.2.7 subtree demotion so an outline-anchored series is not split
+    #: by the subtree demotion (demote_strong_body_headings) so an
+    #: outline-anchored series is not split
     #: (a no-outline member 1) is not demoted while its outlined 2)/3) survive).
     outline_anchored: bool = False
     pre_anchor_level: int | None = None  # level before round-1 anchoring
@@ -164,7 +165,7 @@ class HeadingDecision:
     title_parts: tuple[str, ...] = ()
     member_indices: tuple[int, ...] = ()
     use_raw_text: bool = False
-    absorbed: bool = False  # merged into a preceding heading (§2.2.7)
+    absorbed: bool = False  # merged into a preceding heading (merge_split_headings)
     rule_trail: list[str] = field(default_factory=list)
 
     def note(self, rule: str) -> None:
@@ -184,7 +185,7 @@ class HeadingDecision:
 
 
 def _record_weight(rec: Any) -> int:
-    """Char weight for FS_base statistics (§2.2.2).
+    """Char weight for FS_base statistics.
 
     Prefers the visible source-text count (w:t only) so auto-numbering labels
     and ``<sup>``/``<equation>``/``<drawing>``/``<table>`` placeholder markup
@@ -197,7 +198,7 @@ def _record_weight(rec: Any) -> int:
 
 
 def _stat_paragraphs(records: Sequence[Any], indices: Sequence[int]) -> list[int]:
-    """Record indices that participate in FS_base statistics (§2.2.2):
+    """Record indices that participate in FS_base statistics:
     paragraphs only — tables/cells, empty paragraphs and TOC lines are out."""
     out = []
     for i in indices:
@@ -280,7 +281,7 @@ def _log_physical_feature_summary(
 #: itself is safer. CLAUSE classes (条/款/项, Article/§) are NOT here — they
 #: defer to the post-merge sweep like CnParentNum / MultiLevelNum / EnNum, so a
 #: run of body-in-disguise clauses is demoted as a whole series and short
-#: colon-lead survivors don't leak through as headings (§2.2.5 note / §2.2.7).
+#: colon-lead survivors don't leak through as headings.
 EARLY_STRONG_BODY_KEYS = frozenset({CN_CHAPTER, EN_CHAPTER})
 
 
@@ -295,20 +296,20 @@ class GateResult:
     #: CB1 spared the sub-document without re-estimation: the raw first-pass
     #: density was over threshold, but a look-ahead of the downstream
     #: strong-body + CB2 series-propagation sweep projected it back under the
-    #: bar, so the trip was withheld (§2.3.3). Real demotion is left to the
+    #: bar, so the trip was withheld. Real demotion is left to the
     #: normal post-merge sweep.
     cb1_strong_body_recovered: bool = False
-    cb1_new_fs: float | None = None  # re-estimated FS_base (audit, §2.3.5)
+    cb1_new_fs: float | None = None  # re-estimated FS_base (audit)
     #: Second-pass mean body chars between adjacent candidates (observational
-    #: only — the §2.3.3 recheck is density-only; None when < 2 candidates).
+    #: only — the CB1 recheck is density-only; None when < 2 candidates).
     cb1_new_inter_chars: float | None = None
     #: Recognition-time strong-body demotions. Kept apart from ``decisions``
     #: (they must not be leveled/anchored) but carry a rule-tagged
     #: ``HeadingDecision`` so every demotion is explicit and audited, never a
-    #: silent drop. OUTLINE members bear the §2.3.2 I2 weight — they were
+    #: silent drop. OUTLINE members bear the I2 weight — they were
     #: baseline headings, so they re-render from ``full_text_raw``
-    #: (``use_raw_text``) and the retention check sees the rule trail (review
-    #: C2). NON-outline members were never baseline headings: they exist purely
+    #: (``use_raw_text``) and the retention check sees the rule trail.
+    #: NON-outline members were never baseline headings: they exist purely
     #: so the per-paragraph audit ledger matches the demotion counter, and stay
     #: output-neutral (``use_raw_text`` off → same body rendering as no
     #: decision).
@@ -330,7 +331,7 @@ class GateResult:
     #: stopped earlier by the caption / LLM-body vetoes are deliberately NOT
     #: recorded: those vetoes carry their own semantics.
     grant_rejected: list[HeadingDecision] = field(default_factory=list)
-    #: CB1 graduated demotion (§2.3.3): the ladder stages actually applied, in
+    #: CB1 graduated demotion: the ladder stages actually applied, in
     #: demotion order. Empty unless the ladder ran AND found a converging prefix
     #: (see ``_try_cb1_graduated_demotion``). When non-empty the three
     #: breaker/recovery flags above (``cb1_reestimated`` / ``cb1_tripped`` /
@@ -371,7 +372,7 @@ def gate_candidates(
     llm_heading_grants: set[int] = frozenset(),
     llm_body_vetoes: set[int] = frozenset(),
 ) -> GateResult:
-    """§2.2.5 step 1 over one sub-document (``indices`` into ``records``).
+    """Candidate gate (step 1) over one sub-document (``indices`` into ``records``).
 
     ``llm_heading_grants`` are record indices the title-block LLM classified
     as plain headings. The vote carries NO admission force — a granted
@@ -380,11 +381,11 @@ def gate_candidates(
     The set is kept for auditing only: a grant that then matches no rule is
     recorded in ``GateResult.grant_rejected``.
     ``llm_body_vetoes`` are indices the LLM classified as body — candidate
-    identity revoked (§2.2.4: only the veto side of the partition has force);
+    identity revoked (only the veto side of the partition has force);
     outline paragraphs never appear here (title_block already reroutes them
     per I2).
 
-    ``cb1_reestimate`` switches to the CB1 second-pass semantics (§2.3.3):
+    ``cb1_reestimate`` switches to the CB1 second-pass semantics:
     same-size composite paths (series / bold / centered) are all disabled,
     while sizes strictly above the re-estimated FS_base remain auto-admitted;
     outline pass-through is unaffected.
@@ -482,7 +483,7 @@ def gate_candidates(
             <= TITLE_LINE_MAX_WEIGHTED_CHARS
         )
 
-    # Solo centered channel (§2.2.5): under a HIGH-confidence FS_base, a
+    # Solo centered channel: under a HIGH-confidence FS_base, a
     # centered short line free of every body signal is heading-shaped on its
     # own — no companion needed (a two-line centered title has none). The
     # shape gate carries the exclusions that make solo admission safe: strong
@@ -553,8 +554,8 @@ def gate_candidates(
 
     # Weak-signal companions (P2): count of same-size weak-tier paragraphs.
     # A strong-body paragraph will be demoted and so is NOT a companion —
-    # spec §2.3.4 counts only "不含强正文特征的弱信号段落". Excluding it here
-    # prevents a lone +0.5 paragraph from falsely pairing with a same-size
+    # only weak-signal paragraphs free of strong-body features count. Excluding it
+    # here prevents a lone +0.5 paragraph from falsely pairing with a same-size
     # sentence/long paragraph that is about to be dropped.
     weak_size_count: dict[float, int] = {}
     if fs is not None:
@@ -587,7 +588,7 @@ def gate_candidates(
             # Zero visible source characters — a pure <drawing>/<object>/
             # <equation> placeholder paragraph. It carries no textual heading
             # evidence: its "font size" is style metadata synthesized by the
-            # fallback cascade, not measured off text (§2.2.2). Never a
+            # fallback cascade, not measured off text. Never a
             # heading, including outline members (user ruling) — but an
             # outline member was a baseline heading, so it takes an EXPLICIT
             # I2 demotion (use_raw_text re-renders the tag as body), never a
@@ -625,11 +626,11 @@ def gate_candidates(
             # zero-visible-char demotion above, which is rule-tagged and I2-
             # explicit, not a silent skip. Silently skipping here would strip
             # a baseline heading without a decision/warning and trip the I2
-            # machine check (A5). Wrong captions with an outline fall to the
+            # machine check. Wrong captions with an outline fall to the
             # strong-body / guardrail path like any outline para.
             rule = "outline"
         elif i in llm_body_vetoes:
-            continue  # §2.2.4: LLM body vote revokes candidate identity
+            continue  # LLM body vote revokes candidate identity
         elif caption_veto(text) is not None:
             continue  # P3: never a heading
         elif fs is None or size is None:
@@ -658,7 +659,7 @@ def gate_candidates(
                     rule = "base_bold"
                 elif _centered_channel(i):
                     rule = "base_center"
-            # size < fs without outline: never a heading (§2.2.2 necessary
+            # size < fs without outline: never a heading (necessary
             # condition under high confidence)
         else:
             # Low confidence (CB5 / CB1): no size tier stands alone; require
@@ -703,7 +704,7 @@ def gate_candidates(
         # Strong-body demotion at recognition time: unnumbered candidates
         # and chapter-class numbered ones; clause-class and all other numbered
         # styleKeys defer to the post-merge sweep so CB2 series propagation can
-        # demote a body-in-disguise run as a whole (§2.2.7; EARLY_STRONG_BODY_KEYS).
+        # demote a body-in-disguise run as a whole (see EARLY_STRONG_BODY_KEYS).
         check_now = cls is None or cls.style_key in EARLY_STRONG_BODY_KEYS
         if check_now:
             reason = _strong(i)
@@ -717,9 +718,9 @@ def gate_candidates(
                 # silent drop — so the per-paragraph audit ledger matches the
                 # demotion counter above. The demoted decision is kept out of
                 # the leveled candidate list. Outline members bear the I2
-                # (§2.3.2) weight: they were baseline headings, so they
+                # weight: they were baseline headings, so they
                 # re-render from full_text_raw (``use_raw_text``), the retention
-                # check sees the rule trail (review C2), and the demotion is
+                # check sees the rule trail, and the demotion is
                 # warned. Non-outline candidates were never baseline headings —
                 # they stay output-neutral (``use_raw_text`` off → same body
                 # rendering as no decision) and emit no I2 warning.
@@ -793,13 +794,13 @@ def _avg_inter_heading_body_chars(
             rec = records[i]
             if rec.kind == "para":
                 # CJK-weighted (1 Chinese = 3 English), same yardstick as
-                # every other length threshold in the spec (§2.2.4/§2.2.5).
+                # every other length threshold.
                 body_chars += guardrails.weighted_char_length(rec.text)
     return body_chars / (len(cand) - 1)
 
 
 # ---------------------------------------------------------------------------
-# CB1 graduated demotion (§2.3.3)
+# CB1 graduated demotion
 # ---------------------------------------------------------------------------
 # When CB1 would otherwise blanket-re-estimate FS_base and wipe EVERY same-size
 # numbered heading (the "1 范围 / 5.2 版面 / 7.2.1 份号" GB/T shape), demote
@@ -937,7 +938,7 @@ def _try_cb1_graduated_demotion(
     min_inter: int,
     warnings: dict | None = None,
 ) -> bool:
-    """§2.3.3 graduated demotion, run after the look-ahead fails and before the
+    """CB1 graduated demotion, run after the look-ahead fails and before the
     blanket re-estimation. Demote same-size candidates one evidence tier at a
     time (fixed weakest-first ladder) on the strong-body+CB2 PROJECTION
     (``survivors``), re-checking density + inter-heading spacing after each tier.
@@ -1037,7 +1038,7 @@ def gate_with_cb1(
 ) -> GateResult:
     """Run the gate; on CB1 overflow (density > threshold, or the average
     body chars between adjacent candidates below
-    ``DOCX_SMART_MIN_INTER_HEADING_CHARS`` — trigger side only, §2.3.3):
+    ``DOCX_SMART_MIN_INTER_HEADING_CHARS`` — trigger side only):
 
     1. Look-ahead: project the downstream strong-body + CB2 series-propagation
        sweep onto a throwaway copy of the candidates and re-measure density.
@@ -1085,7 +1086,7 @@ def gate_with_cb1(
     if result.density <= threshold and not sparse_body:
         return result
 
-    # CB1 look-ahead (§2.3.3): the raw first-pass density is over the bar, but
+    # CB1 look-ahead: the raw first-pass density is over the bar, but
     # numbered body-in-disguise (e.g. a run of ``CnParentNum`` "(一)…。" clauses)
     # is still counted as candidates here — its strong-body demotion is deferred
     # to the post-merge sweep, which runs LATER and is skipped entirely once the
@@ -1128,7 +1129,7 @@ def gate_with_cb1(
         )
         return result
 
-    # Graduated demotion (§2.3.3 step 2): the projection still overflows, but a
+    # Graduated demotion (step 2): the projection still overflows, but a
     # numbered outline may be over-dense only because its LOWER tiers (list
     # items, deep MLN levels) crowd the upper ones. Peel same-size candidates
     # off one evidence tier at a time until density + spacing recover, keeping
@@ -1187,7 +1188,7 @@ def gate_with_cb1(
     )
     second.cb1_reestimated = True
     second.cb1_new_fs = new_size
-    # Second-pass inter-heading spacing: observational only (the §2.3.3
+    # Second-pass inter-heading spacing: observational only (the CB1
     # recheck stays density-only — this does NOT feed the trip decision).
     second.cb1_new_inter_chars = _avg_inter_heading_body_chars(records, indices, second)
     if second.density > threshold:
@@ -1227,7 +1228,7 @@ def gate_with_cb1(
 
 
 def assign_levels_by_size(decisions: list[HeadingDecision]) -> None:
-    """Assign levels from size bands (§2.2.5 step 2), in place.
+    """Assign levels from size bands (step 2), in place.
 
     Bands are the distinct effective sizes, descending; each band expands
     into consecutive levels: centered-unnumbered first (shallowest), then
@@ -1345,8 +1346,8 @@ _BACKFILL_KEYS = (EN_NUM, CN_CHAPTER, EN_CHAPTER)
 def backfill_top_level(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> None:
-    """Absorb a parent numbering class as MultiLevelNum raw level 1 (§2.2.5
-    step 3), in place. Runs per main-title scope (callers pass decisions of
+    """Absorb a parent numbering class as MultiLevelNum raw level 1 (step 3),
+    in place. Runs per main-title scope (callers pass decisions of
     one scope). No-op without multi-level numbering."""
     mln = [
         d
@@ -1379,7 +1380,7 @@ def backfill_top_level(
 
     # Group ALL parent-class headings; the size threshold is one of two
     # admission channels below (ordinal linkage can waive it — parents typed
-    # smaller than their children are a real-world anomaly, §2.2.5 step 3).
+    # smaller than their children are a real-world anomaly).
     groups: dict[tuple, list[HeadingDecision]] = {}
     for d in decisions:
         cls = d.numbering
@@ -1454,7 +1455,7 @@ def backfill_top_level(
     # the MLN family. Suppressing the boost drops EnNum to the generic-linkage
     # tier (element B) and the priority tie-break (element C, CnChapter=1 <
     # EnNum=7). A DISTRACTOR chapter with no linkage still loses — EnNum with
-    # linkage beats it on element B — preserving G6-4.
+    # linkage beats it on element B, preserving the intended parent preference.
     chapter_present = any(k[0] in (CN_CHAPTER, EN_CHAPTER) for k, _m, _l in eligible)
 
     def _preference(item):
@@ -1528,7 +1529,7 @@ def _collect_series_group(
     key = head.numbering.series_key()
     group = [start_pos]
     min_level = head.level if head.level is not None else 1
-    # §2.2.3 / DOCX_SMART_SEQ_BREAK_PARAS: a long run of body paragraphs
+    # DOCX_SMART_SEQ_BREAK_PARAS: a long run of body paragraphs
     # between same-key members closes the open sequence. Record-index gaps
     # are the proxy for "consecutive body paragraphs" (records between two
     # heading decisions are body/tables). 0 (the default) disables the rule.
@@ -1574,12 +1575,12 @@ def _shift_subtree(
 def align_numbering_series(
     decisions: list[HeadingDecision], *, skip_anchored: bool = False
 ) -> None:
-    """§2.2.5 step 4: align every same-series numbering group to its level
+    """Step 4: align every same-series numbering group to its level
     mode (ties toward the SHALLOWER level), shifting subtrees along, in
     place. Scanning is head-to-tail; each group aligns once.
 
     ``skip_anchored=True`` keeps outline-locked members fixed (used by the
-    §2.2.8 smoothing pass: unanchored members align to the anchored mode).
+    smoothing pass: unanchored members align to the anchored mode).
     """
     aligned: set[int] = set()
     pos = 0
@@ -1622,7 +1623,7 @@ def align_numbering_series(
 
 
 # ---------------------------------------------------------------------------
-# §2.2.6 — two-round physical-outline anchoring
+# two-round physical-outline anchoring
 # ---------------------------------------------------------------------------
 
 
@@ -1642,7 +1643,7 @@ def _all_series_groups(decisions: list[HeadingDecision]) -> list[list[int]]:
 def anchor_outline_levels(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> bool:
-    """§2.2.6: re-anchor size-derived levels onto the physical outline.
+    """Re-anchor size-derived levels onto the physical outline.
 
     Round 1 — non-numbered outlined headings snap to ``outlineLvl + 1``;
     a numbered series with ≥1 outlined member snaps the WHOLE series to the
@@ -1703,7 +1704,7 @@ def anchor_outline_levels(
             m.level = mode
             m.anchored = True
             # whole series' level derives from physical outline evidence — a
-            # no-outline member (1) must not be split off by the §2.2.7 subtree
+            # no-outline member (1) must not be split off by the subtree
             # demotion while its outlined siblings (2)/3) survive.
             m.outline_anchored = True
             m.note("anchor_outline_series")
@@ -1737,9 +1738,9 @@ def anchor_outline_levels(
         cut = 0  # boundary between follow-zone and the trailing sub-window
         if front is not None and front.anchor_delta != 0:
             delta = front.anchor_delta
-            # §2.2.6 round 2: the follow stops at a heading whose level is
-            # equal to or shallower than the front anchor's PRE-adjust level
-            # (the back-anchor branch already uses pre; A3 restores symmetry).
+            # round 2: the follow stops at a heading whose level is
+            # equal to or shallower than the front anchor's PRE-adjust level,
+            # matching the back-anchor branch's use of the pre-adjust level.
             stop_level = (
                 front.pre_anchor_level
                 if front.pre_anchor_level is not None
@@ -1752,7 +1753,7 @@ def anchor_outline_levels(
                 d.note("anchor_follow_front")
                 cut = k + 1
 
-        if cut and warnings is not None:  # §2.3.5: window shift events
+        if cut and warnings is not None:  # window shift events
             warnings["smart_anchor_window_shifts"] = (
                 warnings.get("smart_anchor_window_shifts", 0) + 1
             )
@@ -1787,7 +1788,7 @@ def anchor_outline_levels(
 
 
 # ---------------------------------------------------------------------------
-# §2.2.7 — heading merge and strong-body demotion sweep
+# heading merge and strong-body demotion sweep
 # ---------------------------------------------------------------------------
 
 _MERGE_MAX_LINES = 4
@@ -1799,7 +1800,7 @@ def merge_split_headings(
     *,
     warnings: dict | None = None,
 ) -> list[HeadingDecision]:
-    """§2.2.7: re-join headings the author split for line-spacing looks.
+    """Re-join headings the author split for line-spacing looks.
 
     Adjacent same-level headings with the same font size (bold ignored)
     merge — "adjacent" tolerates ONE empty paragraph between them; a
@@ -1856,7 +1857,7 @@ def demote_strong_body_headings(
     strong_body: Callable[[str], str | None] | None = None,
     warnings: dict | None = None,
 ) -> None:
-    """§2.2.7 post-merge sweep: every remaining heading is re-checked for
+    """Post-merge sweep: every remaining heading is re-checked for
     strong-body features; hits demote to body. A numbered hit propagates the
     demotion to its whole same-series group unless CB2 trips (fewer than 20%
     of the group hit, or ≥50% of the group carries a physical outline) — a
@@ -1866,9 +1867,10 @@ def demote_strong_body_headings(
     numbered headings it parents) down with it — an orphaned deeper numbered
     child would otherwise re-anchor to the wrong parent and swallow the
     following content. An unnumbered deeper heading is NOT cascaded (its depth
-    is only a size/style heuristic — it is left to close_unnumbered_level_gaps
-    §2.2.8); a heading with physical-outline evidence (its own outlineLvl, or a
-    same-series member anchored to the outline in §2.2.6 round 1) is a hard
+    is only a size/style heuristic — it is left to close_unnumbered_level_gaps);
+    a heading with physical-outline evidence (its own outlineLvl, or a
+    same-series member anchored to the outline in anchor_outline_levels round 1)
+    is a hard
     boundary that is never demoted by ancestor propagation nor split off from
     its series (it keeps only whatever its own strong-body / CB2 evidence
     already gave it). The scan stops at either kind of boundary."""
@@ -1922,29 +1924,30 @@ def demote_strong_body_headings(
             )
             continue
         demote.update(group)
-        if warnings is not None:  # §2.3.5: successful propagation events
+        if warnings is not None:  # successful propagation events
             warnings["smart_cb2_propagations"] = (
                 warnings.get("smart_cb2_propagations", 0) + 1
             )
 
-    # §2.2.7: an ancestor demotion takes its NUMBERED subtree down with it — an
+    # an ancestor demotion takes its NUMBERED subtree down with it — an
     # orphaned deeper NUMBERED child would re-anchor to the wrong parent and
-    # swallow the following content (test14: 一、句号-demoted, （一）/（二） left
-    # as orphan L2). Scan forward from each already-demoted heading (CB2
+    # swallow the following content (for example, if 一、 is demoted while
+    # （一）/（二） remain as orphan L2 headings). Scan forward from each
+    # already-demoted heading (CB2
     # snapshot; newly folded-in descendants need not be roots — their span is
     # already covered by the ancestor). Boundaries that stop the scan:
     #   - a title block / level-0 member (sub-document boundary);
     #   - a sibling or shallower heading (level <= parent);
     #   - a member with physical-outline evidence — its own outlineLvl OR a
-    #     same-series member anchored to the outline in §2.2.6 round 1
+    #     same-series member anchored to the outline in anchor_outline_levels round 1
     #     (outline_anchored, so a no-outline 1) is not split off while its
     #     outlined 2)/3) survive) — kept, never demoted by ancestor propagation
     #     (keeps only its own evidence, never discard());
     #   - an UNNUMBERED heading: its deeper level is only a size/style heuristic
-    #     (§2.2.5 step 2 sinks unnumbered non-centered below same-size numbered),
-    #     NOT a reliable subtree link (test7: EnNum claims demoted, the
-    #     independent "技术领域"/"背景技术" sections must survive and rise to L2 via
-    #     close_unnumbered_level_gaps §2.2.8, not cascade with the claims).
+    #     (assign_levels_by_size sinks unnumbered non-centered below same-size
+    #     numbered), NOT a reliable subtree link: when EnNum claims are
+    #     demoted, independent "技术领域"/"背景技术" sections must survive and rise to L2 via
+    #     close_unnumbered_level_gaps, not cascade with the claims).
     for pos in sorted(demote):
         parent = decisions[pos]
         if parent.level is None:
@@ -1958,7 +1961,7 @@ def demote_strong_body_headings(
             if child.level is None or child.level <= parent.level:
                 break  # subtree ends (sibling or shallower)
             if child.outline_level is not None or child.outline_anchored:
-                break  # outline evidence (own, or same-series §2.2.6 round-1
+                break  # outline evidence (own, or same-series anchor_outline_levels round-1
                 # propagation) = hard boundary, kept — never split a series
             if child.numbering is None:
                 break  # unnumbered: heuristic depth, leave it to gap-close
@@ -1992,7 +1995,7 @@ def _collect_series_group_containing(
 
 
 # ---------------------------------------------------------------------------
-# §2.2.8 — numbering skeleton correction, smoothing, clamping
+# numbering skeleton correction, smoothing, clamping
 # ---------------------------------------------------------------------------
 
 #: Cross-class unit hierarchy for nesting-evidence edges (legal documents:
@@ -2044,7 +2047,7 @@ def _habitual_shallower(a: _SkeletonNode, b: _SkeletonNode, decisions) -> bool:
 def _nesting_evidence(
     a: _SkeletonNode, b: _SkeletonNode, decisions: list[HeadingDecision]
 ) -> bool:
-    """All-three nesting evidence for edge a→b (§2.2.8)."""
+    """All-three nesting evidence for edge a→b."""
     a_pos = sorted(a.positions)
     b_pos = sorted(b.positions)
     if len(a_pos) < 2:
@@ -2093,7 +2096,7 @@ def _nesting_evidence(
 def correct_numbering_skeleton(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> list[dict]:
-    """§2.2.8 step 1: single-shot skeleton solve over numbering families.
+    """Single-shot skeleton solve over numbering families.
 
     Nodes: MultiLevelNum gets ONE node per raw level (document-wide); every
     other styleKey gets one node per open-interval series. A node holding an
@@ -2144,11 +2147,11 @@ def correct_numbering_skeleton(
         levels = [pre_levels[p] for p in node.positions if pre_levels[p] is not None]
         if not levels:
             continue
-        # Snapshot = the SHALLOWEST pre-correction member level (§2.2.8):
+        # Snapshot = the SHALLOWEST pre-correction member level:
         # window shifts may have pushed part of a series deeper; the
         # shallowest member represents the series' un-displaced position.
-        # Fixed nodes were already unified to the anchored mode by §2.2.6,
-        # where min == mode.
+        # Fixed nodes were already unified to the anchored mode by
+        # anchor_outline_levels, where min == mode.
         node.snapshot = min(levels)
         node.fixed = any(decisions[p].anchored for p in node.positions)
 
@@ -2173,7 +2176,7 @@ def correct_numbering_skeleton(
                 and b.snapshot <= a.snapshot
             ):
                 # An inversion against the habitual order without enough
-                # evidence to correct it — observed, never acted on (§2.3.5).
+                # evidence to correct it — observed, never acted on.
                 if warnings is not None:
                     warnings["smart_skeleton_inversion_suspected"] = (
                         warnings.get("smart_skeleton_inversion_suspected", 0) + 1
@@ -2282,7 +2285,7 @@ def _shift_subtree_unlocked(
 
     The subtree walk additionally stops at the first descendant carrying an
     ``outline_level`` — those are pinned to the Word outline (I3: level ==
-    outlineLvl + 1) by :func:`anchor_outline_levels` (§2.2.6) and must not be
+    outlineLvl + 1) by :func:`anchor_outline_levels` and must not be
     dragged along by a numbered-list re-nest.
 
     It deliberately does NOT stop on ``anchored``: anchoring round 2 flags every
@@ -2305,7 +2308,7 @@ def _shift_subtree_unlocked(
 def nest_numbered_under_parent(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> None:
-    """§2.2.8: nest a non-MultiLevelNum numbered heading under its structural
+    """Nest a non-MultiLevelNum numbered heading under its structural
     parent, in place. Runs AFTER outline anchoring + smoothing so parent levels
     are final.
 
@@ -2395,11 +2398,11 @@ def nest_numbered_under_parent(
 def close_unnumbered_level_gaps(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> None:
-    """§2.2.8: lift unnumbered headings over levels vacated by demotion.
+    """Lift unnumbered headings over levels vacated by demotion.
 
     ``assign_levels_by_size`` hands each numbering class a slot BETWEEN the
     centered-plain and uncentered-plain tracks; when the post-merge sweep
-    (§2.2.7) later demotes such a class wholesale (e.g. patent claims
+    later demotes such a class wholesale (e.g. patent claims
     ``1、…`` matched as an EnNum series), its slot empties and the unnumbered
     headings below it are stranded one-or-more levels too deep (title L1 /
     sections L3 with nothing at L2).
@@ -2415,8 +2418,8 @@ def close_unnumbered_level_gaps(
     lands at ``running + 1`` — strictly below every pinned level processed so
     far — so it never collides with or crosses a surviving numbered heading.
 
-    Scope note (design ruling): this pass repairs unnumbered headings
-    THEMSELVES, not the numeric contiguity of their numbered descendants. A
+    Scope: this pass repairs unnumbered headings THEMSELVES, not the numeric
+    contiguity of their numbered descendants. A
     pinned child already deeper than a lifted parent keeps its level (the
     downstream nest pass is one-directional and never pulls a deeper child
     up), leaving a documented numeric gap; heading ORDER (child strictly
@@ -2463,7 +2466,7 @@ def close_unnumbered_level_gaps(
 def clamp_deep_levels(
     decisions: list[HeadingDecision], *, warnings: dict | None = None
 ) -> None:
-    """§2.2.8 step 3: headings deeper than level 9 demote to body (no
+    """Headings deeper than level 9 demote to body (no
     clamping-to-9 — that would break same-series level equality)."""
     for d in decisions:
         if d.is_heading and not d.is_title_block and (d.level or 0) > 9:
@@ -2487,7 +2490,7 @@ class SmartHeadingResult:
 
     ``toc_indices`` is the set excluded from the heading pipeline; some of those
     lines are still re-emitted as body per ``toc_kept_text`` /
-    ``toc_ellipsis_anchor`` (§2.3 TOC retention), so the set is NOT the same as
+    ``toc_ellipsis_anchor`` (TOC retention), so the set is NOT the same as
     "dropped from final output".
     """
 
@@ -2548,7 +2551,7 @@ def _outline_only_decisions(
 ) -> list[HeadingDecision]:
     """Sub-document fallback: internal levels revert to outlineLvl-only
     (the baseline rule); global actions (title blocks, TOC removal,
-    doc_title) are NOT undone (§3.4 mixed-output rules).
+    doc_title) are NOT undone.
 
     公文版记 (imprint) lines and zero-visible-char placeholder paragraphs are
     the two exceptions to the baseline revert: an outline paragraph opening
@@ -2628,7 +2631,7 @@ def _demote_confirmed_imprint_regions(
     warnings: dict | None,
     skip_indices: set[int] = frozenset(),
 ) -> None:
-    """Force a confirmed 公文版记 region's lines to body (§2.2.9 conditional).
+    """Force a confirmed 公文版记 region's lines to body (conditional).
 
     A region is CONFIRMED — 100% 版记, not a false imprint hit — only when its
     closer is IMMEDIATELY followed by a valid title block: the first CONTENT
@@ -2716,7 +2719,7 @@ def run_smart_heading(
     numbering_veto: Callable[[Any, str], str | None] | None = None,
     caption_veto: Callable[[str], str | None] | None = None,
 ) -> SmartHeadingResult | None:
-    """Run the full §2.2 pipeline over one document's records.
+    """Run the full smart-heading pipeline over one document's records.
 
     Returns ``None`` when the CB4 whole-document gate rejects (too short:
     smart is skipped BEFORE any title-block work, zero LLM calls, output is
@@ -2762,14 +2765,14 @@ def run_smart_heading(
     audit: dict[str, Any] = {"sub_documents": [], "rule_events": []}
 
     # Whole-document TOC judgment feeds BOTH the CB4 counting scope and the
-    # smart output removal set (§2.3.3: the token count excludes TOC lines
+    # smart output removal set (the token count excludes TOC lines
     # so a long-TOC + short-body doc takes the same short path).
     toc_indices, toc_events = g.detect_toc_records(records)
     audit["toc_removed"] = g.toc_audit_entries(records, toc_indices)
     if toc_events:
         audit["rule_events"].extend(toc_events)
 
-    # §2.3 TOC retention: keep the first DOCX_SMART_TOC_KEEP_LINES visible TOC
+    # TOC retention: keep the first DOCX_SMART_TOC_KEEP_LINES visible TOC
     # lines as body (the rest collapse to one "……") so a 目录 heading is not
     # orphaned from its entries. This is output-only — toc_indices stays the
     # full heading-pipeline exclusion set below.
@@ -2799,10 +2802,10 @@ def run_smart_heading(
         return None  # CB4 whole-document gate — smart never ran
 
     # --- title blocks -------------------------------------------------------
-    # §2.2.4: the title-block gate baseline is the GLOBAL FS_base initial
-    # value — the char-weighted dominant size (§2.2.2), not a weighted mean.
+    # The title-block gate baseline is the GLOBAL FS_base initial
+    # value — the char-weighted dominant size, not a weighted mean.
     fs_initial = doc_fs.size_pt
-    # §2.2.9: map imprint regions ONCE (抄送 anchor → 印发 closer, + preceding
+    # map imprint regions ONCE (抄送 anchor → 印发 closer, + preceding
     # signature/date lines). The union is the title-block veto set; the regions
     # themselves are reused after title judgment for the conditional demotion
     # (a region followed by a valid title block is a 公文汇编 boundary).
@@ -2833,7 +2836,8 @@ def run_smart_heading(
         suppressed_events=suppressed_windows,
     )
     if suppressed_windows:
-        # Deterministic (pure ints/strs, scan order) — §2.3.5 audit red line.
+        # Keep audit events deterministic and replayable: only ints/strs in
+        # scan order are recorded.
         audit["rule_events"].extend(suppressed_windows)
         warnings["smart_mid_document_window_suppressed"] = warnings.get(
             "smart_mid_document_window_suppressed", 0
@@ -2850,7 +2854,7 @@ def run_smart_heading(
     title_starts: list[int] = []
     doc_title: str | None = None
 
-    # §2.3.5: LLM call count + per-candidate verdicts are structured metrics.
+    # LLM call count + per-candidate verdicts are structured metrics.
     llm_calls = {"n": 0}
     judge = llm_judge
     if judge is not None:
@@ -2873,7 +2877,7 @@ def run_smart_heading(
                 "end": cand.end,
                 "single": cand.single,
                 "is_title_block": verdict.is_title_block,
-                # LLM verdict content (§2.3.5 replayability): the accepted
+                # LLM verdict content (replayability): the accepted
                 # main title, and the partition strength of a false verdict.
                 # All deterministic; the raw response is NOT stored.
                 "main_title": verdict.main_title,
@@ -2916,7 +2920,7 @@ def run_smart_heading(
             if doc_title is None:
                 doc_title = doc_heading
         else:
-            # §2.2.4: only the VETO side of the partition carries force —
+            # only the VETO side of the partition carries force —
             # body votes revoke candidate identity (outline paragraphs never
             # land here — title_block reroutes them to heading_indices per
             # I2). Heading votes are collected for auditing only: a granted
@@ -2981,7 +2985,7 @@ def run_smart_heading(
                 decisions[d.record_index] = d
             continue
 
-        if not fs.confidence_high:  # §2.3.5: CB5 trips per sub-document
+        if not fs.confidence_high:  # CB5 trips per sub-document
             warnings["smart_cb5_low_confidence"] = (
                 warnings.get("smart_cb5_low_confidence", 0) + 1
             )
@@ -2998,7 +3002,7 @@ def run_smart_heading(
             llm_heading_grants=llm_grants,
             llm_body_vetoes=llm_body_vetoes,
         )
-        if gate.cb1_reestimated:  # §2.3.5: FS_base + density after re-estimation
+        if gate.cb1_reestimated:  # FS_base + density after re-estimation
             sub_audit["cb1_reestimated_fs"] = gate.cb1_new_fs
             sub_audit["cb1_reestimated_density"] = round(gate.density, 4)
             sub_audit["cb1_reestimated_inter_chars"] = (
@@ -3006,9 +3010,9 @@ def run_smart_heading(
                 if gate.cb1_new_inter_chars is not None
                 else None
             )
-        if gate.cb1_strong_body_recovered:  # §2.3.3 look-ahead spared the trip
+        if gate.cb1_strong_body_recovered:  # CB1 look-ahead spared the trip
             sub_audit["cb1_strong_body_recovered"] = True
-        if gate.cb1_graduated_stages:  # §2.3.3 graduated demotion (per-tier)
+        if gate.cb1_graduated_stages:  # CB1 graduated demotion (per-tier)
             sub_audit["cb1_graduated"] = {
                 "stages_applied": list(gate.cb1_graduated_stages),
                 "demoted_count": gate.cb1_graduated_demoted,
@@ -3048,19 +3052,19 @@ def run_smart_heading(
         demote_strong_body_headings(ds, strong_body=strong_body, warnings=warnings)
         skeleton_audit = correct_numbering_skeleton(ds, warnings=warnings)
         if skeleton_audit:
-            # §2.3.5: audit rows key on the paragraph HASH, not a transient
+            # audit rows key on the paragraph HASH, not a transient
             # position into this sub-document's decision list.
             for event in skeleton_audit:
                 pos = event.pop("position", None)
                 if pos is not None:
                     event["hash"] = _para_hash(ds[pos].text)
             audit["rule_events"].extend(skeleton_audit)
-        align_numbering_series(ds, skip_anchored=True)  # §2.2.8 smoothing
-        # §2.2.8: lift unnumbered headings over levels the post-merge sweep
+        align_numbering_series(ds, skip_anchored=True)  # smoothing
+        # lift unnumbered headings over levels the post-merge sweep
         # vacated — BEFORE nest, so re-nested children land on the corrected
         # parent levels (nest never pulls an already-deeper child up).
         close_unnumbered_level_gaps(ds, warnings=warnings)
-        # §2.2.8: nest same-size non-MLN numbered lists under their structural
+        # nest same-size non-MLN numbered lists under their structural
         # parent — AFTER smoothing (else series-align would overwrite it),
         # before clamp.
         nest_numbered_under_parent(ds, warnings=warnings)
@@ -3074,14 +3078,13 @@ def run_smart_heading(
             # merged heading survives. If the post-merge sweep or clamping
             # demoted it, the joined text is never rendered, so the members
             # must fall back to emitting their own paragraph text; otherwise
-            # their content vanishes and I1 trips a whole-document fallback
-            # (review C4).
+            # their content vanishes and I1 trips a whole-document fallback.
             if d.member_indices and not d.is_title_block and d.is_heading:
                 for m in d.member_indices[1:]:
                     absorbed = HeadingDecision(record_index=m, text="", absorbed=True)
                     absorbed.note("merged_absorbed")
                     decisions[m] = absorbed
-        # I2 audit trail for recognition-time outline demotions (review C2):
+        # I2 audit trail for recognition-time outline demotions:
         # merged in AFTER the candidate loop so they never reach leveling /
         # anchoring, yet appear in the final decision map + audit ledger.
         # Placeholder demotions count HERE — the single final-adoption point —
@@ -3110,7 +3113,7 @@ def run_smart_heading(
     # absence from a silent drop: TOC and title-block-member paragraphs are
     # legitimate non-headings. The "toc_removed" tag means "excluded from the
     # heading pipeline" — NOT "dropped from output": some TOC lines are still
-    # re-emitted as body (§2.3 TOC retention), but none is ever a heading.
+    # re-emitted as body (TOC retention), but none is ever a heading.
     for i in toc_indices:
         if i not in decisions:
             sentinel = HeadingDecision(record_index=i, text="")
@@ -3123,7 +3126,7 @@ def run_smart_heading(
                 sentinel.note("title_block_member")
                 decisions[m] = sentinel
 
-    # §2.2.9: a 抄送…印发 region whose closer is immediately followed by a valid
+    # a 抄送…印发 region whose closer is immediately followed by a valid
     # title block is a confirmed 公文汇编 boundary — force its lines to body.
     # Match against the FULL member set (title_members includes each block's
     # main position): see the member-vs-start note in the demotion helper.
@@ -3147,13 +3150,13 @@ def run_smart_heading(
             + outline_multisentence_spared
         )
 
-    # §2.3.5: the full re-judgment ledger — one row per paragraph that any
+    # the full re-judgment ledger — one row per paragraph that any
     # rule touched (hash + rule trail + final level), replayable offline.
     audit["llm_calls"] = llm_calls["n"]
     audit["decisions"] = [
         {
             "hash": _para_hash(d.text),
-            # §2.3.5 deviation: a plaintext preview alongside the hash for
+            # Include a bounded plaintext preview alongside the hash for
             # human-readable auditing (see _AUDIT_SUMMARY_CHARS).
             "summary": get_content_summary(d.text, max_length=_AUDIT_SUMMARY_CHARS),
             # Paragraph font size = the char-weighted MODE off the record

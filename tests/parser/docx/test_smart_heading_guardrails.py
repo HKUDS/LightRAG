@@ -238,8 +238,11 @@ def test_heuristic_toc_needs_three_consecutive_leader_lines() -> None:
 
 
 def test_heuristic_toc_single_paragraph_soft_breaks() -> None:
-    """Review M2 (§2.2.2): a TOC typed as ONE paragraph with ≥3 soft-break
-    dot-leader lines is detected — lines are counted, not paragraphs."""
+    """A TOC typed as one soft-break-delimited paragraph is detected.
+
+    Three or more dot-leader lines qualify because detection counts lines,
+    not paragraphs.
+    """
     records = [
         _para(
             "第一章 绪论............3\n第二章 方法............12\n第三章 实验............25"
@@ -469,7 +472,7 @@ def test_toc_third_channel_english_contents_casefold() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TOC retention: plan_toc_output (§2.3)
+# TOC retention implemented by plan_toc_output
 # ---------------------------------------------------------------------------
 
 
@@ -636,8 +639,9 @@ def test_i1_whitelists_toc_indices_only() -> None:
 
 
 def test_i1_subtracts_injected_toc_copy_reveals_body_loss() -> None:
-    """§2.3 TOC retention: a retained TOC copy of a body heading must NOT mask
-    that heading actually going missing from the output. The injected copy is
+    """A retained TOC copy must not mask a missing body heading.
+
+    The injected copy is
     subtracted from the output multiset first, so the lost body line surfaces.
     (Multiset SUBTRACTION, not mere canonicalization: proven by the paired
     'body present' case below returning [].)"""

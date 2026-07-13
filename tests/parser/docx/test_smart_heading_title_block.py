@@ -670,8 +670,9 @@ def test_multi_verdict_rejects_duplicate_indices() -> None:
 
 
 def test_multi_window_requires_two_pt_over_body() -> None:
-    """A7 tightened (§2.2.4 conservative preference): the multi-paragraph
-    window title line now needs +2pt over FS_base, matching the single
+    """A multi-paragraph title line must be at least 2pt over FS_base.
+
+    This matches the single-paragraph
     channel. The old +1pt strong-signal tier let ordinary section-heading
     sizes open windows, so it is no longer sufficient on its own."""
     # +1pt over base: below the (now unified) +2pt bar → no title line.
@@ -700,8 +701,9 @@ def test_multi_window_requires_two_pt_over_body() -> None:
 
 
 def test_title_line_uses_first_line_size_for_split_records() -> None:
-    """A9 (§2.2.2 / §3.1): a soft-break-split heading record is judged by
-    its FIRST line's size, not the whole-paragraph dominant size that the
+    """A soft-break-split heading is judged by its first line's size.
+
+    The whole-paragraph dominant size is not used because the
     demoted body remainder dominates."""
     split = _para(
         "被拆分的超长主标题首行",
@@ -970,7 +972,7 @@ def test_mid_document_candidate_after_previous_page_break_run_rejected() -> None
 
 
 # ---------------------------------------------------------------------------
-# table windows (§2.2.4 table channel): a cover laid out inside tables
+# Table-channel windows for covers laid out inside tables
 # ---------------------------------------------------------------------------
 
 

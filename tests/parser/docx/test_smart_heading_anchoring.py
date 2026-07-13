@@ -1,4 +1,4 @@
-"""G7 tests: two-round physical-outline anchoring (§2.2.6) + CB3."""
+"""Tests for two-round physical-outline anchoring and the CB3 guard."""
 
 from __future__ import annotations
 
@@ -191,8 +191,9 @@ def test_round2_first_window_without_front_anchor() -> None:
 
 
 def test_round2_front_follow_stops_at_pre_adjust_level_when_raised() -> None:
-    """A3 (§2.2.6): the front-anchor follow stops at the anchor's PRE-adjust
-    level. Raised front (4→2): only the genuine child (5) follows; the
+    """The front-anchor follow stops at the anchor's PRE-adjust level.
+
+    Raised front (4→2): only the genuine child (5) follows; the
     sibling at the old level (4) and anything shallower stay put."""
     ds = _build(
         [

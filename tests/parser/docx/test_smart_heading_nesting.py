@@ -1,5 +1,7 @@
-"""Unit tests for §2.2.8 numbered-list re-nesting (`nest_numbered_under_parent`)
-and the `backfill_top_level` chapter-top guard.
+"""Tests for numbered-list re-nesting and chapter-top backfill.
+
+The covered entry points are ``nest_numbered_under_parent`` and the
+``backfill_top_level`` chapter-top guard.
 
 The nesting pass repairs same-font-size layouts where `assign_levels_by_size`
 places a non-MultiLevelNum numbered class (EnNum, EnAlpha, …) at a flat class

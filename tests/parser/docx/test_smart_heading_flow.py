@@ -357,7 +357,7 @@ def test_subtree_demotion_follows_cb2_propagation() -> None:
 
 def test_subtree_demotion_leaves_unnumbered_child_to_gap_close() -> None:
     """Only numbered children cascade; an unnumbered deeper heading is left to
-    close_unnumbered_level_gaps (§2.2.8) rather than demoted with the parent —
+    ``close_unnumbered_level_gaps`` rather than demoted with the parent —
     its deeper level is a size/style heuristic, not a reliable subtree link
     (test7: EnNum claims demoted, the independent sections survive, rise to
     L2)."""
@@ -393,11 +393,14 @@ def test_subtree_demotion_multilevel_and_sibling_boundary() -> None:
 
 
 def test_subtree_demotion_keeps_outline_anchored_series_together() -> None:
-    """§2.2.6 round 1 anchors a whole numbered series (with ≥1 outlined member)
-    to the outline; a no-outline member (outline_anchored) must NOT be split off
+    """Round-1 anchoring locks a whole numbered series to its outline.
+
+    When at least one member is outlined, a no-outline member marked
+    ``outline_anchored`` must not be split off
     by the parent's subtree demotion while its outlined siblings survive — else
-    the series ends up part body / part heading (violates §2.1 same-series
-    consistency). 1）no outline, 2）/3）outline."""
+    the series ends up part body and part heading, breaking same-series
+    consistency. 1）has no outline; 2）/3）have outlines.
+    """
     decs = [
         _hd(0, "一、总体安排。", 1),  # 句号 → hit
         _hd(1, "1）甲项内容", 2),  # EnSingleParen, no own outline
@@ -605,9 +608,11 @@ def test_high_confidence_size_tiers() -> None:
 
 
 def test_weak_pair_ignores_strong_body_companion() -> None:
-    """Review P2: a strong-body paragraph (about to be demoted) does NOT count
-    as a weak-signal companion, so a lone +0.5pt paragraph paired only with a
-    same-size sentence stays out (spec §2.3.4 '不含强正文特征的弱信号段落')."""
+    """A strong-body paragraph does not count as a weak-signal companion.
+
+    Therefore, a lone +0.5pt paragraph paired only with a same-size sentence
+    stays out of the heading set.
+    """
     records = _body(30)
     records.append(_para("孤立弱信号标题", size=12.5))  # +0.5pt, no real companion
     records += _body(3)
@@ -713,8 +718,10 @@ def test_centered_run_longer_than_four_loses_channel() -> None:
 
 
 def test_solo_centered_line_is_heading_under_high_confidence() -> None:
-    """§2.2.5 solo centered channel: under a high-confidence FS_base a
-    centered base-size line free of every body signal is a heading on its
+    """The solo-centered channel admits a clean line at a reliable body size.
+
+    Under a high-confidence FS_base, a centered base-size line free of every
+    body signal is a heading on its
     own — no cross-run companion needed."""
     records = _body(30)
     records.append(_para("孤立居中标题", size=12.0, alignment="center"))
@@ -866,7 +873,7 @@ def test_cb1_extreme_sample_trips_breaker(monkeypatch, caplog) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CB1 graduated demotion (§2.3.3): peel same-size candidates one evidence tier
+# CB1 graduated demotion peels same-size candidates one evidence tier
 # at a time instead of the blanket re-estimation wiping every same-size heading.
 # ---------------------------------------------------------------------------
 
@@ -1270,7 +1277,7 @@ def test_same_band_centered_numbered_uncentered_order() -> None:
 
 
 def test_step2_spec_example_table() -> None:
-    """G6-5 (part 1): the §2.2.5 step-2 example table, verbatim."""
+    """Size bands assign centered, numbered, and plain headings in order."""
     ds = [
         _decision("居中无编号标题", size=14.0, numbered=False, centered=True, idx=0),
         _decision("1.2 多级编号", size=14.0, idx=1),
@@ -1286,7 +1293,7 @@ def test_step2_spec_example_table() -> None:
 
 
 def test_step4_spec_example_table() -> None:
-    """G6-5 (part 2): the §2.2.5 step-4 alignment example, verbatim."""
+    """Same-series alignment uses the modal level with a shallow tie-break."""
     rows = [
         ("居中无编号标题", 2, 2, False),
         ("1.2 节", 3, 3, True),
@@ -1567,8 +1574,10 @@ def test_fs_base_excludes_toc_lines() -> None:
 
 
 def test_cb1_second_pass_keeps_sizes_above_reestimated_base() -> None:
-    """A1 (§2.3.3): re-estimation disables ALL same-size composite paths but
-    keeps auto-admitting sizes strictly above the re-estimated body size."""
+    """CB1 re-estimation disables same-size composite admission paths.
+
+    Sizes strictly above the re-estimated body size remain auto-admitted.
+    """
     records = _body(60, size=10.5)
     for i in range(30):
         records.append(_para(f"伪标题短语{i}", size=12.0))
@@ -1600,8 +1609,11 @@ def test_cb1_second_pass_keeps_sizes_above_reestimated_base() -> None:
 
 
 def test_cb1_sparse_body_average_triggers_reestimation() -> None:
-    """A2 (§2.3.3 trigger #2): density stays under the cap, but the average
-    CJK-weighted body chars between adjacent headings falls below 200."""
+    """Sparse body text between candidates triggers CB1 re-estimation.
+
+    Candidate density stays under the cap, but the average CJK-weighted body
+    characters between adjacent headings falls below 200.
+    """
     records = []
     for i in range(4):
         records.append(_para(f"密集标题{i}", size=16.0))
@@ -1759,8 +1771,9 @@ def test_caption_veto_spares_outline_paragraphs() -> None:
 
 
 def test_llm_body_veto_revokes_candidacy() -> None:
-    """A10 (§2.2.4, the veto side — the only partition side with force): an
-    LLM body vote strips an otherwise strong-size candidate; without the
+    """An LLM body vote strips an otherwise strong-size candidate.
+
+    Only the veto side of the LLM partition carries force; without the
     vote it is admitted."""
     records = _body(30)
     records.append(_para("被判为正文的大字号行", size=16.0))
@@ -1917,8 +1930,9 @@ def test_merge_ledger_only_merges_and_counts_once() -> None:
 
 
 def test_title_block_gate_uses_char_weighted_mode_not_mean(monkeypatch) -> None:
-    """A6 (§2.2.4): the title-block size baseline is the global FS_base
-    initial value (char-weighted MODE, 12pt here) — a long large-font
+    """The title-block baseline is the initial global FS_base mode.
+
+    Here the char-weighted mode is 12pt; a long large-font
     paragraph inflating the weighted mean must not raise the gate."""
     import json
 
@@ -2035,8 +2049,9 @@ def test_assembler_doc_title_empty_without_title_block() -> None:
 
 
 def test_assembler_toc_retention_keeps_first_lines_as_body() -> None:
-    """§2.3 TOC retention: the first N TOC lines are emitted as body under the
-    目录 heading, the rest collapse to a single '……', and NO retained line is
+    """TOC retention emits the first N lines as body under the 目录 heading.
+
+    The rest collapse to a single '……', and no retained line is
     ever a heading (the toc_indices branch continues before any heading path)."""
     from lightrag.parser.docx.parse_document import _assemble_blocks_smart
     from lightrag.parser.docx.smart_heading.guardrails import TOC_ELLIPSIS
@@ -2242,8 +2257,7 @@ def test_seq_break_knob_splits_distant_series(monkeypatch) -> None:
 
 
 def test_run_level_audit_exports_metrics(monkeypatch) -> None:
-    """A14 (§2.3.5): llm call count, per-candidate verdicts and the full
-    re-judgment ledger land in the audit payload."""
+    """The audit payload includes calls, verdicts, and the decision ledger."""
     import json
 
     from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
@@ -2353,8 +2367,10 @@ def test_run_logs_physical_feature_summary(monkeypatch, caplog) -> None:
 
 
 def test_table_title_block_end_to_end_assembly(monkeypatch) -> None:
-    """§2.2.4 table channel, end to end: a cover laid out inside tables is
-    judged a title block (level-0, heading = main title) whose content carries
+    """A cover laid out inside tables becomes a complete title block.
+
+    End to end, it is judged a level-0 block whose heading is the main title
+    and whose content carries
     every absorbed cover-cell text verbatim (as plain text, not a ``<table>``
     placeholder). With no section heading in the document, the title block also
     OWNS the following body and the trailing data table (block-boundary merge),
@@ -2488,7 +2504,7 @@ def test_title_block_empty_members_defense() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §2.3.3 CB1 look-ahead: density evaluated AFTER strong-body + series propagation
+# CB1 look-ahead evaluates density after strong-body and series propagation
 # ---------------------------------------------------------------------------
 
 
@@ -2740,9 +2756,11 @@ def test_imprint_outline_demotion_passes_i2() -> None:
 
 
 def test_postmerge_sweep_demotes_imprint_heading() -> None:
-    """Leak path (e.g. an outline/size-admitted line, or a merge whose joined
-    text newly reads as imprint): a surviving imprint heading is caught by
-    the §2.2.7 sweep; unnumbered → no series propagation side effects."""
+    """The post-merge sweep catches an imprint that survives earlier gates.
+
+    This covers outline/size admission and merges whose joined text newly reads
+    as an imprint; unnumbered headings have no series-propagation side effects.
+    """
     from lightrag.parser.docx.smart_heading import guardrails
 
     d = _decision("抄送：各成员单位", numbered=False)
@@ -3208,7 +3226,7 @@ def test_trailing_document_date_not_absorbed_into_next_cover(monkeypatch) -> Non
 
 
 # ---------------------------------------------------------------------------
-# §2.2.8: close_unnumbered_level_gaps (post-demotion unnumbered lift)
+# close_unnumbered_level_gaps: post-demotion lift for unnumbered headings
 # ---------------------------------------------------------------------------
 
 

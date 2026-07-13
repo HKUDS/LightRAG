@@ -205,7 +205,7 @@ DEFAULT_DOCX_SMART_DENSITY_MAX = 0.35
 # CB1 margin added to the sub-document's baseline outline density when it beats
 # the floor above (percentage points, not relative).
 DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN = 0.10
-# Density re-estimation trigger #2 (trigger side only, §2.3.3): also trips when
+# Density re-estimation trigger #2 (trigger side only): also trips when
 # the mean CJK-weighted body chars between adjacent candidate headings falls
 # below this — a dense run of headings by spacing rather than by count.
 DEFAULT_DOCX_SMART_MIN_INTER_HEADING_CHARS = 200

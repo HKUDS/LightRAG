@@ -1,4 +1,4 @@
-"""Numbering styleKey classification and FS_base statistics (spec §2.2.2/§2.2.3).
+"""Numbering styleKey classification and FS_base statistics.
 
 Twelve numbering shapes, each with a unique ``styleKey``, a priority order
 (smaller = shallower level when font sizes tie), optional unit-word sub-order
@@ -36,7 +36,7 @@ EN_ALPHA = "EnAlpha"
 EN_DOUBLE_PAREN = "EnDoubleParen"
 EN_SINGLE_PAREN = "EnSingleParen"
 
-#: styleKey -> level priority (smaller = shallower); spec §2.2.3 table.
+#: styleKey -> level priority (smaller = shallower).
 STYLE_KEY_PRIORITY: dict[str, int] = {
     CN_CHAPTER: 1,
     EN_CHAPTER: 1,
@@ -57,7 +57,7 @@ ALLOW_EMPTY_TITLE = frozenset({CN_CHAPTER, EN_CHAPTER, CN_CLAUSE, EN_CLAUSE})
 
 _CN_ORD = "一二三四五六七八九十百千万"
 
-# --- the twelve patterns (spec §2.2.3, transcribed exactly) ------------------
+# --- the twelve patterns -----------------------------------------------------
 # Group 1 always captures the numbering prefix (label); the remainder of the
 # paragraph after the full match is the title text.
 
@@ -254,7 +254,7 @@ class NumberingClassification:
         return STYLE_KEY_PRIORITY[self.style_key]
 
     def series_key(self) -> tuple:
-        """Grouping key for the "same-series numbering" judgment (§2.2.3).
+        """Grouping key for the "same-series numbering" judgment.
 
         Unit-bearing styleKeys require the same normalized unit;
         MultiLevelNum groups by raw level.
@@ -369,7 +369,7 @@ _SINGLE_ROMAN_CHARS = frozenset("IVXivx")
 def reclassify_single_char_romans(
     items: Sequence[NumberingClassification | None],
 ) -> list[NumberingClassification | None]:
-    """Deferred second scan (spec §2.2.3): promote ``I.``-style EnAlpha items
+    """Deferred second scan: promote ``I.``-style EnAlpha items
     to RomanNum when the same sub-document already contains at least one
     multi-char or Unicode RomanNum companion."""
     has_roman_companion = any(
@@ -401,7 +401,7 @@ def reclassify_single_char_romans(
 
 @dataclass(frozen=True)
 class FsBase:
-    """Char-weighted dominant body font size and its confidence (§2.2.2)."""
+    """Char-weighted dominant body font size and its confidence."""
 
     size_pt: float | None
     dominant_ratio: float  # weight share of the dominant size, 0.0-1.0

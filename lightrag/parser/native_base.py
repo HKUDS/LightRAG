@@ -107,8 +107,8 @@ class NativeParserBase(BaseParser):
         (debug CLI / golden tests without injection) — the algorithm layer
         hard-fails later only if it actually needs the LLM (a short-document
         gate may skip it entirely). ``i4_cache_disabled`` flags the I4
-        determinism waiver so parse() can surface it as a parse warning
-        (§2.3.5 channel a), not just a log line.
+        determinism waiver so parse() can surface it as a parse warning,
+        not just a log line.
 
         Uses the EXTRACT role func under the dedicated ``smartheading`` cache
         namespace: title-block judgment is its own semantics, and hits must
@@ -288,8 +288,8 @@ class NativeParserBase(BaseParser):
                 )
             else:
                 blocks, warnings, metadata = await asyncio.to_thread(_extract_sync)
-            # A15 (§2.3.5 channel a): the I4 determinism waiver is a
-            # warning-grade event — surface it via parse_warnings →
+            # The I4 determinism waiver is a warning-grade event — surface it
+            # via parse_warnings →
             # doc_status, not only the process log.
             if llm_invoke is not None and i4_cache_disabled:
                 warnings["smart_i4_cache_disabled"] = 1

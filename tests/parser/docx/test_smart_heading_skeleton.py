@@ -1,5 +1,4 @@
-"""G8 tests: heading merge, strong-body sweep with CB2, skeleton correction,
-smoothing and clamping (§2.2.7 / §2.2.8)."""
+"""Tests for heading merge, CB2 demotion, skeleton correction, and clamping."""
 
 from __future__ import annotations
 
@@ -281,7 +280,7 @@ def test_skeleton_mln_intrinsic_edges_push_children() -> None:
 
 
 # ---------------------------------------------------------------------------
-# smoothing (§2.2.8 step 2) + clamping (G8-6)
+# Numbering-series smoothing and deep-level clamping
 # ---------------------------------------------------------------------------
 
 
@@ -335,8 +334,10 @@ def test_skeleton_snapshot_takes_shallowest_and_floor_writeback() -> None:
 
 
 def test_skeleton_suspected_inversion_counted_not_acted_on() -> None:
-    """A14 (§2.3.5): an inversion against the habitual order that lacks the
-    three-evidence proof is counted as suspected — levels stay put."""
+    """An unproven habitual-order inversion is counted but not corrected.
+
+    Without all three forms of evidence, the levels stay put.
+    """
     ds = [
         _d("一、总体要求", 3, idx=0, numbered=True),
         _d("（一）提高认识", 2, idx=1, numbered=True),  # inverted vs 一、
@@ -354,8 +355,9 @@ def test_skeleton_suspected_inversion_counted_not_acted_on() -> None:
 
 
 def test_merged_then_demoted_heading_keeps_member_text() -> None:
-    """Review C4: a §2.2.7-merged heading later demoted by the sweep must
-    still emit every member's text. The absorbed-member markers are only laid
+    """A merged heading later demoted by the sweep still emits every member.
+
+    The absorbed-member markers are only laid
     down while the merged heading survives; once demoted, the members fall
     back to their own paragraph rows, so I1 passes (no content loss)."""
     from lightrag.parser.docx.parse_document import _assemble_blocks_smart

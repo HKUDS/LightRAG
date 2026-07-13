@@ -243,8 +243,10 @@ def test_markdown_does_not_warn_on_falsy_param(tmp_path, monkeypatch, caplog) ->
 
 
 def test_i4_cache_disabled_surfaces_parse_warning(tmp_path, monkeypatch) -> None:
-    """A15 (§2.3.5 channel a): the I4 determinism waiver reaches
-    parse_warnings → doc_status, not just the process log."""
+    """The I4 determinism waiver reaches doc_status via parse_warnings.
+
+    It must not be limited to the process log.
+    """
 
     async def _fake_llm(prompt: str, **_kw) -> str:
         return "{}"

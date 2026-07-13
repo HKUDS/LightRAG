@@ -319,8 +319,9 @@ def test_superscript_chars_counted_but_markup_not(tmp_path) -> None:
 
 
 def test_textbox_content_excluded_from_features(tmp_path) -> None:
-    """Review F1 (§2.2.2 textbox exclusion): a run anchoring a drawing whose
-    textbox holds large bold text must NOT pollute the host paragraph's
+    """Text inside a drawing's textbox does not affect host paragraph features.
+
+    A textbox holding large bold text must not pollute the host paragraph's
     font-size / bold / visible-char stats — the baseline treats the whole
     drawing as an opaque placeholder and so must the feature extractor."""
     from lxml import etree
@@ -342,8 +343,9 @@ def test_textbox_content_excluded_from_features(tmp_path) -> None:
 
 
 def test_visible_char_count_excludes_generated_text(tmp_path) -> None:
-    """Review F14 (§2.2.2): visible_char_count counts only source w:t chars —
-    auto-numbering labels (prepended at read time) and <sup>/<equation>/
+    """``visible_char_count`` counts only source ``w:t`` characters.
+
+    Auto-numbering labels (prepended at read time) and <sup>/<equation>/
     placeholder markup never enter run_features, so they cannot skew FS_base
     weighting."""
     doc = Document()
@@ -447,8 +449,7 @@ def test_toc_field_and_link_evidence(tmp_path) -> None:
 
 
 def test_sdt_docpart_gallery_toc_evidence() -> None:
-    """Review §2.2.2/§3.4: an in-paragraph SDT whose docPartObj gallery is
-    'Table of Contents' is structural TOC evidence."""
+    """An in-paragraph SDT with a Table of Contents gallery is TOC evidence."""
     from lxml import etree
 
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -547,8 +548,10 @@ def test_read_pass_smart_off_skips_features(tmp_path) -> None:
 
 
 def test_fractional_size_values_round_to_nearest_half_point() -> None:
-    """A11 (§2.2.1): theme-derived fractional half-point values snap to the
-    NEAREST grid step — truncation would bias 21.75pt down to 21.5pt."""
+    """Theme-derived fractional half-points snap to the nearest grid step.
+
+    Truncation would incorrectly bias 21.75pt down to 21.5pt.
+    """
     from xml.etree import ElementTree as ET
 
     from lightrag.parser.docx.smart_heading.features import (
@@ -582,8 +585,10 @@ def test_bare_sz_does_not_mask_valid_szcs() -> None:
 
 
 def test_table_cell_features_captured_on_table_records(tmp_path) -> None:
-    """§2.2.4 table channel wiring: the read pass captures per-PHYSICAL-cell
-    (text, effective size, has_outline) on ``kind=="table"`` records — a
+    """The read pass captures physical-cell features for the table channel.
+
+    Each ``kind=="table"`` record stores ``(text, effective size, has_outline)``
+    per physical cell; a
     gridSpan full-width merge is ONE cell, sizes resolve through the style
     cascade, and an ``outlineLvl`` cell paragraph flags ``has_outline``."""
     from lightrag.parser.docx.numbering_resolver import NumberingResolver

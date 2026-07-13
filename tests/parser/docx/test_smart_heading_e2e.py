@@ -608,8 +608,9 @@ if __name__ == "__main__":
 
 
 def test_softbreak_heading_lands_single_line(monkeypatch, tmp_path) -> None:
-    """A4 (§2.2.7): a heading paragraph that keeps its soft-break lines is
-    ONE title — pass3 renders it as a single CJK-joined line. Multi-line
+    """A heading paragraph that keeps its soft-break lines is one title.
+
+    Pass3 renders it as a single CJK-joined line. Multi-line
     headings could never match their I1 source paragraph and would fall the
     whole document back to baseline."""
     from docx import Document
@@ -744,8 +745,9 @@ def test_extreme_length_fallback_g9_4(monkeypatch, tmp_path) -> None:
 
 
 def test_toc_retention_short_toc_kept_as_body(monkeypatch, tmp_path) -> None:
-    """§2.3 TOC retention: a 3-line TOC (≤ the keep budget) is kept ENTIRELY as
-    body — no removal claim, no ellipsis, and none of its entries becomes a
+    """A 3-line TOC within the keep budget is retained entirely as body.
+
+    There is no removal claim or ellipsis, and none of its entries becomes a
     heading. The CB4 short-document skip still ships baseline output (TOC
     intact) with no content claims. (Fallback side: test_extreme_length_...)"""
     from docx import Document

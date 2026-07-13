@@ -26,7 +26,7 @@ _load_lock = threading.Lock()
 _infer_lock = threading.Lock()
 _pipelines: dict[str, Any] = {}
 
-#: NER labels that veto a leading number's numbering identity (§2.2.5).
+#: NER labels that veto a leading number's numbering identity.
 HOMOPHONE_ENTITY_LABELS = frozenset({"DATE", "TIME", "MONEY", "PERCENT", "QUANTITY"})
 
 _INSTALL_HINT = (
@@ -103,7 +103,7 @@ def route_language(text: str) -> str:
     The denominator excludes ALL whitespace (not just ASCII spaces): tabs,
     newlines and the full-width space U+3000 — common padding in CJK title
     lines — otherwise inflate the denominator and mis-route borderline zh text
-    to the English pipeline (review D8)."""
+    to the English pipeline."""
     if not text:
         return "en"
     non_ws = [ch for ch in text if not ch.isspace()]
