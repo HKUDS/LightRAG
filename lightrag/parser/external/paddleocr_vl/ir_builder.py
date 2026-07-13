@@ -146,7 +146,9 @@ class PaddleOCRVLIRBuilder:
                 cb_positions.append(position)
 
         for page_index, page in enumerate(pages):
-            # Convert to 1-based page anchor like what ``MinerU`` does
+            # Page anchors identify pages by their 1-based order in the parser
+            # result. They intentionally do not preserve source-document page
+            # numbers after page_ranges filtering, matching MinerU semantics.
             page_anchor = str(page_index + 1)
             # Each item in items contains the following key-value pairs:
             # - block_bbox: (np.ndarray) Bounding box of the layout region

@@ -110,6 +110,46 @@ def test_sample_payload_builds_structured_ir(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_page_anchors_follow_returned_order_not_source_page_ranges(
+    tmp_path: Path,
+) -> None:
+    raw_dir = _write_bundle(
+        tmp_path,
+        [
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "text",
+                            "block_content": "Source page 5",
+                            "block_bbox": [10, 20, 30, 40],
+                        }
+                    ]
+                }
+            },
+            {
+                "prunedResult": {
+                    "parsing_res_list": [
+                        {
+                            "block_label": "text",
+                            "block_content": "Source page 6",
+                            "block_bbox": [10, 20, 30, 40],
+                        }
+                    ]
+                }
+            },
+        ],
+    )
+    _write_manifest(raw_dir, page_ranges="5-6")
+
+    ir = PaddleOCRVLIRBuilder().normalize_from_workdir(
+        raw_dir, document_name="demo.pdf"
+    )
+
+    assert [position.anchor for position in ir.blocks[0].positions] == ["1", "2"]
+
+
+@pytest.mark.offline
 def test_inline_payload_merges_blocks_and_skips_layout_noise(tmp_path: Path) -> None:
     raw_dir = _write_bundle(
         tmp_path,

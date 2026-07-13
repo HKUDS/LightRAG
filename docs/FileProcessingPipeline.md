@@ -965,6 +965,12 @@ PADDLEOCR_VL_PAGE_RANGES=
 PADDLEOCR_VL_BATCH_ID=
 ```
 
+PaddleOCR-VL sidecar page anchors use the 1-based order of pages returned by
+the parser. After `pageRanges` filtering, they intentionally do not map back to
+the original document's page numbers. This matches the existing MinerU
+behavior, whose returned page indexes also follow parser-result order rather
+than the requested source-page ranges.
+
 Optional PaddleOCR-VL request parameters are read from env and included in the
 official API `optionalPayload`. The `useOcrForImageBlock`,
 `useSealRecognition`, and `useDocUnwarping` options may also be overridden per

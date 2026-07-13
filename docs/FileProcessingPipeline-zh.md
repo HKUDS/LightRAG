@@ -960,6 +960,11 @@ PADDLEOCR_VL_PAGE_RANGES=
 PADDLEOCR_VL_BATCH_ID=
 ```
 
+PaddleOCR-VL sidecar 中的页码 anchor 按解析器返回页面的顺序从 1 开始编号。
+使用 `pageRanges` 筛选页面后，anchor 不会映射回原始文档页码。这与现有
+MinerU 行为一致：MinerU 返回的页索引同样按解析结果顺序编号，而不是按请求的
+原文页码范围编号。
+
 PaddleOCR-VL 的可选请求参数从环境变量读取，并写入 official API 的
 `optionalPayload`。其中 `useOcrForImageBlock`、`useSealRecognition` 和
 `useDocUnwarping` 也可通过文件 hint 按文件覆盖，例如 official 模式下的
