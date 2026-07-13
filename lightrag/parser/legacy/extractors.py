@@ -95,7 +95,16 @@ def _extract_pptx(file_bytes: bytes) -> str:
 
 
 def _extract_xlsx(file_bytes: bytes) -> str:
-    """Extract XLSX content in tab-delimited format with sheet separators."""
+    """Extract XLSX content in tab-delimited format with sheet separators.
+
+    Formula cells are indexed by their cached calculated value when the workbook
+    carries one, falling back to the formula text when it does not. openpyxl
+    fixes ``data_only`` at load time, so the workbook is deliberately loaded
+    twice -- ``data_only=True`` for values, ``data_only=False`` for formulas.
+    This doubles peak memory/parse cost but is required to have both views;
+    ``read_only=True`` is not a safe optimization here because it can report
+    ``max_row``/``max_column`` as ``None`` and collapse the iteration range.
+    """
     from openpyxl import load_workbook  # type: ignore
 
     wb_values = load_workbook(BytesIO(file_bytes), data_only=True)
