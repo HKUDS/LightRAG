@@ -201,7 +201,7 @@ DEFAULT_DOCX_SMART_TOC_KEEP_LINES = 5
 # the effective threshold. The threshold is baseline-aware — a document with a
 # rich physical outline naturally admits more candidates, so the effective
 # ceiling is max(this floor, baseline outline density + the margin below).
-DEFAULT_DOCX_SMART_DENSITY_MAX = 0.35
+DEFAULT_DOCX_SMART_DENSITY_MAX = 0.40
 # CB1 margin added to the sub-document's baseline outline density when it beats
 # the floor above (percentage points, not relative).
 DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN = 0.10

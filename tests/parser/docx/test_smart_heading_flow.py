@@ -998,7 +998,9 @@ def test_cb1_graduated_density_reflects_real_decisions_not_projection() -> None:
     warnings: dict = {}
     result = _grad_gate(records, warnings)
 
-    assert result.cb1_graduated_stages == ["en_single_paren", "mln_raw3"]
+    # At the 0.40 floor the ladder converges after peeling the single weakest
+    # tier (en_single_paren); the deeper mln_raw3 tier is no longer needed.
+    assert result.cb1_graduated_stages == ["en_single_paren"]
     # The 4 strong-body clauses survive the first-pass gate (clause defers
     # strong-body) and are NOT touched by the ladder, so the real ratio counts
     # them while the projection ratio does not — a strict inequality.
@@ -1664,21 +1666,26 @@ def test_cb1_long_inter_heading_body_does_not_trigger() -> None:
 
 
 def _cb1_baseline_density_records() -> list:
-    """4 headings (16pt) with long body gaps → 40% candidate density but the
-    inter-heading spacing stays well over 200 weighted chars (no sparse-body
-    trip). Layout: H B B H B B H B B H → 4 headings / 10 paras = 0.40."""
+    """4 headings (16pt) with long body gaps → 44.4% candidate density but the
+    mean inter-heading spacing stays well over 200 weighted chars (no
+    sparse-body trip). Layout: H B B H B B H B H → 4 headings / 9 paras = 0.444.
+
+    The 0.444 density is chosen to straddle the 0.40 floor: with a low baseline
+    the threshold is the 0.40 floor (trips), while a 0.35 baseline lifts the
+    threshold to 0.45 (spared) — see the two tests below."""
     long_body = "这是一段刻意写长的正文内容，用来把相邻标题之间的正文字符数撑到二百加权字符以上，从而避开稀疏正文触发条件的判定。"
+    gaps = (2, 2, 1)  # body paras after headings 0,1,2 (last heading has none)
     records: list = []
     for i in range(4):
         records.append(_para(f"标题第{i}节", size=16.0))
         if i < 3:
-            records.append(_para(long_body, size=12.0))
-            records.append(_para(long_body, size=12.0))
+            for _ in range(gaps[i]):
+                records.append(_para(long_body, size=12.0))
     return records
 
 
 def test_cb1_threshold_is_baseline_aware() -> None:
-    """The density ceiling is max(floor 0.35, baseline_density + 0.10). A
+    """The density ceiling is max(floor 0.40, baseline_density + 0.10). A
     richly-outlined sub-document (high baseline) tolerates a candidate density
     the flat floor would reject, so CB1 does NOT trip and every heading is
     kept."""
@@ -1687,8 +1694,8 @@ def test_cb1_threshold_is_baseline_aware() -> None:
     fs = document_fs_base(records, indices)
     assert fs.confidence_high
 
-    # baseline outline density 0.35 → threshold max(0.35, 0.45) = 0.45;
-    # the 40% candidate density sits under it.
+    # baseline outline density 0.35 → threshold max(0.40, 0.45) = 0.45;
+    # the 44.4% candidate density sits under it.
     result = gate_with_cb1(
         records,
         indices,
@@ -1704,8 +1711,8 @@ def test_cb1_threshold_is_baseline_aware() -> None:
 
 
 def test_cb1_low_baseline_still_trips_same_density() -> None:
-    """Control for baseline-awareness: the SAME 40% candidate density, but a
-    low baseline (threshold falls back to the 0.35 floor), trips CB1."""
+    """Control for baseline-awareness: the SAME 44.4% candidate density, but a
+    low baseline (threshold falls back to the 0.40 floor), trips CB1."""
     records = _cb1_baseline_density_records()
     indices = list(range(len(records)))
     fs = document_fs_base(records, indices)
@@ -1723,6 +1730,120 @@ def test_cb1_low_baseline_still_trips_same_density() -> None:
     )
     assert result.cb1_reestimated
     assert warnings.get("smart_cb1_reestimated") == 1
+
+
+# ---------------------------------------------------------------------------
+# test15 regression: a compact single-tier 公文 outline (一、二、三… at body
+# font size) must survive at the default 0.40 density floor. The real notice
+# had 9 same-size CN_NUM section headings (density 9/24 = 0.375) isolated into
+# their own sub-document; at the old 0.35 floor CB1 tripped, and because cn_num
+# was the ONLY ladder tier, graduated demotion peeled it to zero and wiped
+# every heading. Raising the floor to 0.40 lets the raw 0.375 density pass.
+# ---------------------------------------------------------------------------
+
+_CN_ORDINALS = "一二三四五六七八九十"
+
+
+def _compact_gongwen_records(*, heading_texts, body_per_gap, size: float = 16.0):
+    """CN_NUM headings at FS_base size, each followed by ``body_per_gap[i]`` long
+    body paragraphs — ALL at the same size, so fs_dominant_ratio is 1.0 and the
+    headings carry no size signal (mirrors the real notice)."""
+    recs: list = []
+    for i, htext in enumerate(heading_texts):
+        recs.append(_para(htext, size=size))
+        for _ in range(body_per_gap[i]):
+            recs.append(_para(_GRAD_BODY, size=size))
+    return recs
+
+
+def test_cb1_compact_gongwen_outline_survives_at_default_floor(monkeypatch) -> None:
+    """Fix-proof (test15): 9 same-size ``一、``…``九、`` CN_NUM section headings,
+    one substantial body paragraph each — density 9/24 = 0.375, healthy (>200)
+    inter-heading spacing. At the default 0.40 floor CB1 short-circuits (raw
+    density under the ceiling, not sparse) so every heading survives. Pinning the
+    OLD 0.35 floor reproduces the failure: the sole cn_num tier is peeled to
+    zero."""
+    heads = [f"{_CN_ORDINALS[i]}、第{i}节标题内容" for i in range(9)]
+    # 8 internal gaps carry all 15 body paras (2×7 + 1), no leading/trailing, so
+    # every body sits between the first and last candidate → spacing well >200.
+    gaps = (2, 2, 2, 2, 2, 2, 2, 1, 0)
+    records = _compact_gongwen_records(heading_texts=heads, body_per_gap=gaps)
+    indices = list(range(len(records)))
+    assert len([i for i in indices if records[i].text.strip()]) == 24  # 9 + 15
+
+    # Default floor 0.40: 0.375 ≤ 0.40 and spacing healthy → CB1 does not engage.
+    result = _grad_gate(records, {})
+    assert not result.cb1_reestimated
+    assert not result.cb1_strong_body_recovered
+    assert result.cb1_graduated_stages == []
+    assert result.density == pytest.approx(9 / 24, abs=1e-4)
+    assert sum(1 for d in result.decisions if d.is_heading) == 9
+    assert all(h in _texts(result) for h in heads)
+
+    # Fix-proof: pin the OLD 0.35 floor → 0.375 > 0.35 trips, the sole cn_num
+    # ladder tier is peeled to zero, every heading is demoted.
+    monkeypatch.setenv("DOCX_SMART_DENSITY_MAX", "0.35")
+    warnings: dict = {}
+    demoted = _grad_gate(records, warnings)
+    assert demoted.cb1_graduated_stages == ["cn_num"]
+    assert demoted.cb1_graduated_demoted == 9
+    assert sum(1 for d in demoted.decisions if d.is_heading) == 0
+    assert warnings["smart_cb1_graduated_demotions"] == 9
+
+
+def test_cb1_sparse_backstop_still_engages_below_density_floor() -> None:
+    """Negative control: raising the density floor to 0.40 must NOT disable the
+    sparse-body backstop (``MIN_INTER_HEADING_CHARS=200``). A packed run of
+    same-size ``一、``…``六、`` CN_NUM candidates has density 6/16 = 0.375 (UNDER
+    the 0.40 ceiling) but ~0 inter-heading spacing → CB1 still engages via
+    sparsity and the sole cn_num tier is demoted. ``cb1_tripped`` stays False
+    (graduated handled it), so we assert the graduated stages, not the trip
+    flag."""
+    records = _body(5, size=16.0)  # leading body keeps density under the ceiling
+    for i in range(6):  # packed CN_NUM run: no body between → sparse spacing
+        records.append(_para(f"{_CN_ORDINALS[i]}、紧凑小节{i}", size=16.0))
+    records += _body(5, size=16.0)  # trailing body
+    assert len(records) == 16  # density 6/16 = 0.375 ≤ 0.40
+
+    result = _grad_gate(records, {})
+    # Density under the ceiling → ONLY sparsity could have engaged CB1.
+    assert result.cb1_graduated_stages == ["cn_num"]
+    assert result.cb1_graduated_demoted == 6
+    assert sum(1 for d in result.decisions if d.is_heading) == 0
+
+
+def test_cb1_body_in_disguise_still_demoted_after_ceiling_raise() -> None:
+    """Negative control: raising the floor to 0.40 must NOT let numbered
+    body-in-disguise become headings. Nine ``一、``…``九、`` CN_NUM candidates
+    that are full sentences (strong-body) at density 9/24 = 0.375 slip UNDER the
+    0.40 ceiling with healthy spacing, so CB1 short-circuits and they survive the
+    gate first-pass (CN_NUM defers strong-body). The downstream sweep —
+    ``assign_levels_by_size`` + ``demote_strong_body_headings``, exactly as
+    run_smart_heading runs it — then demotes every one. Asserting the gate return
+    alone would falsely 'pass'."""
+    heads = [
+        f"{_CN_ORDINALS[i]}、这是一段伪装成小节标题实则为完整正文的句子内容以句号收尾。"
+        for i in range(9)
+    ]
+    gaps = (2, 2, 2, 2, 2, 2, 2, 1, 0)
+    records = _compact_gongwen_records(heading_texts=heads, body_per_gap=gaps)
+    warnings: dict = {}
+    result = _grad_gate(records, warnings)
+
+    # 0.375 ≤ 0.40 and spacing healthy → CB1 short-circuits; candidates are still
+    # is_heading at the gate boundary (CN_NUM defers strong-body to the sweep).
+    assert not result.cb1_reestimated and result.cb1_graduated_stages == []
+    assert sum(1 for d in result.decisions if d.is_heading) == 9
+
+    # Downstream sweep demotes the body-in-disguise — the real guard for this
+    # class, unchanged by the ceiling raise.
+    ds = result.decisions
+    assign_levels_by_size(ds)
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings=warnings)
+    assert not any(
+        d.numbering is not None and d.numbering.style_key == "CnNum" and d.is_heading
+        for d in ds
+    )
 
 
 def test_min_inter_heading_chars_env_override(monkeypatch) -> None:
