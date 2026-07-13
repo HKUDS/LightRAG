@@ -700,12 +700,8 @@ def is_bundle_valid(
     if current_paddleocr_vl_options_signature(overrides) != manifest.options_signature:
         return False
 
-    cur_version = os.getenv("PADDLEOCR_VL_ENGINE_VERSION", "").strip()
-    if (
-        cur_version
-        and manifest.engine_version
-        and cur_version != manifest.engine_version
-    ):
+    cur_version = current_engine_version()
+    if manifest.engine_version and cur_version != manifest.engine_version:
         return False
 
     crit = manifest.critical_file

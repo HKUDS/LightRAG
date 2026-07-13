@@ -70,7 +70,11 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _bundle(
-    tmp_path: Path, source: Path, *, options_signature: str | None = None
+    tmp_path: Path,
+    source: Path,
+    *,
+    options_signature: str | None = None,
+    engine_version: str = "",
 ) -> Path:
     raw_dir = tmp_path / "src.paddleocr_vl_raw"
     raw_dir.mkdir()
@@ -92,7 +96,7 @@ def _bundle(
         total_size_bytes=result_size + asset.stat().st_size,
         task_id="job-1",
         endpoint_signature=current_endpoint_signature(),
-        engine_version="",
+        engine_version=engine_version,
         options_signature=(
             options_signature
             if options_signature is not None
@@ -369,6 +373,15 @@ def test_option_change_invalidates_cache(
     raw = _bundle(tmp_path, source_file)
     # Use an option where the default value is False, so setting to True changes it
     monkeypatch.setenv("PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY", "true")
+    assert is_bundle_valid(raw, source_file) is False
+
+
+def test_bundle_invalid_when_engine_version_override_is_cleared(
+    tmp_path: Path, source_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = _bundle(tmp_path, source_file, engine_version="custom-engine")
+    monkeypatch.delenv("PADDLEOCR_VL_ENGINE_VERSION", raising=False)
+
     assert is_bundle_valid(raw, source_file) is False
 
 
