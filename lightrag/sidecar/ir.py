@@ -184,6 +184,10 @@ class IRBlock:
     session_type: str = "body"
     table_slice: str = "none"
     table_header: str | None = None
+    # Smart-heading title block (docx smart_heading): level=0 root whose
+    # heading is the document title compound. The chunker pins such blocks
+    # (no merge/absorb). Written to the sidecar row only when True.
+    is_title_block: bool = False
     positions: list[IRPosition] = field(default_factory=list)
     tables: list[IRTable] = field(default_factory=list)
     drawings: list[IRDrawing] = field(default_factory=list)

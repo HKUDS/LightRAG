@@ -881,12 +881,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+Here is an example configuration for utilizing the Reranker service provided by Aliyun (`gte-rerank-*` and `qwen3-vl-rerank`, which use the nested `input`/`parameters` payload format):
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **Aliyun `qwen3-rerank` series:** Unlike `gte-rerank-*` and `qwen3-vl-rerank`, the `qwen3-rerank` models use a flat, Cohere-style payload (`{"model", "query", "documents", "top_n", ...}`), return top-level `results`, and are served from a **different**, Cohere-compatible endpoint — `/compatible-api/v1/reranks`, not the `.../text-rerank/text-rerank` path used above. Because the format is identical to standard Cohere, configure them with `RERANK_BINDING=cohere` (not `aliyun`); no dedicated binding is needed. Replace `{WorkspaceId}` and the region with your own (see the [Aliyun Text Rerank API docs](https://help.aliyun.com/zh/model-studio/text-rerank-api)):
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 

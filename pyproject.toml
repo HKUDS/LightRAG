@@ -102,6 +102,11 @@ api = [
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker
     "langchain-text-splitters>=0.3,<2",
     "langchain-experimental>=0.3.2,<1",  # >=0.3.2: SemanticChunker gained min_chunk_size
+    # NLP runtime for the native docx smart_heading engine parameter
+    # (sentence/NER heuristics). Language models are separate wheels pinned in
+    # requirements-offline-smart-heading.txt and installed via
+    # `lightrag-download-cache --spacy --spacy-install`.
+    "spacy>=3.8,<4",
 ]
 
 # Offline deployment dependencies (layered design for flexibility)
