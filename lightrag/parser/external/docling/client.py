@@ -21,7 +21,9 @@ envelope from the result endpoint even when the client requests a zip. When
 that happens, the client materializes the nested ``document.json_content``
 (the actual ``DoclingDocument``) as the main ``<stem>.json`` and writes
 ``document.md_content`` beside it as ``<stem>.md``. The response envelope and
-its ``ExportDocumentResponse`` wrapper are not treated as document content.
+its ``ExportDocumentResponse`` wrapper are not treated as document content. A
+JSON envelope whose own conversion ``status`` is not ``success`` is rejected
+rather than materialized, so a partial conversion never becomes a cache hit.
 """
 
 from __future__ import annotations
@@ -300,7 +302,7 @@ class DoclingRawClient:
         ctype = resp.headers.get("content-type", "")
         if "zip" not in ctype.lower():
             if _is_json_result(resp, ctype):
-                _materialize_json_result(resp, raw_dir, upload_filename)
+                _materialize_json_result(resp, task_id, raw_dir, upload_filename)
                 return
             raise RuntimeError(
                 f"Docling result {task_id} returned non-zip content-type "
@@ -341,13 +343,37 @@ def _is_json_result(resp: Any, content_type: str) -> bool:
     return resp.content.lstrip().startswith((b"{", b"["))
 
 
-def _materialize_json_result(resp: Any, raw_dir: Path, upload_filename: str) -> None:
+def _result_envelope_status(payload: Any) -> str:
+    """Conversion status carried by a JSON result envelope, lower-cased.
+
+    Mirrors ``_poll_until_done``'s field lookup (``task_status`` first, then
+    ``status``). Returns ``""`` when neither is present — e.g. a bare
+    ``DoclingDocument`` payload — so the caller can skip the status gate.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("task_status") or payload.get("status") or "").lower()
+
+
+def _materialize_json_result(
+    resp: Any, task_id: str, raw_dir: Path, upload_filename: str
+) -> None:
     try:
         payload = resp.json() if resp.text else json.loads(resp.content)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             "Docling result returned JSON content-type but the body is not valid JSON"
         ) from exc
+
+    # A JSON ``ConvertDocumentResponse`` envelope carries its own conversion
+    # ``status``. ``_poll_until_done`` only checked the async *task* status, and
+    # the manifest is written after this returns — so honouring the envelope
+    # status here is what stops a ``partial_success`` / ``failure`` result from
+    # being cached as a successful bundle. (Bare DoclingDocument payloads have
+    # no status field; those skip the check.)
+    status = _result_envelope_status(payload)
+    if status and status not in SUCCESS_STATES:
+        raise RuntimeError(_format_failure(task_id, status, payload))
 
     document, markdown = _extract_document_payload(payload)
     stem = Path(upload_filename).stem

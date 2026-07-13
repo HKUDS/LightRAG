@@ -566,6 +566,43 @@ async def test_docling_client_json_envelope_is_parseable_by_ir_builder(
     assert ir.doc_title == "Only this text should be extracted."
 
 
+async def test_docling_client_rejects_non_success_json_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    """A JSON result envelope whose own status is not ``success`` must abort
+    instead of caching a partial conversion as a successful bundle — even when
+    the async poll reported success and the envelope still carries a document."""
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "partial_success",
+        "document": {
+            "filename": "demo.pdf",
+            "md_content": "# Partial\n",
+            "json_content": _docling_document_with_one_block(),
+        },
+    }
+    recorder = _Recorder(
+        terminal_status="success",  # async task poll succeeds ...
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    assert "partial_success" in str(excinfo.value)
+    # Nothing was materialized: no document, no markdown, no manifest.
+    assert not (raw_dir / "demo.json").exists()
+    assert not (raw_dir / "demo.md").exists()
+    assert not (raw_dir / "_manifest.json").exists()
+
+
 async def test_docling_client_encodes_task_id_into_url_path_segment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
