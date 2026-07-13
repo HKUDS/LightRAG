@@ -91,6 +91,7 @@ from lightrag.kg.shared_storage import (
     set_default_workspace,
     get_namespace_lock,
     get_storage_keyed_lock,
+    initialize_pipeline_status,
 )
 
 from lightrag.base import (
@@ -112,6 +113,7 @@ from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     extract_entities,
     kg_query,
+    merge_nodes_and_edges,
     naive_query,
     rebuild_knowledge_from_chunks,
 )
@@ -1602,13 +1604,46 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.warning("All chunks are already in the storage.")
                 return
 
-            tasks = [
+            extract_task = asyncio.create_task(
+                self._process_extract_entities(inserting_chunks)
+            )
+            await asyncio.gather(
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
+                extract_task,
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
-            ]
-            await asyncio.gather(*tasks)
+            )
+            chunk_results = extract_task.result()
+
+            # Merge the extracted entities/relationships into the knowledge
+            # graph. Without this the extraction result was discarded, so no KG
+            # was built from custom chunks (KG-dependent query modes returned
+            # nothing while the extraction LLM cost was still spent). Mirrors the
+            # file pipeline's merge stage (see pipeline.apipeline_process_...).
+            if chunk_results:
+                await initialize_pipeline_status(workspace=self.workspace)
+                pipeline_status = await get_namespace_data(
+                    "pipeline_status", workspace=self.workspace
+                )
+                pipeline_status_lock = get_namespace_lock(
+                    "pipeline_status", workspace=self.workspace
+                )
+                await merge_nodes_and_edges(
+                    chunk_results=chunk_results,
+                    knowledge_graph_inst=self.chunk_entity_relation_graph,
+                    entity_vdb=self.entities_vdb,
+                    relationships_vdb=self.relationships_vdb,
+                    global_config=self._build_global_config(),
+                    full_entities_storage=self.full_entities,
+                    full_relations_storage=self.full_relations,
+                    doc_id=doc_key,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                    llm_response_cache=self.llm_response_cache,
+                    entity_chunks_storage=self.entity_chunks,
+                    relation_chunks_storage=self.relation_chunks,
+                    file_path=file_path,
+                )
 
         finally:
             if update_storage:

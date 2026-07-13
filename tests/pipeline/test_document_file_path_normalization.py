@@ -163,3 +163,73 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
     assert rag.full_docs.upserts[0]["doc-1"]["file_path"] == "unknown_source"
     chunk = next(iter(rag.text_chunks.upserts[0].values()))
     assert chunk["file_path"] == "unknown_source"
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_merge_extracted_entities_into_kg(monkeypatch):
+    """`ainsert_custom_chunks` must merge extracted entities into the KG.
+
+    Regression: `_process_extract_entities` ran but its result was discarded,
+    so `merge_nodes_and_edges` was never called and no knowledge graph was
+    built from custom chunks (KG-dependent query modes returned nothing while
+    the extraction LLM cost was still spent).
+    """
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+
+    rag = LightRAG.__new__(LightRAG)
+    rag.full_docs = CaptureKV()
+    rag.text_chunks = CaptureKV()
+    rag.chunks_vdb = CaptureKV()
+    rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    rag.workspace = "test-workspace"
+    # Referenced positionally by the merge call; unused because merge is stubbed.
+    for attr in (
+        "chunk_entity_relation_graph",
+        "entities_vdb",
+        "relationships_vdb",
+        "full_entities",
+        "full_relations",
+        "entity_chunks",
+        "relation_chunks",
+        "llm_response_cache",
+    ):
+        setattr(rag, attr, object())
+
+    extracted = [({"Entity": [{"entity_name": "Entity"}]}, {})]
+
+    async def _process_extract_entities(chunks):
+        return extracted
+
+    async def _insert_done():
+        return None
+
+    rag._process_extract_entities = _process_extract_entities
+    rag._insert_done = _insert_done
+    rag._build_global_config = lambda: {}
+
+    captured: dict = {}
+
+    async def fake_merge(*, chunk_results, doc_id, **kwargs):
+        captured["chunk_results"] = chunk_results
+        captured["doc_id"] = doc_id
+
+    async def fake_init_status(workspace=None):
+        return None
+
+    async def fake_namespace_data(name, workspace=None):
+        return {}
+
+    def fake_namespace_lock(name, workspace=None):
+        return object()
+
+    monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fake_merge)
+    monkeypatch.setattr(lightrag_module, "initialize_pipeline_status", fake_init_status)
+    monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
+    monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-2")
+
+    # The extracted entities/relationships must reach the KG merge step.
+    assert captured["chunk_results"] == extracted
+    assert captured["doc_id"] == "doc-2"
