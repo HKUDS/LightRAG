@@ -18,9 +18,10 @@ code change automatically invalidates pre-existing caches.
 
 Some docling-serve deployments return a JSON ``ConvertDocumentResponse``
 envelope from the result endpoint even when the client requests a zip. When
-that happens, the client materializes the nested ``document`` object as the
-main ``<stem>.json`` and writes ``document.md_content`` beside it as
-``<stem>.md``. The response envelope itself is not treated as document content.
+that happens, the client materializes the nested ``document.json_content``
+(the actual ``DoclingDocument``) as the main ``<stem>.json`` and writes
+``document.md_content`` beside it as ``<stem>.md``. The response envelope and
+its ``ExportDocumentResponse`` wrapper are not treated as document content.
 """
 
 from __future__ import annotations
@@ -364,8 +365,27 @@ def _extract_document_payload(payload: Any) -> tuple[dict[str, Any], Any | None]
 
     nested = payload.get("document")
     if isinstance(nested, dict):
-        return nested, nested.get("md_content")
+        # ``ConvertDocumentResponse.document`` is an ``ExportDocumentResponse``
+        # wrapper (``filename`` / ``md_content`` / ``json_content`` / ...); the
+        # actual ``DoclingDocument`` lives under ``json_content``. Storing the
+        # wrapper as ``<stem>.json`` would leave the root without
+        # ``body`` / ``texts`` / ``tables``, and the IR builder would produce
+        # zero blocks. Extract ``json_content`` and keep ``md_content`` as the
+        # markdown twin.
+        json_content = nested.get("json_content")
+        if isinstance(json_content, dict):
+            return json_content, nested.get("md_content")
+        # Defensive: some deployments may place the ``DoclingDocument`` directly
+        # under ``document`` with no ``json_content`` wrapper.
+        if _looks_like_docling_document(nested):
+            return nested, nested.get("md_content")
+        keys = ", ".join(sorted(str(k) for k in nested)[:20])
+        raise RuntimeError(
+            f"Docling result 'document' has no DoclingDocument (json_content); "
+            f"keys=[{keys}]"
+        )
 
+    # No envelope: the endpoint returned the DoclingDocument at the top level.
     if _looks_like_docling_document(payload):
         return payload, payload.get("md_content")
 
