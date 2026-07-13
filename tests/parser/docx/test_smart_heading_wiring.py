@@ -9,6 +9,7 @@ directives, and the markdown warn-and-ignore path.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -243,9 +244,11 @@ def test_markdown_does_not_warn_on_falsy_param(tmp_path, monkeypatch, caplog) ->
 
 
 def test_i4_cache_disabled_surfaces_parse_warning(tmp_path, monkeypatch) -> None:
-    """The I4 determinism waiver reaches doc_status via parse_warnings.
+    """The I4 determinism waiver reaches the sidecar smart_audit.json.
 
-    It must not be limited to the process log.
+    It is a smart-heading diagnostic, so it is diverted to the audit file
+    (under a ``parse_warnings`` key) rather than doc_status — and it must not
+    be limited to the process log.
     """
 
     async def _fake_llm(prompt: str, **_kw) -> str:
@@ -279,4 +282,192 @@ def test_i4_cache_disabled_surfaces_parse_warning(tmp_path, monkeypatch) -> None
                 ParseContext(rag, "doc-1", str(source_path), content_data)
             )
         )
-    assert (result.parse_warnings or {}).get("smart_i4_cache_disabled") == 1
+    # The waiver no longer rides doc_status parse_warnings ...
+    assert "smart_i4_cache_disabled" not in (result.parse_warnings or {})
+    # ... it lands in the sidecar audit file instead.
+    audits = list(input_dir.glob("**/*.smart_audit.json"))
+    assert len(audits) == 1, f"expected one smart_audit.json, got {audits}"
+    audit = json.loads(audits[0].read_text(encoding="utf-8"))
+    assert audit["parse_warnings"]["smart_i4_cache_disabled"] == 1
+
+
+# --- parse_warnings split: smart-heading → smart_audit.json, rest → doc_status -
+
+
+def _make_stub(*, warnings=None, ledger=None):
+    """``extract_docx_blocks`` stand-in that seeds parse_warnings / the audit
+    ledger, so the merge path (ledger + warnings) is exercised end to end."""
+
+    def _stub(
+        file_path,
+        *,
+        drawing_context=None,
+        parse_warnings=None,
+        parse_metadata=None,
+        **_kwargs,
+    ):
+        if warnings and parse_warnings is not None:
+            parse_warnings.update(warnings)
+        if ledger is not None and parse_metadata is not None:
+            parse_metadata["smart_audit"] = ledger
+        return [dict(b) for b in _STUB_BLOCKS]
+
+    return _stub
+
+
+def _parse_with_stub(tmp_path, monkeypatch, stub, *, parse_engine="native"):
+    """Drive ``parse()`` on a stub docx; return ``(result, audit_or_None)``
+    where ``audit`` is the parsed ``<base>.smart_audit.json`` (or None)."""
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+    source_path.write_bytes(b"fake-docx")
+    content_data: dict[str, Any] = {
+        "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+        "content": "",
+        "parse_engine": parse_engine,
+    }
+    rag = build_debug_rag()
+    with mock.patch("lightrag.parser.docx.parse_document.extract_docx_blocks", stub):
+        result = asyncio.run(
+            get_parser("native").parse(
+                ParseContext(rag, "doc-1", str(source_path), content_data)
+            )
+        )
+    audits = list(input_dir.glob("**/*.smart_audit.json"))
+    audit = json.loads(audits[0].read_text(encoding="utf-8")) if audits else None
+    return result, audit
+
+
+def test_split_ledger_plus_smart_and_nonsmart(tmp_path, monkeypatch) -> None:
+    """ledger + smart + non-smart: ledger preserved verbatim, smart warnings
+    merged under a ``parse_warnings`` key, non-smart stays on doc_status."""
+    result, audit = _parse_with_stub(
+        tmp_path,
+        monkeypatch,
+        _make_stub(
+            warnings={
+                "smart_cb1_tripped": 3,
+                "heading_softbreak_split_count": 1,
+                "missing_paraid_count": 2,
+            },
+            ledger={"shadow_diff": {"x": 1}, "fallback_sub_documents": []},
+        ),
+    )
+    assert result.parse_warnings == {
+        "heading_softbreak_split_count": 1,
+        "missing_paraid_count": 2,
+    }
+    assert audit == {
+        "shadow_diff": {"x": 1},
+        "fallback_sub_documents": [],
+        "parse_warnings": {"smart_cb1_tripped": 3},
+    }
+
+
+def test_split_lone_nonsmart_warning_not_dropped(tmp_path, monkeypatch) -> None:
+    """Regression: a lone non-smart warning (no smart_ key, no missing_paraId)
+    must still reach doc_status. The pre-refactor surface path returned it as
+    ``None`` and silently dropped it."""
+    result, audit = _parse_with_stub(
+        tmp_path,
+        monkeypatch,
+        _make_stub(
+            warnings={"heading_softbreak_split_count": 1},
+            ledger={"shadow_diff": {}},
+        ),
+    )
+    assert result.parse_warnings == {"heading_softbreak_split_count": 1}
+    # ledger still written, no parse_warnings key (no smart warnings this run).
+    assert audit == {"shadow_diff": {}}
+
+
+def test_split_smart_warning_without_ledger_still_writes_audit(
+    tmp_path, monkeypatch
+) -> None:
+    result, audit = _parse_with_stub(
+        tmp_path,
+        monkeypatch,
+        _make_stub(warnings={"smart_toc_removed_lines": 5}),
+    )
+    assert result.parse_warnings is None
+    assert audit == {"parse_warnings": {"smart_toc_removed_lines": 5}}
+
+
+def test_split_no_warnings_no_ledger_writes_no_audit(tmp_path, monkeypatch) -> None:
+    result, audit = _parse_with_stub(tmp_path, monkeypatch, _make_stub())
+    assert result.parse_warnings is None
+    assert audit is None
+
+
+def test_markdown_warning_stays_on_doc_status_no_audit_file(
+    tmp_path, monkeypatch
+) -> None:
+    """markdown emits only non-smart warnings (engine_params_ignored): they
+    ride doc_status parse_warnings and no smart_audit.json is written."""
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "notes.md"
+    source_path.write_text("# Title\n\nSome body text.\n", encoding="utf-8")
+
+    rag = build_debug_rag()
+    result = asyncio.run(
+        get_parser("native").parse(
+            ParseContext(
+                rag,
+                "doc-md",
+                str(source_path),
+                {
+                    "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                    "content": "",
+                    "parse_engine": "native(smart_heading=true)",
+                },
+            )
+        )
+    )
+    assert (result.parse_warnings or {}).get("engine_params_ignored") == 1
+    assert list(input_dir.glob("**/*.smart_audit.json")) == []
+
+
+def test_smart_audit_json_is_byte_stable_across_reparse(tmp_path, monkeypatch) -> None:
+    """I4: re-parsing the same document yields a byte-identical smart_audit.json.
+
+    Compares raw bytes (not parsed objects) so a regression in ``sort_keys`` /
+    indent / trailing newline is caught. The ledger keys are deliberately given
+    out of sorted order to prove ``sort_keys`` normalizes them.
+    """
+    stub = _make_stub(
+        warnings={"smart_cb1_tripped": 3, "smart_toc_removed_lines": 5},
+        ledger={"shadow_diff": {"b": 2, "a": 1}, "decisions": [{"z": 1}]},
+    )
+
+    def _audit_bytes(sub: str) -> bytes:
+        input_dir = tmp_path / sub
+        input_dir.mkdir()
+        monkeypatch.setenv("INPUT_DIR", str(input_dir))
+        source_path = input_dir / "doc.docx"
+        source_path.write_bytes(b"fake-docx")
+        rag = build_debug_rag()
+        with mock.patch(
+            "lightrag.parser.docx.parse_document.extract_docx_blocks", stub
+        ):
+            asyncio.run(
+                get_parser("native").parse(
+                    ParseContext(
+                        rag,
+                        "doc-1",
+                        str(source_path),
+                        {
+                            "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                            "content": "",
+                            "parse_engine": "native",
+                        },
+                    )
+                )
+            )
+        (audit,) = input_dir.glob("**/*.smart_audit.json")
+        return audit.read_bytes()
+
+    assert _audit_bytes("a") == _audit_bytes("b")

@@ -175,6 +175,26 @@ class NativeParserBase(BaseParser):
         """Map parser warnings to the ``parse_warnings`` result field (opt)."""
         return None
 
+    def finalize_parse_warnings(
+        self,
+        warnings: dict[str, Any],
+        metadata: dict[str, Any],
+        *,
+        parsed_dir: Path,
+        base_name: str,
+        source: Path,
+        i4_cache_disabled: bool,
+    ) -> dict[str, Any] | None:
+        """Map raw parser warnings to the doc_status ``parse_warnings`` field.
+
+        Runs after ``extract`` (so it sees the full raw warnings dict). Engines
+        may override to divert a subset of warnings to sidecar audit artifacts
+        and return only the remainder for doc_status (see
+        :class:`~lightrag.parser.docx.parser.NativeDocxParser`). The base stays
+        engine-agnostic and simply surfaces everything via ``surface_warnings``.
+        """
+        return self.surface_warnings(warnings, source)
+
     # --- template ------------------------------------------------------------
     async def parse(self, ctx: ParseContext) -> ParseResult:
         from lightrag.parser.routing import decode_parse_engine, encode_parse_engine
@@ -288,11 +308,6 @@ class NativeParserBase(BaseParser):
                 )
             else:
                 blocks, warnings, metadata = await asyncio.to_thread(_extract_sync)
-            # The I4 determinism waiver is a warning-grade event — surface it
-            # via parse_warnings →
-            # doc_status, not only the process log.
-            if llm_invoke is not None and i4_cache_disabled:
-                warnings["smart_i4_cache_disabled"] = 1
         except BaseException:
             # Unblock a bridge poller promptly (idempotent), THEN roll back
             # the pre-created (possibly partial) dirs. The worker thread may
@@ -310,7 +325,18 @@ class NativeParserBase(BaseParser):
                 f"for {ctx.file_path}"
             )
 
-        parse_warnings = self.surface_warnings(warnings, source)
+        # Map raw warnings → doc_status parse_warnings. Runs after extract() so
+        # the hook sees the complete warnings dict; docx overrides it to divert
+        # its smart-heading diagnostics (incl. the I4 waiver, which the hook —
+        # not the base — records) into the sidecar smart_audit.json instead.
+        parse_warnings = self.finalize_parse_warnings(
+            warnings,
+            metadata,
+            parsed_dir=parsed_dir,
+            base_name=base_name,
+            source=source,
+            i4_cache_disabled=i4_cache_disabled,
+        )
         ir = self.build_ir(
             blocks,
             document_name=document_name,

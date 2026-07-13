@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +14,12 @@ from lightrag.utils import logger
 
 if TYPE_CHECKING:
     from lightrag.sidecar.ir import IRDoc
+
+
+# Warnings whose key carries one of these prefixes are smart-heading feature
+# diagnostics: finalize_parse_warnings diverts them to the sidecar
+# smart_audit.json. Every other warning stays on doc_status.metadata.
+_SMART_HEADING_WARNING_PREFIXES = ("smart_", "title_block_")
 
 
 class NativeDocxParser(NativeParserBase):
@@ -72,20 +79,11 @@ class NativeDocxParser(NativeParserBase):
             parse_metadata=metadata,
             smart_heading_runtime=runtime,
         )
-        # Full smart-heading audit artifact: sits beside blocks.jsonl (the
-        # clean_parsed_dir=False write keeps it), deliberately timestamp-free
-        # so repeated parses stay byte-identical (I4). Popped from metadata —
-        # it is not IR-builder input.
-        smart_audit = metadata.pop("smart_audit", None)
-        if smart_audit is not None:
-            import json
-
-            audit_path = parsed_dir / f"{base_name}.smart_audit.json"
-            audit_path.write_text(
-                json.dumps(smart_audit, ensure_ascii=False, indent=2, sort_keys=True)
-                + "\n",
-                encoding="utf-8",
-            )
+        # The smart-heading audit ledger stays in ``metadata["smart_audit"]``;
+        # ``finalize_parse_warnings`` (below) merges the smart-heading warnings
+        # into it and writes ``<base>.smart_audit.json`` once, after the base
+        # template has computed the post-extract I4 waiver flag. It pops the key
+        # before build_ir, so the IR builder never sees it.
         return blocks, warnings, metadata
 
     def build_ir(
@@ -105,9 +103,32 @@ class NativeDocxParser(NativeParserBase):
             parse_metadata=metadata,
         )
 
-    def surface_warnings(
-        self, warnings: dict[str, Any], source: Path
+    def finalize_parse_warnings(
+        self,
+        warnings: dict[str, Any],
+        metadata: dict[str, Any],
+        *,
+        parsed_dir: Path,
+        base_name: str,
+        source: Path,
+        i4_cache_disabled: bool,
     ) -> dict[str, Any] | None:
+        """Divert smart-heading diagnostics to the sidecar; keep the rest.
+
+        Smart-heading warnings (``smart_*`` / ``title_block_*``) are merged
+        under a ``parse_warnings`` key into the audit ledger docx left in
+        ``metadata["smart_audit"]`` and written once to
+        ``<base>.smart_audit.json`` (timestamp-free + ``sort_keys`` so a
+        re-parse stays byte-identical — I4). Every other warning (missing
+        paraId, over-long-heading handling) is returned unconditionally so the
+        pipeline keeps mirroring it onto ``doc_status.metadata``.
+        """
+        # I4 determinism waiver: a smart-heading LLM ran with the entity-extract
+        # cache off. Record it in the audit file — the base no longer injects
+        # this smart_ key into the warnings dict.
+        if i4_cache_disabled:
+            warnings["smart_i4_cache_disabled"] = 1
+
         missing = int(warnings.get("missing_paraid_count", 0) or 0)
         if missing > 0:
             # Surface once per document; affected blocks emit
@@ -118,11 +139,30 @@ class NativeDocxParser(NativeParserBase):
                 source.name,
                 missing,
             )
-        # Smart-heading runs surface their full compact summary (breaker
-        # trips, TOC removals, demotion counts, …); the smart-off path keeps
-        # its historical missing-paraId-only shape.
-        smart_active = any(k.startswith(("smart_", "title_block_")) for k in warnings)
-        if smart_active:
-            relevant = {k: v for k, v in warnings.items() if v}
-            return relevant or None
-        return {"missing_paraid_count": missing} if missing > 0 else None
+
+        smart = {
+            k: v
+            for k, v in warnings.items()
+            if k.startswith(_SMART_HEADING_WARNING_PREFIXES) and v
+        }
+        other = {
+            k: v
+            for k, v in warnings.items()
+            if not k.startswith(_SMART_HEADING_WARNING_PREFIXES) and v
+        }
+
+        # Merge into the ledger (pop before build_ir sees it) and write the
+        # sidecar. Written whenever there is any audit content — ledger only,
+        # warnings only, or both.
+        ledger = metadata.pop("smart_audit", None)
+        audit = dict(ledger) if isinstance(ledger, dict) else {}
+        if smart:
+            audit["parse_warnings"] = smart
+        if audit:
+            audit_path = parsed_dir / f"{base_name}.smart_audit.json"
+            audit_path.write_text(
+                json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+        return other or None
