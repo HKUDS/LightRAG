@@ -633,6 +633,8 @@ lightrag-hash-password --username admin
 
 如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
 
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
+
 ## Azure OpenAI 后端配置
 
 可以使用以下 Azure CLI 命令创建 Azure OpenAI API（您需要先从 [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) 安装 Azure CLI）：
@@ -764,6 +766,16 @@ QUERY_LLM_MODEL=gpt-5
 VLM_LLM_MODEL=gpt-5-mini
 ```
 
+**按角色的模型推荐：**
+
+- **`EXTRACT`**：实体关系抽取会对每个文本块调用，选择主流的高速模型即可，并**强烈推荐使用非思考模型（关闭 reasoning/thinking 模式）**，以免抽取变慢、变贵。例如国外的 GPT-5.6-luna、Claude Haiku、Gemini-mini，国内的 DeepSeek-V4-lite、Kimi。本地部署最低可考虑 Qwen3-30B-A3B-Instruct。
+- **`QUERY`**：负责在长且嘈杂的上下文上生成最终答案，应选择比 `EXTRACT` 更好的模型，尽量提高回答质量；此处使用带思考能力的模型没有问题。
+- **`KEYWORD`**：检索前生成关键词，属于轻量、对延迟敏感的任务，**一定要选择非思考模型**以降低查询延迟，选用与 `EXTRACT` 相当的高速模型即可。
+- **`VLM`**：主流的多模态模型均可，需支持图片输入；本地部署可考虑 Qwen3.6-35B-A3B。
+- **Embedding / Reranker**：选择主流最新的模型即可。本地部署使用 `BAAI/bge-m3`（embedding）与 `BAAI/bge-reranker-v2-m3`（rerank）即可。
+
+在可接受的时间和价格范围内，优先选择评分（各类公开榜单/基准）越高的模型越好。
+
 跨 provider 规则、`QUERY_OPENAI_LLM_REASONING_EFFORT` 等 provider 专属选项、角色级 Bedrock SigV4 凭据以及队列行为，请参阅 [基于角色的 LLM/VLM 配置指南](./RoleSpecificLLMConfiguration-zh.md)。
 
 ### 多模态分析配置
@@ -879,12 +891,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-以下是使用阿里云提供的 Reranker 服务的示例配置：
+以下是使用阿里云提供的 Reranker 服务的示例配置（`gte-rerank-*` 和 `qwen3-vl-rerank`，它们使用嵌套的 `input`/`parameters` 报文格式）：
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **阿里云 `qwen3-rerank` 系列：** 与 `gte-rerank-*`、`qwen3-vl-rerank` 不同，`qwen3-rerank` 模型使用扁平的 Cohere 风格报文（`{"model", "query", "documents", "top_n", ...}`），返回顶层的 `results`，并且使用**不同的** Cohere 兼容 endpoint —— `/compatible-api/v1/reranks`，而非上面 `gte`/`vl` 所用的 `.../text-rerank/text-rerank` 路径。由于格式与标准 Cohere 完全一致，因此使用 `RERANK_BINDING=cohere`（而非 `aliyun`）即可，无需单独的 binding。请将 `{WorkspaceId}` 与地域替换为你自己的（参见 [阿里云文本排序 API 文档](https://help.aliyun.com/zh/model-studio/text-rerank-api)）：
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 

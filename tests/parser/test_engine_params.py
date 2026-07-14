@@ -107,7 +107,7 @@ def test_parse_engine_params_local_parse_method_rejected_official(monkeypatch):
     "block,engine,needle",
     [
         ("page_range=1", "legacy", "does not accept parameters"),
-        ("page_range=1", "native", "does not accept parameters"),
+        ("page_range=1", "native", "unknown parameter 'page_range'"),
         ("foo=1", "mineru", "unknown parameter 'foo'"),
         ("local_parse_method=bad", "mineru", "must be one of"),
         ("force_ocr=maybe", "docling", "must be a boolean"),
@@ -129,6 +129,8 @@ def test_normalize_engine_params_coerces_bool_string():
     # A direct caller may pass force_ocr as the string "false" — must coerce.
     norm, errors = normalize_engine_params("docling", {"force_ocr": "false"})
     assert errors == [] and norm == {"force_ocr": False}
+    norm, errors = normalize_engine_params("native", {"smart_heading": "true"})
+    assert errors == [] and norm == {"smart_heading": True}
 
 
 def test_normalize_engine_params_accepts_page_range_list_or_string(monkeypatch):

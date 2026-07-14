@@ -45,6 +45,8 @@ class MyParser(BaseParser):
 
 `ParseResult` fields: `doc_id` / `file_path` / `parse_format` (`"raw"` or `"lightrag"`) / `content` / `blocks_path` (`""` when there is no sidecar) / `parse_engine` / `parse_stage_skipped` (skipped scenarios such as cache hits) / `parse_warnings` (non-fatal warnings, persisted to `doc_status.metadata`).
 
+> Note: `parse_warnings → doc_status.metadata` is the general contract for every parser — the pipeline mirrors whatever a parser returns, without inspecting key names. The built-in native DOCX smart-heading engine is the one exception: it diverts *its own* `smart_`/`title_block_`-prefixed diagnostics to the sidecar `<base>.smart_audit.json` (under a `parse_warnings` key) instead of doc_status, and returns only the remaining non-smart warnings. This is a private policy of that engine, not a global prefix rule — a third-party parser returning `smart_*` warnings still gets them written to `doc_status.metadata`.
+
 ### 2.2 Three Implementation Paths (Choose a Base Class by Engine Type)
 
 **A. Plain-text engine (no sidecar) - inherit `BaseParser` directly**
@@ -96,7 +98,7 @@ class MyNativeParser(NativeParserBase):
         """blocks -> IRDoc (handed to the shared sidecar writer)."""
 ```
 
-Optional overrides: `validate_source` (by default only requires the file to exist), `surface_warnings` (maps extraction warnings to `parse_warnings`). Reference implementation: `lightrag/parser/docx/parser.py`.
+Optional overrides: `validate_source` (by default only requires the file to exist); `surface_warnings` (maps extraction warnings to `parse_warnings`); and `finalize_parse_warnings` (full control, runs after `extract` so it sees the complete warnings dict — an engine may divert a subset of warnings to sidecar audit artifacts and return only the remainder for doc_status; the default just calls `surface_warnings`). Reference implementation: `lightrag/parser/docx/parser.py`, whose `finalize_parse_warnings` writes the smart-heading `<base>.smart_audit.json`.
 
 **C. External parsing service (download raw bundle + cache) - inherit `ExternalParserBase`** (`lightrag/parser/external/_base.py`)
 

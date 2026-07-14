@@ -220,6 +220,24 @@ make env-security-check # Optional: audit the current .env for security risks
 
 For full description of every target see [docs/InteractiveSetup.md](./docs/InteractiveSetup.md).
 
+### Optional: spaCy Models for docx smart_heading
+
+The native docx parser's opt-in `smart_heading` engine parameter uses spaCy for sentence/NER heuristics. The spaCy runtime is already included in the `api` extra — only the two pinned language models (`zh_core_web_sm` / `en_core_web_sm` 3.8.0, GitHub release wheels not published on PyPI) need one extra step:
+
+```bash
+lightrag-download-cache --spacy --spacy-install
+```
+
+Enable smart_heading per file/rule (e.g. `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), or globally in `.env`:
+
+```bash
+# .docx files routed to the native engine get smart_heading by default;
+# opt a file back out with an explicit native(smart_heading=false) rule/hint.
+DOCX_SMART_HEADING=true
+```
+
+When the global switch is on (or a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)`), the server verifies the models at startup and fails fast with install guidance if they are missing. Deployments that never enable smart_heading need no models. The main Docker image ships the models pre-installed (the lite image does not); for air-gapped hosts see the [Offline Deployment Guide](./docs/OfflineDeployment.md).
+
 ## About LightRAG
 
 ### A Lightweight, Graph-Based RAG Framework
@@ -251,7 +269,16 @@ The LightRAG server offers not only a web-based UI for exploring LightRAG functi
 
 ### Selecting LLM Models
 
-LightRAG requires LLM/VLMs of four different roles during its workflow. You should configure models with different capabilities and speeds for different roles to strike a balance between performance and processing speed. LightRAG has higher capability requirements for Large Language Models (LLMs) than traditional RAG because it requires LLMs to perform complex entity-relation extraction tasks from documents. During the query phase, the LLM needs to process a large volume of retrieved information, including entities, relationships, and text chunks. This requires the model to have the capability of generating high-quality responses in long, noisy contexts. For detailed model configurations, please refer to [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md)
+LightRAG requires LLM/VLMs of four different roles during its workflow. You should configure models with different capabilities and speeds for different roles to strike a balance between performance and processing speed. LightRAG has higher capability requirements for Large Language Models (LLMs) than traditional RAG because it requires LLMs to perform complex entity-relation extraction tasks from documents. During the query phase, the LLM needs to process a large volume of retrieved information, including entities, relationships, and text chunks. This requires the model to have the capability of generating high-quality responses in long, noisy contexts.
+
+**Recommended models by role:**
+
+- **Extraction LLM (`EXTRACT`)**: Entity-relation extraction runs on every text chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended to avoid slow, expensive extraction. Good hosted options include GPT-5.6-luna, Claude Haiku, or Gemini-mini internationally, and DeepSeek-V4-lite or Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+- **Query LLM (`QUERY`)**: This model writes the final answer from long, noisy retrieved context, so it should be *stronger* than the extraction model in order to maximize answer quality. Choose a higher-tier model from the same families; a thinking-capable model is fine here.
+- **Keyword LLM (`KEYWORD`)**: A lightweight, latency-sensitive step that **must** use a non-thinking model to keep query latency low; a fast model comparable to the extraction one is sufficient.
+- **VLM (`VLM`)**: Any mainstream multimodal model with image-input support works. For local deployment, consider Qwen3.6-35B-A3B.
+
+Within your acceptable latency and cost budget, prefer the highest-scoring model available (based on public benchmarks/leaderboards). For detailed model configurations, please refer to [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md)
 
 ### Selecting Query Modes
 
@@ -267,13 +294,13 @@ The default query mode for LightRAG is `mix`. Using `mix` mode generally yields 
 
 ### Embedding Models
 
-When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. Typically, `BAAI/bge-m3` is sufficient. We highly recommend deploying the Embedding model locally to achieve the best performance.
+When choosing an Embedding model, pay attention to its multilingual support capabilities. Since LightRAG's retrieval quality has limited dependency on the Embedding model, it is recommended to choose low-dimensional and fast models. Any mainstream, up-to-date embedding model works well; for local deployment, `BAAI/bge-m3` is a solid choice. We highly recommend deploying the Embedding model locally to achieve the best performance.
 
 **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used in the query phase. Once selected, embedding models generally cannot be changed. If changed, you will need to re-embed all text chunks, entities, and relationships. LightRAG does not currently provide a re-embedding tool. Some storage backends (e.g., PostgreSQL) require the vector dimension to be defined when creating tables for the first time, so changing the Embedding model requires deleting vector-related tables so LightRAG can recreate them.
 
 ### Enabling Reranking
 
-Enabling the Rerank option during the query phase can significantly improve query quality. However, enabling Rerank typically introduces a 1–2 second delay. To minimize latency, it is highly recommended to deploy the Rerank model locally. For configuration details, please refer to the `.env.example` file. Unlike Embedding models, the Rerank model can be changed at any time during the query phase.
+Enabling the Rerank option during the query phase can significantly improve query quality. However, enabling Rerank typically introduces a 1–2 second delay. To minimize latency, it is highly recommended to deploy the Rerank model locally. Any mainstream, up-to-date reranker works; for local deployment, `BAAI/bge-reranker-v2-m3` is recommended. For configuration details, please refer to the `.env.example` file. Unlike Embedding models, the Rerank model can be changed at any time during the query phase.
 
 ### Document Processing Pipeline Configuration
 

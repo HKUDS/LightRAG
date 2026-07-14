@@ -430,9 +430,10 @@ async def openai_complete_if_cache(
     try:
         # Single dispatch: create() covers the dict-based response_format
         # payloads used by this project. Typed/Pydantic helpers are rejected
-        # above. Length-truncation is detected via finish_reason below and the
-        # raw content is returned unchanged so upstream tolerant JSON parsing
-        # can still salvage it.
+        # above. Length-truncated responses with non-empty content are
+        # returned unchanged so upstream tolerant JSON parsing can still
+        # salvage them; finish_reason is only inspected when content is empty
+        # (see the empty-content diagnostics below).
         response = await openai_async_client.chat.completions.create(
             model=api_model, messages=messages, **kwargs
         )
@@ -743,12 +744,55 @@ async def openai_complete_if_cache(
 
                 # Validate final content
                 if not final_content or final_content.strip() == "":
-                    logger.error("Received empty content from OpenAI API")
+                    # Distinguish the empty-content failure modes so the retry
+                    # ERROR lines (and the final RetryError) carry the root
+                    # cause: reasoning models swallowing output vs token-limit
+                    # truncation vs a genuinely empty response.
+                    finish_reason = getattr(response.choices[0], "finish_reason", None)
+                    usage = getattr(response, "usage", None)
+                    completion_tokens = getattr(usage, "completion_tokens", None)
+                    usage_details = getattr(usage, "completion_tokens_details", None)
+                    reasoning_tokens = getattr(usage_details, "reasoning_tokens", None)
+                    reasoning_len = (
+                        len(reasoning_content.strip()) if reasoning_content else 0
+                    )
+                    diagnostics = (
+                        f"finish_reason={finish_reason if finish_reason is not None else 'n/a'}, "
+                        f"completion_tokens={completion_tokens if completion_tokens is not None else 'n/a'}, "
+                        f"reasoning_tokens={reasoning_tokens if reasoning_tokens is not None else 'n/a'}, "
+                        f"reasoning_content_len={reasoning_len}"
+                    )
+                    if finish_reason == "length":
+                        hint = (
+                            "generation hit the token limit before emitting "
+                            "any content"
+                            + (
+                                " (budget consumed by reasoning)"
+                                if reasoning_len
+                                else ""
+                            )
+                            + "; consider raising max_tokens or disabling "
+                            "thinking mode"
+                        )
+                    elif reasoning_len:
+                        hint = (
+                            "model returned reasoning-only output "
+                            "(reasoning_content is discarded on this path); "
+                            "consider disabling thinking mode for this role"
+                        )
+                    else:
+                        hint = "model produced no output"
+                    logger.error(
+                        f"Received empty content from OpenAI API "
+                        f"({diagnostics}): {hint}"
+                    )
                     try:
                         await openai_async_client.close()
                     except Exception as close_error:
                         logger.warning(f"Failed to close OpenAI client: {close_error}")
-                    raise InvalidResponseError("Received empty content from OpenAI API")
+                    raise InvalidResponseError(
+                        f"Received empty content from OpenAI API ({diagnostics})"
+                    )
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:
