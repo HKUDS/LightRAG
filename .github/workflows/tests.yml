@@ -42,7 +42,7 @@ jobs:
         # anthropic, boto3, etc.). Without them, importorskip falls back
         # and the tests are silently skipped.
         pip install -e ".[api,offline-storage,offline-llm]"
-        pip install pytest pytest-asyncio
+        pip install pytest pytest-asyncio httpx2
 
     - name: Run offline tests
       run: |

@@ -46,6 +46,10 @@ def _isolate_env(monkeypatch):
     """Keep tests hermetic from developer-local .env and global config state."""
     for var in _ENV_VARS_TO_ISOLATE:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AUTH_ACCOUNTS", "")
+    monkeypatch.setenv("LIGHTRAG_API_KEY", "")
+    monkeypatch.setenv("TOKEN_SECRET", "")
+    monkeypatch.setenv("WHITELIST_PATHS", "/health,/api/*")
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
 

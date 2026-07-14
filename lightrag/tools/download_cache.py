@@ -14,6 +14,98 @@ from pathlib import Path
 # These need to be loaded with tiktoken.get_encoding() instead of tiktoken.encoding_for_model()
 TIKTOKEN_ENCODING_NAMES = {"cl100k_base", "p50k_base", "r50k_base", "o200k_base"}
 
+# spaCy language models used by the native docx `smart_heading` engine parameter.
+# Pinned to an exact version: smart_heading promises deterministic re-parse
+# results across environments, and a model drift would silently change NER /
+# sentence-split decisions. Keep in sync with requirements-offline-smart-heading.txt.
+# spacy-pkuseg is zh_core_web_sm's tokenizer backend (a PyPI dependency the
+# model wheel does not bundle); it is pinned and shipped with the wheels for
+# the same determinism promise — without it the offline install of the zh
+# model from this wheel directory cannot resolve its dependency.
+SPACY_MODEL_WHEELS = {
+    "zh_core_web_sm": "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl",
+    "en_core_web_sm": "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "spacy-pkuseg": "spacy-pkuseg==1.0.1",
+}
+
+
+def download_spacy_models(spacy_dir: str = None, install: bool = False):
+    """Download (and optionally install) the pinned spaCy model wheels.
+
+    Args:
+        spacy_dir: Directory to store the downloaded wheels. Defaults to
+            ``./spacy_models``. Ignored when ``install`` is True.
+        install: If True, ``pip install`` the wheels into the current
+            environment instead of downloading them to a directory.
+
+    Returns:
+        Tuple of (success_count, failed_models)
+    """
+    import subprocess
+
+    success_count = 0
+    failed_models = []
+
+    if install:
+        print(f"\nInstalling {len(SPACY_MODEL_WHEELS)} spaCy models...")
+    else:
+        spacy_dir = os.path.abspath(spacy_dir or "./spacy_models")
+        Path(spacy_dir).mkdir(parents=True, exist_ok=True)
+        print(f"\nDownloading {len(SPACY_MODEL_WHEELS)} spaCy model wheels...")
+        print(f"Using spaCy model directory: {spacy_dir}")
+    print("=" * 70)
+
+    for i, (name, url) in enumerate(sorted(SPACY_MODEL_WHEELS.items()), 1):
+        if install:
+            cmd = [sys.executable, "-m", "pip", "install", url]
+            action = "Installing"
+        else:
+            cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",
+                "--dest",
+                spacy_dir,
+                url,
+            ]
+            action = "Downloading"
+        try:
+            print(
+                f"[{i}/{len(SPACY_MODEL_WHEELS)}] {action} {name}...",
+                end=" ",
+                flush=True,
+            )
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            print("✓ Done")
+            success_count += 1
+        except subprocess.CalledProcessError as e:
+            print("✗ Failed")
+            detail = (e.stderr or e.stdout or str(e)).strip().splitlines()
+            failed_models.append((name, detail[-1] if detail else str(e)))
+
+    print("=" * 70)
+    print(
+        f"\n✓ Successfully processed {success_count}/{len(SPACY_MODEL_WHEELS)} spaCy models"
+    )
+
+    if failed_models:
+        print(f"\n✗ Failed spaCy models ({len(failed_models)}):")
+        for name, error in failed_models:
+            print(f"  - {name}: {error}")
+
+    if not install:
+        print(f"\nspaCy model wheels location: {spacy_dir}")
+        print("\nFor offline deployment:")
+        print("  1. Copy the wheels to the offline server together with")
+        print("     requirements-offline-smart-heading.txt")
+        print("  2. On the offline server install them with:")
+        print(f"     pip install --no-index --find-links={spacy_dir} \\")
+        print("         zh_core_web_sm en_core_web_sm")
+
+    return success_count, failed_models
+
 
 def download_tiktoken_cache(cache_dir: str = None, models: list = None):
     """Download tiktoken models to local cache
@@ -137,6 +229,13 @@ Examples:
   # Download specific models only
   lightrag-download-cache --models gpt-4o-mini gpt-4
 
+  # Additionally download the pinned spaCy model wheels for the native docx
+  # smart_heading engine parameter (to ./spacy_models by default)
+  lightrag-download-cache --spacy
+
+  # Install the spaCy models straight into the current environment
+  lightrag-download-cache --spacy --spacy-install
+
 For more information, visit: https://github.com/HKUDS/LightRAG
         """,
     )
@@ -153,6 +252,23 @@ For more information, visit: https://github.com/HKUDS/LightRAG
         default=None,
     )
     parser.add_argument(
+        "--spacy",
+        action="store_true",
+        help="Also download the pinned spaCy model wheels used by the native "
+        "docx smart_heading engine parameter",
+    )
+    parser.add_argument(
+        "--spacy-dir",
+        help="Directory for the spaCy model wheels (default: ./spacy_models)",
+        default=None,
+    )
+    parser.add_argument(
+        "--spacy-install",
+        action="store_true",
+        help="pip install the spaCy models into the current environment "
+        "instead of downloading wheels (implies --spacy)",
+    )
+    parser.add_argument(
         "--version", action="version", version="%(prog)s (LightRAG cache downloader)"
     )
 
@@ -166,6 +282,13 @@ For more information, visit: https://github.com/HKUDS/LightRAG
         success_count, failed_models = download_tiktoken_cache(
             args.cache_dir, args.models
         )
+
+        if args.spacy or args.spacy_install:
+            spacy_success, spacy_failed = download_spacy_models(
+                args.spacy_dir, install=args.spacy_install
+            )
+            success_count += spacy_success
+            failed_models.extend(spacy_failed)
 
         print("\n" + "=" * 70)
         print("Download Complete")

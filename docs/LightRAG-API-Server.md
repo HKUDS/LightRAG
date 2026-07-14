@@ -633,6 +633,8 @@ The command prompts for the password and prints an `admin:{bcrypt}...` entry rea
 
 If Account credentials are not configured, the Web UI will access the system as a Guest. Therefore, even if only an API Key is configured, all APIs can still be accessed through the Guest account, which remains insecure. Hence, to safeguard the API, it is necessary to configure both authentication methods simultaneously.
 
+> Although the server can be configured with **both** an API key and account credentials, a single request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied.
+
 ## For Azure OpenAI Backend
 
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
@@ -764,6 +766,16 @@ QUERY_LLM_MODEL=gpt-5
 VLM_LLM_MODEL=gpt-5-mini
 ```
 
+**Recommended models by role:**
+
+- **`EXTRACT`**: Entity-relation extraction runs on every chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended. E.g. GPT-5.6-luna, Claude Haiku, or Gemini-mini (hosted), or DeepSeek-V4-lite / Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+- **`QUERY`**: Writes the final answer from long, noisy context, so choose a *stronger* model than `EXTRACT` to maximize answer quality; a thinking-capable model is fine here.
+- **`KEYWORD`**: A lightweight, latency-sensitive step that **must** use a non-thinking model to keep query latency low; a fast model comparable to `EXTRACT` is enough.
+- **`VLM`**: Any mainstream multimodal model with image-input support works; for local deployment, consider Qwen3.6-35B-A3B.
+- **Embedding / Reranker**: Any mainstream, up-to-date model works. For local deployment, use `BAAI/bge-m3` for embeddings and `BAAI/bge-reranker-v2-m3` for reranking.
+
+Within an acceptable latency and cost budget, prefer the highest-scoring model available (per public benchmarks/leaderboards).
+
 For cross-provider rules, provider-specific options such as `QUERY_OPENAI_LLM_REASONING_EFFORT`, role-level Bedrock SigV4 credentials, and queue behavior, see [Role-Specific LLM/VLM Configuration Guide](./RoleSpecificLLMConfiguration.md).
 
 ### Multimodal Analysis Configuration
@@ -879,12 +891,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+Here is an example configuration for utilizing the Reranker service provided by Aliyun (`gte-rerank-*` and `qwen3-vl-rerank`, which use the nested `input`/`parameters` payload format):
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **Aliyun `qwen3-rerank` series:** Unlike `gte-rerank-*` and `qwen3-vl-rerank`, the `qwen3-rerank` models use a flat, Cohere-style payload (`{"model", "query", "documents", "top_n", ...}`), return top-level `results`, and are served from a **different**, Cohere-compatible endpoint — `/compatible-api/v1/reranks`, not the `.../text-rerank/text-rerank` path used above. Because the format is identical to standard Cohere, configure them with `RERANK_BINDING=cohere` (not `aliyun`); no dedicated binding is needed. Replace `{WorkspaceId}` and the region with your own (see the [Aliyun Text Rerank API docs](https://help.aliyun.com/zh/model-studio/text-rerank-api)):
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 

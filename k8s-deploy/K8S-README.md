@@ -72,7 +72,7 @@ kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
 ## Production Deployment (Using External Databases)
 
 ### 1. Install Databases
-> You can skip this step if you've already prepared databases. Detailed information can be found in: [README.md](databases%2FREADME.md).
+> You can skip this step if you've already prepared databases. Detailed information can be found in: [K8S-DB-README.md](databases%2FK8S-DB-README.md).
 
 We recommend KubeBlocks for database deployment. KubeBlocks is a cloud-native database operator that makes it easy to run any database on Kubernetes at production scale.
 

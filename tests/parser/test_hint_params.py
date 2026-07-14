@@ -192,13 +192,13 @@ def test_canonicalize_strips_parameterised_hint():
     )
 
 
-def test_engine_params_rejected_for_engine_that_declares_none():
+def test_unknown_native_engine_params_are_rejected():
     # Chunk params on a chunk char still work...
     d = resolve_parser_directives("doc.[native-F(chunk_ts=900)].docx", parser_rules="")
     assert d.chunk_params == {"F": {"chunk_token_size": 900}}
-    # ...but native declares no engine params, so an engine-level block on it is
-    # a hard error on ingestion (Phase 2: only mineru/docling accept params).
-    with pytest.raises(FilenameParserHintError, match="does not accept parameters"):
+    # ...but native only declares smart_heading as an engine parameter, so
+    # unrelated engine-level params remain hard errors on ingestion.
+    with pytest.raises(FilenameParserHintError, match="unknown parameter 'do_ocr'"):
         resolve_file_parser_directives(
             "doc.[native(do_ocr=true)-F].docx", parser_rules=""
         )
