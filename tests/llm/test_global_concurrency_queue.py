@@ -905,3 +905,64 @@ async def test_context_propagates_to_global_limit_path_worker():
         assert seen[-1] == "request-2"
     finally:
         await wrapped.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# In-flight cancellation on shutdown (#3382): the contextvars fix runs each
+# call as a separate Task (ctx.run + asyncio.ensure_future) instead of awaiting
+# the coroutine inline. These lock in that the wrapping does NOT break shutdown
+# cancellation — a non-graceful shutdown that cancels a worker mid-await must
+# still cancel the in-flight call (asyncio.Task.cancel cascades to the awaited
+# exec Task via _fut_waiter), not let it run to completion.
+# ---------------------------------------------------------------------------
+
+
+async def _assert_inflight_cancelled_on_shutdown(make_wrapped):
+    """A call in flight when the pool is torn down non-gracefully must observe
+    CancelledError, not keep running to completion (orphaned)."""
+    entered = asyncio.Event()
+    outcome = []
+
+    async def blocker():
+        entered.set()
+        try:
+            await asyncio.sleep(3600)  # never completes on its own
+            outcome.append("completed")
+        except asyncio.CancelledError:
+            outcome.append("cancelled")
+            raise
+
+    # No llm_timeout / max_execution_timeout => exercises `await exec_task`.
+    wrapped = make_wrapped(blocker)
+    call = asyncio.ensure_future(wrapped())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        # Non-graceful teardown cancels the worker while it awaits the call.
+        await wrapped.shutdown(graceful=False)
+        # asyncio cancels the awaited exec Task when the worker is cancelled
+        # (Task.cancel cascades to _fut_waiter); give it a loop turn to unwind.
+        await _wait_until(lambda: bool(outcome), timeout=2.0)
+        assert outcome == ["cancelled"]
+    finally:
+        call.cancel()
+        try:
+            await call
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_worker_cancel_cancels_inflight_call_default_path():
+    await _assert_inflight_cancelled_on_shutdown(
+        lambda fn: lr_utils.priority_limit_async_func_call(
+            2, queue_name="orphan cancel default"
+        )(fn)
+    )
+
+
+async def test_worker_cancel_cancels_inflight_call_global_limit_path():
+    _init({GROUP: 2})
+    await _assert_inflight_cancelled_on_shutdown(
+        lambda fn: lr_utils.priority_limit_async_func_call(
+            2, queue_name="orphan cancel global", concurrency_group=GROUP
+        )(fn)
+    )

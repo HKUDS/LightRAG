@@ -1282,7 +1282,9 @@ def priority_limit_async_func_call(
                             # own context is copied from ctx (works on
                             # Python 3.10, unlike create_task's context=
                             # kwarg which needs 3.11+).
-                            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
+                            exec_task = ctx.run(
+                                asyncio.ensure_future, func(*args, **kwargs)
+                            )
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
                                     exec_task, timeout=max_execution_timeout
@@ -1533,7 +1535,9 @@ def priority_limit_async_func_call(
                             # Run under the enqueuer's captured context, not
                             # this long-lived worker's creation-time context
                             # — see the matching comment in worker().
-                            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
+                            exec_task = ctx.run(
+                                asyncio.ensure_future, func(*args, **kwargs)
+                            )
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
                                     exec_task,
@@ -2036,14 +2040,14 @@ def priority_limit_async_func_call(
 
                 # Capture the enqueuer's context (e.g. an active OpenTelemetry
                 # span) so the worker executes func() under it instead of the
-                # long-lived worker task's own creation-time context.
+                # long-lived worker task's own creation-time context. It rides
+                # as the 6th tuple element; keep the unpack sites in sync
+                # (worker / slot_pump / limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
                 # Unbounded physical queue: put_nowait never blocks, and the
                 # (priority, count, ...) tuple keeps heap ordering intact.
-                queue.put_nowait(
-                    (_priority, current_count, task_id, args, kwargs, ctx)
-                )
+                queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
                 work_available.set()
                 await _publish_stats()
@@ -2173,7 +2177,9 @@ def priority_limit_async_func_call(
                 # Capture the enqueuer's context (e.g. an active
                 # OpenTelemetry span) so the worker executes func() under
                 # it instead of the long-lived worker task's own
-                # creation-time context.
+                # creation-time context. It rides as the 6th tuple element;
+                # keep the unpack sites in sync (worker / slot_pump /
+                # limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
                 # Queue the task with timeout handling
