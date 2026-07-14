@@ -24,6 +24,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -53,6 +54,10 @@ class ParseContext:
     doc_id: str
     file_path: str
     content_data: dict[str, Any]
+    # Set by the active pipeline batch when the user requests cancellation.
+    # Native parsers pass it to their synchronous LLM bridge so a worker thread
+    # does not remain blocked on a slow title-block judgment.
+    pipeline_cancel_event: threading.Event | None = None
 
     def source_path(self, parser_engine: str) -> Path:
         """Resolve the on-disk source file for this document."""
@@ -121,6 +126,12 @@ class ParseResult:
     parse_engine: str | None = None
     parse_stage_skipped: bool = False
     parse_warnings: dict[str, Any] | None = None
+    # LLM cache keys minted during the parse stage (docx smart_heading).
+    # Fixed, first-class field: the pipeline mirrors it into
+    # doc_status.metadata so adelete_by_doc_id(delete_llm_cache=True) can
+    # purge parse-stage cache — there is no chunk llm_cache_list at parse
+    # time to carry them.
+    smartheading_llm_cache_ids: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -136,6 +147,8 @@ class ParseResult:
             out["parse_stage_skipped"] = True
         if self.parse_warnings:
             out["parse_warnings"] = self.parse_warnings
+        if self.smartheading_llm_cache_ids:
+            out["smartheading_llm_cache_ids"] = self.smartheading_llm_cache_ids
         return out
 
 

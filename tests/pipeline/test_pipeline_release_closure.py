@@ -377,6 +377,9 @@ def test_carry_over_keys_grouped_by_stage():
         "parse_stage_skipped",
         "parse_format",
         "parse_engine",
+        # Parse-stage LLM cache keys (docx smart_heading) — parse-stage
+        # group so document deletion can purge them at any later status.
+        "smartheading_llm_cache_ids",
         "analyzing_start_time",
         "analyzing_end_time",
         "analyzing_stage_skipped",

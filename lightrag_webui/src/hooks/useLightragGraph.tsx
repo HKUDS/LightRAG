@@ -10,6 +10,7 @@ import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import { hasEdgeSafe, addUndirectedEdgeSafe } from '@/utils/graphEdgeSafety'
 
 // Every node gets this border (the node-border program reads `borderColor`).
 const NODE_BORDER_COLOR = '#FFFFFF'
@@ -127,32 +128,6 @@ const parseEdgeWeight = (properties: Record<string, unknown> | undefined): numbe
 // — fall back to the node id so the rest of the graph still renders.
 const safeNodeLabel = (labels: unknown, fallbackId: string): string =>
   Array.isArray(labels) ? labels.join(', ') : fallbackId
-
-// Add an undirected edge, working around a graphology 0.26.0 bug: the non-multi
-// duplicate check does a bare `adjacency[target]` object lookup, so a TARGET
-// node named like an Object.prototype property ('constructor', 'toString',
-// '__proto__', 'hasOwnProperty', ...) makes addEdge throw "already exists" even
-// though hasEdge correctly returns false. The broken check only runs on the
-// source side, and on an undirected graph the flipped edge is the same edge —
-// so adding it reversed recovers it. Returns the dynamic edge id, or null if
-// both orientations fail (e.g. both endpoints are prototype-named). Callers are
-// expected to have pre-checked hasEdge, so a real duplicate is never masked.
-const addUndirectedEdgeSafe = (
-  graph: UndirectedGraph,
-  source: string,
-  target: string,
-  attributes: Record<string, unknown>
-): string | null => {
-  try {
-    return graph.addEdge(source, target, attributes)
-  } catch {
-    try {
-      return graph.addEdge(target, source, attributes)
-    } catch {
-      return null
-    }
-  }
-}
 
 export type NodeType = {
   x: number
@@ -320,7 +295,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
     if (
       !graph.hasNode(rawEdge.source) ||
       !graph.hasNode(rawEdge.target) ||
-      graph.hasEdge(rawEdge.source, rawEdge.target)
+      hasEdgeSafe(graph, rawEdge.source, rawEdge.target)
     ) {
       continue
     }
@@ -1018,8 +993,8 @@ const useLightrangeGraph = () => {
         for (const edgeId of edgesToAdd) {
           const newEdge = processedEdgeById.get(edgeId)!
 
-          // Skip if edge already exists
-          if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
+          // Skip if edge already exists (prototype-safe: see hasEdgeSafe)
+          if (hasEdgeSafe(sigmaGraph, newEdge.source, newEdge.target)) {
             continue
           }
 

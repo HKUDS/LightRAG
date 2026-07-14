@@ -7,6 +7,7 @@ primitives).
 """
 
 import asyncio
+import contextvars
 
 import pytest
 
@@ -848,3 +849,120 @@ async def test_maintenance_renews_held_leases(monkeypatch):
         assert await task == "long"
     finally:
         await wrapped.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# contextvars propagation (#3382): persistent worker tasks must run each call
+# under the enqueuer's context, not the context frozen when the worker was
+# first created.
+# ---------------------------------------------------------------------------
+
+_ctx_var: contextvars.ContextVar = contextvars.ContextVar("ctx_var", default="unset")
+
+
+async def test_context_propagates_to_default_path_worker():
+    seen = []
+
+    async def record_ctx(value):
+        seen.append(_ctx_var.get())
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(2, queue_name="ctx default test")(
+        record_ctx
+    )
+    try:
+        # Force the persistent worker task to spin up while the contextvar
+        # is still at its default — this is the moment the bug snapshotted
+        # forever under the old (unpatched) worker.
+        assert await wrapped("prime") == "prime"
+        assert seen[-1] == "unset"
+
+        _ctx_var.set("request-1")
+        assert await wrapped("call") == "call"
+        assert seen[-1] == "request-1"
+    finally:
+        await wrapped.shutdown()
+
+
+async def test_context_propagates_to_global_limit_path_worker():
+    _init({GROUP: 2})
+    seen = []
+
+    async def record_ctx(value):
+        seen.append(_ctx_var.get())
+        return value
+
+    wrapped = lr_utils.priority_limit_async_func_call(
+        2, queue_name="ctx global test", concurrency_group=GROUP
+    )(record_ctx)
+    try:
+        # Same priming step, but through the slot-pump / limited_worker path.
+        assert await wrapped("prime") == "prime"
+        assert seen[-1] == "unset"
+
+        _ctx_var.set("request-2")
+        assert await wrapped("call") == "call"
+        assert seen[-1] == "request-2"
+    finally:
+        await wrapped.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# In-flight cancellation on shutdown (#3382): the contextvars fix runs each
+# call as a separate Task (ctx.run + asyncio.ensure_future) instead of awaiting
+# the coroutine inline. These lock in that the wrapping does NOT break shutdown
+# cancellation — a non-graceful shutdown that cancels a worker mid-await must
+# still cancel the in-flight call (asyncio.Task.cancel cascades to the awaited
+# exec Task via _fut_waiter), not let it run to completion.
+# ---------------------------------------------------------------------------
+
+
+async def _assert_inflight_cancelled_on_shutdown(make_wrapped):
+    """A call in flight when the pool is torn down non-gracefully must observe
+    CancelledError, not keep running to completion (orphaned)."""
+    entered = asyncio.Event()
+    outcome = []
+
+    async def blocker():
+        entered.set()
+        try:
+            await asyncio.sleep(3600)  # never completes on its own
+            outcome.append("completed")
+        except asyncio.CancelledError:
+            outcome.append("cancelled")
+            raise
+
+    # No llm_timeout / max_execution_timeout => exercises `await exec_task`.
+    wrapped = make_wrapped(blocker)
+    call = asyncio.ensure_future(wrapped())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        # Non-graceful teardown cancels the worker while it awaits the call.
+        await wrapped.shutdown(graceful=False)
+        # asyncio cancels the awaited exec Task when the worker is cancelled
+        # (Task.cancel cascades to _fut_waiter); give it a loop turn to unwind.
+        await _wait_until(lambda: bool(outcome), timeout=2.0)
+        assert outcome == ["cancelled"]
+    finally:
+        call.cancel()
+        try:
+            await call
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_worker_cancel_cancels_inflight_call_default_path():
+    await _assert_inflight_cancelled_on_shutdown(
+        lambda fn: lr_utils.priority_limit_async_func_call(
+            2, queue_name="orphan cancel default"
+        )(fn)
+    )
+
+
+async def test_worker_cancel_cancels_inflight_call_global_limit_path():
+    _init({GROUP: 2})
+    await _assert_inflight_cancelled_on_shutdown(
+        lambda fn: lr_utils.priority_limit_async_func_call(
+            2, queue_name="orphan cancel global", concurrency_group=GROUP
+        )(fn)
+    )

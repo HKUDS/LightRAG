@@ -109,6 +109,41 @@ def test_table_cell_drops_comment_markers() -> None:
     assert extract_paragraph_content_table(para, qn) == "cell-text"
 
 
+def _pm(inner_xml: str):
+    """Build a ``<w:p>`` element that also declares the ``m`` (math) namespace."""
+    return etree.fromstring(
+        f'<w:p xmlns:w="{W_NS}" xmlns:m="{PARAGRAPH_NS["m"]}">{inner_xml}</w:p>'.encode(
+            "utf-8"
+        )
+    )
+
+
+@pytest.mark.offline
+def test_table_cell_converts_inline_equation() -> None:
+    # Regression: the m:oMath branch used a bare ``from omml import`` (absolute)
+    # that raised ModuleNotFoundError once a table cell actually contained an
+    # equation. It must resolve the package-relative ``.omml`` module instead.
+    para = _pm(
+        "<w:r><w:t>before </w:t></w:r>"
+        "<m:oMath><m:r><m:t>x+1</m:t></m:r></m:oMath>"
+        "<w:r><w:t> after</w:t></w:r>"
+    )
+
+    assert (
+        extract_paragraph_content_table(para, qn)
+        == "before <equation>x+1</equation> after"
+    )
+
+
+@pytest.mark.offline
+def test_table_cell_converts_block_equation() -> None:
+    para = _pm(
+        "<m:oMathPara><m:oMath><m:r><m:t>E=mc^2</m:t></m:r></m:oMath></m:oMathPara>"
+    )
+
+    assert extract_paragraph_content_table(para, qn) == "<equation>E=mc^2</equation>"
+
+
 # --- end-to-end: empty tables vanish from blocks output --------------------
 
 
