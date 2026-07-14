@@ -188,7 +188,7 @@ LightRAG 在本地会缓存 `mineru`、`docling` 和 `paddleocr_vl` 引擎的解
 
 #### 使用 Native 文件解析引擎
 
-`native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。
+`native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。为 docx 启用可选的 `smart_heading` 引擎参数时，额外需要钉定版本的 `zh_core_web_sm` / `en_core_web_sm` spaCy 模型（`spacy` 运行时已随 `api` extra 一并安装，模型用 `lightrag-download-cache --spacy --spacy-install` 安装——Docker 主镜像已内置）；从不启用该参数的部署无需模型，另外 smart_heading 路径会在解析阶段调用 EXTRACT 角色 LLM。设置环境变量 `DOCX_SMART_HEADING=true` 后，路由到 native 引擎的 `.docx` 文件默认启用 smart_heading——单个文件/规则可用显式 `native(smart_heading=false)` 关闭——同时服务器会在启动时校验 spaCy 模型并 fail-fast（而不是等到首次解析才报错）；`LIGHTRAG_PARSER` 规则中携带 `native(smart_heading=true)` 时同样触发启动校验。该默认值仅作用于新上传：已入库文档重解析时沿用其持久化的引擎参数。
 
 支持后缀：`docx` / `md` / `textpack`。启用方式：
 

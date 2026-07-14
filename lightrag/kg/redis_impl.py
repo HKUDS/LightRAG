@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from typing import Any, final, Union
 from dataclasses import dataclass
 import pipmaster as pm
@@ -66,6 +67,11 @@ class RedisConnectionManager:
     _pools = {}
     _pool_refs = {}  # Track reference count for each pool
     _lock = threading.Lock()
+    # Strong references to background pool-close tasks scheduled from sync
+    # contexts (init-error path). Held until each task completes so the loop
+    # cannot GC an in-flight task, and so a failing aclose() does not surface
+    # as "Task exception was never retrieved".
+    _cleanup_tasks: set = set()
 
     @classmethod
     def get_pool(cls, redis_url: str) -> ConnectionPool:
@@ -91,8 +97,19 @@ class RedisConnectionManager:
         return cls._pools[redis_url]
 
     @classmethod
-    def release_pool(cls, redis_url: str):
-        """Release a reference to the connection pool"""
+    def release_pool_ref(cls, redis_url: str):
+        """Release a reference to the connection pool (synchronous).
+
+        Decrements the reference count and, if it reaches zero, pops the pool
+        from the registry and **returns it** so the caller can await its
+        async ``aclose()``. The disconnect is intentionally NOT performed here
+        because ``ConnectionPool.aclose()`` / ``disconnect()`` are coroutines
+        and this method is called from both sync (init-error) and async
+        (close/finalize) contexts.
+
+        Returns the pool to disconnect, or ``None`` if the reference count is
+        still positive (or the URL is unknown).
+        """
         with cls._lock:
             if redis_url in cls._pool_refs:
                 cls._pool_refs[redis_url] -= 1
@@ -100,31 +117,77 @@ class RedisConnectionManager:
                     f"Redis pool {redis_url} reference count: {cls._pool_refs[redis_url]}"
                 )
 
-                # If no more references, close the pool
+                # If no more references, remove from registry and return for disconnect
                 if cls._pool_refs[redis_url] <= 0:
-                    try:
-                        cls._pools[redis_url].disconnect()
-                        logger.info(
-                            f"Closed Redis connection pool for {redis_url} (no more references)"
-                        )
-                    except Exception as e:
-                        logger.error(f"Error closing Redis pool for {redis_url}: {e}")
-                    finally:
-                        del cls._pools[redis_url]
-                        del cls._pool_refs[redis_url]
+                    pool = cls._pools.pop(redis_url)
+                    del cls._pool_refs[redis_url]
+                    return pool
+            return None
 
     @classmethod
-    def close_all_pools(cls):
+    async def release_pool(cls, redis_url: str):
+        """Release a reference to the connection pool (async).
+
+        Decrements the reference count and, when it reaches zero, awaits the
+        pool's async ``aclose()`` so sockets are actually closed before
+        ``finalize_storages()`` reports success.
+        """
+        pool = cls.release_pool_ref(redis_url)
+        if pool is not None:
+            try:
+                await pool.aclose()
+                logger.info(
+                    f"Closed Redis connection pool for {redis_url} (no more references)"
+                )
+            except Exception as e:
+                logger.error(f"Error closing Redis pool for {redis_url}: {e}")
+
+    @classmethod
+    async def close_all_pools(cls):
         """Close all connection pools (for cleanup)"""
         with cls._lock:
-            for url, pool in cls._pools.items():
-                try:
-                    pool.disconnect()
-                    logger.info(f"Closed Redis connection pool for {url}")
-                except Exception as e:
-                    logger.error(f"Error closing Redis pool for {url}: {e}")
+            pools = dict(cls._pools)
             cls._pools.clear()
             cls._pool_refs.clear()
+        for url, pool in pools.items():
+            try:
+                await pool.aclose()
+                logger.info(f"Closed Redis connection pool for {url}")
+            except Exception as e:
+                logger.error(f"Error closing Redis pool for {url}: {e}")
+
+    @classmethod
+    async def _close_pool_safely(cls, pool: ConnectionPool, redis_url: str) -> None:
+        """Await ``pool.aclose()``, swallowing errors as best-effort cleanup."""
+        try:
+            await pool.aclose()
+            logger.info(
+                f"Closed Redis connection pool for {redis_url} (no more references)"
+            )
+        except Exception as e:
+            logger.error(f"Error closing Redis pool for {redis_url}: {e}")
+
+    @classmethod
+    def schedule_pool_close(cls, pool: ConnectionPool, redis_url: str) -> None:
+        """Schedule a background pool disconnect from a *synchronous* context.
+
+        Used by the ``__post_init__`` init-error path, which cannot ``await``.
+        If an event loop is running, the disconnect runs as a managed task
+        (strong-referenced until done, errors swallowed by
+        ``_close_pool_safely``). If no loop is running, this is a no-op: the
+        coroutine is never created, so no ``RuntimeError`` masks the original
+        init exception and no unawaited-coroutine warning is emitted. Skipping
+        is safe — the pool was just created (no I/O yet) if this instance is the
+        sole owner, and if it is shared the refcount is still positive so
+        ``release_pool_ref`` would not have returned the pool.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(cls._close_pool_safely(pool, redis_url))
+        cls._cleanup_tasks.add(task)
+        task.add_done_callback(cls._cleanup_tasks.discard)
 
 
 @final
@@ -179,7 +242,9 @@ class RedisKVStorage(BaseKVStorage):
         except Exception as e:
             # Clean up on initialization failure
             if self._redis_url:
-                RedisConnectionManager.release_pool(self._redis_url)
+                pool = RedisConnectionManager.release_pool_ref(self._redis_url)
+                if pool is not None:
+                    RedisConnectionManager.schedule_pool_close(pool, self._redis_url)
             logger.error(
                 f"[{self.workspace}] Failed to initialize Redis KV storage: {e}"
             )
@@ -242,24 +307,53 @@ class RedisKVStorage(BaseKVStorage):
 
     async def close(self):
         """Close the Redis connection and release pool reference to prevent resource leaks."""
-        if hasattr(self, "_redis") and self._redis:
-            try:
-                await self._redis.close()
-                logger.debug(
-                    f"[{self.workspace}] Closed Redis connection for {self.namespace}"
-                )
-            except Exception as e:
-                logger.error(f"[{self.workspace}] Error closing Redis connection: {e}")
-            finally:
-                self._redis = None
+        # Detach all instance state BEFORE the first await, so a concurrent /
+        # re-entrant close() (or finalize-after-__aexit__) is a complete no-op
+        # from the start and cannot release the shared pool a second time.
+        redis = getattr(self, "_redis", None)
+        redis_url = getattr(self, "_redis_url", None)
+        self._redis = None
+        self._redis_url = None
+        self._pool = None
 
-        # Release the pool reference (will auto-close pool if no more references)
-        if hasattr(self, "_redis_url") and self._redis_url:
-            RedisConnectionManager.release_pool(self._redis_url)
-            self._pool = None
-            logger.debug(
-                f"[{self.workspace}] Released Redis connection pool reference for {self.namespace}"
-            )
+        # Close the client first, then release the pool reference. The pool
+        # release lives in ``finally`` so that even if ``aclose()`` is cancelled
+        # (CancelledError is a BaseException and escapes ``except Exception``),
+        # the reference is still released — otherwise redis_url is already gone
+        # and the refcount would leak permanently.
+        try:
+            if redis is not None:
+                try:
+                    await redis.aclose()
+                    logger.debug(
+                        f"[{self.workspace}] Closed Redis connection for {self.namespace}"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error closing Redis connection: {e}"
+                    )
+        finally:
+            if redis_url:
+                await RedisConnectionManager.release_pool(redis_url)
+                logger.debug(
+                    f"[{self.workspace}] Released Redis connection pool reference for {self.namespace}"
+                )
+
+    async def finalize(self):
+        """Release the Redis client and shared-pool reference on shutdown.
+
+        The base ``finalize`` is a no-op, so without this override the
+        standard shutdown path (``LightRAG.finalize_storages``) never calls
+        ``close()``: the shared pool's reference count only ever grows and
+        the pool is never disconnected until process exit. Mirrors the
+        release-on-finalize contract of the other KV backends (e.g.
+        ``MongoKVStorage`` releases its client via ``ClientManager``).
+        ``close()`` is best-effort and idempotent, so double-finalize and
+        finalize-after-error are both safe.
+        """
+        await self.close()
 
     async def __aenter__(self):
         """Support for async context manager."""
@@ -578,7 +672,9 @@ class RedisDocStatusStorage(DocStatusStorage):
         except Exception as e:
             # Clean up on initialization failure
             if self._redis_url:
-                RedisConnectionManager.release_pool(self._redis_url)
+                pool = RedisConnectionManager.release_pool_ref(self._redis_url)
+                if pool is not None:
+                    RedisConnectionManager.schedule_pool_close(pool, self._redis_url)
             logger.error(
                 f"[{self.workspace}] Failed to initialize Redis doc status storage: {e}"
             )
@@ -632,24 +728,52 @@ class RedisDocStatusStorage(DocStatusStorage):
 
     async def close(self):
         """Close the Redis connection and release pool reference to prevent resource leaks."""
-        if hasattr(self, "_redis") and self._redis:
-            try:
-                await self._redis.close()
-                logger.debug(
-                    f"[{self.workspace}] Closed Redis connection for doc status {self.namespace}"
-                )
-            except Exception as e:
-                logger.error(f"[{self.workspace}] Error closing Redis connection: {e}")
-            finally:
-                self._redis = None
+        # Detach all instance state BEFORE the first await, so a concurrent /
+        # re-entrant close() (or finalize-after-__aexit__) is a complete no-op
+        # from the start and cannot release the shared pool a second time.
+        redis = getattr(self, "_redis", None)
+        redis_url = getattr(self, "_redis_url", None)
+        self._redis = None
+        self._redis_url = None
+        self._pool = None
 
-        # Release the pool reference (will auto-close pool if no more references)
-        if hasattr(self, "_redis_url") and self._redis_url:
-            RedisConnectionManager.release_pool(self._redis_url)
-            self._pool = None
-            logger.debug(
-                f"[{self.workspace}] Released Redis connection pool reference for doc status {self.namespace}"
-            )
+        # Close the client first, then release the pool reference. The pool
+        # release lives in ``finally`` so that even if ``aclose()`` is cancelled
+        # (CancelledError is a BaseException and escapes ``except Exception``),
+        # the reference is still released — otherwise redis_url is already gone
+        # and the refcount would leak permanently.
+        try:
+            if redis is not None:
+                try:
+                    await redis.aclose()
+                    logger.debug(
+                        f"[{self.workspace}] Closed Redis connection for doc status {self.namespace}"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(
+                        f"[{self.workspace}] Error closing Redis connection: {e}"
+                    )
+        finally:
+            if redis_url:
+                await RedisConnectionManager.release_pool(redis_url)
+                logger.debug(
+                    f"[{self.workspace}] Released Redis connection pool reference for doc status {self.namespace}"
+                )
+
+    async def finalize(self):
+        """Release the Redis client and shared-pool reference on shutdown.
+
+        The base ``finalize`` is a no-op, so without this override the
+        standard shutdown path (``LightRAG.finalize_storages``) never calls
+        ``close()``: the shared pool's reference count only ever grows and
+        the pool is never disconnected until process exit. Mirrors the
+        release-on-finalize contract of the other DocStatus backends.
+        ``close()`` is best-effort and idempotent, so double-finalize and
+        finalize-after-error are both safe.
+        """
+        await self.close()
 
     async def __aenter__(self):
         """Support for async context manager."""

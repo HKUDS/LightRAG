@@ -1,0 +1,24 @@
+# LightRAG Offline Dependencies - Native docx smart_heading (optional)
+# Install with: pip install -r requirements-offline-smart-heading.txt
+# For offline installation:
+#   pip download -r requirements-offline-smart-heading.txt -d ./packages
+#   pip install --no-index --find-links=./packages spacy zh_core_web_sm en_core_web_sm
+# Do NOT install with `-r` on the offline machine: the model pins below are
+# direct GitHub URLs, and pip fetches direct-URL requirements from the network
+# even under --no-index/--find-links. Install by name from the local wheels.
+#
+# Recommended: Use pip install lightrag-hku[api] for the spacy runtime,
+# then install the two pinned model wheels below (or run: lightrag-download-cache --spacy)
+#
+# NOTE: model wheels are pinned to an exact version on purpose — the smart_heading
+# algorithm promises deterministic re-parse results across environments, and a
+# model version drift would silently change NER / sentence-split decisions.
+
+
+# Pinned language models (GitHub release wheels; not on PyPI)
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+# spaCy runtime (matches the spacy pin in pyproject.toml's api extra)
+spacy>=3.8,<4
+# zh_core_web_sm's tokenizer backend, pinned for the same determinism promise
+spacy-pkuseg==1.0.1
+zh_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl
