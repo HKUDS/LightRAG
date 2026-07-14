@@ -202,6 +202,8 @@ docker compose up
 > Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 >
 > Official GHCR images published by GitHub Actions are signed with Sigstore Cosign using GitHub OIDC. See [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) for verification commands.
+>
+> On Apple Silicon (macOS 26) without Docker Desktop, you can run the same Postgres/Neo4j/Milvus storage stack on Apple's native `container` runtime — see [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md).
 
 ### Create .env File With Setup Tool
 
