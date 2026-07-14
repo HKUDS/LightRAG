@@ -288,7 +288,6 @@ async def test_vlm_cache_hit_on_second_run(tmp_path):
             process_options="i",
         )
         assert len(call_log) == 1
-        await rag.llm_response_cache.index_done_callback()
         cache_file = (
             Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
         )

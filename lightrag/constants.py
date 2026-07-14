@@ -139,6 +139,117 @@ DEFAULT_CHUNK_P_SIZE = 2000
 DEFAULT_P_REFERENCES_TAIL_N = 2
 DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 
+# Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
+# below has a matching env var (drop the DEFAULT_ prefix) read at run time
+# by lightrag/parser/docx/smart_heading (same live-env pattern as the
+# CHUNK_P_REFERENCES_* knobs above).
+#
+# Global default for the smart_heading engine param itself (env
+# DOCX_SMART_HEADING): when true, .docx files routed to the native engine get
+# smart_heading enabled by default — an explicit native(smart_heading=false)
+# rule/hint turns it back off — and the server verifies at startup that the
+# spaCy models are installed (fail-fast instead of failing mid-pipeline).
+# The default is materialized into the persisted parse_engine at ingestion
+# time (seed_smart_heading_param, called from resolve_parser_directives for
+# uploads and from apipeline_enqueue_documents for direct enqueue), so
+# toggling the env var never changes how already-ingested documents re-parse.
+DEFAULT_DOCX_SMART_HEADING = False
+#
+# P1 homophone blacklist: an EnNum immediately followed by one of these CJK
+# unit/measure words (2026年 / 1个 / 1人…) is NOT a numbering prefix. Env
+# DOCX_SMART_ENNUM_BLACKLIST is comma/pipe-separated.
+DEFAULT_DOCX_SMART_ENNUM_BLACKLIST = (
+    "年,月,日,时,分,秒,个,人,只,条,次,项,天,号,元,角,件,名,台,种,倍,"
+    "万,亿,岁,周,米,克,吨,页,寸,层,间,句,字,笔,轮,批,组,套,户,家,期"
+)
+# P3 caption prefixes: a paragraph starting with one of these + a numbering
+# shape is a figure/table caption, never a heading. Comma/pipe-separated.
+DEFAULT_DOCX_SMART_CAPTION_PREFIXES = "图,表,公式,Figure,Table,Fig.,Eq.,Chart"
+# 公文版记 (imprint) ANCHORS: a paragraph opening with one of these + [：:]
+# (抄送：各区人民政府 / 主题词：经济 管理) starts a 版记 region. It is imprint
+# metadata — body, never a heading — and it vetoes title-block membership for
+# itself AND its 2 preceding non-blank paragraphs (the signature/date lines
+# above). Anchors may also sit as middle content of another anchor's region
+# (主题词 then 抄送); only a CLOSER (below) ends a region.
+# Comma/pipe-separated; whitespace may interleave the prefix chars (抄　送：).
+DEFAULT_DOCX_SMART_IMPRINT_COLON_PREFIXES = "抄送,主题词"
+# 版记 region CLOSER markers (印发-family — the issuing-organ / print line that
+# ENDS a 版记). Recognized ONLY inside the forward window of an anchor above
+# (never a standalone per-line rule), so a line-final 印发 in body prose
+# (…已印发) cannot false-fire on its own:
+#   - closer prefix: line opens with the prefix + [：:] or whitespace
+#     (印发：XX / 印发 XX / 印发机关 XX / 印发机关：XX — 印发机关 is a closer, NOT an
+#     anchor, which is why there is no longer an IMPRINT_SPACE_PREFIXES knob);
+#   - closer trailing: line ENDS with 印发 (某某办公室 2026年6月30日 印发) — the
+#     GB/T standard layout with the issuer/date first and 印发 last.
+# Comma/pipe-separated. When a closer is found within FORWARD_PARAS non-blank
+# paragraphs of an anchor, the whole 抄送…印发 span (middle lines included) is
+# barred from title blocks; and if a valid title block immediately follows the
+# span (a 公文汇编 boundary), the span's lines are force-demoted to body.
+DEFAULT_DOCX_SMART_IMPRINT_CLOSER_PREFIXES = "印发,印发机关"
+DEFAULT_DOCX_SMART_IMPRINT_CLOSER_TRAILING = "印发"
+DEFAULT_DOCX_SMART_IMPRINT_FORWARD_PARAS = 3
+# Heuristic TOC evidence: at least this many consecutive dot-leader lines.
+DEFAULT_DOCX_SMART_TOC_MIN_LINES = 3
+# TOC retention: keep at most this many VISIBLE LINES of a detected TOC as body
+# (the rest collapse to a single "……") so a 目录 heading is not orphaned from
+# its entries. Counted globally by visible line (each soft-break line counts as
+# one). 0 keeps none (one "……" replaces the whole TOC); negatives clamp to 0;
+# a very large value keeps the entire TOC.
+DEFAULT_DOCX_SMART_TOC_KEEP_LINES = 5
+# CB1 heading-density ceiling (headings / non-empty paragraphs): the floor of
+# the effective threshold. The threshold is baseline-aware — a document with a
+# rich physical outline naturally admits more candidates, so the effective
+# ceiling is max(this floor, baseline outline density + the margin below).
+DEFAULT_DOCX_SMART_DENSITY_MAX = 0.40
+# CB1 margin added to the sub-document's baseline outline density when it beats
+# the floor above (percentage points, not relative).
+DEFAULT_DOCX_SMART_DENSITY_BASELINE_MARGIN = 0.10
+# Density re-estimation trigger #2 (trigger side only): also trips when
+# the mean CJK-weighted body chars between adjacent candidate headings falls
+# below this — a dense run of headings by spacing rather than by count.
+DEFAULT_DOCX_SMART_MIN_INTER_HEADING_CHARS = 200
+# CB2 demotion-propagation breaker ratios.
+DEFAULT_DOCX_SMART_CB2_BODY_RATIO = 0.20
+DEFAULT_DOCX_SMART_CB2_OUTLINE_RATIO = 0.50
+# CB5 FS_base confidence threshold (dominant-size char share).
+DEFAULT_DOCX_SMART_CONFIDENCE_RATIO = 0.60
+# CB4 whole-document gate: below this many tokens the whole document is too
+# short for smart heading — it is skipped entirely (baseline output). Kept
+# below DEFAULT_CHUNK_P_SIZE (2000): a document that fits inside a single
+# paragraph-chunk does not need heading-driven structural splitting.
+DEFAULT_DOCX_SMART_MIN_TOKENS = 1800
+# CB4 per-sub-document gate: once the whole document clears the gate above,
+# an individual sub-document below this many tokens falls back to outline-only
+# levels (``_outline_only_decisions``) instead of size-based leveling. Lower
+# than the whole-document gate — a sub-document is a fragment and needs less
+# content to be worth leveling.
+DEFAULT_DOCX_SMART_SUBDOC_MIN_TOKENS = 1000
+# Title-block LLM window cap (tokens) — content beyond it is truncated.
+DEFAULT_DOCX_SMART_LLM_WINDOW_TOKENS = 1000
+# Single-paragraph title-block gate: font size must exceed the global
+# FS_base mean by at least this many points.
+DEFAULT_DOCX_SMART_TITLE_BLOCK_MIN_DELTA = 2.0
+# Document head zone for multi/table title-block windows: a window whose
+# start is preceded by at least this many CONTENT records (paragraphs with
+# semantic text / tables; blanks, TOC lines, section breaks and pure-drawing
+# logo paragraphs do not count) is mid-document and needs document-boundary
+# evidence (imprint tail / attachment marker). Calibrated on the corpus: a
+# real cover may sit behind a few leading tables or long title lines
+# (national-standard covers, report covers), but never ~a page of content.
+DEFAULT_DOCX_SMART_TITLE_HEAD_ZONE_RECORDS = 8
+# Open numbering series: close a series after this many consecutive body
+# paragraphs (0 disables the auxiliary body-run break; the primary close
+# signal is the level returning to an ancestor scope).
+DEFAULT_DOCX_SMART_SEQ_BREAK_PARAS = 0
+# Strong-body length threshold in English-equivalent chars (1 CJK ≈ 3).
+DEFAULT_DOCX_SMART_HEADING_MAX_CHARS = 180
+# Hard raw-character ceiling for a rendered heading (UI/display constraint,
+# NOT env-configurable). Shared by parse_document (truncate_heading /
+# validate_heading_length) and the smart-heading synthesis path so a merged
+# main+sub title can never exceed what any other heading may reach.
+MAX_HEADING_LENGTH = 200
+
 # LightRAG Document pipeline
 FULL_DOCS_FORMAT_RAW = "raw"  # content in full_docs["content"]
 # Post-parse persistence marker: full_docs rows written by the parsers carry

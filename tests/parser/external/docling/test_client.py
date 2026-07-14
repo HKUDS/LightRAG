@@ -73,6 +73,8 @@ class _Recorder:
         poll_text: str | None = None,
         result_status_code: int = 200,
         result_text: str | None = None,
+        result_content: bytes | None = None,
+        result_content_type: str = "application/zip",
     ) -> None:
         self.terminal_status = terminal_status
         self.zip_bytes = zip_bytes
@@ -83,6 +85,8 @@ class _Recorder:
         self.poll_text = poll_text
         self.result_status_code = result_status_code
         self.result_text = result_text
+        self.result_content = result_content
+        self.result_content_type = result_content_type
 
         self.post_calls: list[dict] = []
         self.get_calls: list[dict] = []
@@ -165,8 +169,8 @@ class _FakeAsyncClient:
                 )
             return _FakeResponse(
                 status_code=200,
-                content=recorder.zip_bytes,
-                headers={"content-type": "application/zip"},
+                content=recorder.result_content or recorder.zip_bytes,
+                headers={"content-type": recorder.result_content_type},
             )
         raise AssertionError(f"unexpected GET {url}")
 
@@ -446,6 +450,247 @@ async def test_docling_client_result_http_error_preserves_response_body(
     assert "Docling result task-abc download" in message
     assert "HTTP 500" in message
     assert "zip artifact missing" in message
+
+
+def _docling_document_with_one_block() -> dict:
+    """A minimal but real ``DoclingDocument`` that yields one IR block.
+
+    Mirrors the shape docling-serve nests under
+    ``ConvertDocumentResponse.document.json_content``: a ``body`` referencing
+    one ``texts`` entry so the IR builder produces a non-empty parse.
+    """
+    return {
+        "schema_name": "DoclingDocument",
+        "version": "1.10.0",
+        "origin": {"filename": "demo.pdf", "mimetype": "application/pdf"},
+        "body": {
+            "self_ref": "#/body",
+            "children": [{"$ref": "#/texts/0"}],
+            "content_layer": "body",
+            "label": "unspecified",
+        },
+        "groups": [],
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "title",
+                "text": "Only this text should be extracted.",
+                "orig": "Only this text should be extracted.",
+                "content_layer": "body",
+                "prov": [],
+            }
+        ],
+        "pictures": [],
+        "tables": [],
+        "key_value_items": [],
+        "form_items": [],
+    }
+
+
+def _docling_document_with_picture(uri: str) -> dict:
+    """``_docling_document_with_one_block`` plus one picture referencing ``uri``."""
+    doc = _docling_document_with_one_block()
+    doc["body"]["children"].append({"$ref": "#/pictures/0"})
+    doc["pictures"] = [
+        {
+            "self_ref": "#/pictures/0",
+            "label": "picture",
+            "content_layer": "body",
+            "prov": [],
+            "children": [],
+            "image": {"uri": uri, "mimetype": "image/png"},
+        }
+    ]
+    return doc
+
+
+async def test_docling_client_materializes_json_result_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    # Real ConvertDocumentResponse shape: the DoclingDocument lives under
+    # ``document.json_content``; ``md_content`` is its sibling. The stored
+    # ``<stem>.json`` must be the inner DoclingDocument, NOT the response
+    # envelope or the ExportDocumentResponse wrapper.
+    json_content = _docling_document_with_one_block()
+    markdown = "# Extracted markdown\n\nOnly this text should be markdown."
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "success",
+        "document": {
+            "filename": "demo.pdf",
+            "md_content": markdown,
+            "json_content": json_content,
+        },
+    }
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    manifest = await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    stored = json.loads((raw_dir / "demo.json").read_text(encoding="utf-8"))
+    assert stored == json_content
+    # Neither the envelope nor the ExportDocumentResponse wrapper leaks in.
+    assert "task_status" not in stored
+    assert "json_content" not in stored
+    assert "md_content" not in stored
+    assert (raw_dir / "demo.md").read_text(encoding="utf-8") == markdown
+    assert manifest.critical_file.path == "demo.json"
+    assert {f.path for f in manifest.files} == {"demo.md"}
+
+
+async def test_docling_client_json_envelope_is_parseable_by_ir_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    """End-to-end guard for #2996: a materialized JSON envelope must feed the
+    IR builder and yield non-empty blocks (storing the wrapper would produce
+    zero blocks and fail ``validate_ir``)."""
+    from lightrag.parser.external.docling.ir_builder import DoclingIRBuilder
+
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "success",
+        "document": {
+            "filename": "demo.pdf",
+            "md_content": "# Extracted markdown\n",
+            "json_content": _docling_document_with_one_block(),
+        },
+    }
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    assert ir.blocks, "materialized JSON envelope produced zero IR blocks"
+    assert ir.doc_title == "Only this text should be extracted."
+
+
+async def test_docling_client_rejects_non_success_json_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    """A JSON result envelope whose own status is not ``success`` must abort
+    instead of caching a partial conversion as a successful bundle — even when
+    the async poll reported success and the envelope still carries a document."""
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "partial_success",
+        "document": {
+            "filename": "demo.pdf",
+            "md_content": "# Partial\n",
+            "json_content": _docling_document_with_one_block(),
+        },
+    }
+    recorder = _Recorder(
+        terminal_status="success",  # async task poll succeeds ...
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    assert "partial_success" in str(excinfo.value)
+    # Nothing was materialized: no document, no markdown, no manifest.
+    assert not (raw_dir / "demo.json").exists()
+    assert not (raw_dir / "demo.md").exists()
+    assert not (raw_dir / "_manifest.json").exists()
+
+
+async def test_docling_client_rejects_referenced_image_artifacts_in_json_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    """A JSON envelope whose DoclingDocument references ``artifacts/`` images
+    must abort: the JSON path cannot deliver those files, so materializing would
+    silently drop the pictures and still cache the bundle as a success."""
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "success",
+        "document": {
+            "filename": "demo.pdf",
+            "md_content": "# md\n",
+            "json_content": _docling_document_with_picture("artifacts/image_000.png"),
+        },
+    }
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    with pytest.raises(RuntimeError) as excinfo:
+        await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    assert "artifacts/image_000.png" in str(excinfo.value)
+    assert not (raw_dir / "demo.json").exists()
+    assert not (raw_dir / "demo.md").exists()
+    assert not (raw_dir / "_manifest.json").exists()
+
+
+async def test_docling_client_json_result_preserves_embedded_image(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdf: Path,
+) -> None:
+    """Embedded (``data:``) images carry their own bytes, so the guard is a
+    no-op and the base64 is preserved verbatim in the stored ``<stem>.json``
+    (the IR builder decodes it into the sidecar assets dir downstream)."""
+    data_uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgAB"
+    json_content = _docling_document_with_picture(data_uri)
+    envelope = {
+        "task_id": "task-abc",
+        "task_status": "success",
+        "document": {
+            "filename": "demo.pdf",
+            "md_content": "# md\n",
+            "json_content": json_content,
+        },
+    }
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=b"",
+        result_content=json_dump(envelope).encode("utf-8"),
+        result_content_type="application/json",
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    raw_dir = tmp_path / "demo.docling_raw"
+    manifest = await DoclingRawClient().download_into(raw_dir, source_pdf)
+
+    stored = json.loads((raw_dir / "demo.json").read_text(encoding="utf-8"))
+    assert stored == json_content
+    assert stored["pictures"][0]["image"]["uri"] == data_uri
+    assert manifest.critical_file.path == "demo.json"
 
 
 async def test_docling_client_encodes_task_id_into_url_path_segment(

@@ -766,6 +766,16 @@ QUERY_LLM_MODEL=gpt-5
 VLM_LLM_MODEL=gpt-5-mini
 ```
 
+**按角色的模型推荐：**
+
+- **`EXTRACT`**：实体关系抽取会对每个文本块调用，选择主流的高速模型即可，并**强烈推荐使用非思考模型（关闭 reasoning/thinking 模式）**，以免抽取变慢、变贵。例如国外的 GPT-5.6-luna、Claude Haiku、Gemini-mini，国内的 DeepSeek-V4-lite、Kimi。本地部署最低可考虑 Qwen3-30B-A3B-Instruct。
+- **`QUERY`**：负责在长且嘈杂的上下文上生成最终答案，应选择比 `EXTRACT` 更好的模型，尽量提高回答质量；此处使用带思考能力的模型没有问题。
+- **`KEYWORD`**：检索前生成关键词，属于轻量、对延迟敏感的任务，**一定要选择非思考模型**以降低查询延迟，选用与 `EXTRACT` 相当的高速模型即可。
+- **`VLM`**：主流的多模态模型均可，需支持图片输入；本地部署可考虑 Qwen3.6-35B-A3B。
+- **Embedding / Reranker**：选择主流最新的模型即可。本地部署使用 `BAAI/bge-m3`（embedding）与 `BAAI/bge-reranker-v2-m3`（rerank）即可。
+
+在可接受的时间和价格范围内，优先选择评分（各类公开榜单/基准）越高的模型越好。
+
 跨 provider 规则、`QUERY_OPENAI_LLM_REASONING_EFFORT` 等 provider 专属选项、角色级 Bedrock SigV4 凭据以及队列行为，请参阅 [基于角色的 LLM/VLM 配置指南](./RoleSpecificLLMConfiguration-zh.md)。
 
 ### 多模态分析配置
