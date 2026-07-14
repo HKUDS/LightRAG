@@ -1291,6 +1291,54 @@ def test_enqueue_status_upsert_failure_starts_idle_processing(tmp_path, monkeypa
 
 
 @pytest.mark.offline
+def test_enqueue_status_upsert_failure_survives_wake_failure(
+    tmp_path, monkeypatch, caplog
+):
+    """The best-effort wake after a DocStatus upsert error is defensive: if
+    ``apipeline_process_enqueue_documents`` itself raises, enqueue must still
+    surface the ORIGINAL storage error (never swallow it behind the wake
+    failure) and log a warning about the failed wake.
+    """
+    import logging
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            async def _failing_process():
+                raise RuntimeError("wake boom")
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _failing_process
+            )
+
+            # The "lightrag" logger sets propagate=False, so caplog (a root
+            # handler) cannot see its records unless we re-enable propagation
+            # for the duration of the test (monkeypatch auto-reverts it).
+            monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(RuntimeError, match="partial doc-status"):
+                    await rag.apipeline_enqueue_documents(
+                        "wake failure",
+                        file_paths="wake-failure.txt",
+                        track_id="track-wake-failure",
+                    )
+            assert "Failed to start document processing" in caplog.text
+            assert "wake boom" in caplog.text
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_atomic_release_busy_or_consume_pending(tmp_path):
     """The loop-exit handoff is atomic via
     ``_atomic_release_busy_or_consume_pending``: the same critical

@@ -651,7 +651,6 @@ class _PipelineMixin:
             "enqueue_serialize", workspace=self.workspace
         )
         status_upsert_error: Exception | None = None
-        status_upsert_traceback = None
         process_after_status_error = False
 
         async with enqueue_serialize_lock:
@@ -857,11 +856,13 @@ class _PipelineMixin:
                 await self.doc_status.upsert(new_docs)
             except Exception as exc:
                 status_upsert_error = exc
-                status_upsert_traceback = exc.__traceback__
-                # OpenSearch bulk upserts can commit some PENDING rows before
-                # surfacing item-level failures. Wake the processing loop so
-                # committed rows are not stranded, then preserve the original
-                # storage error for the caller.
+                # A doc-status write may partially commit before failing (e.g.
+                # OpenSearch bulk reports per-item failures after some PENDING
+                # rows already landed). Decide how to avoid stranding committed
+                # rows here, under the same lock the processing loop uses for
+                # its atomic busy/exit handoff; the actual wake runs after the
+                # lock is released (see below). The original storage error is
+                # always re-raised.
                 try:
                     async with pipeline_status_lock:
                         if pipeline_status.get("busy"):
@@ -878,6 +879,16 @@ class _PipelineMixin:
 
         if status_upsert_error is not None:
             if process_after_status_error:
+                # Best-effort recovery, NOT a confirmed partial-commit signal:
+                # this fires on ANY upsert error while the pipeline is idle,
+                # because neither doc_status.upsert nor this function can
+                # cheaply tell whether rows actually landed (only some backends
+                # like OpenSearch bulk commit partially before raising). Safe to
+                # over-call — apipeline_process_enqueue_documents is busy-gated
+                # and queries the real doc_status, so with nothing committed it
+                # is a cheap no-op ("No documents to process"). The caller will
+                # not trigger processing itself (it is about to get an
+                # exception), so we run one inline pass here before re-raising.
                 try:
                     await self.apipeline_process_enqueue_documents()
                 except Exception as wake_error:
@@ -885,7 +896,11 @@ class _PipelineMixin:
                         "Failed to start document processing after enqueue "
                         f"status upsert error: {wake_error}"
                     )
-            raise status_upsert_error.with_traceback(status_upsert_traceback)
+            # Bare re-raise preserves the exception's original __traceback__:
+            # only the local `exc` name was unbound at the end of the except
+            # block; the exception object and its traceback survive via
+            # status_upsert_error.
+            raise status_upsert_error
 
         # Notify any in-flight processing loop that new work has arrived.
         # The loop checks ``request_pending`` after each batch and will
