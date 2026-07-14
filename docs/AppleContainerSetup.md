@@ -27,6 +27,7 @@ features it lacks have to be reimplemented:
 | Service-name DNS (`postgres`, `neo4j`, …) | **does not resolve** between containers in 1.0.0 (see [apple/container#856](https://github.com/apple/container/issues/856)) | services are wired by the **IP** `container` assigns on the shared network (discovered with `container inspect`) — no DNS, no `sudo` |
 | host bind mounts for DB data dirs | **broken** (`chown`/`chmod: Operation not permitted`, [apple/container#333](https://github.com/apple/container/issues/333), wontfix) | **named volumes** (`container volume create`) |
 | `restart: unless-stopped` | not supported | `up` restarts stopped containers; a crashed container stays down until the next `up` |
+| `security_opt: seccomp:unconfined` (Milvus) | no shared-kernel seccomp sandbox — each container is its own Linux VM | dropped: there is no seccomp profile to relax, and the CLI has no equivalent flag |
 
 ## Prerequisites
 

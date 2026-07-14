@@ -268,13 +268,18 @@ _set_kv() {
 }
 
 generate_env_file() {
+  # This file is a copy of the user's .env (real API keys) — keep it private.
+  # Create it under umask 077 so a freshly created copy is never briefly
+  # world-readable in the window before the chmod below (matters when the file
+  # does not already exist; cp/`>` honor the umask only when creating it).
   if [[ -f "$ENV_SOURCE" ]]; then
-    cp "$ENV_SOURCE" "$ENV_GENERATED"
+    ( umask 077; cp "$ENV_SOURCE" "$ENV_GENERATED" )
   else
     log_warn "No source .env at $ENV_SOURCE — generating a minimal one (set your LLM keys!)."
-    : > "$ENV_GENERATED"
+    ( umask 077; : > "$ENV_GENERATED" )
   fi
-  # This file is a copy of the user's .env (real API keys) — keep it private.
+  # Tighten in case the file already existed with looser permissions (cp/`>`
+  # preserve an existing file's mode, so the umask above does not cover that).
   chmod 600 "$ENV_GENERATED"
 
   # Server binds inside the container; the host reaches it via the published port.
@@ -361,6 +366,11 @@ start_milvus_deps() {
 }
 
 start_milvus() {
+  # NOTE: the Compose template runs Milvus with `security_opt: seccomp:unconfined`.
+  # That flag is deliberately dropped here: Apple `container` isolates each
+  # container in its own lightweight Linux VM rather than a shared-kernel seccomp
+  # sandbox, so there is no seccomp profile to relax (and the CLI has no
+  # equivalent flag). Verified running on Apple `container` 1.0.0.
   run_service milvus -- -m "$MEM_HEAVY" \
     -e ETCD_ENDPOINTS="${ETCD_ADDR}:2379" \
     -e MINIO_ADDRESS="${MINIO_ADDR}:9000" \
