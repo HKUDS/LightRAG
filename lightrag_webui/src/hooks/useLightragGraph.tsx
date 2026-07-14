@@ -10,6 +10,7 @@ import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 
 import { resolveNodeColor, DEFAULT_NODE_COLOR } from '@/utils/graphColor'
+import { hasEdgeSafe, addUndirectedEdgeSafe } from '@/utils/graphEdgeSafety'
 
 // Every node gets this border (the node-border program reads `borderColor`).
 const NODE_BORDER_COLOR = '#FFFFFF'
@@ -127,48 +128,6 @@ const parseEdgeWeight = (properties: Record<string, unknown> | undefined): numbe
 // — fall back to the node id so the rest of the graph still renders.
 const safeNodeLabel = (labels: unknown, fallbackId: string): string =>
   Array.isArray(labels) ? labels.join(', ') : fallbackId
-
-// Prototype-safe replacement for `graph.hasEdge(source, target)`, working around
-// a second graphology 0.26.0 bug in the same family as the addEdge one below.
-// hasEdge does an unguarded `nodeData.undirected.hasOwnProperty(target)` METHOD
-// call, so once a node gains a neighbor literally named 'hasOwnProperty' that
-// adjacency entry shadows the method and every subsequent hasEdge on that node
-// throws "hasOwnProperty is not a function" — aborting the whole graph build.
-// `graph.edge(source, target)` reaches the same adjacency by property lookup
-// instead of a method call, so it never throws. It returns the edge's key when
-// the edge exists and undefined otherwise: a missing entry inherits a plain
-// Object.prototype value (a function, etc.) that has no `.key`, so inherited
-// junk can never masquerade as a real edge. The hasNode guards keep this a true
-// drop-in for hasEdge (which returns false for an absent endpoint, whereas
-// edge() throws NotFound); hasNode is Map-backed and prototype-safe.
-const hasEdgeSafe = (graph: UndirectedGraph, source: string, target: string): boolean =>
-  graph.hasNode(source) && graph.hasNode(target) && graph.edge(source, target) !== undefined
-
-// Add an undirected edge, working around a graphology 0.26.0 bug: the non-multi
-// duplicate check does a bare `adjacency[target]` object lookup, so a TARGET
-// node named like an Object.prototype property ('constructor', 'toString',
-// '__proto__', 'hasOwnProperty', ...) makes addEdge throw "already exists" even
-// though hasEdge correctly returns false. The broken check only runs on the
-// source side, and on an undirected graph the flipped edge is the same edge —
-// so adding it reversed recovers it. Returns the dynamic edge id, or null if
-// both orientations fail (e.g. both endpoints are prototype-named). Callers are
-// expected to have pre-checked hasEdge, so a real duplicate is never masked.
-const addUndirectedEdgeSafe = (
-  graph: UndirectedGraph,
-  source: string,
-  target: string,
-  attributes: Record<string, unknown>
-): string | null => {
-  try {
-    return graph.addEdge(source, target, attributes)
-  } catch {
-    try {
-      return graph.addEdge(target, source, attributes)
-    } catch {
-      return null
-    }
-  }
-}
 
 export type NodeType = {
   x: number
