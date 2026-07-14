@@ -6,6 +6,7 @@ ABOUTME: Extracts automatic numbering, splits by headings, converts tables to JS
 
 import json
 import sys
+from dataclasses import dataclass
 
 try:
     from docx import Document
@@ -18,10 +19,12 @@ except ImportError as exc:
         "python-docx not installed. Run: pip install python-docx"
     ) from exc
 
+from lightrag.constants import MAX_HEADING_LENGTH
 from lightrag.parser._markdown import (
     render_heading_line,
     strip_heading_markdown_prefix,
 )
+from lightrag.utils import logger
 from .numbering_resolver import NumberingResolver
 from .table_extractor import TableExtractor
 from .drawing_image_extractor import (
@@ -31,8 +34,10 @@ from .drawing_image_extractor import (
 )
 
 
-# Constants for content validation (character-based for UI/display)
-MAX_HEADING_LENGTH = 200  # Maximum heading length in characters (UI constraint)
+# MAX_HEADING_LENGTH is imported from lightrag.constants above (a raw-char UI
+# ceiling shared with the smart-heading synthesis path); the module-level import
+# re-exports it so existing ``from ...parse_document import MAX_HEADING_LENGTH``
+# call sites (e.g. tests) keep working.
 
 # OOXML tracked-change/comment tags whose subtree must be dropped so we only
 # surface the *final* revised text. w:ins / w:moveTo are kept via default
@@ -569,7 +574,11 @@ def _collect_table_headers(paragraphs: list) -> list:
 
 
 def _build_unsplit_block(
-    heading: str, paragraphs: list, parent_headings: list, level: int
+    heading: str,
+    paragraphs: list,
+    parent_headings: list,
+    level: int,
+    is_title_block: bool = False,
 ) -> dict:
     """Build a single block from paragraphs without size-based splitting."""
     last_para = paragraphs[-1]
@@ -582,6 +591,8 @@ def _build_unsplit_block(
         "parent_headings": parent_headings,
         "level": level,
     }
+    if is_title_block:
+        block["is_title_block"] = True
     table_headers = _collect_table_headers(paragraphs)
     if table_headers:
         block["table_headers"] = table_headers
@@ -594,6 +605,7 @@ def _flush_current_block(
     paragraphs: list,
     parent_headings: list,
     level: int,
+    is_title_block: bool = False,
 ) -> None:
     """Flush accumulated paragraphs into a single heading-scoped block.
 
@@ -604,74 +616,105 @@ def _flush_current_block(
     if not paragraphs:
         return
 
-    blocks.append(_build_unsplit_block(heading, paragraphs, parent_headings, level))
-
-
-def extract_docx_blocks(
-    file_path: str,
-    drawing_context: DrawingExtractionContext = None,
-    parse_warnings: dict | None = None,
-    parse_metadata: dict | None = None,
-) -> list:
-    """
-    Extract heading-scoped text blocks from a DOCX file.
-
-    Uses python-docx with a custom numbering resolver to:
-    1. Capture automatic numbering (list labels)
-    2. Split the document into one block per heading (structural splitting)
-    3. Convert tables to JSON (2D array) and emit them as <table> placeholders
-    4. Preserve superscript/subscript formatting with <sup>/<sub> markup
-
-    Block sizing — long-block anchor splitting, table row splitting, and
-    small-block merging — is intentionally NOT done here; it is the downstream
-    paragraph-semantic chunker's responsibility. Blocks emitted here may
-    therefore be arbitrarily large.
-
-    Args:
-        file_path: Path to the DOCX file
-        parse_warnings: Optional out-dict that this function mutates with
-            non-fatal warnings observed during parsing. Currently used for
-            ``missing_paraid_count`` — incremented once per body-level
-            paragraph (heading or text) that lacks a ``w14:paraId`` and once
-            per table whose every cell lacks one. Callers (the LightRAG
-            adapter / debug CLI) read this to surface a one-line warning per
-            document instead of crashing.
-        parse_metadata: Optional out-dict that this function mutates with
-            document-level metadata derived during parsing. Currently used
-            for ``first_heading`` — the text of the first heading encountered
-            in document order (regardless of level). Used by the LightRAG
-            adapter to populate ``meta.doc_title`` in ``.blocks.jsonl``.
-
-    Returns:
-        List of block dictionaries with heading, content, type, and metadata
-    """
-    try:
-        doc = Document(file_path)
-    except PackageNotFoundError as exc:
-        # python-docx surfaces a misleading "Package not found at '...'" for any
-        # file it cannot open as a ZIP/OOXML package — including files that
-        # exist but are corrupt or a different format wearing a .docx extension.
-        # Diagnose the real cause from the magic bytes and raise a DocxContentError
-        # (a ValueError) so the pipeline's per-document handler marks just this
-        # document FAILED with an accurate, actionable message.
-        details, solution = _diagnose_invalid_docx(file_path)
-        raise DocxContentError(
-            format_error("File is not a valid DOCX document", details, solution)
-        ) from exc
-    resolver = NumberingResolver(file_path)
-    styles_outline = parse_styles_outline_levels(file_path)
-
-    blocks = []
-    current_heading = "Preface/Uncategorized"
-    current_heading_level = 1  # Default level for "Preface/Uncategorized"
-    current_heading_stack = {}  # {level: heading_text} - Use dict to correctly track heading hierarchy
-    current_parent_headings = []  # Parent headings for current block
-    current_paragraphs = []  # Track paragraphs with metadata for splitting
-    first_heading_recorded = (
-        False  # Track whether the document's first heading has been captured
+    blocks.append(
+        _build_unsplit_block(
+            heading, paragraphs, parent_headings, level, is_title_block
+        )
     )
 
-    # Iterate through document body elements (paragraphs and tables)
+
+@dataclass
+class ParagraphRecord:
+    """Engine-neutral snapshot of one body element (pass1).
+
+    The single read pass emits these; the assembly passes (legacy or smart)
+    consume them. Records hold only normalized feature fields — never lxml
+    node references — and are transient inside ``extract_docx_blocks``: they
+    are not persisted and never enter the IR.
+
+    The ``kind`` values ``empty_para`` / ``empty_table`` / ``section_break``
+    exist so the smart pass can see document-shape evidence (blank-line and
+    section boundaries) that the legacy assembler simply skips.
+    """
+
+    kind: str  # "para" | "table" | "empty_para" | "empty_table" | "section_break"
+    # --- fields the legacy (smart-off) assembler consumes -------------------
+    text: str = ""  # para: post-policy label+text; table: "<table>…</table>"
+    para_id: str | None = None
+    para_id_end: str | None = None  # table only
+    outline_level: int | None = None  # post-policy, 0-based
+    demoted_body_text: str | None = None  # oversize soft-break remainder
+    table_header_rows: list | None = None
+    ends_section: bool = False  # paragraph-level w:pPr/w:sectPr
+    # --- smart-heading features (populated only when smart is enabled) ------
+    full_text_raw: str | None = None  # pre-policy label+text (keeps "\n")
+    label: str = ""  # auto-numbering label, if any
+    outline_level_raw: int | None = None  # pre-policy outline level
+    style_id: str | None = None
+    font_size_pt: float | None = None  # char-weighted dominant (0.5pt grid)
+    # Visible source-text char count (w:t only; excludes auto-numbering labels
+    # and <sup>/<equation>/<drawing>/<table> placeholder markup). Feeds FS_base
+    # char weighting so generated text cannot skew the body-size mode.
+    # None means "not computed" (smart-off / manually built records).
+    visible_char_count: int | None = None
+    first_line_font_size_pt: float | None = None  # before first soft break
+    all_bold: bool = False
+    alignment: str | None = None  # resolved w:jc or None
+    page_break_before: bool = False  # w:pPr/w:pageBreakBefore only
+    has_page_break_run: bool = False  # w:br type="page" run inside this para
+    has_leading_page_break_run: bool = False  # page-break run before any text
+    has_nonleading_page_break_run: bool = False  # page-break run AFTER text
+    is_toc_field: bool = False  # TOC field instruction inside the paragraph
+    is_toc_link: bool = False  # hyperlink to a _Toc bookmark
+    size_trace_failed: bool = False  # font-size cascade found nothing (CB5)
+    # Table only (smart-only): per-row PHYSICAL cells as
+    # (text, effective_size_pt, has_outline) tuples — one entry per w:tc, so a
+    # gridSpan-merged full-width row is ONE cell. Feeds the title-block
+    # table channel; None when smart is off.
+    table_cell_features: list | None = None
+
+
+def _read_document_records(
+    doc,
+    resolver: NumberingResolver,
+    styles_outline: dict,
+    drawing_context: DrawingExtractionContext,
+    parse_warnings: dict | None,
+    *,
+    style_attributes=None,
+) -> list:
+    """Single read pass over the document body (pass1 read step).
+
+    Shared by BOTH assembly modes, and physically unrepeatable: the numbering
+    resolver is stateful and the drawing/table extractors export asset bytes,
+    so this pass must run exactly once per parse. Every resolver/extractor
+    side effect below keeps the exact order and trigger conditions of the
+    pre-split loop (characterization-locked):
+
+    - empty paragraphs never call ``resolver.get_label`` (a numbered empty
+      paragraph must not advance counters) and never check the paragraph-level
+      sectPr;
+    - tables reset numbering tracking before extraction, again when skipped
+      as empty, and after emission;
+    - the oversize-heading policy (soft-break split / body demotion) applies
+      here so its warning counters and stderr notices fire per document order.
+
+    ``style_attributes`` (a ``smart_heading.features.StyleAttributes``) turns
+    on collection of the smart-only physical features; ``None`` skips them.
+    """
+    records: list[ParagraphRecord] = []
+    ns = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    }
+    if style_attributes is not None:
+        from lightrag.parser.docx.smart_heading.features import (
+            extract_paragraph_physical_features,
+            first_line_size_half_points,
+            half_points_to_pt,
+        )
+
     body = doc._element.body
 
     for element in body:
@@ -679,32 +722,53 @@ def extract_docx_blocks(
 
         if tag == "sectPr":  # Document-level section break
             resolver.reset_tracking_state()
+            records.append(ParagraphRecord(kind="section_break"))
             continue
 
         if tag == "p":  # Paragraph
-            # Get paragraph text with superscript/subscript markup and equations
-            para_text = ""
-            ns = {
-                "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-                "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
-                "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
-            }
             para_text = extract_paragraph_content(
                 element,
                 ns,
                 drawing_context=drawing_context,
             )
-
             para_text = para_text.strip()
             if not para_text:
+                # A blank line still carries page/section-boundary evidence
+                # the smart title-block pass reads (page breaks often live on
+                # empty paragraphs). No visible text, so any w:br page here
+                # is a LEADING break (never nonleading).
+                rec = ParagraphRecord(kind="empty_para")
+                w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+                for br in element.iter(f"{w_ns}br"):
+                    if br.get(f"{w_ns}type") == "page":
+                        rec.has_page_break_run = True
+                        rec.has_leading_page_break_run = True
+                        break
+                pPr = element.find(f"{w_ns}pPr")
+                if pPr is not None:
+                    pbb = pPr.find(f"{w_ns}pageBreakBefore")
+                    # OOXML on/off: absent val means on.
+                    if pbb is not None and pbb.get(f"{w_ns}val") not in (
+                        "0",
+                        "false",
+                        "none",
+                    ):
+                        rec.page_break_before = True
+                    if pPr.find(f"{w_ns}sectPr") is not None:
+                        # Section boundary on a blank paragraph: same
+                        # numbering-reset semantics as a non-empty one.
+                        resolver.reset_tracking_state()
+                        rec.ends_section = True
+                records.append(rec)
                 continue
 
             # Get numbering label using our resolver
             label = resolver.get_label(element)
             full_text = f"{label} {para_text}".strip() if label else para_text
 
-            # Check if this is a heading using the new function
             outline_level = get_heading_level(element, styles_outline)
+            outline_level_raw = outline_level
+            full_text_raw = full_text
 
             # A "heading" longer than MAX_HEADING_LENGTH is not a real heading.
             # The common cause (WPS/Word): the author set an outline level on a
@@ -744,100 +808,40 @@ def extract_docx_blocks(
                         file=sys.stderr,
                     )
 
-            if outline_level is not None:
-                # This is a heading (outline level 0-8)
-                # Convert 0-based to 1-based level
-                level = outline_level + 1
-
-                # Extract paraId for this heading
-                heading_para_id = extract_para_id(element)
-                if parse_warnings is not None and not heading_para_id:
-                    parse_warnings["missing_paraid_count"] = (
-                        parse_warnings.get("missing_paraid_count", 0) + 1
-                    )
-
-                # Validate heading length
-                validate_heading_length(full_text, heading_para_id)
-
-                # Truncate heading if needed before storing
-                truncated_text = truncate_heading(full_text, heading_para_id)
-                clean_heading_text = strip_heading_markdown_prefix(truncated_text)
-
-                # Record the document's first heading (any level) for meta.doc_title.
-                if not first_heading_recorded:
-                    if parse_metadata is not None:
-                        parse_metadata["first_heading"] = clean_heading_text
-                    first_heading_recorded = True
-
-                # Every recognized heading starts its own block. Always flush the
-                # accumulated paragraphs so a heading with no body becomes a
-                # standalone block whose content is just the heading text,
-                # instead of being folded into the next heading's block.
-                if current_paragraphs:
-                    _flush_current_block(
-                        blocks,
-                        current_heading,
-                        current_paragraphs,
-                        current_parent_headings,
-                        current_heading_level,
-                    )
-
-                    # Reset for new block
-                    current_paragraphs = []
-
-                # Add heading to current_paragraphs. The content line gets
-                # a markdown ``#`` prefix (capped at 6) via
-                # render_heading_line; ``clean_heading_text`` is kept
-                # for the heading field / stack / parent_headings below.
-                current_paragraphs.append(
-                    {
-                        "text": render_heading_line(level, truncated_text),
-                        "para_id": heading_para_id,
-                        "is_table": False,
-                    }
+            para_id = extract_para_id(element)
+            if parse_warnings is not None and not para_id:
+                parse_warnings["missing_paraid_count"] = (
+                    parse_warnings.get("missing_paraid_count", 0) + 1
                 )
 
-                # Update current_heading and parent_headings for the FIRST heading in a block
-                # (when current_paragraphs just had this heading added as its first element)
-                if len(current_paragraphs) == 1:
-                    current_heading = clean_heading_text
-                    current_heading_level = level  # Only set level when setting heading
-                    # Parent headings = all headings from levels strictly less than current level
-                    # Sort by level to maintain hierarchy order
-                    current_parent_headings = [
-                        current_heading_stack[lvl]
-                        for lvl in sorted(current_heading_stack.keys())
-                        if lvl < level
-                    ]
+            rec = ParagraphRecord(
+                kind="para",
+                text=full_text,
+                para_id=para_id,
+                outline_level=outline_level,
+                demoted_body_text=demoted_body_text,
+            )
 
-                # Update heading stack: remove current level and all lower levels, then add current
-                current_heading_stack = {
-                    k: v for k, v in current_heading_stack.items() if k < level
-                }
-                current_heading_stack[level] = clean_heading_text
-
-                # Carry the body text that followed a soft break in an over-long
-                # heading paragraph as a regular body paragraph in the same block.
-                if demoted_body_text:
-                    current_paragraphs.append(
-                        {
-                            "text": demoted_body_text,
-                            "para_id": heading_para_id,
-                            "is_table": False,
-                        }
-                    )
-            else:
-                # Regular paragraph content
-                para_id = extract_para_id(element)
-                if parse_warnings is not None and not para_id:
-                    parse_warnings["missing_paraid_count"] = (
-                        parse_warnings.get("missing_paraid_count", 0) + 1
-                    )
-
-                # Store paragraph with metadata for potential splitting
-                current_paragraphs.append(
-                    {"text": full_text, "para_id": para_id, "is_table": False}
+            if style_attributes is not None:
+                phys = extract_paragraph_physical_features(element, style_attributes)
+                rec.full_text_raw = full_text_raw
+                rec.label = label or ""
+                rec.outline_level_raw = outline_level_raw
+                rec.style_id = phys.style_id
+                rec.font_size_pt = phys.font_size_pt
+                rec.visible_char_count = phys.visible_char_count
+                rec.first_line_font_size_pt = half_points_to_pt(
+                    first_line_size_half_points(phys.run_features)
                 )
+                rec.all_bold = phys.all_bold
+                rec.alignment = phys.alignment
+                rec.page_break_before = phys.page_break_before
+                rec.has_page_break_run = phys.has_page_break_run
+                rec.has_leading_page_break_run = phys.has_leading_page_break_run
+                rec.has_nonleading_page_break_run = phys.has_nonleading_page_break_run
+                rec.is_toc_field = phys.is_toc_field
+                rec.is_toc_link = phys.is_toc_link
+                rec.size_trace_failed = phys.size_trace_failed
 
             # Check for paragraph-level section break (after processing paragraph)
             # sectPr in pPr means this paragraph ends a section
@@ -851,6 +855,9 @@ def extract_docx_blocks(
                 if sectPr is not None:
                     # Section break after this paragraph - reset tracking
                     resolver.reset_tracking_state()
+                    rec.ends_section = True
+
+            records.append(rec)
 
         elif tag == "tbl":  # Table
             # Reset numbering tracking before table (table start boundary)
@@ -865,6 +872,8 @@ def extract_docx_blocks(
                 table,
                 numbering_resolver=resolver,
                 drawing_context=drawing_context,
+                style_attributes=style_attributes,
+                styles_outline=styles_outline,
             )
 
             table_rows = table_metadata["rows"]
@@ -877,6 +886,7 @@ def extract_docx_blocks(
             # content and a useless IRTable would appear in tables.json.
             if _is_table_empty(table_rows):
                 resolver.reset_tracking_state()
+                records.append(ParagraphRecord(kind="empty_table"))
                 continue
 
             # Count tables whose cells carry no w14:paraId. Legacy / non-Word
@@ -905,20 +915,142 @@ def extract_docx_blocks(
             # table row splitting is the downstream chunker's responsibility.
             # Use first valid paraId from table, and last valid paraId (from
             # para_ids_end) for uuid_end.
-            table_para_id = find_first_valid_para_id(para_ids)
-            table_para_id_end = find_last_valid_para_id(para_ids_end)
-            current_paragraphs.append(
-                {
-                    "text": f"<table>{table_json}</table>",
-                    "para_id": table_para_id,
-                    "para_id_end": table_para_id_end,  # Store end paraId for uuid_end calculation
-                    "is_table": True,
-                    "_table_header": header_rows_or_none,
-                }
+            records.append(
+                ParagraphRecord(
+                    kind="table",
+                    text=f"<table>{table_json}</table>",
+                    para_id=find_first_valid_para_id(para_ids),
+                    para_id_end=find_last_valid_para_id(para_ids_end),
+                    table_header_rows=header_rows_or_none,
+                    table_cell_features=table_metadata.get("cell_features"),
+                )
             )
 
             # Reset numbering tracking after table (table end boundary)
             resolver.reset_tracking_state()
+
+    return records
+
+
+def _assemble_blocks_legacy(
+    records: list,
+    parse_warnings: dict | None,
+    parse_metadata: dict | None,
+) -> list:
+    """Assemble blocks from records exactly as the pre-split loop did.
+
+    This is the smart-off (baseline) assembly step: the block-building half of
+    the original single loop, moved verbatim with lxml locals replaced by
+    record fields. Behavior is characterization-locked — do not "improve" it.
+    """
+    blocks = []
+    current_heading = "Preface/Uncategorized"
+    current_heading_level = 1  # Default level for "Preface/Uncategorized"
+    current_heading_stack = {}  # {level: heading_text} - Use dict to correctly track heading hierarchy
+    current_parent_headings = []  # Parent headings for current block
+    current_paragraphs = []  # Track paragraphs with metadata for splitting
+    first_heading_recorded = (
+        False  # Track whether the document's first heading has been captured
+    )
+
+    for rec in records:
+        if rec.kind in ("empty_para", "empty_table", "section_break"):
+            continue
+
+        if rec.kind == "table":
+            current_paragraphs.append(
+                {
+                    "text": rec.text,
+                    "para_id": rec.para_id,
+                    "para_id_end": rec.para_id_end,  # Store end paraId for uuid_end calculation
+                    "is_table": True,
+                    "_table_header": rec.table_header_rows,
+                }
+            )
+            continue
+
+        # rec.kind == "para"
+        if rec.outline_level is not None:
+            # This is a heading (outline level 0-8)
+            # Convert 0-based to 1-based level
+            level = rec.outline_level + 1
+            heading_para_id = rec.para_id
+
+            # Validate heading length
+            validate_heading_length(rec.text, heading_para_id)
+
+            # Truncate heading if needed before storing
+            truncated_text = truncate_heading(rec.text, heading_para_id)
+            clean_heading_text = strip_heading_markdown_prefix(truncated_text)
+
+            # Record the document's first heading (any level) for meta.doc_title.
+            if not first_heading_recorded:
+                if parse_metadata is not None:
+                    parse_metadata["first_heading"] = clean_heading_text
+                first_heading_recorded = True
+
+            # Every recognized heading starts its own block. Always flush the
+            # accumulated paragraphs so a heading with no body becomes a
+            # standalone block whose content is just the heading text,
+            # instead of being folded into the next heading's block.
+            if current_paragraphs:
+                _flush_current_block(
+                    blocks,
+                    current_heading,
+                    current_paragraphs,
+                    current_parent_headings,
+                    current_heading_level,
+                )
+
+                # Reset for new block
+                current_paragraphs = []
+
+            # Add heading to current_paragraphs. The content line gets
+            # a markdown ``#`` prefix (capped at 6) via
+            # render_heading_line; ``clean_heading_text`` is kept
+            # for the heading field / stack / parent_headings below.
+            current_paragraphs.append(
+                {
+                    "text": render_heading_line(level, truncated_text),
+                    "para_id": heading_para_id,
+                    "is_table": False,
+                }
+            )
+
+            # Update current_heading and parent_headings for the FIRST heading in a block
+            # (when current_paragraphs just had this heading added as its first element)
+            if len(current_paragraphs) == 1:
+                current_heading = clean_heading_text
+                current_heading_level = level  # Only set level when setting heading
+                # Parent headings = all headings from levels strictly less than current level
+                # Sort by level to maintain hierarchy order
+                current_parent_headings = [
+                    current_heading_stack[lvl]
+                    for lvl in sorted(current_heading_stack.keys())
+                    if lvl < level
+                ]
+
+            # Update heading stack: remove current level and all lower levels, then add current
+            current_heading_stack = {
+                k: v for k, v in current_heading_stack.items() if k < level
+            }
+            current_heading_stack[level] = clean_heading_text
+
+            # Carry the body text that followed a soft break in an over-long
+            # heading paragraph as a regular body paragraph in the same block.
+            if rec.demoted_body_text:
+                current_paragraphs.append(
+                    {
+                        "text": rec.demoted_body_text,
+                        "para_id": heading_para_id,
+                        "is_table": False,
+                    }
+                )
+        else:
+            # Regular paragraph content
+            current_paragraphs.append(
+                {"text": rec.text, "para_id": rec.para_id, "is_table": False}
+            )
 
     # Save final block
     _flush_current_block(
@@ -929,4 +1061,467 @@ def extract_docx_blocks(
         current_heading_level,
     )
 
+    return blocks
+
+
+def extract_docx_blocks(
+    file_path: str,
+    drawing_context: DrawingExtractionContext = None,
+    parse_warnings: dict | None = None,
+    parse_metadata: dict | None = None,
+    *,
+    smart_heading_runtime=None,
+) -> list:
+    """
+    Extract heading-scoped text blocks from a DOCX file.
+
+    Uses python-docx with a custom numbering resolver to:
+    1. Capture automatic numbering (list labels)
+    2. Split the document into one block per heading (structural splitting)
+    3. Convert tables to JSON (2D array) and emit them as <table> placeholders
+    4. Preserve superscript/subscript formatting with <sup>/<sub> markup
+
+    Block sizing — long-block anchor splitting, table row splitting, and
+    small-block merging — is intentionally NOT done here; it is the downstream
+    paragraph-semantic chunker's responsibility. Blocks emitted here may
+    therefore be arbitrarily large.
+
+    Structured as a single read pass (``_read_document_records``) shared by
+    both assembly modes, then a mode-specific assembly step; smart-off runs
+    ``_assemble_blocks_legacy`` whose output is characterization-locked to the
+    pre-split behavior.
+
+    Args:
+        file_path: Path to the DOCX file
+        parse_warnings: Optional out-dict that this function mutates with
+            non-fatal warnings observed during parsing. Currently used for
+            ``missing_paraid_count`` — incremented once per body-level
+            paragraph (heading or text) that lacks a ``w14:paraId`` and once
+            per table whose every cell lacks one. Callers (the LightRAG
+            adapter / debug CLI) read this to surface a one-line warning per
+            document instead of crashing.
+        parse_metadata: Optional out-dict that this function mutates with
+            document-level metadata derived during parsing. Currently used
+            for ``first_heading`` — the text of the first heading encountered
+            in document order (regardless of level). Used by the LightRAG
+            adapter to populate ``meta.doc_title`` in ``.blocks.jsonl``.
+        smart_heading_runtime: Optional ``NativeExtractRuntime``. When its
+            engine params enable ``smart_heading``, the read pass collects the
+            physical features the smart algorithm consumes. (The smart
+            assembly itself lands with the algorithm commits; until then the
+            output is identical to baseline.)
+
+    Returns:
+        List of block dictionaries with heading, content, type, and metadata
+    """
+    try:
+        doc = Document(file_path)
+    except PackageNotFoundError as exc:
+        # python-docx surfaces a misleading "Package not found at '...'" for any
+        # file it cannot open as a ZIP/OOXML package — including files that
+        # exist but are corrupt or a different format wearing a .docx extension.
+        # Diagnose the real cause from the magic bytes and raise a DocxContentError
+        # (a ValueError) so the pipeline's per-document handler marks just this
+        # document FAILED with an accurate, actionable message.
+        details, solution = _diagnose_invalid_docx(file_path)
+        raise DocxContentError(
+            format_error("File is not a valid DOCX document", details, solution)
+        ) from exc
+    resolver = NumberingResolver(file_path)
+    styles_outline = parse_styles_outline_levels(file_path)
+
+    smart_enabled = bool(
+        smart_heading_runtime is not None
+        and getattr(smart_heading_runtime, "engine_params", None)
+        and smart_heading_runtime.engine_params.get("smart_heading")
+    )
+
+    style_attributes = None
+    if smart_enabled:
+        # Function-local import: the smart-off path must stay free of the
+        # smart_heading package (and its optional spaCy dependency).
+        from lightrag.parser.docx.smart_heading.features import (
+            parse_styles_attributes,
+        )
+
+        style_attributes = parse_styles_attributes(file_path, warnings=parse_warnings)
+
+    records = _read_document_records(
+        doc,
+        resolver,
+        styles_outline,
+        drawing_context,
+        parse_warnings,
+        style_attributes=style_attributes,
+    )
+
+    if not smart_enabled:
+        return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
+
+    # --- smart path (pipeline + landing guardrails) ---------------
+    from lightrag.parser.docx.smart_heading import guardrails as _guards
+    from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
+
+    warnings_sink = parse_warnings if parse_warnings is not None else {}
+    llm_judge = getattr(smart_heading_runtime, "llm_invoke", None)
+
+    smart_result = run_smart_heading(
+        records, llm_judge=llm_judge, warnings=warnings_sink
+    )
+    if smart_result is None:
+        # CB4 whole-document gate: too short for smart — baseline output,
+        # zero LLM calls, TOC untouched.
+        warnings_sink["smart_skipped_short_document"] = 1
+        return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
+
+    smart_blocks = _assemble_blocks_smart(
+        records, smart_result, parse_warnings, parse_metadata
+    )
+
+    # Landing guardrails: any violation abandons the smart output for THIS
+    # document and re-runs the baseline assembly. The shadow
+    # baseline is synthesized from the SAME pass1 records in memory — no
+    # extra IO, no re-parse.
+    shadow_meta: dict = {}
+    baseline_blocks = _assemble_blocks_legacy(records, None, shadow_meta)
+    all_decisions = list(smart_result.decisions.values())
+    i1_missing = _guards.verify_content_preservation(
+        records,
+        smart_blocks,
+        toc_indices=smart_result.toc_indices,
+        # Retained TOC body + the ellipsis are output lines that come from no
+        # record; subtract them so an injected copy can't mask a lost source
+        # line (TOC retention).
+        ignored_output_texts=[
+            *smart_result.toc_kept_text.values(),
+            *(
+                [_guards.TOC_ELLIPSIS]
+                if smart_result.toc_ellipsis_anchor is not None
+                else []
+            ),
+        ],
+    )
+    i2_violations = _guards.verify_baseline_heading_retention(records, all_decisions)
+    i3_violations = _guards.verify_anchor_semantics(all_decisions)
+    length_ok = _guards.smart_output_length_ok(smart_blocks, baseline_blocks)
+    if i1_missing or i2_violations or i3_violations or not length_ok:
+        # Emit an ERROR *log* (not a bare stderr print) so the
+        # event is visible to the repo's caplog-based assertions and any
+        # structured log routing.
+        logger.error(
+            "[smart_heading] guardrail violation "
+            "(I1 missing=%d, I2=%s, I3=%s, length_ok=%s); "
+            "falling back to baseline output for this document.",
+            len(i1_missing),
+            i2_violations,
+            i3_violations,
+            length_ok,
+        )
+        warnings_sink["smart_fallback_baseline"] = 1
+        if parse_metadata is not None:
+            parse_metadata.pop("first_heading", None)
+            # Baseline output ships baseline doc_title semantics too — the
+            # smart-only explicit key must not survive the fallback.
+            parse_metadata.pop("doc_title", None)
+        return _assemble_blocks_legacy(records, parse_warnings, parse_metadata)
+
+    # These are content claims, so they land only now that the smart output is
+    # accepted — the CB4 skip and the guardrail fallback above both ship
+    # baseline output with the TOC intact. Line-level counts are exact (the keep
+    # budget is per visible line). ``smart_toc_removed_paragraphs`` keeps its
+    # name to ease migration but its meaning NARROWS to "fully-dropped visible
+    # TOC paragraphs" (a straddling, partly-kept record counts as kept, not
+    # removed); the precise removal count is ``smart_toc_removed_lines``. All
+    # three counts come from guardrails.plan_toc_output — the single visibility
+    # / disposition source — never re-derived here.
+    if smart_result.toc_removed_lines:
+        warnings_sink["smart_toc_removed_lines"] = smart_result.toc_removed_lines
+    if smart_result.toc_kept_lines:
+        warnings_sink["smart_toc_kept_lines"] = smart_result.toc_kept_lines
+    if smart_result.toc_fully_removed_paragraphs:
+        warnings_sink["smart_toc_removed_paragraphs"] = (
+            smart_result.toc_fully_removed_paragraphs
+        )
+
+    audit = dict(smart_result.audit)
+    audit["shadow_diff"] = _guards.shadow_baseline_diff(smart_blocks, baseline_blocks)
+    audit["fallback_sub_documents"] = smart_result.fallback_sub_docs
+    if parse_metadata is not None:
+        parse_metadata["smart_audit"] = audit
+    return smart_blocks
+
+
+def _assemble_blocks_smart(
+    records: list,
+    smart_result,
+    parse_warnings: dict | None,
+    parse_metadata: dict | None,
+) -> list:
+    """Smart (pass3) assembly: rebuild blocks from records + HeadingDecisions.
+
+    Same state machine as the legacy assembler; the differences are exactly
+    the smart products — a detected TOC keeps its first few visible lines as
+    body and collapses the rest to a single ``……`` (TOC retention), a
+    title block seeds a level-0 block flagged ``is_title_block`` (heading = the
+    plain main title) that then OWNS the following body up to the next heading
+    / title / EOF (like an ordinary section heading owns its body),
+    heading/level come from the decisions (merged texts, demotions to
+    ``full_text_raw``), and ``parent_headings`` chains rebuild naturally from
+    the final levels.
+    """
+    # Module-level function: ``_guards`` is a local of extract_docx_blocks and
+    # out of scope here, so import the shared ellipsis constant locally (mirrors
+    # the flatten_heading_line import below; keeps smart-off from loading it).
+    from .smart_heading.guardrails import TOC_ELLIPSIS
+
+    decisions = smart_result.decisions
+    toc_indices = smart_result.toc_indices
+    kept_toc_text = smart_result.toc_kept_text
+    toc_ellipsis_anchor = smart_result.toc_ellipsis_anchor
+
+    # Non-lead members of every title block are emitted as part of their
+    # lead record's composite block; their standalone rows must be skipped.
+    # (Their sentinel decisions are NOT ``is_title_block``, so checking the
+    # decision flag on each record misses them and double-emits the text.)
+    # Populated lazily when a title lead is SUCCESSFULLY seeded
+    # (below): a title verdict rejected for empty members must not silently
+    # skip its members. A title lead's own index is always < its non-lead
+    # member indices (single = (start,), multi = ascending index_map, table =
+    # ascending member_tables), so seeding the lead before its members are
+    # reached keeps the skip set correct.
+    title_member_skip: set[int] = set()
+
+    blocks: list = []
+    current_heading = "Preface/Uncategorized"
+    current_heading_level = 1
+    current_heading_stack: dict[int, str] = {}
+    current_parent_headings: list = []
+    current_paragraphs: list = []
+    current_is_title_block = False
+    first_heading_recorded = False
+
+    if parse_metadata is not None:
+        # Smart mode: the LLM title block is the ONLY doc_title source — no
+        # title block means an explicitly EMPTY title ("前言"-style first
+        # headings must not masquerade as the document title). The dedicated
+        # key overrides ir_builder's first_heading/stem fallback chain;
+        # first_heading below keeps its legacy any-heading semantics.
+        parse_metadata["doc_title"] = smart_result.doc_title or ""
+    if smart_result.doc_title and parse_metadata is not None:
+        parse_metadata["first_heading"] = smart_result.doc_title
+        first_heading_recorded = True
+
+    def _flush():
+        nonlocal current_paragraphs
+        if current_paragraphs:
+            _flush_current_block(
+                blocks,
+                current_heading,
+                current_paragraphs,
+                current_parent_headings,
+                current_heading_level,
+                current_is_title_block,
+            )
+            current_paragraphs = []
+
+    for i, rec in enumerate(records):
+        if i in toc_indices:
+            # TOC retention: a TOC line is KEPT (first visible lines as
+            # body), the ellipsis anchor also emits one ``……``, and the rest
+            # are DROPPED. Every branch ``continue``s before any heading /
+            # title / table branch, so a retained line is never a heading.
+            kept = kept_toc_text.get(i)
+            if kept:
+                current_paragraphs.append(
+                    {"text": kept, "para_id": rec.para_id, "is_table": False}
+                )
+            if i == toc_ellipsis_anchor:
+                current_paragraphs.append(
+                    {"text": TOC_ELLIPSIS, "para_id": rec.para_id, "is_table": False}
+                )
+            continue
+        if i in title_member_skip:
+            continue  # non-lead title-block member, emitted with the lead
+        if rec.kind in ("empty_para", "empty_table", "section_break"):
+            continue
+
+        d = decisions.get(i)
+        if d is not None and d.absorbed:
+            continue  # text already merged into a preceding heading
+        # The title-block lead branch must run BEFORE the plain-table branch:
+        # a TABLE-channel lead is itself a table record — emitting it
+        # as body content would discard the composed heading and drop every
+        # non-lead member via title_member_skip.
+        if d is not None and d.is_title_block and i == d.member_indices[0]:
+            _flush()
+            member_paras = []
+            for m in d.member_indices:
+                mrec = records[m]
+                if mrec.kind == "para":
+                    member_paras.append(
+                        {
+                            "text": mrec.text,
+                            "para_id": mrec.para_id,
+                            "is_table": False,
+                        }
+                    )
+                elif mrec.kind == "table" and mrec.table_cell_features:
+                    # Absorbed cover table: its cell texts ARE the title
+                    # material (every cell passed the membership gate:
+                    # short, non-body, no outline), so the block carries them
+                    # verbatim and the <table> placeholder is dropped. I1
+                    # only audits kind=="para" records — this explicit
+                    # carry-over is what keeps absorption lossless.
+                    cell_texts = [
+                        t.strip()
+                        for row in mrec.table_cell_features
+                        for (t, _size, _outline) in row
+                        if t and t.strip()
+                    ]
+                    if cell_texts:
+                        member_paras.append(
+                            {
+                                "text": "\n".join(cell_texts),
+                                "para_id": mrec.para_id,
+                                "para_id_end": mrec.para_id_end,
+                                "is_table": False,
+                            }
+                        )
+            if not member_paras:
+                # Defensive: a title verdict with no emittable member content
+                # is unreachable in practice — judge_title_block's locate-back
+                # requires main_title to match a non-empty window — but we must
+                # never crash (_build_unsplit_block indexes paragraphs[-1]) nor
+                # silently mis-label. Warn, drop the degenerate lead, and do
+                # NOT fall through to the heading branch (which would coerce
+                # is_heading/level=0 into a level-1 heading). Members stay OUT
+                # of title_member_skip so they are not silently dropped.
+                logger.warning(
+                    "[smart_heading] title-block lead at record %d has no "
+                    "emittable member content; skipping title treatment",
+                    i,
+                )
+                if parse_warnings is not None:
+                    parse_warnings["title_block_empty_members"] = (
+                        parse_warnings.get("title_block_empty_members", 0) + 1
+                    )
+                current_is_title_block = False
+                continue
+            main_title = (
+                d.doc_title_heading
+                or (d.title_parts[0] if d.title_parts else None)
+                or d.composed_heading
+                or d.text
+            )
+            if "\n" in main_title:
+                # LLM verdicts are flattened at construction (_opt_str), but
+                # the d.text fallback (hand-built decisions) still carries raw
+                # soft breaks — same single-line rule as the plain branch.
+                from .smart_heading.title_block import flatten_heading_line
+
+                main_title = flatten_heading_line(main_title) or main_title
+            title_heading = truncate_heading(main_title, rec.para_id)
+            # Seed the block with the title cover; the following body joins the
+            # SAME block so the title block OWNS its content up to the next
+            # heading/title/EOF. (Earlier versions emitted the cover standalone
+            # then let the body form a second same-heading block — the split
+            # was the block-boundary bug, not a parent-heading one.)
+            current_paragraphs = list(member_paras)
+            current_heading = title_heading
+            current_heading_level = 0
+            current_parent_headings = []
+            current_heading_stack = {0: title_heading}
+            current_is_title_block = True
+            # Skip the non-lead members' standalone rows (their content is
+            # already carried above). Added HERE, on a successful seed only.
+            title_member_skip.update(d.member_indices[1:])
+            if not first_heading_recorded:
+                if parse_metadata is not None:
+                    parse_metadata["first_heading"] = title_heading
+                first_heading_recorded = True
+            continue
+
+        if rec.kind == "table":
+            current_paragraphs.append(
+                {
+                    "text": rec.text,
+                    "para_id": rec.para_id,
+                    "para_id_end": rec.para_id_end,
+                    "is_table": True,
+                    "_table_header": rec.table_header_rows,
+                }
+            )
+            continue
+
+        if d is not None and d.is_heading:
+            level = max(1, int(d.level or 1))
+            heading_para_id = rec.para_id
+            heading_text = d.text
+            if "\n" in heading_text:
+                # A heading that still carries soft-break lines is
+                # ONE title — render it as a single line (CJK-aware join),
+                # or the I1 source paragraph can never match any output row.
+                from .smart_heading.title_block import flatten_heading_line
+
+                heading_text = flatten_heading_line(heading_text) or heading_text
+            truncated_text = truncate_heading(heading_text, heading_para_id)
+            clean_heading_text = strip_heading_markdown_prefix(truncated_text)
+
+            if not first_heading_recorded:
+                if parse_metadata is not None:
+                    parse_metadata["first_heading"] = clean_heading_text
+                first_heading_recorded = True
+
+            _flush()
+            current_paragraphs.append(
+                {
+                    "text": render_heading_line(level, truncated_text),
+                    "para_id": heading_para_id,
+                    "is_table": False,
+                }
+            )
+            current_heading = clean_heading_text
+            current_heading_level = level
+            current_is_title_block = False
+            current_parent_headings = [
+                current_heading_stack[lvl]
+                for lvl in sorted(current_heading_stack.keys())
+                if lvl < level
+            ]
+            current_heading_stack = {
+                k: v for k, v in current_heading_stack.items() if k < level
+            }
+            current_heading_stack[level] = clean_heading_text
+
+            if rec.demoted_body_text and not d.use_raw_text:
+                current_paragraphs.append(
+                    {
+                        "text": rec.demoted_body_text,
+                        "para_id": heading_para_id,
+                        "is_table": False,
+                    }
+                )
+        else:
+            if d is not None and d.use_raw_text and rec.full_text_raw:
+                current_paragraphs.append(
+                    {
+                        "text": rec.full_text_raw,
+                        "para_id": rec.para_id,
+                        "is_table": False,
+                    }
+                )
+            else:
+                current_paragraphs.append(
+                    {"text": rec.text, "para_id": rec.para_id, "is_table": False}
+                )
+                if rec.demoted_body_text:
+                    current_paragraphs.append(
+                        {
+                            "text": rec.demoted_body_text,
+                            "para_id": rec.para_id,
+                            "is_table": False,
+                        }
+                    )
+
+    _flush()
     return blocks

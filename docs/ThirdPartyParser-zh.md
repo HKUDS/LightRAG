@@ -45,6 +45,8 @@ class MyParser(BaseParser):
 
 `ParseResult` 字段:`doc_id` / `file_path` / `parse_format`(`"raw"` 或 `"lightrag"`)/ `content` / `blocks_path`(无 sidecar 则 `""`)/ `parse_engine` / `parse_stage_skipped`(缓存命中等跳过场景)/ `parse_warnings`(非致命警告,会落到 `doc_status.metadata`)。
 
+> 注:`parse_warnings → doc_status.metadata` 是对所有 parser 的通用契约——pipeline 会原样镜像 parser 返回的内容,不检查键名。内置 native DOCX smart-heading 引擎是唯一例外:它把**自身** `smart_`/`title_block_` 前缀的诊断改写进 sidecar `<base>.smart_audit.json`(挂在 `parse_warnings` 键下)而非 doc_status,只返回剩余的非 smart 警告。这是该引擎的私有策略,不是全局前缀规则——第三方 parser 返回的 `smart_*` 警告仍会照常写入 `doc_status.metadata`。
+
 ### 2.2 三条实现路径(按引擎形态选基类)
 
 **A. 纯文本引擎(无 sidecar)— 直接继承 `BaseParser`**
@@ -96,7 +98,7 @@ class MyNativeParser(NativeParserBase):
         """blocks → IRDoc(交给统一的 sidecar writer)。"""
 ```
 
-可选覆写:`validate_source`(默认仅要求文件存在)、`surface_warnings`(把抽取警告映射为 `parse_warnings`)。参考实现:`lightrag/parser/docx/parser.py`。
+可选覆写:`validate_source`(默认仅要求文件存在)、`surface_warnings`(把抽取警告映射为 `parse_warnings`)、`finalize_parse_warnings`(完全控制,在 `extract` 之后运行、能看到完整 warnings dict——引擎可把一部分警告改写进 sidecar 审计产物、只返回剩余部分给 doc_status;默认直接调用 `surface_warnings`)。参考实现:`lightrag/parser/docx/parser.py`,其 `finalize_parse_warnings` 负责写 smart-heading 的 `<base>.smart_audit.json`。
 
 **C. 外部解析服务(下载 raw bundle + 缓存)— 继承 `ExternalParserBase`**(`lightrag/parser/external/_base.py`)
 

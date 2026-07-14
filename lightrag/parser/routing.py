@@ -9,6 +9,8 @@ from typing import Any
 
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
+    DEFAULT_DOCX_SMART_HEADING,
+    DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
     DEFAULT_R_SEPARATORS,
     DEFAULT_SENTENCE_SPLIT_REGEX,
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -37,6 +39,7 @@ from lightrag.parser.registry import (
     suffix_capabilities,
 )
 from lightrag.parser.param_schema import (
+    _parse_bool,
     parse_chunk_params,
     parse_engine_params,
     render_engine_params,
@@ -1013,6 +1016,132 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
         )
 
 
+def smart_heading_default_enabled() -> bool:
+    """Global default for the native docx ``smart_heading`` engine param.
+
+    Read live from env ``DOCX_SMART_HEADING`` (same live-env pattern as the
+    other DOCX_SMART_* knobs). When true, :func:`seed_smart_heading_param`
+    seeds ``smart_heading=true`` for .docx files that resolve to the native
+    engine; an explicit ``native(smart_heading=false)`` rule/hint/directive
+    overrides it back off. An unparseable value raises so a typo surfaces at
+    startup (``validate_smart_heading_dependencies``) instead of silently
+    disabling.
+    """
+    raw = os.getenv("DOCX_SMART_HEADING", "").strip()
+    if not raw:
+        return DEFAULT_DOCX_SMART_HEADING
+    parsed = _parse_bool(raw)
+    if parsed is None:
+        raise ParserRoutingConfigError(
+            f"Invalid DOCX_SMART_HEADING value {raw!r}; expected a boolean (true/false)"
+        )
+    return parsed
+
+
+def seed_smart_heading_param(
+    engine: str, engine_params: dict[str, Any], file_path: str | Path
+) -> None:
+    """Materialize the ``DOCX_SMART_HEADING`` default into ``engine_params``.
+
+    Lowest precedence: fills ``smart_heading=True`` only when ``engine`` is
+    native, ``file_path`` is a .docx, the switch is on, and the caller has no
+    explicit ``smart_heading`` param (so ``smart_heading=false`` stays the
+    opt-out). Shared by every chokepoint that persists ``parse_engine`` —
+    upload-time :func:`resolve_parser_directives` and the direct-enqueue
+    ``apipeline_enqueue_documents`` path — so the seed lands in the stored
+    field regardless of how the document entered and re-parses stay immune
+    to later env toggles.
+    """
+    if (
+        engine == PARSER_ENGINE_NATIVE
+        and "smart_heading" not in engine_params
+        and parser_suffix(file_path) == "docx"
+        and smart_heading_default_enabled()
+    ):
+        engine_params["smart_heading"] = True
+
+
+def _rules_enable_smart_heading(rules: str) -> bool:
+    """True when a docx-matching native LIGHTRAG_PARSER rule sets ``smart_heading=true``.
+
+    Rules whose suffix pattern cannot match ``docx`` are ignored: smart_heading
+    only ever takes effect on .docx files (other native paths warn-and-ignore
+    the param), so e.g. ``md:native(smart_heading=true)`` must not force the
+    spaCy models at startup.
+    """
+    for _, item in _iter_parser_rule_items(rules):
+        if ":" not in item:
+            continue
+        pattern, engine_hint = item.split(":", 1)
+        if not fnmatch.fnmatch("docx", pattern.strip().lower()):
+            continue
+        stripped_hint, engine_param, _, _ = _extract_param_blocks(engine_hint.strip())
+        engine, _ = _rule_engine_and_options(stripped_hint)
+        if engine != PARSER_ENGINE_NATIVE or engine_param is None:
+            continue
+        params, _ = parse_engine_params(engine_param, engine=engine, label="rule")
+        if params.get("smart_heading") is True:
+            return True
+    return False
+
+
+def validate_smart_heading_dependencies(parser_rules: str | None = None) -> None:
+    """Fail fast at startup when config enables smart_heading without models.
+
+    Triggers when the ``DOCX_SMART_HEADING`` global default is on, or when any
+    ``LIGHTRAG_PARSER`` rule carries ``native(smart_heading=true)``. Per-file
+    filename hints cannot be known at startup — those keep the parse-time hard
+    error as the backstop. Silent no-op otherwise (deployments that never use
+    smart_heading are not forced to install the models).
+    """
+    rules = parser_rules_from_env() if parser_rules is None else parser_rules.strip()
+    if not (
+        smart_heading_default_enabled()
+        or (rules and _rules_enable_smart_heading(rules))
+    ):
+        return
+    _validate_smart_heading_max_chars()
+    # Lazy import: only configurations that enable smart_heading pay for it.
+    from lightrag.parser.docx.smart_heading.nlp import ensure_spacy_models_installed
+
+    ensure_spacy_models_installed(
+        "smart_heading is enabled by DOCX_SMART_HEADING or a LIGHTRAG_PARSER rule"
+    )
+
+
+def _validate_smart_heading_max_chars() -> None:
+    """Startup check for ``DOCX_SMART_HEADING_MAX_CHARS`` (only when smart_heading
+    is enabled).
+
+    The structural rule (reject non-integer / ``< 3``) is the shared single
+    source :func:`~lightrag.parser.docx.smart_heading.guardrails.validate_heading_max_chars_env`,
+    used here AND at the parse-time entry (``run_smart_heading``) so a bad cap is
+    rejected identically however smart_heading was enabled; here it is re-raised
+    as a config error so the API refuses to start. On top of that, warn (startup
+    only, to avoid a per-document log storm) on a usable-but-tiny cap: below the
+    per-line title width even accepted title lines exceed it, so almost every
+    heading would be demoted to body — usable, but almost certainly a misconfig.
+    """
+    from lightrag.parser.docx.smart_heading import guardrails
+    from lightrag.parser.docx.smart_heading.title_block import (
+        TITLE_LINE_MAX_WEIGHTED_CHARS,
+    )
+
+    try:
+        value = guardrails.validate_heading_max_chars_env()
+    except ValueError as exc:
+        raise ParserRoutingConfigError(str(exc)) from exc
+    if value is not None and value < TITLE_LINE_MAX_WEIGHTED_CHARS:
+        logger.warning(
+            "DOCX_SMART_HEADING_MAX_CHARS=%d is below the title-line width (%d "
+            "en-equivalent chars); most real headings will be demoted to body. "
+            "This is usually a misconfiguration — the default is %d.",
+            value,
+            TITLE_LINE_MAX_WEIGHTED_CHARS,
+            DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
+        )
+
+
 def _matching_rule_directives(
     file_path: str | Path,
     *,
@@ -1151,15 +1280,19 @@ def resolve_parser_directives(
         if merged:
             chunk_params[selector] = merged
 
-    # Engine params are flat (one resolved engine per file). Keep only the
-    # params whose attached engine == the resolved engine: rule params first,
-    # then filename-hint params (filename wins on a shared key). Params attached
-    # to an engine that lost resolution are dropped.
+    # Engine params are flat (one resolved engine per file): keep only the
+    # params whose attached engine == the resolved engine — rule params first,
+    # then filename-hint params (filename wins on a shared key); params
+    # attached to a losing engine are dropped. The DOCX_SMART_HEADING global
+    # default seeds in last at the lowest precedence (an explicit
+    # smart_heading=false rule/hint wins), materialized into the persisted
+    # parse_engine so re-parses stay immune to later env toggles.
     engine_params: dict[str, Any] = {}
     if rule_engine == engine:
         engine_params.update(rule_engine_params)
     if hinted_engine_for_params == engine:
         engine_params.update(hinted_engine_params)
+    seed_smart_heading_param(engine, engine_params, file_path)
 
     return ParserDirectives(
         engine=engine,
