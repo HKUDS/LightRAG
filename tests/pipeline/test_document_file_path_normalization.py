@@ -543,3 +543,37 @@ async def test_custom_chunks_clears_stale_cancellation(monkeypatch):
     assert status["cancellation_requested"] is False  # cleared on release
     assert status["cancellation_reason"] is None
     assert status["cancellation_detail"] is None
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_overwrites_stale_deletion_job_name(monkeypatch):
+    """A stale ``Deleting N Documents`` job_name (left by a finished batch delete,
+    which releases busy but not job_name) must be overwritten when custom-chunks
+    takes the busy slot. Otherwise a concurrent adelete_by_doc_id — which joins a
+    running delete whenever busy=True and job_name starts with 'deleting' and
+    contains 'document' — would proceed and race custom-chunks' KG/vector writes.
+    """
+    status = {
+        "busy": False,
+        "history_messages": [],
+        "request_pending": False,
+        "job_name": "Deleting 5 Documents",  # stale, from a finished batch delete
+    }
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    observed = {}
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        # Captured while we hold busy — this is what a concurrent
+        # adelete_by_doc_id would see and key its join-guard off.
+        observed["job_name_during"] = status["job_name"]
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    rag._process_extract_entities = _process_extract_entities
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-jn")
+
+    jn = observed["job_name_during"].lower()
+    # The exact adelete_by_doc_id join-guard predicate must be False while
+    # custom-chunks holds busy, so a concurrent single delete is rejected.
+    assert not (jn.startswith("deleting") and "document" in jn)

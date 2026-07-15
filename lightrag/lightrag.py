@@ -1640,6 +1640,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "Wait for the scan to finish and retry."
                     )
                 pipeline_status["busy"] = True
+                # Stamp our own job identity, mirroring every other acquirer
+                # (processing loop -> "Default Job", deletes -> "...document...").
+                # Critical: flipping busy without overwriting job_name would leave
+                # a stale name from the previous holder. After a batch delete,
+                # background_delete_documents releases busy but leaves
+                # job_name="Deleting N Documents"; adelete_by_doc_id treats
+                # busy + a "deleting...document" job_name as "a batch delete is
+                # running, join it" and proceeds WITHOUT acquiring — so a
+                # concurrent delete could run against our KG/vector writes. A
+                # non-deletion job_name makes that guard correctly reject.
+                pipeline_status["job_name"] = "Custom chunks insert"
+                pipeline_status["job_start"] = datetime.now(timezone.utc).isoformat()
+                pipeline_status["latest_message"] = "Inserting custom chunks"
                 # Start clean, mirroring the processing loop's acquire: clear any
                 # stale cancellation left by a previously cancelled job. The
                 # cancel endpoint sets cancellation_requested whenever busy=True
