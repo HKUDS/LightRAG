@@ -238,6 +238,49 @@ def get_binding_env_value(env_key: str, default: str) -> str:
     return normalize_binding_name(get_env_value(env_key, default)) or default
 
 
+_WORKSPACE_NAME_RE = re.compile(
+    r"^[A-Za-z0-9_.\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff-]+$"
+)
+
+
+def validate_workspace_name(name: str) -> str:
+    """Validate and normalize a workspace name. Returns stripped name or raises.
+
+    Allowed characters: ``[A-Za-z0-9_.-]`` plus Chinese (\\u4e00-\\u9fff) and
+    Japanese kana.  Dots (``.``) are allowed (useful for versioned names like
+    ``v1.0``) because path-traversal is already blocked by the explicit ``..``
+    check below.
+
+    This is a rejection-based whitelist validator — unlike the old
+    substitution-based approach (``re.sub``), different invalid inputs are
+    NOT silently mapped to the same output.  The operator is told exactly
+    what to fix.
+
+    Args:
+        name: Raw workspace name from header or CLI.
+
+    Returns:
+        Validated, stripped workspace name.
+
+    Raises:
+        HTTPException(400): Invalid or empty workspace name.
+    """
+    from fastapi import HTTPException
+
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "LIGHTRAG-WORKSPACE header must not be empty")
+    if len(name) > 128:
+        raise HTTPException(400, "LIGHTRAG-WORKSPACE name too long (max 128 chars)")
+    if name in (".", ".."):
+        raise HTTPException(400, f"Invalid workspace name: {name}")
+    if "/" in name or "\\" in name:
+        raise HTTPException(400, f"Invalid workspace name: {name}")
+    if not _WORKSPACE_NAME_RE.match(name):
+        raise HTTPException(400, f"Workspace name contains invalid characters: {name}")
+    return name
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
@@ -736,16 +779,9 @@ def parse_args() -> argparse.Namespace:
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
-    # Sanitize workspace: only alphanumeric characters and underscores are allowed
+    # Validate workspace name (rejection-based whitelist)
     if args.workspace:
-        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", args.workspace)
-        if sanitized != args.workspace:
-            logging.warning(
-                f"Workspace name '{args.workspace}' contains invalid characters. "
-                f"It has been sanitized to '{sanitized}'. "
-                "Only alphanumeric characters and underscores are allowed."
-            )
-            args.workspace = sanitized
+        args.workspace = validate_workspace_name(args.workspace)
 
     validate_auth_configuration(args)
     validate_bedrock_auth_configuration(args)

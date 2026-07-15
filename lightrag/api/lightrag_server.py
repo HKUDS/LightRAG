@@ -11,7 +11,6 @@ from fastapi.openapi.docs import (
 )
 import json
 import os
-import re
 import logging
 import logging.config
 import sys
@@ -29,6 +28,7 @@ from dotenv import load_dotenv
 from lightrag.api.utils_api import (
     get_combined_auth_dependency,
     get_auth_status_dependency,
+    get_workspace_from_request,
     display_splash_screen,
     check_env_file,
 )
@@ -40,7 +40,7 @@ from .config import (
     PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
 )
 from lightrag.utils import get_env_value
-from lightrag import LightRAG, ROLES, RoleLLMConfig, __version__ as core_version
+from lightrag import ROLES, RoleLLMConfig, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
@@ -48,10 +48,7 @@ from lightrag.constants import (
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
 )
-from lightrag.api.routers.document_routes import (
-    DocumentManager,
-    create_document_routes,
-)
+from lightrag.api.routers.document_routes import create_document_routes
 from lightrag.parser.plugins import load_third_party_parsers
 from lightrag.parser.routing import (
     parser_rules_from_env,
@@ -62,12 +59,12 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.workspace_pool import RagPool, DocManagerPool
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_default_workspace,
-    # set_default_workspace,
+    set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
 )
@@ -1268,8 +1265,10 @@ def create_app(args):
     # Check if API key is provided either through env var or args
     api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
 
-    # Initialize document manager with workspace support for data isolation
-    doc_manager = DocumentManager(args.input_dir, workspace=args.workspace)
+    # Set the global default workspace deterministically before any pool
+    # instance is created, so pool-created instances do not race to become
+    # the global default (§14.4).
+    set_default_workspace(args.workspace)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1277,30 +1276,27 @@ def create_app(args):
         # Store background tasks
         app.state.background_tasks = set()
 
+        # No pre-initialization — workspaces are created lazily by RagPool.
         try:
-            # Initialize database connections
-            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
-            await rag.initialize_storages()
-
-            # Data migration regardless of storage implementation
-            await rag.check_and_migrate_data()
-
-            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
-
             yield
-
         finally:
-            # Clean up database connections
-            await rag.finalize_storages()
+            # Shutdown: finalize all cached instances.  Use try/finally so
+            # that a failure in one pool does not skip the other.
+            try:
+                await rag_pool.shutdown_all()
+            finally:
+                await doc_mgr_pool.shutdown_all()
 
+            # Finalize shared multiprocessing resources (uvicorn-only).
+            # In Gunicorn mode with preload_app=True, this is handled by
+            # on_exit hooks in the master process instead.
             if "LIGHTRAG_GUNICORN_MODE" not in os.environ:
-                # Only perform cleanup in Uvicorn single-process mode
-                logger.debug("Unvicorn Mode: finalizing shared storage...")
+                logger.debug("Uvicorn Mode: finalizing shared storage...")
                 finalize_share_data()
             else:
-                # In Gunicorn mode with preload_app=True, cleanup is handled by on_exit hooks
                 logger.debug(
-                    "Gunicorn Mode: postpone shared storage finalization to master process"
+                    "Gunicorn Mode: postpone shared storage finalization "
+                    "to master process"
                 )
 
     base_description = (
@@ -1422,36 +1418,6 @@ def create_app(args):
     # Non-enforcing dependency: reports whether the caller is authenticated so
     # /health can stay a public liveness probe while gating sensitive config.
     auth_status = get_auth_status_dependency(api_key)
-
-    def get_workspace_from_request(request: Request) -> str | None:
-        """
-        Extract workspace from HTTP request header or use default.
-
-        This enables multi-workspace API support by checking the custom
-        'LIGHTRAG-WORKSPACE' header. If not present, falls back to the
-        server's default workspace configuration.
-
-        Args:
-            request: FastAPI Request object
-
-        Returns:
-            Workspace identifier (may be empty string for global namespace)
-        """
-        # Check custom header first
-        workspace = request.headers.get("LIGHTRAG-WORKSPACE", "").strip()
-
-        if not workspace:
-            workspace = None
-        else:
-            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
-            if sanitized != workspace:
-                logger.warning(
-                    f"Workspace header '{workspace}' contains invalid characters. "
-                    f"Sanitized to '{sanitized}'."
-                )
-                workspace = sanitized
-
-        return workspace
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
@@ -2022,105 +1988,117 @@ def create_app(args):
         name=args.simulated_model_name, tag=args.simulated_model_tag
     )
 
-    # LightRAG.__post_init__ normalizes addon_params and backfills env-based defaults
-    # (SUMMARY_LANGUAGE, ENTITY_TYPE_PROMPT_FILE, ...), so we only need to pass the
-    # API-level overrides here.
-    addon_params = {
-        "language": args.summary_language,
-    }
+    def build_rag_config(workspace: str) -> dict:
+        """Build a fresh LightRAG config dict for *workspace*.
 
-    role_llm_configs = {
-        spec.name: {
-            **resolve_role_llm_settings(spec.name),
-            "func": create_role_llm_func(spec.name),
-            "kwargs": create_role_llm_model_kwargs(spec.name),
-        }
-        for spec in ROLES
-    }
-
-    # Initialize RAG with unified configuration
-    try:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            summary_max_tokens=args.summary_max_tokens,
-            summary_context_size=args.summary_context_size,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=create_llm_model_kwargs(
+        Shared singletons (LLM functions, embedding functions, clients,
+        OllamaServerInfos) are captured by the closure and reused by
+        reference.  Per-workspace values (kwargs dicts, addon_params,
+        role_llm_configs) are re-constructed on every call — no deepcopy
+        needed, no risk of accidentally sharing mutable state.
+        """
+        return {
+            # ── Shared singletons (closure-captured once, safe to reuse) ──
+            "working_dir": args.working_dir,
+            "llm_model_name": args.llm_model,
+            "llm_model_max_async": args.max_async,
+            "summary_max_tokens": args.summary_max_tokens,
+            "summary_context_size": args.summary_context_size,
+            "embedding_func": embedding_func,
+            "default_llm_timeout": llm_timeout,
+            "default_embedding_timeout": embedding_timeout,
+            "kv_storage": args.kv_storage,
+            "graph_storage": args.graph_storage,
+            "vector_storage": args.vector_storage,
+            "doc_status_storage": args.doc_status_storage,
+            "enable_llm_cache_for_entity_extract": args.enable_llm_cache_for_extract,
+            "enable_llm_cache": args.enable_llm_cache,
+            "vlm_process_enable": args.vlm_process_enable,
+            "rerank_model_func": rerank_model_func,
+            "rerank_model_max_async": args.rerank_max_async,
+            "default_rerank_timeout": args.rerank_timeout,
+            "max_parallel_insert": args.max_parallel_insert,
+            "max_graph_nodes": args.max_graph_nodes,
+            "ollama_server_infos": ollama_server_infos,
+            # ── Per-workspace (freshly constructed on every call) ──
+            "workspace": workspace,
+            "llm_model_func": create_llm_model_func(args.llm_binding),
+            "chunk_token_size": int(args.chunk_size),
+            "chunk_overlap_token_size": int(args.chunk_overlap_size),
+            "llm_model_kwargs": create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             ),
-            embedding_func=embedding_func,
-            default_llm_timeout=llm_timeout,
-            default_embedding_timeout=embedding_timeout,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
+            "vector_db_storage_cls_kwargs": {
+                "cosine_better_than_threshold": args.cosine_threshold,
             },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            vlm_process_enable=args.vlm_process_enable,
-            rerank_model_func=rerank_model_func,
-            rerank_model_max_async=args.rerank_max_async,
-            default_rerank_timeout=args.rerank_timeout,
-            max_parallel_insert=args.max_parallel_insert,
-            max_graph_nodes=args.max_graph_nodes,
-            addon_params=addon_params,
-            ollama_server_infos=ollama_server_infos,
-            role_llm_configs={
+            "addon_params": {
+                "language": args.summary_language,
+            },
+            "role_llm_configs": {
                 spec.name: RoleLLMConfig(
-                    func=role_llm_configs[spec.name]["func"],
-                    kwargs=role_llm_configs[spec.name]["kwargs"],
-                    max_async=role_llm_configs[spec.name]["max_async"],
-                    timeout=role_llm_configs[spec.name]["timeout"],
+                    func=create_role_llm_func(spec.name),
+                    kwargs=create_role_llm_model_kwargs(spec.name),
+                    max_async=resolve_role_llm_settings(spec.name)["max_async"],
+                    timeout=resolve_role_llm_settings(spec.name)["timeout"],
                     metadata={
                         "base_binding": args.llm_binding,
-                        "binding": role_llm_configs[spec.name]["binding"],
-                        "model": role_llm_configs[spec.name]["model"],
-                        "host": role_llm_configs[spec.name]["host"],
-                        "api_key": role_llm_configs[spec.name]["api_key"],
-                        "provider_options": role_llm_configs[spec.name][
+                        "binding": resolve_role_llm_settings(spec.name)["binding"],
+                        "model": resolve_role_llm_settings(spec.name)["model"],
+                        "host": resolve_role_llm_settings(spec.name)["host"],
+                        "api_key": resolve_role_llm_settings(spec.name)["api_key"],
+                        "provider_options": resolve_role_llm_settings(spec.name)[
                             "provider_options"
                         ],
-                        "bedrock_aws_options": role_llm_configs[spec.name][
+                        "bedrock_aws_options": resolve_role_llm_settings(spec.name)[
                             "bedrock_aws_options"
                         ],
-                        "is_cross_provider": role_llm_configs[spec.name][
+                        "is_cross_provider": resolve_role_llm_settings(spec.name)[
                             "is_cross_provider"
                         ],
                     },
                 )
                 for spec in ROLES
             },
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize LightRAG: {e}")
-        raise
+        }
 
-    _log_role_provider_options(rag)
-
-    rag.register_role_llm_builder(
-        lambda role, meta: (
+    def role_llm_builder(role, meta):
+        return (
             create_role_llm_func(role, meta),
             create_role_llm_model_kwargs(role, meta),
         )
+
+    rag_pool = RagPool(
+        config_factory=build_rag_config,
+        role_llm_builder=role_llm_builder,
+        on_create=_log_role_provider_options,
     )
+    doc_mgr_pool = DocManagerPool(args.input_dir)
 
     # Add routes
     # root_path is set on the app for reverse proxy support;
     # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
-    app.include_router(create_document_routes(rag, doc_manager, api_key))
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(
+        create_document_routes(
+            rag_pool, doc_mgr_pool, api_key, default_workspace=args.workspace
+        )
+    )
+    app.include_router(
+        create_query_routes(
+            rag_pool, api_key, args.top_k, default_workspace=args.workspace
+        )
+    )
+    app.include_router(
+        create_graph_routes(rag_pool, api_key, default_workspace=args.workspace)
+    )
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
+    ollama_api = OllamaAPI(
+        rag_pool=rag_pool,
+        ollama_server_infos=ollama_server_infos,
+        top_k=args.top_k,
+        api_key=api_key,
+        default_workspace=args.workspace,
+    )
     app.include_router(ollama_api.router, prefix="/api")
 
     # Custom Swagger UI endpoint for offline support
@@ -2295,13 +2273,8 @@ def create_app(args):
         caller is authenticated (see get_auth_status_dependency).
         """
         try:
-            workspace = get_workspace_from_request(request)
-            default_workspace = get_default_workspace()
-            if workspace is None:
-                workspace = default_workspace
-            pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=workspace
-            )
+            ws = get_workspace_from_request(request, default_workspace=args.workspace)
+            pipeline_status = await get_namespace_data("pipeline_status", workspace=ws)
 
             pipeline_busy = bool(pipeline_status.get("busy", False))
             pipeline_scanning = bool(pipeline_status.get("scanning", False))
@@ -2351,6 +2324,8 @@ def create_app(args):
             # Cleanup expired keyed locks and get status
             keyed_lock_info = cleanup_keyed_lock()
 
+            rag = await rag_pool.get(ws)
+
             status_data.update(
                 {
                     "working_directory": str(args.working_dir),
@@ -2373,7 +2348,7 @@ def create_app(args):
                         "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                         "enable_llm_cache": args.enable_llm_cache,
                         "vlm_process_enable": args.vlm_process_enable,
-                        "workspace": default_workspace,
+                        "workspace": ws,
                         "storage_workspaces": _get_storage_workspaces(rag),
                         "max_graph_nodes": args.max_graph_nodes,
                         # Rerank configuration
@@ -2421,6 +2396,8 @@ def create_app(args):
                 }
             )
             return status_data
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))

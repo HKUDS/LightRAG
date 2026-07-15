@@ -19,7 +19,9 @@ _document_routes = importlib.import_module("lightrag.api.routers.document_routes
 _parser_routing = importlib.import_module("lightrag.parser.routing")
 sys.argv = _original_argv
 
-DocumentManager = _document_routes.DocumentManager
+DocumentManager = importlib.import_module(
+    "lightrag.api.document_manager"
+).DocumentManager
 resolve_file_parser_engine = _parser_routing.resolve_file_parser_engine
 
 

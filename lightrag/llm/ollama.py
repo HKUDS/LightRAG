@@ -154,7 +154,9 @@ async def _ollama_model_if_cache(
 
     host = _coerce_host_for_cloud_model(host, model)
 
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
+    ollama_client = ollama.AsyncClient(
+        host=host, timeout=timeout, headers=headers, trust_env=False
+    )
 
     try:
         messages = []
@@ -309,7 +311,9 @@ async def ollama_embed(
 
     host = _coerce_host_for_cloud_model(host, embed_model)
 
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
+    ollama_client = ollama.AsyncClient(
+        host=host, timeout=timeout, headers=headers, trust_env=False
+    )
     try:
         options = kwargs.pop("options", {})
         data = await ollama_client.embed(

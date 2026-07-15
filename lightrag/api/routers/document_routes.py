@@ -11,7 +11,6 @@ from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
     performance_timing_log,
-    validate_workspace,
 )
 import aiofiles
 import traceback
@@ -54,6 +53,7 @@ from lightrag.utils import (
     generate_track_id,
     move_file_to_parsed_dir,
 )
+from lightrag.api.document_manager import DocumentManager
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -994,112 +994,6 @@ class PipelineStatusResponse(BaseModel):
         return format_datetime(value)
 
     model_config = ConfigDict(extra="allow")
-
-
-class DocumentManager:
-    def __init__(
-        self,
-        input_dir: str,
-        workspace: str = "",  # New parameter for workspace isolation
-    ):
-        # Reject path traversal before using workspace in the upload path
-        validate_workspace(workspace)
-        # Store the base input directory and workspace
-        self.base_input_dir = Path(input_dir)
-        self.workspace = workspace
-        self.indexed_files = set()
-
-        # Create workspace-specific input directory
-        # If workspace is provided, create a subdirectory for data isolation
-        if workspace:
-            self.input_dir = self.base_input_dir / workspace
-        else:
-            self.input_dir = self.base_input_dir
-
-        # Create input directory if it doesn't exist
-        self.input_dir.mkdir(parents=True, exist_ok=True)
-
-    @property
-    def supported_extensions(self) -> tuple:
-        """Suffixes accepted for an unhinted filename, derived live.
-
-        A suffix is advertised only when it is *routable without extra
-        directives*: the engine that ``resolve_file_parser_engine`` picks for
-        a bare ``x.<suffix>`` (filename hint absent; ``LIGHTRAG_PARSER``
-        rules + default apply) must itself support the suffix. This keeps
-        "uploadable" aligned with "will actually parse": e.g. mineru's
-        ``png`` joins only when its endpoint is configured AND a routing
-        rule (or per-file hint, see ``is_supported_file``) sends pngs to it
-        — otherwise the default ``legacy`` engine would fail the suffix gate
-        at the parse stage. A default deployment equals the local engines'
-        (legacy ∪ native) types; no hardcoded list to keep in sync.
-        """
-        from lightrag.parser.registry import available_engine_suffixes
-        from lightrag.parser.routing import (
-            parser_engine_supports_suffix,
-            resolve_file_parser_engine,
-        )
-
-        out = []
-        for s in sorted(available_engine_suffixes()):
-            engine = resolve_file_parser_engine(f"x.{s}")
-            if parser_engine_supports_suffix(engine, s):
-                out.append(f".{s}")
-        return tuple(out)
-
-    def scan_directory_for_new_files(self) -> List[Path]:
-        """Scan input directory for new, routable files.
-
-        Globs over every *available* engine suffix (capability surface, so a
-        hint-carrying file like ``img.[mineru].png`` is discoverable even
-        when bare ``.png`` is not advertised), then keeps only files whose
-        resolved engine actually supports them (``is_supported_file``).
-        """
-        from lightrag.parser.registry import available_engine_suffixes
-        from lightrag.parser.routing import FilenameParserHintError
-
-        new_files = []
-        for s in sorted(available_engine_suffixes()):
-            ext = f".{s}"
-            logger.debug(f"Scanning for {ext} files in {self.input_dir}")
-            for file_path in self.input_dir.glob(f"*{ext}"):
-                if file_path in self.indexed_files:
-                    continue
-                try:
-                    if not self.is_supported_file(file_path.name):
-                        continue
-                except FilenameParserHintError:
-                    # Malformed hint: pass the file through — the enqueue
-                    # path reports a detailed error document, instead of the
-                    # scan silently ignoring the user's file.
-                    pass
-                new_files.append(file_path)
-        return new_files
-
-    def mark_as_indexed(self, file_path: Path):
-        self.indexed_files.add(file_path)
-
-    def is_supported_file(self, filename: str) -> bool:
-        """True when THIS filename routes to an engine that can parse it.
-
-        Resolves the engine for the concrete name — so a per-file hint
-        (``img.[mineru].png``) is honoured — and checks the resolved engine
-        supports the suffix. A bare suffix that would fall through to the
-        default ``legacy`` engine is rejected here instead of failing later
-        at the parse worker's suffix gate.
-
-        Raises :class:`FilenameParserHintError` for a malformed hint —
-        callers surface it (upload → HTTP 400 with the detailed message;
-        scan passes the file through so enqueue emits an error document).
-        """
-        from lightrag.parser.routing import (
-            parser_engine_supports_suffix,
-            parser_suffix,
-            resolve_file_parser_engine,
-        )
-
-        engine = resolve_file_parser_engine(filename)
-        return parser_engine_supports_suffix(engine, parser_suffix(filename))
 
 
 def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
@@ -2448,7 +2342,10 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    rag_pool,
+    doc_mgr_pool,
+    api_key: Optional[str] = None,
+    default_workspace: str | None = None,
 ):
     # Fresh router per call — see the note above the temp_prefix constant.
     router = APIRouter(
@@ -2457,12 +2354,25 @@ def create_document_routes(
     )
 
     # Create combined auth dependency for document routes
+    from lightrag.api.utils_api import get_workspace_from_request
+    from fastapi import Request as _FR
+
+    async def _resolve_rag(request: _FR):
+        """Resolve LightRAG instance for the workspace in *request*."""
+        ws = get_workspace_from_request(request, default_workspace=default_workspace)
+        return await rag_pool.get(ws)
+
+    async def _resolve_doc_manager(request: _FR):
+        """Resolve DocumentManager instance for the workspace in *request*."""
+        ws = get_workspace_from_request(request, default_workspace=default_workspace)
+        return await doc_mgr_pool.get(ws)
+
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(_req: _FR, background_tasks: BackgroundTasks):
         """
         Trigger the scanning process for new documents.
 
@@ -2489,6 +2399,8 @@ def create_document_routes(
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
         """
+        rag = await _resolve_rag(_req)
+        doc_manager = await _resolve_doc_manager(_req)
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 
@@ -2586,7 +2498,7 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        _req: _FR, background_tasks: BackgroundTasks, file: UploadFile = File(...)
     ):
         """
         Upload a file to the input directory and index it.
@@ -2660,6 +2572,8 @@ def create_document_routes(
                 conflict or scan-classifying / destructive job in
                 flight, 413 file too large, 500 other errors.
         """
+        rag = await _resolve_rag(_req)
+        doc_manager = await _resolve_doc_manager(_req)
         slot_reserved = False
         try:
             # Reject upload while a scan is in its CLASSIFICATION
@@ -2835,7 +2749,7 @@ def create_document_routes(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
-        request: InsertTextRequest, background_tasks: BackgroundTasks
+        _req: _FR, request: InsertTextRequest, background_tasks: BackgroundTasks
     ):
         """
         Insert text into the RAG system.
@@ -2863,6 +2777,7 @@ def create_document_routes(
             HTTPException: 400 invalid file_source, 409 same-name conflict
                 or scan/destructive job in flight, 500 other errors.
         """
+        rag = await _resolve_rag(_req)
         slot_reserved = False
         try:
             # Reject text insertion while a scan is in progress AND reserve
@@ -2939,7 +2854,7 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
-        request: InsertTextsRequest, background_tasks: BackgroundTasks
+        _req: _FR, request: InsertTextsRequest, background_tasks: BackgroundTasks
     ):
         """
         Insert multiple texts into the RAG system.
@@ -2968,6 +2883,7 @@ def create_document_routes(
                 conflict or scan/destructive job in flight, 500 other
                 errors.
         """
+        rag = await _resolve_rag(_req)
         slot_reserved = False
         try:
             # Reject batch text insertion while a scan is in progress AND
@@ -3060,7 +2976,7 @@ def create_document_routes(
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
-    async def clear_documents():
+    async def clear_documents(_req: _FR):
         """
         Clear all documents from the RAG system.
 
@@ -3093,6 +3009,8 @@ def create_document_routes(
             HTTPException: Raised when a serious error occurs during the clearing process,
                           with status code 500 and error details in the detail field.
         """
+        rag = await _resolve_rag(_req)
+        doc_manager = await _resolve_doc_manager(_req)
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
@@ -3285,7 +3203,9 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
         response_model=PipelineStatusResponse,
     )
-    async def get_pipeline_status() -> PipelineStatusResponse:
+    async def get_pipeline_status(
+        _req: _FR,
+    ) -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
 
@@ -3310,6 +3230,7 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving pipeline status (500)
         """
         try:
+            rag = await _resolve_rag(_req)
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
                 get_namespace_lock,
@@ -3384,7 +3305,9 @@ def create_document_routes(
     @router.get(
         "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
     )
-    async def documents() -> DocsStatusesResponse:
+    async def documents(
+        _req: _FR,
+    ) -> DocsStatusesResponse:
         """
         Get the status of all documents in the system. This endpoint is deprecated; use /documents/paginated instead.
         To prevent excessive resource consumption, a maximum of 1,000 records is returned.
@@ -3403,6 +3326,7 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
         try:
+            rag = await _resolve_rag(_req)
             statuses = (
                 DocStatus.PENDING,
                 DocStatus.PARSING,
@@ -3500,6 +3424,7 @@ def create_document_routes(
         summary="Delete a document and all its associated data by its ID.",
     )
     async def delete_document(
+        _req: _FR,
         delete_request: DeleteDocRequest,
         background_tasks: BackgroundTasks,
     ) -> DeleteDocByIdResponse:
@@ -3536,6 +3461,8 @@ def create_document_routes(
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
+        rag = await _resolve_rag(_req)
+        doc_manager = await _resolve_doc_manager(_req)
         doc_ids = delete_request.doc_ids
 
         slot_acquired = False
@@ -3592,7 +3519,7 @@ def create_document_routes(
         response_model=ClearCacheResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def clear_cache(request: ClearCacheRequest):
+    async def clear_cache(_req: _FR, request: ClearCacheRequest):
         """
         Clear all cache data from the LLM response cache storage.
 
@@ -3608,6 +3535,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs during cache clearing (500).
         """
+        rag = await _resolve_rag(_req)
         try:
             # Call the aclear_cache method (no modes parameter)
             await rag.aclear_cache()
@@ -3626,7 +3554,7 @@ def create_document_routes(
         response_model=TrackStatusResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def get_track_status(track_id: str) -> TrackStatusResponse:
+    async def get_track_status(_req: _FR, track_id: str) -> TrackStatusResponse:
         """
         Get the processing status of documents by tracking ID.
 
@@ -3635,17 +3563,9 @@ def create_document_routes(
 
         Args:
             track_id (str): The tracking ID returned from upload, text, or texts endpoints
-
-        Returns:
-            TrackStatusResponse: A response object containing:
-                - track_id: The tracking ID
-                - documents: List of documents associated with this track_id
-                - total_count: Total number of documents for this track_id
-
-        Raises:
-            HTTPException: If track_id is invalid (400) or an error occurs (500).
         """
         try:
+            rag = await _resolve_rag(_req)
             # Validate track_id
             if not track_id or not track_id.strip():
                 raise HTTPException(status_code=400, detail="Track ID cannot be empty")
@@ -3701,6 +3621,7 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def get_documents_paginated(
+        _req: _FR,
         request: DocumentsRequest,
     ) -> PaginatedDocsResponse:
         """
@@ -3712,16 +3633,8 @@ def create_document_routes(
 
         Args:
             request (DocumentsRequest): The request body containing pagination parameters
-
-        Returns:
-            PaginatedDocsResponse: A response object containing:
-                - documents: List of documents for the current page
-                - pagination: Pagination information (page, total_count, etc.)
-                - status_counts: Count of documents by status for all documents
-
-        Raises:
-            HTTPException: If an error occurs while retrieving documents (500).
         """
+        rag = await _resolve_rag(_req)
         trace_id = uuid4().hex[:8]
         request_start = time.perf_counter()
         status_filter_value = (
@@ -3881,7 +3794,9 @@ def create_document_routes(
         response_model=StatusCountsResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def get_document_status_counts() -> StatusCountsResponse:
+    async def get_document_status_counts(
+        _req: _FR,
+    ) -> StatusCountsResponse:
         """
         Get counts of documents by status.
 
@@ -3895,6 +3810,7 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving status counts (500).
         """
         try:
+            rag = await _resolve_rag(_req)
             status_counts = await rag.doc_status.get_all_status_counts()
             return StatusCountsResponse(status_counts=status_counts)
 
@@ -3908,7 +3824,7 @@ def create_document_routes(
         response_model=ReprocessResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+    async def reprocess_failed_documents(_req: _FR, background_tasks: BackgroundTasks):
         """
         Reprocess failed and pending documents.
 
@@ -3933,6 +3849,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
+        rag = await _resolve_rag(_req)
         try:
             # Start the reprocessing in the background
             # Note: Reprocessed documents retain their original track_id from initial upload
@@ -3954,7 +3871,7 @@ def create_document_routes(
         response_model=CancelPipelineResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def cancel_pipeline():
+    async def cancel_pipeline(_req: _FR):
         """
         Request cancellation of the currently running pipeline.
 
@@ -3975,6 +3892,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while setting cancellation flag (500).
         """
+        rag = await _resolve_rag(_req)
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
