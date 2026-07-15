@@ -1640,6 +1640,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "Wait for the scan to finish and retry."
                     )
                 pipeline_status["busy"] = True
+                # Start clean, mirroring the processing loop's acquire: clear any
+                # stale cancellation left by a previously cancelled job. The
+                # cancel endpoint sets cancellation_requested whenever busy=True
+                # (it can't tell this path from the loop); without clearing it
+                # here a leftover flag would immediately abort the extract/merge
+                # below via PipelineCancelledException.
+                pipeline_status["cancellation_requested"] = False
+                pipeline_status["cancellation_reason"] = None
+                pipeline_status["cancellation_detail"] = None
             busy_acquired = True
 
             # Stage 1 (barrier): persist chunks BEFORE extraction. Extraction
@@ -1701,6 +1710,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 finally:
                     async with pipeline_status_lock:
                         pipeline_status["busy"] = False
+                        # Clear cancellation as part of releasing the slot
+                        # (mirroring the processing loop's finally): a cancel
+                        # that targeted THIS job, or arrived after it finished,
+                        # must not wedge the next ainsert_custom_chunks with a
+                        # stale PipelineCancelledException.
+                        pipeline_status["cancellation_requested"] = False
+                        pipeline_status["cancellation_reason"] = None
+                        pipeline_status["cancellation_detail"] = None
                         # An enqueue that arrived while we held busy set
                         # request_pending but had no running loop to consume it.
                         # Note whether to kick processing so those PENDING docs

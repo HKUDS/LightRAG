@@ -508,3 +508,38 @@ async def test_custom_chunks_busy_rejection_does_not_flush_shared_buffers(monkey
         await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-p1")
 
     assert cleanup["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_clears_stale_cancellation(monkeypatch):
+    """A stale cancellation_requested (e.g. left by a previously cancelled
+    custom-chunks job, since the cancel endpoint sets it whenever busy=True)
+    must not abort the next insert. The busy lifecycle clears the cancellation
+    fields on acquire (so extract/merge are not pre-killed) and on release (so
+    it does not leak to the next job)."""
+    status = {
+        "busy": False,
+        "history_messages": [],
+        "request_pending": False,
+        "cancellation_requested": True,  # stale from a prior cancelled job
+        "cancellation_reason": "internal_error",
+        "cancellation_detail": "stale",
+    }
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    observed = {}
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        # Real extract/merge raise PipelineCancelledException when this is True;
+        # it must have been cleared on acquire so this job runs.
+        observed["cancel_during"] = status.get("cancellation_requested")
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    rag._process_extract_entities = _process_extract_entities
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-cancel")
+
+    assert observed["cancel_during"] is False  # cleared on acquire
+    assert status["cancellation_requested"] is False  # cleared on release
+    assert status["cancellation_reason"] is None
+    assert status["cancellation_detail"] is None
