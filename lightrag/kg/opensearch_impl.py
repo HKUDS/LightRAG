@@ -1417,7 +1417,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         try:
             # DocStatus needs refresh="wait_for" because get_docs_by_status
             # (search-based) is called immediately after enqueue upserts.
-            await _run_chunked_async_bulk(
+            _, failed = await _run_chunked_async_bulk(
                 self.client,
                 actions,
                 max_payload_bytes=self._max_upsert_payload_bytes,
@@ -1433,6 +1433,20 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             # succeeded — a silently-lost doc-status row corrupts pipeline
             # bookkeeping (a doc could never be recorded FAILED/PROCESSED).
             raise
+        retryable_ids, non_retryable_ops = _extract_bulk_failed_ids(failed)
+        if retryable_ids or non_retryable_ops:
+            retryable_sample = ", ".join(sorted(retryable_ids)[:5])
+            permanent_sample = ", ".join(
+                f"{op.op}/{op.doc_id}/status={op.status}/{op.error}"
+                for op in non_retryable_ops[:5]
+            )
+            raise RuntimeError(
+                f"[{self.workspace}] {self.namespace} upsert: "
+                f"{len(retryable_ids)} retryable and "
+                f"{len(non_retryable_ops)} non-retryable doc-status ops failed. "
+                f"Retryable sample: {retryable_sample}; "
+                f"Permanent sample: {permanent_sample}"
+            )
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get document counts grouped by status."""

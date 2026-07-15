@@ -202,6 +202,8 @@ docker compose up
 > LightRAG docker イメージの過去バージョンはこちらで確認できます: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 >
 > GitHub Actions により公開された公式 GHCR イメージは、GitHub OIDC を用いた Sigstore Cosign で署名されています。検証コマンドについては [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) を参照してください。
+>
+> Apple Silicon（macOS 26）では、Docker Desktop なしで、同じ Postgres/Neo4j/Milvus ストレージスタックを Apple ネイティブの `container` ランタイム上で実行できます。詳細は [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md) を参照してください。
 
 ### セットアップツールによる .env ファイルの作成
 

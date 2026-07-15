@@ -111,6 +111,22 @@ def _make_chunk(
     return item
 
 
+def _window_step(chunk_token_size: int, chunk_overlap_token_size: int) -> int:
+    """Token-window stride for the sliding-window chunk loops.
+
+    When overlap >= size the stride is <= 0, which makes ``range()`` yield an
+    empty sequence (dropping the whole segment silently) or raise the opaque
+    ``range() arg 3 must not be zero``. Fail closed with the same invariant the
+    API-boundary validators enforce.
+    """
+    if chunk_overlap_token_size >= chunk_token_size:
+        raise ValueError(
+            f"chunk_overlap_token_size ({chunk_overlap_token_size}) must be < "
+            f"chunk_token_size ({chunk_token_size})"
+        )
+    return chunk_token_size - chunk_overlap_token_size
+
+
 def chunking_by_token_size(
     tokenizer: Tokenizer,
     content: str,
@@ -167,7 +183,9 @@ def chunking_by_token_size(
                     # below), so it resets per split-by-character segment.
                     anchor = (0, 0)
                     for start in range(
-                        0, len(_tokens), chunk_token_size - chunk_overlap_token_size
+                        0,
+                        len(_tokens),
+                        _window_step(chunk_token_size, chunk_overlap_token_size),
                     ):
                         end_token = min(start + chunk_token_size, len(_tokens))
                         chunk_content = tokenizer.decode(_tokens[start:end_token])
@@ -213,7 +231,11 @@ def chunking_by_token_size(
     else:
         anchor = (0, 0)
         for index, start in enumerate(
-            range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
+            range(
+                0,
+                len(tokens),
+                _window_step(chunk_token_size, chunk_overlap_token_size),
+            )
         ):
             end = min(start + chunk_token_size, len(tokens))
             chunk_content = tokenizer.decode(tokens[start:end])

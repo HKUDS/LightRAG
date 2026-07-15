@@ -1187,6 +1187,158 @@ def test_enqueue_during_busy_sets_request_pending(tmp_path):
 
 
 @pytest.mark.offline
+def test_enqueue_status_upsert_failure_still_nudges_busy_loop(tmp_path, monkeypatch):
+    """A DocStatus bulk upsert can partially commit PENDING rows before
+    surfacing item-level failures. If the pipeline is already busy, enqueue
+    must still set request_pending before re-raising so committed rows are
+    picked up by the running loop.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
+
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            async def _unexpected_process():
+                raise AssertionError("busy enqueue should nudge, not start processing")
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _unexpected_process
+            )
+            try:
+                with pytest.raises(RuntimeError, match="partial doc-status"):
+                    await rag.apipeline_enqueue_documents(
+                        "partial busy",
+                        file_paths="partial-busy.txt",
+                        track_id="track-partial-busy",
+                    )
+                assert pipeline_status.get("request_pending") is True
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["request_pending"] = False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_status_upsert_failure_starts_idle_processing(tmp_path, monkeypatch):
+    """If a partial DocStatus upsert fails while the pipeline is idle, the
+    caller will not reach its normal process_enqueue call. Enqueue therefore
+    starts processing best-effort before re-raising the storage error.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            process_called = False
+
+            async def _record_process():
+                nonlocal process_called
+                process_called = True
+                pending_docs = await rag.doc_status.get_docs_by_statuses(
+                    [DocStatus.PENDING]
+                )
+                assert pending_docs
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _record_process
+            )
+
+            with pytest.raises(RuntimeError, match="partial doc-status"):
+                await rag.apipeline_enqueue_documents(
+                    "partial idle",
+                    file_paths="partial-idle.txt",
+                    track_id="track-partial-idle",
+                )
+            assert process_called is True
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_status_upsert_failure_survives_wake_failure(
+    tmp_path, monkeypatch, caplog
+):
+    """The best-effort wake after a DocStatus upsert error is defensive: if
+    ``apipeline_process_enqueue_documents`` itself raises, enqueue must still
+    surface the ORIGINAL storage error (never swallow it behind the wake
+    failure) and log a warning about the failed wake.
+    """
+    import logging
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            async def _failing_process():
+                raise RuntimeError("wake boom")
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _failing_process
+            )
+
+            # The "lightrag" logger sets propagate=False, so caplog (a root
+            # handler) cannot see its records unless we re-enable propagation
+            # for the duration of the test (monkeypatch auto-reverts it).
+            monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(RuntimeError, match="partial doc-status"):
+                    await rag.apipeline_enqueue_documents(
+                        "wake failure",
+                        file_paths="wake-failure.txt",
+                        track_id="track-wake-failure",
+                    )
+            assert "Failed to start document processing" in caplog.text
+            assert "wake boom" in caplog.text
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_atomic_release_busy_or_consume_pending(tmp_path):
     """The loop-exit handoff is atomic via
     ``_atomic_release_busy_or_consume_pending``: the same critical

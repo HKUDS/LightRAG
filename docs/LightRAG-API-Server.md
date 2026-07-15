@@ -766,6 +766,16 @@ QUERY_LLM_MODEL=gpt-5
 VLM_LLM_MODEL=gpt-5-mini
 ```
 
+**Recommended models by role:**
+
+- **`EXTRACT`**: Entity-relation extraction runs on every chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended. E.g. GPT-5.6-luna, Claude Haiku, or Gemini-mini (hosted), or DeepSeek-V4-lite / Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+- **`QUERY`**: Writes the final answer from long, noisy context, so choose a *stronger* model than `EXTRACT` to maximize answer quality; a thinking-capable model is fine here.
+- **`KEYWORD`**: A lightweight, latency-sensitive step that **must** use a non-thinking model to keep query latency low; a fast model comparable to `EXTRACT` is enough.
+- **`VLM`**: Any mainstream multimodal model with image-input support works; for local deployment, consider Qwen3.6-35B-A3B.
+- **Embedding / Reranker**: Any mainstream, up-to-date model works. For local deployment, use `BAAI/bge-m3` for embeddings and `BAAI/bge-reranker-v2-m3` for reranking.
+
+Within an acceptable latency and cost budget, prefer the highest-scoring model available (per public benchmarks/leaderboards).
+
 For cross-provider rules, provider-specific options such as `QUERY_OPENAI_LLM_REASONING_EFFORT`, role-level Bedrock SigV4 credentials, and queue behavior, see [Role-Specific LLM/VLM Configuration Guide](./RoleSpecificLLMConfiguration.md).
 
 ### Multimodal Analysis Configuration

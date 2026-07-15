@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from 'bun:test'
 
 // ---------------------------------------------------------------------------
 // Mock dependencies BEFORE importing the module under test
@@ -130,8 +130,26 @@ function installFetchMock(
 
 let apiModule: typeof import('./lightrag')
 
+// Several suites below intentionally drive queryTextStream's failure branches
+// (HTTP errors, network errors, truncated streams). By design the module logs
+// those via console.error / console.warn, which floods the test output with
+// red lines that look like failures but are not. The tests already assert the
+// observable contract through the onError callback, so silence the logs for
+// the whole file and restore the originals afterwards.
+let restoreConsole: (() => void) | undefined
+
 beforeAll(async () => {
   apiModule = await import('./lightrag')
+  const errorSpy = spyOn(console, 'error').mockImplementation(() => {})
+  const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+  restoreConsole = () => {
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
+  }
+})
+
+afterAll(() => {
+  restoreConsole?.()
 })
 
 afterEach(() => {
