@@ -2005,6 +2005,51 @@ async def _rebuild_single_relationship(
             pipeline_status["history_messages"].append(status_message)
 
 
+def _combine_descriptions_dedup(
+    already_description: list[str], new_descriptions: list[str]
+) -> tuple[list[str], int]:
+    """Merge stored and newly-extracted descriptions, dropping exact duplicates.
+
+    Stored fragments come first (preserving prior order), then new fragments not
+    already present. Deduplicating across stored *and* new (not only within the
+    new batch) prevents a re-extracted description from appending a duplicate
+    fragment on every reprocess or resume (issue #3367); it also collapses any
+    legacy duplicate fragments already stored. Returns the combined list and the
+    count of surviving stored fragments, used for accurate merge accounting.
+
+    Fragments are compared and stored *after* ``sanitize_text_for_encoding``:
+    stored descriptions were already sanitized before being persisted (the
+    single-description return and the join in ``_handle_entity_relation_summary``
+    both sanitize), while a freshly re-extracted description is still raw.
+    Comparing raw-vs-sanitized would miss the duplicate whenever sanitization
+    changed the string (e.g. an XML-illegal control char was stripped), so
+    "dirty" descriptions would keep accumulating across reprocess. Sanitizing
+    here is idempotent, so the later sanitize calls are unaffected. Fragments
+    that sanitize to empty are dropped (they carry no information and would only
+    inflate the fragment count / emit ``<sep><sep>`` artifacts on join).
+
+    The two-phase walk is deliberate: ``already_fragment`` is captured after the
+    stored pass so it stays an accurate count of surviving stored fragments. Do
+    NOT collapse both phases into a single ``dict.fromkeys`` over the
+    concatenation — that loses the stored/new boundary the merge accounting log
+    depends on.
+    """
+    combined: list[str] = []
+    seen: set[str] = set()
+
+    def _add_sanitized(descriptions: list[str]) -> None:
+        for desc in descriptions:
+            sanitized = sanitize_text_for_encoding(desc)
+            if sanitized and sanitized not in seen:
+                seen.add(sanitized)
+                combined.append(sanitized)
+
+    _add_sanitized(already_description)
+    already_fragment = len(combined)
+    _add_sanitized(new_descriptions)
+    return combined, already_fragment
+
+
 async def _merge_nodes_then_upsert(
     entity_name: str,
     nodes_data: list[dict],
@@ -2163,8 +2208,11 @@ async def _merge_nodes_then_upsert(
         )
         sorted_descriptions = [dp["description"] for dp in sorted_nodes]
 
-        # Combine already_description with sorted new sorted descriptions
-        description_list = already_description + sorted_descriptions
+        # Combine stored and new descriptions, deduplicating across both so a
+        # re-extracted description does not accumulate on reprocess (issue #3367)
+        description_list, already_fragment = _combine_descriptions_dedup(
+            already_description, sorted_descriptions
+        )
         if not description_list:
             fallback_description = f"Entity {entity_name}"
             logger.warning(
@@ -2249,7 +2297,6 @@ async def _merge_nodes_then_upsert(
 
         # 10.Log based on actual LLM usage
         num_fragment = len(description_list)
-        already_fragment = len(already_description)
         if llm_was_used:
             status_message = f"LLMmrg: `{entity_name}` | {already_fragment}+{num_fragment - already_fragment}"
         else:
@@ -2521,8 +2568,11 @@ async def _merge_edges_then_upsert(
         )
         sorted_descriptions = [dp["description"] for dp in sorted_edges]
 
-        # Combine already_description with sorted new descriptions
-        description_list = already_description + sorted_descriptions
+        # Combine stored and new descriptions, deduplicating across both so a
+        # re-extracted description does not accumulate on reprocess (issue #3367)
+        description_list, already_fragment = _combine_descriptions_dedup(
+            already_description, sorted_descriptions
+        )
         if not description_list:
             logger.error(f"Relation {src_id}~{tgt_id} has no description")
             raise ValueError(f"Relation {src_id}~{tgt_id} has no description")
@@ -2602,7 +2652,6 @@ async def _merge_edges_then_upsert(
 
         # 10. Log based on actual LLM usage
         num_fragment = len(description_list)
-        already_fragment = len(already_description)
         if llm_was_used:
             status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment - already_fragment}"
         else:
