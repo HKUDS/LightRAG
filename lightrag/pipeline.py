@@ -989,7 +989,9 @@ class _PipelineMixin:
                     f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
                 )
 
-    async def apipeline_process_enqueue_documents(self) -> None:
+    async def apipeline_process_enqueue_documents(
+        self, _holding_busy: bool = False
+    ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
         each chunk for entity and relation extraction, and updating the
@@ -1000,6 +1002,16 @@ class _PipelineMixin:
         3. Split document content into chunks
         4. Process each chunk for entity and relation extraction
         5. Update the document status
+
+        ``_holding_busy`` (internal): when True the caller already owns the
+        ``busy`` slot and hands it to this run atomically — used by
+        ``ainsert_custom_chunks`` to drain a ``request_pending`` that arrived
+        while it held ``busy``, without ever dropping ``busy`` to False (which
+        would open a window for a clear/delete/scan reservation to start and
+        drop the accepted-but-unprocessed document). This run takes over the
+        existing slot instead of re-acquiring it, and always releases it — on
+        the no-work path, on a get-docs failure, and via the loop's finally —
+        so a handoff can never wedge the pipeline as permanently busy.
         """
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
@@ -1009,15 +1021,29 @@ class _PipelineMixin:
         )
 
         async with pipeline_status_lock:
-            # Ensure only one worker is processing documents
-            if not pipeline_status.get("busy", False):
-                to_process_docs: dict[
-                    str, DocProcessingStatus
-                ] = await self.doc_status.get_docs_by_statuses(
-                    list(_INFLIGHT_DOC_STATUSES)
-                )
+            # Ensure only one worker is processing documents. ``_holding_busy``
+            # means the slot was handed to us already owned, so take it over
+            # rather than treating busy=True as "someone else is running".
+            if _holding_busy or not pipeline_status.get("busy", False):
+                try:
+                    to_process_docs: dict[
+                        str, DocProcessingStatus
+                    ] = await self.doc_status.get_docs_by_statuses(
+                        list(_INFLIGHT_DOC_STATUSES)
+                    )
+                except Exception:
+                    # A handed-off slot is already busy=True; release it so a
+                    # failure here does not wedge the pipeline permanently busy.
+                    # A normal call has not set busy yet, so nothing to release.
+                    if _holding_busy:
+                        pipeline_status["busy"] = False
+                    raise
 
                 if not to_process_docs:
+                    # Release the handed-off slot (a normal call never set busy
+                    # on this path).
+                    if _holding_busy:
+                        pipeline_status["busy"] = False
                     logger.info("No documents to process")
                     return
 

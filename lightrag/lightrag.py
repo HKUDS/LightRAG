@@ -1559,7 +1559,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
-        update_storage = False
+        busy_acquired = False
+        pipeline_status = None
+        pipeline_status_lock = None
         try:
             # Clean input texts
             full_text = sanitize_text_for_encoding(full_text)
@@ -1579,7 +1581,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.warning("This document is already in the storage.")
                 return
 
-            update_storage = True
             logger.info(f"Inserting {len(new_docs)} docs")
 
             inserting_chunks: dict[str, Any] = {}
@@ -1612,6 +1613,64 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=self.workspace
             )
+
+            # Reserve the pipeline busy slot before doing any extraction/merge.
+            # This path now writes the KG (Stage 3), so it must be mutually
+            # exclusive with the processing loop, destructive ops, and another
+            # custom-chunks insert — the single-writer contract the file
+            # pipeline enforces via ``busy``. Entity-keyed locks already keep
+            # the graph data consistent under concurrency, but without this a
+            # second merger would still run: LLM concurrency doubles past
+            # ``llm_model_max_async``, ``pipeline_status`` misreports idle, and
+            # the shared ``cancellation_requested`` flag cross-cancels. Reject
+            # (rather than queue) when the slot is taken, mirroring
+            # ``_acquire_destructive_busy``; ``destructive_busy`` implies
+            # ``busy`` so a running clear/delete is covered too.
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy"):
+                    raise RuntimeError(
+                        "Pipeline is busy with another operation; "
+                        "ainsert_custom_chunks cannot run concurrently. "
+                        "Wait for it to finish and retry."
+                    )
+                if pipeline_status.get("scanning"):
+                    raise RuntimeError(
+                        "A document scan is in progress; "
+                        "ainsert_custom_chunks cannot run concurrently. "
+                        "Wait for the scan to finish and retry."
+                    )
+                pipeline_status["busy"] = True
+                # Record ownership INSIDE the locked section, immediately after
+                # taking the slot and before any await. Exiting the
+                # ``async with`` awaits the lock's __aexit__ (which awaits an
+                # asyncio.shield), a point at which task cancellation can be
+                # delivered; if busy_acquired were set only after the block, a
+                # cancel there would leave busy=True but busy_acquired=False and
+                # the finally would skip the release, wedging the workspace busy
+                # forever. Mirrors adelete_by_doc_id's we_acquired_pipeline.
+                busy_acquired = True
+                # Stamp our own job identity, mirroring every other acquirer
+                # (processing loop -> "Default Job", deletes -> "...document...").
+                # Critical: flipping busy without overwriting job_name would leave
+                # a stale name from the previous holder. After a batch delete,
+                # background_delete_documents releases busy but leaves
+                # job_name="Deleting N Documents"; adelete_by_doc_id treats
+                # busy + a "deleting...document" job_name as "a batch delete is
+                # running, join it" and proceeds WITHOUT acquiring — so a
+                # concurrent delete could run against our KG/vector writes. A
+                # non-deletion job_name makes that guard correctly reject.
+                pipeline_status["job_name"] = "Custom chunks insert"
+                pipeline_status["job_start"] = datetime.now(timezone.utc).isoformat()
+                pipeline_status["latest_message"] = "Inserting custom chunks"
+                # Start clean, mirroring the processing loop's acquire: clear any
+                # stale cancellation left by a previously cancelled job. The
+                # cancel endpoint sets cancellation_requested whenever busy=True
+                # (it can't tell this path from the loop); without clearing it
+                # here a leftover flag would immediately abort the extract/merge
+                # below via PipelineCancelledException.
+                pipeline_status["cancellation_requested"] = False
+                pipeline_status["cancellation_reason"] = None
+                pipeline_status["cancellation_detail"] = None
 
             # Stage 1 (barrier): persist chunks BEFORE extraction. Extraction
             # records per-chunk LLM cache references (update_chunk_cache_list ->
@@ -1657,8 +1716,55 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
 
         finally:
-            if update_storage:
-                await self._insert_done_with_cleanup()
+            # Everything here is gated on busy_acquired. If we rejected
+            # (busy/scanning) or returned before acquiring, we neither own the
+            # slot nor wrote any data, so we must NOT flush/discard the SHARED
+            # pending buffers — doing so could commit or tear down another
+            # running job's in-flight index ops.
+            if busy_acquired:
+                hand_off = False
+                # Flush first (while still busy so no other writer starts
+                # mid-flush), then release the slot even if the flush raises —
+                # otherwise the pipeline would stay wedged as busy forever.
+                try:
+                    await self._insert_done_with_cleanup()
+                finally:
+                    async with pipeline_status_lock:
+                        # Clear cancellation as part of releasing the slot
+                        # (mirroring the processing loop's finally): a cancel
+                        # that targeted THIS job, or arrived after it finished,
+                        # must not wedge the next ainsert_custom_chunks with a
+                        # stale PipelineCancelledException.
+                        pipeline_status["cancellation_requested"] = False
+                        pipeline_status["cancellation_reason"] = None
+                        pipeline_status["cancellation_detail"] = None
+                        if pipeline_status.get("request_pending"):
+                            # A doc was enqueued while we held busy. Hand the
+                            # slot to a processing run WITHOUT releasing busy
+                            # (keep it True) — releasing here first would open a
+                            # busy=False + request_pending window in which a
+                            # clear/delete/scan reservation (which check busy /
+                            # scanning / pending_enqueues but NOT request_pending)
+                            # could start and drop the accepted-but-unprocessed
+                            # document. The handoff run below consumes
+                            # request_pending and releases busy atomically at its
+                            # own exit, mirroring the loop's
+                            # _atomic_release_busy_or_consume_pending.
+                            hand_off = True
+                        else:
+                            pipeline_status["busy"] = False
+                    if hand_off:
+                        # busy is still True; the handoff takes over the slot and
+                        # always releases it (no-work / error / normal exit).
+                        try:
+                            await self.apipeline_process_enqueue_documents(
+                                _holding_busy=True
+                            )
+                        except Exception as drain_error:
+                            logger.warning(
+                                "Failed to process queued documents handed off "
+                                f"from a custom-chunks insert: {drain_error}"
+                            )
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
