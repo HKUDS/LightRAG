@@ -1714,7 +1714,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # pending buffers — doing so could commit or tear down another
             # running job's in-flight index ops.
             if busy_acquired:
-                drain_pending = False
+                hand_off = False
                 # Flush first (while still busy so no other writer starts
                 # mid-flush), then release the slot even if the flush raises —
                 # otherwise the pipeline would stay wedged as busy forever.
@@ -1722,7 +1722,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     await self._insert_done_with_cleanup()
                 finally:
                     async with pipeline_status_lock:
-                        pipeline_status["busy"] = False
                         # Clear cancellation as part of releasing the slot
                         # (mirroring the processing loop's finally): a cancel
                         # that targeted THIS job, or arrived after it finished,
@@ -1731,24 +1730,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         pipeline_status["cancellation_requested"] = False
                         pipeline_status["cancellation_reason"] = None
                         pipeline_status["cancellation_detail"] = None
-                        # An enqueue that arrived while we held busy set
-                        # request_pending but had no running loop to consume it.
-                        # Note whether to kick processing so those PENDING docs
-                        # are not stranded. request_pending is left set (not
-                        # cleared here) so the drain — or, if a concurrent writer
-                        # wins the slot first, the next trigger — still sees it.
-                        drain_pending = bool(pipeline_status.get("request_pending"))
-                    if drain_pending:
-                        # Best-effort: apipeline_process_enqueue_documents
-                        # re-acquires busy atomically and clears request_pending
-                        # itself. Runs inside the finally so it happens whether
-                        # or not the body raised, and busy is already released.
+                        if pipeline_status.get("request_pending"):
+                            # A doc was enqueued while we held busy. Hand the
+                            # slot to a processing run WITHOUT releasing busy
+                            # (keep it True) — releasing here first would open a
+                            # busy=False + request_pending window in which a
+                            # clear/delete/scan reservation (which check busy /
+                            # scanning / pending_enqueues but NOT request_pending)
+                            # could start and drop the accepted-but-unprocessed
+                            # document. The handoff run below consumes
+                            # request_pending and releases busy atomically at its
+                            # own exit, mirroring the loop's
+                            # _atomic_release_busy_or_consume_pending.
+                            hand_off = True
+                        else:
+                            pipeline_status["busy"] = False
+                    if hand_off:
+                        # busy is still True; the handoff takes over the slot and
+                        # always releases it (no-work / error / normal exit).
                         try:
-                            await self.apipeline_process_enqueue_documents()
+                            await self.apipeline_process_enqueue_documents(
+                                _holding_busy=True
+                            )
                         except Exception as drain_error:
                             logger.warning(
-                                "Failed to drain queued documents after "
-                                f"custom-chunks insert: {drain_error}"
+                                "Failed to process queued documents handed off "
+                                f"from a custom-chunks insert: {drain_error}"
                             )
 
     async def _process_extract_entities(

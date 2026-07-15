@@ -428,10 +428,12 @@ async def test_custom_chunks_rejects_when_pipeline_busy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
-    """ainsert_custom_chunks must hold ``busy`` for the whole extract+merge so a
-    concurrent pipeline sees it, and release it afterwards. A request_pending
-    that arrived while busy triggers a best-effort drain on release."""
+async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
+    """A request_pending that arrived while custom-chunks held busy is handed
+    off to processing WITHOUT ever dropping busy to False first — otherwise a
+    clear/delete/scan reservation could start in the gap and drop the accepted
+    doc. The handoff must run with _holding_busy=True while busy is still True,
+    and the (real) processing run releases busy atomically."""
     status = {"busy": False, "history_messages": [], "request_pending": False}
     rag = _custom_chunks_rag(monkeypatch, status)
 
@@ -443,13 +445,16 @@ async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
         status["request_pending"] = True
         return [({"E": [{"entity_name": "E"}]}, {})]
 
-    drained = {"called": False}
+    drained = {}
 
-    async def _drain():
+    async def _drain(_holding_busy=False):
         drained["called"] = True
-        # The real apipeline_process_enqueue_documents clears request_pending
-        # atomically when it re-acquires busy; model that here.
+        drained["holding_busy"] = _holding_busy
+        # The slot must NOT have been released before handing off (no window).
+        drained["busy_at_handoff"] = status["busy"]
+        # The real run consumes request_pending and releases busy at its exit.
         status["request_pending"] = False
+        status["busy"] = False
 
     rag._process_extract_entities = _process_extract_entities
     rag.apipeline_process_enqueue_documents = _drain
@@ -457,20 +462,23 @@ async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
     await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-h")
 
     assert observed["busy_during_extract"] is True  # held during the work
-    assert status["busy"] is False  # released afterwards
-    assert drained["called"] is True  # processing nudged for the queued docs
-    assert status["request_pending"] is False  # consumed by the drain
+    assert drained["called"] is True  # queued docs handed off
+    assert drained["holding_busy"] is True  # atomic handoff, not a fresh acquire
+    assert drained["busy_at_handoff"] is True  # busy never dropped before handoff
+    assert status["request_pending"] is False  # consumed by the handoff
+    assert status["busy"] is False  # released by the handoff run
 
 
 @pytest.mark.asyncio
 async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
-    """With no request_pending, the busy slot is released and no drain runs."""
+    """With no request_pending, the busy slot is released directly and no
+    handoff runs."""
     status = {"busy": False, "history_messages": [], "request_pending": False}
     rag = _custom_chunks_rag(monkeypatch, status)
 
     drained = {"called": False}
 
-    async def _drain():
+    async def _drain(_holding_busy=False):
         drained["called"] = True
 
     async def _process_extract_entities(chunks, ps=None, pl=None):
@@ -482,6 +490,7 @@ async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
     await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-np")
 
     assert status["busy"] is False
+    assert drained["called"] is False
     assert drained["called"] is False
 
 

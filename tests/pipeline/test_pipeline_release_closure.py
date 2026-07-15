@@ -1339,6 +1339,40 @@ def test_enqueue_status_upsert_failure_survives_wake_failure(
 
 
 @pytest.mark.offline
+def test_process_enqueue_holding_busy_releases_when_no_docs(tmp_path):
+    """apipeline_process_enqueue_documents(_holding_busy=True) takes over an
+    already-held busy slot instead of treating busy=True as "someone else is
+    running", and releases it when there is nothing to process. This is the
+    handoff ainsert_custom_chunks uses to drain a request_pending atomically; it
+    must never leave the pipeline wedged as busy on the empty path.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            async with lock:
+                pipeline_status["busy"] = True  # simulate a handed-off slot
+
+            # No pending docs in a fresh rag: the handoff must release the slot.
+            await rag.apipeline_process_enqueue_documents(_holding_busy=True)
+            assert pipeline_status.get("busy") is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_atomic_release_busy_or_consume_pending(tmp_path):
     """The loop-exit handoff is atomic via
     ``_atomic_release_busy_or_consume_pending``: the same critical
