@@ -1,3 +1,4 @@
+import asyncio
 import sys
 
 import pytest
@@ -166,7 +167,7 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert(monkeypa
         return {}
 
     def fake_namespace_lock(name, workspace=None):
-        return object()
+        return asyncio.Lock()
 
     monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
     monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
@@ -233,7 +234,7 @@ async def test_custom_chunks_merge_extracted_entities_into_kg(monkeypatch):
         return {}
 
     def fake_namespace_lock(name, workspace=None):
-        return object()
+        return asyncio.Lock()
 
     monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fake_merge)
     monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
@@ -337,7 +338,7 @@ async def test_custom_chunks_persist_before_extraction(monkeypatch):
         return {}
 
     def fake_namespace_lock(name, workspace=None):
-        return object()
+        return asyncio.Lock()
 
     monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
     monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
@@ -345,3 +346,114 @@ async def test_custom_chunks_persist_before_extraction(monkeypatch):
     await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-3")
 
     assert events.index("text_chunks_persisted") < events.index("extract")
+
+
+def _custom_chunks_rag(monkeypatch, status):
+    """A bare LightRAG wired for ainsert_custom_chunks with a shared, mutable
+    ``status`` dict and a real asyncio lock, extraction/merge stubbed."""
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+
+    rag = LightRAG.__new__(LightRAG)
+    rag.full_docs = CaptureKV()
+    rag.text_chunks = CaptureKV()
+    rag.chunks_vdb = CaptureKV()
+    rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    rag.workspace = "test-workspace"
+    for attr in (
+        "chunk_entity_relation_graph",
+        "entities_vdb",
+        "relationships_vdb",
+        "full_entities",
+        "full_relations",
+        "entity_chunks",
+        "relation_chunks",
+        "llm_response_cache",
+    ):
+        setattr(rag, attr, object())
+    rag._build_global_config = lambda: {}
+
+    async def _insert_done():
+        return None
+
+    rag._insert_done = _insert_done
+
+    lock = asyncio.Lock()
+
+    async def fake_namespace_data(name, workspace=None):
+        return status
+
+    def fake_namespace_lock(name, workspace=None):
+        return lock
+
+    async def fake_merge(**kwargs):
+        return None
+
+    monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
+    monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
+    monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fake_merge)
+    return rag
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_rejects_when_pipeline_busy(monkeypatch):
+    """ainsert_custom_chunks writes the KG (Stage 3), so it must not run while
+    the pipeline is busy — a second concurrent merger would double LLM
+    concurrency and desync status/cancellation. It must reject, and neither
+    extract nor merge may run."""
+    status = {"busy": True, "history_messages": []}
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    called = {"extract": False, "merge": False}
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        called["extract"] = True
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    import lightrag.lightrag as lightrag_module
+
+    async def fake_merge(**kwargs):
+        called["merge"] = True
+
+    rag._process_extract_entities = _process_extract_entities
+    monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fake_merge)
+
+    with pytest.raises(RuntimeError, match="busy"):
+        await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-b")
+
+    assert called["extract"] is False
+    assert called["merge"] is False
+    # The pre-existing busy holder's flag must be left untouched.
+    assert status["busy"] is True
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
+    """ainsert_custom_chunks must hold ``busy`` for the whole extract+merge so a
+    concurrent pipeline sees it, and release it afterwards. A request_pending
+    that arrived while busy is drained on release."""
+    status = {"busy": False, "history_messages": [], "request_pending": False}
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    observed = {}
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        observed["busy_during_extract"] = status["busy"]
+        # Simulate a concurrent enqueue arriving while we hold busy.
+        status["request_pending"] = True
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    drained = {"called": False}
+
+    async def _drain():
+        drained["called"] = True
+
+    rag._process_extract_entities = _process_extract_entities
+    rag.apipeline_process_enqueue_documents = _drain
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-h")
+
+    assert observed["busy_during_extract"] is True  # held during the work
+    assert status["busy"] is False  # released afterwards
+    assert status["request_pending"] is False  # drained
+    assert drained["called"] is True  # processing nudged for the queued docs

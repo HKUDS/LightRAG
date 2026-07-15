@@ -1560,6 +1560,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
         update_storage = False
+        busy_acquired = False
+        process_after_release = False
+        pipeline_status = None
+        pipeline_status_lock = None
         try:
             # Clean input texts
             full_text = sanitize_text_for_encoding(full_text)
@@ -1613,6 +1617,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "pipeline_status", workspace=self.workspace
             )
 
+            # Reserve the pipeline busy slot before doing any extraction/merge.
+            # This path now writes the KG (Stage 3), so it must be mutually
+            # exclusive with the processing loop, destructive ops, and another
+            # custom-chunks insert — the single-writer contract the file
+            # pipeline enforces via ``busy``. Entity-keyed locks already keep
+            # the graph data consistent under concurrency, but without this a
+            # second merger would still run: LLM concurrency doubles past
+            # ``llm_model_max_async``, ``pipeline_status`` misreports idle, and
+            # the shared ``cancellation_requested`` flag cross-cancels. Reject
+            # (rather than queue) when the slot is taken, mirroring
+            # ``_acquire_destructive_busy``; ``destructive_busy`` implies
+            # ``busy`` so a running clear/delete is covered too.
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy"):
+                    raise RuntimeError(
+                        "Pipeline is busy with another operation; "
+                        "ainsert_custom_chunks cannot run concurrently. "
+                        "Wait for it to finish and retry."
+                    )
+                if pipeline_status.get("scanning"):
+                    raise RuntimeError(
+                        "A document scan is in progress; "
+                        "ainsert_custom_chunks cannot run concurrently. "
+                        "Wait for the scan to finish and retry."
+                    )
+                pipeline_status["busy"] = True
+            busy_acquired = True
+
             # Stage 1 (barrier): persist chunks BEFORE extraction. Extraction
             # records per-chunk LLM cache references (update_chunk_cache_list ->
             # text_chunks) keyed by chunk id and reads chunks back via
@@ -1657,8 +1689,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
 
         finally:
-            if update_storage:
-                await self._insert_done_with_cleanup()
+            # Release the busy slot even if the flush below raises, otherwise
+            # the pipeline would stay wedged as busy forever. Flush first (while
+            # still busy) so no other writer starts mid-flush, then release.
+            try:
+                if update_storage:
+                    await self._insert_done_with_cleanup()
+            finally:
+                if busy_acquired:
+                    async with pipeline_status_lock:
+                        pipeline_status["busy"] = False
+                        # An enqueue that arrived while we held busy set
+                        # request_pending (it has no running loop to consume
+                        # it). Drain it below so those PENDING docs are not
+                        # stranded until an unrelated trigger.
+                        if pipeline_status.get("request_pending"):
+                            pipeline_status["request_pending"] = False
+                            process_after_release = True
+
+        if process_after_release:
+            try:
+                await self.apipeline_process_enqueue_documents()
+            except Exception as drain_error:
+                logger.warning(
+                    "Failed to drain queued documents after custom-chunks "
+                    f"insert: {drain_error}"
+                )
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
