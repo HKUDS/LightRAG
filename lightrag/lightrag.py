@@ -1640,6 +1640,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "Wait for the scan to finish and retry."
                     )
                 pipeline_status["busy"] = True
+                # Record ownership INSIDE the locked section, immediately after
+                # taking the slot and before any await. Exiting the
+                # ``async with`` awaits the lock's __aexit__ (which awaits an
+                # asyncio.shield), a point at which task cancellation can be
+                # delivered; if busy_acquired were set only after the block, a
+                # cancel there would leave busy=True but busy_acquired=False and
+                # the finally would skip the release, wedging the workspace busy
+                # forever. Mirrors adelete_by_doc_id's we_acquired_pipeline.
+                busy_acquired = True
                 # Stamp our own job identity, mirroring every other acquirer
                 # (processing loop -> "Default Job", deletes -> "...document...").
                 # Critical: flipping busy without overwriting job_name would leave
@@ -1662,7 +1671,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status["cancellation_requested"] = False
                 pipeline_status["cancellation_reason"] = None
                 pipeline_status["cancellation_detail"] = None
-            busy_acquired = True
 
             # Stage 1 (barrier): persist chunks BEFORE extraction. Extraction
             # records per-chunk LLM cache references (update_chunk_cache_list ->

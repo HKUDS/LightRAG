@@ -586,3 +586,65 @@ async def test_custom_chunks_overwrites_stale_deletion_job_name(monkeypatch):
     # The exact adelete_by_doc_id join-guard predicate must be False while
     # custom-chunks holds busy, so a concurrent single delete is rejected.
     assert not (jn.startswith("deleting") and "document" in jn)
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_release_survives_cancel_at_lock_exit(monkeypatch):
+    """If cancellation is delivered while exiting the acquire's status lock —
+    its __aexit__ awaits an asyncio.shield, a real cancellation point — right
+    after busy was set, the finally must still release busy. busy_acquired is
+    recorded inside the lock (atomically with busy), so a cancel at the lock
+    boundary can't leave busy=True with busy_acquired=False and wedge the
+    workspace permanently busy.
+    """
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+
+    status = {"busy": False, "history_messages": [], "request_pending": False}
+
+    class _CancelOnFirstExitLock:
+        """Delivers CancelledError at the FIRST __aexit__ (the acquire block's
+        exit, after busy was set); later exits (the finally's release) behave
+        normally, mirroring how asyncio.shield in the real lock re-raises a
+        cancel at the await boundary."""
+
+        def __init__(self):
+            self._exits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            self._exits += 1
+            if self._exits == 1:
+                raise asyncio.CancelledError()
+            return False
+
+    lock = _CancelOnFirstExitLock()
+
+    rag = LightRAG.__new__(LightRAG)
+    rag.full_docs = CaptureKV()
+    rag.text_chunks = CaptureKV()
+    rag.chunks_vdb = CaptureKV()
+    rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    rag.workspace = "test-workspace"
+
+    async def _insert_done_with_cleanup():
+        return None
+
+    rag._insert_done_with_cleanup = _insert_done_with_cleanup
+
+    async def fake_namespace_data(name, workspace=None):
+        return status
+
+    def fake_namespace_lock(name, workspace=None):
+        return lock
+
+    monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
+    monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
+
+    with pytest.raises(asyncio.CancelledError):
+        await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-x")
+
+    # Despite the cancel at the acquire-lock exit, busy must be released.
+    assert status["busy"] is False
