@@ -140,16 +140,20 @@ async def test_error_document_enqueue_canonicalizes_file_path_before_upsert():
 
 
 @pytest.mark.asyncio
-async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
+async def test_custom_chunks_use_canonical_unknown_source_before_upsert(monkeypatch):
     from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
 
     rag = LightRAG.__new__(LightRAG)
     rag.full_docs = CaptureKV()
     rag.text_chunks = CaptureKV()
     rag.chunks_vdb = CaptureKV()
     rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    rag.workspace = "test-workspace"
 
-    async def _process_extract_entities(chunks):
+    async def _process_extract_entities(
+        chunks, pipeline_status=None, pipeline_status_lock=None
+    ):
         return []
 
     async def _insert_done():
@@ -158,8 +162,186 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert():
     rag._process_extract_entities = _process_extract_entities
     rag._insert_done = _insert_done
 
+    async def fake_namespace_data(name, workspace=None):
+        return {}
+
+    def fake_namespace_lock(name, workspace=None):
+        return object()
+
+    monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
+    monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
+
     await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-1")
 
     assert rag.full_docs.upserts[0]["doc-1"]["file_path"] == "unknown_source"
     chunk = next(iter(rag.text_chunks.upserts[0].values()))
     assert chunk["file_path"] == "unknown_source"
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_merge_extracted_entities_into_kg(monkeypatch):
+    """`ainsert_custom_chunks` must merge extracted entities into the KG.
+
+    Regression: `_process_extract_entities` ran but its result was discarded,
+    so `merge_nodes_and_edges` was never called and no knowledge graph was
+    built from custom chunks (KG-dependent query modes returned nothing while
+    the extraction LLM cost was still spent).
+    """
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+
+    rag = LightRAG.__new__(LightRAG)
+    rag.full_docs = CaptureKV()
+    rag.text_chunks = CaptureKV()
+    rag.chunks_vdb = CaptureKV()
+    rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    rag.workspace = "test-workspace"
+    # Referenced positionally by the merge call; unused because merge is stubbed.
+    for attr in (
+        "chunk_entity_relation_graph",
+        "entities_vdb",
+        "relationships_vdb",
+        "full_entities",
+        "full_relations",
+        "entity_chunks",
+        "relation_chunks",
+        "llm_response_cache",
+    ):
+        setattr(rag, attr, object())
+
+    extracted = [({"Entity": [{"entity_name": "Entity"}]}, {})]
+
+    async def _process_extract_entities(
+        chunks, pipeline_status=None, pipeline_status_lock=None
+    ):
+        return extracted
+
+    async def _insert_done():
+        return None
+
+    rag._process_extract_entities = _process_extract_entities
+    rag._insert_done = _insert_done
+    rag._build_global_config = lambda: {}
+
+    captured: dict = {}
+
+    async def fake_merge(*, chunk_results, doc_id, **kwargs):
+        captured["chunk_results"] = chunk_results
+        captured["doc_id"] = doc_id
+
+    async def fake_namespace_data(name, workspace=None):
+        return {}
+
+    def fake_namespace_lock(name, workspace=None):
+        return object()
+
+    monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fake_merge)
+    monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
+    monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-2")
+
+    # The extracted entities/relationships must reach the KG merge step.
+    assert captured["chunk_results"] == extracted
+    assert captured["doc_id"] == "doc-2"
+
+
+@pytest.mark.asyncio
+async def test_process_extract_entities_surfaces_real_error_without_lock(monkeypatch):
+    """With no pipeline_status/lock, a failing extraction must surface its REAL
+    error, not a TypeError from ``async with None`` masking it.
+
+    Regression (#3367 P2): the except block wrote to pipeline_status under
+    ``async with pipeline_status_lock`` without a None guard, so a lock-less
+    caller saw ``TypeError: NoneType ... async context manager`` instead of the
+    actual extraction failure.
+    """
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+
+    rag = LightRAG.__new__(LightRAG)
+    rag.llm_response_cache = object()
+    rag.text_chunks = object()
+    rag._build_global_config = lambda: {}
+
+    async def boom(*args, **kwargs):
+        raise ValueError("real extraction failure")
+
+    monkeypatch.setattr(lightrag_module, "extract_entities", boom)
+
+    # Called with the default None status/lock (a lock-less direct caller).
+    with pytest.raises(ValueError, match="real extraction failure"):
+        await rag._process_extract_entities({"chunk-1": {"content": "x"}})
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_persist_before_extraction(monkeypatch):
+    """Chunks must be persisted (Stage-1 barrier) BEFORE extraction runs.
+
+    Regression (#3367 P8): extraction records per-chunk LLM cache references and
+    reads chunks back via get_by_id; running it concurrently with the chunk
+    upserts can observe a not-yet-persisted chunk and silently drop the cache
+    reference. A slow text_chunks upsert makes the ordering observable: with the
+    old concurrent gather, extraction ran before the upsert finished; with the
+    barrier it runs after.
+    """
+    import asyncio
+
+    from lightrag import LightRAG
+    import lightrag.lightrag as lightrag_module
+
+    events: list[str] = []
+
+    class SlowText(CaptureKV):
+        async def upsert(self, data):
+            await asyncio.sleep(0.05)  # let a concurrent extraction race ahead
+            events.append("text_chunks_persisted")
+            await super().upsert(data)
+
+    rag = LightRAG.__new__(LightRAG)
+    rag.full_docs = CaptureKV()
+    rag.text_chunks = SlowText()
+    rag.chunks_vdb = CaptureKV()
+    rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
+    rag.workspace = "test-workspace"
+    for attr in (
+        "chunk_entity_relation_graph",
+        "entities_vdb",
+        "relationships_vdb",
+        "full_entities",
+        "full_relations",
+        "entity_chunks",
+        "relation_chunks",
+        "llm_response_cache",
+    ):
+        setattr(rag, attr, object())
+
+    async def _process_extract_entities(
+        chunks, pipeline_status=None, pipeline_status_lock=None
+    ):
+        events.append("extract")
+        # The barrier guarantees the chunk upsert completed first.
+        assert "text_chunks_persisted" in events, (
+            "extraction ran before chunks were persisted"
+        )
+        return []
+
+    async def _insert_done():
+        return None
+
+    rag._process_extract_entities = _process_extract_entities
+    rag._insert_done = _insert_done
+    rag._build_global_config = lambda: {}
+
+    async def fake_namespace_data(name, workspace=None):
+        return {}
+
+    def fake_namespace_lock(name, workspace=None):
+        return object()
+
+    monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
+    monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-3")
+
+    assert events.index("text_chunks_persisted") < events.index("extract")
