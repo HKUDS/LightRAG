@@ -2529,8 +2529,40 @@ async def _merge_edges_then_upsert(
         # 6.1 Finalize source_id
         source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-        # 6.2 Finalize weight by summing new edges and existing weights
-        weight = sum([dp["weight"] for dp in edges_data] + already_weights)
+        # 6.2 Finalize weight. Each extracted relation contributes weight 1.0
+        # (or its parsed strength), so a stored edge's weight tracks the number
+        # of distinct contributing sources. On reprocess/resume the same source
+        # can be re-fed while it is already reflected in already_weights (the
+        # stored scalar), so only sum weights of edges whose source_id is NOT
+        # already stored -- otherwise weight double-counts and grows 1 -> 2 -> 3
+        # per reprocess (the #3367 sibling of description accumulation).
+        # Genuinely new sources still add their weight, preserving legitimate
+        # multi-document growth.
+        #
+        # Filter on the EDGE's own source_ids (already_source_ids) -- the same
+        # source as already_weights -- NOT existing_full_source_ids, which can
+        # come from relation_chunks_storage, a SEPARATE store. relation_chunks
+        # can run ahead of the graph edge on a partial write (chunks upserted,
+        # upsert_edge not yet), so filtering on it would wrongly skip a genuinely
+        # new source (under-count), or, with no stored weight at all, recover the
+        # edge with weight 0. Filtering on already_source_ids keeps the exclusion
+        # consistent with the stored scalar: when there is no stored edge
+        # (already_source_ids empty) nothing is excluded, so a recovered edge
+        # keeps its full weight; a re-fed already-stored source is dropped.
+        # A falsy source_id is dropped from new_source_ids above (it never
+        # persists), so it must not add weight either -- otherwise weight would
+        # outgrow the stored source count. Count only sources that actually
+        # persist: truthy AND not already reflected in the stored scalar.
+        already_edge_source_set = set(already_source_ids)
+        weight = sum(
+            [
+                dp["weight"]
+                for dp in edges_data
+                if dp.get("source_id")
+                and dp["source_id"] not in already_edge_source_set
+            ]
+            + already_weights
+        )
 
         # 6.2 Finalize keywords by merging existing and new keywords
         all_keywords = set()
