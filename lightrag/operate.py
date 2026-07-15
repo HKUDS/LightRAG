@@ -2016,18 +2016,37 @@ def _combine_descriptions_dedup(
     fragment on every reprocess or resume (issue #3367); it also collapses any
     legacy duplicate fragments already stored. Returns the combined list and the
     count of surviving stored fragments, used for accurate merge accounting.
+
+    Fragments are compared and stored *after* ``sanitize_text_for_encoding``:
+    stored descriptions were already sanitized before being persisted (the
+    single-description return and the join in ``_handle_entity_relation_summary``
+    both sanitize), while a freshly re-extracted description is still raw.
+    Comparing raw-vs-sanitized would miss the duplicate whenever sanitization
+    changed the string (e.g. an XML-illegal control char was stripped), so
+    "dirty" descriptions would keep accumulating across reprocess. Sanitizing
+    here is idempotent, so the later sanitize calls are unaffected. Fragments
+    that sanitize to empty are dropped (they carry no information and would only
+    inflate the fragment count / emit ``<sep><sep>`` artifacts on join).
+
+    The two-phase walk is deliberate: ``already_fragment`` is captured after the
+    stored pass so it stays an accurate count of surviving stored fragments. Do
+    NOT collapse both phases into a single ``dict.fromkeys`` over the
+    concatenation — that loses the stored/new boundary the merge accounting log
+    depends on.
     """
     combined: list[str] = []
     seen: set[str] = set()
-    for desc in already_description:
-        if desc not in seen:
-            seen.add(desc)
-            combined.append(desc)
+
+    def _add_sanitized(descriptions: list[str]) -> None:
+        for desc in descriptions:
+            sanitized = sanitize_text_for_encoding(desc)
+            if sanitized and sanitized not in seen:
+                seen.add(sanitized)
+                combined.append(sanitized)
+
+    _add_sanitized(already_description)
     already_fragment = len(combined)
-    for desc in new_descriptions:
-        if desc not in seen:
-            seen.add(desc)
-            combined.append(desc)
+    _add_sanitized(new_descriptions)
     return combined, already_fragment
 
 

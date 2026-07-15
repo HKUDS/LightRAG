@@ -108,7 +108,68 @@ def test_combine_descriptions_dedup_preserves_distinct():
     assert already == 1
 
 
+def test_combine_descriptions_dedup_sanitizes_before_compare():
+    # A re-extracted description carrying an XML-illegal control char (\x08)
+    # sanitizes to a fragment already stored, so it must NOT accumulate on
+    # reprocess (issue #3367 P3c; aligns with #3373's dirty-char case). A raw
+    # comparison would treat the two as distinct and grow the fragment count.
+    stored = ["Alice is a software engineer at Acme."]
+    dirty_new = ["Alice\x08 is a software engineer at Acme."]
+    combined, already = _combine_descriptions_dedup(stored, dirty_new)
+    assert combined == ["Alice is a software engineer at Acme."]
+    assert already == 1
+
+
+def test_combine_descriptions_dedup_collapses_dirty_stored_fragments():
+    # Legacy dirty stored fragments (written before sanitization) collapse
+    # against a clean re-extraction; the surviving stored count reflects the
+    # sanitized fragment, not the raw duplicate.
+    combined, already = _combine_descriptions_dedup(
+        ["Bob\x08 builds pipelines.", "Bob builds pipelines."],
+        ["Bob builds pipelines."],
+    )
+    assert combined == ["Bob builds pipelines."]
+    assert already == 1
+
+
+def test_combine_descriptions_dedup_drops_empty_after_sanitize():
+    # A fragment that is only control chars sanitizes to "" and is dropped, so
+    # it neither inflates already_fragment nor emits a <sep><sep> artifact.
+    combined, already = _combine_descriptions_dedup(["A", "\x08"], ["\x00", "B"])
+    assert combined == ["A", "B"]
+    assert already == 1
+
+
 # --- node merge round-trip --------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_node_reprocess_with_dirty_char_does_not_accumulate():
+    """Round-trip twin of the helper test (aligns with #3373 test #2): a
+    re-extracted description with an XML-illegal control char must dedup against
+    the sanitized stored copy instead of accumulating on reprocess (#3367)."""
+    graph = _MemGraph()
+    cfg = _config()
+    clean = "Alice is a software engineer at Acme."
+    dirty = "Alice\x08 is a software engineer at Acme."
+    base = {
+        "entity_name": "ALICE",
+        "entity_type": "person",
+        "source_id": "chunk-1",
+        "file_path": "doc1.txt",
+        "timestamp": 1,
+    }
+
+    await _merge_nodes_then_upsert(
+        "ALICE", [dict(base, description=clean)], graph, None, cfg
+    )
+    # Reprocess with a dirty variant of the SAME description.
+    await _merge_nodes_then_upsert(
+        "ALICE", [dict(base, description=dirty, timestamp=2)], graph, None, cfg
+    )
+
+    assert _node_fragments(graph, "ALICE") == [clean]
 
 
 @pytest.mark.offline
