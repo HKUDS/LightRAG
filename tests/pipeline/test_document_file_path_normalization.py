@@ -431,7 +431,7 @@ async def test_custom_chunks_rejects_when_pipeline_busy(monkeypatch):
 async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
     """ainsert_custom_chunks must hold ``busy`` for the whole extract+merge so a
     concurrent pipeline sees it, and release it afterwards. A request_pending
-    that arrived while busy is drained on release."""
+    that arrived while busy triggers a best-effort drain on release."""
     status = {"busy": False, "history_messages": [], "request_pending": False}
     rag = _custom_chunks_rag(monkeypatch, status)
 
@@ -447,6 +447,9 @@ async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
 
     async def _drain():
         drained["called"] = True
+        # The real apipeline_process_enqueue_documents clears request_pending
+        # atomically when it re-acquires busy; model that here.
+        status["request_pending"] = False
 
     rag._process_extract_entities = _process_extract_entities
     rag.apipeline_process_enqueue_documents = _drain
@@ -455,5 +458,53 @@ async def test_custom_chunks_holds_busy_during_and_releases_after(monkeypatch):
 
     assert observed["busy_during_extract"] is True  # held during the work
     assert status["busy"] is False  # released afterwards
-    assert status["request_pending"] is False  # drained
     assert drained["called"] is True  # processing nudged for the queued docs
+    assert status["request_pending"] is False  # consumed by the drain
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
+    """With no request_pending, the busy slot is released and no drain runs."""
+    status = {"busy": False, "history_messages": [], "request_pending": False}
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    drained = {"called": False}
+
+    async def _drain():
+        drained["called"] = True
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    rag._process_extract_entities = _process_extract_entities
+    rag.apipeline_process_enqueue_documents = _drain
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-np")
+
+    assert status["busy"] is False
+    assert drained["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_custom_chunks_busy_rejection_does_not_flush_shared_buffers(monkeypatch):
+    """P1: a busy rejection must NOT run _insert_done_with_cleanup. The call
+    neither acquired the slot nor wrote data, so flushing/discarding the SHARED
+    pending buffers could commit or tear down the running job's in-flight ops."""
+    status = {"busy": True, "history_messages": []}
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    cleanup = {"called": False}
+
+    async def _insert_done_with_cleanup():
+        cleanup["called"] = True
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        return []
+
+    rag._insert_done_with_cleanup = _insert_done_with_cleanup
+    rag._process_extract_entities = _process_extract_entities
+
+    with pytest.raises(RuntimeError, match="busy"):
+        await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-p1")
+
+    assert cleanup["called"] is False

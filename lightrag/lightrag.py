@@ -1559,9 +1559,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
-        update_storage = False
         busy_acquired = False
-        process_after_release = False
         pipeline_status = None
         pipeline_status_lock = None
         try:
@@ -1583,7 +1581,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.warning("This document is already in the storage.")
                 return
 
-            update_storage = True
             logger.info(f"Inserting {len(new_docs)} docs")
 
             inserting_chunks: dict[str, Any] = {}
@@ -1689,32 +1686,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
 
         finally:
-            # Release the busy slot even if the flush below raises, otherwise
-            # the pipeline would stay wedged as busy forever. Flush first (while
-            # still busy) so no other writer starts mid-flush, then release.
-            try:
-                if update_storage:
+            # Everything here is gated on busy_acquired. If we rejected
+            # (busy/scanning) or returned before acquiring, we neither own the
+            # slot nor wrote any data, so we must NOT flush/discard the SHARED
+            # pending buffers — doing so could commit or tear down another
+            # running job's in-flight index ops.
+            if busy_acquired:
+                drain_pending = False
+                # Flush first (while still busy so no other writer starts
+                # mid-flush), then release the slot even if the flush raises —
+                # otherwise the pipeline would stay wedged as busy forever.
+                try:
                     await self._insert_done_with_cleanup()
-            finally:
-                if busy_acquired:
+                finally:
                     async with pipeline_status_lock:
                         pipeline_status["busy"] = False
                         # An enqueue that arrived while we held busy set
-                        # request_pending (it has no running loop to consume
-                        # it). Drain it below so those PENDING docs are not
-                        # stranded until an unrelated trigger.
-                        if pipeline_status.get("request_pending"):
-                            pipeline_status["request_pending"] = False
-                            process_after_release = True
-
-        if process_after_release:
-            try:
-                await self.apipeline_process_enqueue_documents()
-            except Exception as drain_error:
-                logger.warning(
-                    "Failed to drain queued documents after custom-chunks "
-                    f"insert: {drain_error}"
-                )
+                        # request_pending but had no running loop to consume it.
+                        # Note whether to kick processing so those PENDING docs
+                        # are not stranded. request_pending is left set (not
+                        # cleared here) so the drain — or, if a concurrent writer
+                        # wins the slot first, the next trigger — still sees it.
+                        drain_pending = bool(pipeline_status.get("request_pending"))
+                    if drain_pending:
+                        # Best-effort: apipeline_process_enqueue_documents
+                        # re-acquires busy atomically and clears request_pending
+                        # itself. Runs inside the finally so it happens whether
+                        # or not the body raised, and busy is already released.
+                        try:
+                            await self.apipeline_process_enqueue_documents()
+                        except Exception as drain_error:
+                            logger.warning(
+                                "Failed to drain queued documents after "
+                                f"custom-chunks insert: {drain_error}"
+                            )
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
