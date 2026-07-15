@@ -213,7 +213,7 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
-  /** If True, emits retrieval pipeline progress events before response chunks (streaming only). Default: false. */
+  /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
   include_progress?: boolean
 }
 

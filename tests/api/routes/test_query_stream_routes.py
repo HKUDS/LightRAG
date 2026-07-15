@@ -194,11 +194,7 @@ class TestQueryStreamProtocolOrder:
                 "is_streaming": False,
                 "content": "test response",
             },
-            "data": {
-                "references": [
-                    {"reference_id": "1", "file_path": "/doc.pdf"}
-                ]
-            },
+            "data": {"references": [{"reference_id": "1", "file_path": "/doc.pdf"}]},
         }
 
         async def _fake_aquery(*a, **kw):
@@ -248,6 +244,9 @@ class TestQueryStreamProtocolOrder:
             assert not any("progress" in item for item in lines), (
                 "Default stream must not contain progress lines"
             )
+            assert not any("response_time" in item for item in lines), (
+                "Default stream must not contain timing metadata"
+            )
         finally:
             sys.argv = original_argv
 
@@ -283,6 +282,9 @@ class TestQueryStreamProtocolOrder:
             )
             assert first_progress_idx < first_ref_idx, (
                 "progress must precede references when include_progress=True"
+            )
+            assert "response_time" in lines[-1], (
+                "include_progress stream must end with timing metadata"
             )
         finally:
             sys.argv = original_argv

@@ -108,7 +108,8 @@ class QueryRequest(BaseModel):
     include_progress: Optional[bool] = Field(
         default=False,
         description="If True, emits retrieval pipeline progress events (e.g. "
-        "'extracting_keywords') as NDJSON lines before the response chunks. "
+        "'extracting_keywords') before the response chunks and appends a final "
+        "response_time metadata line. "
         "Only applies to /query/stream. When False (default), the stream "
         "preserves the original protocol order: references first, then "
         "response chunks — ensuring backward compatibility for existing clients.",
@@ -198,13 +199,12 @@ class StreamChunkResponse(BaseModel):
     2. ``response`` — LLM response content chunks (streaming) or the
        complete response (non-streaming).
     3. ``error`` — error message if processing fails.
-    4. ``response_time`` — total server-side processing duration, emitted
-       once as the final line.
 
     When the client opts in via ``include_progress=True``:
     ``progress`` lines are emitted **before** ``references``, so clients
     that depend on ``references`` being the first line should not enable
-    ``include_progress``.
+    ``include_progress``. A final ``response_time`` metadata line is also
+    emitted after the response completes.
     """
 
     references: Optional[List[Dict[str, str]]] = Field(
@@ -223,7 +223,7 @@ class StreamChunkResponse(BaseModel):
     )
     response_time: Optional[float] = Field(
         default=None,
-        description="Total server-side processing time in seconds (only in the final metadata line)",
+        description="Total server-side processing time in seconds (final metadata line when include_progress=True)",
     )
 
 
@@ -507,14 +507,15 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         result: dict[str, Any],
         include_references: bool,
         include_chunk_content: bool,
+        include_response_time: bool,
         start_time: float,
     ):
         """Shared async generator that yields NDJSON lines for streaming responses.
 
         Used by ``/query/stream`` to format NDJSON output with consistent
-        error-handling behaviour. A final metadata line carrying
-        ``response_time`` is emitted after all content so the client can
-        display the total server-side processing duration.
+        error-handling behaviour. When ``include_response_time`` is enabled,
+        a final metadata line is emitted after all content so opted-in clients
+        can display the total server-side processing duration.
         """
 
         async def _generate():
@@ -567,10 +568,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
                 yield f"{json.dumps(complete_response)}\n"
 
-            # Final metadata line: total server-side processing time (retrieval
-            # + LLM generation). Emitted last so streaming clients can stamp
-            # the assistant message once the full response has been delivered.
-            yield f"{json.dumps({'response_time': round(time.perf_counter() - start_time, 3)})}\n"
+            if include_response_time:
+                # Final metadata line: total server-side processing time
+                # (retrieval + LLM generation) for opted-in clients.
+                yield f"{json.dumps({'response_time': round(time.perf_counter() - start_time, 3)})}\n"
 
         return _generate
 
@@ -670,6 +671,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         - With ``include_progress=True`` (opt-in):
           - Progress lines: `{"progress": "step_name"}` emitted **before** references
           - Then references, response chunks, and errors as above
+          - Final line: `{"response_time": 1.234}`
           - Clients that depend on references being the first line must not enable ``include_progress``
 
         > If stream parameter is False, or the query hit LLM cache, complete response delivered in a single streaming message.
@@ -733,8 +735,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         ```
         Progress lines (`{"progress": "extracting_keywords"}`, etc.) are emitted
         before references and response chunks, letting the client show live
-        pipeline status. Omit ``include_progress`` (or set it to ``false``) to
-        keep the original protocol order where references is always the first line.
+        pipeline status. A final `{"response_time": 1.234}` metadata line follows
+        the response. Omit ``include_progress`` (or set it to ``false``) to keep
+        the original protocol shape with no progress or timing metadata lines.
 
         Conversation with context:
         ```json
@@ -776,7 +779,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - **mode**: Query strategy - "mix" recommended for best results
                 - **stream**: Enable streaming (True) or complete response (False)
                 - **include_references**: Whether to include source citations
-                - **include_progress**: If True, emit retrieval progress events before references (default: False)
+                - **include_progress**: If True, emit retrieval progress events before references and a final response_time metadata line (default: False)
                 - **response_type**: Format preference (e.g., "Multiple Paragraphs")
                 - **top_k**: Number of top entities/relations to retrieve
                 - **conversation_history**: Previous dialogue context for multi-turn conversations
@@ -789,6 +792,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                   - References object (if requested): `{"references": [...]}`
                   - Content chunks: `{"response": "chunk content"}`
                   - Error objects: `{"error": "error message"}`
+                  - Final timing object (only if include_progress=True): `{"response_time": 1.234}`
                 - **Non-streaming mode**: Single JSON object
                   - Complete response: `{"references": [...], "response": "complete content"}`
 
@@ -857,6 +861,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             result=result,
                             include_references=include_references,
                             include_chunk_content=include_chunk_content,
+                            include_response_time=True,
                             start_time=start_time,
                         )
                         async for line in stream_gen():
@@ -882,6 +887,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     result=result,
                     include_references=request.include_references,
                     include_chunk_content=request.include_chunk_content,
+                    include_response_time=False,
                     start_time=start_time,
                 )
 
