@@ -1453,6 +1453,113 @@ async def test_enqueue_endpoint_releases_token_on_acquire_cancellation(
     assert pipeline_status.get("pending_enqueue_tokens", {}) == {}
 
 
+async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff(
+    tmp_path,
+):
+    """Regression (#3408 Codex P2): a cancellation delivered after the scan
+    endpoint reserves ``scanning``/``scanning_exclusive`` but before the bg
+    task takes over — at the ``pipeline_status_lock`` __aexit__ await, or as
+    ``add_task`` runs — must not leak the reservation. The endpoint's finally
+    releases the owner token so both flags return to False; without the
+    try/finally around the acquire->schedule window they would stay stuck
+    True and block every future scan/upload until restart.
+    """
+    import asyncio
+    import importlib
+
+    workspace = f"scan-cancel-test-{uuid4().hex}"
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    class _CancelOnAddTask(_document_routes.BackgroundTasks):
+        def add_task(self, *args, **kwargs):
+            # Simulate the request being cancelled in the window between
+            # reserving the scanning slot and handing off to the bg task.
+            raise asyncio.CancelledError()
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await scan_endpoint(_CancelOnAddTask())
+
+    # The finally released the reservation (old code, with no try/finally
+    # around the acquire->schedule window, would leak both flags here).
+    assert pipeline_status.get("scanning") is False
+    assert pipeline_status.get("scanning_exclusive") is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_clear_endpoint_releases_destructive_busy_on_cancellation_during_setup(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 Codex P2): a cancellation delivered after clear
+    reserves the destructive slot but before/while it writes job status (the
+    ``pipeline_status_lock`` __aenter__ await) must not leak the reservation.
+    The acquire + job-status setup now live inside the try/finally, so the
+    owner-checked release frees busy/destructive_busy; the pre-fix layout put
+    the job-status write outside the try and left the workspace permanently
+    busy.
+    """
+    import asyncio
+    import importlib
+
+    workspace = f"clear-cancel-test-{uuid4().hex}"
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    class _CancelNow:
+        @staticmethod
+        def now():
+            # Cancellation delivered while writing job status, inside the
+            # status-init lock (which the fix moved inside the endpoint's try).
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(_document_routes, "datetime", _CancelNow)
+
+    router = create_document_routes(rag, doc_manager)
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await clear_endpoint()
+
+    # The finally released the destructive slot (old code, with job-status
+    # setup outside the try/finally, would leak busy + destructive_busy here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
 async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
     tmp_path, monkeypatch
 ):

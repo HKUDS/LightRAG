@@ -1478,6 +1478,46 @@ async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
     )
 
 
+def _release_scanning_action(status) -> None:
+    status.update(
+        {"scanning": False, "scanning_exclusive": False, "scanning_owner": None}
+    )
+
+
+async def _release_scanning_reservation(rag: LightRAG, token: str) -> None:
+    """Release the scanning slot reserved by the ``/documents/scan`` endpoint.
+
+    Owner-checked by ``token`` (a no-op if a later scan took the slot) and
+    cancellation-resistant. Used by the endpoint's finally to cover the window
+    between reserving ``scanning``/``scanning_exclusive`` and handing the task
+    off to ``run_scanning_process`` (which otherwise owns the release). Never
+    raises (except a re-raised cancellation after the release has completed).
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        with_reservation_lock,
+    )
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+    except PipelineNotInitializedError:
+        return
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
+    await with_reservation_lock(
+        pipeline_status,
+        pipeline_status_lock,
+        owner_key="scanning_owner",
+        token=token,
+        action=_release_scanning_action,
+    )
+
+
 def find_existing_file_by_file_path(input_dir: Path, file_path: str) -> Path | None:
     """Find an input-dir file whose canonical basename matches ``file_path``.
 
@@ -2602,72 +2642,89 @@ def create_document_routes(
         #     pending-enqueue slot (see _reserve_enqueue_slot): the bg
         #     task has not yet written doc_status and we would otherwise
         #     race with its mid-flight write.
-        async with pipeline_status_lock:
-            if pipeline_status.get("busy"):
-                logger.warning(
-                    "Scan request skipped: pipeline is busy processing documents"
+        reserved = False
+        handed_off = False
+        try:
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy"):
+                    logger.warning(
+                        "Scan request skipped: pipeline is busy processing documents"
+                    )
+                    return ScanResponse(
+                        status="scanning_skipped_pipeline_busy",
+                        message=(
+                            "Pipeline is currently busy processing documents. "
+                            "Wait for the running job to finish before triggering another scan."
+                        ),
+                        track_id=track_id,
+                    )
+                if pipeline_status.get("scanning"):
+                    logger.warning(
+                        "Scan request skipped: another scan is already in progress"
+                    )
+                    return ScanResponse(
+                        status="scanning_skipped_pipeline_busy",
+                        message=(
+                            "Another scan is already in progress. "
+                            "Wait for it to finish before triggering a new one."
+                        ),
+                        track_id=track_id,
+                    )
+                pending_enqueues = pipeline_status.get("pending_enqueues", 0)
+                if pending_enqueues > 0:
+                    logger.warning(
+                        "Scan request skipped: "
+                        f"{pending_enqueues} pending enqueue(s) reserved by "
+                        "upload/insert endpoints"
+                    )
+                    return ScanResponse(
+                        status="scanning_skipped_pipeline_busy",
+                        message=(
+                            "Document upload/insert is being enqueued. "
+                            "Wait for in-flight work to complete before triggering a scan."
+                        ),
+                        track_id=track_id,
+                    )
+                # ``scanning`` covers the whole scan task lifecycle (used by
+                # this endpoint to refuse overlapping scans).
+                # ``scanning_exclusive`` is True only during the
+                # classification phase: run_scanning_process clears it once
+                # classification is done so concurrent uploads can land
+                # while the scan-driven processing finishes.
+                # Take both flags + stamp the owner in a single atomic update.
+                pipeline_status.update(
+                    {
+                        "scanning": True,
+                        "scanning_exclusive": True,
+                        "scanning_owner": scanning_token,
+                    }
                 )
-                return ScanResponse(
-                    status="scanning_skipped_pipeline_busy",
-                    message=(
-                        "Pipeline is currently busy processing documents. "
-                        "Wait for the running job to finish before triggering another scan."
-                    ),
-                    track_id=track_id,
-                )
-            if pipeline_status.get("scanning"):
-                logger.warning(
-                    "Scan request skipped: another scan is already in progress"
-                )
-                return ScanResponse(
-                    status="scanning_skipped_pipeline_busy",
-                    message=(
-                        "Another scan is already in progress. "
-                        "Wait for it to finish before triggering a new one."
-                    ),
-                    track_id=track_id,
-                )
-            pending_enqueues = pipeline_status.get("pending_enqueues", 0)
-            if pending_enqueues > 0:
-                logger.warning(
-                    "Scan request skipped: "
-                    f"{pending_enqueues} pending enqueue(s) reserved by "
-                    "upload/insert endpoints"
-                )
-                return ScanResponse(
-                    status="scanning_skipped_pipeline_busy",
-                    message=(
-                        "Document upload/insert is being enqueued. "
-                        "Wait for in-flight work to complete before triggering a scan."
-                    ),
-                    track_id=track_id,
-                )
-            # ``scanning`` covers the whole scan task lifecycle (used by
-            # this endpoint to refuse overlapping scans).
-            # ``scanning_exclusive`` is True only during the
-            # classification phase: run_scanning_process clears it once
-            # classification is done so concurrent uploads can land
-            # while the scan-driven processing finishes.
-            # Take both flags + stamp the owner in a single atomic update.
-            pipeline_status.update(
-                {
-                    "scanning": True,
-                    "scanning_exclusive": True,
-                    "scanning_owner": scanning_token,
-                }
-            )
+                # Slot now owned by scanning_token; arm the finally so a
+                # cancellation before hand-off releases it. Set inside the lock,
+                # immediately after the atomic update, with no await in between.
+                reserved = True
 
-        # Start the scanning process in the background with track_id.  The
-        # task is responsible for clearing both flags in its finally block,
-        # owner-checked by scanning_token.
-        background_tasks.add_task(
-            run_scanning_process, rag, doc_manager, track_id, scanning_token
-        )
-        return ScanResponse(
-            status="scanning_started",
-            message="Scanning process has been initiated in the background",
-            track_id=track_id,
-        )
+            # Start the scanning process in the background with track_id.  The
+            # task is responsible for clearing both flags in its finally block,
+            # owner-checked by scanning_token.
+            background_tasks.add_task(
+                run_scanning_process, rag, doc_manager, track_id, scanning_token
+            )
+            # Ownership of the slot transferred to the bg task — it releases in
+            # its finally. The endpoint's finally must NOT release it again.
+            handed_off = True
+            return ScanResponse(
+                status="scanning_started",
+                message="Scanning process has been initiated in the background",
+                track_id=track_id,
+            )
+        finally:
+            # Release the scanning slot if we reserved it but a cancellation
+            # arrived before the bg task took over (e.g. at the
+            # pipeline_status_lock __aexit__ await, or before add_task ran).
+            # Owner-checked + idempotent, so a no-op once the task owns it.
+            if reserved and not handed_off:
+                await _release_scanning_reservation(rag, scanning_token)
 
     @router.post(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
@@ -3208,25 +3265,30 @@ def create_document_routes(
         acquired, reason = await _acquire_destructive_busy(rag, destructive_token)
         if not acquired:
             return ClearDocumentsResponse(status="busy", message=reason)
-        async with pipeline_status_lock:
-            pipeline_status.update(
-                {
-                    "job_name": "Clearing Documents",
-                    "job_start": datetime.now().isoformat(),
-                    "docs": 0,
-                    "batchs": 0,
-                    "cur_batch": 0,
-                    "request_pending": False,  # Clear any previous request
-                    "latest_message": "Starting document clearing process",
-                }
-            )
-            # Cleaning history_messages without breaking it as a shared list object
-            del pipeline_status["history_messages"][:]
-            pipeline_status["history_messages"].append(
-                "Starting document clearing process"
-            )
-
+        # Everything below runs inside try/finally so a cancellation delivered
+        # after the destructive slot is reserved — e.g. at the
+        # pipeline_status_lock __aenter__ await while writing job status, before
+        # any drop work begins — still runs the owner-checked release in
+        # ``finally`` and cannot leave the workspace permanently busy.
         try:
+            async with pipeline_status_lock:
+                pipeline_status.update(
+                    {
+                        "job_name": "Clearing Documents",
+                        "job_start": datetime.now().isoformat(),
+                        "docs": 0,
+                        "batchs": 0,
+                        "cur_batch": 0,
+                        "request_pending": False,  # Clear any previous request
+                        "latest_message": "Starting document clearing process",
+                    }
+                )
+                # Cleaning history_messages without breaking it as a shared list object
+                del pipeline_status["history_messages"][:]
+                pipeline_status["history_messages"].append(
+                    "Starting document clearing process"
+                )
+
             # Use drop method to clear all data
             drop_tasks = []
             storages = [
