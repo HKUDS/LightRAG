@@ -1688,6 +1688,119 @@ async def with_token_set_reservation_lock(
     return await run_to_completion(_run)
 
 
+# ============================================================================
+# Managed reservation-holding background tasks
+# ============================================================================
+#
+# Scans / deletes / enqueues reserve a slot in the request handler, then run the
+# actual work in the background. Starlette ``BackgroundTasks`` run only AFTER the
+# response body is sent and are not tracked, so a request cancelled mid-send
+# would drop the callback and strand the reservation. Instead we start a real
+# ``asyncio`` task, track it for shutdown, and hand ownership over via a start
+# barrier so a cancellation before takeover releases the slot instead of leaking
+# it or letting the child run unreserved.
+
+
+async def _join_resistant(task) -> Optional[asyncio.CancelledError]:
+    """Join ``task`` resisting (repeated) cancellation.
+
+    Returns a caller cancellation observed while waiting (or ``None``); NEVER
+    propagates the task's own exception or cancellation, so a caller can always
+    run its cleanup (e.g. a backstop release) after the join.
+    """
+    pending_cancel = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                break  # the task itself is done+cancelled
+            pending_cancel = pending_cancel or exc
+        except Exception:
+            break  # task finished with an exception; retrieved below
+    if not task.cancelled():
+        task.exception()  # retrieve to avoid "never retrieved" warnings
+    return pending_cancel
+
+
+async def start_reserved_background_task(
+    background_tasks: set, *, work, backstop_release
+):
+    """Start a background task that already holds a reservation and hand ownership
+    to it safely.
+
+    ``work(started: asyncio.Event)`` MUST call ``started.set()`` as the first
+    statement inside its own ``try`` and release the reservation in its
+    ``finally``. ``backstop_release()`` is an owner-checked, idempotent release
+    used only if the child never takes over.
+
+    Returns the running task once the child has taken over (``started`` set). If
+    this coroutine is cancelled before takeover, or the child ends before
+    signalling, the child is cancelled and joined, ``backstop_release`` runs
+    (a no-op if the child already released), and the original cancellation — or a
+    startup failure — is raised. The child therefore never runs unreserved and
+    the reservation is never stranded.
+    """
+    started = asyncio.Event()
+    task = asyncio.ensure_future(work(started))
+    background_tasks.add(task)
+
+    def _done(t):
+        background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                direct_log(
+                    f"Reserved background task failed: {exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+
+    task.add_done_callback(_done)
+
+    waiter = asyncio.ensure_future(started.wait())
+    caller_cancel = None
+    try:
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError as exc:
+        caller_cancel = exc
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+    if started.is_set() and caller_cancel is None:
+        return task  # child took over; its finally owns the release
+
+    # Not taken over (child ended before signalling) or caller cancelled: tear
+    # down deterministically so the child never runs unreserved.
+    task.cancel()
+    join_cancel = await _join_resistant(task)
+    await backstop_release()
+    cancel = caller_cancel or join_cancel
+    if cancel is not None:
+        raise cancel
+    raise RuntimeError("reserved background task failed to start")
+
+
+async def drain_reserved_background_tasks(
+    background_tasks: set,
+) -> Optional[asyncio.CancelledError]:
+    """Cancel and join all tracked reserved background tasks (used at shutdown).
+
+    Resists repeated cancellation so every child's ``finally`` releases its
+    reservation before shared state is torn down. Returns a deferred caller
+    cancellation to re-raise AFTER the caller's own cleanup, or ``None``.
+    """
+    tasks = list(background_tasks)
+    for task in tasks:
+        task.cancel()
+    pending_cancel = None
+    for task in tasks:
+        observed = await _join_resistant(task)
+        pending_cancel = pending_cancel or observed
+    return pending_cancel
+
+
 async def get_update_flag(namespace: str, workspace: str | None = None):
     """
     Create a namespace's update flag for a workers.

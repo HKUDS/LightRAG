@@ -69,6 +69,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     # set_default_workspace,
     cleanup_keyed_lock,
+    drain_reserved_background_tasks,
     finalize_share_data,
 )
 from fastapi.security import OAuth2PasswordRequestForm
@@ -1290,6 +1291,14 @@ def create_app(args):
             yield
 
         finally:
+            # Cancel and join all reserved background tasks FIRST, so each
+            # child's finally releases its reservation while shared state is
+            # still alive. Resists repeated cancellation; a deferred shutdown
+            # cancellation is re-raised only after storage/shared-state cleanup.
+            shutdown_cancel = await drain_reserved_background_tasks(
+                app.state.background_tasks
+            )
+
             # Clean up database connections
             await rag.finalize_storages()
 
@@ -1302,6 +1311,10 @@ def create_app(args):
                 logger.debug(
                     "Gunicorn Mode: postpone shared storage finalization to master process"
                 )
+
+            # Re-raise a shutdown cancellation only after all cleanup is done.
+            if shutdown_cancel is not None:
+                raise shutdown_cancel
 
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
