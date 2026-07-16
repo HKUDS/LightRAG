@@ -14,6 +14,7 @@ holder records.
 """
 
 import asyncio
+import os
 import subprocess
 import sys
 
@@ -167,24 +168,32 @@ async def test_lease_release_is_owner_checked():
 @pytest.mark.offline
 async def test_lease_reclaims_on_pid_reuse():
     """A live PID whose start time differs from the recorded one is a DIFFERENT
-    process that reused the PID → reclaim."""
+    process that reused the PID → reclaim.
+
+    The recorded PID must be another live process, NOT our own: _process_alive
+    short-circuits ``pid == os.getpid()`` to alive (a process is always alive to
+    itself), so a self-PID record could never look reused.
+    """
     finalize_share_data()
     initialize_share_data(2)
+    # A live OTHER process whose recorded start id is wrong = a different process
+    # reused this PID.
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        import os
-
         key = _get_combined_key("ns", "reuse")
-        # Our PID is alive, but the recorded start id is wrong → PID reuse.
         _holders()[key] = {
-            "owner_pid": os.getpid(),
-            "process_start_id": "definitely-not-our-start-time",
+            "owner_pid": proc.pid,
+            "process_start_id": "definitely-not-its-real-start-time",
             "lease_id": "stale",
         }
-        async with asyncio.timeout(2):
+        async with asyncio.timeout(5):
             async with get_storage_keyed_lock("reuse", namespace="ns"):
-                assert _holders()[key]["lease_id"] != "stale"
+                assert _holders()[key]["lease_id"] != "stale"  # reclaimed by us
+                assert _holders()[key]["owner_pid"] == os.getpid()
         assert key not in _holders()
     finally:
+        proc.kill()
+        proc.wait()
         finalize_share_data()
 
 
