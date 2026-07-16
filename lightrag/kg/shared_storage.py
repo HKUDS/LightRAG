@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import multiprocessing as mp
+import random
 import uuid
 from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing import Manager
@@ -66,10 +67,18 @@ _workers = None
 _manager = None
 
 # Global singleton data for multi-process keyed locks
-_lock_registry: Optional[Dict[str, mp.synchronize.Lock]] = None
+_lock_registry: Optional[Dict[str, Any]] = None
 _lock_registry_count: Optional[Dict[str, int]] = None
 _lock_cleanup_data: Optional[Dict[str, time.time]] = None
 _registry_guard = None
+# Holder records for multi-process keyed locks (dead-worker recovery). Maps a
+# combined key to {owner_pid, process_start_id, lease_id} while the lock is held;
+# the record IS the lock (replaces manager.Lock()), so a SIGKILLed holder can be
+# reclaimed by a live worker instead of deadlocking every process.
+_keyed_lock_holders: Optional[Dict[str, Any]] = None
+# Keyed-lock lease poll backoff bounds (seconds).
+_KEYED_LEASE_POLL_BASE = 0.02
+_KEYED_LEASE_POLL_MAX = 0.5
 # Timeout for keyed locks in seconds (Default 300)
 CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
 # Cleanup pending list threshold for triggering cleanup (Default 500)
@@ -182,6 +191,7 @@ class UnifiedLock(Generic[T]):
         name: str = "unnamed",
         enable_logging: bool = True,
         async_lock: Optional[asyncio.Lock] = None,
+        mp_is_lease: bool = False,
     ):
         self._lock = lock
         self._is_async = is_async
@@ -189,6 +199,10 @@ class UnifiedLock(Generic[T]):
         self._name = name  # for debug only
         self._enable_logging = enable_logging  # for debug only
         self._async_lock = async_lock  # auxiliary lock for coroutine synchronization
+        # When True, ``_lock`` is a _KeyedLeaseLock whose acquire() is an async
+        # holder-record poll (dead-only reclaim) rather than a blocking
+        # manager.Lock() acquire offloaded to an executor thread.
+        self._mp_is_lease = mp_is_lease
 
     async def _acquire_mp_lock_in_executor(self) -> None:
         """Acquire the multiprocess lock without blocking the event loop.
@@ -233,6 +247,12 @@ class UnifiedLock(Generic[T]):
             # Note: self._lock should never be None here as the check has been moved
             # to get_internal_lock() and get_data_init_lock() functions
             if self._is_async:
+                await self._lock.acquire()
+            elif self._mp_is_lease:
+                # Holder-record lease: an async poll that reclaims a confirmed-
+                # dead owner's lease and never blocks the event loop (no executor
+                # thread). The async gate above already caps this process to one
+                # poller per key.
                 await self._lock.acquire()
             else:
                 # A Manager lock proxy blocks the calling thread until every
@@ -341,7 +361,7 @@ class UnifiedLock(Generic[T]):
     def __enter__(self) -> "UnifiedLock[T]":
         """For backward compatibility"""
         try:
-            if self._is_async:
+            if self._is_async or self._mp_is_lease:
                 raise RuntimeError("Use 'async with' for shared_storage lock")
 
             # Acquire the main lock
@@ -524,10 +544,90 @@ def _perform_lock_cleanup(
         return 0, earliest_cleanup_time, last_cleanup_time
 
 
+def _keyed_lease_backoff(attempt: int) -> float:
+    """Exponential backoff with jitter for the keyed-lock lease poll.
+
+    The per-process async gate already caps concurrent pollers to one per process
+    per key, so this only spaces out *cross-process* contention; jitter avoids a
+    thundering herd when a lease is released."""
+    base = min(_KEYED_LEASE_POLL_MAX, _KEYED_LEASE_POLL_BASE * (2 ** min(attempt, 5)))
+    return base * (0.5 + random.random() * 0.5)
+
+
+class _KeyedLeaseLock:
+    """Multiprocess keyed lock backed by a holder record, not a manager.Lock().
+
+    The record IS the lock: acquiring writes
+    ``_keyed_lock_holders[combined_key] = {owner_pid, process_start_id,
+    lease_id}`` under ``_registry_guard`` (a single manager.dict write, atomic);
+    releasing pops it iff we still own ``lease_id``. A record whose owner process
+    is *confirmed dead* (:func:`_process_alive` — PID gone or start-id mismatch)
+    is reclaimed lazily on the next acquire, so a SIGKILLed holder can no longer
+    deadlock every other worker. Dead-only: a live (merely slow) owner is never
+    preempted, so no fencing token is needed.
+
+    Per-process, per-acquire — each instance holds its own ``lease_id``; the only
+    shared state is ``_keyed_lock_holders``. The liveness probe runs OUTSIDE the
+    guard so ``os.kill`` / ``/proc`` reads never widen the (otherwise µs-scale)
+    guard window.
+    """
+
+    __slots__ = ("_combined_key", "_lease_id")
+
+    def __init__(self, combined_key: str) -> None:
+        self._combined_key = combined_key
+        self._lease_id: Optional[str] = None
+
+    async def acquire(self) -> None:
+        attempt = 0
+        while True:
+            with _registry_guard:
+                holder = _keyed_lock_holders.get(self._combined_key)
+                if holder is None:
+                    lease_id = uuid.uuid4().hex
+                    _keyed_lock_holders[self._combined_key] = {
+                        "owner_pid": os.getpid(),
+                        "process_start_id": _my_start_id(),
+                        "lease_id": lease_id,
+                    }
+                    self._lease_id = lease_id
+                    return
+                snap = dict(holder)
+            # Probe liveness outside the guard (os.kill / /proc can be slow).
+            if not _process_alive(snap.get("owner_pid"), snap.get("process_start_id")):
+                with _registry_guard:
+                    cur = _keyed_lock_holders.get(self._combined_key)
+                    # Recheck the SAME lease_id so a holder that changed between
+                    # the probe and the reclaim is never clobbered.
+                    if cur is not None and cur.get("lease_id") == snap.get("lease_id"):
+                        _keyed_lock_holders.pop(self._combined_key, None)
+                continue  # retry the claim immediately
+            # Live owner → back off (this is the only cancellation point; no
+            # lease is held here, so a cancel simply abandons the wait).
+            await asyncio.sleep(_keyed_lease_backoff(attempt))
+            attempt += 1
+
+    def release(self) -> None:
+        lease_id = self._lease_id
+        if lease_id is None:
+            return
+        self._lease_id = None
+        with _registry_guard:
+            holder = _keyed_lock_holders.get(self._combined_key)
+            if holder is not None and holder.get("lease_id") == lease_id:
+                _keyed_lock_holders.pop(self._combined_key, None)
+
+
 def _get_or_create_shared_raw_mp_lock(
     factory_name: str, key: str
-) -> Optional[mp.synchronize.Lock]:
-    """Return the *singleton* manager.Lock() proxy for keyed lock, creating if needed."""
+) -> Optional["_KeyedLeaseLock"]:
+    """Return a fresh holder-lease lock for a keyed lock (multiprocess only).
+
+    Refcount + idle-cleanup bookkeeping is preserved (``_lock_registry`` now holds
+    a presence sentinel rather than a manager.Lock); the actual mutual exclusion
+    lives in ``_keyed_lock_holders`` via :class:`_KeyedLeaseLock`. A FRESH lease
+    object is returned per call — each acquisition owns its own ``lease_id``.
+    """
     if not _is_multiprocess:
         return None
 
@@ -536,8 +636,7 @@ def _get_or_create_shared_raw_mp_lock(
         raw = _lock_registry.get(combined_key)
         count = _lock_registry_count.get(combined_key)
         if raw is None:
-            raw = _manager.Lock()
-            _lock_registry[combined_key] = raw
+            _lock_registry[combined_key] = True  # presence sentinel (bookkeeping)
             count = 0
         else:
             if count is None:
@@ -550,7 +649,7 @@ def _get_or_create_shared_raw_mp_lock(
                 _lock_cleanup_data.pop(combined_key)
         count += 1
         _lock_registry_count[combined_key] = count
-        return raw
+        return _KeyedLeaseLock(combined_key)
 
 
 def _release_shared_raw_mp_lock(factory_name: str, key: str):
@@ -721,10 +820,11 @@ class KeyedUnifiedLock:
         if is_multiprocess:
             return UnifiedLock(
                 lock=raw_lock,
-                is_async=False,  # manager.Lock is synchronous
+                is_async=False,  # holder-lease acquire is driven explicitly
                 name=combined_key,
                 enable_logging=enable_logging,
                 async_lock=async_lock,  # prevents event‑loop blocking
+                mp_is_lease=True,  # raw_lock is a _KeyedLeaseLock (async poll)
             )
         else:
             return UnifiedLock(
@@ -1324,6 +1424,7 @@ def initialize_share_data(
         _lock_registry_count, \
         _lock_cleanup_data, \
         _registry_guard, \
+        _keyed_lock_holders, \
         _internal_lock, \
         _data_init_lock, \
         _shared_dicts, \
@@ -1370,6 +1471,7 @@ def initialize_share_data(
         _lock_registry_count = _manager.dict()
         _lock_cleanup_data = _manager.dict()
         _registry_guard = _manager.RLock()
+        _keyed_lock_holders = _manager.dict()
         _internal_lock = _manager.Lock()
         _data_init_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
@@ -1392,6 +1494,7 @@ def initialize_share_data(
         _is_multiprocess = False
         _internal_lock = asyncio.Lock()
         _data_init_lock = asyncio.Lock()
+        _keyed_lock_holders = None  # multiprocess-only; unused single-process
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
@@ -1509,14 +1612,72 @@ async def initialize_pipeline_status(workspace: str | None = None):
 # so this module is self-contained and behaves as "no dead-owner reclaim".
 
 
-def _my_start_id() -> Optional[str]:
-    """Opaque per-process start identifier used to detect PID reuse.
+_MY_START_ID_CACHE: Optional[str] = None
+_MY_START_ID_COMPUTED: bool = False
 
-    Filled in by the dead-process recovery layer (Linux ``/proc`` start time).
-    Here it is a placeholder so callers can store it harmlessly; ``None`` where
-    dead-owner reclaim is not active.
+
+def _read_proc_starttime(pid: int) -> Optional[str]:
+    """Return a stable per-process start token (field 22 of ``/proc/<pid>/stat``)
+    used to detect PID reuse, or ``None`` when unavailable (non-Linux, the
+    process is gone, or the stat file is unreadable).
+
+    A live PID whose start time differs from a previously recorded token is a
+    DIFFERENT process that reused the PID. ``None`` means "cannot tell" — callers
+    must treat that as *not reused* so a live owner is never reclaimed.
     """
-    return None
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+    except (FileNotFoundError, ProcessLookupError):
+        return None  # process is gone (liveness is decided by _pid_alive)
+    except OSError:
+        return None  # unreadable → unknown, make no reuse claim
+    try:
+        # comm (field 2) is wrapped in parentheses and may itself contain spaces
+        # or ')' — everything after the LAST ')' is the space-separated tail
+        # starting at field 3 (state). starttime is field 22 → tail index 19.
+        rparen = data.rindex(b")")
+        tail = data[rparen + 1 :].split()
+        return tail[19].decode("ascii")
+    except (ValueError, IndexError):
+        return None
+
+
+def _my_start_id() -> Optional[str]:
+    """This process's start token (see :func:`_read_proc_starttime`), computed
+    once and cached. ``None`` on non-Linux / when ``/proc`` is unavailable, in
+    which case PID-reuse detection is disabled (dead-only reclaim still works via
+    :func:`_pid_alive`)."""
+    global _MY_START_ID_CACHE, _MY_START_ID_COMPUTED
+    if not _MY_START_ID_COMPUTED:
+        _MY_START_ID_CACHE = _read_proc_starttime(os.getpid())
+        _MY_START_ID_COMPUTED = True
+    return _MY_START_ID_CACHE
+
+
+def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
+    """Dead-only liveness for lock / reservation owners.
+
+    Returns ``False`` ONLY when the owner is *confirmed* dead: the PID is gone,
+    or the PID is alive but its start time differs from ``start_id`` (PID reuse =
+    a different process now holds that PID). Every uncertainty — no recorded
+    identity, no permission to probe, non-Linux, unreadable ``/proc`` — is
+    treated as ALIVE, so a live (merely slow) owner is never reclaimed. Shared by
+    the keyed-lock and pipeline-reservation dead-owner reclaim layers.
+    """
+    if pid is None:
+        return True  # no owner identity recorded → cannot declare dead
+    if pid == os.getpid():
+        return True
+    if not _pid_alive(pid):
+        return False
+    if start_id is not None:
+        current = _read_proc_starttime(pid)
+        if current is not None and current != start_id:
+            return False  # PID reused by a different process
+    return True
 
 
 def reconcile_dead_pipeline_reservations(pipeline_status: Dict[str, Any]) -> None:
