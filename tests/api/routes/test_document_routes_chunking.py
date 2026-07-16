@@ -478,6 +478,10 @@ def _make_client(monkeypatch, addon_params=None):
     rag.addon_params = addon_params if addon_params is not None else {}
 
     app = FastAPI()
+    # The endpoints start reservation-holding work as managed asyncio tasks via
+    # request.app.state.background_tasks (normally created by the server
+    # lifespan); provide it here so the dependency resolves under TestClient.
+    app.state.background_tasks = set()
     app.include_router(
         create_document_routes(rag, SimpleNamespace(), api_key="test-key")
     )
