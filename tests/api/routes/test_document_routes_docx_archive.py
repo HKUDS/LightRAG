@@ -1730,6 +1730,163 @@ async def test_delete_task_releases_when_cancelled_before_release_try(
     assert pipeline_status.get("busy_owner") is None
 
 
+async def test_release_destructive_helper_survives_fetch_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``_release_destructive_busy`` used to await
+    ``get_namespace_data`` OUTSIDE the run_to_completion-protected release, so a
+    cancellation during the fetch skipped the release and leaked the slot. The
+    helper now runs the fetch + owner-check inside ``release_owned_reservation``,
+    so the destructive slot is freed even when the caller is cancelled mid-fetch
+    (the deferred cancellation is re-raised only after the release completes)."""
+    import asyncio
+    import importlib
+
+    workspace = f"rel-destr-cancel-{uuid4().hex}"
+    token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status.update(
+        {"busy": True, "destructive_busy": True, "busy_owner": token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    entered = asyncio.Event()
+
+    async def _slow_get(name, workspace=None):
+        # Suspend the fetch so we can deliver a cancellation while it is in
+        # flight; it then completes on its own (run_to_completion shields it).
+        entered.set()
+        await asyncio.sleep(0.05)
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+    task = asyncio.create_task(_document_routes._release_destructive_busy(rag, token))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Released despite the cancellation during the fetch (the pre-fix helper,
+    # with the fetch outside run_to_completion, would leak here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_release_scanning_helper_survives_fetch_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``_release_scanning_reservation`` must
+    release the scanning slot even when cancelled during its namespace fetch —
+    the fetch now runs inside ``release_owned_reservation`` (run_to_completion),
+    covering shutdown cancellations of ``run_scanning_process``."""
+    import asyncio
+    import importlib
+
+    workspace = f"rel-scan-cancel-{uuid4().hex}"
+    token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status.update(
+        {"scanning": True, "scanning_exclusive": True, "scanning_owner": token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    entered = asyncio.Event()
+
+    async def _slow_get(name, workspace=None):
+        entered.set()
+        await asyncio.sleep(0.05)
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+    task = asyncio.create_task(
+        _document_routes._release_scanning_reservation(rag, token)
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert pipeline_status.get("scanning") is False
+    assert pipeline_status.get("scanning_exclusive") is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_release_enqueue_helper_survives_fetch_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``_release_enqueue_slot`` must remove its
+    token from ``pending_enqueue_tokens`` even when cancelled during its
+    namespace fetch — the fetch now runs inside
+    ``release_token_set_reservation`` (run_to_completion)."""
+    import asyncio
+    import importlib
+
+    workspace = f"rel-enq-cancel-{uuid4().hex}"
+    token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status.update(
+        {
+            "pending_enqueue_tokens": {token: {"pid": 0, "process_start_id": None}},
+            "pending_enqueues": 1,
+        }
+    )
+
+    real_get = shared_storage.get_namespace_data
+    entered = asyncio.Event()
+
+    async def _slow_get(name, workspace=None):
+        entered.set()
+        await asyncio.sleep(0.05)
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+    task = asyncio.create_task(_document_routes._release_enqueue_slot(rag, token))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert pipeline_status.get("pending_enqueues", 0) == 0
+    assert pipeline_status.get("pending_enqueue_tokens", {}) == {}
+
+
 async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
     tmp_path, monkeypatch
 ):

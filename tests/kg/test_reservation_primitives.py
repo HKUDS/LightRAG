@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.shared_storage import (
     acquire_enqueue_reservation,
     acquire_reservation,
@@ -18,6 +19,8 @@ from lightrag.kg.shared_storage import (
     get_namespace_lock,
     initialize_pipeline_status,
     initialize_share_data,
+    release_owned_reservation,
+    release_token_set_reservation,
     run_to_completion,
     with_reservation_lock,
     with_token_set_reservation_lock,
@@ -247,5 +250,100 @@ async def test_enqueue_token_set_acquire_and_idempotent_release():
         )
         assert ps["pending_enqueues"] == 1
         assert set(ps["pending_enqueue_tokens"]) == {"e2"}
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_release_owned_reservation_survives_fetch_cancellation(monkeypatch):
+    """release_owned_reservation fetches pipeline_status INSIDE
+    run_to_completion, so a caller cancelled while the fetch is in flight still
+    releases the slot (the deferred cancel is re-raised only afterwards)."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        ws = "rel_owned_cancel_ws"
+        await initialize_pipeline_status(ws)
+        ps = await get_namespace_data("pipeline_status", workspace=ws)
+        lock = get_namespace_lock("pipeline_status", workspace=ws)
+        await acquire_reservation(
+            ps,
+            lock,
+            owner_key="busy_owner",
+            owner="tok",
+            flags={"busy": True, "destructive_busy": True},
+            reject_when=[("busy", "busy")],
+        )
+
+        real_get = shared_storage.get_namespace_data
+        entered = asyncio.Event()
+
+        async def _slow_get(name, workspace=None):
+            entered.set()
+            await asyncio.sleep(0.05)
+            return await real_get(name, workspace=workspace)
+
+        monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+        def _release(status):
+            status.update(
+                {"busy": False, "destructive_busy": False, "busy_owner": None}
+            )
+
+        task = asyncio.ensure_future(
+            release_owned_reservation(
+                ws, owner_key="busy_owner", token="tok", action=_release
+            )
+        )
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert ps["busy"] is False
+        assert ps["destructive_busy"] is False
+        assert ps["busy_owner"] is None
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_release_token_set_reservation_survives_fetch_cancellation(monkeypatch):
+    """release_token_set_reservation also fetches inside run_to_completion, so a
+    cancellation during the fetch still removes the token from the set."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        ws = "rel_tokset_cancel_ws"
+        await initialize_pipeline_status(ws)
+        ps = await get_namespace_data("pipeline_status", workspace=ws)
+        lock = get_namespace_lock("pipeline_status", workspace=ws)
+        await acquire_enqueue_reservation(
+            ps, lock, token="e1", reject_when=[("destructive_busy", "d")]
+        )
+        assert ps["pending_enqueues"] == 1
+
+        real_get = shared_storage.get_namespace_data
+        entered = asyncio.Event()
+
+        async def _slow_get(name, workspace=None):
+            entered.set()
+            await asyncio.sleep(0.05)
+            return await real_get(name, workspace=workspace)
+
+        monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+        task = asyncio.ensure_future(
+            release_token_set_reservation(
+                ws, tokens_key="pending_enqueue_tokens", token="e1"
+            )
+        )
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert ps["pending_enqueues"] == 0
+        assert dict(ps["pending_enqueue_tokens"]) == {}
     finally:
         finalize_share_data()

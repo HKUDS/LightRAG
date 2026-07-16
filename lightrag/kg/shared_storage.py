@@ -1689,6 +1689,86 @@ async def with_token_set_reservation_lock(
     return await run_to_completion(_run)
 
 
+async def release_owned_reservation(
+    workspace: Optional[str],
+    *,
+    owner_key: str,
+    token: Any,
+    action,
+):
+    """Cancellation-safe, self-fetching form of :func:`with_reservation_lock`.
+
+    Fetches ``pipeline_status`` + its lock AND runs the owner-checked release
+    entirely inside ``run_to_completion``, so a cancellation delivered during the
+    namespace fetch or the lock acquire/exit is retried/completed rather than
+    leaking the reservation. Use this from release helpers that do not already
+    hold the status (e.g. background-task releases running during shutdown),
+    where the plain ``with_reservation_lock`` would leave the pre-fetch
+    unprotected.
+
+    No-op (returns ``None``) when ``pipeline_status`` was never initialised for
+    ``workspace`` or a later holder owns the slot. ``action`` must be idempotent
+    (it may re-run if the work task is directly cancelled and restarted).
+    """
+
+    async def _run():
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
+        except PipelineNotInitializedError:
+            return None
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            if _reservation_owner_token(pipeline_status.get(owner_key)) != token:
+                return None
+            return action(pipeline_status)
+
+    return await run_to_completion(_run)
+
+
+async def release_token_set_reservation(
+    workspace: Optional[str],
+    *,
+    tokens_key: str,
+    token: str,
+    action=None,
+):
+    """Cancellation-safe, self-fetching form of
+    :func:`with_token_set_reservation_lock`.
+
+    Fetches ``pipeline_status`` + its lock AND removes ``token`` from the
+    ``tokens_key`` set entirely inside ``run_to_completion``. Idempotent (a no-op
+    if the token is absent or the workspace is uninitialised), so an endpoint and
+    its background task may both release, and a restart after a direct task
+    cancellation is safe.
+    """
+
+    async def _run():
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
+        except PipelineNotInitializedError:
+            return None
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            tokens = dict(pipeline_status.get(tokens_key, {}))
+            if token not in tokens:
+                return None
+            del tokens[token]
+            pipeline_status.update(
+                {tokens_key: tokens, "pending_enqueues": len(tokens)}
+            )
+            return action(pipeline_status) if action else None
+
+    return await run_to_completion(_run)
+
+
 # ============================================================================
 # Managed reservation-holding background tasks
 # ============================================================================

@@ -1417,26 +1417,16 @@ async def _release_destructive_busy(rag: LightRAG, token: str) -> None:
     cancellation-resistant. Distinct from ``_release_enqueue_slot``: that helper
     clears ``pending_enqueues`` (the upload/insert reservation), this one clears
     ``busy + destructive_busy`` (the clear/delete reservation).
-    """
-    from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import (
-        get_namespace_data,
-        get_namespace_lock,
-        with_reservation_lock,
-    )
 
-    try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
-        return
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
-    )
-    await with_reservation_lock(
-        pipeline_status,
-        pipeline_status_lock,
+    The namespace fetch runs INSIDE ``run_to_completion`` (via
+    ``release_owned_reservation``) so a cancellation delivered during the fetch
+    or lock — e.g. a shutdown cancelling this background release — is
+    retried/completed rather than leaking the slot.
+    """
+    from lightrag.kg.shared_storage import release_owned_reservation
+
+    await release_owned_reservation(
+        rag.workspace,
         owner_key="busy_owner",
         token=token,
         action=_release_destructive_action,
@@ -1453,26 +1443,16 @@ async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
     ``apipeline_process_enqueue_documents`` after enqueue; no cross-task drain
     coordination is needed. Never raises (except a re-raised cancellation after
     the release has completed).
-    """
-    from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import (
-        get_namespace_data,
-        get_namespace_lock,
-        with_token_set_reservation_lock,
-    )
 
-    try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
-        return
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
-    )
-    await with_token_set_reservation_lock(
-        pipeline_status,
-        pipeline_status_lock,
+    The namespace fetch runs INSIDE ``run_to_completion`` (via
+    ``release_token_set_reservation``) so a cancellation delivered during the
+    fetch or lock — e.g. a shutdown cancelling this background release — is
+    retried/completed rather than leaking the slot.
+    """
+    from lightrag.kg.shared_storage import release_token_set_reservation
+
+    await release_token_set_reservation(
+        rag.workspace,
         tokens_key="pending_enqueue_tokens",
         token=token,
     )
@@ -1492,26 +1472,16 @@ async def _release_scanning_reservation(rag: LightRAG, token: str) -> None:
     between reserving ``scanning``/``scanning_exclusive`` and handing the task
     off to ``run_scanning_process`` (which otherwise owns the release). Never
     raises (except a re-raised cancellation after the release has completed).
-    """
-    from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import (
-        get_namespace_data,
-        get_namespace_lock,
-        with_reservation_lock,
-    )
 
-    try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
-        return
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
-    )
-    await with_reservation_lock(
-        pipeline_status,
-        pipeline_status_lock,
+    The namespace fetch runs INSIDE ``run_to_completion`` (via
+    ``release_owned_reservation``) so a cancellation delivered during the fetch
+    or lock — e.g. a shutdown cancelling ``run_scanning_process`` — is
+    retried/completed rather than leaking the slot.
+    """
+    from lightrag.kg.shared_storage import release_owned_reservation
+
+    await release_owned_reservation(
+        rag.workspace,
         owner_key="scanning_owner",
         token=token,
         action=_release_scanning_action,
@@ -2353,11 +2323,10 @@ async def background_delete_documents(
     token: str | None = None,
 ):
     """Background task to delete multiple documents"""
-    from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         get_namespace_lock,
-        with_reservation_lock,
+        release_owned_reservation,
     )
 
     total_docs = len(doc_ids)
@@ -2548,32 +2517,18 @@ async def background_delete_documents(
             status["history_messages"].append(completion_msg)
             return status.get("request_pending", False)
 
-        # Use the status/lock we already fetched; if a cancellation interrupted
-        # the initial fetch (leaving them None) re-fetch here so the reservation
-        # is still released. with_reservation_lock is owner-checked + resistant.
-        release_status = pipeline_status
-        release_lock = pipeline_status_lock
-        if release_status is None or release_lock is None:
-            try:
-                release_status = await get_namespace_data(
-                    "pipeline_status", workspace=rag.workspace
-                )
-                release_lock = get_namespace_lock(
-                    "pipeline_status", workspace=rag.workspace
-                )
-            except PipelineNotInitializedError:
-                release_status = None
-                release_lock = None
-
-        has_pending_request = False
-        if release_status is not None and release_lock is not None:
-            has_pending_request = await with_reservation_lock(
-                release_status,
-                release_lock,
-                owner_key="busy_owner",
-                token=token,
-                action=_delete_release,
-            )
+        # Release the destructive slot with the fetch, lock and owner-checked
+        # write ALL inside run_to_completion (release_owned_reservation), so a
+        # cancellation delivered during the release — including a re-cancellation
+        # of the namespace fetch after the initial fetch was already cancelled —
+        # is retried rather than leaving busy/destructive_busy stuck. Returns the
+        # pending flag (or None when uninitialised / a later holder owns it).
+        has_pending_request = await release_owned_reservation(
+            rag.workspace,
+            owner_key="busy_owner",
+            token=token,
+            action=_delete_release,
+        )
 
         # If there are pending requests, start document processing pipeline
         if has_pending_request:
