@@ -92,6 +92,9 @@ from lightrag.kg.shared_storage import (
     set_default_workspace,
     get_namespace_lock,
     get_storage_keyed_lock,
+    make_owner_record,
+    pipeline_recovery_blocked_message,
+    reconcile_dead_pipeline_reservations,
     with_reservation_lock,
 )
 
@@ -1633,6 +1636,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # ``_acquire_destructive_busy``; ``destructive_busy`` implies
             # ``busy`` so a running clear/delete is covered too.
             async with pipeline_status_lock:
+                # Reclaim a dead owner's slot before checking busy; a dead
+                # custom_chunks/delete/clear owner raises recovery_required, which
+                # fences all mutations until an explicit recovery.
+                reconcile_dead_pipeline_reservations(pipeline_status)
+                if pipeline_status.get("recovery_required"):
+                    raise RuntimeError(
+                        pipeline_recovery_blocked_message(pipeline_status)
+                    )
                 if pipeline_status.get("busy"):
                     raise RuntimeError(
                         "Pipeline is busy with another operation; "
@@ -1659,7 +1670,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status.update(
                     {
                         "busy": True,
-                        "busy_owner": token,
+                        "busy_owner": make_owner_record(token, "custom_chunks"),
+                        # Snapshot for dead-owner recovery: custom_chunks may
+                        # write Stage-1 storage before the KG is built, so a dead
+                        # owner is fenced (recovery_required) rather than re-run.
+                        "operation_record": {
+                            "kind": "custom_chunks",
+                            "doc_id": doc_key,
+                        },
                         "job_name": "Custom chunks insert",
                         "job_start": datetime.now(timezone.utc).isoformat(),
                         "latest_message": "Inserting custom chunks",
@@ -1736,6 +1754,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # reservation could start and drop the accepted document);
                     # otherwise release the slot.
                     updates = {
+                        # custom_chunks work is complete here; clear its
+                        # operation_record so a later dead-owner reclaim does not
+                        # read a stale target.
+                        "operation_record": None,
                         "cancellation_requested": False,
                         "cancellation_reason": None,
                         "cancellation_detail": None,
@@ -1753,6 +1775,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         {
                             "busy": False,
                             "busy_owner": None,
+                            "operation_record": None,
                             "cancellation_requested": False,
                             "cancellation_reason": None,
                             "cancellation_detail": None,
@@ -3412,7 +3435,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         def _release_on_acquire_failure(status):
             status.update(
-                {"busy": False, "busy_owner": None, "cancellation_requested": False}
+                {
+                    "busy": False,
+                    "busy_owner": None,
+                    "operation_record": None,
+                    "cancellation_requested": False,
+                }
             )
 
         # Acquire (or join a batch delete) inside a try so a cancellation at the
@@ -3421,6 +3449,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         try:
             # Check and acquire pipeline if needed
             async with pipeline_status_lock:
+                reconcile_dead_pipeline_reservations(pipeline_status)
+                if pipeline_status.get("recovery_required"):
+                    return DeletionResult(
+                        status="not_allowed",
+                        doc_id=doc_id,
+                        message=pipeline_recovery_blocked_message(pipeline_status),
+                        status_code=503,
+                        file_path=None,
+                    )
                 if not pipeline_status.get("busy", False):
                     # Pipeline is idle - WE acquire it for this deletion. Take the
                     # slot + stamp identity in a single atomic update.
@@ -3428,7 +3465,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline_status.update(
                         {
                             "busy": True,
-                            "busy_owner": token,
+                            "busy_owner": make_owner_record(token, "delete"),
+                            "operation_record": {"kind": "delete", "doc_id": doc_id},
                             "job_name": "Single document deletion",
                             "job_start": datetime.now(timezone.utc).isoformat(),
                             "docs": 1,
@@ -4275,6 +4313,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     {
                         "busy": False,
                         "busy_owner": None,
+                        "operation_record": None,
                         "cancellation_requested": False,
                     }
                 )

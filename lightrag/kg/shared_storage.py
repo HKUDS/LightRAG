@@ -1607,9 +1607,13 @@ async def initialize_pipeline_status(workspace: str | None = None):
 #   cancellation via ``run_to_completion``, so a slot is never wedged and a stale
 #   task never clobbers a new owner.
 #
-# ``reconcile_dead_pipeline_reservations`` and ``_my_start_id`` are hooks for the
-# separate dead-process recovery layer; here they are inert (no-op / opaque id)
-# so this module is self-contained and behaves as "no dead-owner reclaim".
+# On top of cancellation safety, the dead-process recovery layer reclaims a
+# reservation whose owning worker was SIGKILLed: owners are recorded as
+# ``{token, pid, process_start_id, kind}`` and ``reconcile_dead_pipeline_reservations``
+# (called under the lock, before conflict checks) clears a CONFIRMED-dead owner's
+# slot — re-running processing/scan, fencing custom_chunks/delete/clear with
+# ``recovery_required``. Gated to Linux multi-worker (single-process dies with
+# its state; see ``_reservation_recovery_enabled``).
 
 
 _MY_START_ID_CACHE: Optional[str] = None
@@ -1689,14 +1693,133 @@ def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
     return True
 
 
+# pipeline_status fields that are internal bookkeeping for reservation ownership
+# / dead-process recovery — never surfaced on the /pipeline_status response.
+_INTERNAL_PIPELINE_STATUS_FIELDS = (
+    "busy_owner",
+    "scanning_owner",
+    "pending_enqueue_tokens",
+    "operation_record",
+    "recovery_required",
+)
+
+# Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
+# reclaim (in-flight docs sit in doc_status and are reset to PENDING / retried).
+# Every other kind (custom_chunks / delete / clear) may have half-committed and
+# is fenced with ``recovery_required`` instead of being cleared for re-run.
+_RERUNNABLE_RESERVATION_KINDS = frozenset({"processing", "scan"})
+
+
+def _reservation_recovery_enabled() -> bool:
+    """Dead-process reservation reclaim is Linux-multiworker only.
+
+    Single-process Uvicorn dies with its pipeline_status (no cross-process
+    orphan); Windows has no Gunicorn multi-worker. Exposed as a function so tests
+    can force it on to exercise the reclaim logic off-Linux.
+    """
+    return bool(_is_multiprocess) and sys.platform.startswith("linux")
+
+
+def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
+    """Human-readable refusal for a mutation attempted while ``recovery_required``
+    is set (a worker died mid custom_chunks/delete/clear, which may have
+    half-committed). Returns a generic message if the pipeline is not fenced."""
+    rec = pipeline_status.get("recovery_required")
+    if not isinstance(rec, dict):
+        return "Pipeline is not fenced for recovery."
+    op = rec.get("operation_record") or {}
+    target = op.get("doc_id") or op.get("scope") or ""
+    target = f" (target: {target})" if target else ""
+    return (
+        f"Pipeline is fenced pending recovery: a worker died mid "
+        f"'{rec.get('kind')}'{target}, which may have left storage in a "
+        "partially-committed state. All mutations are refused until the "
+        "workspace is recovered or force-reset."
+    )
+
+
+def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
+    """Build a reservation owner record: the cancellation-safety token plus the
+    process identity used to detect a dead owner (see :func:`_process_alive`) and
+    the ``kind`` that decides recovery semantics."""
+    return {
+        "token": token,
+        "pid": os.getpid(),
+        "process_start_id": _my_start_id(),
+        "kind": kind,
+    }
+
+
+def _recover_dead_reservation(
+    pipeline_status: Dict[str, Any],
+    owner_key: str,
+    flags: tuple,
+    rec: Dict[str, Any],
+) -> None:
+    """Reclaim a single-holder reservation whose owner is confirmed dead.
+
+    processing / scan → clear flags + owner (the work is re-runnable). Everything
+    else (custom_chunks / delete / clear) may have half-committed, so clear the
+    flags + owner but raise ``recovery_required`` to fence the workspace against
+    all further mutations until an explicit recovery / force-reset. All writes go
+    in a SINGLE ``status.update`` so a crash mid-recovery cannot tear them apart.
+    """
+    updates: Dict[str, Any] = {owner_key: None}
+    for flag in flags:
+        updates[flag] = False
+    if rec.get("kind") not in _RERUNNABLE_RESERVATION_KINDS:
+        updates["recovery_required"] = {
+            "kind": rec.get("kind"),
+            "owner_key": owner_key,
+            # snapshot of what the dead owner was doing (doc_id / scope), if any
+            "operation_record": pipeline_status.get("operation_record"),
+        }
+    pipeline_status.update(updates)
+
+
 def reconcile_dead_pipeline_reservations(pipeline_status: Dict[str, Any]) -> None:
     """Reclaim reservations whose owning process is confirmed dead.
 
-    No-op until the dead-process recovery layer is enabled (Linux multi-worker).
-    Called inside the ``pipeline_status_lock`` critical section, before conflict
-    checks, so a dead owner's slot is lazily reclaimed at the next acquire.
+    No-op unless Linux multi-worker (:func:`_reservation_recovery_enabled`).
+    Called inside the ``pipeline_status_lock`` critical section, BEFORE conflict
+    checks, so a dead owner's slot is lazily reclaimed at the next acquire. Uses
+    a FIXED flag→owner mapping (not the generic reject_when set, which only knows
+    the acquirer's own owner_key) and only reclaims a CONFIRMED-dead owner
+    (:func:`_process_alive`); a live-but-slow owner is never preempted.
     """
-    return None
+    if not _reservation_recovery_enabled():
+        return
+    # busy_owner covers busy + destructive_busy; scanning_owner covers
+    # scanning + scanning_exclusive.
+    for owner_key, flags in (
+        ("busy_owner", ("busy", "destructive_busy")),
+        ("scanning_owner", ("scanning", "scanning_exclusive")),
+    ):
+        rec = pipeline_status.get(owner_key)
+        if not isinstance(rec, dict):
+            continue
+        if not any(pipeline_status.get(flag) for flag in flags):
+            continue
+        if _process_alive(rec.get("pid"), rec.get("process_start_id")):
+            continue
+        _recover_dead_reservation(pipeline_status, owner_key, flags, rec)
+
+    # pending_enqueues: {token: {pid, process_start_id}} — drop confirmed-dead
+    # tokens (an enqueue is re-runnable: its doc sits in doc_status). Always
+    # recalibrate the mirrored count, covering a crash between "dropped token"
+    # and "updated count".
+    tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
+    alive = {
+        token: meta
+        for token, meta in tokens.items()
+        if _process_alive((meta or {}).get("pid"), (meta or {}).get("process_start_id"))
+    }
+    if len(alive) != len(tokens) or pipeline_status.get("pending_enqueues") != len(
+        alive
+    ):
+        pipeline_status.update(
+            {"pending_enqueue_tokens": alive, "pending_enqueues": len(alive)}
+        )
 
 
 async def run_to_completion(factory, *, max_restarts: int = 3):

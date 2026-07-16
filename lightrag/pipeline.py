@@ -45,6 +45,8 @@ from lightrag.kg.shared_storage import (
     _reservation_owner_token,
     get_namespace_data,
     get_namespace_lock,
+    make_owner_record,
+    reconcile_dead_pipeline_reservations,
     run_to_completion,
 )
 from lightrag.operate import merge_nodes_and_edges
@@ -1049,6 +1051,10 @@ class _PipelineMixin:
 
         try:
             async with pipeline_status_lock:
+                # Reclaim any reservation whose owner process is confirmed dead
+                # BEFORE reading busy, so a SIGKILLed worker's slot does not
+                # wedge this acquire (Linux multi-worker only; no-op otherwise).
+                reconcile_dead_pipeline_reservations(pipeline_status)
                 # Ensure only one worker is processing documents. ``_holding_busy``
                 # means the slot was handed to us already owned, so take it over
                 # rather than treating busy=True as "someone else is running".
@@ -1069,7 +1075,7 @@ class _PipelineMixin:
                     pipeline_status.update(
                         {
                             "busy": True,
-                            "busy_owner": token,
+                            "busy_owner": make_owner_record(token, "processing"),
                             "job_name": "Default Job",
                             "job_start": datetime.now(timezone.utc).isoformat(),
                             "docs": 0,
