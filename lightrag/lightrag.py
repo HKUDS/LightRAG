@@ -3400,57 +3400,81 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         we_acquired_pipeline = False
         token = uuid.uuid4().hex
 
-        # Check and acquire pipeline if needed
-        async with pipeline_status_lock:
-            if not pipeline_status.get("busy", False):
-                # Pipeline is idle - WE acquire it for this deletion. Take the
-                # slot + stamp identity in a single atomic update.
-                we_acquired_pipeline = True
-                pipeline_status.update(
-                    {
-                        "busy": True,
-                        "busy_owner": token,
-                        "job_name": "Single document deletion",
-                        "job_start": datetime.now(timezone.utc).isoformat(),
-                        "docs": 1,
-                        "batchs": 1,
-                        "cur_batch": 0,
-                        "request_pending": False,
-                        "cancellation_requested": False,
-                        "latest_message": f"Starting deletion for document: {doc_id}",
-                    }
-                )
-                # Initialize history messages
-                pipeline_status["history_messages"][:] = [
-                    f"Starting deletion for document: {doc_id}"
-                ]
-            else:
-                # Pipeline already busy - verify it's a deletion job
-                job_name = pipeline_status.get("job_name", "").lower()
-                if not job_name.startswith("deleting") or "document" not in job_name:
-                    return DeletionResult(
-                        status="not_allowed",
-                        doc_id=doc_id,
-                        message=f"Deletion not allowed: current job '{pipeline_status.get('job_name')}' is not a document deletion job",
-                        status_code=403,
-                        file_path=None,
+        def _release_on_acquire_failure(status):
+            status.update(
+                {"busy": False, "busy_owner": None, "cancellation_requested": False}
+            )
+
+        # Acquire (or join a batch delete) inside a try so a cancellation at the
+        # acquire/logging lock exit — before the main try/finally is armed — still
+        # releases the slot we took (owner-checked) instead of wedging it.
+        try:
+            # Check and acquire pipeline if needed
+            async with pipeline_status_lock:
+                if not pipeline_status.get("busy", False):
+                    # Pipeline is idle - WE acquire it for this deletion. Take the
+                    # slot + stamp identity in a single atomic update.
+                    we_acquired_pipeline = True
+                    pipeline_status.update(
+                        {
+                            "busy": True,
+                            "busy_owner": token,
+                            "job_name": "Single document deletion",
+                            "job_start": datetime.now(timezone.utc).isoformat(),
+                            "docs": 1,
+                            "batchs": 1,
+                            "cur_batch": 0,
+                            "request_pending": False,
+                            "cancellation_requested": False,
+                            "latest_message": f"Starting deletion for document: {doc_id}",
+                        }
                     )
-                # Pipeline is busy with deletion - proceed without acquiring
+                    # Initialize history messages
+                    pipeline_status["history_messages"][:] = [
+                        f"Starting deletion for document: {doc_id}"
+                    ]
+                else:
+                    # Pipeline already busy - verify it's a deletion job
+                    job_name = pipeline_status.get("job_name", "").lower()
+                    if (
+                        not job_name.startswith("deleting")
+                        or "document" not in job_name
+                    ):
+                        return DeletionResult(
+                            status="not_allowed",
+                            doc_id=doc_id,
+                            message=f"Deletion not allowed: current job '{pipeline_status.get('job_name')}' is not a document deletion job",
+                            status_code=403,
+                            file_path=None,
+                        )
+                    # Pipeline is busy with deletion - proceed without acquiring
 
-        deletion_operations_started = False
-        deletion_fully_completed = False
-        in_final_delete_stage = False
-        original_exception = None
-        doc_llm_cache_ids: list[str] = []
-        deletion_stage = "initializing"
-        doc_status_data: dict[str, Any] | None = None
-        file_path: str | None = None
+            deletion_operations_started = False
+            deletion_fully_completed = False
+            in_final_delete_stage = False
+            original_exception = None
+            doc_llm_cache_ids: list[str] = []
+            deletion_stage = "initializing"
+            doc_status_data: dict[str, Any] | None = None
+            file_path: str | None = None
 
-        async with pipeline_status_lock:
-            log_message = f"Starting deletion process for document {doc_id}"
-            logger.info(log_message)
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            async with pipeline_status_lock:
+                log_message = f"Starting deletion process for document {doc_id}"
+                logger.info(log_message)
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+        except BaseException:
+            # Cancel/error between taking the slot and arming the main try:
+            # release it (owner-checked) so it is never left wedged.
+            if we_acquired_pipeline:
+                await with_reservation_lock(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    owner_key="busy_owner",
+                    token=token,
+                    action=_release_on_acquire_failure,
+                )
+            raise
 
         try:
             # 1. Get the document status and related data
