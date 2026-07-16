@@ -21,13 +21,6 @@ import sys
 
 import pytest
 
-# Import document_routes under a clean argv — its module chain parses CLI args at
-# import time and would otherwise choke on pytest's argv.
-_original_argv = sys.argv[:]
-sys.argv = [sys.argv[0]]
-dr = importlib.import_module("lightrag.api.routers.document_routes")
-sys.argv = _original_argv
-
 import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.shared_storage import (
     _INTERNAL_PIPELINE_STATUS_FIELDS,
@@ -39,6 +32,16 @@ from lightrag.kg.shared_storage import (
     pipeline_recovery_blocked_message,
     reconcile_dead_pipeline_reservations,
 )
+
+# Import document_routes under a clean argv — its module chain parses CLI args at
+# import time and would otherwise choke on pytest's argv. Kept below the regular
+# imports and done via importlib (an assignment, not an ``import`` statement) so
+# it is not flagged as a late module-level import (E402); shared_storage is a
+# lower-level module that does not parse argv, so it imports normally above.
+_original_argv = sys.argv[:]
+sys.argv = [sys.argv[0]]
+dr = importlib.import_module("lightrag.api.routers.document_routes")
+sys.argv = _original_argv
 
 pytestmark = pytest.mark.offline
 
@@ -284,8 +287,58 @@ async def test_processing_loop_bails_when_recovery_required():
         finalize_share_data()
 
 
+@pytest.mark.offline
+async def test_graph_mutation_sdk_refuses_when_recovery_required():
+    """Direct SDK graph edits (bypassing the REST check_pipeline_busy_or_raise
+    fence) must refuse on a fenced workspace — the ``_raise_if_recovery_required``
+    guard fires before any graph storage is touched."""
+    from lightrag import LightRAG
+
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = LightRAG.__new__(LightRAG)
+        rag.workspace = "recovery-graph-ws"
+        await initialize_pipeline_status(workspace=rag.workspace)
+        ps = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        ps["recovery_required"] = {
+            "kind": "delete",
+            "owner_key": "busy_owner",
+            "operation_record": {"kind": "delete", "doc_id": "doc-1"},
+        }
+        with pytest.raises(RuntimeError, match="fenced"):
+            await rag.acreate_entity("E", {"description": "x"})
+        with pytest.raises(RuntimeError, match="fenced"):
+            await rag.adelete_by_entity("E")
+        with pytest.raises(RuntimeError, match="fenced"):
+            await rag.amerge_entities(["A"], "B")
+        with pytest.raises(RuntimeError, match="fenced"):
+            await rag.ainsert_custom_kg({"chunks": []})
+    finally:
+        finalize_share_data()
+
+
 def _endpoint(router, name):
     return [r.endpoint for r in router.routes if getattr(r, "name", "") == name][-1]
+
+
+@pytest.mark.offline
+async def test_reprocess_endpoint_refuses_when_recovery_required(tmp_path):
+    """/reprocess_failed must return 503 on a fenced workspace instead of
+    reporting a false 'reprocessing_started' (the processing loop would bail, so
+    nothing would actually be queued)."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = _Rag()
+        await _seed_recovery_required(rag)
+        router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+        reprocess = _endpoint(router, "reprocess_failed_documents")
+        with pytest.raises(dr.HTTPException) as excinfo:
+            await reprocess(set())
+        assert excinfo.value.status_code == 503
+    finally:
+        finalize_share_data()
 
 
 @pytest.mark.offline

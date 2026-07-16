@@ -2057,6 +2057,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         custom_kg: dict[str, Any],
         full_doc_id: str = None,
     ) -> None:
+        # Direct KG write path — refuse on a fenced workspace (recovery_required)
+        # like the other SDK mutations, before touching any storage.
+        await self._raise_if_recovery_required()
+
         update_storage = False
         try:
             # Insert chunks into vector storage
@@ -4374,6 +4378,41 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         action=_release_action,
                     )
 
+    async def _raise_if_recovery_required(self) -> None:
+        """Refuse a graph/data mutation while the workspace is fenced for
+        recovery (a worker died mid custom_chunks/delete/clear, possibly leaving
+        storage partially committed).
+
+        The REST graph-edit routes go through ``check_pipeline_busy_or_raise``,
+        which already refuses a fenced workspace, but a DIRECT SDK caller of the
+        ``a{create,edit,delete,merge}_*`` methods bypasses that. This is the
+        SDK-level fence so "refuse all mutations while fenced" holds on both
+        paths. It intentionally does NOT check ``busy`` (SDK graph edits may run
+        concurrently with the pipeline, guarded by per-entity keyed locks). No-op
+        when pipeline_status was never initialised (test rigs).
+        """
+        from lightrag.exceptions import PipelineNotInitializedError
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+            pipeline_recovery_blocked_message,
+            reconcile_dead_pipeline_reservations,
+        )
+
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=self.workspace
+            )
+        except PipelineNotInitializedError:
+            return
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+        async with pipeline_status_lock:
+            reconcile_dead_pipeline_reservations(pipeline_status)
+            if pipeline_status.get("recovery_required"):
+                raise RuntimeError(pipeline_recovery_blocked_message(pipeline_status))
+
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
 
@@ -4383,6 +4422,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import adelete_by_entity
 
         return await adelete_by_entity(
@@ -4420,6 +4461,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import adelete_by_relation
 
         return await adelete_by_relation(
@@ -4552,6 +4595,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing updated entity information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import aedit_entity
 
         return await aedit_entity(
@@ -4598,6 +4643,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing updated relation information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import aedit_relation
 
         return await aedit_relation(
@@ -4634,6 +4681,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing created entity information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import acreate_entity
 
         return await acreate_entity(
@@ -4669,6 +4718,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing created relation information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import acreate_relation
 
         return await acreate_relation(
@@ -4717,6 +4768,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing the merged entity information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import amerge_entities
 
         return await amerge_entities(

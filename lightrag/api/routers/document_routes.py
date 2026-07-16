@@ -4314,7 +4314,33 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
-        from lightrag.kg.shared_storage import start_reserved_background_task
+        from lightrag.exceptions import PipelineNotInitializedError
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+            pipeline_recovery_blocked_message,
+            reconcile_dead_pipeline_reservations,
+            start_reserved_background_task,
+        )
+
+        # Fail-closed BEFORE scheduling: the processing loop refuses on a fenced
+        # workspace, so a scheduled task would report "reprocessing_started" while
+        # nothing is ever queued or processed. Reconcile + refuse with 503 here so
+        # the client sees the fence instead of a false success. (Raised before the
+        # try/except below, whose ``except Exception`` would otherwise remap it.)
+        try:
+            _ps = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        except PipelineNotInitializedError:
+            _ps = None
+        if _ps is not None:
+            _ps_lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            async with _ps_lock:
+                reconcile_dead_pipeline_reservations(_ps)
+                if _ps.get("recovery_required"):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=pipeline_recovery_blocked_message(_ps),
+                    )
 
         # Reprocess holds NO reservation of its own — apipeline_process_enqueue_documents
         # acquires (and releases) the busy slot itself. We only need the task to
