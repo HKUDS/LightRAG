@@ -1466,6 +1466,19 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 "request_pending": False,  # Flag for pending request for processing
                 "latest_message": "",  # Latest message from pipeline processing
                 "history_messages": history_messages,  # 使用共享列表对象
+                # ---- reservation owner tokens (cancellation-safe release) ----
+                # ``busy``/``scanning`` are held by exactly one task at a time.
+                # The owner records which task holds the slot so a release can be
+                # owner-checked (never clobber a new owner) and — once the
+                # dead-process recovery layer lands — a dead owner can be
+                # reclaimed. ``busy_owner`` covers busy + destructive_busy;
+                # ``scanning_owner`` covers scanning + scanning_exclusive.
+                # ``pending_enqueue_tokens`` is a {token: metadata} set whose
+                # length is mirrored in ``pending_enqueues`` (concurrent enqueues
+                # are permitted, so it is a set, not a single owner).
+                "busy_owner": None,
+                "scanning_owner": None,
+                "pending_enqueue_tokens": {},
             }
         )
 
@@ -1473,6 +1486,400 @@ async def initialize_pipeline_status(workspace: str | None = None):
         direct_log(
             f"Process {os.getpid()} Pipeline namespace '{final_namespace}' initialized"
         )
+
+
+# ============================================================================
+# Pipeline reservation primitives (cancellation-safe owner-token release)
+# ============================================================================
+#
+# The pipeline serialises document processing, scans and destructive ops through
+# single-holder ``busy``/``scanning`` reservations plus a concurrent
+# ``pending_enqueue_tokens`` set. These helpers make acquiring and releasing a
+# reservation safe under asyncio cancellation:
+#
+# * the owner is recorded together with the flags in a SINGLE ``status.update``
+#   (one Manager RPC, applied atomically server-side), so a cancellation can
+#   never leave a flag set with no matching owner;
+# * release/finalize is owner-checked and runs to completion even under repeated
+#   cancellation via ``run_to_completion``, so a slot is never wedged and a stale
+#   task never clobbers a new owner.
+#
+# ``reconcile_dead_pipeline_reservations`` and ``_my_start_id`` are hooks for the
+# separate dead-process recovery layer; here they are inert (no-op / opaque id)
+# so this module is self-contained and behaves as "no dead-owner reclaim".
+
+
+def _my_start_id() -> Optional[str]:
+    """Opaque per-process start identifier used to detect PID reuse.
+
+    Filled in by the dead-process recovery layer (Linux ``/proc`` start time).
+    Here it is a placeholder so callers can store it harmlessly; ``None`` where
+    dead-owner reclaim is not active.
+    """
+    return None
+
+
+def reconcile_dead_pipeline_reservations(pipeline_status: Dict[str, Any]) -> None:
+    """Reclaim reservations whose owning process is confirmed dead.
+
+    No-op until the dead-process recovery layer is enabled (Linux multi-worker).
+    Called inside the ``pipeline_status_lock`` critical section, before conflict
+    checks, so a dead owner's slot is lazily reclaimed at the next acquire.
+    """
+    return None
+
+
+async def run_to_completion(factory, *, max_restarts: int = 3):
+    """Await ``factory()`` to completion even if THIS coroutine is (repeatedly)
+    cancelled while waiting.
+
+    Cancellations of the caller are deferred until the work finishes, then the
+    first one is re-raised. If the work task is itself directly cancelled (e.g. a
+    shutdown that cancels every task) it is restarted a bounded number of times —
+    used only for idempotent releases, so the release still completes.
+    """
+    pending_cancel = None
+    restarts = 0
+    task = asyncio.ensure_future(factory())
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                # The work task itself was cancelled (e.g. a shutdown that
+                # cancels every task). Restart the idempotent work so the
+                # release still completes; do NOT treat this as a caller cancel.
+                if restarts >= max_restarts:
+                    raise
+                restarts += 1
+                task = asyncio.ensure_future(factory())
+                continue
+            # This coroutine was cancelled while the work is still running:
+            # record it (even if the task became done in the same step, so it is
+            # never swallowed) and keep waiting for the work to complete.
+            pending_cancel = pending_cancel or exc
+    if pending_cancel is not None:
+        raise pending_cancel
+    return result
+
+
+def _reservation_owner_token(record: Any) -> Any:
+    """Extract the token from an owner record (a bare token or a dict)."""
+    if isinstance(record, dict):
+        return record.get("token")
+    return record
+
+
+async def acquire_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    owner_key: str,
+    owner: Any,
+    flags: Dict[str, Any],
+    reject_when,
+) -> tuple[bool, Optional[str]]:
+    """Atomically take a single-holder reservation.
+
+    ``reject_when`` is a sequence of ``(flag_key, reason)``: if any flag is set
+    the reservation is refused and ``(False, reason)`` is returned. Otherwise the
+    ``flags`` and ``pipeline_status[owner_key] = owner`` are written in a SINGLE
+    ``status.update`` (atomic against a mid-write crash) and ``(True, None)`` is
+    returned. ``owner`` may be a bare token or an owner record dict.
+
+    The caller MUST have entered its ``try`` before calling this so a cancel at
+    the lock exit still runs the ``finally`` that releases ``owner`` by token.
+    """
+    async with pipeline_status_lock:
+        reconcile_dead_pipeline_reservations(pipeline_status)
+        for flag_key, reason in reject_when:
+            if pipeline_status.get(flag_key):
+                return False, reason
+        updates = dict(flags)
+        updates[owner_key] = owner
+        pipeline_status.update(updates)
+    return True, None
+
+
+async def acquire_enqueue_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    token: str,
+    reject_when,
+) -> tuple[bool, Optional[str]]:
+    """Take one of the (concurrent) pending-enqueue reservations.
+
+    ``pending_enqueue_tokens`` is a ``{token: metadata}`` set; several enqueues
+    may hold slots at once. Adds ``token`` and mirrors the count into
+    ``pending_enqueues`` in a single atomic update.
+    """
+    async with pipeline_status_lock:
+        reconcile_dead_pipeline_reservations(pipeline_status)
+        for flag_key, reason in reject_when:
+            if pipeline_status.get(flag_key):
+                return False, reason
+        tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
+        tokens[token] = {"pid": os.getpid(), "process_start_id": _my_start_id()}
+        pipeline_status.update(
+            {"pending_enqueue_tokens": tokens, "pending_enqueues": len(tokens)}
+        )
+    return True, None
+
+
+async def with_reservation_lock(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    owner_key: str,
+    token: Any,
+    action,
+):
+    """Run ``action(status)`` under ``pipeline_status_lock``, but only while we
+    still own the reservation (the token stored at ``status[owner_key]`` equals
+    ``token``); otherwise no-op and return ``None``.
+
+    ``action`` is SYNCHRONOUS (no await) and must apply all correctness-critical
+    mutations (owner, busy/scanning flags, request_pending, cancellation flags,
+    operation_record, recovery state) via a SINGLE ``status.update`` so a crash
+    cannot tear them apart. ``history_messages`` (a Manager list) must be mutated
+    in place, not replaced. Runs to completion even under repeated cancellation
+    (via ``run_to_completion``), so a release can never be interrupted into
+    leaving the slot wedged.
+    """
+
+    async def _run():
+        async with pipeline_status_lock:
+            if _reservation_owner_token(pipeline_status.get(owner_key)) != token:
+                return None
+            return action(pipeline_status)
+
+    return await run_to_completion(_run)
+
+
+async def with_token_set_reservation_lock(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    tokens_key: str,
+    token: str,
+    action=None,
+):
+    """Release one token from a token-set reservation (e.g. pending enqueues).
+
+    Under the lock: if ``token`` is in the set, remove it, rewrite the set and
+    mirror the count in a single atomic update, then run the optional
+    ``action(status)``. If the token is absent, no-op (idempotent — an endpoint
+    and its background task may both release). Runs to completion under
+    cancellation.
+    """
+
+    async def _run():
+        async with pipeline_status_lock:
+            tokens = dict(pipeline_status.get(tokens_key, {}))
+            if token not in tokens:
+                return None
+            del tokens[token]
+            pipeline_status.update(
+                {tokens_key: tokens, "pending_enqueues": len(tokens)}
+            )
+            return action(pipeline_status) if action else None
+
+    return await run_to_completion(_run)
+
+
+async def release_owned_reservation(
+    workspace: Optional[str],
+    *,
+    owner_key: str,
+    token: Any,
+    action,
+):
+    """Cancellation-safe, self-fetching form of :func:`with_reservation_lock`.
+
+    Fetches ``pipeline_status`` + its lock AND runs the owner-checked release
+    entirely inside ``run_to_completion``, so a cancellation delivered during the
+    namespace fetch or the lock acquire/exit is retried/completed rather than
+    leaking the reservation. Use this from release helpers that do not already
+    hold the status (e.g. background-task releases running during shutdown),
+    where the plain ``with_reservation_lock`` would leave the pre-fetch
+    unprotected.
+
+    No-op (returns ``None``) when ``pipeline_status`` was never initialised for
+    ``workspace`` or a later holder owns the slot. ``action`` must be idempotent
+    (it may re-run if the work task is directly cancelled and restarted).
+    """
+
+    async def _run():
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
+        except PipelineNotInitializedError:
+            return None
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            if _reservation_owner_token(pipeline_status.get(owner_key)) != token:
+                return None
+            return action(pipeline_status)
+
+    return await run_to_completion(_run)
+
+
+async def release_token_set_reservation(
+    workspace: Optional[str],
+    *,
+    tokens_key: str,
+    token: str,
+    action=None,
+):
+    """Cancellation-safe, self-fetching form of
+    :func:`with_token_set_reservation_lock`.
+
+    Fetches ``pipeline_status`` + its lock AND removes ``token`` from the
+    ``tokens_key`` set entirely inside ``run_to_completion``. Idempotent (a no-op
+    if the token is absent or the workspace is uninitialised), so an endpoint and
+    its background task may both release, and a restart after a direct task
+    cancellation is safe.
+    """
+
+    async def _run():
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=workspace
+            )
+        except PipelineNotInitializedError:
+            return None
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=workspace
+        )
+        async with pipeline_status_lock:
+            tokens = dict(pipeline_status.get(tokens_key, {}))
+            if token not in tokens:
+                return None
+            del tokens[token]
+            pipeline_status.update(
+                {tokens_key: tokens, "pending_enqueues": len(tokens)}
+            )
+            return action(pipeline_status) if action else None
+
+    return await run_to_completion(_run)
+
+
+# ============================================================================
+# Managed reservation-holding background tasks
+# ============================================================================
+#
+# Scans / deletes / enqueues reserve a slot in the request handler, then run the
+# actual work in the background. Starlette ``BackgroundTasks`` run only AFTER the
+# response body is sent and are not tracked, so a request cancelled mid-send
+# would drop the callback and strand the reservation. Instead we start a real
+# ``asyncio`` task, track it for shutdown, and hand ownership over via a start
+# barrier so a cancellation before takeover releases the slot instead of leaking
+# it or letting the child run unreserved.
+
+
+async def _join_resistant(task) -> Optional[asyncio.CancelledError]:
+    """Join ``task`` resisting (repeated) cancellation.
+
+    Returns a caller cancellation observed while waiting (or ``None``); NEVER
+    propagates the task's own exception or cancellation, so a caller can always
+    run its cleanup (e.g. a backstop release) after the join.
+    """
+    pending_cancel = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                break  # the task itself is done+cancelled
+            pending_cancel = pending_cancel or exc
+        except Exception:
+            break  # task finished with an exception; retrieved below
+    if not task.cancelled():
+        task.exception()  # retrieve to avoid "never retrieved" warnings
+    return pending_cancel
+
+
+async def start_reserved_background_task(
+    background_tasks: set, *, work, backstop_release
+):
+    """Start a background task that already holds a reservation and hand ownership
+    to it safely.
+
+    ``work(started: asyncio.Event)`` MUST call ``started.set()`` as the first
+    statement inside its own ``try`` and release the reservation in its
+    ``finally``. ``backstop_release()`` is an owner-checked, idempotent release
+    used only if the child never takes over.
+
+    Returns the running task once the child has taken over (``started`` set). If
+    this coroutine is cancelled before takeover, or the child ends before
+    signalling, the child is cancelled and joined, ``backstop_release`` runs
+    (a no-op if the child already released), and the original cancellation — or a
+    startup failure — is raised. The child therefore never runs unreserved and
+    the reservation is never stranded.
+    """
+    started = asyncio.Event()
+    task = asyncio.ensure_future(work(started))
+    background_tasks.add(task)
+
+    def _done(t):
+        background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                direct_log(
+                    f"Reserved background task failed: {exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+
+    task.add_done_callback(_done)
+
+    waiter = asyncio.ensure_future(started.wait())
+    caller_cancel = None
+    try:
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError as exc:
+        caller_cancel = exc
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+    if started.is_set() and caller_cancel is None:
+        return task  # child took over; its finally owns the release
+
+    # Not taken over (child ended before signalling) or caller cancelled: tear
+    # down deterministically so the child never runs unreserved.
+    task.cancel()
+    join_cancel = await _join_resistant(task)
+    await backstop_release()
+    cancel = caller_cancel or join_cancel
+    if cancel is not None:
+        raise cancel
+    raise RuntimeError("reserved background task failed to start")
+
+
+async def drain_reserved_background_tasks(
+    background_tasks: set,
+) -> Optional[asyncio.CancelledError]:
+    """Cancel and join all tracked reserved background tasks (used at shutdown).
+
+    Resists repeated cancellation so every child's ``finally`` releases its
+    reservation before shared state is torn down. Returns a deferred caller
+    cancellation to re-raise AFTER the caller's own cleanup, or ``None``.
+    """
+    tasks = list(background_tasks)
+    for task in tasks:
+        task.cancel()
+    pending_cancel = None
+    for task in tasks:
+        observed = await _join_resistant(task)
+        pending_cancel = pending_cancel or observed
+    return pending_cancel
 
 
 async def get_update_flag(namespace: str, workspace: str | None = None):

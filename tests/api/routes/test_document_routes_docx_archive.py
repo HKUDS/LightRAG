@@ -1330,7 +1330,8 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
 
     # Reserve a slot — mirrors what /upload, /text and /texts do
     # synchronously before scheduling their bg tasks.
-    reserved = await _document_routes._reserve_enqueue_slot(rag)
+    enq_token = "enq-blocks-scan"
+    reserved = await _document_routes._reserve_enqueue_slot(rag, enq_token)
     assert reserved is True
     assert pipeline_status["pending_enqueues"] == 1
 
@@ -1346,7 +1347,7 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
     assert blocked.status == "scanning_skipped_pipeline_busy"
 
     # Release: bg task wrapper would do this in finally.
-    await _document_routes._release_enqueue_slot(rag)
+    await _document_routes._release_enqueue_slot(rag, enq_token)
     assert pipeline_status["pending_enqueues"] == 0
 
     bg2 = _document_routes.BackgroundTasks()
@@ -1380,19 +1381,510 @@ async def test_release_enqueue_slot_decrements_per_call(tmp_path):
     # (busy and the bare ``scanning`` flag are no longer gates;
     # concurrent enqueue with the processing loop and scan's
     # processing phase is explicitly allowed).
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq-a") is True
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq-b") is True
     assert pipeline_status["pending_enqueues"] == 2
 
-    # Each release is a pure decrement; no drain coordination required
-    # because each bg task triggers process_enqueue independently and
-    # the running loop's request_pending mechanism collapses duplicate
-    # triggers safely.
-    await _document_routes._release_enqueue_slot(rag)
+    # Each release removes its own token; count mirrors the set size. No drain
+    # coordination required — each bg task triggers process_enqueue independently
+    # and the running loop's request_pending mechanism collapses duplicates.
+    await _document_routes._release_enqueue_slot(rag, "enq-a")
     assert pipeline_status["pending_enqueues"] == 1
 
-    await _document_routes._release_enqueue_slot(rag)
+    await _document_routes._release_enqueue_slot(rag, "enq-b")
     assert pipeline_status["pending_enqueues"] == 0
+
+
+async def test_enqueue_endpoint_releases_token_on_acquire_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 Codex P2): a cancellation delivered while
+    ``_reserve_enqueue_slot`` is exiting its lock — the token is already in
+    ``pending_enqueue_tokens`` but the endpoint has not yet recorded the handoff
+    — must not leak the slot. The endpoint's finally releases the pre-generated
+    token, so ``pending_enqueues`` returns to 0.
+    """
+    import asyncio
+    import importlib
+
+    class _Rag:
+        workspace = "enq-cancel-test"
+
+    rag = _Rag()
+    doc_manager = DocumentManager(str(tmp_path))
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    async def _reserve_then_cancel(rag_arg, token):
+        # Real reserve adds the token under the lock; here the coroutine is then
+        # cancelled at the lock exit before returning to the endpoint.
+        lock = shared_storage.get_namespace_lock(
+            "pipeline_status", workspace=rag_arg.workspace
+        )
+        async with lock:
+            tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
+            tokens[token] = {"pid": 0, "process_start_id": None}
+            pipeline_status.update(
+                {"pending_enqueue_tokens": tokens, "pending_enqueues": len(tokens)}
+            )
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(_document_routes, "_reserve_enqueue_slot", _reserve_then_cancel)
+
+    router = create_document_routes(rag, doc_manager)
+    text_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "insert_text"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await text_endpoint(
+            _document_routes.InsertTextRequest(text="hello", file_source="a.md"),
+            _document_routes.BackgroundTasks(),
+        )
+
+    # The finally released the pre-generated token (old code, which set the
+    # reserved flag only after the await, would leak it here).
+    assert pipeline_status.get("pending_enqueues", 0) == 0
+    assert pipeline_status.get("pending_enqueue_tokens", {}) == {}
+
+
+async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff(
+    tmp_path,
+):
+    """Regression (#3408 Codex P2): a cancellation delivered after the scan
+    endpoint reserves ``scanning``/``scanning_exclusive`` but before the bg
+    task takes over — at the ``pipeline_status_lock`` __aexit__ await, or as
+    ``add_task`` runs — must not leak the reservation. The endpoint's finally
+    releases the owner token so both flags return to False; without the
+    try/finally around the acquire->schedule window they would stay stuck
+    True and block every future scan/upload until restart.
+    """
+    import asyncio
+    import importlib
+
+    workspace = f"scan-cancel-test-{uuid4().hex}"
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    class _CancelOnAddTask(_document_routes.BackgroundTasks):
+        def add_task(self, *args, **kwargs):
+            # Simulate the request being cancelled in the window between
+            # reserving the scanning slot and handing off to the bg task.
+            raise asyncio.CancelledError()
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await scan_endpoint(_CancelOnAddTask())
+
+    # The finally released the reservation (old code, with no try/finally
+    # around the acquire->schedule window, would leak both flags here).
+    assert pipeline_status.get("scanning") is False
+    assert pipeline_status.get("scanning_exclusive") is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_clear_endpoint_releases_destructive_busy_on_cancellation_during_setup(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 Codex P2): a cancellation delivered after clear
+    reserves the destructive slot but before/while it writes job status (the
+    ``pipeline_status_lock`` __aenter__ await) must not leak the reservation.
+    The acquire + job-status setup now live inside the try/finally, so the
+    owner-checked release frees busy/destructive_busy; the pre-fix layout put
+    the job-status write outside the try and left the workspace permanently
+    busy.
+    """
+    import asyncio
+    import importlib
+
+    workspace = f"clear-cancel-test-{uuid4().hex}"
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    class _CancelNow:
+        @staticmethod
+        def now():
+            # Cancellation delivered while writing job status, inside the
+            # status-init lock (which the fix moved inside the endpoint's try).
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(_document_routes, "datetime", _CancelNow)
+
+    router = create_document_routes(rag, doc_manager)
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await clear_endpoint()
+
+    # The finally released the destructive slot (old code, with job-status
+    # setup outside the try/finally, would leak busy + destructive_busy here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_clear_releases_when_acquire_cancelled_at_lock_exit(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): a cancellation delivered while
+    ``_acquire_destructive_busy`` is exiting its own lock — busy /
+    destructive_busy / busy_owner already written but the endpoint has not yet
+    received ``acquired`` — must not leak the slot. The acquire now runs inside
+    the endpoint's try/finally, so the owner-checked release frees it. The
+    pre-fix layout put the acquire before the try and wedged the workspace."""
+    import asyncio
+    import importlib
+
+    workspace = f"clear-acq-cancel-{uuid4().hex}"
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    async def _acquire_then_cancel(rag_arg, token):
+        # Real acquire stamps the flags + owner under the lock; here the
+        # coroutine is then cancelled at the lock exit before returning.
+        lock = shared_storage.get_namespace_lock(
+            "pipeline_status", workspace=rag_arg.workspace
+        )
+        ps = await shared_storage.get_namespace_data(
+            "pipeline_status", workspace=rag_arg.workspace
+        )
+        async with lock:
+            ps.update({"busy": True, "destructive_busy": True, "busy_owner": token})
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        _document_routes, "_acquire_destructive_busy", _acquire_then_cancel
+    )
+
+    router = create_document_routes(rag, doc_manager)
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await clear_endpoint()
+
+    # Released by the endpoint's finally (old code leaked busy here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_scan_task_releases_when_cancelled_before_release_try(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``run_scanning_process`` already holds the
+    scanning reservation when it starts, but if it is cancelled during the
+    initial ``get_namespace_data`` fetch — before its release try/finally — the
+    scanning flags must still be released. The fetch now lives inside the
+    release try and the finally releases via a fresh-fetch helper. The pre-fix
+    layout fetched in a separate try and leaked scanning."""
+    import asyncio
+    import importlib
+
+    workspace = f"scan-fetch-cancel-{uuid4().hex}"
+    scanning_token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    # Simulate the endpoint's synchronous reservation.
+    pipeline_status.update(
+        {"scanning": True, "scanning_exclusive": True, "scanning_owner": scanning_token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    calls = {"n": 0}
+
+    async def _get_ns_cancel_first(name, workspace=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Cancel the very first fetch (the scan body's), before the release
+            # try was entered in the pre-fix layout.
+            raise asyncio.CancelledError()
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _get_ns_cancel_first)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_scanning_process(rag, doc_manager, "track-scan", scanning_token)
+
+    # The finally released scanning via the fresh-fetch helper (old code, whose
+    # release try never ran when the fetch was cancelled, would leak here).
+    assert pipeline_status.get("scanning") is False
+    assert pipeline_status.get("scanning_exclusive") is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_delete_task_releases_when_cancelled_before_release_try(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``background_delete_documents`` already
+    holds the destructive reservation when it starts, but if it is cancelled
+    during the initial ``get_namespace_data`` fetch — before its release
+    try/finally — busy/destructive_busy must still be released. The fetch now
+    lives inside the release try and the finally re-fetches by token. The
+    pre-fix layout fetched before the try and leaked the slot."""
+    import asyncio
+    import importlib
+
+    workspace = f"delete-fetch-cancel-{uuid4().hex}"
+    destructive_token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    # Simulate the delete endpoint's synchronous reservation.
+    pipeline_status.update(
+        {"busy": True, "destructive_busy": True, "busy_owner": destructive_token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    calls = {"n": 0}
+
+    async def _get_ns_cancel_first(name, workspace=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise asyncio.CancelledError()
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _get_ns_cancel_first)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _document_routes.background_delete_documents(
+            rag, doc_manager, ["doc-x"], token=destructive_token
+        )
+
+    # The finally re-fetched by token and released (old code, which fetched
+    # before the try, would leak busy + destructive_busy here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_release_destructive_helper_survives_fetch_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``_release_destructive_busy`` used to await
+    ``get_namespace_data`` OUTSIDE the run_to_completion-protected release, so a
+    cancellation during the fetch skipped the release and leaked the slot. The
+    helper now runs the fetch + owner-check inside ``release_owned_reservation``,
+    so the destructive slot is freed even when the caller is cancelled mid-fetch
+    (the deferred cancellation is re-raised only after the release completes)."""
+    import asyncio
+    import importlib
+
+    workspace = f"rel-destr-cancel-{uuid4().hex}"
+    token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status.update(
+        {"busy": True, "destructive_busy": True, "busy_owner": token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    entered = asyncio.Event()
+
+    async def _slow_get(name, workspace=None):
+        # Suspend the fetch so we can deliver a cancellation while it is in
+        # flight; it then completes on its own (run_to_completion shields it).
+        entered.set()
+        await asyncio.sleep(0.05)
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+    task = asyncio.create_task(_document_routes._release_destructive_busy(rag, token))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Released despite the cancellation during the fetch (the pre-fix helper,
+    # with the fetch outside run_to_completion, would leak here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_release_scanning_helper_survives_fetch_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``_release_scanning_reservation`` must
+    release the scanning slot even when cancelled during its namespace fetch —
+    the fetch now runs inside ``release_owned_reservation`` (run_to_completion),
+    covering shutdown cancellations of ``run_scanning_process``."""
+    import asyncio
+    import importlib
+
+    workspace = f"rel-scan-cancel-{uuid4().hex}"
+    token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status.update(
+        {"scanning": True, "scanning_exclusive": True, "scanning_owner": token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    entered = asyncio.Event()
+
+    async def _slow_get(name, workspace=None):
+        entered.set()
+        await asyncio.sleep(0.05)
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+    task = asyncio.create_task(
+        _document_routes._release_scanning_reservation(rag, token)
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert pipeline_status.get("scanning") is False
+    assert pipeline_status.get("scanning_exclusive") is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_release_enqueue_helper_survives_fetch_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``_release_enqueue_slot`` must remove its
+    token from ``pending_enqueue_tokens`` even when cancelled during its
+    namespace fetch — the fetch now runs inside
+    ``release_token_set_reservation`` (run_to_completion)."""
+    import asyncio
+    import importlib
+
+    workspace = f"rel-enq-cancel-{uuid4().hex}"
+    token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status.update(
+        {
+            "pending_enqueue_tokens": {token: {"pid": 0, "process_start_id": None}},
+            "pending_enqueues": 1,
+        }
+    )
+
+    real_get = shared_storage.get_namespace_data
+    entered = asyncio.Event()
+
+    async def _slow_get(name, workspace=None):
+        entered.set()
+        await asyncio.sleep(0.05)
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _slow_get)
+
+    task = asyncio.create_task(_document_routes._release_enqueue_slot(rag, token))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert pipeline_status.get("pending_enqueues", 0) == 0
+    assert pipeline_status.get("pending_enqueue_tokens", {}) == {}
 
 
 async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
@@ -1471,23 +1963,23 @@ async def test_reserve_enqueue_slot_allows_busy_and_scan_processing_phase(tmp_pa
 
     # busy=True alone does NOT block.
     pipeline_status["busy"] = True
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    await _document_routes._release_enqueue_slot(rag)
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq") is True
+    await _document_routes._release_enqueue_slot(rag, "enq")
     pipeline_status["busy"] = False
 
     # scanning=True (scan processing phase) does NOT block — this is
     # the user-reported case: upload during scan-driven processing
     # must succeed.
     pipeline_status["scanning"] = True
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    await _document_routes._release_enqueue_slot(rag)
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq") is True
+    await _document_routes._release_enqueue_slot(rag, "enq")
     pipeline_status["scanning"] = False
 
     # scanning_exclusive=True (scan classification phase) STILL rejects.
     pipeline_status["scanning"] = True
     pipeline_status["scanning_exclusive"] = True
     with pytest.raises(_document_routes.HTTPException) as exc:
-        await _document_routes._reserve_enqueue_slot(rag)
+        await _document_routes._reserve_enqueue_slot(rag, "enq")
     assert exc.value.status_code == 409
     assert "classifying" in exc.value.detail.lower()
     assert pipeline_status["pending_enqueues"] == 0
@@ -1516,7 +2008,7 @@ async def test_reserve_enqueue_slot_rejects_destructive_busy(tmp_path):
     pipeline_status["busy"] = True
     pipeline_status["destructive_busy"] = True
     with pytest.raises(_document_routes.HTTPException) as exc:
-        await _document_routes._reserve_enqueue_slot(rag)
+        await _document_routes._reserve_enqueue_slot(rag, "enq")
     assert exc.value.status_code == 409
     assert "clearing or deleting" in exc.value.detail.lower()
     assert pipeline_status["pending_enqueues"] == 0
@@ -1524,8 +2016,8 @@ async def test_reserve_enqueue_slot_rejects_destructive_busy(tmp_path):
     # Cleared once the destructive job finishes.
     pipeline_status["destructive_busy"] = False
     pipeline_status["busy"] = False
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    await _document_routes._release_enqueue_slot(rag)
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq") is True
+    await _document_routes._release_enqueue_slot(rag, "enq")
 
 
 async def test_clear_documents_sets_and_clears_destructive_busy(tmp_path):
