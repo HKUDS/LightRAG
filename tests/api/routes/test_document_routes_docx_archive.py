@@ -1330,7 +1330,8 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
 
     # Reserve a slot — mirrors what /upload, /text and /texts do
     # synchronously before scheduling their bg tasks.
-    reserved = await _document_routes._reserve_enqueue_slot(rag)
+    enq_token = "enq-blocks-scan"
+    reserved = await _document_routes._reserve_enqueue_slot(rag, enq_token)
     assert reserved is True
     assert pipeline_status["pending_enqueues"] == 1
 
@@ -1346,7 +1347,7 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
     assert blocked.status == "scanning_skipped_pipeline_busy"
 
     # Release: bg task wrapper would do this in finally.
-    await _document_routes._release_enqueue_slot(rag)
+    await _document_routes._release_enqueue_slot(rag, enq_token)
     assert pipeline_status["pending_enqueues"] == 0
 
     bg2 = _document_routes.BackgroundTasks()
@@ -1380,18 +1381,17 @@ async def test_release_enqueue_slot_decrements_per_call(tmp_path):
     # (busy and the bare ``scanning`` flag are no longer gates;
     # concurrent enqueue with the processing loop and scan's
     # processing phase is explicitly allowed).
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq-a") is True
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq-b") is True
     assert pipeline_status["pending_enqueues"] == 2
 
-    # Each release is a pure decrement; no drain coordination required
-    # because each bg task triggers process_enqueue independently and
-    # the running loop's request_pending mechanism collapses duplicate
-    # triggers safely.
-    await _document_routes._release_enqueue_slot(rag)
+    # Each release removes its own token; count mirrors the set size. No drain
+    # coordination required — each bg task triggers process_enqueue independently
+    # and the running loop's request_pending mechanism collapses duplicates.
+    await _document_routes._release_enqueue_slot(rag, "enq-a")
     assert pipeline_status["pending_enqueues"] == 1
 
-    await _document_routes._release_enqueue_slot(rag)
+    await _document_routes._release_enqueue_slot(rag, "enq-b")
     assert pipeline_status["pending_enqueues"] == 0
 
 
@@ -1471,23 +1471,23 @@ async def test_reserve_enqueue_slot_allows_busy_and_scan_processing_phase(tmp_pa
 
     # busy=True alone does NOT block.
     pipeline_status["busy"] = True
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    await _document_routes._release_enqueue_slot(rag)
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq") is True
+    await _document_routes._release_enqueue_slot(rag, "enq")
     pipeline_status["busy"] = False
 
     # scanning=True (scan processing phase) does NOT block — this is
     # the user-reported case: upload during scan-driven processing
     # must succeed.
     pipeline_status["scanning"] = True
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    await _document_routes._release_enqueue_slot(rag)
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq") is True
+    await _document_routes._release_enqueue_slot(rag, "enq")
     pipeline_status["scanning"] = False
 
     # scanning_exclusive=True (scan classification phase) STILL rejects.
     pipeline_status["scanning"] = True
     pipeline_status["scanning_exclusive"] = True
     with pytest.raises(_document_routes.HTTPException) as exc:
-        await _document_routes._reserve_enqueue_slot(rag)
+        await _document_routes._reserve_enqueue_slot(rag, "enq")
     assert exc.value.status_code == 409
     assert "classifying" in exc.value.detail.lower()
     assert pipeline_status["pending_enqueues"] == 0
@@ -1516,7 +1516,7 @@ async def test_reserve_enqueue_slot_rejects_destructive_busy(tmp_path):
     pipeline_status["busy"] = True
     pipeline_status["destructive_busy"] = True
     with pytest.raises(_document_routes.HTTPException) as exc:
-        await _document_routes._reserve_enqueue_slot(rag)
+        await _document_routes._reserve_enqueue_slot(rag, "enq")
     assert exc.value.status_code == 409
     assert "clearing or deleting" in exc.value.detail.lower()
     assert pipeline_status["pending_enqueues"] == 0
@@ -1524,8 +1524,8 @@ async def test_reserve_enqueue_slot_rejects_destructive_busy(tmp_path):
     # Cleared once the destructive job finishes.
     pipeline_status["destructive_busy"] = False
     pipeline_status["busy"] = False
-    assert await _document_routes._reserve_enqueue_slot(rag) is True
-    await _document_routes._release_enqueue_slot(rag)
+    assert await _document_routes._reserve_enqueue_slot(rag, "enq") is True
+    await _document_routes._release_enqueue_slot(rag, "enq")
 
 
 async def test_clear_documents_sets_and_clears_destructive_busy(tmp_path):

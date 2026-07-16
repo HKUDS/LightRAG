@@ -464,10 +464,10 @@ def _make_client(monkeypatch, addon_params=None):
         captured["file_sources"] = file_sources
         captured["chunking"] = chunking
 
-    async def _noop_reserve(rag):
+    async def _noop_reserve(rag, token):
         return False
 
-    async def _noop_release(rag):
+    async def _noop_release(rag, token):
         return None
 
     monkeypatch.setattr(_dr, "pipeline_index_texts", _spy)
