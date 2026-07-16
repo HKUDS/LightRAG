@@ -1360,12 +1360,17 @@ def test_process_enqueue_holding_busy_releases_when_no_docs(tmp_path):
                 "pipeline_status", workspace=rag.workspace
             )
             lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            handoff_token = "handoff-token"
             async with lock:
-                pipeline_status["busy"] = True  # simulate a handed-off slot
+                # Simulate a handed-off slot: busy held under the caller's token.
+                pipeline_status.update({"busy": True, "busy_owner": handoff_token})
 
             # No pending docs in a fresh rag: the handoff must release the slot.
-            await rag.apipeline_process_enqueue_documents(_holding_busy=True)
+            await rag.apipeline_process_enqueue_documents(
+                _holding_busy=True, token=handoff_token
+            )
             assert pipeline_status.get("busy") is False
+            assert pipeline_status.get("busy_owner") is None
         finally:
             await rag.finalize_storages()
 

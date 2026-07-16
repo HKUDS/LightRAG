@@ -1629,37 +1629,38 @@ async def acquire_enqueue_reservation(
 
 
 async def with_reservation_lock(
-    workspace: Optional[str],
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
     *,
     owner_key: str,
     token: Any,
     action,
 ):
-    """Run ``action(status)`` under a fresh pipeline_status lock, but only while
-    we still own the reservation (the token stored at ``status[owner_key]``
-    equals ``token``); otherwise no-op and return ``None``.
+    """Run ``action(status)`` under ``pipeline_status_lock``, but only while we
+    still own the reservation (the token stored at ``status[owner_key]`` equals
+    ``token``); otherwise no-op and return ``None``.
 
     ``action`` is SYNCHRONOUS (no await) and must apply all correctness-critical
     mutations (owner, busy/scanning flags, request_pending, cancellation flags,
     operation_record, recovery state) via a SINGLE ``status.update`` so a crash
     cannot tear them apart. ``history_messages`` (a Manager list) must be mutated
-    in place, not replaced. Runs to completion even under repeated cancellation,
-    so a release can never be interrupted into leaving the slot wedged.
+    in place, not replaced. Runs to completion even under repeated cancellation
+    (via ``run_to_completion``), so a release can never be interrupted into
+    leaving the slot wedged.
     """
 
     async def _run():
-        lock = get_namespace_lock("pipeline_status", workspace=workspace)
-        status = await get_namespace_data("pipeline_status", workspace=workspace)
-        async with lock:
-            if _reservation_owner_token(status.get(owner_key)) != token:
+        async with pipeline_status_lock:
+            if _reservation_owner_token(pipeline_status.get(owner_key)) != token:
                 return None
-            return action(status)
+            return action(pipeline_status)
 
     return await run_to_completion(_run)
 
 
 async def with_token_set_reservation_lock(
-    workspace: Optional[str],
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
     *,
     tokens_key: str,
     token: str,
@@ -1667,23 +1668,23 @@ async def with_token_set_reservation_lock(
 ):
     """Release one token from a token-set reservation (e.g. pending enqueues).
 
-    Under a fresh lock: if ``token`` is in the set, remove it, rewrite the set
-    and mirror the count in a single atomic update, then run the optional
+    Under the lock: if ``token`` is in the set, remove it, rewrite the set and
+    mirror the count in a single atomic update, then run the optional
     ``action(status)``. If the token is absent, no-op (idempotent — an endpoint
     and its background task may both release). Runs to completion under
     cancellation.
     """
 
     async def _run():
-        lock = get_namespace_lock("pipeline_status", workspace=workspace)
-        status = await get_namespace_data("pipeline_status", workspace=workspace)
-        async with lock:
-            tokens = dict(status.get(tokens_key, {}))
+        async with pipeline_status_lock:
+            tokens = dict(pipeline_status.get(tokens_key, {}))
             if token not in tokens:
                 return None
             del tokens[token]
-            status.update({tokens_key: tokens, "pending_enqueues": len(tokens)})
-            return action(status) if action else None
+            pipeline_status.update(
+                {tokens_key: tokens, "pending_enqueues": len(tokens)}
+            )
+            return action(pipeline_status) if action else None
 
     return await run_to_completion(_run)
 

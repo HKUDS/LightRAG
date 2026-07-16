@@ -23,6 +23,7 @@ import re
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +41,12 @@ from lightrag.exceptions import (
     PipelineCancelledException,
     IndexFlushError,
 )
-from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+from lightrag.kg.shared_storage import (
+    _reservation_owner_token,
+    get_namespace_data,
+    get_namespace_lock,
+    run_to_completion,
+)
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
 from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
@@ -990,7 +996,7 @@ class _PipelineMixin:
                 )
 
     async def apipeline_process_enqueue_documents(
-        self, _holding_busy: bool = False
+        self, _holding_busy: bool = False, token: str | None = None
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -1020,70 +1026,76 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
 
-        async with pipeline_status_lock:
-            # Ensure only one worker is processing documents. ``_holding_busy``
-            # means the slot was handed to us already owned, so take it over
-            # rather than treating busy=True as "someone else is running".
-            if _holding_busy or not pipeline_status.get("busy", False):
-                try:
+        # Owner token for this run's ``busy`` reservation. A handed-off run
+        # (``_holding_busy``) reuses the caller's token — it already owns the
+        # slot — so the caller's release and this run's release refer to the
+        # same owner; a normal run mints its own.
+        if _holding_busy:
+            if token is None:
+                raise ValueError("_holding_busy requires the owner token")
+        else:
+            token = uuid.uuid4().hex
+
+        # A handed-off slot is ours from entry; a normal run owns it only after
+        # it sets busy=True below. The finally releases ``busy`` iff we own it.
+        holds_busy = _holding_busy
+
+        # Tracks whether the loop already released ``busy`` under the same
+        # critical section that observed request_pending=False. This makes the
+        # exit handoff atomic: a concurrent enqueue either sets request_pending
+        # BEFORE we release (loop continues with a fresh snapshot) or AFTER (it
+        # sees busy=False and starts a new loop via its own process_enqueue).
+        busy_released_in_loop = False
+
+        try:
+            async with pipeline_status_lock:
+                # Ensure only one worker is processing documents. ``_holding_busy``
+                # means the slot was handed to us already owned, so take it over
+                # rather than treating busy=True as "someone else is running".
+                if _holding_busy or not pipeline_status.get("busy", False):
                     to_process_docs: dict[
                         str, DocProcessingStatus
                     ] = await self.doc_status.get_docs_by_statuses(
                         list(_INFLIGHT_DOC_STATUSES)
                     )
-                except Exception:
-                    # A handed-off slot is already busy=True; release it so a
-                    # failure here does not wedge the pipeline permanently busy.
-                    # A normal call has not set busy yet, so nothing to release.
-                    if _holding_busy:
-                        pipeline_status["busy"] = False
-                    raise
 
-                if not to_process_docs:
-                    # Release the handed-off slot (a normal call never set busy
-                    # on this path).
-                    if _holding_busy:
-                        pipeline_status["busy"] = False
-                    logger.info("No documents to process")
+                    if not to_process_docs:
+                        # Nothing to do. A handed-off slot is released by the
+                        # finally (holds_busy, owner-checked); a normal run
+                        # never took the slot, so the finally is a no-op.
+                        logger.info("No documents to process")
+                        return
+
+                    pipeline_status.update(
+                        {
+                            "busy": True,
+                            "busy_owner": token,
+                            "job_name": "Default Job",
+                            "job_start": datetime.now(timezone.utc).isoformat(),
+                            "docs": 0,
+                            "batchs": 0,  # Total number of files to be processed
+                            "cur_batch": 0,  # Number of files already processed
+                            "request_pending": False,  # Clear any previous request
+                            "cancellation_requested": False,  # Initialize cancellation flag
+                            "cancellation_reason": None,  # "internal_error" or None (user)
+                            "cancellation_detail": None,  # driver + root cause for internal
+                            "latest_message": "",
+                        }
+                    )
+                    # Cleaning history_messages without breaking it as a shared list object
+                    del pipeline_status["history_messages"][:]
+                    holds_busy = True
+                else:
+                    # Another process is busy, just set request flag and return
+                    pipeline_status["request_pending"] = True
+                    logger.info(
+                        "Another process is already processing the document queue. Request queued."
+                    )
                     return
+            # The acquire lock exits here (an await point). Because it is INSIDE
+            # this try, a cancellation delivered at the lock exit still runs the
+            # finally, which releases ``busy`` iff we own it (holds_busy + token).
 
-                pipeline_status.update(
-                    {
-                        "busy": True,
-                        "job_name": "Default Job",
-                        "job_start": datetime.now(timezone.utc).isoformat(),
-                        "docs": 0,
-                        "batchs": 0,  # Total number of files to be processed
-                        "cur_batch": 0,  # Number of files already processed
-                        "request_pending": False,  # Clear any previous request
-                        "cancellation_requested": False,  # Initialize cancellation flag
-                        "cancellation_reason": None,  # "internal_error" or None (user)
-                        "cancellation_detail": None,  # driver + root cause for internal
-                        "latest_message": "",
-                    }
-                )
-                # Cleaning history_messages without breaking it as a shared list object
-                del pipeline_status["history_messages"][:]
-            else:
-                # Another process is busy, just set request flag and return
-                pipeline_status["request_pending"] = True
-                logger.info(
-                    "Another process is already processing the document queue. Request queued."
-                )
-                return
-
-        # Tracks whether the loop has already released ``busy`` under
-        # the same critical section that observed request_pending=False.
-        # This makes the exit handoff atomic: a concurrent enqueue can
-        # either set request_pending BEFORE we release (in which case
-        # the loop continues with a fresh snapshot) or AFTER (in which
-        # case it sees busy=False and starts a new loop via its own
-        # process_enqueue call).  Without this, a small window between
-        # "loop reads request_pending=False" and "finally clears busy"
-        # could strand newly-enqueued PENDING docs.
-        busy_released_in_loop = False
-
-        try:
             # Process documents until no more documents or requests
             while True:
                 # Check for cancellation request at the start of main loop
@@ -1192,40 +1204,56 @@ class _PipelineMixin:
 
         finally:
             stopped_message = "Enqueued document processing pipeline stopped"
-            logger.info(stopped_message)
-            # If the loop already released ``busy`` under the atomic exit
-            # check, don't clobber it here — a concurrent enqueue may have
-            # observed busy=False and started a new processing pass that
-            # has set busy=True for itself.  Cancellation flag and log
-            # bookkeeping are always safe to update.
-            async with pipeline_status_lock:
-                if not busy_released_in_loop:
-                    pipeline_status["busy"] = False
-                # An internal-error abort normally exits via the batch's
-                # ``break`` (not the loop-top cancellation handler, which
-                # logs + clears the reason itself), so without this the only
-                # visible trace would be the generic "stopped" line. Surface
-                # the actionable halt reason here too, BEFORE clearing the
-                # reason/detail. Read it first so _cancellation_label still
-                # sees the cause.
-                internal_halt = None
-                if pipeline_status.get("cancellation_reason") == "internal_error":
-                    internal_halt = self._internal_halt_message(
-                        self._cancellation_label(pipeline_status)
-                    )
-                    logger.error(internal_halt)
-                pipeline_status["cancellation_requested"] = (
-                    False  # Always reset cancellation flag
+
+            async def _finalize():
+                # Cancellation-resistant, owner-checked release + bookkeeping.
+                # Only runs when THIS invocation actually held the slot: a queued
+                # request, a normal no-docs return, or a get-docs failure before
+                # acquiring never entered here (holds_busy stays False), so we
+                # never touch another run's state.
+                if not holds_busy:
+                    return
+                logger.info(stopped_message)
+                lock = get_namespace_lock("pipeline_status", workspace=self.workspace)
+                status = await get_namespace_data(
+                    "pipeline_status", workspace=self.workspace
                 )
-                pipeline_status["cancellation_reason"] = None
-                pipeline_status["cancellation_detail"] = None
-                pipeline_status["history_messages"].append(stopped_message)
-                if internal_halt is not None:
-                    pipeline_status["history_messages"].append(internal_halt)
-                    # Prefer the actionable halt reason as the latest message.
-                    pipeline_status["latest_message"] = internal_halt
-                else:
-                    pipeline_status["latest_message"] = stopped_message
+                async with lock:
+                    # Release ``busy`` only if the loop did not already release it
+                    # under the atomic exit check AND we still own the slot — a
+                    # concurrent enqueue may have observed busy=False and started
+                    # a new pass with its own owner, which we must not clobber.
+                    if (
+                        not busy_released_in_loop
+                        and _reservation_owner_token(status.get("busy_owner")) == token
+                    ):
+                        status.update({"busy": False, "busy_owner": None})
+                    # Bookkeeping runs whenever we held the slot. An internal-error
+                    # abort exits via the batch's break (not the loop-top handler),
+                    # so surface the actionable halt reason here BEFORE clearing
+                    # the reason/detail (read it first so _cancellation_label sees
+                    # the cause).
+                    internal_halt = None
+                    if status.get("cancellation_reason") == "internal_error":
+                        internal_halt = self._internal_halt_message(
+                            self._cancellation_label(status)
+                        )
+                        logger.error(internal_halt)
+                    status.update(
+                        {
+                            "cancellation_requested": False,
+                            "cancellation_reason": None,
+                            "cancellation_detail": None,
+                            "latest_message": internal_halt
+                            if internal_halt
+                            else stopped_message,
+                        }
+                    )
+                    status["history_messages"].append(stopped_message)
+                    if internal_halt is not None:
+                        status["history_messages"].append(internal_halt)
+
+            await run_to_completion(_finalize)
 
     # ============================================================
     # Pipeline orchestration
@@ -1635,7 +1663,10 @@ class _PipelineMixin:
             if pipeline_status.get("request_pending", False):
                 pipeline_status["request_pending"] = False
                 return False
-            pipeline_status["busy"] = False
+            # Release the slot together with its owner token so a later
+            # owner-checked release (the finally, or a fresh acquirer) sees the
+            # slot as free and unowned.
+            pipeline_status.update({"busy": False, "busy_owner": None})
             return True
 
     @staticmethod

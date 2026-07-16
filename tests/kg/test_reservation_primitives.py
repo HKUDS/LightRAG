@@ -148,7 +148,7 @@ async def test_with_reservation_lock_is_owner_checked():
 
         # Correct owner → action runs and releases.
         res = await with_reservation_lock(
-            ws, owner_key="busy_owner", token="tok", action=_release_action
+            ps, lock, owner_key="busy_owner", token="tok", action=_release_action
         )
         assert res == "released"
         assert ps["busy"] is False and ps["busy_owner"] is None
@@ -170,7 +170,7 @@ async def test_with_reservation_lock_is_owner_checked():
             return "oops"
 
         res2 = await with_reservation_lock(
-            ws, owner_key="busy_owner", token="WRONG", action=bad
+            ps, lock, owner_key="busy_owner", token="WRONG", action=bad
         )
         assert res2 is None
         assert ran == []  # action never ran
@@ -206,7 +206,7 @@ async def test_with_reservation_lock_matches_owner_record_token():
         assert ps["busy_owner"] == owner
 
         res = await with_reservation_lock(
-            ws, owner_key="busy_owner", token="tokX", action=_release_action
+            ps, lock, owner_key="busy_owner", token="tokX", action=_release_action
         )
         assert res == "released"
         assert ps["busy"] is False and ps["busy_owner"] is None
@@ -236,14 +236,14 @@ async def test_enqueue_token_set_acquire_and_idempotent_release():
 
         # Release e1: count mirrors, e2 survives (concurrent enqueue contract).
         await with_token_set_reservation_lock(
-            ws, tokens_key="pending_enqueue_tokens", token="e1"
+            ps, lock, tokens_key="pending_enqueue_tokens", token="e1"
         )
         assert ps["pending_enqueues"] == 1
         assert set(ps["pending_enqueue_tokens"]) == {"e2"}
 
         # Releasing e1 again is a no-op (does not double-decrement e2's slot).
         await with_token_set_reservation_lock(
-            ws, tokens_key="pending_enqueue_tokens", token="e1"
+            ps, lock, tokens_key="pending_enqueue_tokens", token="e1"
         )
         assert ps["pending_enqueues"] == 1
         assert set(ps["pending_enqueue_tokens"]) == {"e2"}

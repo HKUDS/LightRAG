@@ -5,6 +5,7 @@ import asyncio
 import os
 import threading
 import time
+import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -91,6 +92,7 @@ from lightrag.kg.shared_storage import (
     set_default_workspace,
     get_namespace_lock,
     get_storage_keyed_lock,
+    with_reservation_lock,
 )
 
 from lightrag.base import (
@@ -1559,6 +1561,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
+        # Owner token for the busy reservation, generated before any await so the
+        # finally always holds it and can release the slot by owner (even if the
+        # acquire is cancelled at the lock exit).
+        token = uuid.uuid4().hex
         busy_acquired = False
         pipeline_status = None
         pipeline_status_lock = None
@@ -1639,38 +1645,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "ainsert_custom_chunks cannot run concurrently. "
                         "Wait for the scan to finish and retry."
                     )
-                pipeline_status["busy"] = True
-                # Record ownership INSIDE the locked section, immediately after
-                # taking the slot and before any await. Exiting the
-                # ``async with`` awaits the lock's __aexit__ (which awaits an
-                # asyncio.shield), a point at which task cancellation can be
-                # delivered; if busy_acquired were set only after the block, a
-                # cancel there would leave busy=True but busy_acquired=False and
-                # the finally would skip the release, wedging the workspace busy
-                # forever. Mirrors adelete_by_doc_id's we_acquired_pipeline.
-                busy_acquired = True
-                # Stamp our own job identity, mirroring every other acquirer
-                # (processing loop -> "Default Job", deletes -> "...document...").
-                # Critical: flipping busy without overwriting job_name would leave
-                # a stale name from the previous holder. After a batch delete,
-                # background_delete_documents releases busy but leaves
-                # job_name="Deleting N Documents"; adelete_by_doc_id treats
+                # Take the slot and stamp identity in a SINGLE atomic update so a
+                # crash mid-write can never leave busy=True with no owner. The
+                # ``busy_owner`` token lets the finally release the slot by owner
+                # (never clobbering a later holder). ``job_name`` must be a
+                # non-deletion name: after a batch delete, background_delete leaves
+                # job_name="Deleting N Documents", and adelete_by_doc_id treats
                 # busy + a "deleting...document" job_name as "a batch delete is
-                # running, join it" and proceeds WITHOUT acquiring — so a
-                # concurrent delete could run against our KG/vector writes. A
-                # non-deletion job_name makes that guard correctly reject.
-                pipeline_status["job_name"] = "Custom chunks insert"
-                pipeline_status["job_start"] = datetime.now(timezone.utc).isoformat()
-                pipeline_status["latest_message"] = "Inserting custom chunks"
-                # Start clean, mirroring the processing loop's acquire: clear any
-                # stale cancellation left by a previously cancelled job. The
-                # cancel endpoint sets cancellation_requested whenever busy=True
-                # (it can't tell this path from the loop); without clearing it
-                # here a leftover flag would immediately abort the extract/merge
-                # below via PipelineCancelledException.
-                pipeline_status["cancellation_requested"] = False
-                pipeline_status["cancellation_reason"] = None
-                pipeline_status["cancellation_detail"] = None
+                # running, join it" — a non-deletion name makes that guard reject.
+                # Cancellation flags are cleared here (mirroring the processing
+                # loop's acquire) so a stale flag from a previous job does not
+                # immediately abort the extract/merge below.
+                pipeline_status.update(
+                    {
+                        "busy": True,
+                        "busy_owner": token,
+                        "job_name": "Custom chunks insert",
+                        "job_start": datetime.now(timezone.utc).isoformat(),
+                        "latest_message": "Inserting custom chunks",
+                        "cancellation_requested": False,
+                        "cancellation_reason": None,
+                        "cancellation_detail": None,
+                    }
+                )
+                # Record ownership INSIDE the locked section, immediately after
+                # taking the slot and before any await (the ``async with`` exit
+                # awaits an asyncio.shield, a cancellation-delivery point). If
+                # busy_acquired were set only after the block, a cancel there
+                # would leave busy=True but busy_acquired=False and the finally
+                # would skip the release, wedging the workspace busy forever.
+                busy_acquired = True
 
             # Stage 1 (barrier): persist chunks BEFORE extraction. Extraction
             # records per-chunk LLM cache references (update_chunk_cache_list ->
@@ -1722,49 +1726,78 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # pending buffers — doing so could commit or tear down another
             # running job's in-flight index ops.
             if busy_acquired:
-                hand_off = False
-                # Flush first (while still busy so no other writer starts
-                # mid-flush), then release the slot even if the flush raises —
-                # otherwise the pipeline would stay wedged as busy forever.
+
+                def _exit_action(status):
+                    # Clear cancellation (mirroring the processing loop) and
+                    # decide, atomically: if a doc was enqueued while we held
+                    # busy, hand the slot to a processing run WITHOUT releasing
+                    # busy (releasing first would open a busy=False +
+                    # request_pending window in which a clear/delete/scan
+                    # reservation could start and drop the accepted document);
+                    # otherwise release the slot.
+                    updates = {
+                        "cancellation_requested": False,
+                        "cancellation_reason": None,
+                        "cancellation_detail": None,
+                    }
+                    if status.get("request_pending"):
+                        status.update(updates)
+                        return "handoff"  # keep busy (owner stays ours)
+                    updates.update({"busy": False, "busy_owner": None})
+                    status.update(updates)
+                    return "released"
+
+                def _terminal_release(status):
+                    # Owner-checked backstop: release the slot we still hold.
+                    status.update(
+                        {
+                            "busy": False,
+                            "busy_owner": None,
+                            "cancellation_requested": False,
+                            "cancellation_reason": None,
+                            "cancellation_detail": None,
+                        }
+                    )
+
                 try:
-                    await self._insert_done_with_cleanup()
-                finally:
-                    async with pipeline_status_lock:
-                        # Clear cancellation as part of releasing the slot
-                        # (mirroring the processing loop's finally): a cancel
-                        # that targeted THIS job, or arrived after it finished,
-                        # must not wedge the next ainsert_custom_chunks with a
-                        # stale PipelineCancelledException.
-                        pipeline_status["cancellation_requested"] = False
-                        pipeline_status["cancellation_reason"] = None
-                        pipeline_status["cancellation_detail"] = None
-                        if pipeline_status.get("request_pending"):
-                            # A doc was enqueued while we held busy. Hand the
-                            # slot to a processing run WITHOUT releasing busy
-                            # (keep it True) — releasing here first would open a
-                            # busy=False + request_pending window in which a
-                            # clear/delete/scan reservation (which check busy /
-                            # scanning / pending_enqueues but NOT request_pending)
-                            # could start and drop the accepted-but-unprocessed
-                            # document. The handoff run below consumes
-                            # request_pending and releases busy atomically at its
-                            # own exit, mirroring the loop's
-                            # _atomic_release_busy_or_consume_pending.
-                            hand_off = True
-                        else:
-                            pipeline_status["busy"] = False
-                    if hand_off:
-                        # busy is still True; the handoff takes over the slot and
-                        # always releases it (no-work / error / normal exit).
+                    # Flush first (while still busy so no other writer starts
+                    # mid-flush). If it raises, the inner finally still runs the
+                    # release/handoff decision, then the flush error propagates.
+                    try:
+                        await self._insert_done_with_cleanup()
+                    finally:
+                        decision = await with_reservation_lock(
+                            pipeline_status,
+                            pipeline_status_lock,
+                            owner_key="busy_owner",
+                            token=token,
+                            action=_exit_action,
+                        )
+                    if decision == "handoff":
+                        # busy is still True (ours); the handoff run takes over
+                        # the slot and releases it at its own exit. Pass our token
+                        # so it owns and releases the SAME reservation.
                         try:
                             await self.apipeline_process_enqueue_documents(
-                                _holding_busy=True
+                                _holding_busy=True, token=token
                             )
                         except Exception as drain_error:
                             logger.warning(
                                 "Failed to process queued documents handed off "
                                 f"from a custom-chunks insert: {drain_error}"
                             )
+                finally:
+                    # Guarantee release even if the flush / decision / handoff was
+                    # cancelled or errored. Owner-checked + cancellation-resistant;
+                    # a no-op if the handoff run already released the slot (or a
+                    # later holder took over).
+                    await with_reservation_lock(
+                        pipeline_status,
+                        pipeline_status_lock,
+                        owner_key="busy_owner",
+                        token=token,
+                        action=_terminal_release,
+                    )
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
@@ -3362,17 +3395,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             "pipeline_status", workspace=self.workspace
         )
 
-        # Track whether WE acquired the pipeline
+        # Track whether WE acquired the pipeline. ``token`` owns the busy slot so
+        # the finally releases it by owner (never clobbering a later holder).
         we_acquired_pipeline = False
+        token = uuid.uuid4().hex
 
         # Check and acquire pipeline if needed
         async with pipeline_status_lock:
             if not pipeline_status.get("busy", False):
-                # Pipeline is idle - WE acquire it for this deletion
+                # Pipeline is idle - WE acquire it for this deletion. Take the
+                # slot + stamp identity in a single atomic update.
                 we_acquired_pipeline = True
                 pipeline_status.update(
                     {
                         "busy": True,
+                        "busy_owner": token,
                         "job_name": "Single document deletion",
                         "job_start": datetime.now(timezone.utc).isoformat(),
                         "docs": 1,
@@ -4195,56 +4232,74 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
 
         finally:
-            # ALWAYS ensure persistence if any deletion operations were started
-            if deletion_operations_started:
-                # Plain _insert_done: this finally reports the deletion as
-                # successful after logging a persistence error, so discarding
-                # pending DELETES here would drop them with no retry and leave
-                # stale vectors/KV behind. Keep them buffered for a later flush.
-                try:
-                    await self._insert_done()
-                except Exception as persistence_error:
-                    persistence_error_msg = f"Failed to persist data after deletion attempt for {doc_id}: {persistence_error}"
-                    logger.error(persistence_error_msg)
-                    logger.error(traceback.format_exc())
 
-                    if deletion_fully_completed:
-                        # All deletion stages succeeded; the flush error is a post-cleanup
-                        # concern. Do not override the success result already returned.
-                        logger.error(
-                            "Post-deletion persistence flush failed for %s, "
-                            "but deletion completed successfully: %s",
-                            doc_id,
-                            persistence_error,
-                        )
-                    elif original_exception is None:
-                        # Deletion stages were in-flight but the try-block return was never
-                        # reached; treat the persistence failure as the primary error.
-                        return DeletionResult(
-                            status="fail",
-                            doc_id=doc_id,
-                            message=f"Deletion completed but failed to persist changes: {persistence_error}",
-                            status_code=500,
-                            file_path=file_path,
-                        )
-                    # If there was an original exception, log the persistence error but
-                    # don't override it — the original error result was already returned.
-            else:
-                logger.debug(
-                    f"No deletion operations were started for document {doc_id}, skipping persistence"
+            def _release_action(status):
+                # Owner-checked release (+ cancellation reset + completion log),
+                # applied atomically. Runs via with_reservation_lock so it is
+                # cancellation-resistant and cannot clobber a later holder.
+                status.update(
+                    {
+                        "busy": False,
+                        "busy_owner": None,
+                        "cancellation_requested": False,
+                    }
                 )
+                completion_msg = f"Deletion process completed for document: {doc_id}"
+                status["latest_message"] = completion_msg
+                status["history_messages"].append(completion_msg)
+                logger.info(completion_msg)
 
-            # Release pipeline only if WE acquired it
-            if we_acquired_pipeline:
-                async with pipeline_status_lock:
-                    pipeline_status["busy"] = False
-                    pipeline_status["cancellation_requested"] = False
-                    completion_msg = (
-                        f"Deletion process completed for document: {doc_id}"
+            try:
+                # ALWAYS ensure persistence if any deletion operations were started
+                if deletion_operations_started:
+                    # Plain _insert_done: this finally reports the deletion as
+                    # successful after logging a persistence error, so discarding
+                    # pending DELETES here would drop them with no retry and leave
+                    # stale vectors/KV behind. Keep them buffered for a later flush.
+                    try:
+                        await self._insert_done()
+                    except Exception as persistence_error:
+                        persistence_error_msg = f"Failed to persist data after deletion attempt for {doc_id}: {persistence_error}"
+                        logger.error(persistence_error_msg)
+                        logger.error(traceback.format_exc())
+
+                        if deletion_fully_completed:
+                            # All deletion stages succeeded; the flush error is a post-cleanup
+                            # concern. Do not override the success result already returned.
+                            logger.error(
+                                "Post-deletion persistence flush failed for %s, "
+                                "but deletion completed successfully: %s",
+                                doc_id,
+                                persistence_error,
+                            )
+                        elif original_exception is None:
+                            # Deletion stages were in-flight but the try-block return was never
+                            # reached; treat the persistence failure as the primary error.
+                            return DeletionResult(
+                                status="fail",
+                                doc_id=doc_id,
+                                message=f"Deletion completed but failed to persist changes: {persistence_error}",
+                                status_code=500,
+                                file_path=file_path,
+                            )
+                        # If there was an original exception, log the persistence error but
+                        # don't override it — the original error result was already returned.
+                else:
+                    logger.debug(
+                        f"No deletion operations were started for document {doc_id}, skipping persistence"
                     )
-                    pipeline_status["latest_message"] = completion_msg
-                    pipeline_status["history_messages"].append(completion_msg)
-                    logger.info(completion_msg)
+            finally:
+                # Release the slot even if the flush above was cancelled or
+                # returned — owner-checked + cancellation-resistant, so a cancel
+                # during _insert_done can never leave the pipeline wedged.
+                if we_acquired_pipeline:
+                    await with_reservation_lock(
+                        pipeline_status,
+                        pipeline_status_lock,
+                        owner_key="busy_owner",
+                        token=token,
+                        action=_release_action,
+                    )
 
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.

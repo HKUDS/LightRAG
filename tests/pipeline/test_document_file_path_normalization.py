@@ -447,14 +447,15 @@ async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
 
     drained = {}
 
-    async def _drain(_holding_busy=False):
+    async def _drain(_holding_busy=False, token=None):
         drained["called"] = True
         drained["holding_busy"] = _holding_busy
+        drained["token"] = token
         # The slot must NOT have been released before handing off (no window).
         drained["busy_at_handoff"] = status["busy"]
-        # The real run consumes request_pending and releases busy at its exit.
+        # The real run consumes request_pending and releases busy (+owner) at exit.
         status["request_pending"] = False
-        status["busy"] = False
+        status.update({"busy": False, "busy_owner": None})
 
     rag._process_extract_entities = _process_extract_entities
     rag.apipeline_process_enqueue_documents = _drain
@@ -464,6 +465,7 @@ async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
     assert observed["busy_during_extract"] is True  # held during the work
     assert drained["called"] is True  # queued docs handed off
     assert drained["holding_busy"] is True  # atomic handoff, not a fresh acquire
+    assert drained["token"] is not None  # handoff passes the owner token
     assert drained["busy_at_handoff"] is True  # busy never dropped before handoff
     assert status["request_pending"] is False  # consumed by the handoff
     assert status["busy"] is False  # released by the handoff run
