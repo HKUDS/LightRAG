@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
+    Request,
     UploadFile,
 )
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -1488,6 +1488,22 @@ async def _release_scanning_reservation(rag: LightRAG, token: str) -> None:
     )
 
 
+def get_managed_background_tasks(request: Request) -> set:
+    """FastAPI dependency returning the app's managed background-task set.
+
+    Reservation-holding background work (scan / delete / enqueue / reprocess) is
+    started via ``start_reserved_background_task`` into this set — a real,
+    tracked ``asyncio`` task rather than a Starlette ``BackgroundTasks`` callback
+    (which runs only AFTER the response body is sent and is not tracked, so a
+    request cancelled mid-send would drop the callback and strand the
+    reservation). The lifespan drains this set on shutdown so every child's
+    finally releases its reservation before shared state is torn down.
+
+    Direct-call tests pass a plain ``set()`` for this argument.
+    """
+    return request.app.state.background_tasks
+
+
 def find_existing_file_by_file_path(input_dir: Path, file_path: str) -> Path | None:
     """Find an input-dir file whose canonical basename matches ``file_path``.
 
@@ -2556,7 +2572,9 @@ def create_document_routes(
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        managed_tasks: set = Depends(get_managed_background_tasks),
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -2584,12 +2602,28 @@ def create_document_routes(
             ScanResponse: A response object containing the scanning status and track_id
         """
         from lightrag.exceptions import PipelineNotInitializedError
-        from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+            start_reserved_background_task,
+        )
 
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
         # Owner token for the scanning reservation, generated before any await.
         scanning_token = uuid4().hex
+
+        async def _scan_work(started):
+            # started.set() first (no await before it) so the endpoint's
+            # start-barrier confirms takeover before returning; a body-send
+            # cancellation therefore cannot strand the reservation. Its release
+            # (owner-checked) lives in run_scanning_process's own finally.
+            started.set()
+            await run_scanning_process(rag, doc_manager, track_id, scanning_token)
+
+        async def _scan_backstop():
+            # Owner-checked + idempotent; runs only if the child never took over.
+            await _release_scanning_reservation(rag, scanning_token)
 
         try:
             pipeline_status = await get_namespace_data(
@@ -2599,8 +2633,9 @@ def create_document_routes(
             # Workspace pipeline_status not yet bootstrapped (e.g. mocked
             # test rigs).  Treat as idle and allow the scan to proceed; the
             # scanning flag has nowhere to live so it is effectively skipped.
-            background_tasks.add_task(
-                run_scanning_process, rag, doc_manager, track_id, scanning_token
+            # Still start it as a managed task so shutdown can drain it.
+            await start_reserved_background_task(
+                managed_tasks, work=_scan_work, backstop_release=_scan_backstop
             )
             return ScanResponse(
                 status="scanning_started",
@@ -2684,11 +2719,13 @@ def create_document_routes(
                 # immediately after the atomic update, with no await in between.
                 reserved = True
 
-            # Start the scanning process in the background with track_id.  The
-            # task is responsible for clearing both flags in its finally block,
-            # owner-checked by scanning_token.
-            background_tasks.add_task(
-                run_scanning_process, rag, doc_manager, track_id, scanning_token
+            # Hand the reservation to a managed background task. The start
+            # barrier guarantees the child took over (started.set) before we
+            # return, so a cancellation while sending the response body cannot
+            # strand ``scanning``. run_scanning_process clears both flags in its
+            # finally, owner-checked by scanning_token.
+            await start_reserved_background_task(
+                managed_tasks, work=_scan_work, backstop_release=_scan_backstop
             )
             # Ownership of the slot transferred to the bg task — it releases in
             # its finally. The endpoint's finally must NOT release it again.
@@ -2700,9 +2737,10 @@ def create_document_routes(
             )
         finally:
             # Release the scanning slot if we reserved it but a cancellation
-            # arrived before the bg task took over (e.g. at the
-            # pipeline_status_lock __aexit__ await, or before add_task ran).
-            # Owner-checked + idempotent, so a no-op once the task owns it.
+            # arrived before the managed task took over (e.g. at the
+            # pipeline_status_lock __aexit__ await, before hand-off). Owner-
+            # checked + idempotent, so a no-op once the task owns it (or the
+            # start helper's own backstop already released it).
             if reserved and not handed_off:
                 await _release_scanning_reservation(rag, scanning_token)
 
@@ -2710,7 +2748,8 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        managed_tasks: set = Depends(get_managed_background_tasks),
+        file: UploadFile = File(...),
     ):
         """
         Upload a file to the input directory and index it.
@@ -2772,7 +2811,9 @@ def create_document_routes(
           up via its ``request_pending`` mechanism.
 
         Args:
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
 
         Returns:
@@ -2784,6 +2825,8 @@ def create_document_routes(
                 conflict or scan-classifying / destructive job in
                 flight, 413 file too large, 500 other errors.
         """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
         enqueue_token = uuid4().hex
         handed_off = False
         try:
@@ -2924,13 +2967,24 @@ def create_document_routes(
             # collapses to a ``request_pending=True`` nudge and returns,
             # so concurrent uploads/inserts cooperate via the running
             # loop's request_pending mechanism.
-            async def _indexing_task():
+            async def _indexing_work(started):
+                # started.set() first (no await before it) so the endpoint's
+                # start-barrier confirms takeover before returning; a body-send
+                # cancellation therefore cannot strand the enqueue slot.
+                started.set()
                 try:
                     await pipeline_index_file(rag, file_path, track_id)
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
 
-            background_tasks.add_task(_indexing_task)
+            async def _enqueue_backstop():
+                await _release_enqueue_slot(rag, enqueue_token)
+
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_indexing_work,
+                backstop_release=_enqueue_backstop,
+            )
             # Ownership of the slot transferred to the bg task — the
             # finally block below must NOT release it again.
             handed_off = True
@@ -2960,7 +3014,8 @@ def create_document_routes(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
-        request: InsertTextRequest, background_tasks: BackgroundTasks
+        request: InsertTextRequest,
+        managed_tasks: set = Depends(get_managed_background_tasks),
     ):
         """
         Insert text into the RAG system.
@@ -2979,7 +3034,9 @@ def create_document_routes(
 
         Args:
             request (InsertTextRequest): The request body containing the text to be inserted.
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
 
         Returns:
             InsertResponse: A response object containing the status of the operation.
@@ -2988,6 +3045,8 @@ def create_document_routes(
             HTTPException: 400 invalid file_source, 409 same-name conflict
                 or scan/destructive job in flight, 500 other errors.
         """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
         enqueue_token = uuid4().hex
         handed_off = False
         try:
@@ -3029,7 +3088,11 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
-            async def _indexing_task():
+            async def _indexing_work(started):
+                # started.set() first (no await before it) so the endpoint's
+                # start-barrier confirms takeover before returning; a body-send
+                # cancellation therefore cannot strand the enqueue slot.
+                started.set()
                 try:
                     await pipeline_index_texts(
                         rag,
@@ -3041,7 +3104,14 @@ def create_document_routes(
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
 
-            background_tasks.add_task(_indexing_task)
+            async def _enqueue_backstop():
+                await _release_enqueue_slot(rag, enqueue_token)
+
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_indexing_work,
+                backstop_release=_enqueue_backstop,
+            )
             handed_off = True
 
             return InsertResponse(
@@ -3065,7 +3135,8 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
-        request: InsertTextsRequest, background_tasks: BackgroundTasks
+        request: InsertTextsRequest,
+        managed_tasks: set = Depends(get_managed_background_tasks),
     ):
         """
         Insert multiple texts into the RAG system.
@@ -3084,7 +3155,9 @@ def create_document_routes(
 
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
 
         Returns:
             InsertResponse: A response object containing the status of the operation.
@@ -3094,6 +3167,8 @@ def create_document_routes(
                 conflict or scan/destructive job in flight, 500 other
                 errors.
         """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
         enqueue_token = uuid4().hex
         handed_off = False
         try:
@@ -3154,7 +3229,11 @@ def create_document_routes(
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
-            async def _indexing_task():
+            async def _indexing_work(started):
+                # started.set() first (no await before it) so the endpoint's
+                # start-barrier confirms takeover before returning; a body-send
+                # cancellation therefore cannot strand the enqueue slot.
+                started.set()
                 try:
                     await pipeline_index_texts(
                         rag,
@@ -3166,7 +3245,14 @@ def create_document_routes(
                 finally:
                     await _release_enqueue_slot(rag, enqueue_token)
 
-            background_tasks.add_task(_indexing_task)
+            async def _enqueue_backstop():
+                await _release_enqueue_slot(rag, enqueue_token)
+
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_indexing_work,
+                backstop_release=_enqueue_backstop,
+            )
             handed_off = True
 
             return InsertResponse(
@@ -3649,7 +3735,7 @@ def create_document_routes(
     )
     async def delete_document(
         delete_request: DeleteDocRequest,
-        background_tasks: BackgroundTasks,
+        managed_tasks: set = Depends(get_managed_background_tasks),
     ) -> DeleteDocByIdResponse:
         """
         Delete documents and all their associated data by their IDs using background processing.
@@ -3672,7 +3758,9 @@ def create_document_routes(
 
         Args:
             delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
@@ -3684,11 +3772,34 @@ def create_document_routes(
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
         doc_ids = delete_request.doc_ids
 
         # Owner token for the destructive slot, generated before any await so the
         # finally can release it by owner even if the acquire is cancelled.
         destructive_token = uuid4().hex
+
+        async def _delete_work(started):
+            # started.set() first (no await before it) so the endpoint's
+            # start-barrier confirms takeover before returning; a body-send
+            # cancellation therefore cannot strand the reservation.
+            # background_delete_documents releases busy + destructive_busy
+            # (owner-checked by destructive_token) in its own finally.
+            started.set()
+            await background_delete_documents(
+                rag,
+                doc_manager,
+                doc_ids,
+                delete_request.delete_file,
+                delete_request.delete_llm_cache,
+                destructive_token,
+            )
+
+        async def _delete_backstop():
+            # Owner-checked + idempotent; runs only if the child never took over.
+            await _release_destructive_busy(rag, destructive_token)
+
         handed_off = False
         try:
             # Atomically reserve the destructive slot BEFORE returning
@@ -3706,14 +3817,12 @@ def create_document_routes(
                     doc_id=", ".join(doc_ids),
                 )
 
-            background_tasks.add_task(
-                background_delete_documents,
-                rag,
-                doc_manager,
-                doc_ids,
-                delete_request.delete_file,
-                delete_request.delete_llm_cache,
-                destructive_token,
+            # Hand the reservation to a managed background task. The start
+            # barrier guarantees takeover (started.set) before we return, so a
+            # cancellation while sending the response body cannot strand
+            # busy/destructive_busy.
+            await start_reserved_background_task(
+                managed_tasks, work=_delete_work, backstop_release=_delete_backstop
             )
             # Ownership of the slot transferred to the bg task — it releases in
             # its finally. The endpoint's finally must NOT release it again.
@@ -3731,11 +3840,12 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=error_msg)
         finally:
-            # Release by the pre-generated token unless the bg task took over.
-            # This also covers a cancellation delivered while _acquire_destructive_busy
+            # Release by the pre-generated token unless the managed task took
+            # over. Covers a cancellation delivered while _acquire_destructive_busy
             # was exiting its lock (flags + owner already written, but ``acquired``
-            # not yet assigned): release is owner-checked + idempotent, so it frees
-            # the slot we took and is a no-op if we never acquired.
+            # not yet assigned) or before hand-off: release is owner-checked +
+            # idempotent, so it frees the slot we took and is a no-op if we never
+            # acquired (or the start helper's backstop already released it).
             if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
 
@@ -4060,7 +4170,9 @@ def create_document_routes(
         response_model=ReprocessResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+    async def reprocess_failed_documents(
+        managed_tasks: set = Depends(get_managed_background_tasks),
+    ):
         """
         Reprocess failed and pending documents.
 
@@ -4085,10 +4197,27 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
+        # Reprocess holds NO reservation of its own — apipeline_process_enqueue_documents
+        # acquires (and releases) the busy slot itself. We only need the task to
+        # be MANAGED so the lifespan can drain it on shutdown; the backstop is a
+        # no-op because there is nothing to release if the child never takes over.
+        async def _reprocess_work(started):
+            started.set()
+            await rag.apipeline_process_enqueue_documents()
+
+        async def _reprocess_backstop():
+            return None
+
         try:
-            # Start the reprocessing in the background
+            # Start the reprocessing in a managed background task.
             # Note: Reprocessed documents retain their original track_id from initial upload
-            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_reprocess_work,
+                backstop_release=_reprocess_backstop,
+            )
             logger.info("Reprocessing of failed documents initiated")
 
             return ReprocessResponse(

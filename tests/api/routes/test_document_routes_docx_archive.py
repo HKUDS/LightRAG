@@ -54,6 +54,22 @@ create_document_routes = _document_routes.create_document_routes
 pytestmark = pytest.mark.offline
 
 
+async def _await_managed(managed_tasks):
+    """Await every managed background task to completion so each child's finally
+    runs (releasing its reservation). The endpoints now start reservation-holding
+    work as tracked asyncio tasks (``start_reserved_background_task``) instead of
+    deferred Starlette callbacks, so tests drain the managed set rather than
+    manually invoking a queued callback. Snapshot first — the task's done-callback
+    discards it from the set."""
+    import asyncio
+
+    for task in list(managed_tasks):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 @pytest.fixture(autouse=True)
 def _ensure_shared_storage_initialized():
     """Initialize the shared_storage module-level dicts before each test.
@@ -968,7 +984,7 @@ async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
     # rather than returning a "duplicated" 200 response.  Clients must delete
     # the existing record before re-uploading.
     with pytest.raises(_document_routes.HTTPException) as excinfo:
-        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+        await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 409
     assert "failed.docx" in excinfo.value.detail
     assert "Status: failed" in excinfo.value.detail
@@ -996,7 +1012,7 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     # Strict name pre-check: an INPUT directory file with the same canonical
     # basename now blocks the upload with 409.
     with pytest.raises(_document_routes.HTTPException) as excinfo:
-        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+        await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 409
     assert "existing.docx" in excinfo.value.detail
     assert not (tmp_path / "existing.[native].docx").exists()
@@ -1024,7 +1040,7 @@ async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     )
 
     with pytest.raises(_document_routes.HTTPException) as excinfo:
-        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+        await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 400
     assert "multiple chunking modes" in excinfo.value.detail
 
@@ -1064,17 +1080,34 @@ async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypat
         file=BytesIO(b"docx bytes"),
     )
 
-    bg = _document_routes.BackgroundTasks()
-    response = await upload_endpoint(bg, upload_file)
+    # Gate the managed child so the enqueue slot stays reserved until we let it
+    # finish — the deterministic replacement for the old "task queued but not
+    # run" deferral.
+    import asyncio
+
+    gate = asyncio.Event()
+
+    async def _gated_index(rag_arg, file_path, track_id=None):
+        await gate.wait()
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", _gated_index)
+
+    managed: set = set()
+    response = await upload_endpoint(managed, upload_file)
 
     # Endpoint accepted the upload despite busy=True.
     assert response.status == "success"
     assert (tmp_path / "while_busy.docx").exists()
-    # The slot has been transferred to the bg task; it will release on
-    # completion.  Until then pending_enqueues stays at 1 so a
-    # concurrent /scan would refuse.
+    # The slot has been transferred to the managed task, which is parked in the
+    # gated child; until it finishes pending_enqueues stays at 1 so a concurrent
+    # /scan would refuse.
     assert pipeline_status["pending_enqueues"] == 1
-    assert len(bg.tasks) == 1
+    assert len(managed) == 1
+
+    # Let the child complete; its finally releases the slot.
+    gate.set()
+    await _await_managed(managed)
+    assert pipeline_status["pending_enqueues"] == 0
 
 
 async def test_upload_returns_409_when_scanning_classification(tmp_path, monkeypatch):
@@ -1111,7 +1144,7 @@ async def test_upload_returns_409_when_scanning_classification(tmp_path, monkeyp
     )
 
     with pytest.raises(_document_routes.HTTPException) as excinfo:
-        await upload_endpoint(_document_routes.BackgroundTasks(), upload_file)
+        await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 409
     assert "classifying" in excinfo.value.detail.lower()
     assert not (tmp_path / "while_scanning.docx").exists()
@@ -1154,14 +1187,27 @@ async def test_upload_succeeds_during_scan_processing_phase(tmp_path, monkeypatc
         file=BytesIO(b"docx bytes"),
     )
 
-    bg = _document_routes.BackgroundTasks()
-    response = await upload_endpoint(bg, upload_file)
+    import asyncio
+
+    gate = asyncio.Event()
+
+    async def _gated_index(rag_arg, file_path, track_id=None):
+        await gate.wait()
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", _gated_index)
+
+    managed: set = set()
+    response = await upload_endpoint(managed, upload_file)
 
     # Endpoint accepted the upload despite scan in progress.
     assert response.status == "success"
     assert (tmp_path / "upload_during_scan_processing.docx").exists()
     assert pipeline_status["pending_enqueues"] == 1
-    assert len(bg.tasks) == 1
+    assert len(managed) == 1
+
+    gate.set()
+    await _await_managed(managed)
+    assert pipeline_status["pending_enqueues"] == 0
 
 
 async def test_scan_endpoint_returns_skipped_when_pipeline_busy(tmp_path):
@@ -1186,12 +1232,12 @@ async def test_scan_endpoint_returns_skipped_when_pipeline_busy(tmp_path):
         if getattr(route, "name", "") == "scan_for_new_documents"
     ][-1]
 
-    bg = _document_routes.BackgroundTasks()
-    response = await scan_endpoint(bg)
+    managed: set = set()
+    response = await scan_endpoint(managed)
 
     assert response.status == "scanning_skipped_pipeline_busy"
-    # No background task should have been scheduled.
-    assert len(bg.tasks) == 0
+    # No managed background task should have been started.
+    assert len(managed) == 0
     # And ``scanning`` is left unchanged at False (we didn't acquire it).
     assert pipeline_status.get("scanning") is False
 
@@ -1218,11 +1264,11 @@ async def test_scan_endpoint_returns_skipped_when_already_scanning(tmp_path):
         if getattr(route, "name", "") == "scan_for_new_documents"
     ][-1]
 
-    bg = _document_routes.BackgroundTasks()
-    response = await scan_endpoint(bg)
+    managed: set = set()
+    response = await scan_endpoint(managed)
 
     assert response.status == "scanning_skipped_pipeline_busy"
-    assert len(bg.tasks) == 0
+    assert len(managed) == 0
 
 
 async def test_scan_endpoint_acquires_and_releases_scanning_flag(tmp_path, monkeypatch):
@@ -1250,18 +1296,18 @@ async def test_scan_endpoint_acquires_and_releases_scanning_flag(tmp_path, monke
         if getattr(route, "name", "") == "scan_for_new_documents"
     ][-1]
 
-    bg = _document_routes.BackgroundTasks()
-    response = await scan_endpoint(bg)
+    managed: set = set()
+    response = await scan_endpoint(managed)
 
-    # Endpoint scheduled the task and acquired the flag synchronously.
+    # Endpoint acquired the flag synchronously and handed off to a managed task
+    # (``scanning_started`` is only returned after the atomic scanning=True write
+    # and a confirmed start-barrier takeover).
     assert response.status == "scanning_started"
-    assert pipeline_status["scanning"] is True
-    assert len(bg.tasks) == 1
 
-    # Run the scheduled task; finally-block must clear the flag.
-    task = bg.tasks[0]
-    await task.func(*task.args, **task.kwargs)
+    # Drain the managed task; run_scanning_process's finally must clear the flag.
+    await _await_managed(managed)
     assert pipeline_status["scanning"] is False
+    assert rag.process_calls == 1  # the child actually ran the scan
 
 
 async def test_scan_endpoint_returns_skipped_when_enqueue_pending(tmp_path):
@@ -1297,12 +1343,12 @@ async def test_scan_endpoint_returns_skipped_when_enqueue_pending(tmp_path):
         if getattr(route, "name", "") == "scan_for_new_documents"
     ][-1]
 
-    bg = _document_routes.BackgroundTasks()
-    response = await scan_endpoint(bg)
+    managed: set = set()
+    response = await scan_endpoint(managed)
 
     assert response.status == "scanning_skipped_pipeline_busy"
-    # No background task scheduled; scanning flag untouched.
-    assert len(bg.tasks) == 0
+    # No managed task started; scanning flag untouched.
+    assert len(managed) == 0
     assert pipeline_status.get("scanning") is False
     # Reservation count is preserved — only the owning bg task may release it.
     assert pipeline_status["pending_enqueues"] == 1
@@ -1342,18 +1388,21 @@ async def test_reserve_enqueue_slot_blocks_concurrent_scan_until_release(tmp_pat
         if getattr(route, "name", "") == "scan_for_new_documents"
     ][-1]
 
-    bg = _document_routes.BackgroundTasks()
-    blocked = await scan_endpoint(bg)
+    managed: set = set()
+    blocked = await scan_endpoint(managed)
     assert blocked.status == "scanning_skipped_pipeline_busy"
+    assert len(managed) == 0
 
     # Release: bg task wrapper would do this in finally.
     await _document_routes._release_enqueue_slot(rag, enq_token)
     assert pipeline_status["pending_enqueues"] == 0
 
-    bg2 = _document_routes.BackgroundTasks()
-    allowed = await scan_endpoint(bg2)
+    managed2: set = set()
+    allowed = await scan_endpoint(managed2)
     assert allowed.status == "scanning_started"
-    assert pipeline_status["scanning"] is True
+    # Drain the now-allowed scan so it doesn't leak into the shared workspace.
+    await _await_managed(managed2)
+    assert pipeline_status["scanning"] is False
 
 
 async def test_release_enqueue_slot_decrements_per_call(tmp_path):
@@ -1444,7 +1493,7 @@ async def test_enqueue_endpoint_releases_token_on_acquire_cancellation(
     with pytest.raises(asyncio.CancelledError):
         await text_endpoint(
             _document_routes.InsertTextRequest(text="hello", file_source="a.md"),
-            _document_routes.BackgroundTasks(),
+            set(),
         )
 
     # The finally released the pre-generated token (old code, which set the
@@ -1454,15 +1503,13 @@ async def test_enqueue_endpoint_releases_token_on_acquire_cancellation(
 
 
 async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
-    """Regression (#3408 Codex P2): a cancellation delivered after the scan
-    endpoint reserves ``scanning``/``scanning_exclusive`` but before the bg
-    task takes over — at the ``pipeline_status_lock`` __aexit__ await, or as
-    ``add_task`` runs — must not leak the reservation. The endpoint's finally
-    releases the owner token so both flags return to False; without the
-    try/finally around the acquire->schedule window they would stay stuck
-    True and block every future scan/upload until restart.
+    """Regression (#3408): a cancellation delivered after the scan endpoint
+    reserves ``scanning``/``scanning_exclusive`` but before the managed task
+    takes over (e.g. the request cancelled while start_reserved_background_task
+    awaits the start barrier) must not leak the reservation. The endpoint's
+    finally releases the owner token so both flags return to False.
     """
     import asyncio
     import importlib
@@ -1482,11 +1529,15 @@ async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff
         "pipeline_status", workspace=rag.workspace
     )
 
-    class _CancelOnAddTask(_document_routes.BackgroundTasks):
-        def add_task(self, *args, **kwargs):
-            # Simulate the request being cancelled in the window between
-            # reserving the scanning slot and handing off to the bg task.
-            raise asyncio.CancelledError()
+    async def _cancel_before_takeover(*args, **kwargs):
+        # Simulate a cancellation delivered after scanning was reserved but
+        # before the managed task took over (request cancelled at the start
+        # barrier). The endpoint's finally must still release the slot.
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        shared_storage, "start_reserved_background_task", _cancel_before_takeover
+    )
 
     router = create_document_routes(rag, doc_manager)
     scan_endpoint = [
@@ -1496,10 +1547,10 @@ async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff
     ][-1]
 
     with pytest.raises(asyncio.CancelledError):
-        await scan_endpoint(_CancelOnAddTask())
+        await scan_endpoint(set())
 
-    # The finally released the reservation (old code, with no try/finally
-    # around the acquire->schedule window, would leak both flags here).
+    # The endpoint's finally released the reservation (reserved but not handed
+    # off), so no future scan/upload is blocked.
     assert pipeline_status.get("scanning") is False
     assert pipeline_status.get("scanning_exclusive") is False
     assert pipeline_status.get("scanning_owner") is None
@@ -1921,23 +1972,37 @@ async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
         if getattr(route, "name", "") == "upload_to_input_dir"
     ][-1]
 
-    bg_a = _document_routes.BackgroundTasks()
+    # Gate both managed children so their enqueue slots stay reserved together.
+    import asyncio
+
+    gate = asyncio.Event()
+
+    async def _gated_index(rag_arg, file_path, track_id=None):
+        await gate.wait()
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", _gated_index)
+
+    managed: set = set()
+
     upload_a = _document_routes.UploadFile(filename="a.docx", file=BytesIO(b"a bytes"))
-    response_a = await upload_endpoint(bg_a, upload_a)
+    response_a = await upload_endpoint(managed, upload_a)
     assert response_a.status == "success"
     assert pipeline_status["pending_enqueues"] == 1
 
-    bg_b = _document_routes.BackgroundTasks()
     upload_b = _document_routes.UploadFile(filename="b.docx", file=BytesIO(b"b bytes"))
-    response_b = await upload_endpoint(bg_b, upload_b)
+    response_b = await upload_endpoint(managed, upload_b)
     assert response_b.status == "success"
-    # Both reservations coexist while bg tasks are pending.
+    # Both reservations coexist while the gated managed tasks run.
     assert pipeline_status["pending_enqueues"] == 2
-    # Both files were written to disk; both bg tasks scheduled.
+    # Both files were written to disk; both managed tasks tracked.
     assert (tmp_path / "a.docx").exists()
     assert (tmp_path / "b.docx").exists()
-    assert len(bg_a.tasks) == 1
-    assert len(bg_b.tasks) == 1
+    assert len(managed) == 2
+
+    # Let both finish; each child's finally releases its slot.
+    gate.set()
+    await _await_managed(managed)
+    assert pipeline_status["pending_enqueues"] == 0
 
 
 async def test_reserve_enqueue_slot_allows_busy_and_scan_processing_phase(tmp_path):
@@ -2187,48 +2252,258 @@ async def test_delete_document_reserves_destructive_busy_synchronously(tmp_path)
     # Build the request payload using the model class on the module.
     DeleteDocRequest = _document_routes.DeleteDocRequest
 
-    # Case 1: reservation acquired synchronously, bg task scheduled.
+    # Case 1: reservation acquired synchronously, managed task started.
+    import asyncio
+
     pipeline_status["busy"] = False
     pipeline_status["scanning"] = False
     pipeline_status["pending_enqueues"] = 0
-    bg = _document_routes.BackgroundTasks()
+    # Gate the child inside its delete loop so it parks BEFORE its finally,
+    # keeping the synchronously-acquired slot held while we assert.
+    gate = asyncio.Event()
+    _orig_delete = rag.adelete_by_doc_id
+
+    async def _gated_delete(doc_id, delete_llm_cache=False):
+        await gate.wait()
+        return await _orig_delete(doc_id, delete_llm_cache=delete_llm_cache)
+
+    rag.adelete_by_doc_id = _gated_delete
+
+    managed: set = set()
     response = await delete_endpoint(
         DeleteDocRequest(doc_ids=["doc-1"]),
-        bg,
+        managed,
     )
     assert response.status == "deletion_started"
-    # Synchronously reserved BEFORE returning.
+    # Synchronously reserved BEFORE returning (set by _acquire_destructive_busy
+    # in the endpoint, released only by the child's finally — still gated here).
     assert pipeline_status["busy"] is True
     assert pipeline_status["destructive_busy"] is True
-    assert len(bg.tasks) == 1
+    assert len(managed) == 1
+    # Let the child finish; background_delete_documents releases in its finally.
+    gate.set()
+    await _await_managed(managed)
+    assert pipeline_status["busy"] is False
+    assert pipeline_status["destructive_busy"] is False
+    rag.adelete_by_doc_id = _orig_delete
     # Reset for next case.
     pipeline_status["busy"] = False
     pipeline_status["destructive_busy"] = False
 
     # Case 2: scanning=True must refuse without scheduling.
     pipeline_status["scanning"] = True
-    bg = _document_routes.BackgroundTasks()
+    managed = set()
     response = await delete_endpoint(
         DeleteDocRequest(doc_ids=["doc-1"]),
-        bg,
+        managed,
     )
     assert response.status == "busy"
-    assert len(bg.tasks) == 0
+    assert len(managed) == 0
     assert pipeline_status.get("destructive_busy", False) is False
     pipeline_status["scanning"] = False
 
     # Case 3: pending_enqueues>0 must refuse without scheduling.
     pipeline_status["pending_enqueues"] = 1
-    bg = _document_routes.BackgroundTasks()
+    managed = set()
     response = await delete_endpoint(
         DeleteDocRequest(doc_ids=["doc-1"]),
-        bg,
+        managed,
     )
     assert response.status == "busy"
-    assert len(bg.tasks) == 0
+    assert len(managed) == 0
     assert pipeline_status["pending_enqueues"] == 1
     assert pipeline_status.get("destructive_busy", False) is False
     pipeline_status["pending_enqueues"] = 0
+
+
+async def test_scan_managed_task_released_on_shutdown_drain(tmp_path):
+    """PR-1b: the scan reservation is held by a MANAGED asyncio task (start
+    barrier confirmed takeover before the endpoint returned), so a shutdown that
+    drains the managed set cancels the child and its finally releases scanning —
+    closing the Starlette 'callback dropped after response body sent' leak."""
+    import asyncio
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    # Park run_scanning_process mid-flight (scanning still True) so the drain,
+    # not natural completion, is what releases it.
+    gate = asyncio.Event()
+
+    async def _gated_process():
+        await gate.wait()
+
+    rag.apipeline_process_enqueue_documents = _gated_process
+
+    router = create_document_routes(rag, doc_manager)
+    scan_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "scan_for_new_documents"
+    ][-1]
+
+    managed: set = set()
+    response = await scan_endpoint(managed)
+    assert response.status == "scanning_started"
+    # A live managed task holds the reservation (not a deferred callback).
+    assert len(managed) == 1
+    assert pipeline_status["scanning"] is True
+
+    # Shutdown drain: cancel + join, child finally releases (owner-checked,
+    # cancellation-resistant) even though it was parked at the gate.
+    pending = await shared_storage.drain_reserved_background_tasks(managed)
+    assert pending is None
+    assert pipeline_status["scanning"] is False
+    assert pipeline_status["scanning_exclusive"] is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_upload_managed_task_released_on_shutdown_drain(tmp_path, monkeypatch):
+    """PR-1b: the enqueue slot is held by a managed task; a shutdown drain
+    cancels it and its finally releases the slot (pending_enqueues back to 0)."""
+    import asyncio
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    gate = asyncio.Event()
+
+    async def _gated_index(rag_arg, file_path, track_id=None):
+        await gate.wait()
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", _gated_index)
+
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="drain.docx", file=BytesIO(b"bytes")
+    )
+
+    managed: set = set()
+    response = await upload_endpoint(managed, upload_file)
+    assert response.status == "success"
+    assert pipeline_status["pending_enqueues"] == 1
+    assert len(managed) == 1
+
+    pending = await shared_storage.drain_reserved_background_tasks(managed)
+    assert pending is None
+    assert pipeline_status["pending_enqueues"] == 0
+    assert pipeline_status.get("pending_enqueue_tokens", {}) == {}
+
+
+async def test_delete_managed_task_released_on_shutdown_drain(tmp_path):
+    """PR-1b: the destructive slot is held by a managed task; a shutdown drain
+    cancels it and background_delete_documents' finally releases busy +
+    destructive_busy."""
+    import asyncio
+    import importlib
+
+    rag = _DeleteRag(DeletionResult(status="success", message="ok", doc_id="doc-1"))
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = False
+    pipeline_status["scanning"] = False
+    pipeline_status["pending_enqueues"] = 0
+
+    gate = asyncio.Event()
+
+    async def _gated_delete(doc_id, delete_llm_cache=False):
+        await gate.wait()
+
+    rag.adelete_by_doc_id = _gated_delete
+
+    router = create_document_routes(rag, doc_manager)
+    delete_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "delete_document"
+    ][-1]
+
+    managed: set = set()
+    response = await delete_endpoint(
+        _document_routes.DeleteDocRequest(doc_ids=["doc-1"]),
+        managed,
+    )
+    assert response.status == "deletion_started"
+    assert pipeline_status["busy"] is True
+    assert pipeline_status["destructive_busy"] is True
+    assert len(managed) == 1
+
+    pending = await shared_storage.drain_reserved_background_tasks(managed)
+    assert pending is None
+    assert pipeline_status["busy"] is False
+    assert pipeline_status["destructive_busy"] is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_reprocess_starts_managed_task(tmp_path):
+    """PR-1b: /reprocess_failed runs apipeline_process_enqueue_documents as a
+    MANAGED task (tracked for shutdown drain) rather than a Starlette callback.
+    It holds no reservation of its own — the backstop is a no-op."""
+    import asyncio
+    import importlib
+
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _ScanRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+
+    gate = asyncio.Event()
+
+    async def _gated_process():
+        await gate.wait()
+        rag.process_calls += 1
+
+    rag.apipeline_process_enqueue_documents = _gated_process
+
+    router = create_document_routes(rag, doc_manager)
+    reprocess_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "reprocess_failed_documents"
+    ][-1]
+
+    managed: set = set()
+    response = await reprocess_endpoint(managed)
+    assert response.status == "reprocessing_started"
+    # The pipeline pass is a live managed task (start barrier confirmed takeover).
+    assert len(managed) == 1
+
+    gate.set()
+    await _await_managed(managed)
+    assert rag.process_calls == 1
 
 
 def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
