@@ -2110,16 +2110,21 @@ async def run_scanning_process(
     pipeline_status = None
     pipeline_status_lock = None
     try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-        pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
-        pass
+        # Fetch INSIDE the release try: the scan endpoint already reserved
+        # ``scanning``/``scanning_exclusive`` before scheduling us, so a
+        # cancellation delivered at this await must still reach the finally and
+        # release. PipelineNotInitializedError = mocked test rig (nothing to
+        # clear); a real CancelledError propagates to the finally.
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+        except PipelineNotInitializedError:
+            pass
 
-    try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")
@@ -2318,34 +2323,25 @@ async def run_scanning_process(
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
     finally:
-        # Always release both scanning flags so future uploads / scans
-        # are not blocked by a crashed / cancelled task.  Skip when
-        # pipeline_status was never initialised for this workspace (test rigs).
-        if pipeline_status is not None and pipeline_status_lock is not None:
-
-            def _scan_release(status):
-                status.update(
+        # Always release both scanning flags so future uploads / scans are not
+        # blocked by a crashed / cancelled task.
+        if scanning_token is not None:
+            # Real scans: owner-checked + cancellation-resistant release that
+            # fetches status FRESH, so a cancellation during the initial
+            # namespace fetch above (which leaves pipeline_status_lock None)
+            # still releases scanning. A no-op if a later scan took the slot or
+            # the workspace was never initialised.
+            await _release_scanning_reservation(rag, scanning_token)
+        elif pipeline_status is not None and pipeline_status_lock is not None:
+            # Legacy/test path (no token): best-effort in-place clear.
+            async with pipeline_status_lock:
+                pipeline_status.update(
                     {
                         "scanning": False,
                         "scanning_exclusive": False,
                         "scanning_owner": None,
                     }
                 )
-
-            if scanning_token is not None:
-                # Owner-checked + cancellation-resistant release.
-                from lightrag.kg.shared_storage import with_reservation_lock
-
-                await with_reservation_lock(
-                    pipeline_status,
-                    pipeline_status_lock,
-                    owner_key="scanning_owner",
-                    token=scanning_token,
-                    action=_scan_release,
-                )
-            else:
-                async with pipeline_status_lock:
-                    _scan_release(pipeline_status)
 
 
 async def background_delete_documents(
@@ -2357,50 +2353,59 @@ async def background_delete_documents(
     token: str | None = None,
 ):
     """Background task to delete multiple documents"""
+    from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         get_namespace_lock,
         with_reservation_lock,
     )
 
-    pipeline_status = await get_namespace_data(
-        "pipeline_status", workspace=rag.workspace
-    )
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
-    )
-
     total_docs = len(doc_ids)
     successful_deletions = []
     failed_deletions = []
-
-    # The /documents/delete_document endpoint has already reserved the
-    # destructive slot synchronously: ``busy=True`` and
-    # ``destructive_busy=True`` were set before the client got
-    # ``deletion_started``, after checking busy + scanning +
-    # pending_enqueues>0 atomically.  Here we only update the
-    # job-info fields; the busy reservation was acquired by the
-    # endpoint and is released in the finally block below.
-    async with pipeline_status_lock:
-        pipeline_status.update(
-            {
-                # Job name can not be changed, it's verified in adelete_by_doc_id()
-                "job_name": f"Deleting {total_docs} Documents",
-                "job_start": datetime.now().isoformat(),
-                "docs": total_docs,
-                "batchs": total_docs,
-                "cur_batch": 0,
-                "latest_message": "Starting document deletion process",
-            }
-        )
-        # Use slice assignment to clear the list in place
-        pipeline_status["history_messages"][:] = ["Starting document deletion process"]
-        if delete_llm_cache:
-            pipeline_status["history_messages"].append(
-                "LLM cache cleanup requested for this deletion job"
-            )
+    pipeline_status = None
+    pipeline_status_lock = None
 
     try:
+        # Fetch + initial job-status write INSIDE the release try: the delete
+        # endpoint already reserved busy + destructive_busy (owner=token) before
+        # scheduling us, so a cancellation delivered at these awaits must still
+        # reach the finally and release the slot.
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+
+        # The /documents/delete_document endpoint has already reserved the
+        # destructive slot synchronously: ``busy=True`` and
+        # ``destructive_busy=True`` were set before the client got
+        # ``deletion_started``, after checking busy + scanning +
+        # pending_enqueues>0 atomically.  Here we only update the
+        # job-info fields; the busy reservation was acquired by the
+        # endpoint and is released in the finally block below.
+        async with pipeline_status_lock:
+            pipeline_status.update(
+                {
+                    # Job name can not be changed, it's verified in adelete_by_doc_id()
+                    "job_name": f"Deleting {total_docs} Documents",
+                    "job_start": datetime.now().isoformat(),
+                    "docs": total_docs,
+                    "batchs": total_docs,
+                    "cur_batch": 0,
+                    "latest_message": "Starting document deletion process",
+                }
+            )
+            # Use slice assignment to clear the list in place
+            pipeline_status["history_messages"][:] = [
+                "Starting document deletion process"
+            ]
+            if delete_llm_cache:
+                pipeline_status["history_messages"].append(
+                    "LLM cache cleanup requested for this deletion job"
+                )
+
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
             # Check for cancellation at the start of each document deletion
@@ -2522,8 +2527,9 @@ async def background_delete_documents(
         error_msg = f"Critical error during batch deletion: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
-        async with pipeline_status_lock:
-            pipeline_status["history_messages"].append(error_msg)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["history_messages"].append(error_msg)
     finally:
         # Final summary + release the destructive slot, owner-checked +
         # cancellation-resistant so a cancel here cannot wedge the slot or
@@ -2542,13 +2548,32 @@ async def background_delete_documents(
             status["history_messages"].append(completion_msg)
             return status.get("request_pending", False)
 
-        has_pending_request = await with_reservation_lock(
-            pipeline_status,
-            pipeline_status_lock,
-            owner_key="busy_owner",
-            token=token,
-            action=_delete_release,
-        )
+        # Use the status/lock we already fetched; if a cancellation interrupted
+        # the initial fetch (leaving them None) re-fetch here so the reservation
+        # is still released. with_reservation_lock is owner-checked + resistant.
+        release_status = pipeline_status
+        release_lock = pipeline_status_lock
+        if release_status is None or release_lock is None:
+            try:
+                release_status = await get_namespace_data(
+                    "pipeline_status", workspace=rag.workspace
+                )
+                release_lock = get_namespace_lock(
+                    "pipeline_status", workspace=rag.workspace
+                )
+            except PipelineNotInitializedError:
+                release_status = None
+                release_lock = None
+
+        has_pending_request = False
+        if release_status is not None and release_lock is not None:
+            has_pending_request = await with_reservation_lock(
+                release_status,
+                release_lock,
+                owner_key="busy_owner",
+                token=token,
+                action=_delete_release,
+            )
 
         # If there are pending requests, start document processing pipeline
         if has_pending_request:
@@ -3262,15 +3287,17 @@ def create_document_routes(
         # this window would write to storages mid-drop and silently
         # lose the document.
         destructive_token = uuid4().hex
-        acquired, reason = await _acquire_destructive_busy(rag, destructive_token)
-        if not acquired:
-            return ClearDocumentsResponse(status="busy", message=reason)
-        # Everything below runs inside try/finally so a cancellation delivered
-        # after the destructive slot is reserved — e.g. at the
-        # pipeline_status_lock __aenter__ await while writing job status, before
-        # any drop work begins — still runs the owner-checked release in
-        # ``finally`` and cannot leave the workspace permanently busy.
+        # Acquire INSIDE the try/finally so a cancellation delivered while
+        # ``_acquire_destructive_busy`` is exiting its own lock — busy /
+        # destructive_busy / busy_owner already written but ``acquired`` not yet
+        # assigned — still runs the owner-checked release in ``finally`` (which
+        # also covers the status-init lock await below). Mirrors the delete
+        # endpoint. Release is owner-checked + idempotent: a no-op when the
+        # acquire returned busy and never stamped our token.
         try:
+            acquired, reason = await _acquire_destructive_busy(rag, destructive_token)
+            if not acquired:
+                return ClearDocumentsResponse(status="busy", message=reason)
             async with pipeline_status_lock:
                 pipeline_status.update(
                     {

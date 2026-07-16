@@ -1560,6 +1560,176 @@ async def test_clear_endpoint_releases_destructive_busy_on_cancellation_during_s
     assert pipeline_status.get("busy_owner") is None
 
 
+async def test_clear_releases_when_acquire_cancelled_at_lock_exit(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): a cancellation delivered while
+    ``_acquire_destructive_busy`` is exiting its own lock — busy /
+    destructive_busy / busy_owner already written but the endpoint has not yet
+    received ``acquired`` — must not leak the slot. The acquire now runs inside
+    the endpoint's try/finally, so the owner-checked release frees it. The
+    pre-fix layout put the acquire before the try and wedged the workspace."""
+    import asyncio
+    import importlib
+
+    workspace = f"clear-acq-cancel-{uuid4().hex}"
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    async def _acquire_then_cancel(rag_arg, token):
+        # Real acquire stamps the flags + owner under the lock; here the
+        # coroutine is then cancelled at the lock exit before returning.
+        lock = shared_storage.get_namespace_lock(
+            "pipeline_status", workspace=rag_arg.workspace
+        )
+        ps = await shared_storage.get_namespace_data(
+            "pipeline_status", workspace=rag_arg.workspace
+        )
+        async with lock:
+            ps.update({"busy": True, "destructive_busy": True, "busy_owner": token})
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        _document_routes, "_acquire_destructive_busy", _acquire_then_cancel
+    )
+
+    router = create_document_routes(rag, doc_manager)
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await clear_endpoint()
+
+    # Released by the endpoint's finally (old code leaked busy here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
+async def test_scan_task_releases_when_cancelled_before_release_try(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``run_scanning_process`` already holds the
+    scanning reservation when it starts, but if it is cancelled during the
+    initial ``get_namespace_data`` fetch — before its release try/finally — the
+    scanning flags must still be released. The fetch now lives inside the
+    release try and the finally releases via a fresh-fetch helper. The pre-fix
+    layout fetched in a separate try and leaked scanning."""
+    import asyncio
+    import importlib
+
+    workspace = f"scan-fetch-cancel-{uuid4().hex}"
+    scanning_token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    # Simulate the endpoint's synchronous reservation.
+    pipeline_status.update(
+        {"scanning": True, "scanning_exclusive": True, "scanning_owner": scanning_token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    calls = {"n": 0}
+
+    async def _get_ns_cancel_first(name, workspace=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Cancel the very first fetch (the scan body's), before the release
+            # try was entered in the pre-fix layout.
+            raise asyncio.CancelledError()
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _get_ns_cancel_first)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_scanning_process(rag, doc_manager, "track-scan", scanning_token)
+
+    # The finally released scanning via the fresh-fetch helper (old code, whose
+    # release try never ran when the fetch was cancelled, would leak here).
+    assert pipeline_status.get("scanning") is False
+    assert pipeline_status.get("scanning_exclusive") is False
+    assert pipeline_status.get("scanning_owner") is None
+
+
+async def test_delete_task_releases_when_cancelled_before_release_try(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 review P2): ``background_delete_documents`` already
+    holds the destructive reservation when it starts, but if it is cancelled
+    during the initial ``get_namespace_data`` fetch — before its release
+    try/finally — busy/destructive_busy must still be released. The fetch now
+    lives inside the release try and the finally re-fetches by token. The
+    pre-fix layout fetched before the try and leaked the slot."""
+    import asyncio
+    import importlib
+
+    workspace = f"delete-fetch-cancel-{uuid4().hex}"
+    destructive_token = uuid4().hex
+
+    class _Rag:
+        pass
+
+    rag = _Rag()
+    rag.workspace = workspace
+    doc_manager = DocumentManager(str(tmp_path))
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    # Simulate the delete endpoint's synchronous reservation.
+    pipeline_status.update(
+        {"busy": True, "destructive_busy": True, "busy_owner": destructive_token}
+    )
+
+    real_get = shared_storage.get_namespace_data
+    calls = {"n": 0}
+
+    async def _get_ns_cancel_first(name, workspace=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise asyncio.CancelledError()
+        return await real_get(name, workspace=workspace)
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", _get_ns_cancel_first)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _document_routes.background_delete_documents(
+            rag, doc_manager, ["doc-x"], token=destructive_token
+        )
+
+    # The finally re-fetched by token and released (old code, which fetched
+    # before the try, would leak busy + destructive_busy here).
+    assert pipeline_status.get("busy") is False
+    assert pipeline_status.get("destructive_busy") is False
+    assert pipeline_status.get("busy_owner") is None
+
+
 async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
     tmp_path, monkeypatch
 ):
