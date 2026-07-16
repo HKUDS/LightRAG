@@ -6,6 +6,8 @@ Ensures:
   - /query/stream → application/x-ndjson
 """
 
+import asyncio
+import json
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -180,7 +182,7 @@ class TestQueryStreamProtocolOrder:
     only when include_progress=True."""
 
     @staticmethod
-    def _build_client_with_mock():
+    def _build_client_with_mock(query_error: Exception | None = None):
         original_argv = sys.argv.copy()
         sys.argv = ["lightrag-server"]
         from lightrag.api.config import parse_args
@@ -202,6 +204,8 @@ class TestQueryStreamProtocolOrder:
             cb = kw.get("progress_callback")
             if cb:
                 await cb("extracting_keywords")
+            if query_error:
+                raise query_error
             return mock_result
 
         mock_rag.aquery_llm = MagicMock(side_effect=_fake_aquery)
@@ -218,7 +222,7 @@ class TestQueryStreamProtocolOrder:
         for line in body.strip().split("\n"):
             line = line.strip()
             if line:
-                lines.append(__import__("json").loads(line))
+                lines.append(json.loads(line))
         return lines
 
     def test_references_first_without_progress(self):
@@ -288,3 +292,56 @@ class TestQueryStreamProtocolOrder:
             )
         finally:
             sys.argv = original_argv
+
+    def test_progress_query_failure_emits_structured_error(self):
+        """A background query failure must end with a valid NDJSON error line."""
+        client, original_argv = self._build_client_with_mock(
+            RuntimeError("query failed")
+        )
+        try:
+            response = client.post(
+                "/query/stream",
+                json={
+                    "query": "test",
+                    "mode": "mix",
+                    "include_progress": True,
+                },
+            )
+            assert response.status_code == 200
+            lines = self._parse_ndjson(response.text)
+            assert lines[-1] == {"error": "query failed"}
+            assert not any("response_time" in item for item in lines)
+        finally:
+            sys.argv = original_argv
+
+    @pytest.mark.asyncio
+    async def test_disconnect_awaits_background_query_cancellation(self):
+        """Closing the response generator must finish query-task cleanup."""
+        from lightrag.api.routers.query_routes import QueryRequest, create_query_routes
+
+        cleanup_complete = asyncio.Event()
+
+        class HangingRag:
+            async def aquery_llm(self, *args, **kwargs):
+                callback = kwargs["progress_callback"]
+                await callback("extracting_keywords")
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    await asyncio.sleep(0)
+                    cleanup_complete.set()
+
+        router = create_query_routes(HangingRag())
+        endpoint = next(
+            route.endpoint for route in router.routes if route.path == "/query/stream"
+        )
+        response = await endpoint(
+            QueryRequest(query="test", mode="mix", include_progress=True)
+        )
+        iterator = response.body_iterator
+
+        first_line = await anext(iterator)
+        assert json.loads(first_line) == {"progress": "extracting_keywords"}
+
+        await iterator.aclose()
+        assert cleanup_complete.is_set()

@@ -883,6 +883,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     finally:
                         if not query_task.done():
                             query_task.cancel()
+                            # Wait for cancellation cleanup so the task cannot
+                            # outlive the response generator after disconnect.
+                            await asyncio.gather(query_task, return_exceptions=True)
 
                 return StreamingResponse(
                     merged_generator(),

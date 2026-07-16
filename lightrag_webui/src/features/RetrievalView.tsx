@@ -326,7 +326,13 @@ export default function RetrievalView() {
         // Record time-to-first-token on the very first content chunk.
         // Only meaningful for streaming — non-streaming returns the full
         // response at once, so there is no "first token" to measure.
-        if (!firstTokenRecordedRef.current && isStreamingRef.current && responseStartRef.current && chunk) {
+        if (
+          !isError &&
+          !firstTokenRecordedRef.current &&
+          isStreamingRef.current &&
+          responseStartRef.current &&
+          chunk
+        ) {
           firstTokenRecordedRef.current = true
           const ttft = (Date.now() - responseStartRef.current) / 1000
           assistantMessage.firstTokenTime = parseFloat(ttft.toFixed(1))
@@ -669,15 +675,32 @@ export default function RetrievalView() {
   useEffect(() => {
     // Component cleanup - reset timer state to prevent memory leaks
     return () => {
+      // Relinquish ownership before aborting so the request's deferred
+      // `finally` cannot update state after this component has unmounted.
+      const controller = abortControllerRef.current
+      abortControllerRef.current = null
+      controller?.abort()
+
+      if (responseTimerRef.current) {
+        clearInterval(responseTimerRef.current)
+        responseTimerRef.current = null
+      }
+      responseStartRef.current = null
+      serverResponseTimeRef.current = null
+      firstTokenRecordedRef.current = false
+      isStreamingRef.current = false
+      isReceivingResponseRef.current = false
+      activeAssistantIdRef.current = null
+
       if (thinkingStartTime.current) {
-        thinkingStartTime.current = null;
+        thinkingStartTime.current = null
       }
       if (stopCooldownTimerRef.current) {
-        clearTimeout(stopCooldownTimerRef.current);
-        stopCooldownTimerRef.current = null;
+        clearTimeout(stopCooldownTimerRef.current)
+        stopCooldownTimerRef.current = null
       }
-    };
-  }, []);
+    }
+  }, [])
 
   // Add event listeners to detect when user manually interacts with the container
   useEffect(() => {
