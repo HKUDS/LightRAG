@@ -92,6 +92,9 @@ from lightrag.kg.shared_storage import (
     set_default_workspace,
     get_namespace_lock,
     get_storage_keyed_lock,
+    make_owner_record,
+    pipeline_recovery_blocked_message,
+    reconcile_dead_pipeline_reservations,
     with_reservation_lock,
 )
 
@@ -1633,6 +1636,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # ``_acquire_destructive_busy``; ``destructive_busy`` implies
             # ``busy`` so a running clear/delete is covered too.
             async with pipeline_status_lock:
+                # Reclaim a dead owner's slot before checking busy; a dead
+                # custom_chunks/delete/clear owner raises recovery_required, which
+                # fences all mutations until an explicit recovery.
+                reconcile_dead_pipeline_reservations(pipeline_status)
+                if pipeline_status.get("recovery_required"):
+                    raise RuntimeError(
+                        pipeline_recovery_blocked_message(pipeline_status)
+                    )
                 if pipeline_status.get("busy"):
                     raise RuntimeError(
                         "Pipeline is busy with another operation; "
@@ -1659,7 +1670,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status.update(
                     {
                         "busy": True,
-                        "busy_owner": token,
+                        "busy_owner": make_owner_record(token, "custom_chunks"),
+                        # Snapshot for dead-owner recovery: custom_chunks may
+                        # write Stage-1 storage before the KG is built, so a dead
+                        # owner is fenced (recovery_required) rather than re-run.
+                        "operation_record": {
+                            "kind": "custom_chunks",
+                            "doc_id": doc_key,
+                        },
                         "job_name": "Custom chunks insert",
                         "job_start": datetime.now(timezone.utc).isoformat(),
                         "latest_message": "Inserting custom chunks",
@@ -1736,6 +1754,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # reservation could start and drop the accepted document);
                     # otherwise release the slot.
                     updates = {
+                        # custom_chunks work is complete here; clear its
+                        # operation_record so a later dead-owner reclaim does not
+                        # read a stale target.
+                        "operation_record": None,
                         "cancellation_requested": False,
                         "cancellation_reason": None,
                         "cancellation_detail": None,
@@ -1753,6 +1775,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         {
                             "busy": False,
                             "busy_owner": None,
+                            "operation_record": None,
                             "cancellation_requested": False,
                             "cancellation_reason": None,
                             "cancellation_detail": None,
@@ -2034,6 +2057,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         custom_kg: dict[str, Any],
         full_doc_id: str = None,
     ) -> None:
+        # Direct KG write path — refuse on a fenced workspace (recovery_required)
+        # like the other SDK mutations, before touching any storage.
+        await self._raise_if_recovery_required()
+
         update_storage = False
         try:
             # Insert chunks into vector storage
@@ -3412,7 +3439,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         def _release_on_acquire_failure(status):
             status.update(
-                {"busy": False, "busy_owner": None, "cancellation_requested": False}
+                {
+                    "busy": False,
+                    "busy_owner": None,
+                    "operation_record": None,
+                    "cancellation_requested": False,
+                }
             )
 
         # Acquire (or join a batch delete) inside a try so a cancellation at the
@@ -3421,6 +3453,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         try:
             # Check and acquire pipeline if needed
             async with pipeline_status_lock:
+                reconcile_dead_pipeline_reservations(pipeline_status)
+                if pipeline_status.get("recovery_required"):
+                    return DeletionResult(
+                        status="not_allowed",
+                        doc_id=doc_id,
+                        message=pipeline_recovery_blocked_message(pipeline_status),
+                        status_code=503,
+                        file_path=None,
+                    )
                 if not pipeline_status.get("busy", False):
                     # Pipeline is idle - WE acquire it for this deletion. Take the
                     # slot + stamp identity in a single atomic update.
@@ -3428,7 +3469,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline_status.update(
                         {
                             "busy": True,
-                            "busy_owner": token,
+                            "busy_owner": make_owner_record(token, "delete"),
+                            "operation_record": {"kind": "delete", "doc_id": doc_id},
                             "job_name": "Single document deletion",
                             "job_start": datetime.now(timezone.utc).isoformat(),
                             "docs": 1,
@@ -4275,6 +4317,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     {
                         "busy": False,
                         "busy_owner": None,
+                        "operation_record": None,
                         "cancellation_requested": False,
                     }
                 )
@@ -4335,6 +4378,41 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         action=_release_action,
                     )
 
+    async def _raise_if_recovery_required(self) -> None:
+        """Refuse a graph/data mutation while the workspace is fenced for
+        recovery (a worker died mid custom_chunks/delete/clear, possibly leaving
+        storage partially committed).
+
+        The REST graph-edit routes go through ``check_pipeline_busy_or_raise``,
+        which already refuses a fenced workspace, but a DIRECT SDK caller of the
+        ``a{create,edit,delete,merge}_*`` methods bypasses that. This is the
+        SDK-level fence so "refuse all mutations while fenced" holds on both
+        paths. It intentionally does NOT check ``busy`` (SDK graph edits may run
+        concurrently with the pipeline, guarded by per-entity keyed locks). No-op
+        when pipeline_status was never initialised (test rigs).
+        """
+        from lightrag.exceptions import PipelineNotInitializedError
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+            pipeline_recovery_blocked_message,
+            reconcile_dead_pipeline_reservations,
+        )
+
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=self.workspace
+            )
+        except PipelineNotInitializedError:
+            return
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+        async with pipeline_status_lock:
+            reconcile_dead_pipeline_reservations(pipeline_status)
+            if pipeline_status.get("recovery_required"):
+                raise RuntimeError(pipeline_recovery_blocked_message(pipeline_status))
+
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
 
@@ -4344,6 +4422,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import adelete_by_entity
 
         return await adelete_by_entity(
@@ -4381,6 +4461,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import adelete_by_relation
 
         return await adelete_by_relation(
@@ -4513,6 +4595,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing updated entity information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import aedit_entity
 
         return await aedit_entity(
@@ -4559,6 +4643,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing updated relation information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import aedit_relation
 
         return await aedit_relation(
@@ -4595,6 +4681,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing created entity information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import acreate_entity
 
         return await acreate_entity(
@@ -4630,6 +4718,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing created relation information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import acreate_relation
 
         return await acreate_relation(
@@ -4678,6 +4768,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             Dictionary containing the merged entity information
         """
+        await self._raise_if_recovery_required()
+
         from lightrag.utils_graph import amerge_entities
 
         return await amerge_entities(

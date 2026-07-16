@@ -1638,7 +1638,7 @@ async def test_clear_releases_when_acquire_cancelled_at_lock_exit(
         "pipeline_status", workspace=rag.workspace
     )
 
-    async def _acquire_then_cancel(rag_arg, token):
+    async def _acquire_then_cancel(rag_arg, token, *, kind=None, operation_record=None):
         # Real acquire stamps the flags + owner under the lock; here the
         # coroutine is then cancelled at the lock exit before returning.
         lock = shared_storage.get_namespace_lock(
