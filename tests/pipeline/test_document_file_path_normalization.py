@@ -472,6 +472,54 @@ async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_custom_chunks_handoff_runs_even_when_flush_errors(monkeypatch):
+    """Regression (#3408 Codex P2): a doc enqueued while custom-chunks held busy
+    (request_pending=True → decision="handoff", busy kept True) must still be
+    drained when the flush (_insert_done_with_cleanup) then raises. Old code put
+    the ``if decision == "handoff"`` branch AFTER the inner finally, so a flush
+    error skipped it and the outer terminal release cleared busy without
+    draining — stranding the queued docs behind request_pending=True with no
+    active processor. The flush error must still propagate after the handoff."""
+    status = {"busy": False, "history_messages": [], "request_pending": False}
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        # A concurrent enqueue arrived while we held busy.
+        status["request_pending"] = True
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    async def _flush_boom():
+        raise RuntimeError("flush failed")
+
+    drained = {"called": False}
+
+    async def _drain(_holding_busy=False, token=None):
+        drained["called"] = True
+        drained["holding_busy"] = _holding_busy
+        # The slot must NOT have been released before handing off (no window),
+        # even though the flush errored.
+        drained["busy_at_handoff"] = status["busy"]
+        # The real run consumes request_pending and releases busy (+owner).
+        status["request_pending"] = False
+        status.update({"busy": False, "busy_owner": None})
+
+    rag._process_extract_entities = _process_extract_entities
+    rag._insert_done_with_cleanup = _flush_boom
+    rag.apipeline_process_enqueue_documents = _drain
+
+    # The flush error still surfaces to the caller after the handoff runs.
+    with pytest.raises(RuntimeError, match="flush failed"):
+        await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-fe")
+
+    # Handoff ran despite the flush error (old code skipped it).
+    assert drained["called"] is True
+    assert drained["holding_busy"] is True  # atomic handoff, not a fresh acquire
+    assert drained["busy_at_handoff"] is True  # busy never dropped before handoff
+    assert status["request_pending"] is False  # consumed by the handoff
+    assert status["busy"] is False  # released by the handoff run
+
+
+@pytest.mark.asyncio
 async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
     """With no request_pending, the busy slot is released directly and no
     handoff runs."""

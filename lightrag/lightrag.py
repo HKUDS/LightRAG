@@ -1761,8 +1761,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                 try:
                     # Flush first (while still busy so no other writer starts
-                    # mid-flush). If it raises, the inner finally still runs the
-                    # release/handoff decision, then the flush error propagates.
+                    # mid-flush). BOTH the release/handoff decision AND the
+                    # handoff itself live in the inner finally so a flush error
+                    # cannot skip them: _exit_action keeps busy=True for a
+                    # handoff, so if the queued docs were not drained here the
+                    # outer terminal release would clear busy and strand them
+                    # behind request_pending=True with no active processor.
                     try:
                         await self._insert_done_with_cleanup()
                     finally:
@@ -1773,19 +1777,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             token=token,
                             action=_exit_action,
                         )
-                    if decision == "handoff":
-                        # busy is still True (ours); the handoff run takes over
-                        # the slot and releases it at its own exit. Pass our token
-                        # so it owns and releases the SAME reservation.
-                        try:
-                            await self.apipeline_process_enqueue_documents(
-                                _holding_busy=True, token=token
-                            )
-                        except Exception as drain_error:
-                            logger.warning(
-                                "Failed to process queued documents handed off "
-                                f"from a custom-chunks insert: {drain_error}"
-                            )
+                        if decision == "handoff":
+                            # busy is still True (ours); the handoff run takes
+                            # over the slot and releases it at its own exit. Pass
+                            # our token so it owns and releases the SAME
+                            # reservation. Runs even when the flush raised — its
+                            # error still propagates after this — so the queued
+                            # docs are not stranded. A pending cancellation makes
+                            # this await re-raise immediately, deferring the
+                            # drain to the next trigger (#3400).
+                            try:
+                                await self.apipeline_process_enqueue_documents(
+                                    _holding_busy=True, token=token
+                                )
+                            except Exception as drain_error:
+                                logger.warning(
+                                    "Failed to process queued documents handed "
+                                    "off from a custom-chunks insert: "
+                                    f"{drain_error}"
+                                )
                 finally:
                     # Guarantee release even if the flush / decision / handoff was
                     # cancelled or errored. Owner-checked + cancellation-resistant;
