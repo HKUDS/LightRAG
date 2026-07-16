@@ -1395,6 +1395,64 @@ async def test_release_enqueue_slot_decrements_per_call(tmp_path):
     assert pipeline_status["pending_enqueues"] == 0
 
 
+async def test_enqueue_endpoint_releases_token_on_acquire_cancellation(
+    tmp_path, monkeypatch
+):
+    """Regression (#3408 Codex P2): a cancellation delivered while
+    ``_reserve_enqueue_slot`` is exiting its lock — the token is already in
+    ``pending_enqueue_tokens`` but the endpoint has not yet recorded the handoff
+    — must not leak the slot. The endpoint's finally releases the pre-generated
+    token, so ``pending_enqueues`` returns to 0.
+    """
+    import asyncio
+    import importlib
+
+    class _Rag:
+        workspace = "enq-cancel-test"
+
+    rag = _Rag()
+    doc_manager = DocumentManager(str(tmp_path))
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+
+    async def _reserve_then_cancel(rag_arg, token):
+        # Real reserve adds the token under the lock; here the coroutine is then
+        # cancelled at the lock exit before returning to the endpoint.
+        lock = shared_storage.get_namespace_lock(
+            "pipeline_status", workspace=rag_arg.workspace
+        )
+        async with lock:
+            tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
+            tokens[token] = {"pid": 0, "process_start_id": None}
+            pipeline_status.update(
+                {"pending_enqueue_tokens": tokens, "pending_enqueues": len(tokens)}
+            )
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(_document_routes, "_reserve_enqueue_slot", _reserve_then_cancel)
+
+    router = create_document_routes(rag, doc_manager)
+    text_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "insert_text"
+    ][-1]
+
+    with pytest.raises(asyncio.CancelledError):
+        await text_endpoint(
+            _document_routes.InsertTextRequest(text="hello", file_source="a.md"),
+            _document_routes.BackgroundTasks(),
+        )
+
+    # The finally released the pre-generated token (old code, which set the
+    # reserved flag only after the await, would leak it here).
+    assert pipeline_status.get("pending_enqueues", 0) == 0
+    assert pipeline_status.get("pending_enqueue_tokens", {}) == {}
+
+
 async def test_two_concurrent_uploads_both_succeed_when_pipeline_busy(
     tmp_path, monkeypatch
 ):

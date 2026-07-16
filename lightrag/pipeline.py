@@ -1219,20 +1219,25 @@ class _PipelineMixin:
                     "pipeline_status", workspace=self.workspace
                 )
                 async with lock:
+                    current_owner = _reservation_owner_token(status.get("busy_owner"))
                     # Release ``busy`` only if the loop did not already release it
-                    # under the atomic exit check AND we still own the slot — a
-                    # concurrent enqueue may have observed busy=False and started
-                    # a new pass with its own owner, which we must not clobber.
-                    if (
-                        not busy_released_in_loop
-                        and _reservation_owner_token(status.get("busy_owner")) == token
-                    ):
+                    # under the atomic exit check AND we still own the slot.
+                    if not busy_released_in_loop and current_owner == token:
                         status.update({"busy": False, "busy_owner": None})
-                    # Bookkeeping runs whenever we held the slot. An internal-error
-                    # abort exits via the batch's break (not the loop-top handler),
-                    # so surface the actionable halt reason here BEFORE clearing
-                    # the reason/detail (read it first so _cancellation_label sees
-                    # the cause).
+                        current_owner = None  # slot is now free
+
+                    # Bookkeeping (cancellation reset, stopped/halt messages) must
+                    # NOT touch a slot a DIFFERENT owner has already taken: once the
+                    # loop released busy, a concurrent enqueue can acquire and set
+                    # its own cancellation state, which we must not clear. Only run
+                    # bookkeeping while the slot is still ours or free.
+                    if current_owner is not None and current_owner != token:
+                        return
+
+                    # An internal-error abort exits via the batch's break (not the
+                    # loop-top handler), so surface the actionable halt reason here
+                    # BEFORE clearing the reason/detail (read it first so
+                    # _cancellation_label sees the cause).
                     internal_halt = None
                     if status.get("cancellation_reason") == "internal_error":
                         internal_halt = self._internal_halt_message(

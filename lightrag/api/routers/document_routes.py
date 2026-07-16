@@ -2748,7 +2748,7 @@ def create_document_routes(
                 flight, 413 file too large, 500 other errors.
         """
         enqueue_token = uuid4().hex
-        slot_reserved = False
+        handed_off = False
         try:
             # Reject upload while a scan is in its CLASSIFICATION
             # phase or a destructive job (clear / per-doc delete) is
@@ -2760,7 +2760,7 @@ def create_document_routes(
             # ``scanning_exclusive=False``) are permitted: the running
             # loop's ``request_pending`` mechanism picks up our doc
             # after the current batch.
-            slot_reserved = await _reserve_enqueue_slot(rag, enqueue_token)
+            await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
@@ -2896,7 +2896,7 @@ def create_document_routes(
             background_tasks.add_task(_indexing_task)
             # Ownership of the slot transferred to the bg task — the
             # finally block below must NOT release it again.
-            slot_reserved = False
+            handed_off = True
 
             return InsertResponse(
                 status="success",
@@ -2916,7 +2916,7 @@ def create_document_routes(
             # (e.g. early validation rejection or streaming-write
             # failure), release here.  No drain coordination needed —
             # any sibling bg task triggers its own processing pass.
-            if slot_reserved:
+            if not handed_off:
                 await _release_enqueue_slot(rag, enqueue_token)
 
     @router.post(
@@ -2952,11 +2952,11 @@ def create_document_routes(
                 or scan/destructive job in flight, 500 other errors.
         """
         enqueue_token = uuid4().hex
-        slot_reserved = False
+        handed_off = False
         try:
             # Reject text insertion while a scan is in progress AND reserve
             # a pending-enqueue slot — see /upload for the rationale.
-            slot_reserved = await _reserve_enqueue_slot(rag, enqueue_token)
+            await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Check if file_source already exists in doc_status storage
             if not is_valid_file_source(request.file_source):
@@ -3005,7 +3005,7 @@ def create_document_routes(
                     await _release_enqueue_slot(rag, enqueue_token)
 
             background_tasks.add_task(_indexing_task)
-            slot_reserved = False
+            handed_off = True
 
             return InsertResponse(
                 status="success",
@@ -3019,7 +3019,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
         finally:
-            if slot_reserved:
+            if not handed_off:
                 await _release_enqueue_slot(rag, enqueue_token)
 
     @router.post(
@@ -3058,11 +3058,11 @@ def create_document_routes(
                 errors.
         """
         enqueue_token = uuid4().hex
-        slot_reserved = False
+        handed_off = False
         try:
             # Reject batch text insertion while a scan is in progress AND
             # reserve a pending-enqueue slot — see /upload for the rationale.
-            slot_reserved = await _reserve_enqueue_slot(rag, enqueue_token)
+            await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Check if any file_sources already exist in doc_status storage
             if not request.file_sources or len(request.file_sources) != len(
@@ -3130,7 +3130,7 @@ def create_document_routes(
                     await _release_enqueue_slot(rag, enqueue_token)
 
             background_tasks.add_task(_indexing_task)
-            slot_reserved = False
+            handed_off = True
 
             return InsertResponse(
                 status="success",
@@ -3144,7 +3144,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
         finally:
-            if slot_reserved:
+            if not handed_off:
                 await _release_enqueue_slot(rag, enqueue_token)
 
     @router.delete(
@@ -3645,7 +3645,7 @@ def create_document_routes(
         # Owner token for the destructive slot, generated before any await so the
         # finally can release it by owner even if the acquire is cancelled.
         destructive_token = uuid4().hex
-        slot_acquired = False
+        handed_off = False
         try:
             # Atomically reserve the destructive slot BEFORE returning
             # ``deletion_started``.  Without this, the bg task would set
@@ -3661,7 +3661,6 @@ def create_document_routes(
                     message=reason or "Cannot delete documents while pipeline is busy",
                     doc_id=", ".join(doc_ids),
                 )
-            slot_acquired = True
 
             background_tasks.add_task(
                 background_delete_documents,
@@ -3672,10 +3671,9 @@ def create_document_routes(
                 delete_request.delete_llm_cache,
                 destructive_token,
             )
-            # Ownership of the slot transferred to the bg task — it
-            # will release in its finally.  The endpoint's finally
-            # below must NOT release it again.
-            slot_acquired = False
+            # Ownership of the slot transferred to the bg task — it releases in
+            # its finally. The endpoint's finally must NOT release it again.
+            handed_off = True
 
             return DeleteDocByIdResponse(
                 status="deletion_started",
@@ -3689,10 +3687,12 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=error_msg)
         finally:
-            # If we reserved but never scheduled the bg task (e.g. an
-            # unexpected error between acquire and add_task), release
-            # so the next reservation / scan / enqueue can proceed.
-            if slot_acquired:
+            # Release by the pre-generated token unless the bg task took over.
+            # This also covers a cancellation delivered while _acquire_destructive_busy
+            # was exiting its lock (flags + owner already written, but ``acquired``
+            # not yet assigned): release is owner-checked + idempotent, so it frees
+            # the slot we took and is a no-op if we never acquired.
+            if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
 
     @router.post(

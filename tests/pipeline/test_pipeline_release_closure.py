@@ -1378,6 +1378,69 @@ def test_process_enqueue_holding_busy_releases_when_no_docs(tmp_path):
 
 
 @pytest.mark.offline
+def test_finalize_does_not_clobber_new_owner_bookkeeping(tmp_path):
+    """Regression (#3408 Codex P2): the loop's finally finalize is owner-checked
+    for BOOKKEEPING too, not just the busy release. If a new owner has taken the
+    slot (and requested a cancel for its own job) before the finalize task
+    acquires the lock, the finalize must NOT clear that owner's cancellation
+    flags or overwrite its latest_message.
+    """
+
+    async def _run():
+        import lightrag.pipeline as pipeline_mod
+        from unittest import mock
+
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            token = "holder-token"
+            async with lock:
+                # A handed-off slot owned by this run (no docs to process).
+                pipeline_status.update({"busy": True, "busy_owner": token})
+
+            real_rtc = pipeline_mod.run_to_completion
+
+            async def _inject(factory):
+                # Simulate a NEW owner grabbing the slot and requesting a cancel
+                # for its own job, in the window before the finalize task runs.
+                async with get_namespace_lock(
+                    "pipeline_status", workspace=rag.workspace
+                ):
+                    pipeline_status.update(
+                        {
+                            "busy": True,
+                            "busy_owner": "new-owner",
+                            "cancellation_requested": True,
+                            "latest_message": "new job running",
+                        }
+                    )
+                return await real_rtc(factory)
+
+            with mock.patch.object(pipeline_mod, "run_to_completion", _inject):
+                await rag.apipeline_process_enqueue_documents(
+                    _holding_busy=True, token=token
+                )
+
+            # The new owner's cancellation + message must survive untouched.
+            assert pipeline_status.get("cancellation_requested") is True
+            assert pipeline_status.get("busy_owner") == "new-owner"
+            assert pipeline_status.get("latest_message") == "new job running"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_atomic_release_busy_or_consume_pending(tmp_path):
     """The loop-exit handoff is atomic via
     ``_atomic_release_busy_or_consume_pending``: the same critical
