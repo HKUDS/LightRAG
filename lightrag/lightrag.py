@@ -1963,10 +1963,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     f"{type(storage_inst).__name__}: {e}"
                 )
 
-    async def _insert_done(
-        self, pipeline_status=None, pipeline_status_lock=None
-    ) -> None:
-        storages = self._index_storages()
+    async def _flush_storages(self, storages: list) -> None:
+        """Flush the given storage instances — a narrow, named flush barrier.
+
+        Failure paths and write-ahead barriers (issue #3400) must be able to
+        flush a specific subset of storages (e.g. only the two recovery
+        indexes) instead of the unconditional all-storage ``_insert_done``,
+        which on a partially-failed operation would blindly flush partial
+        work into every store. ``_insert_done`` delegates here with the full
+        ``_index_storages()`` list.
+
+        Raises ``IndexFlushError`` (carrying driver name + namespace) for the
+        first failed flush after every flush has run to completion;
+        ``CancelledError`` propagates as-is.
+        """
 
         async def _flush_one(storage_inst) -> None:
             # Wrap each flush so a failure carries the driver name + namespace.
@@ -1989,7 +1999,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # "Task exception was never retrieved" warning. Collecting all results
         # first makes teardown deterministic and lets us report every failure.
         results = await asyncio.gather(
-            *[_flush_one(inst) for inst in storages], return_exceptions=True
+            *[_flush_one(inst) for inst in storages if inst is not None],
+            return_exceptions=True,
         )
         errors = [r for r in results if isinstance(r, BaseException)]
         if errors:
@@ -2002,6 +2013,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             for extra in errors[1:]:
                 logger.error(f"Additional index flush failure: {extra}")
             raise errors[0]
+
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
+        await self._flush_storages(self._index_storages())
 
         log_message = "In memory DB persist to disk"
         logger.info(log_message)
@@ -2972,6 +2988,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> None:
         """Remove a document's chunks and clean up its knowledge-graph contributions.
 
+        Thin wrapper over :py:meth:`_purge_kg_contributions` in whole-document
+        mode: candidates are discovered from the per-doc ``full_entities`` /
+        ``full_relations`` recovery rows and those rows are deleted at the
+        end. See the primitive for the detailed contract.
+
         Used by:
             - The pipeline resume branch in ``process_document`` when a
               document whose content is already extracted is re-processed
@@ -2980,10 +3001,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             - Future deletion paths that want a focused "purge KG only"
               operation without the LLM-cache / doc_status / full_docs
               cleanup that ``adelete_by_doc_id`` also performs.
+        """
+        await self._purge_kg_contributions(
+            doc_id,
+            chunk_ids,
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+        )
+
+    async def _purge_kg_contributions(
+        self,
+        doc_id: str,
+        chunk_ids: list[str],
+        *,
+        candidate_entities: list[str] | None = None,
+        candidate_relations: list[tuple[str, str]] | None = None,
+        patch_only: bool = False,
+        strict_rebuild: bool = False,
+        pipeline_status: dict,
+        pipeline_status_lock: Any,
+    ) -> None:
+        """Candidate-driven purge/rebuild primitive (issue #3400).
+
+        Shared by whole-document purge (normal deletion / retry) and, in later
+        phases, custom-chunk patch rollback. Candidates are a recovery
+        SUPERSET — a candidate that never reached the graph is an idempotent
+        no-op; ownership is verified per candidate from the union of
+        chunk-tracking entries and graph ``source_id`` lists before anything
+        is deleted or rebuilt.
 
         What this method does:
-            1. Reads ``full_entities`` / ``full_relations`` to identify which
-               graph nodes / edges this document contributed to.
+            1. Resolves the candidate entity/relation set: the explicit
+               ``candidate_entities`` / ``candidate_relations`` arguments if
+               given, otherwise the per-doc ``full_entities`` /
+               ``full_relations`` recovery rows.
             2. For each affected entity / relation, intersects the doc's
                ``chunk_ids`` with the union of chunk-tracking entries
                (``entity_chunks`` / ``relation_chunks``) and graph
@@ -3001,9 +3052,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             6. Calls :func:`rebuild_knowledge_from_chunks` to rebuild any
                *rebuild* entries from their remaining chunks (so other
                documents that also contributed to the same entity /
-               relation keep their data intact).
-            7. Deletes the per-doc ``full_entities`` / ``full_relations``
-               index rows so subsequent re-extraction starts fresh.
+               relation keep their data intact). With ``strict_rebuild``,
+               missing extraction cache or a failed rebuild raises instead
+               of being logged (recovery must not silently succeed on
+               partial data).
+            7. Unless ``patch_only``: deletes the per-doc ``full_entities``
+               / ``full_relations`` index rows so subsequent re-extraction
+               starts fresh. A patch rollback must NOT drop the base
+               document's recovery rows — the document keeps owning its
+               previously committed contributions.
 
         Does NOT touch:
             - ``doc_status`` / ``full_docs`` records — caller manages those.
@@ -3012,7 +3069,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
               pipeline (i.e. this runs inside a pipeline run).
 
         Idempotent: passing an empty ``chunk_ids`` returns immediately
-        without touching storage.
+        without touching storage; repeating a partially-failed purge
+        converges (absent objects are skipped, remaining ones are cleaned).
         """
         if not chunk_ids:
             return
@@ -3021,7 +3079,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
         chunk_ids_set = set(chunk_ids)
 
-        # ---- 1. Analyze affected entities/relations from full_entities/full_relations ----
+        # ---- 1. Analyze affected entities/relations from the candidate set ----
         entities_to_delete: set[str] = set()
         entities_to_rebuild: dict[str, list[str]] = {}
         relationships_to_delete: set[tuple[str, str]] = set()
@@ -3030,33 +3088,46 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         relation_chunk_updates: dict[tuple[str, str], list[str]] = {}
 
         try:
-            doc_entities_data = await self.full_entities.get_by_id(doc_id)
-            doc_relations_data = await self.full_relations.get_by_id(doc_id)
+            if candidate_entities is None:
+                doc_entities_data = await self.full_entities.get_by_id(doc_id)
+                candidate_entities = (
+                    doc_entities_data["entity_names"]
+                    if doc_entities_data and "entity_names" in doc_entities_data
+                    else []
+                )
+            if candidate_relations is None:
+                doc_relations_data = await self.full_relations.get_by_id(doc_id)
+                candidate_relations = (
+                    doc_relations_data["relation_pairs"]
+                    if doc_relations_data and "relation_pairs" in doc_relations_data
+                    else []
+                )
 
             affected_nodes: list[dict[str, Any]] = []
             affected_edges: list[dict[str, Any]] = []
 
-            if doc_entities_data and "entity_names" in doc_entities_data:
-                entity_names = doc_entities_data["entity_names"]
+            if candidate_entities:
                 nodes_dict = await self.chunk_entity_relation_graph.get_nodes_batch(
-                    entity_names
+                    list(candidate_entities)
                 )
-                for entity_name in entity_names:
+                for entity_name in candidate_entities:
                     node_data = nodes_dict.get(entity_name)
+                    # Absent graph node: the candidate was prewritten but the
+                    # mutation never landed (or a previous purge already
+                    # removed it) — an idempotent no-op, not an error.
                     if node_data:
                         if "id" not in node_data:
                             node_data["id"] = entity_name
                         affected_nodes.append(node_data)
 
-            if doc_relations_data and "relation_pairs" in doc_relations_data:
-                relation_pairs = doc_relations_data["relation_pairs"]
+            if candidate_relations:
                 edge_pairs_dicts = [
-                    {"src": pair[0], "tgt": pair[1]} for pair in relation_pairs
+                    {"src": pair[0], "tgt": pair[1]} for pair in candidate_relations
                 ]
                 edges_dict = await self.chunk_entity_relation_graph.get_edges_batch(
                     edge_pairs_dicts
                 )
-                for pair in relation_pairs:
+                for pair in candidate_relations:
                     src, tgt = pair[0], pair[1]
                     edge_data = edges_dict.get((src, tgt))
                     if edge_data:
@@ -3364,22 +3435,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline_status_lock=pipeline_status_lock,
                     entity_chunks_storage=self.entity_chunks,
                     relation_chunks_storage=self.relation_chunks,
+                    strict=strict_rebuild,
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
                 raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
 
         # ---- 8. Delete per-doc full_entities / full_relations index rows ----
-        try:
-            await self.full_entities.delete([doc_id])
-            await self.full_relations.delete([doc_id])
-        except Exception as e:
-            logger.error(
-                f"[purge] Failed to delete full_entities/full_relations rows for {doc_id}: {e}"
-            )
-            raise Exception(
-                f"Failed to delete from full_entities/full_relations: {e}"
-            ) from e
+        # Patch-only rollback keeps the base document's recovery rows: the
+        # document still owns its previously committed contributions.
+        if not patch_only:
+            try:
+                await self.full_entities.delete([doc_id])
+                await self.full_relations.delete([doc_id])
+            except Exception as e:
+                logger.error(
+                    f"[purge] Failed to delete full_entities/full_relations rows for {doc_id}: {e}"
+                )
+                raise Exception(
+                    f"Failed to delete from full_entities/full_relations: {e}"
+                ) from e
 
     async def adelete_by_doc_id(
         self, doc_id: str, delete_llm_cache: bool = False

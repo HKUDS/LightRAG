@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
+    KGRebuildCacheMissingError,
     PipelineCancelledException,
 )
 from lightrag.utils import (
@@ -45,6 +46,7 @@ from lightrag.utils import (
     merge_source_ids,
     make_relation_chunk_key,
     _cooperative_yield,
+    wait_tasks_with_drain,
     performance_timing_log,
 )
 from lightrag.base import (
@@ -926,6 +928,7 @@ async def rebuild_knowledge_from_chunks(
     pipeline_status_lock=None,
     entity_chunks_storage: BaseKVStorage | None = None,
     relation_chunks_storage: BaseKVStorage | None = None,
+    strict: bool = False,
 ) -> None:
     """Rebuild entity and relationship descriptions from cached extraction results with parallel processing
 
@@ -946,6 +949,13 @@ async def rebuild_knowledge_from_chunks(
         pipeline_status_lock: Lock for pipeline status
         entity_chunks_storage: KV storage maintaining full chunk IDs per entity
         relation_chunks_storage: KV storage maintaining full chunk IDs per relation
+        strict: When True (recovery paths, issue #3400), missing extraction
+            cache for any referenced chunk raises
+            ``KGRebuildCacheMissingError`` and any single rebuild failure
+            propagates instead of being counted and logged. Rebuild is then a
+            strict recovery operation: silently succeeding on partial data
+            could lead to a false PROCESSED state. Default False preserves
+            the historical best-effort behavior.
     """
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
@@ -971,6 +981,20 @@ async def rebuild_knowledge_from_chunks(
         all_referenced_chunk_ids,
         text_chunks_storage=text_chunks_storage,
     )
+
+    if strict:
+        # Strict recovery: every referenced chunk must have cached extraction
+        # results. Rebuilding from partial cache would silently produce
+        # degraded aggregates and let the caller report a false success.
+        missing_chunk_ids = all_referenced_chunk_ids - set(cached_results.keys())
+        if missing_chunk_ids:
+            preview = ", ".join(sorted(missing_chunk_ids)[:5])
+            if len(missing_chunk_ids) > 5:
+                preview += f", ... (+{len(missing_chunk_ids) - 5} more)"
+            raise KGRebuildCacheMissingError(
+                f"Extraction cache missing for {len(missing_chunk_ids)} of "
+                f"{len(all_referenced_chunk_ids)} referenced chunk(s): {preview}"
+            )
 
     if not cached_results:
         status_message = "No cached extraction results found, cannot rebuild"
@@ -1096,6 +1120,10 @@ async def rebuild_knowledge_from_chunks(
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = status_message
                             pipeline_status["history_messages"].append(status_message)
+                    if strict:
+                        # Strict recovery: a single failed rebuild must fail
+                        # the whole operation, not be downgraded to a counter.
+                        raise
 
     async def _locked_rebuild_relationship(src, tgt, chunk_ids):
         nonlocal rebuilt_relationships_count, failed_relationships_count
@@ -1134,6 +1162,10 @@ async def rebuild_knowledge_from_chunks(
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = status_message
                             pipeline_status["history_messages"].append(status_message)
+                    if strict:
+                        # Strict recovery: a single failed rebuild must fail
+                        # the whole operation, not be downgraded to a counter.
+                        raise
 
     # Create tasks for parallel processing
     tasks = []
@@ -1156,37 +1188,10 @@ async def rebuild_knowledge_from_chunks(
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
 
-    # Execute all tasks in parallel with semaphore control and early failure detection
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-
-    # Check if any task raised an exception and ensure all exceptions are retrieved
-    first_exception = None
-
-    for task in done:
-        try:
-            exception = task.exception()
-            if exception is not None:
-                if first_exception is None:
-                    first_exception = exception
-            else:
-                # Task completed successfully, retrieve result to mark as processed
-                task.result()
-        except Exception as e:
-            if first_exception is None:
-                first_exception = e
-
-    # If any task failed, cancel all pending tasks and raise the first exception
-    if first_exception is not None:
-        # Cancel all pending tasks
-        for pending_task in pending:
-            pending_task.cancel()
-
-        # Wait for cancellation to complete
-        if pending:
-            await asyncio.wait(pending)
-
-        # Re-raise the first exception to notify the caller
-        raise first_exception
+    # Execute all tasks in parallel with semaphore control; on any failure
+    # every sibling is cancelled and drained before the first exception
+    # propagates (no background rebuild writes survive failure handling).
+    await wait_tasks_with_drain(tasks, context="KG rebuild")
 
     # Final status report
     status_message = f"KG rebuild completed: {rebuilt_entities_count} entities and {rebuilt_relationships_count} relationships rebuilt successfully."
@@ -3007,6 +3012,43 @@ async def _merge_edges_then_upsert(
         )
 
 
+def collect_kg_merge_candidates(
+    chunk_results: list,
+) -> tuple[set[str], set[tuple[str, str]]]:
+    """Derive the full candidate entity/relation superset a merge may touch.
+
+    Recovery anchor for issue #3400: before any graph/vector/tracking
+    mutation, the caller must be able to persist a durable candidate set in
+    ``full_entities`` / ``full_relations`` so a later purge/retry can discover
+    every object the merge might have written. The superset therefore
+    includes:
+
+    - every extracted entity name;
+    - every endpoint of every extracted relation (relation processing can
+      create missing endpoint entities, see ``_merge_edges_then_upsert``);
+    - every relation pair, normalized to sorted order (undirected graph).
+
+    The result is a candidate SUPERSET, not proof of existence: purge must
+    verify source ownership per candidate and treat absent objects as no-ops.
+
+    Args:
+        chunk_results: List of ``(maybe_nodes, maybe_edges)`` tuples as
+            produced by ``extract_entities``.
+
+    Returns:
+        ``(candidate_entity_names, candidate_relation_pairs)``.
+    """
+    candidate_entities: set[str] = set()
+    candidate_relations: set[tuple[str, str]] = set()
+    for maybe_nodes, maybe_edges in chunk_results:
+        candidate_entities.update(maybe_nodes.keys())
+        for edge_key in maybe_edges:
+            pair = tuple(sorted((edge_key[0], edge_key[1])))
+            candidate_relations.add(pair)
+            candidate_entities.update(pair)
+    return candidate_entities, candidate_relations
+
+
 async def merge_nodes_and_edges(
     chunk_results: list,
     knowledge_graph_inst: BaseGraphStorage,
@@ -3154,40 +3196,14 @@ async def merge_nodes_and_edges(
         entity_tasks.append(task)
         await _cooperative_yield(i, every=16)
 
-    # Execute entity tasks with error handling
+    # Execute entity tasks; on any failure every sibling is cancelled and
+    # drained before the first exception propagates (no background writes
+    # survive failure handling — issue #3400).
     processed_entities = []
     if entity_tasks:
-        done, pending = await asyncio.wait(
-            entity_tasks, return_when=asyncio.FIRST_EXCEPTION
+        processed_entities = await wait_tasks_with_drain(
+            entity_tasks, context=f"entity merge {doc_id}"
         )
-
-        first_exception = None
-        processed_entities = []
-
-        for i, task in enumerate(done, start=1):
-            try:
-                result = task.result()
-            except BaseException as e:
-                if first_exception is None:
-                    first_exception = e
-            else:
-                processed_entities.append(result)
-            await _cooperative_yield(i, every=32)
-
-        if pending:
-            for task in pending:
-                task.cancel()
-            pending_results = await asyncio.gather(*pending, return_exceptions=True)
-            for result in pending_results:
-                if isinstance(result, BaseException):
-                    if first_exception is None:
-                        first_exception = result
-                else:
-                    processed_entities.append(result)
-
-        if first_exception is not None:
-            raise first_exception
-
         await asyncio.sleep(0)
 
     # ===== Phase 2: Process all relationships concurrently =====
@@ -3272,63 +3288,21 @@ async def merge_nodes_and_edges(
         edge_task_labels[task] = _format_relation_edge_label(edge_key)
         await _cooperative_yield(i, every=32)
 
-    # Execute relationship tasks with error handling
+    # Execute relationship tasks; failures cancel + drain every sibling
+    # before propagating (see wait_tasks_with_drain).
     processed_edges = []
     all_added_entities = []
 
     if edge_tasks:
-        done, pending = await asyncio.wait(
-            edge_tasks, return_when=asyncio.FIRST_EXCEPTION
+        edge_results = await wait_tasks_with_drain(
+            edge_tasks,
+            context=f"relation merge {doc_id}",
+            task_labels=edge_task_labels,
         )
-
-        first_exception = None
-
-        for i, task in enumerate(done, start=1):
-            try:
-                edge_data, added_entities = task.result()
-            except BaseException as e:
-                if first_exception is None:
-                    first_exception = e
-            else:
-                if edge_data is not None:
-                    processed_edges.append(edge_data)
-                all_added_entities.extend(added_entities)
-            await _cooperative_yield(i, every=32)
-
-        if pending:
-            pending_labels = [
-                edge_task_labels.get(task, "<unknown>") for task in pending
-            ]
-            preview = ", ".join(pending_labels[:10])
-            if len(pending_labels) > 10:
-                preview += f", ... (+{len(pending_labels) - 10} more)"
-            logger.warning(
-                "Phase 2 pending relation tasks for %s: %s",
-                doc_id,
-                preview or "<none>",
-            )
-            for task in pending:
-                task.cancel()
-            pending_results = await asyncio.gather(*pending, return_exceptions=True)
-            for result in pending_results:
-                if isinstance(result, BaseException):
-                    if first_exception is None:
-                        first_exception = result
-                else:
-                    edge_data, added_entities = result
-                    if edge_data is not None:
-                        processed_edges.append(edge_data)
-                    all_added_entities.extend(added_entities)
-
-            logger.info(
-                "Phase 2 pending relation tasks drained for %s: collected_edges=%d collected_added_entities=%d",
-                doc_id,
-                len(processed_edges),
-                len(all_added_entities),
-            )
-
-        if first_exception is not None:
-            raise first_exception
+        for edge_data, added_entities in edge_results:
+            if edge_data is not None:
+                processed_edges.append(edge_data)
+            all_added_entities.extend(added_entities)
 
         logger.info(
             "Phase 2 relation processing completed for %s: edges=%d added_entities=%d",

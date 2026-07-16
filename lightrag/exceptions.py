@@ -123,6 +123,18 @@ class IndexFlushError(Exception):
         super().__init__(f"{storage_name}[{namespace}] index flush failed: {cause}")
 
 
+class KGRebuildCacheMissingError(Exception):
+    """Raised by strict KG recovery when required extraction cache is absent.
+
+    ``rebuild_knowledge_from_chunks`` normally degrades to a best-effort
+    rebuild when cached extraction results are missing. Recovery paths
+    (purge/retry/rollback for issue #3400) must NOT silently succeed on
+    partial data — a lost cache would otherwise be reported as a clean
+    rebuild and the document could reach a false PROCESSED state. Strict
+    callers get this error instead and keep the document dirty/retryable.
+    """
+
+
 class ChunkTokenLimitExceededError(ValueError):
     """Raised when a chunk exceeds the configured token limit."""
 

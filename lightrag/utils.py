@@ -3050,6 +3050,83 @@ async def _cooperative_yield(iteration: int, every: int = 64) -> None:
         await asyncio.sleep(0)
 
 
+async def wait_tasks_with_drain(
+    tasks: list[asyncio.Task],
+    *,
+    context: str = "",
+    task_labels: dict[asyncio.Task, str] | None = None,
+) -> list[Any]:
+    """Await *tasks*, guaranteeing none is left running when this returns/raises.
+
+    Concurrent multi-store writers (entity/relation merge, rebuild) must never
+    leave a sibling task writing in the background after a failure — a failed
+    ``gather``/``wait`` does not by itself imply the other write tasks stopped
+    (issue #3400, "incomplete async failure coordination").
+
+    Behavior:
+      - All tasks succeed: returns their results (completion order).
+      - Any task fails: cancels every still-pending sibling, awaits (drains)
+        them ALL so no background write survives, logs every additional
+        exception, then re-raises the FIRST exception observed.
+      - This coroutine itself is cancelled: cancels and drains all tasks
+        before propagating ``CancelledError``.
+
+    Args:
+        tasks: ``asyncio.Task`` objects (already scheduled).
+        context: Optional short label used in log messages.
+        task_labels: Optional per-task display labels for pending-task logging.
+    """
+    if not tasks:
+        return []
+
+    ctx = f" [{context}]" if context else ""
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    except asyncio.CancelledError:
+        # External cancellation: do not leave siblings writing in the background.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    results: list[Any] = []
+    first_exception: BaseException | None = None
+
+    for i, task in enumerate(done, start=1):
+        try:
+            results.append(task.result())
+        except BaseException as e:
+            if first_exception is None:
+                first_exception = e
+            elif not isinstance(e, asyncio.CancelledError):
+                logger.error(f"Additional task failure{ctx}: {e}")
+        await _cooperative_yield(i, every=32)
+
+    if pending:
+        if task_labels:
+            pending_labels = [task_labels.get(task, "<unknown>") for task in pending]
+            preview = ", ".join(pending_labels[:10])
+            if len(pending_labels) > 10:
+                preview += f", ... (+{len(pending_labels) - 10} more)"
+            logger.warning(f"Draining pending tasks{ctx}: {preview or '<none>'}")
+        for task in pending:
+            task.cancel()
+        pending_results = await asyncio.gather(*pending, return_exceptions=True)
+        for result in pending_results:
+            if isinstance(result, BaseException):
+                if first_exception is None:
+                    first_exception = result
+                elif not isinstance(result, asyncio.CancelledError):
+                    logger.error(f"Additional task failure{ctx}: {result}")
+            else:
+                results.append(result)
+
+    if first_exception is not None:
+        raise first_exception
+
+    return results
+
+
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.
