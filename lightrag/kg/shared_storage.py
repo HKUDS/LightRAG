@@ -1062,6 +1062,16 @@ class _KeyedLockContext:
         if self._ul is None:
             return
 
+        # Snapshot the acquired-lock entries and clear ``self._ul`` BEFORE
+        # starting the release task. The release runs on a shielded task that
+        # may complete AFTER this coroutine is (re-)cancelled; if the closure
+        # below read ``self._ul`` at that later point it would find ``None``
+        # (cleared here) and skip releasing the underlying locks, deadlocking
+        # every future acquirer. Iterating a stable snapshot keeps the deferred
+        # release correct.
+        entries = list(self._ul)
+        self._ul = None
+
         async def release_all_locks():
             """Release all locks with comprehensive error handling, protected from cancellation"""
 
@@ -1114,8 +1124,9 @@ class _KeyedLockContext:
             all_errors = []
 
             # Release locks in reverse order
-            # This entire loop is protected by the outer shield
-            for entry in reversed(self._ul):
+            # This entire loop is protected by the outer shield.
+            # Iterate the stable snapshot, not self._ul (already cleared above).
+            for entry in reversed(entries):
                 try:
                     errors = await release_single_entry(entry, exc_type, exc, tb)
                     for error_type, error in errors:
@@ -1130,20 +1141,44 @@ class _KeyedLockContext:
 
             return all_errors
 
-        # CRITICAL: Protect the entire release process with shield
-        # This ensures that even if cancellation occurs, all locks are released
-        try:
-            all_errors = await asyncio.shield(release_all_locks())
-        except Exception as e:
-            direct_log(
-                f"Critical error during __aexit__ cleanup: {e}",
-                level="ERROR",
-                enable_output=True,
-            )
-            all_errors = []
-        finally:
-            # Always clear the lock list, even if shield was cancelled
-            self._ul = None
+        # CRITICAL: run the release on a FIXED task and wait for THAT SAME task
+        # to finish, resisting (repeated) cancellation. A single
+        # ``await asyncio.shield(release_all_locks())`` would, on re-cancellation,
+        # return before the shielded release actually completes, leaving the
+        # underlying keyed lock held forever. The loop below only returns once the
+        # release task is done, so __aexit__ never returns while a lock is still
+        # held. Any cancellation observed while waiting is deferred and re-raised
+        # only after the release has completed.
+        release_task = asyncio.ensure_future(release_all_locks())
+        pending_cancel = None
+        while not release_task.done():
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError as exc:
+                if release_task.cancelled():
+                    # The release task itself was directly cancelled — it cannot
+                    # have finished releasing; do not pretend it did.
+                    raise
+                # External cancellation of THIS coroutine: record it (even if the
+                # task just became done, so it is never swallowed) and keep waiting.
+                pending_cancel = pending_cancel or exc
+
+        all_errors = []
+        if not release_task.cancelled():
+            task_exc = release_task.exception()
+            if task_exc is not None:
+                direct_log(
+                    f"Critical error during __aexit__ cleanup: {task_exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+            else:
+                all_errors = release_task.result()
+
+        # Locks are now definitively released; propagate a deferred cancellation
+        # before anything else.
+        if pending_cancel is not None:
+            raise pending_cancel
 
         # If there were release errors and no other exception, raise the first release error
         if all_errors and exc_type is None:
@@ -1681,10 +1716,15 @@ class NamespaceLock:
         if ctx is None:
             raise RuntimeError("NamespaceLock exited without being entered")
 
-        result = await ctx.__aexit__(exc_type, exc_val, exc_tb)
-        # Clear this coroutine's context
-        self._ctx_var.set(None)
-        return result
+        # Clear the ContextVar in a finally so a cancellation delivered inside
+        # ctx.__aexit__ (which awaits an asyncio.shield) does not leave a stale
+        # context behind. Otherwise the SAME coroutine re-entering this lock in a
+        # finally would hit "already acquired" (RuntimeError, not CancelledError),
+        # and any cancel-safe release built on top could never run.
+        try:
+            return await ctx.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._ctx_var.set(None)
 
 
 def get_namespace_lock(
