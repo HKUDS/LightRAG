@@ -1670,6 +1670,15 @@ def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
     if pid is None:
         return True  # no owner identity recorded → cannot declare dead
     if pid == os.getpid():
+        # Our own PID. Genuinely us only if the recorded start id matches ours:
+        # a record carrying our PID but a DIFFERENT start id was written by a
+        # dead predecessor whose PID the OS reused for us — that owner is dead,
+        # so we must NOT treat the lease as "still alive (me)" or it would never
+        # be reclaimed. If either start id is unknown (non-Linux / no /proc), we
+        # cannot confirm reuse and conservatively report alive.
+        mine = _my_start_id()
+        if start_id is not None and mine is not None and start_id != mine:
+            return False
         return True
     if not _pid_alive(pid):
         return False

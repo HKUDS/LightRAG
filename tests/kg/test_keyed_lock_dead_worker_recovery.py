@@ -161,39 +161,51 @@ async def test_lease_release_is_owner_checked():
         finalize_share_data()
 
 
+def test_process_alive_detects_self_pid_reuse(monkeypatch):
+    """_process_alive must NOT blindly treat a record carrying our own PID as
+    alive: a dead predecessor whose PID the OS reused for us leaves a record with
+    our PID but a different start id, and reporting it alive would wedge the lock
+    forever (no other worker competes for the key). This is the exact deadlock a
+    naive ``pid == os.getpid() -> True`` short-circuit causes. Monkeypatching
+    ``_my_start_id`` exercises the branch without needing real /proc reuse."""
+    monkeypatch.setattr(shared_storage, "_my_start_id", lambda: "our-start-id")
+    mypid = os.getpid()
+    # Same PID, DIFFERENT start id = a dead predecessor that reused our PID.
+    assert shared_storage._process_alive(mypid, "predecessor-start-id") is False
+    # Same PID + matching start id = genuinely us → alive.
+    assert shared_storage._process_alive(mypid, "our-start-id") is True
+    # Same PID, no recorded start id = cannot confirm reuse → conservatively alive.
+    assert shared_storage._process_alive(mypid, None) is True
+    # Our start id unknown (non-Linux) = cannot confirm reuse → alive.
+    monkeypatch.setattr(shared_storage, "_my_start_id", lambda: None)
+    assert shared_storage._process_alive(mypid, "predecessor-start-id") is True
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="PID-reuse detection needs Linux /proc start time",
 )
 @pytest.mark.offline
-async def test_lease_reclaims_on_pid_reuse():
-    """A live PID whose start time differs from the recorded one is a DIFFERENT
-    process that reused the PID → reclaim.
-
-    The recorded PID must be another live process, NOT our own: _process_alive
-    short-circuits ``pid == os.getpid()`` to alive (a process is always alive to
-    itself), so a self-PID record could never look reused.
-    """
+async def test_lease_reclaims_on_self_pid_reuse():
+    """The real dead-worker-with-PID-reuse deadlock: the reclaiming worker was
+    handed the dead owner's very PID by the OS. The stale holder therefore
+    carries OUR pid but the predecessor's start id — the lease must still be
+    reclaimed (our start id differs from the recorded one)."""
     finalize_share_data()
     initialize_share_data(2)
-    # A live OTHER process whose recorded start id is wrong = a different process
-    # reused this PID.
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         key = _get_combined_key("ns", "reuse")
+        # Our PID, but a start id that is not ours = we reused a dead worker's PID.
         _holders()[key] = {
-            "owner_pid": proc.pid,
-            "process_start_id": "definitely-not-its-real-start-time",
+            "owner_pid": os.getpid(),
+            "process_start_id": "predecessor-start-id",
             "lease_id": "stale",
         }
         async with asyncio.timeout(5):
             async with get_storage_keyed_lock("reuse", namespace="ns"):
                 assert _holders()[key]["lease_id"] != "stale"  # reclaimed by us
-                assert _holders()[key]["owner_pid"] == os.getpid()
         assert key not in _holders()
     finally:
-        proc.kill()
-        proc.wait()
         finalize_share_data()
 
 
