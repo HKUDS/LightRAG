@@ -847,8 +847,22 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 yield f"{json.dumps({'progress': event})}\n"
                             except asyncio.TimeoutError:
                                 await asyncio.sleep(0)
-                        # Surface any exception from the task (e.g. LLM service error).
-                        result = await query_task
+
+                        # Surface any exception from the task (e.g. LLM service
+                        # error). Since the StreamingResponse has already begun
+                        # (progress lines sent), we cannot raise an HTTP 500;
+                        # instead emit a structured NDJSON error line so the
+                        # client receives a well-formed error instead of a
+                        # truncated stream.
+                        try:
+                            result = await query_task
+                        except Exception as e:
+                            logger.error(
+                                f"Error in progress-enabled streaming query: {str(e)}",
+                                exc_info=True,
+                            )
+                            yield f"{json.dumps({'error': str(e)})}\n"
+                            return
 
                         # Phase 2: drain any remaining progress events that arrived
                         # between the last poll and task completion.
