@@ -231,6 +231,59 @@ async def test_reserve_enqueue_slot_raises_when_recovery_required():
         finalize_share_data()
 
 
+@pytest.mark.offline
+async def test_apipeline_enqueue_documents_refuses_when_recovery_required():
+    """The core write path — public ``ainsert`` / direct callers bypass the REST
+    ``_reserve_enqueue_slot`` guard — must refuse on a fenced workspace, or it
+    would write full_docs/doc_status onto a partially-committed store."""
+    from lightrag import LightRAG
+
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = LightRAG.__new__(LightRAG)
+        rag.workspace = "recovery-enqueue-ws"
+        await initialize_pipeline_status(workspace=rag.workspace)
+        ps = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        ps["recovery_required"] = {
+            "kind": "clear",
+            "owner_key": "busy_owner",
+            "operation_record": {"kind": "clear", "scope": "all"},
+        }
+        with pytest.raises(RuntimeError) as excinfo:
+            await rag.apipeline_enqueue_documents(["hello"])
+        assert "fenced" in str(excinfo.value).lower()
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_processing_loop_bails_when_recovery_required():
+    """The processing loop must NOT acquire + process on a fenced workspace,
+    even though reconcile cleared ``busy`` when it raised the fence."""
+    from lightrag import LightRAG
+
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = LightRAG.__new__(LightRAG)
+        rag.workspace = "recovery-process-ws"
+        await initialize_pipeline_status(workspace=rag.workspace)
+        ps = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        ps["busy"] = False  # reconcile cleared it when fencing
+        ps["recovery_required"] = {
+            "kind": "delete",
+            "owner_key": "busy_owner",
+            "operation_record": {"kind": "delete", "doc_id": "doc-1"},
+        }
+        # Returns early without acquiring busy or touching storage.
+        await rag.apipeline_process_enqueue_documents()
+        assert ps.get("busy") is False  # never acquired
+        assert ps.get("recovery_required") is not None  # fence untouched
+    finally:
+        finalize_share_data()
+
+
 def _endpoint(router, name):
     return [r.endpoint for r in router.routes if getattr(r, "name", "") == name][-1]
 

@@ -274,6 +274,27 @@ async def test_helper_returns_silently_when_pipeline_idle():
     await _with_pipeline_status(_do)
 
 
+async def test_helper_raises_503_when_recovery_required():
+    """A dead custom_chunks/delete/clear owner leaves ``recovery_required`` set
+    and ``busy`` cleared; the graph-edit guard must still refuse (503), not wave
+    the edit through onto a possibly partially-committed store."""
+
+    async def _do(pipeline_status):
+        pipeline_status["busy"] = False  # reconcile cleared it when fencing
+        pipeline_status["recovery_required"] = {
+            "kind": "delete",
+            "owner_key": "busy_owner",
+            "operation_record": {"kind": "delete", "doc_id": "doc-1"},
+        }
+        rag = SimpleNamespace(workspace="")
+        with pytest.raises(HTTPException) as exc_info:
+            await check_pipeline_busy_or_raise(rag)
+        assert exc_info.value.status_code == 503
+        assert "fenced" in exc_info.value.detail.lower()
+
+    await _with_pipeline_status(_do)
+
+
 async def test_helper_is_noop_when_pipeline_status_uninitialized():
     """When pipeline_status namespace was never bootstrapped the helper must pass.
 

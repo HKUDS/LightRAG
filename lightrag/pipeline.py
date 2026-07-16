@@ -46,6 +46,7 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_namespace_lock,
     make_owner_record,
+    pipeline_recovery_blocked_message,
     reconcile_dead_pipeline_reservations,
     run_to_completion,
 )
@@ -345,6 +346,15 @@ class _PipelineMixin:
             "pipeline_status", workspace=self.workspace
         )
         async with pipeline_status_lock:
+            # Reclaim a dead owner, then fail-closed if the workspace is fenced.
+            # This is the core write path: the public ``ainsert`` and any direct
+            # caller bypass the REST ``_reserve_enqueue_slot`` guard, so a fenced
+            # workspace (a dead custom_chunks/delete/clear owner may have
+            # half-committed) must refuse HERE too, or it would write full_docs /
+            # doc_status onto a partially-committed store.
+            reconcile_dead_pipeline_reservations(pipeline_status)
+            if pipeline_status.get("recovery_required"):
+                raise RuntimeError(pipeline_recovery_blocked_message(pipeline_status))
             if not from_scan and pipeline_status.get("scanning_exclusive"):
                 raise RuntimeError(
                     "Cannot enqueue while scan is classifying files; "
@@ -1055,6 +1065,14 @@ class _PipelineMixin:
                 # BEFORE reading busy, so a SIGKILLed worker's slot does not
                 # wedge this acquire (Linux multi-worker only; no-op otherwise).
                 reconcile_dead_pipeline_reservations(pipeline_status)
+                # Fail-closed: if reconcile fenced the workspace (a dead
+                # custom_chunks/delete/clear owner may have half-committed) it
+                # ALSO cleared ``busy``, so without this check the loop would see
+                # busy=False and immediately process documents on a possibly
+                # inconsistent store. Refuse until an explicit recovery.
+                if pipeline_status.get("recovery_required"):
+                    logger.warning(pipeline_recovery_blocked_message(pipeline_status))
+                    return
                 # Ensure only one worker is processing documents. ``_holding_busy``
                 # means the slot was handed to us already owned, so take it over
                 # rather than treating busy=True as "someone else is running".

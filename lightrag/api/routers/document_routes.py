@@ -1347,7 +1347,12 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     so test rigs without a real shared-storage Manager keep working.
     """
     from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        pipeline_recovery_blocked_message,
+        reconcile_dead_pipeline_reservations,
+    )
 
     try:
         pipeline_status = await get_namespace_data(
@@ -1359,6 +1364,16 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
         "pipeline_status", workspace=rag.workspace
     )
     async with pipeline_status_lock:
+        # Reclaim a dead owner first: reconcile clears ``busy`` when it fences a
+        # dead custom_chunks/delete/clear owner, so a plain ``busy`` check would
+        # wave the graph edit through onto a possibly partially-committed store.
+        # Refuse a fenced workspace with 503 (distinct from the 409 busy case).
+        reconcile_dead_pipeline_reservations(pipeline_status)
+        if pipeline_status.get("recovery_required"):
+            raise HTTPException(
+                status_code=503,
+                detail=pipeline_recovery_blocked_message(pipeline_status),
+            )
         if pipeline_status.get("busy"):
             raise HTTPException(
                 status_code=409,
