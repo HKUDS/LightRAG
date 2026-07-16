@@ -114,7 +114,11 @@ class _RoleLLMMixin:
         "auth",
         "session",
     )
-    _SAFE_PROVIDER_OPTION_KEYS = {"thinking_token_budget"}
+    # Non-secret keys whose names collide with a secret marker substring
+    # (e.g. "thinking_token_budget" contains "token"). Matched globally at
+    # every nesting level during metadata scrubbing, not only inside
+    # ``provider_options``.
+    _SAFE_OPTION_KEYS = {"thinking_token_budget"}
 
     @staticmethod
     def _normalize_llm_role(role: str) -> str:
@@ -444,7 +448,7 @@ class _RoleLLMMixin:
     @classmethod
     def _is_secret_key(cls, key: str) -> bool:
         lowered = key.lower()
-        if lowered in cls._SAFE_PROVIDER_OPTION_KEYS:
+        if lowered in cls._SAFE_OPTION_KEYS:
             return False
         return any(marker in lowered for marker in cls._SECRET_MARKERS)
 
