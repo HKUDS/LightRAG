@@ -271,6 +271,11 @@ def resolve_doc_status_parse_engine(
 # include its staged chunk IDs.
 CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
 
+# Public, persistent audit trail for structurally successful but semantically
+# degraded KG recovery. The WebUI uses this key to distinguish a processed
+# document with recovery warnings from an ordinary informational metadata row.
+KG_RECOVERY_WARNINGS_METADATA_KEY = "kg_recovery_warnings"
+
 
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
@@ -306,9 +311,7 @@ def make_custom_chunk_id(doc_key: str, chunk_text: str) -> str:
     would clobber ``full_doc_id`` and rollback/deletion of either document
     could remove the other's chunk.
     """
-    return compute_mdhash_id(
-        f"{len(doc_key)}:{doc_key}:{chunk_text}", prefix="chunk-"
-    )
+    return compute_mdhash_id(f"{len(doc_key)}:{doc_key}:{chunk_text}", prefix="chunk-")
 
 
 def make_custom_chunk_operation_id(doc_key: str, chunk_ids: list[str]) -> str:

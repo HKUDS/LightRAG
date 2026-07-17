@@ -6,22 +6,32 @@ Covers the building blocks later phases depend on:
   may touch (entities + relation endpoints + sorted relation pairs).
 - ``wait_tasks_with_drain``: sibling-task failure/cancellation must leave no
   background task still writing.
-- ``rebuild_knowledge_from_chunks(strict=True)``: missing extraction cache is
-  an error, not a silently-logged partial success.
+- ``rebuild_knowledge_from_chunks(rebuild_policy="rollback")``: missing
+  extraction cache is reported as a non-fatal degraded recovery condition.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
+import lightrag.operate as operate_module
 
-from lightrag.exceptions import KGRebuildCacheMissingError
 from lightrag.operate import (
     collect_kg_merge_candidates,
     rebuild_knowledge_from_chunks,
 )
 from lightrag.utils import wait_tasks_with_drain
+
+
+@pytest.fixture(autouse=True)
+def _storage_keyed_lock_noop(monkeypatch):
+    @asynccontextmanager
+    async def _noop_lock(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(operate_module, "get_storage_keyed_lock", _noop_lock)
 
 
 # --- collect_kg_merge_candidates -------------------------------------------
@@ -177,11 +187,16 @@ class _KV:
         self.data.update(data)
 
 
+class _AbsentGraph:
+    async def get_node(self, _name):
+        return None
+
+
 def _rebuild_kwargs(text_chunks: _KV, llm_cache: _KV, **overrides):
     kwargs = dict(
         entities_to_rebuild={"ALICE": ["c1"]},
         relationships_to_rebuild={},
-        knowledge_graph_inst=None,  # never reached in these tests
+        knowledge_graph_inst=_AbsentGraph(),
         entities_vdb=None,
         relationships_vdb=None,
         text_chunks_storage=text_chunks,
@@ -194,22 +209,19 @@ def _rebuild_kwargs(text_chunks: _KV, llm_cache: _KV, **overrides):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_strict_rebuild_raises_when_cache_missing():
-    """Strict recovery: no cached extraction for a referenced chunk must
-    raise, never silently return 'success' (which would let the caller mark
-    the document falsely PROCESSED)."""
+async def test_rollback_rebuild_reports_when_cache_missing():
+    """Missing recovery material is reported without wedging rollback."""
     text_chunks = _KV({"c1": {"content": "x", "llm_cache_list": []}})
-    with pytest.raises(KGRebuildCacheMissingError):
-        await rebuild_knowledge_from_chunks(
-            **_rebuild_kwargs(text_chunks, _KV(), strict=True)
-        )
+    report = await rebuild_knowledge_from_chunks(
+        **_rebuild_kwargs(text_chunks, _KV(), rebuild_policy="rollback")
+    )
+    assert report.missing_cache_chunk_ids == {"c1"}
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_strict_rebuild_raises_on_partially_missing_cache():
-    """One chunk has cache, one does not: strict mode must still fail —
-    rebuilding an aggregate from partial contributions silently degrades it."""
+async def test_rollback_rebuild_reports_partially_missing_cache():
+    """Partial cache loss is visible in the report without failing recovery."""
     text_chunks = _KV(
         {
             "c1": {"content": "x", "llm_cache_list": ["k1"]},
@@ -226,20 +238,20 @@ async def test_strict_rebuild_raises_on_partially_missing_cache():
             }
         }
     )
-    with pytest.raises(KGRebuildCacheMissingError):
-        await rebuild_knowledge_from_chunks(
-            **_rebuild_kwargs(
-                text_chunks,
-                llm_cache,
-                entities_to_rebuild={"ALICE": ["c1", "c2"]},
-                strict=True,
-            )
+    report = await rebuild_knowledge_from_chunks(
+        **_rebuild_kwargs(
+            text_chunks,
+            llm_cache,
+            entities_to_rebuild={"ALICE": ["c1", "c2"]},
+            rebuild_policy="rollback",
         )
+    )
+    assert report.missing_cache_chunk_ids == {"c2"}
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_non_strict_rebuild_keeps_best_effort_return():
+async def test_default_rebuild_keeps_best_effort_return():
     """Default (non-strict) behavior is unchanged: missing cache logs a
     warning and returns without raising."""
     text_chunks = _KV({"c1": {"content": "x", "llm_cache_list": []}})

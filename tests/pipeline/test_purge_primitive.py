@@ -9,20 +9,29 @@ custom-chunk patch rollback. These tests drive it with in-memory fakes:
 - a candidate absent from the graph is an idempotent no-op, never an error
   (candidates are a recovery SUPERSET);
 - ``patch_only=True`` must keep the base document's recovery rows;
-- ``strict_rebuild=True`` propagates missing-extraction-cache errors instead
-  of silently succeeding.
+- rollback rebuild structurally repairs provenance and reports missing cache.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
+import lightrag.operate as operate_module
 
 from lightrag import LightRAG
 from lightrag.constants import GRAPH_FIELD_SEP
-from lightrag.exceptions import KGRebuildCacheMissingError
 from lightrag.utils import compute_mdhash_id, make_relation_chunk_key
+
+
+@pytest.fixture(autouse=True)
+def _storage_keyed_lock_noop(monkeypatch):
+    @asynccontextmanager
+    async def _noop_lock(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(operate_module, "get_storage_keyed_lock", _noop_lock)
 
 
 class _KV:
@@ -51,9 +60,15 @@ class _KV:
 class _Vdb:
     def __init__(self):
         self.deleted: list[str] = []
+        self.data: dict = {}
 
     async def delete(self, ids):
         self.deleted.extend(ids)
+        for key in ids:
+            self.data.pop(key, None)
+
+    async def upsert(self, data):
+        self.data.update(data)
 
     async def index_done_callback(self):
         pass
@@ -79,6 +94,24 @@ class _Graph:
 
     async def get_nodes_edges_batch(self, names):
         return {n: [] for n in names}
+
+    async def get_node(self, name):
+        return self.nodes.get(name)
+
+    async def get_edge(self, src, tgt):
+        return self.edges.get((src, tgt)) or self.edges.get((tgt, src))
+
+    async def get_node_edges(self, name):
+        return [pair for pair in self.edges if name in pair]
+
+    async def has_node(self, name):
+        return name in self.nodes
+
+    async def upsert_node(self, name, node_data):
+        self.nodes[name] = dict(node_data)
+
+    async def upsert_edge(self, src, tgt, edge_data):
+        self.edges[(src, tgt)] = dict(edge_data)
 
     async def remove_nodes(self, names):
         self.removed_nodes.extend(names)
@@ -138,7 +171,14 @@ def _make_rag(
         return None
 
     rag._insert_done = _noop_insert_done
-    rag._build_global_config = lambda: {"llm_model_max_async": 1}
+    rag._build_global_config = lambda: {
+        "llm_model_max_async": 1,
+        "max_source_ids_per_entity": 100,
+        "max_source_ids_per_relation": 100,
+        "source_ids_limit_method": "KEEP",
+        "max_file_paths": 100,
+        "file_path_more_placeholder": "more",
+    }
     return rag
 
 
@@ -381,10 +421,8 @@ async def test_chunk_delete_failure_keeps_recovery_rows(monkeypatch):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_strict_rebuild_failure_propagates_through_purge():
-    """An entity that keeps sources from another chunk becomes a rebuild
-    target; with strict_rebuild=True and no extraction cache the purge must
-    FAIL (retaining a retryable dirty state), not silently 'succeed'."""
+async def test_rollback_rebuild_repairs_provenance_when_cache_is_missing():
+    """Missing cache degrades semantics but must not retain deleted sources."""
     graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1", "c2"])})
     rag = _make_rag(
         graph=graph,
@@ -394,23 +432,246 @@ async def test_strict_rebuild_failure_propagates_through_purge():
     )
     status, lock = _status()
 
-    with pytest.raises(Exception) as excinfo:
+    report = await rag._purge_kg_contributions(
+        "d1",
+        ["c1"],
+        candidate_entities=["ALICE"],
+        candidate_relations=[],
+        rebuild_policy="rollback",
+        pipeline_status=status,
+        pipeline_status_lock=lock,
+    )
+
+    assert report.missing_cache_chunk_ids == {"c2"}
+    assert report.degraded_entities == {"ALICE": ["c2"]}
+    assert graph.nodes["ALICE"]["source_id"] == "c2"
+    entity_vdb_id = compute_mdhash_id("ALICE", prefix="ent-")
+    assert rag.entities_vdb.data[entity_vdb_id]["source_id"] == "c2"
+    assert rag.entity_chunks.data["ALICE"]["chunk_ids"] == ["c2"]
+    assert rag.chunks_vdb.deleted == ["c1"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rollback_rebuild_storage_failure_keeps_source_chunks(monkeypatch):
+    """Operational write failures remain retryable and converge on retry."""
+    graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1", "c2"])})
+    rag = _make_rag(
+        graph=graph,
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1", "c2"]}}),
+        text_chunks=_KV({"c2": {"content": "x", "llm_cache_list": []}}),
+    )
+
+    original_upsert = rag.entities_vdb.upsert
+
+    async def upsert_boom(data):
+        raise RuntimeError("entity vdb boom")
+
+    monkeypatch.setattr(rag.entities_vdb, "upsert", upsert_boom)
+    status, lock = _status()
+
+    with pytest.raises(Exception, match="Failed to rebuild knowledge graph"):
         await rag._purge_kg_contributions(
             "d1",
             ["c1"],
             candidate_entities=["ALICE"],
             candidate_relations=[],
-            strict_rebuild=True,
+            rebuild_policy="rollback",
             pipeline_status=status,
             pipeline_status_lock=lock,
         )
-    assert isinstance(excinfo.value.__cause__, KGRebuildCacheMissingError)
+
+    assert rag.chunks_vdb.deleted == []
+    assert rag.text_chunks.deleted == []
+
+    # The first attempt already repaired graph/tracking before the VDB write
+    # failed. Rollback policy must nevertheless rebuild journal candidates on
+    # retry, otherwise the stale VDB record would be skipped permanently.
+    monkeypatch.setattr(rag.entities_vdb, "upsert", original_upsert)
+    report = await rag._purge_kg_contributions(
+        "d1",
+        ["c1"],
+        candidate_entities=["ALICE"],
+        candidate_relations=[],
+        rebuild_policy="rollback",
+        pipeline_status=status,
+        pipeline_status_lock=lock,
+    )
+
+    assert report.degraded_entities == {"ALICE": ["c2"]}
+    entity_vdb_id = compute_mdhash_id("ALICE", prefix="ent-")
+    assert rag.entities_vdb.data[entity_vdb_id]["source_id"] == "c2"
+    assert rag.chunks_vdb.deleted == ["c1"]
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_non_strict_rebuild_keeps_best_effort_behavior():
-    """Same partial-cache scenario without strict_rebuild: historical
+async def test_rollback_tracking_write_failure_keeps_source_chunks(monkeypatch):
+    graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1", "c2"])})
+    rag = _make_rag(
+        graph=graph,
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1", "c2"]}}),
+        text_chunks=_KV({"c2": {"content": "x", "llm_cache_list": []}}),
+    )
+    original_upsert = rag.entity_chunks.upsert
+
+    async def tracking_boom(data):
+        raise RuntimeError("tracking boom")
+
+    monkeypatch.setattr(rag.entity_chunks, "upsert", tracking_boom)
+    status, lock = _status()
+    with pytest.raises(Exception, match="Failed to process graph dependencies"):
+        await rag._purge_kg_contributions(
+            "d1",
+            ["c1"],
+            candidate_entities=["ALICE"],
+            candidate_relations=[],
+            rebuild_policy="rollback",
+            pipeline_status=status,
+            pipeline_status_lock=lock,
+        )
+
+    assert rag.chunks_vdb.deleted == []
+    assert rag.text_chunks.deleted == []
+
+    monkeypatch.setattr(rag.entity_chunks, "upsert", original_upsert)
+    await rag._purge_kg_contributions(
+        "d1",
+        ["c1"],
+        candidate_entities=["ALICE"],
+        candidate_relations=[],
+        rebuild_policy="rollback",
+        pipeline_status=status,
+        pipeline_status_lock=lock,
+    )
+    assert rag.entity_chunks.data["ALICE"]["chunk_ids"] == ["c2"]
+    assert rag.chunks_vdb.deleted == ["c1"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rollback_repairs_relation_when_cache_omits_target_object():
+    """PR #3416 review regression: a valid cache entry can omit the edge.
+
+    Rollback must preserve its semantic fields while removing the staged
+    source from graph, vector, and tracking provenance.
+    """
+    graph = _Graph(
+        nodes={
+            "ALICE": _node("ALICE", ["c1", "c2"]),
+            "BOB": _node("BOB", ["c1", "c2"]),
+        },
+        edges={("ALICE", "BOB"): _edge(["c1", "c2"])},
+    )
+    rag = _make_rag(
+        graph=graph,
+        relation_chunks=_KV(
+            {make_relation_chunk_key("ALICE", "BOB"): {"chunk_ids": ["c1", "c2"]}}
+        ),
+        text_chunks=_KV(
+            {
+                "c2": {
+                    "content": "alice only",
+                    "file_path": "base.txt",
+                    "llm_cache_list": ["cache-c2"],
+                }
+            }
+        ),
+        llm_cache=_KV(
+            {
+                "cache-c2": {
+                    "cache_type": "extract",
+                    "chunk_id": "c2",
+                    "return": '{"entities": [{"name": "ALICE", "type": "PERSON", "description": "Alice"}], "relationships": []}',
+                    "create_time": 1,
+                }
+            }
+        ),
+    )
+    status, lock = _status()
+
+    report = await rag._purge_kg_contributions(
+        "d1",
+        ["c1"],
+        candidate_entities=[],
+        candidate_relations=[("ALICE", "BOB")],
+        patch_only=True,
+        rebuild_policy="rollback",
+        pipeline_status=status,
+        pipeline_status_lock=lock,
+    )
+
+    assert report.missing_cache_chunk_ids == set()
+    assert report.degraded_relationships == {("ALICE", "BOB"): ["c2"]}
+    assert graph.edges[("ALICE", "BOB")]["source_id"] == "c2"
+    rel_vdb_id = compute_mdhash_id("ALICEBOB", prefix="rel-")
+    assert rag.relationships_vdb.data[rel_vdb_id]["source_id"] == "c2"
+    tracking_key = make_relation_chunk_key("ALICE", "BOB")
+    assert rag.relation_chunks.data[tracking_key]["chunk_ids"] == ["c2"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_rollback_relation_vdb_delete_failure_retries_to_convergence(
+    monkeypatch,
+):
+    """Even the VDB cleanup preceding an upsert is strict in rollback mode."""
+    graph = _Graph(
+        nodes={
+            "ALICE": _node("ALICE", ["c1", "c2"]),
+            "BOB": _node("BOB", ["c1", "c2"]),
+        },
+        edges={("ALICE", "BOB"): _edge(["c1", "c2"])},
+    )
+    rag = _make_rag(
+        graph=graph,
+        relation_chunks=_KV(
+            {make_relation_chunk_key("ALICE", "BOB"): {"chunk_ids": ["c1", "c2"]}}
+        ),
+        text_chunks=_KV({"c2": {"content": "base", "llm_cache_list": []}}),
+    )
+    original_delete = rag.relationships_vdb.delete
+
+    async def delete_boom(ids):
+        raise RuntimeError("relation vdb delete boom")
+
+    monkeypatch.setattr(rag.relationships_vdb, "delete", delete_boom)
+    status, lock = _status()
+    with pytest.raises(Exception, match="Failed to rebuild knowledge graph"):
+        await rag._purge_kg_contributions(
+            "d1",
+            ["c1"],
+            candidate_entities=[],
+            candidate_relations=[("ALICE", "BOB")],
+            patch_only=True,
+            rebuild_policy="rollback",
+            pipeline_status=status,
+            pipeline_status_lock=lock,
+        )
+
+    assert rag.chunks_vdb.deleted == []
+    monkeypatch.setattr(rag.relationships_vdb, "delete", original_delete)
+    report = await rag._purge_kg_contributions(
+        "d1",
+        ["c1"],
+        candidate_entities=[],
+        candidate_relations=[("ALICE", "BOB")],
+        patch_only=True,
+        rebuild_policy="rollback",
+        pipeline_status=status,
+        pipeline_status_lock=lock,
+    )
+
+    assert report.degraded_relationships == {("ALICE", "BOB"): ["c2"]}
+    rel_vdb_id = compute_mdhash_id("ALICEBOB", prefix="rel-")
+    assert rag.relationships_vdb.data[rel_vdb_id]["source_id"] == "c2"
+    assert rag.chunks_vdb.deleted == ["c1"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_best_effort_rebuild_keeps_historical_behavior():
+    """Same partial-cache scenario with default policy: historical
     best-effort behavior (warn + continue) is preserved for existing callers."""
     graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1", "c2"])})
     rag = _make_rag(

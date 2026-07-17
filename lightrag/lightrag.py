@@ -115,6 +115,7 @@ from lightrag.base import (
 from lightrag.namespace import NameSpace
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
+    KGRebuildReport,
     collect_kg_merge_candidates,
     extract_entities,
     kg_query,
@@ -124,6 +125,7 @@ from lightrag.operate import (
 )
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    KG_RECOVERY_WARNINGS_METADATA_KEY,
     compute_text_content_hash,
     doc_status_custom_chunk_patch,
     make_custom_chunk_id,
@@ -2243,10 +2245,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Per document, under the same per-document keyed lock the operations
         use: staged contributions are removed/rebuilt via the candidate-driven
-        purge primitive (strict rebuild — missing recovery cache fails the
-        rollback rather than producing a false PROCESSED), operation-scoped
-        LLM cache is deleted, anchor unions are pruned where the document no
-        longer owns a contribution, and only then is the journal cleared:
+        purge primitive (missing recovery cache triggers structural provenance
+        repair plus a persistent warning; operational write failures retain the
+        journal), operation-scoped LLM cache is deleted, anchor unions are
+        pruned where the document no longer owns a contribution, and only then
+        is the journal cleared:
 
         - ``patch`` mode: the base document is restored to ``PROCESSED``.
         - ``create`` mode: the document did not exist before the operation,
@@ -2366,14 +2369,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
             cache_ids = list(dict.fromkeys(cache_ids))
 
+        rebuild_report = KGRebuildReport()
         if staged_chunk_ids:
-            await self._purge_kg_contributions(
+            rebuild_report = await self._purge_kg_contributions(
                 doc_id,
                 staged_chunk_ids,
                 candidate_entities=candidate_entities,
                 candidate_relations=candidate_relations,
                 patch_only=(mode == "patch"),
-                strict_rebuild=True,
+                rebuild_policy="rollback",
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
             )
@@ -2381,6 +2385,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if cache_ids and self.llm_response_cache:
             await self.llm_response_cache.delete(cache_ids)
             await self._flush_storages([self.llm_response_cache])
+
+        warning_rows = await self._persist_custom_chunk_recovery_warning(
+            doc_id,
+            journal,
+            rebuild_report,
+            mode=mode,
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+        )
+        row = warning_rows.get(doc_id, row)
 
         if mode == "create":
             # The document did not exist before this operation: remove its
@@ -2424,6 +2438,130 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             chunks_list=cleaned_chunks,
             error_msg="",
         )
+
+    async def _persist_custom_chunk_recovery_warning(
+        self,
+        doc_id: str,
+        journal: dict[str, Any],
+        report: KGRebuildReport,
+        *,
+        mode: str,
+        pipeline_status: dict,
+        pipeline_status_lock: Any,
+    ) -> dict[str, dict[str, Any]]:
+        """Persist bounded degraded-recovery warnings on surviving owners.
+
+        Patch rollback always includes the target document. Create rollback
+        removes that target entirely, so its warning is attached to documents
+        owning the surviving chunks that contributed to degraded aggregates.
+        """
+        if not report.has_warnings:
+            return {}
+
+        owner_doc_ids: set[str] = set()
+        surviving_chunk_ids = sorted(report.surviving_chunk_ids)
+        if surviving_chunk_ids:
+            chunk_rows = await self.text_chunks.get_by_ids(surviving_chunk_ids)
+            for chunk_row in chunk_rows:
+                if not isinstance(chunk_row, dict):
+                    continue
+                owner_doc_id = chunk_row.get("full_doc_id")
+                if isinstance(owner_doc_id, str) and owner_doc_id:
+                    owner_doc_ids.add(owner_doc_id)
+
+        if mode == "patch":
+            owner_doc_ids.add(doc_id)
+        else:
+            owner_doc_ids.discard(doc_id)
+
+        if not owner_doc_ids:
+            raise RuntimeError(
+                "Cannot persist degraded KG recovery warning: no surviving "
+                "owner document was found"
+            )
+
+        def _sample(values) -> dict[str, Any]:
+            ordered = sorted(set(values))
+            return {"count": len(ordered), "sample": ordered[:20]}
+
+        relationship_labels = [
+            f"{src}~{tgt}" for src, tgt in report.degraded_relationships
+        ]
+        event = {
+            "code": "degraded_custom_chunk_rollback",
+            "message": (
+                "Custom-chunk rollback completed with structural provenance "
+                "repair, but some KG semantic aggregates could not be fully "
+                "rebuilt from extraction cache."
+            ),
+            "operation_id": journal.get("operation_id"),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "missing_cache_chunks": _sample(report.missing_cache_chunk_ids),
+            "unusable_cache_chunks": _sample(report.unusable_cache_chunk_ids),
+            "degraded_entities": _sample(report.degraded_entities),
+            "degraded_relationships": _sample(relationship_labels),
+            "surviving_chunks": _sample(surviving_chunk_ids),
+        }
+
+        updated_rows: dict[str, dict[str, Any]] = {}
+        missing_owner_doc_ids: list[str] = []
+        for owner_doc_id in sorted(owner_doc_ids):
+            owner_row = await self.doc_status.get_by_id(owner_doc_id)
+            if not isinstance(owner_row, dict):
+                logger.warning(
+                    "Cannot persist degraded KG recovery warning: document "
+                    "status `%s` was not found",
+                    owner_doc_id,
+                )
+                missing_owner_doc_ids.append(owner_doc_id)
+                continue
+
+            metadata = dict(owner_row.get("metadata") or {})
+            raw_warnings = metadata.get(KG_RECOVERY_WARNINGS_METADATA_KEY)
+            warnings_list = (
+                [item for item in raw_warnings if isinstance(item, dict)]
+                if isinstance(raw_warnings, list)
+                else []
+            )
+            operation_id = event.get("operation_id")
+            warnings_list = [
+                item
+                for item in warnings_list
+                if not (
+                    item.get("code") == event["code"]
+                    and item.get("operation_id") == operation_id
+                )
+            ]
+            warnings_list.append(event)
+            metadata[KG_RECOVERY_WARNINGS_METADATA_KEY] = warnings_list[-10:]
+            updated_row = {
+                **owner_row,
+                "metadata": metadata,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            updated_rows[owner_doc_id] = updated_row
+
+        if missing_owner_doc_ids:
+            raise RuntimeError(
+                "Cannot persist degraded KG recovery warning: document status "
+                f"missing for {', '.join(missing_owner_doc_ids)}"
+            )
+
+        if updated_rows:
+            await self.doc_status.upsert(updated_rows)
+            await self._flush_storages([self.doc_status])
+
+        log_message = (
+            "[rollback] Degraded KG recovery warning for custom-chunk operation "
+            f"{journal.get('operation_id')} persisted on "
+            f"{len(updated_rows)} surviving document(s)"
+        )
+        logger.warning(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
+
+        return updated_rows
 
     async def _prune_doc_recovery_anchors(
         self,
@@ -3693,10 +3831,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         candidate_entities: list[str] | None = None,
         candidate_relations: list[tuple[str, str]] | None = None,
         patch_only: bool = False,
-        strict_rebuild: bool = False,
+        rebuild_policy: Literal["best_effort", "rollback"] = "best_effort",
         pipeline_status: dict,
         pipeline_status_lock: Any,
-    ) -> None:
+    ) -> KGRebuildReport:
         """Candidate-driven purge/rebuild primitive (issue #3400).
 
         Shared by whole-document purge (normal deletion / retry) and, in later
@@ -3724,9 +3862,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                *rebuild* entries from their remaining chunks (so other
                documents that also contributed to the same entity /
                relation keep their data intact), then flushes the rebuilt
-               state. With ``strict_rebuild``, missing extraction cache or
-               a failed rebuild raises instead of being logged (recovery
-               must not silently succeed on partial data).
+               state. Rollback policy repairs provenance structurally when
+               extraction data is missing, but still raises on operational
+               graph/vector/tracking failures.
             5. Only after every derived contribution is repaired/removed
                and flushed: deletes the chunks themselves from
                ``chunks_vdb`` and ``text_chunks`` and flushes them (safe
@@ -3750,7 +3888,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         converges (absent objects are skipped, remaining ones are cleaned).
         """
         if not chunk_ids:
-            return
+            return KGRebuildReport()
+
+        rebuild_report = KGRebuildReport()
 
         # Set view for membership/intersection checks below (chunk_ids stays a list
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
@@ -3863,6 +4003,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
+                    or rebuild_policy == "rollback"
                 ):
                     entities_to_rebuild[node_label] = remaining_sources
                     entity_chunk_updates[node_label] = remaining_sources
@@ -3927,6 +4068,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
+                    or rebuild_policy == "rollback"
                 ):
                     relationships_to_rebuild[edge_tuple] = remaining_sources
                     relation_chunk_updates[edge_tuple] = remaining_sources
@@ -4084,7 +4226,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # ---- 6. Rebuild entities/relations that still have remaining sources ----
         if entities_to_rebuild or relationships_to_rebuild:
             try:
-                await rebuild_knowledge_from_chunks(
+                rebuild_report = await rebuild_knowledge_from_chunks(
                     entities_to_rebuild=entities_to_rebuild,
                     relationships_to_rebuild=relationships_to_rebuild,
                     knowledge_graph_inst=self.chunk_entity_relation_graph,
@@ -4097,7 +4239,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     pipeline_status_lock=pipeline_status_lock,
                     entity_chunks_storage=self.entity_chunks,
                     relation_chunks_storage=self.relation_chunks,
-                    strict=strict_rebuild,
+                    rebuild_policy=rebuild_policy,
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
@@ -4150,6 +4292,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 raise Exception(
                     f"Failed to delete from full_entities/full_relations: {e}"
                 ) from e
+
+        return rebuild_report
 
     async def adelete_by_doc_id(
         self, doc_id: str, delete_llm_cache: bool = False
@@ -4569,9 +4713,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Without this union, deleting the document would remove the
                 # staged chunks (added to chunk_ids above) while never
                 # visiting those graph objects, leaving orphans behind.
-                entity_names = list(
-                    (doc_entities_data or {}).get("entity_names") or []
-                )
+                entity_names = list((doc_entities_data or {}).get("entity_names") or [])
                 relation_pairs = [
                     list(pair)
                     for pair in ((doc_relations_data or {}).get("relation_pairs") or [])

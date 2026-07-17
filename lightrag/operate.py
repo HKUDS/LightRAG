@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
     IndexFlushError,
-    KGRebuildCacheMissingError,
     PipelineCancelledException,
 )
 from lightrag.utils import (
@@ -93,6 +93,52 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+
+
+KGRebuildPolicy = Literal["best_effort", "rollback"]
+
+
+@dataclass
+class KGRebuildReport:
+    """Non-fatal data-quality gaps observed while rebuilding KG aggregates.
+
+    Missing or unusable extraction material degrades the semantic aggregate,
+    but rollback can still restore the hard provenance invariant by rewriting
+    graph/vector/tracking source IDs to the surviving chunks. Operational
+    storage failures are not represented here; rollback policy propagates
+    those failures so its journal remains retryable.
+    """
+
+    missing_cache_chunk_ids: set[str] = field(default_factory=set)
+    unusable_cache_chunk_ids: set[str] = field(default_factory=set)
+    referenced_chunk_ids: set[str] = field(default_factory=set)
+    degraded_entities: dict[str, list[str]] = field(default_factory=dict)
+    degraded_relationships: dict[tuple[str, str], list[str]] = field(
+        default_factory=dict
+    )
+
+    @property
+    def has_warnings(self) -> bool:
+        return bool(
+            self.missing_cache_chunk_ids
+            or self.unusable_cache_chunk_ids
+            or self.degraded_entities
+            or self.degraded_relationships
+        )
+
+    @property
+    def surviving_chunk_ids(self) -> set[str]:
+        if self.has_warnings:
+            chunk_ids = set(self.referenced_chunk_ids)
+        else:
+            chunk_ids = set()
+        chunk_ids.update(self.missing_cache_chunk_ids)
+        chunk_ids.update(self.unusable_cache_chunk_ids)
+        for ids in self.degraded_entities.values():
+            chunk_ids.update(ids)
+        for ids in self.degraded_relationships.values():
+            chunk_ids.update(ids)
+        return chunk_ids
 
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
@@ -929,8 +975,8 @@ async def rebuild_knowledge_from_chunks(
     pipeline_status_lock=None,
     entity_chunks_storage: BaseKVStorage | None = None,
     relation_chunks_storage: BaseKVStorage | None = None,
-    strict: bool = False,
-) -> None:
+    rebuild_policy: KGRebuildPolicy = "best_effort",
+) -> KGRebuildReport:
     """Rebuild entity and relationship descriptions from cached extraction results with parallel processing
 
     This method uses cached LLM extraction results instead of calling LLM again,
@@ -950,16 +996,19 @@ async def rebuild_knowledge_from_chunks(
         pipeline_status_lock: Lock for pipeline status
         entity_chunks_storage: KV storage maintaining full chunk IDs per entity
         relation_chunks_storage: KV storage maintaining full chunk IDs per relation
-        strict: When True (recovery paths, issue #3400), missing extraction
-            cache for any referenced chunk raises
-            ``KGRebuildCacheMissingError`` and any single rebuild failure
-            propagates instead of being counted and logged. Rebuild is then a
-            strict recovery operation: silently succeeding on partial data
-            could lead to a false PROCESSED state. Default False preserves
-            the historical best-effort behavior.
+        rebuild_policy: ``best_effort`` preserves historical exception
+            handling for ordinary deletion. ``rollback`` treats missing or
+            unusable extraction data as a non-fatal semantic degradation and
+            structurally rewrites provenance from the surviving chunks, while
+            propagating operational graph/vector/tracking failures so the
+            rollback journal remains retryable.
     """
+    if rebuild_policy not in ("best_effort", "rollback"):
+        raise ValueError(f"Unsupported KG rebuild policy: {rebuild_policy}")
+
+    report = KGRebuildReport()
     if not entities_to_rebuild and not relationships_to_rebuild:
-        return
+        return report
 
     # Get all referenced chunk IDs
     all_referenced_chunk_ids = set()
@@ -967,6 +1016,7 @@ async def rebuild_knowledge_from_chunks(
         all_referenced_chunk_ids.update(chunk_ids)
     for chunk_ids in relationships_to_rebuild.values():
         all_referenced_chunk_ids.update(chunk_ids)
+    report.referenced_chunk_ids.update(all_referenced_chunk_ids)
 
     status_message = f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions (parallel processing)"
     logger.info(status_message)
@@ -977,34 +1027,35 @@ async def rebuild_knowledge_from_chunks(
 
     # Get cached extraction results for these chunks using storage
     # cached_results： chunk_id -> [list of (extraction_result, create_time) from LLM cache sorted by create_time of the first extraction_result]
-    cached_results = await _get_cached_extraction_results(
+    cached_results, chunk_data_by_id = await _get_cached_extraction_results(
         llm_response_cache,
         all_referenced_chunk_ids,
         text_chunks_storage=text_chunks_storage,
     )
 
-    if strict:
-        # Strict recovery: every referenced chunk must have cached extraction
-        # results. Rebuilding from partial cache would silently produce
-        # degraded aggregates and let the caller report a false success.
-        missing_chunk_ids = all_referenced_chunk_ids - set(cached_results.keys())
-        if missing_chunk_ids:
-            preview = ", ".join(sorted(missing_chunk_ids)[:5])
-            if len(missing_chunk_ids) > 5:
-                preview += f", ... (+{len(missing_chunk_ids) - 5} more)"
-            raise KGRebuildCacheMissingError(
-                f"Extraction cache missing for {len(missing_chunk_ids)} of "
-                f"{len(all_referenced_chunk_ids)} referenced chunk(s): {preview}"
-            )
-
-    if not cached_results:
-        status_message = "No cached extraction results found, cannot rebuild"
+    missing_chunk_ids = all_referenced_chunk_ids - set(cached_results.keys())
+    report.missing_cache_chunk_ids.update(missing_chunk_ids)
+    if missing_chunk_ids:
+        status_message = (
+            f"Extraction cache missing for {len(missing_chunk_ids)} of "
+            f"{len(all_referenced_chunk_ids)} referenced chunk(s); "
+            "rebuild may use structural fallback"
+        )
         logger.warning(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = status_message
                 pipeline_status["history_messages"].append(status_message)
-        return
+
+    if not cached_results:
+        status_message = "No cached extraction results found"
+        logger.warning(status_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = status_message
+                pipeline_status["history_messages"].append(status_message)
+        if rebuild_policy == "best_effort":
+            return report
 
     # Process cached results to get entities and relationships for each chunk
     chunk_entities = {}  # chunk_id -> {entity_name: [entity_data]}
@@ -1023,6 +1074,7 @@ async def rebuild_knowledge_from_chunks(
                     chunk_id=chunk_id,
                     extraction_result=result[0],
                     timestamp=result[1],
+                    chunk_data=chunk_data_by_id.get(chunk_id),
                 )
 
                 # Merge entities and relationships from this extraction result
@@ -1073,10 +1125,11 @@ async def rebuild_knowledge_from_chunks(
                         # Otherwise keep existing version
 
         except Exception as e:
+            report.unusable_cache_chunk_ids.add(chunk_id)
             status_message = (
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
             )
-            logger.info(status_message)  # Per requirement, change to info
+            logger.warning(status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = status_message
@@ -1092,6 +1145,7 @@ async def rebuild_knowledge_from_chunks(
     rebuilt_relationships_count = 0
     failed_entities_count = 0
     failed_relationships_count = 0
+    structural_fallback = rebuild_policy == "rollback"
 
     async def _locked_rebuild_entity(entity_name, chunk_ids):
         nonlocal rebuilt_entities_count, failed_entities_count
@@ -1102,7 +1156,7 @@ async def rebuild_knowledge_from_chunks(
                 [entity_name], namespace=namespace, enable_logging=False
             ):
                 try:
-                    await _rebuild_single_entity(
+                    degraded = await _rebuild_single_entity(
                         knowledge_graph_inst=knowledge_graph_inst,
                         entities_vdb=entities_vdb,
                         entity_name=entity_name,
@@ -1111,8 +1165,12 @@ async def rebuild_knowledge_from_chunks(
                         llm_response_cache=llm_response_cache,
                         global_config=global_config,
                         entity_chunks_storage=entity_chunks_storage,
+                        chunk_data_by_id=chunk_data_by_id,
+                        structural_fallback=structural_fallback,
                     )
                     rebuilt_entities_count += 1
+                    if degraded:
+                        report.degraded_entities[entity_name] = list(chunk_ids)
                 except Exception as e:
                     failed_entities_count += 1
                     status_message = f"Failed to rebuild `{entity_name}`: {e}"
@@ -1121,9 +1179,9 @@ async def rebuild_knowledge_from_chunks(
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = status_message
                             pipeline_status["history_messages"].append(status_message)
-                    if strict:
-                        # Strict recovery: a single failed rebuild must fail
-                        # the whole operation, not be downgraded to a counter.
+                    if rebuild_policy == "rollback":
+                        # A real storage/rebuild failure is retryable and must
+                        # retain the custom-chunk journal.
                         raise
 
     async def _locked_rebuild_relationship(src, tgt, chunk_ids):
@@ -1139,7 +1197,7 @@ async def rebuild_knowledge_from_chunks(
                 enable_logging=False,
             ):
                 try:
-                    await _rebuild_single_relationship(
+                    degraded = await _rebuild_single_relationship(
                         knowledge_graph_inst=knowledge_graph_inst,
                         relationships_vdb=relationships_vdb,
                         entities_vdb=entities_vdb,
@@ -1153,8 +1211,12 @@ async def rebuild_knowledge_from_chunks(
                         entity_chunks_storage=entity_chunks_storage,
                         pipeline_status=pipeline_status,
                         pipeline_status_lock=pipeline_status_lock,
+                        chunk_data_by_id=chunk_data_by_id,
+                        structural_fallback=structural_fallback,
                     )
                     rebuilt_relationships_count += 1
+                    if degraded:
+                        report.degraded_relationships[(src, tgt)] = list(chunk_ids)
                 except Exception as e:
                     failed_relationships_count += 1
                     status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
@@ -1163,9 +1225,9 @@ async def rebuild_knowledge_from_chunks(
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = status_message
                             pipeline_status["history_messages"].append(status_message)
-                    if strict:
-                        # Strict recovery: a single failed rebuild must fail
-                        # the whole operation, not be downgraded to a counter.
+                    if rebuild_policy == "rollback":
+                        # A real storage/rebuild failure is retryable and must
+                        # retain the custom-chunk journal.
                         raise
 
     # Create tasks for parallel processing
@@ -1205,12 +1267,25 @@ async def rebuild_knowledge_from_chunks(
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
 
+    if report.has_warnings:
+        logger.warning(
+            "KG rebuild completed with degraded recovery: "
+            "missing_cache_chunks=%d unusable_cache_chunks=%d "
+            "entities=%d relationships=%d",
+            len(report.missing_cache_chunk_ids),
+            len(report.unusable_cache_chunk_ids),
+            len(report.degraded_entities),
+            len(report.degraded_relationships),
+        )
+
+    return report
+
 
 async def _get_cached_extraction_results(
     llm_response_cache: BaseKVStorage,
     chunk_ids: set[str],
     text_chunks_storage: BaseKVStorage,
-) -> dict[str, list[str]]:
+) -> tuple[dict[str, list[tuple[str, int]]], dict[str, dict[str, Any]]]:
     """Get cached extraction results for specific chunk IDs
 
     This function retrieves cached LLM extraction results for the given chunk IDs and returns
@@ -1224,19 +1299,21 @@ async def _get_cached_extraction_results(
         text_chunks_storage: Text chunks storage for retrieving chunk data and LLM cache references
 
     Returns:
-        Dict mapping chunk_id -> list of extraction_result_text, where:
-        - Keys (chunk_ids) are ordered by the create_time of their first extraction result
-        - Values (extraction results) are ordered by create_time within each chunk
+        A tuple containing the cache results grouped by chunk ID and the
+        corresponding text-chunk rows used for provenance fallback.
     """
     cached_results = {}
+    chunk_data_by_id: dict[str, dict[str, Any]] = {}
 
     # Collect all LLM cache IDs from chunks
     all_cache_ids = set()
 
     # Read from storage
-    chunk_data_list = await text_chunks_storage.get_by_ids(list(chunk_ids))
-    for chunk_data in chunk_data_list:
+    requested_chunk_ids = list(chunk_ids)
+    chunk_data_list = await text_chunks_storage.get_by_ids(requested_chunk_ids)
+    for chunk_id, chunk_data in zip(requested_chunk_ids, chunk_data_list):
         if chunk_data and isinstance(chunk_data, dict):
+            chunk_data_by_id[chunk_id] = chunk_data
             llm_cache_list = chunk_data.get("llm_cache_list", [])
             if llm_cache_list:
                 all_cache_ids.update(llm_cache_list)
@@ -1245,7 +1322,7 @@ async def _get_cached_extraction_results(
 
     if not all_cache_ids:
         logger.warning(f"No LLM cache IDs found for {len(chunk_ids)} chunk IDs")
-        return cached_results
+        return cached_results, chunk_data_by_id
 
     # Batch get LLM cache entries
     cache_data_list = await llm_response_cache.get_by_ids(list(all_cache_ids))
@@ -1293,7 +1370,8 @@ async def _get_cached_extraction_results(
     logger.info(
         f"Found {valid_entries} valid cache entries, {len(sorted_cached_results)} chunks with results"
     )
-    return sorted_cached_results  # each item: list(extraction_result, create_time)
+    # each cache item is (extraction_result, create_time)
+    return sorted_cached_results, chunk_data_by_id
 
 
 async def _process_extraction_result(
@@ -1432,6 +1510,7 @@ async def _rebuild_from_extraction_result(
     extraction_result: str,
     chunk_id: str,
     timestamp: int,
+    chunk_data: dict[str, Any] | None = None,
 ) -> tuple[dict, dict]:
     """Parse cached extraction result using the same logic as extract_entities.
 
@@ -1449,7 +1528,8 @@ async def _rebuild_from_extraction_result(
     """
 
     # Get chunk data for file_path from storage
-    chunk_data = await text_chunks_storage.get_by_id(chunk_id)
+    if chunk_data is None:
+        chunk_data = await text_chunks_storage.get_by_id(chunk_id)
     file_path = (
         chunk_data.get("file_path", "unknown_source")
         if chunk_data
@@ -1481,6 +1561,40 @@ async def _rebuild_from_extraction_result(
     )
 
 
+def _surviving_chunk_file_paths(
+    chunk_ids: list[str],
+    chunk_data_by_id: dict[str, dict[str, Any]],
+    global_config: dict[str, Any],
+) -> list[str]:
+    """Return bounded, order-preserving file paths for surviving chunks."""
+    file_paths = list(
+        dict.fromkeys(
+            str(chunk_data_by_id[chunk_id]["file_path"])
+            for chunk_id in chunk_ids
+            if chunk_id in chunk_data_by_id
+            and chunk_data_by_id[chunk_id].get("file_path")
+        )
+    )
+    max_file_paths = global_config.get("max_file_paths", DEFAULT_MAX_FILE_PATHS)
+    if len(file_paths) <= max_file_paths:
+        return file_paths
+
+    limit_method = (
+        global_config.get("source_ids_limit_method") or SOURCE_IDS_LIMIT_METHOD_KEEP
+    )
+    if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+        limited = file_paths[-max_file_paths:]
+    else:
+        limited = file_paths[:max_file_paths]
+    placeholder = global_config.get(
+        "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+    )
+    limited.append(
+        f"...{placeholder}...({limit_method} {max_file_paths}/{len(file_paths)})"
+    )
+    return limited
+
+
 async def _rebuild_single_entity(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
@@ -1492,13 +1606,15 @@ async def _rebuild_single_entity(
     entity_chunks_storage: BaseKVStorage | None = None,
     pipeline_status: dict | None = None,
     pipeline_status_lock=None,
-) -> None:
+    chunk_data_by_id: dict[str, dict[str, Any]] | None = None,
+    structural_fallback: bool = False,
+) -> bool:
     """Rebuild a single entity from cached extraction results"""
 
     # Get current entity data
     current_entity = await knowledge_graph_inst.get_node(entity_name)
     if not current_entity:
-        return
+        return False
 
     # Helper function to update entity in both graph and vector storage
     async def _update_entity_storage(
@@ -1587,6 +1703,23 @@ async def _rebuild_single_entity(
             all_entity_data.extend(chunk_entities[chunk_id][entity_name])
 
     if not all_entity_data:
+        if structural_fallback:
+            logger.warning(
+                "No cached entity data found for `%s`; preserving semantic "
+                "fields while repairing provenance",
+                entity_name,
+            )
+            file_paths = _surviving_chunk_file_paths(
+                limited_chunk_ids, chunk_data_by_id or {}, global_config
+            )
+            await _update_entity_storage(
+                current_entity.get("description", ""),
+                current_entity.get("entity_type", "UNKNOWN"),
+                file_paths,
+                limited_chunk_ids,
+            )
+            return True
+
         logger.warning(
             f"No entity data found for `{entity_name}`, trying to rebuild from relationships"
         )
@@ -1595,7 +1728,7 @@ async def _rebuild_single_entity(
         edges = await knowledge_graph_inst.get_node_edges(entity_name)
         if not edges:
             logger.warning(f"No relations attached to entity `{entity_name}`")
-            return
+            return False
 
         # Collect relationship data to extract entity information
         relationship_descriptions = []
@@ -1635,7 +1768,7 @@ async def _rebuild_single_entity(
             file_paths,
             limited_chunk_ids,
         )
-        return
+        return False
 
     # Process cached entity data
     descriptions = []
@@ -1726,6 +1859,7 @@ async def _rebuild_single_entity(
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
+    return False
 
 
 async def _rebuild_single_relationship(
@@ -1742,7 +1876,9 @@ async def _rebuild_single_relationship(
     entity_chunks_storage: BaseKVStorage | None = None,
     pipeline_status: dict | None = None,
     pipeline_status_lock=None,
-) -> None:
+    chunk_data_by_id: dict[str, dict[str, Any]] | None = None,
+    structural_fallback: bool = False,
+) -> bool:
     """Rebuild a single relationship from cached extraction results
 
     Note: This function assumes the caller has already acquired the appropriate
@@ -1752,7 +1888,7 @@ async def _rebuild_single_relationship(
     # Get current relationship data
     current_relationship = await knowledge_graph_inst.get_edge(src, tgt)
     if not current_relationship:
-        return
+        return False
 
     # normalized_chunk_ids = merge_source_ids([], chunk_ids)
     normalized_chunk_ids = chunk_ids
@@ -1789,18 +1925,33 @@ async def _rebuild_single_relationship(
                         chunk_relationships[chunk_id][edge_key]
                     )
 
-    if not all_relationship_data:
+    degraded = not all_relationship_data
+    if degraded and not structural_fallback:
         logger.warning(f"No relation data found for `{src}-{tgt}`")
-        return
+        return False
+
+    if degraded:
+        logger.warning(
+            "No cached relation data found for `%s`~`%s`; preserving semantic "
+            "fields while repairing provenance",
+            src,
+            tgt,
+        )
 
     # Merge descriptions and keywords
-    descriptions = []
-    keywords = []
-    weights = []
-    file_paths_list = []
+    descriptions = [current_relationship.get("description", "")] if degraded else []
+    keywords = [current_relationship.get("keywords", "")] if degraded else []
+    weights = [current_relationship.get("weight", 1.0)] if degraded else []
+    file_paths_list = (
+        _surviving_chunk_file_paths(
+            limited_chunk_ids, chunk_data_by_id or {}, global_config
+        )
+        if degraded
+        else []
+    )
     seen_paths = set()
 
-    for rel_data in all_relationship_data:
+    for rel_data in all_relationship_data if not degraded else []:
         if rel_data.get("description"):
             descriptions.append(rel_data["description"])
         if rel_data.get("keywords"):
@@ -1849,7 +2000,9 @@ async def _rebuild_single_relationship(
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
 
     # Generate final description from relations or fallback to current
-    if description_list:
+    if degraded:
+        final_description = current_relationship.get("description", "")
+    elif description_list:
         final_description, _ = await _handle_entity_relation_summary(
             "Relation",
             f"{src}-{tgt}",
@@ -1958,6 +2111,8 @@ async def _rebuild_single_relationship(
         try:
             await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
         except Exception as e:
+            if structural_fallback:
+                raise
             logger.debug(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
@@ -2009,6 +2164,7 @@ async def _rebuild_single_relationship(
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
+    return degraded
 
 
 def _combine_descriptions_dedup(

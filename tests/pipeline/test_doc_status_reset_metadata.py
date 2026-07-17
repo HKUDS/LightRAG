@@ -144,6 +144,20 @@ def test_reset_metadata_handles_empty_or_invalid_metadata():
     )
 
 
+def test_reset_metadata_drops_degraded_recovery_warnings():
+    """A full reprocess is the repair boundary for prior degraded rollback."""
+    assert (
+        doc_status_reset_metadata(
+            {
+                "metadata": {
+                    "kg_recovery_warnings": [{"code": "degraded_custom_chunk_rollback"}]
+                }
+            }
+        )
+        == {}
+    )
+
+
 def test_has_attempt_fields_trigger():
     assert doc_status_metadata_has_attempt_fields({"metadata": {"parse_end_time": 1}})
     assert doc_status_metadata_has_attempt_fields(
