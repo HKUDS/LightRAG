@@ -107,6 +107,13 @@ class KGRebuildReport:
     graph/vector/tracking source IDs to the surviving chunks. Operational
     storage failures are not represented here; rollback policy propagates
     those failures so its journal remains retryable.
+
+    Known degradation semantics: a degraded relationship preserves its stored
+    ``weight`` as-is — without per-chunk extraction cache the rolled-back
+    chunk's weight contribution cannot be subtracted (#3399 precision is
+    restored only by a full reprocess). The degradation is recorded in the
+    persisted ``kg_recovery_warnings`` so operators can identify affected
+    aggregates.
     """
 
     missing_cache_chunk_ids: set[str] = field(default_factory=set)
@@ -128,17 +135,15 @@ class KGRebuildReport:
 
     @property
     def surviving_chunk_ids(self) -> set[str]:
-        if self.has_warnings:
-            chunk_ids = set(self.referenced_chunk_ids)
-        else:
-            chunk_ids = set()
-        chunk_ids.update(self.missing_cache_chunk_ids)
-        chunk_ids.update(self.unusable_cache_chunk_ids)
-        for ids in self.degraded_entities.values():
-            chunk_ids.update(ids)
-        for ids in self.degraded_relationships.values():
-            chunk_ids.update(ids)
-        return chunk_ids
+        """Chunk ids involved in a degraded rebuild (owner-lookup scope).
+
+        Every specific bucket (missing/unusable cache, degraded aggregates)
+        is a subset of ``referenced_chunk_ids`` by construction — missing =
+        referenced minus cached, unusable/degraded are recorded per rebuild
+        target — so the union is simply the full referenced set whenever any
+        degradation was recorded, and empty otherwise.
+        """
+        return set(self.referenced_chunk_ids) if self.has_warnings else set()
 
 
 def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> float:
@@ -1951,7 +1956,9 @@ async def _rebuild_single_relationship(
     )
     seen_paths = set()
 
-    for rel_data in all_relationship_data if not degraded else []:
+    # ``all_relationship_data`` is empty by definition when ``degraded``
+    # (degraded == not all_relationship_data), so no guard is needed here.
+    for rel_data in all_relationship_data:
         if rel_data.get("description"):
             descriptions.append(rel_data["description"])
         if rel_data.get("keywords"):

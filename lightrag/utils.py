@@ -3080,46 +3080,57 @@ async def wait_tasks_with_drain(
         return []
 
     ctx = f" [{context}]" if context else ""
+    results: list[Any] = []
+    first_exception: BaseException | None = None
+
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+        for i, task in enumerate(done, start=1):
+            try:
+                results.append(task.result())
+            except BaseException as e:
+                if first_exception is None:
+                    first_exception = e
+                elif not isinstance(e, asyncio.CancelledError):
+                    logger.error(f"Additional task failure{ctx}: {e}")
+            # NOTE: an await point — external cancellation delivered here is
+            # handled by the enclosing except so still-pending siblings never
+            # keep writing in the background.
+            await _cooperative_yield(i, every=32)
+
+        if pending:
+            if task_labels:
+                pending_labels = [
+                    task_labels.get(task, "<unknown>") for task in pending
+                ]
+                preview = ", ".join(pending_labels[:10])
+                if len(pending_labels) > 10:
+                    preview += f", ... (+{len(pending_labels) - 10} more)"
+                logger.warning(f"Draining pending tasks{ctx}: {preview or '<none>'}")
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                    elif not isinstance(result, asyncio.CancelledError):
+                        logger.error(f"Additional task failure{ctx}: {result}")
+                else:
+                    results.append(result)
     except asyncio.CancelledError:
-        # External cancellation: do not leave siblings writing in the background.
+        # External cancellation of THIS waiter, delivered at ANY await point
+        # above — asyncio.wait itself, a cooperative yield while collecting
+        # done results (with siblings still pending after FIRST_EXCEPTION),
+        # or the drain gather. Cancel and drain everything before
+        # propagating so no task keeps writing in the background. Per-task
+        # CancelledError stored in a task's own result is caught by the
+        # inner handler and does NOT take this path.
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
-
-    results: list[Any] = []
-    first_exception: BaseException | None = None
-
-    for i, task in enumerate(done, start=1):
-        try:
-            results.append(task.result())
-        except BaseException as e:
-            if first_exception is None:
-                first_exception = e
-            elif not isinstance(e, asyncio.CancelledError):
-                logger.error(f"Additional task failure{ctx}: {e}")
-        await _cooperative_yield(i, every=32)
-
-    if pending:
-        if task_labels:
-            pending_labels = [task_labels.get(task, "<unknown>") for task in pending]
-            preview = ", ".join(pending_labels[:10])
-            if len(pending_labels) > 10:
-                preview += f", ... (+{len(pending_labels) - 10} more)"
-            logger.warning(f"Draining pending tasks{ctx}: {preview or '<none>'}")
-        for task in pending:
-            task.cancel()
-        pending_results = await asyncio.gather(*pending, return_exceptions=True)
-        for result in pending_results:
-            if isinstance(result, BaseException):
-                if first_exception is None:
-                    first_exception = result
-                elif not isinstance(result, asyncio.CancelledError):
-                    logger.error(f"Additional task failure{ctx}: {result}")
-            else:
-                results.append(result)
 
     if first_exception is not None:
         raise first_exception

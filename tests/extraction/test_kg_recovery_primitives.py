@@ -166,6 +166,57 @@ async def test_drain_external_cancellation_drains_children():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_drain_cancellation_between_wait_and_pending_cancel(monkeypatch):
+    """Codex review (PR #3416): cancellation delivered AFTER ``asyncio.wait``
+    returned but BEFORE the pending siblings were cancelled — e.g. at the
+    cooperative yield while collecting done results, with writers still
+    pending after FIRST_EXCEPTION — must still cancel and drain those
+    writers before ``CancelledError`` propagates."""
+    import lightrag.utils as utils_module
+
+    yield_entered = asyncio.Event()
+
+    async def blocking_yield(iteration: int, every: int = 64) -> None:
+        # Deterministically park the waiter INSIDE the done-results loop so
+        # the test can cancel it exactly in the reported window.
+        if iteration > 0 and iteration % every == 0:
+            yield_entered.set()
+            await asyncio.Event().wait()  # never set; only a cancel wakes it
+
+    monkeypatch.setattr(utils_module, "_cooperative_yield", blocking_yield)
+
+    async def _ok():
+        return 1
+
+    async def _fails():
+        raise RuntimeError("boom")
+
+    async def _slow_writer():
+        await asyncio.sleep(30)
+
+    # 31 completed + 1 failed = 32 done tasks -> the loop hits the yield at
+    # i=32 while the slow writer is still pending (FIRST_EXCEPTION).
+    completed = [asyncio.create_task(_ok()) for _ in range(31)]
+    failing = asyncio.create_task(_fails())
+    await asyncio.wait(completed + [failing])
+    sleeper = asyncio.create_task(_slow_writer())
+    tasks = completed + [failing, sleeper]
+
+    waiter = asyncio.create_task(wait_tasks_with_drain(tasks))
+    await yield_entered.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert sleeper.done(), (
+        "pending writer must be cancelled and drained when the waiter is "
+        "cancelled between wait() and the pending-cancel section"
+    )
+    assert sleeper.cancelled()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_drain_empty_task_list_is_noop():
     assert await wait_tasks_with_drain([]) == []
 
