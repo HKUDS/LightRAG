@@ -264,6 +264,19 @@ def resolve_doc_status_parse_engine(
     )
 
 
+# Reserved doc_status.metadata key holding the custom-chunk patch journal
+# (issue #3400 Phase 3). While present, the document has an in-flight or
+# failed ainsert_custom_chunks operation: the pipeline must NOT process the
+# row as ordinary ingestion, resets must NOT strip it, and deletion must
+# include its staged chunk IDs.
+CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
+
+# Public, persistent audit trail for structurally successful but semantically
+# degraded KG recovery. The WebUI uses this key to distinguish a processed
+# document with recovery warnings from an ordinary informational metadata row.
+KG_RECOVERY_WARNINGS_METADATA_KEY = "kg_recovery_warnings"
+
+
 _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "process_options",
     "source_file",
@@ -281,7 +294,52 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     "analyzing_start_time",
     "analyzing_end_time",
     "analyzing_stage_skipped",
+    # Custom-chunk patch journal: the durable recovery anchor for an
+    # in-flight/failed ainsert_custom_chunks operation. Must survive every
+    # status transition until the operation commits or is rolled back.
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
 )
+
+
+def make_custom_chunk_id(doc_key: str, chunk_text: str) -> str:
+    """Deterministic, document-scoped custom-chunk id (issue #3400 Phase 3).
+
+    The components are length-prefixed so the ``(doc, text)`` pair is
+    unambiguous: plain concatenation would give ``doc_id="a", chunk="bc"``
+    and ``doc_id="ab", chunk="c"`` the same hash input, letting two different
+    documents share one ``text_chunks``/``chunks_vdb`` row — the later upsert
+    would clobber ``full_doc_id`` and rollback/deletion of either document
+    could remove the other's chunk.
+    """
+    return compute_mdhash_id(f"{len(doc_key)}:{doc_key}:{chunk_text}", prefix="chunk-")
+
+
+def make_custom_chunk_operation_id(doc_key: str, chunk_ids: list[str]) -> str:
+    """Deterministic operation id for one custom-chunk invocation.
+
+    Hashes the document key plus the ordered chunk-id set (length-prefixed
+    like :func:`make_custom_chunk_id`, so an arbitrary caller-supplied
+    ``doc_id`` cannot collide with the chunk-id list of another document).
+    The same logical input therefore maps to the same operation across
+    retries.
+    """
+    joined = "|".join(chunk_ids)
+    return compute_mdhash_id(f"{len(doc_key)}:{doc_key}:{joined}", prefix="op-")
+
+
+def doc_status_custom_chunk_patch(status_doc: Any) -> dict[str, Any] | None:
+    """Return the custom-chunk patch journal from a doc-status record, if any.
+
+    Accepts either a ``DocProcessingStatus`` object or a raw storage dict.
+    Returns ``None`` when the document carries no journal (the normal case).
+    """
+    if status_doc is None:
+        return None
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return None
+    journal = raw_metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY)
+    return journal if isinstance(journal, dict) else None
 
 
 def doc_status_metadata_carry_over(status_doc: Any) -> dict[str, Any]:
@@ -333,6 +391,11 @@ def doc_status_transition_metadata(
 _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     "process_options",
     "source_file",
+    # Defense in depth: journaled custom-chunk patch rows are excluded from
+    # pipeline processing/reset entirely, but if one ever reaches a reset the
+    # journal must survive — stripping it would orphan the operation's staged
+    # data with no recovery anchor (issue #3400).
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
 )
 
 

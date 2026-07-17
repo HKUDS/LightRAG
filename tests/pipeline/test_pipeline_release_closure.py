@@ -383,6 +383,11 @@ def test_carry_over_keys_grouped_by_stage():
         "analyzing_start_time",
         "analyzing_end_time",
         "analyzing_stage_skipped",
+        # Custom-chunk patch journal (issue #3400 Phase 3): the durable
+        # recovery anchor for an in-flight/failed ainsert_custom_chunks
+        # operation; must survive every status transition until commit or
+        # rollback.
+        "custom_chunk_patch",
     )
 
 

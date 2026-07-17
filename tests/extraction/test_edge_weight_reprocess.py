@@ -93,6 +93,10 @@ class _MemKV:
     async def upsert(self, data):
         self.data.update(data)
 
+    async def index_done_callback(self):
+        # In-memory store: the Phase-0 write-ahead flush barrier is a no-op.
+        pass
+
 
 def _cfg() -> dict:
     return {
