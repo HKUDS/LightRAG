@@ -115,13 +115,19 @@ from lightrag.base import (
 from lightrag.namespace import NameSpace
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
+    collect_kg_merge_candidates,
     extract_entities,
     kg_query,
     merge_nodes_and_edges,
     naive_query,
     rebuild_knowledge_from_chunks,
 )
-from lightrag.utils_pipeline import normalize_document_file_path
+from lightrag.utils_pipeline import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    compute_text_content_hash,
+    doc_status_custom_chunk_patch,
+    normalize_document_file_path,
+)
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.exceptions import IndexFlushError
 from lightrag.utils import (
@@ -134,6 +140,7 @@ from lightrag.utils import (
     sanitize_text_for_encoding,
     check_storage_env_vars,
     generate_track_id,
+    get_content_summary,
     convert_to_user_format,
     logger,
     make_relation_vdb_ids,
@@ -1564,6 +1571,33 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
+        """Insert caller-chunked content as a journaled, recoverable operation.
+
+        Issue #3400 Phase 3 semantics — one invocation is one incremental
+        operation with a durable journal in ``doc_status.metadata``:
+
+        - Target document absent → **create** mode: the document is created
+          with full doc_status bookkeeping (the legacy behavior of this
+          deprecated API, now crash-discoverable).
+        - Target document ``PROCESSED`` → **patch** mode: the chunks are added
+          to the document; recovery anchors and ``chunks_list`` are unioned at
+          commit, never overwritten.
+        - Target document carrying a journal for the SAME operation (same
+          doc + same chunk set) → resume/roll-forward; for a DIFFERENT
+          operation → rejected until the original is retried or rolled back
+          by scan.
+        - Target document in any other state → rejected.
+
+        Identity is deterministic and document-scoped: chunk ids hash
+        ``(doc_id, chunk_content)`` and the operation id hashes the ordered
+        chunk-id set, so repeating the same logical input is idempotent
+        (committed → no-op; failed → resume).
+
+        On failure/cancellation after the journal is durable the document is
+        marked ``FAILED`` with the journal (and any staged data) retained —
+        the same call can be retried by the SDK caller, and ``/documents/scan``
+        can roll the operation back. Partial work is never blind-flushed.
+        """
         # Owner token for the busy reservation, generated before any await so the
         # finally always holds it and can release the slot by owner (even if the
         # acquire is cancelled at the lock exit).
@@ -1571,6 +1605,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         busy_acquired = False
         pipeline_status = None
         pipeline_status_lock = None
+        # Set when the operation fails after acquiring busy: the finally then
+        # discards partial buffers instead of flushing them (issue #3400:
+        # failure finalization must not persist partial work).
+        op_failed = False
         try:
             # Clean input texts
             full_text = sanitize_text_for_encoding(full_text)
@@ -1582,36 +1620,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 doc_key = compute_mdhash_id(full_text, prefix="doc-")
             else:
                 doc_key = doc_id
-            new_docs = {doc_key: {"content": full_text, "file_path": file_path}}
 
-            _add_doc_keys = await self.full_docs.filter_keys({doc_key})
-            new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
-            if not len(new_docs):
-                logger.warning("This document is already in the storage.")
+            # Deterministic, document-scoped identity: chunk ids hash
+            # (doc_key, content) so identical text in two documents never
+            # shares a chunk row (a shared row's full_doc_id would be
+            # clobbered, and rollback could delete another document's chunk).
+            # The operation id hashes the ordered chunk-id set so the same
+            # logical input is the same operation across retries.
+            chunk_entries: list[tuple[str, str, str]] = []
+            seen_chunk_ids: set[str] = set()
+            for chunk_text in text_chunks:
+                if not chunk_text:
+                    continue
+                chunk_id = compute_mdhash_id(doc_key + chunk_text, prefix="chunk-")
+                if chunk_id in seen_chunk_ids:
+                    continue
+                seen_chunk_ids.add(chunk_id)
+                chunk_entries.append(
+                    (chunk_id, chunk_text, compute_text_content_hash(chunk_text))
+                )
+            if not chunk_entries:
+                logger.warning("No non-empty custom chunks to insert.")
                 return
-
-            logger.info(f"Inserting {len(new_docs)} docs")
-
-            inserting_chunks: dict[str, Any] = {}
-            for index, chunk_text in enumerate(text_chunks):
-                chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
-                tokens = len(self.tokenizer.encode(chunk_text))
-                inserting_chunks[chunk_key] = {
-                    "content": chunk_text,
-                    "full_doc_id": doc_key,
-                    "tokens": tokens,
-                    "chunk_order_index": index,
-                    "file_path": file_path,
-                }
-
-            doc_ids = set(inserting_chunks.keys())
-            add_chunk_keys = await self.text_chunks.filter_keys(doc_ids)
-            inserting_chunks = {
-                k: v for k, v in inserting_chunks.items() if k in add_chunk_keys
-            }
-            if not len(inserting_chunks):
-                logger.warning("All chunks are already in the storage.")
-                return
+            operation_id = compute_mdhash_id(
+                doc_key + "|".join(cid for cid, _, _ in chunk_entries), prefix="op-"
+            )
 
             # pipeline_status/lock are already initialized by
             # initialize_storages() (which is idempotent), so fetch the existing
@@ -1694,48 +1727,276 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # would skip the release, wedging the workspace busy forever.
                 busy_acquired = True
 
-            # Stage 1 (barrier): persist chunks BEFORE extraction. Extraction
-            # records per-chunk LLM cache references (update_chunk_cache_list ->
-            # text_chunks) keyed by chunk id and reads chunks back via
-            # get_by_id; running it concurrently with these upserts can observe a
-            # not-yet-persisted chunk and silently drop the cache reference.
-            # Mirror the file pipeline's Stage-1-persist / Stage-2-extract
-            # barrier (see pipeline._run_pipeline_batch).
-            await asyncio.gather(
-                self.chunks_vdb.upsert(inserting_chunks),
-                self.full_docs.upsert(new_docs),
-                self.text_chunks.upsert(inserting_chunks),
+            # Per-document keyed lock: only one custom-chunk operation may be
+            # active for a document (issue #3400 §2.5). The busy reservation
+            # already serializes writers globally; the keyed lock preserves
+            # correctness if that global policy is ever relaxed.
+            doc_lock_namespace = (
+                f"{self.workspace}:DocPatch" if self.workspace else "DocPatch"
             )
+            async with get_storage_keyed_lock(
+                [doc_key], namespace=doc_lock_namespace, enable_logging=False
+            ):
+                # ---- Resolve operation mode under the reservation ----
+                existing_row = await self.doc_status.get_by_id(doc_key)
+                existing_journal = doc_status_custom_chunk_patch(existing_row)
 
-            # Stage 2: extract now that chunks are durably persisted. Pass the
-            # real pipeline_status/lock so extraction progress and any failure
-            # are surfaced (see _process_extract_entities).
-            chunk_results = await self._process_extract_entities(
-                inserting_chunks, pipeline_status, pipeline_status_lock
-            )
+                def _row_status_text(row: dict | None) -> str:
+                    raw = (row or {}).get("status")
+                    return raw.value if isinstance(raw, DocStatus) else str(raw or "")
 
-            # Stage 3: merge the extracted entities/relationships into the
-            # knowledge graph. Without this the extraction result was discarded,
-            # so no KG was built from custom chunks (KG-dependent query modes
-            # returned nothing while the extraction LLM cost was still spent).
-            # Mirrors the file pipeline's merge stage.
-            if chunk_results:
-                await merge_nodes_and_edges(
-                    chunk_results=chunk_results,
-                    knowledge_graph_inst=self.chunk_entity_relation_graph,
-                    entity_vdb=self.entities_vdb,
-                    relationships_vdb=self.relationships_vdb,
-                    global_config=self._build_global_config(),
-                    full_entities_storage=self.full_entities,
-                    full_relations_storage=self.full_relations,
-                    doc_id=doc_key,
-                    pipeline_status=pipeline_status,
-                    pipeline_status_lock=pipeline_status_lock,
-                    llm_response_cache=self.llm_response_cache,
-                    entity_chunks_storage=self.entity_chunks,
-                    relation_chunks_storage=self.relation_chunks,
+                resume = False
+                if existing_journal is not None:
+                    if existing_journal.get("operation_id") != operation_id:
+                        raise RuntimeError(
+                            f"Document {doc_key} has an unfinished custom-chunk "
+                            f"operation {existing_journal.get('operation_id')}; "
+                            "retry that operation with its original input, or "
+                            "run /documents/scan to roll it back, before "
+                            "submitting a different one."
+                        )
+                    mode = existing_journal.get("mode") or "patch"
+                    resume = True
+                elif existing_row is None:
+                    mode = "create"
+                elif _row_status_text(existing_row) == DocStatus.PROCESSED.value:
+                    mode = "patch"
+                else:
+                    raise RuntimeError(
+                        f"Document {doc_key} is in status "
+                        f"'{_row_status_text(existing_row)}'; only PROCESSED "
+                        "documents (or the document's own unfinished "
+                        "operation) can receive a custom-chunk insert."
+                    )
+
+                if mode == "create" and not resume:
+                    # Legacy dedup: a document created by an earlier call (or
+                    # an old build without doc_status bookkeeping) is a
+                    # committed no-op, mirroring the historical behavior.
+                    missing_keys = await self.full_docs.filter_keys({doc_key})
+                    if doc_key not in missing_keys:
+                        logger.warning("This document is already in the storage.")
+                        return
+
+                if mode == "patch":
+                    # Committed-content dedup: drop chunks whose content the
+                    # base document already owns, so repeating an
+                    # already-committed patch (or re-adding base content) is
+                    # idempotent instead of double-merging contributions.
+                    committed_ids = [
+                        cid
+                        for cid in ((existing_row or {}).get("chunks_list") or [])
+                        if isinstance(cid, str) and cid
+                    ]
+                    committed_hashes: set[str] = set()
+                    if committed_ids:
+                        committed_rows = await self.text_chunks.get_by_ids(
+                            committed_ids
+                        )
+                        for row in committed_rows:
+                            if isinstance(row, dict) and row.get("content"):
+                                committed_hashes.add(
+                                    compute_text_content_hash(row["content"])
+                                )
+                    chunk_entries = [
+                        entry
+                        for entry in chunk_entries
+                        if entry[2] not in committed_hashes
+                    ]
+                    if not chunk_entries and not resume:
+                        logger.warning(
+                            "All custom chunks are already committed to this "
+                            "document; nothing to patch."
+                        )
+                        return
+
+                logger.info(
+                    f"Custom chunks {mode} for {doc_key}: "
+                    f"{len(chunk_entries)} chunk(s), operation {operation_id}"
+                    f"{' (resume)' if resume else ''}"
+                )
+
+                # ---- Journal first: durable PROCESSING + operation record
+                # BEFORE any data store is touched (discoverability before
+                # mutation). doc_status backends persist on upsert.
+                now_iso = datetime.now(timezone.utc).isoformat()
+                journal: dict[str, Any] = {
+                    "schema_version": 1,
+                    "operation_id": operation_id,
+                    "mode": mode,
+                    "chunk_ids": [cid for cid, _, _ in chunk_entries],
+                    "content_hashes": [h for _, _, h in chunk_entries],
+                    "phase": "prepared",
+                    "entity_names": (existing_journal or {}).get("entity_names", []),
+                    "relation_pairs": (existing_journal or {}).get(
+                        "relation_pairs", []
+                    ),
+                    "created_at": (existing_journal or {}).get("created_at")
+                    or now_iso,
+                    "updated_at": now_iso,
+                }
+                status_row = await self._upsert_custom_chunk_status(
+                    doc_key,
+                    DocStatus.PROCESSING,
+                    base_row=existing_row,
+                    journal=journal,
+                    full_text=full_text,
                     file_path=file_path,
                 )
+                try:
+                    # Stage 1 (barrier): persist chunks BEFORE extraction.
+                    # Extraction records per-chunk LLM cache references
+                    # (update_chunk_cache_list -> text_chunks) keyed by chunk id
+                    # and reads chunks back via get_by_id; running it
+                    # concurrently with these upserts can observe a
+                    # not-yet-persisted chunk and silently drop the cache
+                    # reference.
+                    inserting_chunks: dict[str, Any] = {
+                        chunk_id: {
+                            "content": content,
+                            "full_doc_id": doc_key,
+                            "tokens": len(self.tokenizer.encode(content)),
+                            "chunk_order_index": index,
+                            "file_path": file_path,
+                        }
+                        for index, (chunk_id, content, _) in enumerate(chunk_entries)
+                    }
+                    stage1_writes = [
+                        self.chunks_vdb.upsert(inserting_chunks),
+                        self.text_chunks.upsert(inserting_chunks),
+                    ]
+                    if mode == "create":
+                        stage1_writes.append(
+                            self.full_docs.upsert(
+                                {
+                                    doc_key: {
+                                        "content": full_text,
+                                        "file_path": file_path,
+                                    }
+                                }
+                            )
+                        )
+                    await asyncio.gather(*stage1_writes)
+
+                    # Stage 2: extract now that chunks are persisted, then make
+                    # the staged chunks AND the extraction cache durable before
+                    # any graph mutation — a resume must reuse the cached
+                    # extraction, never call the LLM again and merge a
+                    # different result into a partially applied operation.
+                    chunk_results = await self._process_extract_entities(
+                        inserting_chunks, pipeline_status, pipeline_status_lock
+                    )
+                    staging_flush = [
+                        self.text_chunks,
+                        self.chunks_vdb,
+                        self.llm_response_cache,
+                    ]
+                    if mode == "create":
+                        staging_flush.append(self.full_docs)
+                    await self._flush_storages(staging_flush)
+
+                    # Persist the complete candidate set in the journal BEFORE
+                    # merging — the write-ahead anchor for this operation.
+                    candidate_entities, candidate_relations = (
+                        collect_kg_merge_candidates(chunk_results or [])
+                    )
+                    journal = {
+                        **journal,
+                        "phase": "applying",
+                        "entity_names": sorted(candidate_entities),
+                        "relation_pairs": [
+                            list(pair) for pair in sorted(candidate_relations)
+                        ],
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    status_row = await self._upsert_custom_chunk_status(
+                        doc_key,
+                        DocStatus.PROCESSING,
+                        base_row=status_row,
+                        journal=journal,
+                    )
+
+                    # Stage 3: merge into the knowledge graph. In patch mode
+                    # the merge must NOT touch the base document's
+                    # full_entities/full_relations rows (passing None skips the
+                    # merge's own anchor prewrite — the journal is this
+                    # operation's anchor); candidates are UNIONED into the base
+                    # rows only at commit. Create mode uses the merge's normal
+                    # write-ahead anchor prewrite.
+                    if chunk_results:
+                        await merge_nodes_and_edges(
+                            chunk_results=chunk_results,
+                            knowledge_graph_inst=self.chunk_entity_relation_graph,
+                            entity_vdb=self.entities_vdb,
+                            relationships_vdb=self.relationships_vdb,
+                            global_config=self._build_global_config(),
+                            full_entities_storage=(
+                                self.full_entities if mode == "create" else None
+                            ),
+                            full_relations_storage=(
+                                self.full_relations if mode == "create" else None
+                            ),
+                            doc_id=doc_key,
+                            pipeline_status=pipeline_status,
+                            pipeline_status_lock=pipeline_status_lock,
+                            llm_response_cache=self.llm_response_cache,
+                            entity_chunks_storage=self.entity_chunks,
+                            relation_chunks_storage=self.relation_chunks,
+                            file_path=file_path,
+                        )
+
+                    # ---- Commit: flush ALL derived stores, union the patch
+                    # into the base document's anchors, then write PROCESSED
+                    # (the commit record) last with the journal cleared.
+                    await self._insert_done()
+
+                    if mode == "patch":
+                        await self._union_doc_recovery_anchors(
+                            doc_key, candidate_entities, candidate_relations
+                        )
+                        base_chunks = [
+                            cid
+                            for cid in ((status_row or {}).get("chunks_list") or [])
+                            if isinstance(cid, str) and cid
+                        ]
+                        final_chunks_list = list(
+                            dict.fromkeys(base_chunks + list(inserting_chunks.keys()))
+                        )
+                    else:
+                        final_chunks_list = list(inserting_chunks.keys())
+
+                    await self._upsert_custom_chunk_status(
+                        doc_key,
+                        DocStatus.PROCESSED,
+                        base_row=status_row,
+                        journal=None,
+                        chunks_list=final_chunks_list,
+                    )
+                except BaseException as op_exc:
+                    # Journal is durable: record FAILED, keep the journal and
+                    # every staged artifact for SDK resume or scan rollback,
+                    # then re-raise. Merge siblings are already drained by
+                    # wait_tasks_with_drain inside merge_nodes_and_edges.
+                    op_failed = True
+                    try:
+                        failed_journal = {
+                            **journal,
+                            "phase": "failed",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        await self._upsert_custom_chunk_status(
+                            doc_key,
+                            DocStatus.FAILED,
+                            base_row=status_row,
+                            journal=failed_journal,
+                            error_msg=str(op_exc)[:500],
+                        )
+                    except Exception as bookkeeping_error:
+                        logger.error(
+                            "Failed to record FAILED custom-chunk journal for "
+                            f"{doc_key}: {bookkeeping_error}"
+                        )
+                    raise
 
         finally:
             # Everything here is gated on busy_acquired. If we rejected
@@ -1791,7 +2052,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # outer terminal release would clear busy and strand them
                     # behind request_pending=True with no active processor.
                     try:
-                        await self._insert_done_with_cleanup()
+                        if op_failed:
+                            # Failure path: do NOT blind-flush partial work
+                            # (issue #3400 root cause 6). Persist what is
+                            # valuable (the LLM cache — handled inside the
+                            # discard helper) and drop the partial buffers;
+                            # the journal anchors whatever immediate-write
+                            # backends already committed, and the same SDK
+                            # call resumes from the staged data.
+                            await self._discard_pending_index_ops(
+                                skip_enqueue_owned=False
+                            )
+                        else:
+                            await self._insert_done_with_cleanup()
                     finally:
                         decision = await with_reservation_lock(
                             pipeline_status,
@@ -1831,6 +2104,120 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         token=token,
                         action=_terminal_release,
                     )
+
+    async def _upsert_custom_chunk_status(
+        self,
+        doc_key: str,
+        status: DocStatus,
+        *,
+        base_row: dict[str, Any] | None,
+        journal: dict[str, Any] | None,
+        full_text: str | None = None,
+        file_path: str | None = None,
+        chunks_list: list[str] | None = None,
+        error_msg: str | None = None,
+    ) -> dict[str, Any]:
+        """Upsert the doc_status row for a custom-chunk operation.
+
+        doc_status backends replace the whole record (and its ``metadata``
+        blob) on upsert, so the full field set is rebuilt from ``base_row``
+        (the previously fetched/returned record) — base-document metadata is
+        carried verbatim with only the ``custom_chunk_patch`` key added
+        (``journal``) or removed (``journal=None``, at commit). Returns the
+        upserted payload so consecutive transitions can pass it back in as
+        ``base_row`` without refetching.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if base_row:
+            metadata = dict(base_row.get("metadata") or {})
+            payload: dict[str, Any] = {
+                "status": status,
+                "content_summary": base_row.get("content_summary") or "",
+                "content_length": base_row.get("content_length") or 0,
+                "created_at": base_row.get("created_at") or now_iso,
+                "updated_at": now_iso,
+                "file_path": base_row.get("file_path")
+                or file_path
+                or normalize_document_file_path(""),
+                "track_id": base_row.get("track_id"),
+                "content_hash": base_row.get("content_hash"),
+                "metadata": metadata,
+            }
+            existing_chunks = [
+                cid
+                for cid in (base_row.get("chunks_list") or [])
+                if isinstance(cid, str) and cid
+            ]
+        else:
+            payload = {
+                "status": status,
+                "content_summary": get_content_summary(full_text or ""),
+                "content_length": len(full_text or ""),
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "file_path": file_path or normalize_document_file_path(""),
+                "track_id": generate_track_id("insert"),
+                "content_hash": compute_text_content_hash(full_text or ""),
+                "metadata": {},
+            }
+            existing_chunks = []
+
+        effective_chunks = chunks_list if chunks_list is not None else existing_chunks
+        payload["chunks_list"] = list(effective_chunks)
+        payload["chunks_count"] = len(effective_chunks)
+
+        if journal is None:
+            payload["metadata"].pop(CUSTOM_CHUNK_PATCH_METADATA_KEY, None)
+        else:
+            payload["metadata"][CUSTOM_CHUNK_PATCH_METADATA_KEY] = journal
+
+        if error_msg is not None:
+            payload["error_msg"] = error_msg
+        elif status == DocStatus.PROCESSED:
+            payload["error_msg"] = ""
+
+        await self.doc_status.upsert({doc_key: payload})
+        return payload
+
+    async def _union_doc_recovery_anchors(
+        self,
+        doc_id: str,
+        entity_names,
+        relation_pairs,
+    ) -> None:
+        """Union a patch's candidates into the document's recovery anchors.
+
+        A custom-chunk patch must never overwrite the base document's
+        ``full_entities`` / ``full_relations`` rows — the base document keeps
+        owning its previously committed contributions — so the patch
+        candidates are unioned in and both rows flushed via the narrow
+        barrier (issue #3400 Phase 3, commit step).
+        """
+        entity_row = await self.full_entities.get_by_id(doc_id) or {}
+        union_names = set(entity_row.get("entity_names") or []) | set(entity_names)
+        await self.full_entities.upsert(
+            {
+                doc_id: {
+                    "entity_names": sorted(union_names),
+                    "count": len(union_names),
+                }
+            }
+        )
+
+        relation_row = await self.full_relations.get_by_id(doc_id) or {}
+        union_pairs = {
+            tuple(pair) for pair in (relation_row.get("relation_pairs") or [])
+        } | {tuple(pair) for pair in relation_pairs}
+        await self.full_relations.upsert(
+            {
+                doc_id: {
+                    "relation_pairs": [list(pair) for pair in sorted(union_pairs)],
+                    "count": len(union_pairs),
+                }
+            }
+        )
+
+        await self._flush_storages([self.full_entities, self.full_relations])
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
@@ -3699,13 +4086,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
             # Order-preserving dedup so chunk_ids stays a list and satisfies the
             # storage delete contract (``delete(ids: list[str])``); a set view is
-            # built below for membership/intersection checks.
+            # built below for membership/intersection checks. Staged chunks of
+            # an unfinished custom-chunk operation (issue #3400 Phase 3) live
+            # only in the journal until commit unions them into chunks_list —
+            # include them so deleting the document also cleans the staging.
+            journal = metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY)
+            journal_chunk_ids = (
+                normalize_string_list(
+                    journal.get("chunk_ids", []),
+                    context=f"doc {doc_id} custom_chunk_patch.chunk_ids",
+                )
+                if isinstance(journal, dict)
+                else []
+            )
             chunk_ids = list(
                 dict.fromkeys(
                     normalize_string_list(
                         doc_status_data.get("chunks_list", []),
                         context=f"doc {doc_id} chunks_list",
                     )
+                    + journal_chunk_ids
                 )
             )
             chunk_ids_set = set(chunk_ids)

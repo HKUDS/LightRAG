@@ -93,6 +93,7 @@ from lightrag.utils_pipeline import (
     build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
     compute_text_content_hash,
+    doc_status_custom_chunk_patch,
     doc_status_field,
     doc_status_parse_failure_fields,
     doc_status_transition_metadata,
@@ -1491,6 +1492,30 @@ class _PipelineMixin:
         pipeline_status_lock: asyncio.Lock,
     ) -> dict[str, DocProcessingStatus]:
         """Validate and fix document data consistency by deleting inconsistent entries, but preserve failed documents"""
+        # Documents carrying a custom-chunk patch journal belong to an
+        # in-flight or failed ainsert_custom_chunks operation (issue #3400
+        # Phase 3). Ordinary pipeline processing must not touch them: a reset
+        # would strip the journal and rebuild the whole document, discarding
+        # the operation's recovery anchor. They are resumed by the SDK caller
+        # (same call) or rolled back by /documents/scan.
+        journaled_patch_docs = [
+            doc_id
+            for doc_id, status_doc in to_process_docs.items()
+            if doc_status_custom_chunk_patch(status_doc) is not None
+        ]
+        if journaled_patch_docs:
+            for doc_id in journaled_patch_docs:
+                to_process_docs.pop(doc_id, None)
+            async with pipeline_status_lock:
+                skip_message = (
+                    f"Skipping {len(journaled_patch_docs)} document(s) with an "
+                    "unfinished custom-chunk operation (retry the operation or "
+                    "run a scan to roll it back)"
+                )
+                logger.info(skip_message)
+                pipeline_status["latest_message"] = skip_message
+                pipeline_status["history_messages"].append(skip_message)
+
         inconsistent_docs = []
         failed_docs_to_preserve = []
         successful_deletions = 0

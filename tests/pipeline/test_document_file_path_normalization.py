@@ -67,6 +67,39 @@ class CaptureKV:
     async def upsert(self, data):
         self.upserts.append(data)
 
+    async def get_by_id(self, key):
+        return None
+
+    async def get_by_ids(self, keys):
+        return [None for _ in keys]
+
+    async def index_done_callback(self):
+        pass
+
+
+class _FakeKeyedLock:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def _patch_custom_chunk_saga(monkeypatch, rag):
+    """Wire a bare LightRAG for the #3400 Phase-3 custom-chunk saga: a
+    doc_status store for the journal, a flushable llm_response_cache for the
+    staging barrier, and a stubbed per-document keyed lock (the real one
+    needs initialized shared storage)."""
+    import lightrag.lightrag as lightrag_module
+
+    rag.doc_status = CaptureKV()
+    rag.llm_response_cache = CaptureKV()
+    monkeypatch.setattr(
+        lightrag_module,
+        "get_storage_keyed_lock",
+        lambda keys, namespace="", enable_logging=False: _FakeKeyedLock(),
+    )
+
 
 @pytest.mark.asyncio
 async def test_pipeline_index_texts_rejects_missing_file_sources():
@@ -151,6 +184,7 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert(monkeypa
     rag.chunks_vdb = CaptureKV()
     rag.tokenizer = type("Tokenizer", (), {"encode": lambda self, text: [text]})()
     rag.workspace = "test-workspace"
+    _patch_custom_chunk_saga(monkeypatch, rag)
 
     async def _process_extract_entities(
         chunks, pipeline_status=None, pipeline_status_lock=None
@@ -209,6 +243,7 @@ async def test_custom_chunks_merge_extracted_entities_into_kg(monkeypatch):
         "llm_response_cache",
     ):
         setattr(rag, attr, object())
+    _patch_custom_chunk_saga(monkeypatch, rag)
 
     extracted = [({"Entity": [{"entity_name": "Entity"}]}, {})]
 
@@ -316,6 +351,7 @@ async def test_custom_chunks_persist_before_extraction(monkeypatch):
         "llm_response_cache",
     ):
         setattr(rag, attr, object())
+    _patch_custom_chunk_saga(monkeypatch, rag)
 
     async def _process_extract_entities(
         chunks, pipeline_status=None, pipeline_status_lock=None
@@ -371,6 +407,7 @@ def _custom_chunks_rag(monkeypatch, status):
         "llm_response_cache",
     ):
         setattr(rag, attr, object())
+    _patch_custom_chunk_saga(monkeypatch, rag)
     rag._build_global_config = lambda: {}
 
     async def _insert_done():
