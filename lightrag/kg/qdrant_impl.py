@@ -72,6 +72,13 @@ def compute_mdhash_id_for_qdrant(
         raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
 
 
+def _normalize_qdrant_point_id(point_id: Any) -> str:
+    try:
+        return uuid.UUID(str(point_id)).hex
+    except (ValueError, AttributeError, TypeError):
+        return str(point_id)
+
+
 def workspace_filter_condition(workspace: str) -> models.FieldCondition:
     """
     Create a workspace filter condition for Qdrant queries.
@@ -1159,7 +1166,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if CREATED_AT_FIELD not in payload:
                         payload[CREATED_AT_FIELD] = None
 
-                    qdrant_point_id = str(point.id) if point.id is not None else ""
+                    qdrant_point_id = (
+                        _normalize_qdrant_point_id(point.id)
+                        if point.id is not None
+                        else ""
+                    )
                     if qdrant_point_id:
                         payload_by_qdrant_id[qdrant_point_id] = payload
 
@@ -1259,10 +1270,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             return result
 
         try:
-            qdrant_ids = [
-                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
+            qdrant_id_to_requested_id = {
+                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace): id
                 for id in remaining
-            ]
+            }
+            qdrant_ids = list(qdrant_id_to_requested_id)
             results = self._client.retrieve(
                 collection_name=self.final_namespace,
                 ids=qdrant_ids,
@@ -1271,13 +1283,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
             for point in results:
-                if point and point.vector is not None and point.payload:
-                    original_id = point.payload.get(ID_FIELD)
-                    if original_id:
-                        vector_data = point.vector
-                        if isinstance(vector_data, np.ndarray):
-                            vector_data = vector_data.tolist()
-                        result[original_id] = vector_data
+                if point and point.vector is not None:
+                    payload = point.payload or {}
+                    original_id = payload.get(ID_FIELD)
+                    if not original_id and point.id is not None:
+                        original_id = qdrant_id_to_requested_id.get(
+                            _normalize_qdrant_point_id(point.id)
+                        )
+                    if not original_id:
+                        continue
+                    vector_data = point.vector
+                    if isinstance(vector_data, np.ndarray):
+                        vector_data = vector_data.tolist()
+                    result[str(original_id)] = vector_data
 
             return result
         except Exception as e:
