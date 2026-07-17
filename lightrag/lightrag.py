@@ -4554,12 +4554,43 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 doc_entities_data = await self.full_entities.get_by_id(doc_id)
                 doc_relations_data = await self.full_relations.get_by_id(doc_id)
 
+                # Candidate discovery must also cover journal-only candidates
+                # (issue #3400 Phase 3): a failed custom-chunk patch may have
+                # written graph/vector/tracking objects whose anchors live
+                # ONLY in the doc's custom_chunk_patch journal — patch mode
+                # unions them into full_entities/full_relations at commit.
+                # Without this union, deleting the document would remove the
+                # staged chunks (added to chunk_ids above) while never
+                # visiting those graph objects, leaving orphans behind.
+                entity_names = list(
+                    (doc_entities_data or {}).get("entity_names") or []
+                )
+                relation_pairs = [
+                    list(pair)
+                    for pair in ((doc_relations_data or {}).get("relation_pairs") or [])
+                ]
+                if isinstance(journal, dict):
+                    seen_names = set(entity_names)
+                    for name in journal.get("entity_names") or []:
+                        if isinstance(name, str) and name and name not in seen_names:
+                            seen_names.add(name)
+                            entity_names.append(name)
+                    seen_pairs = {tuple(pair) for pair in relation_pairs}
+                    for pair in journal.get("relation_pairs") or []:
+                        if (
+                            isinstance(pair, (list, tuple))
+                            and len(pair) == 2
+                            and tuple(pair) not in seen_pairs
+                        ):
+                            seen_pairs.add(tuple(pair))
+                            relation_pairs.append(list(pair))
+
                 affected_nodes = []
                 affected_edges = []
 
-                # Get entity data from graph storage using entity names from full_entities
-                if doc_entities_data and "entity_names" in doc_entities_data:
-                    entity_names = doc_entities_data["entity_names"]
+                # Get entity data from graph storage (candidates are a
+                # recovery superset; absent nodes are skipped below)
+                if entity_names:
                     # get_nodes_batch returns dict[str, dict], need to convert to list[dict]
                     nodes_dict = await self.chunk_entity_relation_graph.get_nodes_batch(
                         entity_names
@@ -4572,9 +4603,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 node_data["id"] = entity_name
                             affected_nodes.append(node_data)
 
-                # Get relation data from graph storage using relation pairs from full_relations
-                if doc_relations_data and "relation_pairs" in doc_relations_data:
-                    relation_pairs = doc_relations_data["relation_pairs"]
+                # Get relation data from graph storage using the candidate pairs
+                if relation_pairs:
                     edge_pairs_dicts = [
                         {"src": pair[0], "tgt": pair[1]} for pair in relation_pairs
                     ]

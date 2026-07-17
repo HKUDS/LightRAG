@@ -308,6 +308,52 @@ async def test_failed_create_records_failed_doc_status(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delete_covers_journal_only_graph_candidates(tmp_path, monkeypatch):
+    """Codex review (PR #3416): a patch that fails AFTER the merge wrote graph
+    objects — but before commit unioned the anchors — leaves candidates that
+    exist only in the journal. Deleting the document must remove those graph
+    objects too, not just the staged chunks; otherwise they survive as
+    orphans pointing at deleted chunks."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        # Merge succeeds (BOB reaches graph/vdb/tracking), then the operation
+        # fails before the commit union.
+        orig_merge = lightrag_module.merge_nodes_and_edges
+        calls = {"n": 0}
+
+        async def merge_then_boom(**kwargs):
+            result = await orig_merge(**kwargs)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("post-merge boom")
+            return result
+
+        monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", merge_then_boom)
+        with pytest.raises(RuntimeError, match="post-merge boom"):
+            await rag.ainsert_custom_chunks("base", ["bob is there"], doc_id="doc-1")
+
+        # BOB reached the graph but is anchored ONLY in the journal.
+        assert await rag.chunk_entity_relation_graph.get_node("BOB") is not None
+        anchors = await rag.full_entities.get_by_id("doc-1")
+        assert "BOB" not in (anchors or {}).get("entity_names", [])
+
+        result = await rag.adelete_by_doc_id("doc-1")
+        assert result.status == "success"
+        assert await rag.chunk_entity_relation_graph.get_node("BOB") is None, (
+            "journal-only graph candidate must be cleaned by document deletion"
+        )
+        assert await rag.entity_chunks.get_by_id("BOB") is None
+        assert (
+            await rag.text_chunks.get_by_id(_chunk_id("doc-1", "bob is there")) is None
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_delete_includes_staged_patch_chunks(tmp_path, monkeypatch):
     rag = await _build_rag(tmp_path)
     try:
