@@ -555,10 +555,15 @@ class LLMConfigCache:
         self.bedrock_llm_options = None
 
         # Only initialize and log OpenAI options when using OpenAI-related bindings
-        if args.llm_binding in ["openai", "azure_openai"]:
-            from lightrag.llm.binding_options import OpenAILLMOptions
+        if args.llm_binding in ["openai", "azure_openai", "atlascloud"]:
+            from lightrag.llm.binding_options import AtlasCloudLLMOptions, OpenAILLMOptions
 
-            self.openai_llm_options = OpenAILLMOptions.options_dict(args)
+            options_cls = (
+                AtlasCloudLLMOptions
+                if args.llm_binding == "atlascloud"
+                else OpenAILLMOptions
+            )
+            self.openai_llm_options = options_cls.options_dict(args)
             logger.info(f"OpenAI LLM Options: {self.openai_llm_options}")
 
         if args.llm_binding == "gemini":
@@ -623,6 +628,7 @@ class LLMConfigCache:
 
 _PROVIDER_LOG_LABELS = {
     "azure_openai": "Azure OpenAI",
+    "atlascloud": "Atlas Cloud",
     "bedrock": "Bedrock",
     "gemini": "Gemini",
     "lollms": "Lollms",
@@ -1230,6 +1236,7 @@ def create_app(args):
         "lollms",
         "ollama",
         "openai",
+        "atlascloud",
         "azure_openai",
         "bedrock",
         "gemini",
@@ -1671,10 +1678,18 @@ def create_app(args):
 
         role_provider_options = override_meta.get("provider_options")
         if role_provider_options is None:
-            if role_binding in ["openai", "azure_openai"]:
-                from lightrag.llm.binding_options import OpenAILLMOptions
+            if role_binding in ["openai", "azure_openai", "atlascloud"]:
+                from lightrag.llm.binding_options import (
+                    AtlasCloudLLMOptions,
+                    OpenAILLMOptions,
+                )
 
-                role_provider_options = OpenAILLMOptions.options_dict_for_role(
+                options_cls = (
+                    AtlasCloudLLMOptions
+                    if role_binding == "atlascloud"
+                    else OpenAILLMOptions
+                )
+                role_provider_options = options_cls.options_dict_for_role(
                     args, role, is_cross_provider
                 )
             elif role_binding == "gemini":

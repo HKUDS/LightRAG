@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from lightrag import ROLES
 from lightrag.utils import get_env_value, logger
 from lightrag.llm.binding_options import (
+    AtlasCloudLLMOptions,
     BedrockLLMOptions,
     GeminiEmbeddingOptions,
     GeminiLLMOptions,
@@ -59,6 +60,8 @@ DEFAULT_TOKEN_SECRET = "lightrag-jwt-default-secret-key!"
 NO_PREFIX_SENTINEL = "NO_PREFIX"
 PROVIDER_ASYMMETRIC_EMBEDDING_BINDINGS = {"gemini", "jina", "voyageai"}
 PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS = {"azure_openai", "ollama", "openai"}
+DEFAULT_ATLASCLOUD_HOST = "https://api.atlascloud.ai/v1"
+DEFAULT_ATLASCLOUD_MODEL = "qwen/qwen3.5-flash"
 
 
 class DefaultRAGStorageConfig:
@@ -74,6 +77,7 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "atlascloud": os.getenv("LLM_BINDING_HOST", DEFAULT_ATLASCLOUD_HOST),
         # Let boto3 select the regional Bedrock endpoint unless the user
         # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
         "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
@@ -402,6 +406,7 @@ def parse_args() -> argparse.Namespace:
             "lollms",
             "ollama",
             "openai",
+            "atlascloud",
             "openai-ollama",
             "azure_openai",
             "bedrock",
@@ -456,6 +461,8 @@ def parse_args() -> argparse.Namespace:
         OllamaLLMOptions.add_args(parser)
     elif llm_binding_value in ["openai", "azure_openai"]:
         OpenAILLMOptions.add_args(parser)
+    elif llm_binding_value == "atlascloud":
+        AtlasCloudLLMOptions.add_args(parser)
     elif llm_binding_value == "gemini":
         GeminiLLMOptions.add_args(parser)
     elif llm_binding_value == "bedrock":
@@ -521,6 +528,8 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_BINDING_HOST", get_default_host(args.embedding_binding)
     )
     args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
+    if args.llm_binding == "atlascloud" and not args.llm_binding_api_key:
+        args.llm_binding_api_key = get_env_value("ATLASCLOUD_API_KEY", None)
     args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
 
     args.aws_region = get_env_value("AWS_REGION", None, special_none=True)
@@ -532,6 +541,8 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
+    if args.llm_binding == "atlascloud" and not os.getenv("LLM_MODEL"):
+        args.llm_model = DEFAULT_ATLASCLOUD_MODEL
     # EMBEDDING_MODEL defaults to None - each binding will use its own default model
     # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
     args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
@@ -568,6 +579,8 @@ def parse_args() -> argparse.Namespace:
         role_model = get_env_value(model_key, None, special_none=True)
         role_host = get_env_value(host_key, None, special_none=True)
         role_apikey = get_env_value(apikey_key, None, special_none=True)
+        if role_binding == "atlascloud" and not role_apikey:
+            role_apikey = get_env_value("ATLASCLOUD_API_KEY", None, special_none=True)
         role_max_async = get_env_value(max_async_key, None, int, special_none=True)
         role_timeout = get_env_value(timeout_key, None, int, special_none=True)
         role_aws_region = get_env_value(f"{prefix}_AWS_REGION", None, special_none=True)
@@ -632,7 +645,7 @@ def parse_args() -> argparse.Namespace:
                 f"VLM_PROCESS_ENABLE=true but the effective VLM binding "
                 f"'{effective_vlm_binding}' does not support image inputs. "
                 "Configure VLM_LLM_BINDING (or LLM_BINDING) to one of: "
-                "openai, azure_openai, gemini, bedrock, ollama."
+                "openai, atlascloud, azure_openai, gemini, bedrock, ollama."
             )
 
     # Add environment variables that were previously read directly

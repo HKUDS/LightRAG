@@ -630,6 +630,13 @@ class OpenAILLMOptions(BindingOptions):
     }
 
 
+@dataclass
+class AtlasCloudLLMOptions(OpenAILLMOptions):
+    """Options for Atlas Cloud's OpenAI-compatible LLM API."""
+
+    _binding_name: ClassVar[str] = "atlascloud_llm"
+
+
 # =============================================================================
 # Binding Options for AWS Bedrock
 # =============================================================================
