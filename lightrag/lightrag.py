@@ -2730,6 +2730,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         custom_kg: dict[str, Any],
         full_doc_id: str = None,
     ) -> None:
+        """Insert caller-constructed KG objects directly into the stores.
+
+        .. warning:: (issue #3400 Phase 5 — direct-writer audit)
+           This path is OUTSIDE the document-level recovery guarantee. It has
+           no durable operation journal and does not prewrite
+           ``full_entities`` / ``full_relations`` recovery anchors, so a
+           crash or partial failure mid-call can leave graph/vector/tracking
+           contributions that per-document purge, retry, and scan rollback
+           cannot discover. Use the journaled ingestion paths (``ainsert`` /
+           ``ainsert_custom_chunks``) when crash recovery matters; the
+           offline ``lightrag.tools.kg_integrity_repair`` audit can
+           reconstruct anchors for data written here after the fact.
+        """
         # Direct KG write path — refuse on a fenced workspace (recovery_required)
         # like the other SDK mutations, before touching any storage.
         await self._raise_if_recovery_required()
