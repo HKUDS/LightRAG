@@ -544,6 +544,102 @@ def _perform_lock_cleanup(
         return 0, earliest_cleanup_time, last_cleanup_time
 
 
+# ============================================================================
+# Process identity and liveness helpers
+# ============================================================================
+
+_MY_START_ID_CACHE: Optional[str] = None
+_MY_START_ID_COMPUTED: bool = False
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness probe; errs on the side of 'alive'."""
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # PermissionError and friends: the process exists (or we cannot
+        # tell) — treat as alive so we never reclaim a live owner's lease.
+        return True
+    return True
+
+
+def _read_proc_starttime(pid: int) -> Optional[str]:
+    """Return a stable per-process start token (field 22 of ``/proc/<pid>/stat``)
+    used to detect PID reuse, or ``None`` when unavailable (non-Linux, the
+    process is gone, or the stat file is unreadable).
+
+    A live PID whose start time differs from a previously recorded token is a
+    DIFFERENT process that reused the PID. ``None`` means "cannot tell" — callers
+    must treat that as *not reused* so a live owner is never reclaimed.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+    except (FileNotFoundError, ProcessLookupError):
+        return None  # process is gone (liveness is decided by _pid_alive)
+    except OSError:
+        return None  # unreadable → unknown, make no reuse claim
+    try:
+        # comm (field 2) is wrapped in parentheses and may itself contain spaces
+        # or ')' — everything after the LAST ')' is the space-separated tail
+        # starting at field 3 (state). starttime is field 22 → tail index 19.
+        rparen = data.rindex(b")")
+        tail = data[rparen + 1 :].split()
+        return tail[19].decode("ascii")
+    except (ValueError, IndexError):
+        return None
+
+
+def _my_start_id() -> Optional[str]:
+    """This process's start token (see :func:`_read_proc_starttime`), computed
+    once and cached. ``None`` on non-Linux / when ``/proc`` is unavailable, in
+    which case PID-reuse detection is disabled (dead-only reclaim still works via
+    :func:`_pid_alive`)."""
+    global _MY_START_ID_CACHE, _MY_START_ID_COMPUTED
+    if not _MY_START_ID_COMPUTED:
+        _MY_START_ID_CACHE = _read_proc_starttime(os.getpid())
+        _MY_START_ID_COMPUTED = True
+    return _MY_START_ID_CACHE
+
+
+def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
+    """Dead-only liveness for lock / reservation owners.
+
+    Returns ``False`` ONLY when the owner is *confirmed* dead: the PID is gone,
+    or the PID is alive but its start time differs from ``start_id`` (PID reuse =
+    a different process now holds that PID). Every uncertainty — no recorded
+    identity, no permission to probe, non-Linux, unreadable ``/proc`` — is
+    treated as ALIVE, so a live (merely slow) owner is never reclaimed. Shared by
+    the keyed-lock and pipeline-reservation dead-owner reclaim layers.
+    """
+    if pid is None:
+        return True  # no owner identity recorded → cannot declare dead
+    if pid == os.getpid():
+        # Our own PID. Genuinely us only if the recorded start id matches ours:
+        # a record carrying our PID but a DIFFERENT start id was written by a
+        # dead predecessor whose PID the OS reused for us — that owner is dead,
+        # so we must NOT treat the lease as "still alive (me)" or it would never
+        # be reclaimed. If either start id is unknown (non-Linux / no /proc), we
+        # cannot confirm reuse and conservatively report alive.
+        mine = _my_start_id()
+        if start_id is not None and mine is not None and start_id != mine:
+            return False
+        return True
+    if not _pid_alive(pid):
+        return False
+    if start_id is not None:
+        current = _read_proc_starttime(pid)
+        if current is not None and current != start_id:
+            return False  # PID reused by a different process
+    return True
+
+
 def _keyed_lease_backoff(attempt: int) -> float:
     """Exponential backoff with jitter for the keyed-lock lease poll.
 
@@ -1616,83 +1712,6 @@ async def initialize_pipeline_status(workspace: str | None = None):
 # its state; see ``_reservation_recovery_enabled``).
 
 
-_MY_START_ID_CACHE: Optional[str] = None
-_MY_START_ID_COMPUTED: bool = False
-
-
-def _read_proc_starttime(pid: int) -> Optional[str]:
-    """Return a stable per-process start token (field 22 of ``/proc/<pid>/stat``)
-    used to detect PID reuse, or ``None`` when unavailable (non-Linux, the
-    process is gone, or the stat file is unreadable).
-
-    A live PID whose start time differs from a previously recorded token is a
-    DIFFERENT process that reused the PID. ``None`` means "cannot tell" — callers
-    must treat that as *not reused* so a live owner is never reclaimed.
-    """
-    if not sys.platform.startswith("linux"):
-        return None
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as fh:
-            data = fh.read()
-    except (FileNotFoundError, ProcessLookupError):
-        return None  # process is gone (liveness is decided by _pid_alive)
-    except OSError:
-        return None  # unreadable → unknown, make no reuse claim
-    try:
-        # comm (field 2) is wrapped in parentheses and may itself contain spaces
-        # or ')' — everything after the LAST ')' is the space-separated tail
-        # starting at field 3 (state). starttime is field 22 → tail index 19.
-        rparen = data.rindex(b")")
-        tail = data[rparen + 1 :].split()
-        return tail[19].decode("ascii")
-    except (ValueError, IndexError):
-        return None
-
-
-def _my_start_id() -> Optional[str]:
-    """This process's start token (see :func:`_read_proc_starttime`), computed
-    once and cached. ``None`` on non-Linux / when ``/proc`` is unavailable, in
-    which case PID-reuse detection is disabled (dead-only reclaim still works via
-    :func:`_pid_alive`)."""
-    global _MY_START_ID_CACHE, _MY_START_ID_COMPUTED
-    if not _MY_START_ID_COMPUTED:
-        _MY_START_ID_CACHE = _read_proc_starttime(os.getpid())
-        _MY_START_ID_COMPUTED = True
-    return _MY_START_ID_CACHE
-
-
-def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
-    """Dead-only liveness for lock / reservation owners.
-
-    Returns ``False`` ONLY when the owner is *confirmed* dead: the PID is gone,
-    or the PID is alive but its start time differs from ``start_id`` (PID reuse =
-    a different process now holds that PID). Every uncertainty — no recorded
-    identity, no permission to probe, non-Linux, unreadable ``/proc`` — is
-    treated as ALIVE, so a live (merely slow) owner is never reclaimed. Shared by
-    the keyed-lock and pipeline-reservation dead-owner reclaim layers.
-    """
-    if pid is None:
-        return True  # no owner identity recorded → cannot declare dead
-    if pid == os.getpid():
-        # Our own PID. Genuinely us only if the recorded start id matches ours:
-        # a record carrying our PID but a DIFFERENT start id was written by a
-        # dead predecessor whose PID the OS reused for us — that owner is dead,
-        # so we must NOT treat the lease as "still alive (me)" or it would never
-        # be reclaimed. If either start id is unknown (non-Linux / no /proc), we
-        # cannot confirm reuse and conservatively report alive.
-        mine = _my_start_id()
-        if start_id is not None and mine is not None and start_id != mine:
-            return False
-        return True
-    if not _pid_alive(pid):
-        return False
-    if start_id is not None:
-        current = _read_proc_starttime(pid)
-        if current is not None and current != start_id:
-            return False  # PID reused by a different process
-    return True
-
-
 # pipeline_status fields that are internal bookkeeping for reservation ownership
 # / dead-process recovery — never surfaced on the /pipeline_status response.
 _INTERNAL_PIPELINE_STATUS_FIELDS = (
@@ -2662,21 +2681,6 @@ def get_global_concurrency_limit(group: Optional[str]) -> Optional[int]:
     if not group or not _global_concurrency_limits:
         return None
     return _global_concurrency_limits.get(group)
-
-
-def _pid_alive(pid: int) -> bool:
-    """Best-effort liveness probe; errs on the side of 'alive'."""
-    if pid == os.getpid():
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        # PermissionError and friends: the process exists (or we cannot
-        # tell) — treat as alive so we never reclaim a live owner's lease.
-        return True
-    return True
 
 
 async def _get_lease_namespace() -> Dict[str, Any]:
