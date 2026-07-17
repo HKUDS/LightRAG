@@ -2203,8 +2203,7 @@ async def run_scanning_process(
                 )
             except Exception as rollback_error:
                 logger.error(
-                    "Scan-time custom-chunk rollback failed: "
-                    f"{rollback_error}"
+                    f"Scan-time custom-chunk rollback failed: {rollback_error}"
                 )
 
         new_files = doc_manager.scan_directory_for_new_files()

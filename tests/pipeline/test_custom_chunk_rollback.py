@@ -159,7 +159,9 @@ async def test_rollback_of_failed_create_removes_document(tmp_path, monkeypatch)
 
         assert await rag.doc_status.get_by_id("doc-9") is None
         assert await rag.full_docs.get_by_id("doc-9") is None
-        assert await rag.text_chunks.get_by_id(_chunk_id("doc-9", "alice is here")) is None
+        assert (
+            await rag.text_chunks.get_by_id(_chunk_id("doc-9", "alice is here")) is None
+        )
         assert await rag.full_entities.get_by_id("doc-9") is None
     finally:
         await rag.finalize_storages()
@@ -213,9 +215,7 @@ async def test_rollback_noop_without_journaled_documents(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sdk_resume_still_possible_before_scan_rolls_back(
-    tmp_path, monkeypatch
-):
+async def test_sdk_resume_still_possible_before_scan_rolls_back(tmp_path, monkeypatch):
     """Roll-forward stays the SDK caller's choice: if the same call resumes
     and commits before a scan runs, rollback then finds nothing to do."""
     rag = await _build_rag(tmp_path)

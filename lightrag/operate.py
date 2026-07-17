@@ -3159,7 +3159,9 @@ async def merge_nodes_and_edges(
         await full_relations_storage.upsert(
             {
                 doc_id: {
-                    "relation_pairs": [list(pair) for pair in sorted(candidate_relations)],
+                    "relation_pairs": [
+                        list(pair) for pair in sorted(candidate_relations)
+                    ],
                     "count": len(candidate_relations),
                 }
             }
@@ -3174,9 +3176,7 @@ async def merge_nodes_and_edges(
                 namespace = getattr(storage_inst, "final_namespace", None) or getattr(
                     storage_inst, "namespace", ""
                 )
-                raise IndexFlushError(
-                    type(storage_inst).__name__, namespace, e
-                ) from e
+                raise IndexFlushError(type(storage_inst).__name__, namespace, e) from e
 
     # Get max async tasks limit from global_config for semaphore control
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2

@@ -137,12 +137,17 @@ def _fail_once(monkeypatch, obj, attr: str, exc_message: str):
 # Injection points: (test id, callable(rag, monkeypatch) -> None) applied to
 # the FIRST instance before the failing run.
 def _inject_anchor_prewrite_flush(rag, monkeypatch):
-    _fail_once(monkeypatch, rag.full_entities, "index_done_callback", "anchor flush boom")
+    _fail_once(
+        monkeypatch, rag.full_entities, "index_done_callback", "anchor flush boom"
+    )
 
 
 def _inject_graph_mutation(rag, monkeypatch):
     _fail_once(
-        monkeypatch, rag.chunk_entity_relation_graph, "upsert_node", "graph mutation boom"
+        monkeypatch,
+        rag.chunk_entity_relation_graph,
+        "upsert_node",
+        "graph mutation boom",
     )
 
 
@@ -309,9 +314,7 @@ async def test_audit_tool_detects_and_repairs_missing_anchor(tmp_path):
 
     rag = await _build_rag(tmp_path, workspace)
     try:
-        await rag.apipeline_enqueue_documents(
-            input="audit doc", file_paths="audit.txt"
-        )
+        await rag.apipeline_enqueue_documents(input="audit doc", file_paths="audit.txt")
         await rag.apipeline_process_enqueue_documents()
 
         # Simulate a pre-#3400 installation: the anchor row is missing.

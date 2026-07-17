@@ -51,7 +51,9 @@ def _split_sources(record: dict[str, Any] | None) -> list[str]:
     return [chunk_id for chunk_id in raw.split(GRAPH_FIELD_SEP) if chunk_id]
 
 
-async def _map_chunks_to_docs(rag, chunk_ids: set[str], batch_size: int) -> dict[str, str]:
+async def _map_chunks_to_docs(
+    rag, chunk_ids: set[str], batch_size: int
+) -> dict[str, str]:
     """chunk_id -> full_doc_id for every resolvable chunk."""
     mapping: dict[str, str] = {}
     ordered = sorted(chunk_ids)
@@ -244,8 +246,7 @@ def main() -> None:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Union missing contributions into the anchor rows "
-        "(default: report only)",
+        help="Union missing contributions into the anchor rows (default: report only)",
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Print per-document details"

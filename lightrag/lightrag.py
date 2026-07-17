@@ -1831,8 +1831,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "relation_pairs": (existing_journal or {}).get(
                         "relation_pairs", []
                     ),
-                    "created_at": (existing_journal or {}).get("created_at")
-                    or now_iso,
+                    "created_at": (existing_journal or {}).get("created_at") or now_iso,
                     "updated_at": now_iso,
                 }
                 status_row = await self._upsert_custom_chunk_status(

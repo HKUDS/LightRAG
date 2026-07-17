@@ -217,7 +217,14 @@ async def test_strict_rebuild_raises_on_partially_missing_cache():
         }
     )
     llm_cache = _KV(
-        {"k1": {"cache_type": "extract", "chunk_id": "c1", "return": "r", "create_time": 1}}
+        {
+            "k1": {
+                "cache_type": "extract",
+                "chunk_id": "c1",
+                "return": "r",
+                "create_time": 1,
+            }
+        }
     )
     with pytest.raises(KGRebuildCacheMissingError):
         await rebuild_knowledge_from_chunks(
