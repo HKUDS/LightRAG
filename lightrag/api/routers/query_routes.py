@@ -823,30 +823,45 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             if include_progress:
                 progress_queue: asyncio.Queue = asyncio.Queue()
+                # Sentinel enqueued once the query task settles, so the generator
+                # can drain progress events with a blocking get() instead of
+                # polling task.done() on a 0.1s timeout (which could also drop an
+                # event whenever the timeout raced the get()).
+                done_sentinel = object()
 
                 async def progress_callback(event: str):
                     await progress_queue.put(event)
 
-                query_task = asyncio.create_task(
-                    rag.aquery_llm(
-                        request.query, param=param, progress_callback=progress_callback
-                    )
-                )
+                async def run_query():
+                    # Wrap aquery_llm so the sentinel is enqueued exactly once the
+                    # query settles — on success, error, or cancellation. The
+                    # finally runs after every progress event the callback awaited
+                    # inside aquery_llm, so the sentinel is always the last queue
+                    # item. put_nowait never blocks on the unbounded queue, which
+                    # keeps the finally safe even while a CancelledError propagates.
+                    try:
+                        return await rag.aquery_llm(
+                            request.query,
+                            param=param,
+                            progress_callback=progress_callback,
+                        )
+                    finally:
+                        progress_queue.put_nowait(done_sentinel)
+
+                query_task = asyncio.create_task(run_query())
 
                 include_references = request.include_references
                 include_chunk_content = request.include_chunk_content
 
                 async def merged_generator():
                     try:
-                        # Phase 1: drain progress events while the retrieval task runs.
-                        while not query_task.done():
-                            try:
-                                event = await asyncio.wait_for(
-                                    progress_queue.get(), timeout=0.1
-                                )
-                                yield f"{json.dumps({'progress': event})}\n"
-                            except asyncio.TimeoutError:
-                                await asyncio.sleep(0)
+                        # Drain progress events until the sentinel: a blocking get
+                        # with no polling, no timeout, and no dropped-item race.
+                        while True:
+                            event = await progress_queue.get()
+                            if event is done_sentinel:
+                                break
+                            yield f"{json.dumps({'progress': event})}\n"
 
                         # Surface any exception from the task (e.g. LLM service
                         # error). Since the StreamingResponse has already begun
@@ -864,13 +879,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             yield f"{json.dumps({'error': str(e)})}\n"
                             return
 
-                        # Phase 2: drain any remaining progress events that arrived
-                        # between the last poll and task completion.
-                        while not progress_queue.empty():
-                            event = progress_queue.get_nowait()
-                            yield f"{json.dumps({'progress': event})}\n"
-
-                        # Phase 3: yield references + LLM response chunks + response_time
+                        # Yield references + LLM response chunks + response_time.
                         stream_gen = _build_stream_generator(
                             result=result,
                             include_references=include_references,
