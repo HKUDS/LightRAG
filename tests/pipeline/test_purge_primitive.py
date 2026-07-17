@@ -44,6 +44,9 @@ class _KV:
         for k in ids:
             self.data.pop(k, None)
 
+    async def index_done_callback(self):
+        pass
+
 
 class _Vdb:
     def __init__(self):
@@ -51,6 +54,9 @@ class _Vdb:
 
     async def delete(self, ids):
         self.deleted.extend(ids)
+
+    async def index_done_callback(self):
+        pass
 
 
 class _Graph:
@@ -258,6 +264,119 @@ async def test_empty_chunk_ids_returns_without_touching_storage():
     assert graph.removed_nodes == []
     assert rag.chunks_vdb.deleted == []
     assert rag.full_entities.deleted == []
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_purge_deletes_chunks_only_after_graph_repair(monkeypatch):
+    """Safe destructive ordering (Phase 2): graph/vector/tracking cleanup is
+    flushed BEFORE the source chunks are deleted, and the recovery rows go
+    last — so a crash at any point leaves either the chunks or the anchors
+    (or both) for a retry."""
+    graph = _Graph(
+        nodes={"ALICE": _node("ALICE", ["c1"])},
+    )
+    rag = _make_rag(
+        graph=graph,
+        full_entities=_KV({"d1": {"entity_names": ["ALICE"], "count": 1}}),
+        full_relations=_KV({"d1": {"relation_pairs": [], "count": 0}}),
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
+    )
+    order: list[str] = []
+
+    orig_remove_nodes = graph.remove_nodes
+
+    async def spy_remove_nodes(names):
+        order.append("graph.remove_nodes")
+        await orig_remove_nodes(names)
+
+    graph.remove_nodes = spy_remove_nodes
+
+    async def spy_insert_done(*a, **k):
+        order.append("flush")
+
+    rag._insert_done = spy_insert_done
+
+    orig_chunk_delete = rag.chunks_vdb.delete
+
+    async def spy_chunk_delete(ids):
+        order.append("chunks.delete")
+        await orig_chunk_delete(ids)
+
+    monkeypatch.setattr(rag.chunks_vdb, "delete", spy_chunk_delete)
+
+    orig_fe_delete = rag.full_entities.delete
+
+    async def spy_fe_delete(ids):
+        order.append("anchors.delete")
+        await orig_fe_delete(ids)
+
+    monkeypatch.setattr(rag.full_entities, "delete", spy_fe_delete)
+
+    status, lock = _status()
+    await rag._purge_doc_chunks_and_kg(
+        "d1", ["c1"], pipeline_status=status, pipeline_status_lock=lock
+    )
+
+    assert order.index("graph.remove_nodes") < order.index("flush")
+    assert order.index("flush") < order.index("chunks.delete")
+    assert order.index("chunks.delete") < order.index("anchors.delete")
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_graph_delete_failure_keeps_chunks_and_anchors():
+    """A failure while repairing graph contributions must leave both the
+    chunks and the recovery rows untouched — fully retryable."""
+    graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1"])})
+
+    async def boom(names):
+        raise RuntimeError("graph delete boom")
+
+    graph.remove_nodes = boom
+    rag = _make_rag(
+        graph=graph,
+        full_entities=_KV({"d1": {"entity_names": ["ALICE"], "count": 1}}),
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
+    )
+    status, lock = _status()
+
+    with pytest.raises(Exception, match="Failed to delete entities"):
+        await rag._purge_doc_chunks_and_kg(
+            "d1", ["c1"], pipeline_status=status, pipeline_status_lock=lock
+        )
+
+    assert rag.chunks_vdb.deleted == []
+    assert rag.text_chunks.deleted == []
+    assert rag.full_entities.deleted == []
+    assert "d1" in rag.full_entities.data
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_chunk_delete_failure_keeps_recovery_rows(monkeypatch):
+    """A failure while deleting chunks must keep the recovery rows so the
+    purge can be repeated."""
+    graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1"])})
+    rag = _make_rag(
+        graph=graph,
+        full_entities=_KV({"d1": {"entity_names": ["ALICE"], "count": 1}}),
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
+    )
+
+    async def boom(ids):
+        raise RuntimeError("chunk delete boom")
+
+    monkeypatch.setattr(rag.chunks_vdb, "delete", boom)
+    status, lock = _status()
+
+    with pytest.raises(Exception, match="Failed to delete document chunks"):
+        await rag._purge_doc_chunks_and_kg(
+            "d1", ["c1"], pipeline_status=status, pipeline_status_lock=lock
+        )
+
+    assert rag.full_entities.deleted == []
+    assert "d1" in rag.full_entities.data
 
 
 @pytest.mark.offline

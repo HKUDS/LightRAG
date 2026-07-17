@@ -3041,24 +3041,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                ``source_id`` lists, then classifies it as either
                *delete-outright* (no remaining sources) or *rebuild*
                (still references chunks from other documents).
-            3. Deletes the chunks themselves from ``chunks_vdb`` and
-               ``text_chunks``.
-            4. For *delete-outright* entries: removes the relationship /
+            3. For *delete-outright* entries: removes the relationship /
                entity from the graph storage, vector storage, and chunk
-               tracking.
-            5. Calls :py:meth:`_insert_done` to persist graph changes
-               before rebuilding (so the rebuild step sees a consistent
-               state).
-            6. Calls :func:`rebuild_knowledge_from_chunks` to rebuild any
+               tracking, then persists via :py:meth:`_insert_done`.
+            4. Calls :func:`rebuild_knowledge_from_chunks` to rebuild any
                *rebuild* entries from their remaining chunks (so other
                documents that also contributed to the same entity /
-               relation keep their data intact). With ``strict_rebuild``,
-               missing extraction cache or a failed rebuild raises instead
-               of being logged (recovery must not silently succeed on
-               partial data).
-            7. Unless ``patch_only``: deletes the per-doc ``full_entities``
-               / ``full_relations`` index rows so subsequent re-extraction
-               starts fresh. A patch rollback must NOT drop the base
+               relation keep their data intact), then flushes the rebuilt
+               state. With ``strict_rebuild``, missing extraction cache or
+               a failed rebuild raises instead of being logged (recovery
+               must not silently succeed on partial data).
+            5. Only after every derived contribution is repaired/removed
+               and flushed: deletes the chunks themselves from
+               ``chunks_vdb`` and ``text_chunks`` and flushes them (safe
+               destructive ordering — graph objects never point at deleted
+               chunks).
+            6. Unless ``patch_only``: deletes the per-doc ``full_entities``
+               / ``full_relations`` index rows LAST and flushes, so every
+               intermediate failure keeps the recovery anchors and stays
+               retryable. A patch rollback must NOT drop the base
                document's recovery rows — the document keeps owning its
                previously committed contributions.
 
@@ -3297,22 +3298,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
             raise Exception(f"Failed to process graph dependencies: {e}") from e
 
-        # ---- 3. Delete chunks themselves ----
-        try:
-            await self.chunks_vdb.delete(chunk_ids)
-            await self.text_chunks.delete(chunk_ids)
-            async with pipeline_status_lock:
-                log_message = (
-                    f"[purge] {doc_id}: deleted {len(chunk_ids)} chunk(s) from storage"
-                )
-                logger.info(log_message)
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-        except Exception as e:
-            logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
-            raise Exception(f"Failed to delete document chunks: {e}") from e
-
-        # ---- 4. Delete relationships with no remaining sources ----
+        # ---- 3. Delete relationships with no remaining sources ----
         if relationships_to_delete:
             try:
                 rel_ids_to_delete = []
@@ -3347,7 +3333,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 raise Exception(f"Failed to delete relationships: {e}") from e
 
-        # ---- 5. Delete entities with no remaining sources ----
+        # ---- 4. Delete entities with no remaining sources ----
         if entities_to_delete:
             try:
                 nodes_edges_dict = (
@@ -3408,7 +3394,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(f"[purge] Failed to delete entities for {doc_id}: {e}")
                 raise Exception(f"Failed to delete entities: {e}") from e
 
-        # ---- 6. Persist pre-rebuild changes ----
+        # ---- 5. Persist pre-rebuild changes ----
         # Use plain _insert_done (no discard-on-failure): the pending buffer
         # here holds DELETES, which are not regenerable by reprocessing. On a
         # flush failure they must stay buffered for a later retry, not be
@@ -3419,7 +3405,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.error(f"[purge] Failed to persist pre-rebuild changes: {e}")
             raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
 
-        # ---- 7. Rebuild entities/relations that still have remaining sources ----
+        # ---- 6. Rebuild entities/relations that still have remaining sources ----
         if entities_to_rebuild or relationships_to_rebuild:
             try:
                 await rebuild_knowledge_from_chunks(
@@ -3441,13 +3427,46 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
                 raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
 
+            # Persist the rebuilt graph/vector/tracking state before the
+            # source chunks disappear — a crash after this flush leaves a
+            # fully repaired graph plus still-present chunks (retryable),
+            # never repaired-in-memory-only state.
+            try:
+                await self._insert_done()
+            except Exception as e:
+                logger.error(f"[purge] Failed to persist rebuilt knowledge: {e}")
+                raise Exception(f"Failed to persist rebuilt knowledge: {e}") from e
+
+        # ---- 7. Delete chunks themselves ----
+        # Deleted only AFTER every derived graph/vector/tracking contribution
+        # has been repaired or removed AND flushed (issue #3400: unsafe
+        # destructive ordering). A failure before this point leaves the
+        # chunks in place, so graph objects never reference deleted chunks.
+        try:
+            await self.chunks_vdb.delete(chunk_ids)
+            await self.text_chunks.delete(chunk_ids)
+            await self._flush_storages([self.chunks_vdb, self.text_chunks])
+            async with pipeline_status_lock:
+                log_message = (
+                    f"[purge] {doc_id}: deleted {len(chunk_ids)} chunk(s) from storage"
+                )
+                logger.info(log_message)
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+        except Exception as e:
+            logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
+            raise Exception(f"Failed to delete document chunks: {e}") from e
+
         # ---- 8. Delete per-doc full_entities / full_relations index rows ----
-        # Patch-only rollback keeps the base document's recovery rows: the
-        # document still owns its previously committed contributions.
+        # LAST, so every intermediate purge failure keeps the recovery
+        # anchors and stays retryable. Patch-only rollback keeps the base
+        # document's recovery rows: the document still owns its previously
+        # committed contributions.
         if not patch_only:
             try:
                 await self.full_entities.delete([doc_id])
                 await self.full_relations.delete([doc_id])
+                await self._flush_storages([self.full_entities, self.full_relations])
             except Exception as e:
                 logger.error(
                     f"[purge] Failed to delete full_entities/full_relations rows for {doc_id}: {e}"

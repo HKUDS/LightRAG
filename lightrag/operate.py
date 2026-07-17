@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
+    IndexFlushError,
     KGRebuildCacheMissingError,
     PipelineCancelledException,
 )
@@ -3067,12 +3068,16 @@ async def merge_nodes_and_edges(
     total_files: int = 0,
     file_path: str = "unknown_source",
 ) -> None:
-    """Two-phase merge: process all entities first, then all relationships
+    """Merge extracted entities/relations into the KG behind write-ahead anchors.
 
-    This approach ensures data consistency by:
+    Phase order (issue #3400 — discoverability before mutation):
+    0. Phase 0: Persist the full candidate superset to ``full_entities`` /
+       ``full_relations`` and flush both BEFORE any graph mutation, so a
+       crash mid-merge always leaves a durable recovery anchor that purge /
+       retry can discover the contributions from. Both rows are written even
+       when empty; a failure here aborts the merge before mutation.
     1. Phase 1: Process all entities concurrently
     2. Phase 2: Process all relationships concurrently (may add missing entities)
-    3. Phase 3: Update full_entities and full_relations storage with final results
 
     Args:
         chunk_results: List of tuples (maybe_nodes, maybe_edges) containing extracted entities and relationships
@@ -3122,6 +3127,56 @@ async def merge_nodes_and_edges(
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
+
+    # ===== Phase 0: write-ahead recovery indexes (issue #3400) =====
+    # Persist the candidate superset BEFORE any graph/vector/tracking
+    # mutation. Candidates are a superset, not proof of existence: purge
+    # verifies ownership per candidate and skips absent objects. Empty rows
+    # are written too — a reprocess that now yields fewer (or zero)
+    # candidates must overwrite the stale anchors of the previous attempt.
+    if full_entities_storage and full_relations_storage and doc_id:
+        candidate_entities, candidate_relations = collect_kg_merge_candidates(
+            chunk_results
+        )
+        log_message = (
+            f"Phase 0: Writing recovery indexes for {doc_id}: "
+            f"{len(candidate_entities)} candidate entities, "
+            f"{len(candidate_relations)} candidate relations"
+        )
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
+
+        await full_entities_storage.upsert(
+            {
+                doc_id: {
+                    "entity_names": sorted(candidate_entities),
+                    "count": len(candidate_entities),
+                }
+            }
+        )
+        await full_relations_storage.upsert(
+            {
+                doc_id: {
+                    "relation_pairs": [list(pair) for pair in sorted(candidate_relations)],
+                    "count": len(candidate_relations),
+                }
+            }
+        )
+        # Narrow flush barrier: both anchors must be durable before the first
+        # graph mutation. A failure propagates — merging without a recovery
+        # anchor would make a later partial failure undiscoverable.
+        for storage_inst in (full_entities_storage, full_relations_storage):
+            try:
+                await storage_inst.index_done_callback()
+            except Exception as e:
+                namespace = getattr(storage_inst, "final_namespace", None) or getattr(
+                    storage_inst, "namespace", ""
+                )
+                raise IndexFlushError(
+                    type(storage_inst).__name__, namespace, e
+                ) from e
 
     # Get max async tasks limit from global_config for semaphore control
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
@@ -3312,73 +3367,11 @@ async def merge_nodes_and_edges(
         )
         await asyncio.sleep(0)
 
-    # ===== Phase 3: Update full_entities and full_relations storage =====
-    if full_entities_storage and full_relations_storage and doc_id:
-        try:
-            # Merge all entities: original entities + entities added during edge processing
-            final_entity_names = set()
-
-            # Add original processed entities
-            for i, entity_data in enumerate(processed_entities, start=1):
-                if entity_data and entity_data.get("entity_name"):
-                    final_entity_names.add(entity_data["entity_name"])
-                await _cooperative_yield(i, every=32)
-
-            # Add entities that were added during relationship processing
-            for i, added_entity in enumerate(all_added_entities, start=1):
-                if added_entity and added_entity.get("entity_name"):
-                    final_entity_names.add(added_entity["entity_name"])
-                await _cooperative_yield(i, every=32)
-
-            # Collect all relation pairs
-            final_relation_pairs = set()
-            for i, edge_data in enumerate(processed_edges, start=1):
-                if edge_data:
-                    src_id = edge_data.get("src_id")
-                    tgt_id = edge_data.get("tgt_id")
-                    if src_id and tgt_id:
-                        relation_pair = tuple(sorted([src_id, tgt_id]))
-                        final_relation_pairs.add(relation_pair)
-                await _cooperative_yield(i, every=32)
-
-            log_message = f"Phase 3: Updating final {len(final_entity_names)}({len(processed_entities)}+{len(all_added_entities)}) entities and  {len(final_relation_pairs)} relations from {doc_id}"
-            logger.info(log_message)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-            # Update storage
-            if final_entity_names:
-                await full_entities_storage.upsert(
-                    {
-                        doc_id: {
-                            "entity_names": list(final_entity_names),
-                            "count": len(final_entity_names),
-                        }
-                    }
-                )
-
-            if final_relation_pairs:
-                await full_relations_storage.upsert(
-                    {
-                        doc_id: {
-                            "relation_pairs": [
-                                list(pair) for pair in final_relation_pairs
-                            ],
-                            "count": len(final_relation_pairs),
-                        }
-                    }
-                )
-
-            logger.debug(
-                f"Updated entity-relation index for document {doc_id}: {len(final_entity_names)} entities (original: {len(processed_entities)}, added: {len(all_added_entities)}), {len(final_relation_pairs)} relations"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"Failed to update entity-relation index for document {doc_id}: {e}"
-            )
-            # Don't raise exception to avoid affecting main flow
+    # NOTE: the recovery indexes are written (and flushed) in Phase 0, BEFORE
+    # graph mutation. The historical post-merge "Phase 3" write — which
+    # derived the rows from in-memory merge results and swallowed its own
+    # exceptions — is gone: a merge whose anchors cannot be persisted no
+    # longer mutates the graph at all (issue #3400).
 
     log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} extra entities, {len(processed_edges)} relations"
     logger.info(log_message)

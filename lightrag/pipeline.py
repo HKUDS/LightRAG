@@ -2816,6 +2816,22 @@ class _PipelineMixin:
                         ctx.pipeline_status, ctx.pipeline_status_lock
                     )
 
+                    # Flush ALL derived stores BEFORE the durable PROCESSED
+                    # write. doc_status backends persist immediately on
+                    # upsert, so writing PROCESSED first opens a crash window
+                    # where the status is durable but the graph/vector/chunk
+                    # data is not — a false PROCESSED that recovery can never
+                    # detect (issue #3400: status is the commit record).
+                    await self._insert_done()
+
+                    # A sibling document's flush error may have aborted the
+                    # batch while our flush ran; do not mark PROCESSED during
+                    # teardown — bail out so this document is FAILED and
+                    # retried on the next run.
+                    await self._raise_if_cancelled(
+                        ctx.pipeline_status, ctx.pipeline_status_lock
+                    )
+
                     process_end_time = int(time.time())
                     await self._upsert_doc_status_transition(
                         doc_id=doc_id,
@@ -2832,8 +2848,6 @@ class _PipelineMixin:
                             **extraction_meta,
                         },
                     )
-
-                    await self._insert_done()
 
                     async with ctx.pipeline_status_lock:
                         log_message = (
