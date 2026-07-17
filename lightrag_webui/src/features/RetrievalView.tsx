@@ -975,6 +975,11 @@ export default function RetrievalView() {
                             ? queryProgress
                             : null
                         }
+                        isQuerying={
+                          idx === messages.length - 1 &&
+                          message.role === 'assistant' &&
+                          isLoading
+                        }
                       />
                       {message.role === 'assistant' && (
                         <Button
