@@ -410,7 +410,17 @@
       "copyManualInstruction": "Vui lòng chọn và sao chép văn bản thủ công",
       "thinking": "Đang suy nghĩ...",
       "thinkingTime": "Thời gian suy nghĩ {{time}}s",
-      "thinkingInProgress": "Đang suy nghĩ..."
+      "thinkingInProgress": "Đang suy nghĩ...",
+      "responseTime": "Thời gian phản hồi {{time}}giây",
+      "firstTokenTime": "Token đầu {{time}}giây",
+      "progress": {
+        "extracting_keywords": "Đang trích xuất từ khóa...",
+        "retrieving_entities": "Đang truy xuất thực thể...",
+        "retrieving_relations": "Đang truy xuất quan hệ...",
+        "retrieving_chunks": "Đang truy xuất đoạn văn...",
+        "reranking": "Đang xếp hạng lại...",
+        "generating_response": "Đang tạo phản hồi..."
+      }
     },
     "retrieval": {
       "startPrompt": "Bắt đầu truy xuất bằng cách nhập truy vấn của bạn bên dưới",

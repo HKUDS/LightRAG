@@ -410,7 +410,17 @@
       "copyManualInstruction": "テキストを手動で選択してコピーしてください",
       "thinking": "思考中...",
       "thinkingTime": "思考時間 {{time}}秒",
-      "thinkingInProgress": "思考中..."
+      "thinkingInProgress": "思考中...",
+      "responseTime": "応答時間 {{time}}秒",
+      "firstTokenTime": "初回トークン {{time}}秒",
+      "progress": {
+        "extracting_keywords": "キーワードを抽出中...",
+        "retrieving_entities": "エンティティを検索中...",
+        "retrieving_relations": "関係を検索中...",
+        "retrieving_chunks": "テキストチャンクを検索中...",
+        "reranking": "再ランキング中...",
+        "generating_response": "応答を生成中..."
+      }
     },
     "retrieval": {
       "startPrompt": "下にクエリを入力して検索を開始",

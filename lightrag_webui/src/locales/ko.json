@@ -410,7 +410,17 @@
       "copyManualInstruction": "텍스트를 직접 선택하여 복사하세요",
       "thinking": "생각 중...",
       "thinkingTime": "생각 소요 시간 {{time}}초",
-      "thinkingInProgress": "생각 진행 중..."
+      "thinkingInProgress": "생각 진행 중...",
+      "responseTime": "응답 시간 {{time}}초",
+      "firstTokenTime": "첫 토큰 {{time}}초",
+      "progress": {
+        "extracting_keywords": "키워드 추출 중...",
+        "retrieving_entities": "엔티티 검색 중...",
+        "retrieving_relations": "관계 검색 중...",
+        "retrieving_chunks": "텍스트 청크 검색 중...",
+        "reranking": "재랭킹 중...",
+        "generating_response": "응답 생성 중..."
+      }
     },
     "retrieval": {
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",

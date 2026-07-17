@@ -410,7 +410,17 @@
       "copyManualInstruction": "Please select and copy the text manually",
       "thinking": "Thinking...",
       "thinkingTime": "Thinking time {{time}}s",
-      "thinkingInProgress": "Thinking in progress..."
+      "thinkingInProgress": "Thinking in progress...",
+      "responseTime": "Response time {{time}}s",
+      "firstTokenTime": "First token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Extracting keywords...",
+        "retrieving_entities": "Retrieving entities...",
+        "retrieving_relations": "Retrieving relations...",
+        "retrieving_chunks": "Retrieving text chunks...",
+        "reranking": "Reranking results...",
+        "generating_response": "Generating response..."
+      }
     },
     "retrieval": {
       "startPrompt": "Start a retrieval by typing your query below",

@@ -410,7 +410,17 @@
       "copyManualInstruction": "請手動選取並複製文字",
       "thinking": "正在思考...",
       "thinkingTime": "思考用時 {{time}} 秒",
-      "thinkingInProgress": "思考進行中..."
+      "thinkingInProgress": "思考進行中...",
+      "responseTime": "回應時間 {{time}}秒",
+      "firstTokenTime": "首字 {{time}}秒",
+      "progress": {
+        "extracting_keywords": "提取關鍵詞...",
+        "retrieving_entities": "檢索實體...",
+        "retrieving_relations": "檢索關係...",
+        "retrieving_chunks": "檢索文本塊...",
+        "reranking": "重排序結果...",
+        "generating_response": "生成回覆..."
+      }
     },
     "retrieval": {
       "startPrompt": "輸入查詢開始檢索",

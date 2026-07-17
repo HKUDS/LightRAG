@@ -410,7 +410,17 @@
       "copyManualInstruction": "请手动选择并复制文本",
       "thinking": "正在思考...",
       "thinkingTime": "思考用时 {{time}} 秒",
-      "thinkingInProgress": "思考进行中..."
+      "thinkingInProgress": "思考进行中...",
+      "responseTime": "响应时间 {{time}}秒",
+      "firstTokenTime": "首字 {{time}}秒",
+      "progress": {
+        "extracting_keywords": "提取关键词...",
+        "retrieving_entities": "检索实体...",
+        "retrieving_relations": "检索关系...",
+        "retrieving_chunks": "检索文本块...",
+        "reranking": "重排序结果...",
+        "generating_response": "生成回复..."
+      }
     },
     "retrieval": {
       "startPrompt": "输入查询开始检索",

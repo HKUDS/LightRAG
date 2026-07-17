@@ -410,7 +410,17 @@
       "copyManualInstruction": "يرجى تحديد ونسخ النص يدوياً",
       "thinking": "جاري التفكير...",
       "thinkingTime": "وقت التفكير {{time}} ثانية",
-      "thinkingInProgress": "التفكير قيد التقدم..."
+      "thinkingInProgress": "التفكير قيد التقدم...",
+      "responseTime": "زمن الاستجابة {{time}}ث",
+      "firstTokenTime": "أول رمز {{time}}ث",
+      "progress": {
+        "extracting_keywords": "استخراج الكلمات المفتاحية...",
+        "retrieving_entities": "استرجاع الكيانات...",
+        "retrieving_relations": "استرجاع العلاقات...",
+        "retrieving_chunks": "استرجاع أجزاء النص...",
+        "reranking": "إعادة ترتيب النتائج...",
+        "generating_response": "توليد الرد..."
+      }
     },
     "retrieval": {
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
