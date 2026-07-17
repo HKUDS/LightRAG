@@ -377,9 +377,17 @@ def test_carry_over_keys_grouped_by_stage():
         "parse_stage_skipped",
         "parse_format",
         "parse_engine",
+        # Parse-stage LLM cache keys (docx smart_heading) — parse-stage
+        # group so document deletion can purge them at any later status.
+        "smartheading_llm_cache_ids",
         "analyzing_start_time",
         "analyzing_end_time",
         "analyzing_stage_skipped",
+        # Custom-chunk patch journal (issue #3400 Phase 3): the durable
+        # recovery anchor for an in-flight/failed ainsert_custom_chunks
+        # operation; must survive every status transition until commit or
+        # rollback.
+        "custom_chunk_patch",
     )
 
 
@@ -1177,6 +1185,260 @@ def test_enqueue_during_busy_sets_request_pending(tmp_path):
                 track_id="track-idle",
             )
             assert pipeline_status.get("request_pending") is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_status_upsert_failure_still_nudges_busy_loop(tmp_path, monkeypatch):
+    """A DocStatus bulk upsert can partially commit PENDING rows before
+    surfacing item-level failures. If the pipeline is already busy, enqueue
+    must still set request_pending before re-raising so committed rows are
+    picked up by the running loop.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = True
+                pipeline_status["request_pending"] = False
+
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            async def _unexpected_process():
+                raise AssertionError("busy enqueue should nudge, not start processing")
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _unexpected_process
+            )
+            try:
+                with pytest.raises(RuntimeError, match="partial doc-status"):
+                    await rag.apipeline_enqueue_documents(
+                        "partial busy",
+                        file_paths="partial-busy.txt",
+                        track_id="track-partial-busy",
+                    )
+                assert pipeline_status.get("request_pending") is True
+            finally:
+                async with pipeline_status_lock:
+                    pipeline_status["busy"] = False
+                    pipeline_status["request_pending"] = False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_status_upsert_failure_starts_idle_processing(tmp_path, monkeypatch):
+    """If a partial DocStatus upsert fails while the pipeline is idle, the
+    caller will not reach its normal process_enqueue call. Enqueue therefore
+    starts processing best-effort before re-raising the storage error.
+    """
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            process_called = False
+
+            async def _record_process():
+                nonlocal process_called
+                process_called = True
+                pending_docs = await rag.doc_status.get_docs_by_statuses(
+                    [DocStatus.PENDING]
+                )
+                assert pending_docs
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _record_process
+            )
+
+            with pytest.raises(RuntimeError, match="partial doc-status"):
+                await rag.apipeline_enqueue_documents(
+                    "partial idle",
+                    file_paths="partial-idle.txt",
+                    track_id="track-partial-idle",
+                )
+            assert process_called is True
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_status_upsert_failure_survives_wake_failure(
+    tmp_path, monkeypatch, caplog
+):
+    """The best-effort wake after a DocStatus upsert error is defensive: if
+    ``apipeline_process_enqueue_documents`` itself raises, enqueue must still
+    surface the ORIGINAL storage error (never swallow it behind the wake
+    failure) and log a warning about the failed wake.
+    """
+    import logging
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            original_upsert = rag.doc_status.upsert
+
+            async def _partial_upsert_then_raise(data):
+                await original_upsert(data)
+                raise RuntimeError("partial doc-status bulk failure")
+
+            async def _failing_process():
+                raise RuntimeError("wake boom")
+
+            monkeypatch.setattr(rag.doc_status, "upsert", _partial_upsert_then_raise)
+            monkeypatch.setattr(
+                rag, "apipeline_process_enqueue_documents", _failing_process
+            )
+
+            # The "lightrag" logger sets propagate=False, so caplog (a root
+            # handler) cannot see its records unless we re-enable propagation
+            # for the duration of the test (monkeypatch auto-reverts it).
+            monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
+            with caplog.at_level(logging.WARNING):
+                with pytest.raises(RuntimeError, match="partial doc-status"):
+                    await rag.apipeline_enqueue_documents(
+                        "wake failure",
+                        file_paths="wake-failure.txt",
+                        track_id="track-wake-failure",
+                    )
+            assert "Failed to start document processing" in caplog.text
+            assert "wake boom" in caplog.text
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_process_enqueue_holding_busy_releases_when_no_docs(tmp_path):
+    """apipeline_process_enqueue_documents(_holding_busy=True) takes over an
+    already-held busy slot instead of treating busy=True as "someone else is
+    running", and releases it when there is nothing to process. This is the
+    handoff ainsert_custom_chunks uses to drain a request_pending atomically; it
+    must never leave the pipeline wedged as busy on the empty path.
+    """
+
+    async def _run():
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            handoff_token = "handoff-token"
+            async with lock:
+                # Simulate a handed-off slot: busy held under the caller's token.
+                pipeline_status.update({"busy": True, "busy_owner": handoff_token})
+
+            # No pending docs in a fresh rag: the handoff must release the slot.
+            await rag.apipeline_process_enqueue_documents(
+                _holding_busy=True, token=handoff_token
+            )
+            assert pipeline_status.get("busy") is False
+            assert pipeline_status.get("busy_owner") is None
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_finalize_does_not_clobber_new_owner_bookkeeping(tmp_path):
+    """Regression (#3408 Codex P2): the loop's finally finalize is owner-checked
+    for BOOKKEEPING too, not just the busy release. If a new owner has taken the
+    slot (and requested a cancel for its own job) before the finalize task
+    acquires the lock, the finalize must NOT clear that owner's cancellation
+    flags or overwrite its latest_message.
+    """
+
+    async def _run():
+        import lightrag.pipeline as pipeline_mod
+        from unittest import mock
+
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+        )
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            token = "holder-token"
+            async with lock:
+                # A handed-off slot owned by this run (no docs to process).
+                pipeline_status.update({"busy": True, "busy_owner": token})
+
+            real_rtc = pipeline_mod.run_to_completion
+
+            async def _inject(factory):
+                # Simulate a NEW owner grabbing the slot and requesting a cancel
+                # for its own job, in the window before the finalize task runs.
+                async with get_namespace_lock(
+                    "pipeline_status", workspace=rag.workspace
+                ):
+                    pipeline_status.update(
+                        {
+                            "busy": True,
+                            "busy_owner": "new-owner",
+                            "cancellation_requested": True,
+                            "latest_message": "new job running",
+                        }
+                    )
+                return await real_rtc(factory)
+
+            with mock.patch.object(pipeline_mod, "run_to_completion", _inject):
+                await rag.apipeline_process_enqueue_documents(
+                    _holding_busy=True, token=token
+                )
+
+            # The new owner's cancellation + message must survive untouched.
+            assert pipeline_status.get("cancellation_requested") is True
+            assert pipeline_status.get("busy_owner") == "new-owner"
+            assert pipeline_status.get("latest_message") == "new job running"
         finally:
             await rag.finalize_storages()
 

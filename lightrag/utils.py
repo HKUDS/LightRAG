@@ -5,6 +5,7 @@ import sys
 
 import asyncio
 import bisect
+import contextvars
 import html
 import csv
 import inspect
@@ -1243,6 +1244,7 @@ def priority_limit_async_func_call(
                                 task_id,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
@@ -1270,13 +1272,25 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute function with timeout protection
+                            # Execute the call under the enqueuer's captured
+                            # context, not the worker's creation-time context
+                            # (asyncio.Task snapshots contextvars once, at
+                            # create_task() time, and this worker task is
+                            # long-lived — reused across many unrelated
+                            # calls). ctx.run(asyncio.ensure_future, ...)
+                            # schedules the coroutine as a fresh Task whose
+                            # own context is copied from ctx (works on
+                            # Python 3.10, unlike create_task's context=
+                            # kwarg which needs 3.11+).
+                            exec_task = ctx.run(
+                                asyncio.ensure_future, func(*args, **kwargs)
+                            )
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs), timeout=max_execution_timeout
+                                    exec_task, timeout=max_execution_timeout
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                result = await exec_task
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1414,7 +1428,12 @@ def priority_limit_async_func_call(
                                     # compaction holds them): return the
                                     # slot immediately.
                                     break
-                                task_id, args, kwargs = item[2], item[3], item[4]
+                                task_id, args, kwargs, ctx = (
+                                    item[2],
+                                    item[3],
+                                    item[4],
+                                    item[5],
+                                )
                                 is_zombie = False
                                 async with task_states_lock:
                                     task_state = task_states.get(task_id)
@@ -1442,6 +1461,7 @@ def priority_limit_async_func_call(
                                             task_state,
                                             args,
                                             kwargs,
+                                            ctx,
                                         )
                                 if is_zombie:
                                     # Never call the provider for a zombie.
@@ -1494,6 +1514,7 @@ def priority_limit_async_func_call(
                                 task_state,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(
                                 dispatch_queue.get(), timeout=1.0
                             )
@@ -1511,13 +1532,19 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
+                            # Run under the enqueuer's captured context, not
+                            # this long-lived worker's creation-time context
+                            # — see the matching comment in worker().
+                            exec_task = ctx.run(
+                                asyncio.ensure_future, func(*args, **kwargs)
+                            )
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs),
+                                    exec_task,
                                     timeout=max_execution_timeout,
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                result = await exec_task
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -1891,6 +1918,7 @@ def priority_limit_async_func_call(
                         task_state,
                         _args,
                         _kwargs,
+                        _ctx,
                     ) = dispatch_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
@@ -2010,9 +2038,16 @@ def priority_limit_async_func_call(
                     current_count = counter
                     counter += 1
 
+                # Capture the enqueuer's context (e.g. an active OpenTelemetry
+                # span) so the worker executes func() under it instead of the
+                # long-lived worker task's own creation-time context. It rides
+                # as the 6th tuple element; keep the unpack sites in sync
+                # (worker / slot_pump / limited_worker / shutdown drain).
+                ctx = contextvars.copy_context()
+
                 # Unbounded physical queue: put_nowait never blocks, and the
                 # (priority, count, ...) tuple keeps heap ordering intact.
-                queue.put_nowait((_priority, current_count, task_id, args, kwargs))
+                queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
                 work_available.set()
                 await _publish_stats()
@@ -2139,6 +2174,14 @@ def priority_limit_async_func_call(
                     current_count = counter
                     counter += 1
 
+                # Capture the enqueuer's context (e.g. an active
+                # OpenTelemetry span) so the worker executes func() under
+                # it instead of the long-lived worker task's own
+                # creation-time context. It rides as the 6th tuple element;
+                # keep the unpack sites in sync (worker / slot_pump /
+                # limited_worker / shutdown drain).
+                ctx = contextvars.copy_context()
+
                 # Queue the task with timeout handling
                 try:
                     if not accepting_new_tasks:
@@ -2147,13 +2190,13 @@ def priority_limit_async_func_call(
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
-                                (_priority, current_count, task_id, args, kwargs)
+                                (_priority, current_count, task_id, args, kwargs, ctx)
                             ),
                             timeout=_queue_timeout,
                         )
                     else:
                         await queue.put(
-                            (_priority, current_count, task_id, args, kwargs)
+                            (_priority, current_count, task_id, args, kwargs, ctx)
                         )
                     submitted_total += 1
                     await _publish_stats()
@@ -3005,6 +3048,94 @@ async def _cooperative_yield(iteration: int, every: int = 64) -> None:
     """
     if iteration > 0 and iteration % every == 0:
         await asyncio.sleep(0)
+
+
+async def wait_tasks_with_drain(
+    tasks: list[asyncio.Task],
+    *,
+    context: str = "",
+    task_labels: dict[asyncio.Task, str] | None = None,
+) -> list[Any]:
+    """Await *tasks*, guaranteeing none is left running when this returns/raises.
+
+    Concurrent multi-store writers (entity/relation merge, rebuild) must never
+    leave a sibling task writing in the background after a failure — a failed
+    ``gather``/``wait`` does not by itself imply the other write tasks stopped
+    (issue #3400, "incomplete async failure coordination").
+
+    Behavior:
+      - All tasks succeed: returns their results (completion order).
+      - Any task fails: cancels every still-pending sibling, awaits (drains)
+        them ALL so no background write survives, logs every additional
+        exception, then re-raises the FIRST exception observed.
+      - This coroutine itself is cancelled: cancels and drains all tasks
+        before propagating ``CancelledError``.
+
+    Args:
+        tasks: ``asyncio.Task`` objects (already scheduled).
+        context: Optional short label used in log messages.
+        task_labels: Optional per-task display labels for pending-task logging.
+    """
+    if not tasks:
+        return []
+
+    ctx = f" [{context}]" if context else ""
+    results: list[Any] = []
+    first_exception: BaseException | None = None
+
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+        for i, task in enumerate(done, start=1):
+            try:
+                results.append(task.result())
+            except BaseException as e:
+                if first_exception is None:
+                    first_exception = e
+                elif not isinstance(e, asyncio.CancelledError):
+                    logger.error(f"Additional task failure{ctx}: {e}")
+            # NOTE: an await point — external cancellation delivered here is
+            # handled by the enclosing except so still-pending siblings never
+            # keep writing in the background.
+            await _cooperative_yield(i, every=32)
+
+        if pending:
+            if task_labels:
+                pending_labels = [
+                    task_labels.get(task, "<unknown>") for task in pending
+                ]
+                preview = ", ".join(pending_labels[:10])
+                if len(pending_labels) > 10:
+                    preview += f", ... (+{len(pending_labels) - 10} more)"
+                logger.warning(f"Draining pending tasks{ctx}: {preview or '<none>'}")
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                    elif not isinstance(result, asyncio.CancelledError):
+                        logger.error(f"Additional task failure{ctx}: {result}")
+                else:
+                    results.append(result)
+    except asyncio.CancelledError:
+        # External cancellation of THIS waiter, delivered at ANY await point
+        # above — asyncio.wait itself, a cooperative yield while collecting
+        # done results (with siblings still pending after FIRST_EXCEPTION),
+        # or the drain gather. Cancel and drain everything before
+        # propagating so no task keeps writing in the background. Per-task
+        # CancelledError stored in a task's own result is caught by the
+        # inner handler and does NOT take this path.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    if first_exception is not None:
+        raise first_exception
+
+    return results
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
