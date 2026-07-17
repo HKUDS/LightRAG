@@ -1132,8 +1132,6 @@ class _PipelineMixin:
                             == "internal_error"
                         )
                         label = self._cancellation_label(pipeline_status)
-                        pipeline_status["request_pending"] = False
-                        pipeline_status["cancellation_requested"] = False
 
                         if is_internal:
                             # Unrecoverable storage error: halting is intentional
@@ -1147,10 +1145,16 @@ class _PipelineMixin:
                         else:
                             log_message = f"Pipeline cancelled ({label})"
                             logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
+                        pipeline_status.update(
+                            {
+                                "request_pending": False,
+                                "cancellation_requested": False,
+                                "cancellation_reason": None,
+                                "cancellation_detail": None,
+                                "latest_message": log_message,
+                            }
+                        )
                         pipeline_status["history_messages"].append(log_message)
-                        pipeline_status["cancellation_reason"] = None
-                        pipeline_status["cancellation_detail"] = None
 
                         # Exit directly, skipping request_pending check
                         return
@@ -1194,10 +1198,14 @@ class _PipelineMixin:
 
                 log_message = f"Processing {len(to_process_docs)} document(s)"
                 logger.info(log_message)
-                pipeline_status["docs"] = len(to_process_docs)
-                pipeline_status["batchs"] = len(to_process_docs)
-                pipeline_status["cur_batch"] = 0
-                pipeline_status["latest_message"] = log_message
+                pipeline_status.update(
+                    {
+                        "docs": len(to_process_docs),
+                        "batchs": len(to_process_docs),
+                        "cur_batch": 0,
+                        "latest_message": log_message,
+                    }
+                )
                 pipeline_status["history_messages"].append(log_message)
 
                 await self._run_pipeline_batch(
@@ -2265,10 +2273,14 @@ class _PipelineMixin:
                 logger.error(f"Unhandled error in process worker; aborting batch: {e}")
                 logger.error(traceback.format_exc())
                 async with ctx.pipeline_status_lock:
-                    ctx.pipeline_status["cancellation_requested"] = True
-                    ctx.pipeline_status["cancellation_reason"] = "internal_error"
-                    ctx.pipeline_status["cancellation_detail"] = (
-                        f"process worker unhandled error: {e}"
+                    ctx.pipeline_status.update(
+                        {
+                            "cancellation_requested": True,
+                            "cancellation_reason": "internal_error",
+                            "cancellation_detail": (
+                                f"process worker unhandled error: {e}"
+                            ),
+                        }
                     )
             finally:
                 ctx.q_process.task_done()
@@ -2335,18 +2347,22 @@ class _PipelineMixin:
                 async with ctx.pipeline_status_lock:
                     ctx.processed_count += 1
                     current_file_number = ctx.processed_count
-                    ctx.pipeline_status["cur_batch"] = ctx.processed_count
 
-                    log_message = (
+                    extraction_message = (
                         f"Extracting stage {current_file_number}/"
                         f"{ctx.total_files}: {file_path}"
                     )
-                    logger.info(log_message)
-                    ctx.pipeline_status["history_messages"].append(log_message)
-                    log_message = f"Processing d-id: {doc_id}"
-                    logger.info(log_message)
-                    ctx.pipeline_status["latest_message"] = log_message
-                    ctx.pipeline_status["history_messages"].append(log_message)
+                    logger.info(extraction_message)
+                    processing_message = f"Processing d-id: {doc_id}"
+                    logger.info(processing_message)
+                    ctx.pipeline_status.update(
+                        {
+                            "cur_batch": ctx.processed_count,
+                            "latest_message": processing_message,
+                        }
+                    )
+                    ctx.pipeline_status["history_messages"].append(extraction_message)
+                    ctx.pipeline_status["history_messages"].append(processing_message)
 
                     # Prevent memory growth: keep only latest 5000 messages
                     # when exceeding 10000.  Trim in place so Manager.list-
@@ -2895,12 +2911,15 @@ class _PipelineMixin:
                     # and root cause so it is distinguishable from a user cancel.
                     if isinstance(e, IndexFlushError):
                         async with ctx.pipeline_status_lock:
-                            ctx.pipeline_status["cancellation_requested"] = True
-                            ctx.pipeline_status["cancellation_reason"] = (
-                                "internal_error"
-                            )
-                            ctx.pipeline_status["cancellation_detail"] = (
-                                f"{e.storage_name}[{e.namespace}]: {e.__cause__}"
+                            ctx.pipeline_status.update(
+                                {
+                                    "cancellation_requested": True,
+                                    "cancellation_reason": "internal_error",
+                                    "cancellation_detail": (
+                                        f"{e.storage_name}[{e.namespace}]: "
+                                        f"{e.__cause__}"
+                                    ),
+                                }
                             )
                         logger.error(
                             f"Aborting pipeline batch due to storage flush error: {e}"

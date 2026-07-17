@@ -5268,16 +5268,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Owner-checked release (+ cancellation reset + completion log),
                 # applied atomically. Runs via with_reservation_lock so it is
                 # cancellation-resistant and cannot clobber a later holder.
+                completion_msg = f"Deletion process completed for document: {doc_id}"
                 status.update(
                     {
                         "busy": False,
                         "busy_owner": None,
                         "operation_record": None,
                         "cancellation_requested": False,
+                        "latest_message": completion_msg,
                     }
                 )
-                completion_msg = f"Deletion process completed for document: {doc_id}"
-                status["latest_message"] = completion_msg
                 status["history_messages"].append(completion_msg)
                 logger.info(completion_msg)
 
