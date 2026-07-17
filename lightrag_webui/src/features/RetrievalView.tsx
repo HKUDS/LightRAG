@@ -139,11 +139,28 @@ export default function RetrievalView() {
   })
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  // Current retrieval pipeline step (e.g. "extracting_keywords") — shown to
+  // the user while the query is in flight so they see live progress.
+  const [queryProgress, setQueryProgress] = useState<string | null>(null)
   // Briefly disable the Stop button right after a query starts so a fast
   // double-click on Send (which morphs into Stop at the same position) can't
   // accidentally abort the query it just launched.
   const [stopDisabled, setStopDisabled] = useState(false)
   const stopCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Live response timer: ticks every 100ms while a query is in flight so the
+  // user sees a running stopwatch. Cleared (and finalized) in the handleSubmit
+  // finally block / handleStop.
+  const responseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const responseStartRef = useRef<number | null>(null)
+  // Authoritative server-side duration returned by the backend. When present,
+  // this overrides the client-side stopwatch estimate for the final display.
+  const serverResponseTimeRef = useRef<number | null>(null)
+  // Tracks whether the time-to-first-token has already been recorded for the
+  // current query so we only stamp it on the very first chunk.
+  const firstTokenRecordedRef = useRef(false)
+  // Tracks whether the current query uses streaming — TTFT is only meaningful
+  // for streaming responses (non-streaming returns the full response at once).
+  const isStreamingRef = useRef(false)
   const [inputError, setInputError] = useState('') // Error message for input
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
@@ -275,8 +292,51 @@ export default function RetrievalView() {
         }
       }
 
+      // Read query settings up front — needed by both the timer setup and
+      // the query dispatch below. Reading here avoids a temporal-dead-zone
+      // reference and ensures a single consistent snapshot for this submit.
+      const state = useSettingsStore.getState()
+
+      // Start the live response timer — ticks every 100ms, stamping the
+      // elapsed seconds onto the assistant message so the UI shows a running
+      // stopwatch. Cleared in the finally block below.
+      responseStartRef.current = Date.now()
+      serverResponseTimeRef.current = null
+      firstTokenRecordedRef.current = false
+      isStreamingRef.current = state.querySettings.stream ?? false
+      assistantMessage.responseTime = 0
+      assistantMessage.firstTokenTime = null
+      if (responseTimerRef.current) clearInterval(responseTimerRef.current)
+      responseTimerRef.current = setInterval(() => {
+        const elapsed = (Date.now() - (responseStartRef.current ?? Date.now())) / 1000
+        const rounded = parseFloat(elapsed.toFixed(1))
+        assistantMessage.responseTime = rounded
+        setMessages((prev) => {
+          const newMessages = [...prev]
+          const lastMessage = newMessages[newMessages.length - 1]
+          if (lastMessage && lastMessage.id === assistantMessage.id) {
+            lastMessage.responseTime = rounded
+          }
+          return newMessages
+        })
+      }, 100)
+
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
+        // Record time-to-first-token on the very first content chunk.
+        // Only meaningful for streaming — non-streaming returns the full
+        // response at once, so there is no "first token" to measure.
+        if (
+          !isError &&
+          !firstTokenRecordedRef.current &&
+          isStreamingRef.current &&
+          responseStartRef.current &&
+          chunk
+        ) {
+          firstTokenRecordedRef.current = true
+          const ttft = (Date.now() - responseStartRef.current) / 1000
+          assistantMessage.firstTokenTime = parseFloat(ttft.toFixed(1))
+        }
         assistantMessage.content += chunk
 
         // Start thinking timer on first sight of think tag
@@ -340,7 +400,9 @@ export default function RetrievalView() {
               isError: isError,
               mermaidRendered: assistantMessage.mermaidRendered,
               latexRendered: assistantMessage.latexRendered,
-              thinkingTime: assistantMessage.thinkingTime
+              thinkingTime: assistantMessage.thinkingTime,
+              responseTime: assistantMessage.responseTime,
+              firstTokenTime: assistantMessage.firstTokenTime
             })
           }
           return newMessages
@@ -355,8 +417,7 @@ export default function RetrievalView() {
         }
       }
 
-      // Prepare query parameters
-      const state = useSettingsStore.getState()
+      // state was already read above (before timer setup)
 
       // Add user prompt to history if it exists and is not empty
       if (state.querySettings.user_prompt && state.querySettings.user_prompt.trim()) {
@@ -376,6 +437,8 @@ export default function RetrievalView() {
         ...state.querySettings,
         query: actualQuery,
         response_type: 'Multiple Paragraphs',
+        // Request retrieval progress events for the live progress display.
+        include_progress: true,
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
@@ -389,9 +452,23 @@ export default function RetrievalView() {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          }, controller.signal)
+          await queryTextStream(
+            queryParams,
+            updateAssistantMessage,
+            (error) => {
+              errorMessage += error
+            },
+            controller.signal,
+            // Capture the authoritative server-side duration (emitted as the
+            // final NDJSON metadata line). The finally block uses this to
+            // override the client-side stopwatch estimate.
+            (seconds) => {
+              serverResponseTimeRef.current = seconds
+            },
+            (event) => {
+              setQueryProgress(event)
+            }
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -400,6 +477,9 @@ export default function RetrievalView() {
           }
         } else {
           const response = await queryText(queryParams, controller.signal)
+          if (typeof response.response_time === 'number') {
+            serverResponseTimeRef.current = response.response_time
+          }
           updateAssistantMessage(response.response)
         }
       } catch (err) {
@@ -418,8 +498,37 @@ export default function RetrievalView() {
         if (abortControllerRef.current === controller) {
           // Clear loading and add messages to state
           setIsLoading(false)
+          setQueryProgress(null)
           isReceivingResponseRef.current = false
           abortControllerRef.current = null
+
+          // Stop the live response timer and stamp the final duration onto
+          // the assistant message (persisted in chat history). Prefer the
+          // authoritative server-side time when available; fall back to the
+          // client-side stopwatch estimate otherwise.
+          if (responseTimerRef.current) {
+            clearInterval(responseTimerRef.current)
+            responseTimerRef.current = null
+          }
+          const authoritativeTime = serverResponseTimeRef.current
+          if (authoritativeTime !== null) {
+            assistantMessage.responseTime = authoritativeTime
+          } else if (responseStartRef.current) {
+            const finalElapsed = (Date.now() - responseStartRef.current) / 1000
+            assistantMessage.responseTime = parseFloat(finalElapsed.toFixed(1))
+          }
+          responseStartRef.current = null
+          serverResponseTimeRef.current = null
+          firstTokenRecordedRef.current = false
+          // Sync the finalized time into the rendered message
+          setMessages((prev) => {
+            const newMessages = [...prev]
+            const lastMessage = newMessages[newMessages.length - 1]
+            if (lastMessage && lastMessage.id === assistantMessage.id) {
+              lastMessage.responseTime = assistantMessage.responseTime
+            }
+            return newMessages
+          })
 
           // Enhanced cleanup with error handling to prevent memory leaks
           try {
@@ -566,15 +675,32 @@ export default function RetrievalView() {
   useEffect(() => {
     // Component cleanup - reset timer state to prevent memory leaks
     return () => {
+      // Relinquish ownership before aborting so the request's deferred
+      // `finally` cannot update state after this component has unmounted.
+      const controller = abortControllerRef.current
+      abortControllerRef.current = null
+      controller?.abort()
+
+      if (responseTimerRef.current) {
+        clearInterval(responseTimerRef.current)
+        responseTimerRef.current = null
+      }
+      responseStartRef.current = null
+      serverResponseTimeRef.current = null
+      firstTokenRecordedRef.current = false
+      isStreamingRef.current = false
+      isReceivingResponseRef.current = false
+      activeAssistantIdRef.current = null
+
       if (thinkingStartTime.current) {
-        thinkingStartTime.current = null;
+        thinkingStartTime.current = null
       }
       if (stopCooldownTimerRef.current) {
-        clearTimeout(stopCooldownTimerRef.current);
-        stopCooldownTimerRef.current = null;
+        clearTimeout(stopCooldownTimerRef.current)
+        stopCooldownTimerRef.current = null
       }
-    };
-  }, []);
+    }
+  }, [])
 
   // Add event listeners to detect when user manually interacts with the container
   useEffect(() => {
@@ -656,6 +782,15 @@ export default function RetrievalView() {
 
 
   const clearMessages = useCallback(() => {
+    // Stop any running response timer so it doesn't keep ticking after clear.
+    if (responseTimerRef.current) {
+      clearInterval(responseTimerRef.current)
+      responseTimerRef.current = null
+    }
+    responseStartRef.current = null
+    serverResponseTimeRef.current = null
+    firstTokenRecordedRef.current = false
+    setQueryProgress(null)
     setMessages([])
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
@@ -678,6 +813,12 @@ export default function RetrievalView() {
     // aborted) and persist immediately so the terminated state is the
     // authoritative saved history.
     const activeId = activeAssistantIdRef.current
+    // Stamp the final response time onto the terminated message so the live
+    // stopwatch freezes at the moment the user stopped.
+    let stoppedResponseTime: number | null = null
+    if (responseStartRef.current) {
+      stoppedResponseTime = parseFloat(((Date.now() - responseStartRef.current) / 1000).toFixed(1))
+    }
     const finalizedMessages = messages.map((m) => {
       if (m.id !== activeId) return m
       // Terminated mid-thinking: finalize the COT block so the partial reasoning
@@ -688,7 +829,13 @@ export default function RetrievalView() {
       if (m.isThinking && thinkingTime === null && thinkingStartTime.current) {
         thinkingTime = parseFloat(((Date.now() - thinkingStartTime.current) / 1000).toFixed(2))
       }
-      return { ...m, isThinking: false, isAborted: true, thinkingTime }
+      return {
+        ...m,
+        isThinking: false,
+        isAborted: true,
+        thinkingTime,
+        responseTime: stoppedResponseTime ?? m.responseTime
+      }
     })
     setMessages(finalizedMessages)
     try {
@@ -703,7 +850,17 @@ export default function RetrievalView() {
     // eslint-disable-next-line react-hooks/immutability
     thinkingProcessed.current = false
 
+    // Stop the live response timer (the skipped finally won't clear it).
+    if (responseTimerRef.current) {
+      clearInterval(responseTimerRef.current)
+      responseTimerRef.current = null
+    }
+    responseStartRef.current = null
+    serverResponseTimeRef.current = null
+    firstTokenRecordedRef.current = false
+
     setIsLoading(false)
+    setQueryProgress(null)
     // Cancel any pending Stop-button cooldown and reset it for the next query.
     if (stopCooldownTimerRef.current) {
       clearTimeout(stopCooldownTimerRef.current)
@@ -792,7 +949,7 @@ export default function RetrievalView() {
                   {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
-                messages.map((message) => { // Remove unused idx
+                messages.map((message, idx) => { // Remove unused idx
                   // isComplete logic is now handled internally based on message.mermaidRendered
                   return (
                     <div
@@ -810,7 +967,20 @@ export default function RetrievalView() {
                           <CopyIcon className="size-4" />
                         </Button>
                       )}
-                      <ChatMessage message={message} isTabActive={isRetrievalTabActive} />
+                      <ChatMessage
+                        message={message}
+                        isTabActive={isRetrievalTabActive}
+                        activeProgress={
+                          idx === messages.length - 1 && message.role === 'assistant'
+                            ? queryProgress
+                            : null
+                        }
+                        isQuerying={
+                          idx === messages.length - 1 &&
+                          message.role === 'assistant' &&
+                          isLoading
+                        }
+                      />
                       {message.role === 'assistant' && (
                         <Button
                           onClick={() => handleCopyMessage(message)}

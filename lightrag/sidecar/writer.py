@@ -282,6 +282,8 @@ def write_sidecar(
         }
         if block.table_header:
             row["table_header"] = block.table_header
+        if block.is_title_block:
+            row["is_title_block"] = True
         blocks_lines.append(json.dumps(row, ensure_ascii=False))
         merged_parts.append(rendered)
 

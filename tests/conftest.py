@@ -39,6 +39,13 @@ def _hermetic_mineru_env(monkeypatch):
     ``test_invalid_when_local_parser_options_change`` toggles each option
     and expects the change to invalidate a bundle recorded with defaults).
 
+    ``DOCX_SMART_HEADING`` is stripped likewise: it is a live-env
+    parser-routing knob (``routing.smart_heading_default_enabled``), so a
+    developer ``.env`` that sets ``DOCX_SMART_HEADING=true`` seeds
+    ``native(smart_heading=true)`` into the persisted ``parse_engine`` on
+    every .docx enqueue, breaking baseline routing tests that expect a bare
+    ``native``.
+
     Strip these variables globally; tests that need a specific mode can
     still ``monkeypatch.setenv(...)`` themselves and monkeypatch will
     restore the inherited value at teardown.
@@ -53,6 +60,7 @@ def _hermetic_mineru_env(monkeypatch):
     monkeypatch.delenv("MINERU_LOCAL_START_PAGE_ID", raising=False)
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    monkeypatch.delenv("DOCX_SMART_HEADING", raising=False)
 
 
 def pytest_configure(config):

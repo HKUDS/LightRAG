@@ -140,11 +140,9 @@ _LEGACY_SUFFIXES = frozenset(
 _MINERU_SUFFIXES = frozenset(
     {
         "pdf",
-        "doc",
         "docx",
         "ppt",
         "pptx",
-        "xls",
         "xlsx",
         "png",
         "jpg",

@@ -410,7 +410,17 @@
       "copyManualInstruction": "Veuillez sélectionner et copier le texte manuellement",
       "thinking": "Réflexion en cours...",
       "thinkingTime": "Temps de réflexion {{time}}s",
-      "thinkingInProgress": "Réflexion en cours..."
+      "thinkingInProgress": "Réflexion en cours...",
+      "responseTime": "Temps de réponse {{time}}s",
+      "firstTokenTime": "Premier token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Extraction des mots-clés...",
+        "retrieving_entities": "Récupération des entités...",
+        "retrieving_relations": "Récupération des relations...",
+        "retrieving_chunks": "Récupération des segments...",
+        "reranking": "Réévaluation des résultats...",
+        "generating_response": "Génération de la réponse..."
+      }
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",

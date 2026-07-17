@@ -410,7 +410,17 @@
       "copyManualInstruction": "Пожалуйста, выберите и скопируйте текст вручную",
       "thinking": "Размышление...",
       "thinkingTime": "Время размышления {{time}}с",
-      "thinkingInProgress": "Размышление в процессе..."
+      "thinkingInProgress": "Размышление в процессе...",
+      "responseTime": "Время ответа {{time}}с",
+      "firstTokenTime": "Первый токен {{time}}с",
+      "progress": {
+        "extracting_keywords": "Извлечение ключевых слов...",
+        "retrieving_entities": "Поиск сущностей...",
+        "retrieving_relations": "Поиск отношений...",
+        "retrieving_chunks": "Поиск фрагментов...",
+        "reranking": "Переранжирование...",
+        "generating_response": "Генерация ответа..."
+      }
     },
     "retrieval": {
       "startPrompt": "Начните поиск, введя ваш запрос ниже",
