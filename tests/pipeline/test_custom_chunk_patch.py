@@ -24,8 +24,11 @@ import pytest
 import lightrag.lightrag as lightrag_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
-from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
-from lightrag.utils_pipeline import CUSTOM_CHUNK_PATCH_METADATA_KEY
+from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.utils_pipeline import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    make_custom_chunk_id,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -101,7 +104,17 @@ def _journal(row: dict) -> dict | None:
 
 
 def _chunk_id(doc_key: str, content: str) -> str:
-    return compute_mdhash_id(doc_key + content, prefix="chunk-")
+    return make_custom_chunk_id(doc_key, content)
+
+
+@pytest.mark.offline
+def test_chunk_id_doc_and_text_are_unambiguous():
+    """Codex review (PR #3416): plain concatenation hashed doc_id="a" +
+    chunk="bc" and doc_id="ab" + chunk="c" identically, letting two documents
+    share (and clobber) one chunk row. The encoding must keep them distinct."""
+    assert make_custom_chunk_id("a", "bc") != make_custom_chunk_id("ab", "c")
+    # Deterministic for the same logical input.
+    assert make_custom_chunk_id("a", "bc") == make_custom_chunk_id("a", "bc")
 
 
 @pytest.mark.asyncio

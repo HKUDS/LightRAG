@@ -126,6 +126,8 @@ from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     compute_text_content_hash,
     doc_status_custom_chunk_patch,
+    make_custom_chunk_id,
+    make_custom_chunk_operation_id,
     normalize_document_file_path,
 )
 from lightrag.constants import GRAPH_FIELD_SEP
@@ -1622,17 +1624,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 doc_key = doc_id
 
             # Deterministic, document-scoped identity: chunk ids hash
-            # (doc_key, content) so identical text in two documents never
-            # shares a chunk row (a shared row's full_doc_id would be
-            # clobbered, and rollback could delete another document's chunk).
-            # The operation id hashes the ordered chunk-id set so the same
-            # logical input is the same operation across retries.
+            # (doc_key, content) — length-prefixed, see make_custom_chunk_id —
+            # so identical text in two documents never shares a chunk row (a
+            # shared row's full_doc_id would be clobbered, and rollback could
+            # delete another document's chunk). The operation id hashes the
+            # ordered chunk-id set so the same logical input is the same
+            # operation across retries.
             chunk_entries: list[tuple[str, str, str]] = []
             seen_chunk_ids: set[str] = set()
             for chunk_text in text_chunks:
                 if not chunk_text:
                     continue
-                chunk_id = compute_mdhash_id(doc_key + chunk_text, prefix="chunk-")
+                chunk_id = make_custom_chunk_id(doc_key, chunk_text)
                 if chunk_id in seen_chunk_ids:
                     continue
                 seen_chunk_ids.add(chunk_id)
@@ -1642,8 +1645,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if not chunk_entries:
                 logger.warning("No non-empty custom chunks to insert.")
                 return
-            operation_id = compute_mdhash_id(
-                doc_key + "|".join(cid for cid, _, _ in chunk_entries), prefix="op-"
+            operation_id = make_custom_chunk_operation_id(
+                doc_key, [cid for cid, _, _ in chunk_entries]
             )
 
             # pipeline_status/lock are already initialized by
@@ -2382,10 +2385,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if mode == "create":
             # The document did not exist before this operation: remove its
             # body and status row entirely. The purge above (whole-document
-            # mode) already dropped the anchors.
+            # mode) already dropped the anchors. The doc_status delete MUST
+            # be flushed here: unlike upsert (immediate-persist), delete is
+            # deferred-commit on the JSON backend, and reporting a rollback
+            # as successful while the FAILED journal row can reappear after
+            # a crash would be a false success.
             await self.full_docs.delete([doc_id])
-            await self._flush_storages([self.full_docs])
             await self.doc_status.delete([doc_id])
+            await self._flush_storages([self.full_docs, self.doc_status])
             return
 
         # Patch mode: prune anchor unions this document no longer owns (a

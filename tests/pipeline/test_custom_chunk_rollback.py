@@ -18,8 +18,11 @@ import pytest
 import lightrag.lightrag as lightrag_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
-from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
-from lightrag.utils_pipeline import CUSTOM_CHUNK_PATCH_METADATA_KEY
+from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.utils_pipeline import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    make_custom_chunk_id,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -92,7 +95,7 @@ def _journal(row: dict) -> dict | None:
 
 
 def _chunk_id(doc_key: str, content: str) -> str:
-    return compute_mdhash_id(doc_key + content, prefix="chunk-")
+    return make_custom_chunk_id(doc_key, content)
 
 
 async def _fail_one_merge(monkeypatch):
@@ -163,6 +166,20 @@ async def test_rollback_of_failed_create_removes_document(tmp_path, monkeypatch)
             await rag.text_chunks.get_by_id(_chunk_id("doc-9", "alice is here")) is None
         )
         assert await rag.full_entities.get_by_id("doc-9") is None
+
+        # Codex review (PR #3416): doc_status.delete is deferred-commit on
+        # the JSON backend — the rollback must flush it before reporting
+        # success, or a crash right after would resurrect the FAILED journal
+        # row on restart. Assert durability on DISK, before finalize (which
+        # would flush and mask the bug).
+        import json
+
+        status_files = list((tmp_path / "wd").rglob("kv_store_doc_status.json"))
+        assert status_files, "doc_status JSON file should exist"
+        on_disk = json.loads(status_files[0].read_text())
+        assert "doc-9" not in on_disk, (
+            "create-rollback doc_status delete must be flushed to disk"
+        )
     finally:
         await rag.finalize_storages()
 

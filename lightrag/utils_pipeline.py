@@ -296,6 +296,34 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
 )
 
 
+def make_custom_chunk_id(doc_key: str, chunk_text: str) -> str:
+    """Deterministic, document-scoped custom-chunk id (issue #3400 Phase 3).
+
+    The components are length-prefixed so the ``(doc, text)`` pair is
+    unambiguous: plain concatenation would give ``doc_id="a", chunk="bc"``
+    and ``doc_id="ab", chunk="c"`` the same hash input, letting two different
+    documents share one ``text_chunks``/``chunks_vdb`` row — the later upsert
+    would clobber ``full_doc_id`` and rollback/deletion of either document
+    could remove the other's chunk.
+    """
+    return compute_mdhash_id(
+        f"{len(doc_key)}:{doc_key}:{chunk_text}", prefix="chunk-"
+    )
+
+
+def make_custom_chunk_operation_id(doc_key: str, chunk_ids: list[str]) -> str:
+    """Deterministic operation id for one custom-chunk invocation.
+
+    Hashes the document key plus the ordered chunk-id set (length-prefixed
+    like :func:`make_custom_chunk_id`, so an arbitrary caller-supplied
+    ``doc_id`` cannot collide with the chunk-id list of another document).
+    The same logical input therefore maps to the same operation across
+    retries.
+    """
+    joined = "|".join(chunk_ids)
+    return compute_mdhash_id(f"{len(doc_key)}:{doc_key}:{joined}", prefix="op-")
+
+
 def doc_status_custom_chunk_patch(status_doc: Any) -> dict[str, Any] | None:
     """Return the custom-chunk patch journal from a doc-status record, if any.
 
