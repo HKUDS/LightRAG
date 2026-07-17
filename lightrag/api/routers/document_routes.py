@@ -2190,6 +2190,23 @@ async def run_scanning_process(
         except PipelineNotInitializedError:
             pass
 
+        # Roll back failed/stale custom-chunk operations FIRST, while the
+        # classification phase still holds ``scanning_exclusive`` (issue
+        # #3400 Phase 4). Discovery is storage-driven — SDK operations may
+        # have no scan-visible input file — and a failed rollback keeps the
+        # journal/FAILED row for the next scan without aborting this one.
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            try:
+                await rag.arollback_failed_custom_chunk_patches(
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+            except Exception as rollback_error:
+                logger.error(
+                    "Scan-time custom-chunk rollback failed: "
+                    f"{rollback_error}"
+                )
+
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")

@@ -2219,6 +2219,276 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         await self._flush_storages([self.full_entities, self.full_relations])
 
+    async def arollback_failed_custom_chunk_patches(
+        self,
+        *,
+        pipeline_status: dict | None = None,
+        pipeline_status_lock: Any | None = None,
+    ) -> dict[str, list[str]]:
+        """Roll back every failed/stale custom-chunk operation (issue #3400 P4).
+
+        The administrative escape hatch invoked at the start of
+        ``/documents/scan``: while the SDK caller owns roll-forward (repeating
+        the same call resumes it), scan rolls incomplete operations BACK to
+        the previously committed document state — repeated roll-forward may
+        keep failing, and the journal row would otherwise stay dirty forever.
+
+        Discovers candidates from ``doc_status`` directly (FAILED or stale
+        PROCESSING rows carrying a ``custom_chunk_patch`` journal — SDK
+        operations may have no scan-visible input file). A PROCESSING row is
+        necessarily stale here: a live operation holds the pipeline ``busy``
+        slot, and the scan reservation refuses to start while ``busy``.
+
+        Per document, under the same per-document keyed lock the operations
+        use: staged contributions are removed/rebuilt via the candidate-driven
+        purge primitive (strict rebuild — missing recovery cache fails the
+        rollback rather than producing a false PROCESSED), operation-scoped
+        LLM cache is deleted, anchor unions are pruned where the document no
+        longer owns a contribution, and only then is the journal cleared:
+
+        - ``patch`` mode: the base document is restored to ``PROCESSED``.
+        - ``create`` mode: the document did not exist before the operation,
+          so its remaining rows (``full_docs``, ``doc_status``) are removed.
+
+        A rollback failure keeps the journal and the FAILED status — the next
+        scan retries it. Absent objects are idempotent no-ops, but success is
+        never reported merely because something was already missing.
+
+        Returns ``{"rolled_back": [...], "failed": [...]}`` doc-id lists.
+        """
+        if pipeline_status is None or pipeline_status_lock is None:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=self.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=self.workspace
+            )
+
+        candidates = await self.doc_status.get_docs_by_statuses(
+            [DocStatus.FAILED, DocStatus.PROCESSING]
+        )
+        journaled_ids = [
+            doc_id
+            for doc_id, status_doc in candidates.items()
+            if doc_status_custom_chunk_patch(status_doc) is not None
+        ]
+
+        rolled_back: list[str] = []
+        failed: list[str] = []
+        if not journaled_ids:
+            return {"rolled_back": rolled_back, "failed": failed}
+
+        doc_lock_namespace = (
+            f"{self.workspace}:DocPatch" if self.workspace else "DocPatch"
+        )
+        for doc_id in journaled_ids:
+            async with get_storage_keyed_lock(
+                [doc_id], namespace=doc_lock_namespace, enable_logging=False
+            ):
+                # Re-read under the lock: the SDK may have resumed (and
+                # committed) the operation between discovery and here.
+                row = await self.doc_status.get_by_id(doc_id)
+                journal = doc_status_custom_chunk_patch(row)
+                if journal is None:
+                    continue
+                try:
+                    await self._rollback_one_custom_chunk_patch(
+                        doc_id,
+                        row,
+                        journal,
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+                    rolled_back.append(doc_id)
+                    log_message = (
+                        f"[rollback] Rolled back custom-chunk operation "
+                        f"{journal.get('operation_id')} on {doc_id} "
+                        f"(mode: {journal.get('mode', 'patch')})"
+                    )
+                    logger.info(log_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+                except Exception as rollback_error:
+                    # Journal and FAILED status remain; the next scan retries.
+                    failed.append(doc_id)
+                    log_message = (
+                        f"[rollback] Failed to roll back custom-chunk "
+                        f"operation on {doc_id}: {rollback_error}"
+                    )
+                    logger.error(log_message)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
+
+        return {"rolled_back": rolled_back, "failed": failed}
+
+    async def _rollback_one_custom_chunk_patch(
+        self,
+        doc_id: str,
+        row: dict[str, Any],
+        journal: dict[str, Any],
+        *,
+        pipeline_status: dict,
+        pipeline_status_lock: Any,
+    ) -> None:
+        """Roll a single journaled custom-chunk operation back (see caller)."""
+        mode = journal.get("mode") or "patch"
+        staged_chunk_ids = [
+            cid
+            for cid in (journal.get("chunk_ids") or [])
+            if isinstance(cid, str) and cid
+        ]
+        candidate_entities = [
+            name
+            for name in (journal.get("entity_names") or [])
+            if isinstance(name, str) and name
+        ]
+        candidate_relations = [
+            (pair[0], pair[1])
+            for pair in (journal.get("relation_pairs") or [])
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        ]
+
+        # Operation-scoped LLM cache ids must be collected BEFORE the purge
+        # deletes the staged chunk rows that reference them.
+        cache_ids: list[str] = []
+        if staged_chunk_ids:
+            staged_rows = await self.text_chunks.get_by_ids(staged_chunk_ids)
+            for staged_row in staged_rows:
+                if isinstance(staged_row, dict):
+                    cache_ids.extend(
+                        cid
+                        for cid in (staged_row.get("llm_cache_list") or [])
+                        if isinstance(cid, str) and cid
+                    )
+            cache_ids = list(dict.fromkeys(cache_ids))
+
+        if staged_chunk_ids:
+            await self._purge_kg_contributions(
+                doc_id,
+                staged_chunk_ids,
+                candidate_entities=candidate_entities,
+                candidate_relations=candidate_relations,
+                patch_only=(mode == "patch"),
+                strict_rebuild=True,
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+
+        if cache_ids and self.llm_response_cache:
+            await self.llm_response_cache.delete(cache_ids)
+            await self._flush_storages([self.llm_response_cache])
+
+        if mode == "create":
+            # The document did not exist before this operation: remove its
+            # body and status row entirely. The purge above (whole-document
+            # mode) already dropped the anchors.
+            await self.full_docs.delete([doc_id])
+            await self._flush_storages([self.full_docs])
+            await self.doc_status.delete([doc_id])
+            return
+
+        # Patch mode: prune anchor unions this document no longer owns (a
+        # previous attempt may have failed after the commit union), then
+        # restore the base document to PROCESSED with the journal cleared and
+        # any staged ids stripped from chunks_list.
+        staged_set = set(staged_chunk_ids)
+        base_chunk_ids = {
+            cid
+            for cid in ((row or {}).get("chunks_list") or [])
+            if isinstance(cid, str) and cid and cid not in staged_set
+        }
+        await self._prune_doc_recovery_anchors(
+            doc_id,
+            candidate_entities,
+            candidate_relations,
+            owned_chunk_ids=base_chunk_ids,
+        )
+        cleaned_chunks = [
+            cid
+            for cid in ((row or {}).get("chunks_list") or [])
+            if isinstance(cid, str) and cid and cid not in staged_set
+        ]
+        await self._upsert_custom_chunk_status(
+            doc_id,
+            DocStatus.PROCESSED,
+            base_row=row,
+            journal=None,
+            chunks_list=cleaned_chunks,
+            error_msg="",
+        )
+
+    async def _prune_doc_recovery_anchors(
+        self,
+        doc_id: str,
+        entity_names,
+        relation_pairs,
+        *,
+        owned_chunk_ids: set[str],
+    ) -> None:
+        """Prune rolled-back candidates from the document's recovery anchors.
+
+        A journal candidate stays in ``full_entities`` / ``full_relations``
+        only if the document still owns a contribution to it through one of
+        ``owned_chunk_ids`` (its committed base chunks, per the tracking
+        stores) — e.g. a patch that added a source to a base-document entity.
+        Candidates the document no longer contributes to are removed so the
+        anchors stay a faithful recovery superset. No-op for anchors/keys
+        that do not exist.
+        """
+        entity_candidates = set(entity_names or [])
+        if entity_candidates:
+            entity_row = await self.full_entities.get_by_id(doc_id)
+            if entity_row and entity_row.get("entity_names"):
+                keep: list[str] = []
+                for name in entity_row["entity_names"]:
+                    if name not in entity_candidates:
+                        keep.append(name)
+                        continue
+                    tracking = (
+                        await self.entity_chunks.get_by_id(name)
+                        if self.entity_chunks
+                        else None
+                    )
+                    sources = set((tracking or {}).get("chunk_ids") or [])
+                    if sources & owned_chunk_ids:
+                        keep.append(name)
+                await self.full_entities.upsert(
+                    {doc_id: {"entity_names": sorted(keep), "count": len(keep)}}
+                )
+
+        relation_candidates = {tuple(pair) for pair in (relation_pairs or [])}
+        if relation_candidates:
+            relation_row = await self.full_relations.get_by_id(doc_id)
+            if relation_row and relation_row.get("relation_pairs"):
+                keep_pairs: list[list[str]] = []
+                for pair in relation_row["relation_pairs"]:
+                    pair_tuple = tuple(pair)
+                    if pair_tuple not in relation_candidates:
+                        keep_pairs.append(list(pair))
+                        continue
+                    tracking = (
+                        await self.relation_chunks.get_by_id(
+                            make_relation_chunk_key(*pair_tuple)
+                        )
+                        if self.relation_chunks
+                        else None
+                    )
+                    sources = set((tracking or {}).get("chunk_ids") or [])
+                    if sources & owned_chunk_ids:
+                        keep_pairs.append(list(pair))
+                await self.full_relations.upsert(
+                    {
+                        doc_id: {
+                            "relation_pairs": sorted(keep_pairs),
+                            "count": len(keep_pairs),
+                        }
+                    }
+                )
+
+        await self._flush_storages([self.full_entities, self.full_relations])
+
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
