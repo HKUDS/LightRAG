@@ -49,11 +49,16 @@ export type MessageWithError = Message & {
 export const ChatMessage = ({
   message,
   isTabActive = true,
-  activeProgress = null
+  activeProgress = null,
+  isQuerying = false
 }: {
   message: MessageWithError
   isTabActive?: boolean
   activeProgress?: string | null
+  // True while this message's query is still in flight (from submit until the
+  // finally/stop handler). Drives the clock's spin so it animates for the whole
+  // query, not just the thinking phase.
+  isQuerying?: boolean
 }) => {
   const { t } = useTranslation()
   const { theme } = useTheme()
@@ -154,6 +159,39 @@ export const ChatMessage = ({
     code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
   }), [message.mermaidRendered, message.role]);
 
+  // Whether the assistant has begun emitting visible answer text. Drives both
+  // where the timing row is placed and whether retrieval progress is shown.
+  const hasContent = !!finalDisplayContent && finalDisplayContent.trim() !== ''
+
+  // Response time (+ first-token time) row. While no answer text exists yet it
+  // sits above the "Thinking..." hint (so the time stays put as the hint
+  // appears below it); once content arrives it is relocated to the end of the
+  // answer. Retrieval progress trails on the same line, but only before any
+  // answer text is shown.
+  const timingRow =
+    message.role === 'assistant' && typeof responseTime === 'number' ? (
+      <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1 tabular-nums">
+          <ClockIcon className={cn('size-3', isQuerying && 'animate-spin')} />
+          {t('retrievePanel.chatMessage.responseTime', { time: responseTime.toFixed(1) })}
+        </span>
+        {typeof firstTokenTime === 'number' && (
+          <span className="flex items-center gap-1 tabular-nums">
+            <ZapIcon className="size-3" />
+            {t('retrievePanel.chatMessage.firstTokenTime', { time: firstTokenTime.toFixed(1) })}
+          </span>
+        )}
+        {!hasContent && activeProgress && (
+          // Progress trails the time as a parenthesised note (no spinner — the
+          // "Thinking..." hint above already carries one, so a second would be
+          // redundant).
+          <span className="text-muted-foreground/70">
+            ({t(`retrievePanel.chatMessage.progress.${activeProgress}`, activeProgress)})
+          </span>
+        )}
+      </div>
+    ) : null
+
   return (
     <div
       className={`${
@@ -164,6 +202,10 @@ export const ChatMessage = ({
             : 'w-[95%] bg-muted'
       } rounded-lg px-4 py-2`}
     >
+      {/* Before any answer text: the timing row sits on top and the thinking
+          hint appears beneath it, so the time doesn't jump when "Thinking..."
+          shows up. Once content arrives, the row moves below the answer. */}
+      {!hasContent && timingRow}
       {/* Thinking process display - only for assistant messages */}
       {/* Always render to prevent layout shift when switching tabs */}
       {message.role === 'assistant' && (isThinking || thinkingTime !== null) && (
@@ -173,7 +215,17 @@ export const ChatMessage = ({
           !isTabActive && 'opacity-50'
         )}>
           <div
-            className="flex items-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-200 text-sm cursor-pointer select-none"
+            // Indent by 1rem ONLY while the timing row sits directly above this
+            // line (i.e. no answer text yet): there the clock icon (size-3) +
+            // gap-1 push the time label right by exactly 1rem, so the same
+            // margin lines the two labels up. Once content arrives the timing
+            // row moves below the answer, so the thinking line drops the indent
+            // and aligns left with the answer instead. (The thinking spinner is
+            // dropped — the timing row's clock already animates while thinking.)
+            className={cn(
+              'flex items-center text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-200 text-sm cursor-pointer select-none',
+              !hasContent && 'ml-4'
+            )}
             onClick={() => {
               // Allow expansion when there's thinking content, even during thinking process
               if (finalThinkingContent && finalThinkingContent.trim() !== '') {
@@ -182,11 +234,7 @@ export const ChatMessage = ({
             }}
           >
             {isThinking ? (
-              <>
-                {/* Only show spinner animation in active tab to save resources */}
-                {isTabActive && <LoaderIcon className="mr-2 size-4 animate-spin" />}
-                <span>{t('retrievePanel.chatMessage.thinking')}</span>
-              </>
+              <span>{t('retrievePanel.chatMessage.thinking')}</span>
             ) : (
               typeof thinkingTime === 'number' && <span>{t('retrievePanel.chatMessage.thinkingTime', { time: thinkingTime })}</span>
             )}
@@ -271,42 +319,24 @@ export const ChatMessage = ({
           </div>
         </div>
       )}
-      {/* Retrieval pipeline progress — shows which step is running (e.g.
-          "Extracting keywords...") while the query is in flight. Only shown
-          for the active assistant message before any content arrives. */}
-      {message.role === 'assistant' && activeProgress && !finalDisplayContent?.trim() && (
-        <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-          <LoaderIcon className="size-3 animate-spin" />
-          {t(`retrievePanel.chatMessage.progress.${activeProgress}`, activeProgress)}
-        </div>
-      )}
-      {/* Response time - live stopwatch while the query is in flight, frozen
-          to the final duration once it completes (assistant messages only). */}
-      {message.role === 'assistant' && typeof responseTime === 'number' && (
-        <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <ClockIcon className={cn('size-3', isThinking && 'animate-spin')} />
-            {t('retrievePanel.chatMessage.responseTime', { time: responseTime })}
-          </span>
-          {typeof firstTokenTime === 'number' && (
-            <span className="flex items-center gap-1">
-              <ZapIcon className="size-3" />
-              {t('retrievePanel.chatMessage.firstTokenTime', { time: firstTokenTime })}
-            </span>
-          )}
-        </div>
-      )}
+      {/* Once answer text has started, the timing row follows at the end of
+          the answer (progress is already hidden by then). */}
+      {hasContent && timingRow}
       {/* User-terminated hint - response may be incomplete */}
       {message.isAborted && (
         <div className="mt-1 text-xs italic text-muted-foreground">
           {t('retrievePanel.retrieval.userTerminated')}
         </div>
       )}
-      {/* Loading indicator - only show in active tab */}
+      {/* Loading indicator — only in the active tab, and only as a fallback when
+          the timing row isn't already on screen. During a query the timing row
+          shows a live stopwatch + retrieval progress, so this bare spinner would
+          be a redundant second animation; suppress it whenever timingRow renders
+          (i.e. an assistant message with a response time). */}
       {isTabActive && !message.isAborted && (() => {
         // More comprehensive loading state check
         const hasVisibleContent = finalDisplayContent && finalDisplayContent.trim() !== '';
-        const isLoadingState = !hasVisibleContent && !isThinking && !thinkingTime;
+        const isLoadingState = !hasVisibleContent && !isThinking && !thinkingTime && !timingRow;
         return isLoadingState && <LoaderIcon className="animate-spin duration-2000" />
       })()}
     </div>
