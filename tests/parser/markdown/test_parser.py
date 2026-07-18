@@ -166,9 +166,9 @@ def test_host_is_public_rejects_ipv6_transition_wrapped_internal(monkeypatch):
     # ``is_global``. On a NAT64/DNS64 host these literals route to the internal
     # target, so every wrapped form of a non-public IPv4 must be blocked.
     monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
-    # 127.0.0.1 (loopback) wrapped four ways.
+    # 127.0.0.1 (loopback) via the wrappers whose embedded-IPv4 position is
+    # fixed by spec (NAT64 well-known /96, IPv4-compatible, 6to4).
     assert _host_is_public("64:ff9b::7f00:1") is False  # NAT64 well-known /96
-    assert _host_is_public("64:ff9b:1::7f00:1") is False  # RFC 8215 /48
     assert _host_is_public("::7f00:1") is False  # IPv4-compatible ::a.b.c.d
     assert _host_is_public("2002:7f00:1::") is False  # 6to4 2002::/16
     # IPv4-mapped form of the same loopback (already blocked pre-fix).
@@ -178,6 +178,35 @@ def test_host_is_public_rejects_ipv6_transition_wrapped_internal(monkeypatch):
     # RFC1918 host (10.66.0.2) via NAT64 and via IPv4-compatible.
     assert _host_is_public("64:ff9b::a42:2") is False
     assert _host_is_public("::a42:2") is False
+
+
+def test_host_is_public_rejects_rfc8215_local_use_nat64_slash48(monkeypatch):
+    # The RFC 8215 local-use NAT64 prefix 64:ff9b:1::/48 is technology-agnostic:
+    # the embedded-IPv4 position is not guaranteed (RFC 8215 §5) and IANA marks
+    # the whole /48 not-globally-reachable, so the entire block is default-denied
+    # rather than decoded. A naive "low 32 bits" decode is a bypass — a proper
+    # RFC 6052 §2.2 /48 encoding carries the IPv4 in bits 48-63 + 72-87, so the
+    # low 32 bits are an attacker-chosen suffix.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    # RFC 6052 /48 encoding of 127.0.0.1 with a public-looking low-32 suffix
+    # (8.8.8.8) — a low-32 decode would wrongly read it as public and pass.
+    assert _host_is_public("64:ff9b:1:7f00:0:100:808:808") is False
+    # RFC 6052 /48 encoding of a *public* address (8.8.8.8) is also denied:
+    # a not-globally-reachable local-use block is off by default policy.
+    assert _host_is_public("64:ff9b:1:808:8:800::") is False
+    # The "low 32 bits" style literals in the same /48 are blocked too.
+    assert _host_is_public("64:ff9b:1::7f00:1") is False
+    assert _host_is_public("64:ff9b:1::808:808") is False
+
+
+def test_rfc8215_slash48_permitted_only_via_allowlist(monkeypatch):
+    # An operator running a genuine local NAT64 in 64:ff9b:1::/48 can still opt
+    # in explicitly; nothing outside the configured block is affected.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "64:ff9b:1::/48")
+    assert _host_is_public("64:ff9b:1::808:808") is True
+    assert _host_is_public("64:ff9b:1:7f00:0:100:808:808") is True
+    # The well-known /96 (a different prefix) is unaffected by the /48 allowlist.
+    assert _host_is_public("64:ff9b::7f00:1") is False
 
 
 def test_host_is_public_allows_genuine_and_nat64_wrapped_public(monkeypatch):
@@ -207,6 +236,11 @@ def test_unwrap_embedded_ipv4_isolated():
     # ``::`` and ``::1`` are not IPv4 wrappers — left untouched.
     assert _unwrap_embedded_ipv4(ip_address("::1")) == ip_address("::1")
     assert _unwrap_embedded_ipv4(ip_address("::")) == ip_address("::")
+    # The RFC 8215 local-use /48 is deliberately NOT decoded here (its embedded
+    # IPv4 position is not guaranteed); it is force-denied at the guard instead,
+    # so the helper returns it unchanged.
+    slash48 = ip_address("64:ff9b:1:7f00:0:100:808:808")
+    assert _unwrap_embedded_ipv4(slash48) == slash48
     # Genuine global IPv6 and plain IPv4 pass through unchanged.
     genuine = ip_address("2606:4700:4700::1111")
     assert _unwrap_embedded_ipv4(genuine) == genuine

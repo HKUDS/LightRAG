@@ -238,6 +238,17 @@ def _allowed_non_public_networks() -> list:
     return nets
 
 
+# IPv6 blocks judged non-globally-routable regardless of the interpreter's
+# ``is_global`` table. RFC 8215's local-use NAT64 prefix ``64:ff9b:1::/48`` is
+# technology-agnostic — the embedded-IPv4 position within it is NOT guaranteed
+# (RFC 8215 §5), so we must not decode it by any fixed offset; IANA also marks
+# the whole /48 not-globally-reachable. We therefore default-deny the entire
+# block (older CPython, pre gh-113171, mis-classified it as global). An operator
+# who genuinely runs a local NAT64 there can still opt in via
+# ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``.
+_FORCE_NON_GLOBAL_V6 = (ip_network("64:ff9b:1::/48"),)
+
+
 def _unwrap_embedded_ipv4(ip):
     """Return the IPv4 embedded in an IPv6 transition wrapper so it is judged by
     IPv4 rules; otherwise return ``ip`` unchanged.
@@ -249,12 +260,15 @@ def _unwrap_embedded_ipv4(ip):
     internal target (loopback / RFC1918 / cloud metadata). We therefore decode
     the embedded IPv4 and classify by *that* before the ``is_global`` gate.
 
-    Handled wrappers: IPv4-mapped (``::ffff:0:0/96``), IPv4-compatible
-    (``::/96``, minus ``::``/``::1``), the NAT64 well-known prefix
-    (``64:ff9b::/96``, RFC 6052) and the RFC 8215 local-use prefix
-    (``64:ff9b:1::/48``), and 6to4 (``2002::/16``). A NAT64-wrapped *public*
-    IPv4 (e.g. ``64:ff9b::808:808`` = 8.8.8.8) still resolves to a global IPv4
-    and is left allowed; genuine native global IPv6 is returned untouched.
+    Only wrappers whose embedded-IPv4 position is fixed by spec are decoded:
+    IPv4-mapped (``::ffff:0:0/96``), IPv4-compatible (``::/96``, minus
+    ``::``/``::1``), the NAT64 well-known prefix (``64:ff9b::/96``, RFC 6052
+    §2.2 — IPv4 in the low 32 bits) and 6to4 (``2002::/16``). A wrapper of a
+    *public* IPv4 (e.g. ``64:ff9b::808:808`` = 8.8.8.8) still resolves to a
+    global IPv4 and is left allowed; genuine native global IPv6 is returned
+    untouched. The RFC 8215 local-use prefix ``64:ff9b:1::/48`` is deliberately
+    NOT decoded here — its embedded-IPv4 position is not guaranteed, so it is
+    default-denied via :data:`_FORCE_NON_GLOBAL_V6` instead.
 
     Boundary: a NAT64 deployment using a *custom*, globally-routable Network-
     Specific Prefix (RFC 6052 permits any /32../96) is not recognised here — the
@@ -279,10 +293,21 @@ def _unwrap_embedded_ipv4(ip):
     # NAT64 well-known prefix ``64:ff9b::/96`` — IPv4 in the low 32 bits.
     if b[:12] == b"\x00\x64\xff\x9b" + b"\x00" * 8:
         return ip_address(b[12:])
-    # RFC 8215 local-use NAT64 ``64:ff9b:1::/48``.
-    if b[:6] == b"\x00\x64\xff\x9b\x00\x01":
-        return ip_address(b[12:])
     return ip
+
+
+def _is_globally_routable(ip) -> bool:
+    """True iff ``ip`` is safe to fetch (globally routable public address).
+
+    Takes the ``is_global`` verdict on the IPv4 embedded in any IPv6 transition
+    wrapper (see :func:`_unwrap_embedded_ipv4`) so a NAT64 / 6to4 /
+    IPv4-compatible literal that wraps an internal IPv4 is judged by that
+    internal IPv4. Blocks that are non-global irrespective of the interpreter's
+    classification are force-denied via :data:`_FORCE_NON_GLOBAL_V6`.
+    """
+    if ip.version == 6 and any(ip in net for net in _FORCE_NON_GLOBAL_V6):
+        return False
+    return _unwrap_embedded_ipv4(ip).is_global
 
 
 def _validated_addresses(host: str) -> list[str]:
@@ -292,8 +317,8 @@ def _validated_addresses(host: str) -> list[str]:
     SSRF to loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10``
     / TEST-NET and any other non-globally-routable range is blocked) or it
     matches the operator-configured ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``
-    escape hatch. The ``is_global`` verdict is taken on the IPv4 embedded in any
-    IPv6 transition wrapper (see :func:`_unwrap_embedded_ipv4`) so a NAT64 /
+    escape hatch. Global-routability is decided by :func:`_is_globally_routable`,
+    which judges the IPv4 embedded in any IPv6 transition wrapper so a NAT64 /
     6to4 / IPv4-compatible literal that wraps an internal IPv4 cannot smuggle
     past the gate. Returns ``[]`` when resolution fails or *any* resolved
     address is non-public — so a single poisoned A/AAAA record rejects the whole
@@ -316,8 +341,7 @@ def _validated_addresses(host: str) -> list[str]:
             ip = ip_address(addr)
         except ValueError:
             return []
-        judged = _unwrap_embedded_ipv4(ip)
-        if not (judged.is_global or any(ip in net for net in allow)):
+        if not (_is_globally_routable(ip) or any(ip in net for net in allow)):
             return []
         addrs.append(addr)
     return addrs
