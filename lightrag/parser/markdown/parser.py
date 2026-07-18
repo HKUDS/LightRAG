@@ -238,15 +238,103 @@ def _allowed_non_public_networks() -> list:
     return nets
 
 
+# IPv6 blocks that older CPython (pre gh-113171) classified as globally routable
+# but that are not, and whose embedded-IPv4 position we must NOT trust:
+#   - ``64:ff9b:1::/48`` — RFC 8215 local-use NAT64. Technology-agnostic; the
+#     embedded-IPv4 position is not guaranteed (RFC 8215 §5), so a fixed-offset
+#     decode is itself bypassable. IANA marks the whole /48 not-globally-reachable.
+#   - ``2002::/16`` — 6to4. IANA marks its global-reachability N/A and CPython
+#     3.13+ / the gh-113171 backports treat the whole block as private, so a
+#     decode of the embedded IPv4 must not re-permit it. (RFC 7526 deprecated
+#     only the 6to4 *anycast relay* path, 192.88.99.0/24; basic unicast 6to4 and
+#     the 2002::/16 prefix itself are not deprecated — but the block is still not
+#     globally reachable.)
+# Both are default-denied as whole blocks, independent of the interpreter, so we
+# never decode past them. An operator who genuinely runs a local NAT64 / 6to4
+# there can still opt in via ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``.
+_FORCE_NON_GLOBAL_V6 = (ip_network("64:ff9b:1::/48"), ip_network("2002::/16"))
+
+
+def _unwrap_embedded_ipv4(ip):
+    """Return the IPv4 embedded in an IPv6 transition wrapper so it is judged by
+    IPv4 rules; otherwise return ``ip`` unchanged.
+
+    Some IPv6 wrappers embed an internal IPv4 yet the *literal* is classified
+    globally routable, so a bare ``is_global`` check on the literal passes them.
+    On a host with NAT64/DNS64 routing the request is then delivered to the
+    embedded internal target (loopback / RFC1918 / cloud metadata). We therefore
+    decode the embedded IPv4 so the caller can *additionally* require it to be
+    global (see :func:`_is_globally_routable`).
+
+    Only wrappers whose embedded-IPv4 position is fixed by spec are decoded:
+    IPv4-mapped (``::ffff:0:0/96``), IPv4-compatible (``::/96``, minus
+    ``::``/``::1``), and the NAT64 well-known prefix (``64:ff9b::/96``, RFC 6052
+    §2.2 — IPv4 in the low 32 bits). 6to4 (``2002::/16``) and the RFC 8215
+    local-use NAT64 prefix (``64:ff9b:1::/48``) are deliberately NOT decoded
+    here — they are default-denied as whole blocks via
+    :data:`_FORCE_NON_GLOBAL_V6` (the /48's embedded-IPv4 position is not
+    guaranteed, and both are non-globally-reachable per IANA).
+
+    Boundary: a NAT64 deployment using a *custom*, globally-routable Network-
+    Specific Prefix (RFC 6052 permits any /32../96) is not recognised here — the
+    prefix is deployment-specific and indistinguishable from ordinary global
+    IPv6. Such operators should pin the download egress or use
+    ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` deliberately.
+    """
+    if ip.version != 6:
+        return ip
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    b = ip.packed
+    # IPv4-compatible ``::a.b.c.d`` (top 96 bits zero), excluding ``::`` and
+    # ``::1`` which are not IPv4 wrappers (and are non-global anyway).
+    if b[:12] == b"\x00" * 12 and b[12:] not in (
+        b"\x00\x00\x00\x00",
+        b"\x00\x00\x00\x01",
+    ):
+        return ip_address(b[12:])
+    # NAT64 well-known prefix ``64:ff9b::/96`` — IPv4 in the low 32 bits.
+    if b[:12] == b"\x00\x64\xff\x9b" + b"\x00" * 8:
+        return ip_address(b[12:])
+    return ip
+
+
+def _is_globally_routable(ip) -> bool:
+    """True iff ``ip`` is safe to fetch (a globally routable public address).
+
+    Starts from the stdlib's ``is_global`` verdict on the literal address and
+    only ever *tightens* it — the guard is never more permissive than
+    ``ipaddress`` itself. On top of that: force-denied blocks
+    (:data:`_FORCE_NON_GLOBAL_V6`) are always rejected, and a fixed-position
+    IPv6 transition wrapper (:func:`_unwrap_embedded_ipv4`) whose embedded IPv4
+    is not itself global is rejected — so a NAT64 / IPv4-compatible literal that
+    wraps an internal IPv4 (e.g. ``64:ff9b::7f00:1``) is blocked even though the
+    literal is globally routable, while a NAT64 wrapper of a public IPv4
+    (``64:ff9b::808:808`` = 8.8.8.8) still passes.
+    """
+    if not ip.is_global:
+        return False
+    if ip.version == 6:
+        if any(ip in net for net in _FORCE_NON_GLOBAL_V6):
+            return False
+        if not _unwrap_embedded_ipv4(ip).is_global:
+            return False
+    return True
+
+
 def _validated_addresses(host: str) -> list[str]:
     """Resolve ``host`` and return its addresses iff ALL are safe to fetch.
 
-    Default-deny: an address is accepted only when ``ip.is_global`` (so SSRF to
-    loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10`` /
-    TEST-NET and any other non-globally-routable range is blocked) or it matches
-    the operator-configured ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` escape
-    hatch. Returns ``[]`` when resolution fails or *any* resolved address is
-    non-public — so a single poisoned A/AAAA record rejects the whole host.
+    Default-deny: an address is accepted only when it is globally routable (so
+    SSRF to loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10``
+    / TEST-NET and any other non-globally-routable range is blocked) or it
+    matches the operator-configured ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``
+    escape hatch. Global-routability is decided by :func:`_is_globally_routable`,
+    which judges the IPv4 embedded in any IPv6 transition wrapper so a NAT64 /
+    6to4 / IPv4-compatible literal that wraps an internal IPv4 cannot smuggle
+    past the gate. Returns ``[]`` when resolution fails or *any* resolved
+    address is non-public — so a single poisoned A/AAAA record rejects the whole
+    host.
 
     The returned addresses are what the connection actually dials (see
     :class:`_GuardedHTTPConnection`): validating and connecting share one
@@ -265,7 +353,7 @@ def _validated_addresses(host: str) -> list[str]:
             ip = ip_address(addr)
         except ValueError:
             return []
-        if not (ip.is_global or any(ip in net for net in allow)):
+        if not (_is_globally_routable(ip) or any(ip in net for net in allow)):
             return []
         addrs.append(addr)
     return addrs
