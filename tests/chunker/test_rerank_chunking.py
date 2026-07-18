@@ -28,6 +28,20 @@ class TestChunkDocumentsForRerank:
         assert docs == ["short"]
         assert idxs == [0]
 
+    def test_max_tokens_one_terminates(self):
+        """max_tokens=1 is the boundary: overlap must clamp so the loop still terminates.
+
+        With the default overlap (32 >= 1) the clamp kicks in; the call must return a
+        bounded set of chunks all mapping back to the single input document rather than
+        hanging (this test would time out if the loop failed to advance).
+        """
+        docs, idxs = chunk_documents_for_rerank(
+            ["one two three four five"], max_tokens=1, overlap_tokens=32
+        )
+        assert len(docs) >= 1
+        assert len(docs) == len(idxs)
+        assert all(i == 0 for i in idxs)
+
     def test_no_chunking_needed_for_short_docs(self):
         """Documents shorter than max_tokens should not be chunked"""
         documents = [
