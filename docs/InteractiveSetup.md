@@ -61,7 +61,7 @@ make env-base
 
 - LLM provider, model, endpoint, and API key
 - Whether the embedding model should run locally via Docker
-- If embedding stays remote: embedding provider, model, dimension, endpoint, and API key
+- If embedding stays remote: embedding provider, model, dimension, endpoint, and API key (LM Studio: dimension is not prompted — auto-probed at startup; see [LM Studio setup](LMSTUDIO_SETUP.md))
 - Whether reranking should be enabled
 - If reranking is enabled: whether the rerank service should run locally via Docker
 - If reranking stays remote: rerank provider, model, endpoint, and API key
