@@ -166,8 +166,9 @@ def test_host_is_public_rejects_ipv6_transition_wrapped_internal(monkeypatch):
     # ``is_global``. On a NAT64/DNS64 host these literals route to the internal
     # target, so every wrapped form of a non-public IPv4 must be blocked.
     monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
-    # 127.0.0.1 (loopback) via the wrappers whose embedded-IPv4 position is
-    # fixed by spec (NAT64 well-known /96, IPv4-compatible, 6to4).
+    # 127.0.0.1 (loopback) via decoded wrappers whose literal is globally
+    # routable (NAT64 well-known /96, IPv4-compatible) — blocked by the embedded
+    # IPv4 — plus 6to4, blocked as a force-denied block.
     assert _host_is_public("64:ff9b::7f00:1") is False  # NAT64 well-known /96
     assert _host_is_public("::7f00:1") is False  # IPv4-compatible ::a.b.c.d
     assert _host_is_public("2002:7f00:1::") is False  # 6to4 2002::/16
@@ -178,6 +179,20 @@ def test_host_is_public_rejects_ipv6_transition_wrapped_internal(monkeypatch):
     # RFC1918 host (10.66.0.2) via NAT64 and via IPv4-compatible.
     assert _host_is_public("64:ff9b::a42:2") is False
     assert _host_is_public("::a42:2") is False
+
+
+def test_host_is_public_rejects_6to4_block_even_wrapping_public(monkeypatch):
+    # 6to4 (2002::/16) is deprecated (RFC 7526) and not globally reachable per
+    # IANA; current CPython classifies the whole block non-global. The guard must
+    # never be more permissive than the stdlib, so decoding the embedded IPv4
+    # must not re-permit it: 2002::/16 is default-denied as a whole block —
+    # including a 6to4 wrapper of a *public* IPv4 — regardless of interpreter.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    assert _host_is_public("2002:808:808::") is False  # 6to4 of public 8.8.8.8
+    assert _host_is_public("2002:7f00:1::") is False  # 6to4 of loopback
+    # Explicit opt-in for a legacy 6to4 deployment still works via the allowlist.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "2002::/16")
+    assert _host_is_public("2002:808:808::") is True
 
 
 def test_host_is_public_rejects_rfc8215_local_use_nat64_slash48(monkeypatch):
@@ -222,12 +237,11 @@ def test_host_is_public_allows_genuine_and_nat64_wrapped_public(monkeypatch):
 def test_unwrap_embedded_ipv4_isolated():
     from ipaddress import ip_address
 
-    # Internal IPv4 wrappers decode to the embedded (non-global) IPv4.
+    # Fixed-position wrappers decode to the embedded (non-global) IPv4.
     assert _unwrap_embedded_ipv4(ip_address("64:ff9b::7f00:1")) == ip_address(
         "127.0.0.1"
     )
     assert _unwrap_embedded_ipv4(ip_address("::7f00:1")) == ip_address("127.0.0.1")
-    assert _unwrap_embedded_ipv4(ip_address("2002:7f00:1::")) == ip_address("127.0.0.1")
     assert _unwrap_embedded_ipv4(ip_address("::ffff:7f00:1")) == ip_address("127.0.0.1")
     # NAT64 of a public IPv4 decodes to that public IPv4 (still global).
     assert _unwrap_embedded_ipv4(ip_address("64:ff9b::808:808")) == ip_address(
@@ -236,9 +250,11 @@ def test_unwrap_embedded_ipv4_isolated():
     # ``::`` and ``::1`` are not IPv4 wrappers — left untouched.
     assert _unwrap_embedded_ipv4(ip_address("::1")) == ip_address("::1")
     assert _unwrap_embedded_ipv4(ip_address("::")) == ip_address("::")
-    # The RFC 8215 local-use /48 is deliberately NOT decoded here (its embedded
-    # IPv4 position is not guaranteed); it is force-denied at the guard instead,
-    # so the helper returns it unchanged.
+    # 6to4 (2002::/16) and the RFC 8215 local-use /48 are deliberately NOT decoded
+    # here — they are force-denied as whole blocks at the guard instead, so the
+    # helper returns them unchanged (decoding either could loosen the verdict).
+    sixtofour = ip_address("2002:7f00:1::")
+    assert _unwrap_embedded_ipv4(sixtofour) == sixtofour
     slash48 = ip_address("64:ff9b:1:7f00:0:100:808:808")
     assert _unwrap_embedded_ipv4(slash48) == slash48
     # Genuine global IPv6 and plain IPv4 pass through unchanged.
