@@ -77,6 +77,7 @@ from lightrag.kg.shared_storage import (
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
+from lightrag.api.login_rate_limit import LoginRateLimiter
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2261,8 +2262,16 @@ def create_app(args):
             "webui_description": webui_description,
         }
 
+    # Brute-force protection for /login (CWE-307): throttle failed attempts per
+    # client IP + username. Checked before the bcrypt verification, so a locked
+    # key is also rejected without paying the bcrypt cost.
+    login_rate_limiter = LoginRateLimiter(
+        max_attempts=args.login_max_failed_attempts,
+        window_seconds=args.login_lockout_window_seconds,
+    )
+
     @app.post("/login")
-    async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
         if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
@@ -2279,15 +2288,33 @@ def create_app(args):
                 "webui_description": webui_description,
             }
         username = form_data.username
+        # Rate-limit key is client IP + username. X-Forwarded-For is NOT trusted
+        # (spoofable); behind a reverse proxy all clients may share the proxy IP,
+        # so buckets are separated by username to avoid one attacker locking out
+        # unrelated accounts. request.client can be None for some transports.
+        client_ip = request.client.host if request.client else "unknown"
+        rate_limit_key = f"{client_ip}:{username}"
+
+        retry_after = login_rate_limiter.retry_after(rate_limit_key)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Please try again later.",
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+
         # verify_password runs a CPU-bound bcrypt for every attempt (including
         # unknown usernames, to equalize timing). Run it in a worker thread so a
         # flood of login requests cannot block the event loop and starve the
-        # whole API (unauthenticated DoS). Login rate limiting is still advisable.
+        # whole API (unauthenticated DoS).
         password_ok = await asyncio.to_thread(
             auth_handler.verify_password, username, form_data.password
         )
         if not password_ok:
+            login_rate_limiter.record_failure(rate_limit_key)
             raise HTTPException(status_code=401, detail="Incorrect credentials")
+
+        login_rate_limiter.reset(rate_limit_key)
 
         # Regular user login
         user_token = auth_handler.create_token(
