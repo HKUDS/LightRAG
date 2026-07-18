@@ -1964,7 +1964,13 @@ def create_app(args):
     # Configure rerank function based on args.rerank_bindingparameter
     rerank_model_func = None
     if args.rerank_binding != "null":
-        from lightrag.rerank import cohere_rerank, jina_rerank, ali_rerank
+        from lightrag.rerank import (
+            cohere_rerank,
+            jina_rerank,
+            ali_rerank,
+            DEFAULT_RERANK_MAX_TOKENS_PER_DOC,
+            MIN_PRACTICAL_RERANK_MAX_TOKENS,
+        )
 
         # Map rerank binding to corresponding function
         rerank_functions = {
@@ -1995,6 +2001,39 @@ def create_app(args):
                 if default_base_url != inspect.Parameter.empty:
                     args.rerank_binding_host = default_base_url
 
+        # Cohere binding supports optional document chunking (useful for models with
+        # token limits like ColBERT). Parse and validate its config ONCE at startup so a
+        # misconfigured RERANK_MAX_TOKENS_PER_DOC fails fast here instead of surfacing on
+        # the first user query, and so the value is not re-parsed on every rerank call.
+        rerank_enable_chunking = False
+        rerank_max_tokens_per_doc = DEFAULT_RERANK_MAX_TOKENS_PER_DOC
+        if args.rerank_binding == "cohere":
+            rerank_enable_chunking = (
+                os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+            )
+            raw_max_tokens = os.getenv(
+                "RERANK_MAX_TOKENS_PER_DOC", str(DEFAULT_RERANK_MAX_TOKENS_PER_DOC)
+            )
+            try:
+                rerank_max_tokens_per_doc = int(raw_max_tokens)
+            except ValueError as e:
+                raise ValueError(
+                    f"RERANK_MAX_TOKENS_PER_DOC must be an integer, got {raw_max_tokens!r}"
+                ) from e
+            if rerank_max_tokens_per_doc < 1:
+                raise ValueError(
+                    f"RERANK_MAX_TOKENS_PER_DOC must be >= 1, got {rerank_max_tokens_per_doc}"
+                )
+            if (
+                rerank_enable_chunking
+                and rerank_max_tokens_per_doc < MIN_PRACTICAL_RERANK_MAX_TOKENS
+            ):
+                logger.warning(
+                    f"RERANK_MAX_TOKENS_PER_DOC={rerank_max_tokens_per_doc} is below the "
+                    f"practical minimum ({MIN_PRACTICAL_RERANK_MAX_TOKENS}); chunking will "
+                    f"split each document into many tiny, low-signal chunks."
+                )
+
         async def server_rerank_func(
             query: str, documents: list, top_n: int = None, extra_body: dict = None
         ):
@@ -2009,15 +2048,10 @@ def create_app(args):
                 "base_url": args.rerank_binding_host,
             }
 
-            # Add Cohere-specific parameters if using cohere binding
+            # Add Cohere-specific parameters if using cohere binding (validated at startup)
             if args.rerank_binding == "cohere":
-                # Enable chunking if configured (useful for models with token limits like ColBERT)
-                kwargs["enable_chunking"] = (
-                    os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
-                )
-                kwargs["max_tokens_per_doc"] = int(
-                    os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")
-                )
+                kwargs["enable_chunking"] = rerank_enable_chunking
+                kwargs["max_tokens_per_doc"] = rerank_max_tokens_per_doc
 
             return await selected_rerank_func(**kwargs, extra_body=extra_body)
 

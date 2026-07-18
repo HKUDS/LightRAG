@@ -18,6 +18,18 @@ from dotenv import load_dotenv
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
+# Default per-document token budget when chunking for rerank.
+# 4096 matches Cohere rerank-v3.5; smaller models (e.g. ColBERT, 512-token limit)
+# should override this to leave margin below their hard limit.
+DEFAULT_RERANK_MAX_TOKENS_PER_DOC = 4096
+
+# Practical lower bound for a rerank chunk window. Below this the loop still
+# terminates (guaranteed by the max_tokens >= 1 guard and the overlap clamp), but
+# every document explodes into many tiny, low-signal chunks — inflating the request
+# payload and the number of scores to aggregate. Configured values below this are
+# accepted but warned about at startup rather than silently degrading query latency.
+MIN_PRACTICAL_RERANK_MAX_TOKENS = 64
+
 
 def chunk_documents_for_rerank(
     documents: List[str],
@@ -39,13 +51,18 @@ def chunk_documents_for_rerank(
         - chunked_documents: List of document chunks (may be more than input)
         - original_doc_indices: Maps each chunk back to its original document index
     """
-    # Clamp overlap_tokens to ensure the loop always advances
-    # If overlap_tokens >= max_tokens, the chunking loop would hang
+    if max_tokens < 1:
+        # max_tokens=0 makes the chunk window zero-width and the loop never advances
+        raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
+
+    # Clamp overlap_tokens to ensure the loop always advances.
+    # If overlap_tokens >= max_tokens the loop would never progress. Recover by
+    # clamping to max_tokens // 2 rather than max_tokens - 1: the latter leaves an
+    # advance of a single token per step, exploding a document into O(tokens) chunks.
+    # Halving keeps the advance at ~half the window (0 overlap when max_tokens == 1).
     if overlap_tokens >= max_tokens:
         original_overlap = overlap_tokens
-        # Ensure overlap is at least 1 token less than max to guarantee progress
-        # For very small max_tokens (e.g., 1), set overlap to 0
-        overlap_tokens = max(0, max_tokens - 1)
+        overlap_tokens = max_tokens // 2
         logger.warning(
             f"overlap_tokens ({original_overlap}) must be less than max_tokens ({max_tokens}). "
             f"Clamping to {overlap_tokens} to prevent infinite loop."
