@@ -3192,7 +3192,13 @@ def create_document_routes(
             try:
                 _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                # Controlled chunking-config validation message (numeric sizes
+                # only, no internal detail); kept as client-facing 422 feedback
+                # but wrapped so it is never a bare raw-exception passthrough.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
+                )
 
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
@@ -3333,7 +3339,13 @@ def create_document_routes(
             try:
                 _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                # Controlled chunking-config validation message (numeric sizes
+                # only, no internal detail); kept as client-facing 422 feedback
+                # but wrapped so it is never a bare raw-exception passthrough.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
+                )
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
