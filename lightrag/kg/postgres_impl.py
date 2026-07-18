@@ -281,13 +281,22 @@ def _dollar_quote(s: str, tag_prefix: str = "AGE") -> str:
         >>> _dollar_quote("$AGE1$ test")
         '$AGE2$$AGE1$ test$AGE2$'
         >>> _dollar_quote("$$$")  # Content with dollar signs
-        '$AGE1$$$$AGE1$'
+        '$AGE1$$$$$AGE1$'
+        >>> _dollar_quote("ends with $AGE1")  # tail would merge with the tag
+        '$AGE2$ends with $AGE1$AGE2$'
     """
     s = "" if s is None else str(s)
     for i in itertools.count(1):
         tag = f"{tag_prefix}{i}"
         wrapper = f"${tag}$"
-        if wrapper not in s:
+        # `wrapper not in s` alone is not enough. The delimiter `$tag$` has a
+        # one-character border ("$" is both its first and last char), so when
+        # `s` ends with `$tag` (i.e. `wrapper` minus its trailing "$"), the
+        # leading "$" of the appended closing wrapper completes a premature
+        # `$tag$` at the seam, truncating the literal and leaking the rest as
+        # raw SQL. Reject such a tag so the chosen delimiter cannot form across
+        # the content/closing boundary either. See test_dollar_quote_*.
+        if wrapper not in s and not s.endswith(wrapper[:-1]):
             return f"{wrapper}{s}{wrapper}"
 
 
