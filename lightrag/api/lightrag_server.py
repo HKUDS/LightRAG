@@ -2320,17 +2320,19 @@ def create_app(args):
             password_ok = await asyncio.to_thread(
                 auth_handler.verify_password, username, form_data.password
             )
+            # Record the outcome BEFORE releasing the reservation, so the entry
+            # still carries the failure (release removes a now-idle entry).
+            if not password_ok:
+                # Confirmed failure -> count it (and emit the lockout alert only
+                # here, so a correct password on the Nth attempt never does).
+                login_rate_limiter.commit_failure(rate_limit_key)
+                raise HTTPException(status_code=401, detail="Incorrect credentials")
+            # Success clears the key's earlier failures.
+            login_rate_limiter.reset(rate_limit_key)
         finally:
+            # Always drop the in-flight reservation (also frees the slot once the
+            # key is fully idle, e.g. after a successful login).
             login_rate_limiter.release(rate_limit_key)
-
-        if not password_ok:
-            # Confirmed failure -> count it (and emit the lockout alert only here,
-            # so a correct password on the Nth attempt never raises a false one).
-            login_rate_limiter.commit_failure(rate_limit_key)
-            raise HTTPException(status_code=401, detail="Incorrect credentials")
-
-        # Success clears the key's earlier failures.
-        login_rate_limiter.reset(rate_limit_key)
 
         # Regular user login
         user_token = auth_handler.create_token(

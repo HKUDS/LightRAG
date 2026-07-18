@@ -173,6 +173,25 @@ def test_active_lockout_survives_flood_of_unique_keys():
     assert len(limiter._entries) <= 3  # still bounded
 
 
+def test_successful_login_frees_its_slot(monkeypatch):
+    """A successful login must not leave a dead (empty) entry occupying a slot.
+
+    Regression: previously reset() cleared the failures but kept the entry, so
+    with the table at capacity a prior success sitting behind a live lockout
+    made _make_room falsely report 'table full' and refuse a new key.
+    """
+    messages = _capture_warnings(monkeypatch)
+    limiter, _clock = _make(max_attempts=3, window_seconds=300, max_tracked_keys=2)
+
+    _fail(limiter, "1.1.1.1:a")  # A: live lockout candidate (stays at the front)
+    _succeed(limiter, "2.2.2.2:b")  # B: success -> entry removed, slot freed
+    assert "2.2.2.2:b" not in limiter._entries
+
+    _fail(limiter, "3.3.3.3:c")  # C must still be trackable
+    assert "3.3.3.3:c" in limiter._entries
+    assert not any("table is full" in m for m in messages)
+
+
 def test_reservation_alone_never_alerts(monkeypatch):
     """Reserving (and succeeding) must never emit a lockout alert, even when the
     reservation count reaches the limit -- only confirmed failures can.

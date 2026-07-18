@@ -170,10 +170,20 @@ class LoginRateLimiter:
         self._entries.move_to_end(key)
 
     def release(self, key: str) -> None:
-        """Drop one in-flight reservation for ``key`` (call once per reserve)."""
+        """Drop one in-flight reservation for ``key`` (call once per reserve).
+
+        Removes the entry as soon as it is fully idle (no reservation and no
+        confirmed failures) so successful logins do not leave dead entries
+        occupying capacity. Keeping the map free of idle entries is also what
+        lets ``_make_room`` trust that a live front implies a live table.
+        """
         entry = self._entries.get(key)
-        if entry is not None and entry.pending > 0:
+        if entry is None:
+            return
+        if entry.pending > 0:
             entry.pending -= 1
+        if entry.pending == 0 and not entry.failures:
+            del self._entries[key]
 
     def commit_failure(self, key: str) -> None:
         """Record a confirmed failure (call only after a verified wrong password).
@@ -203,11 +213,15 @@ class LoginRateLimiter:
     def reset(self, key: str) -> None:
         """Clear confirmed failures for ``key`` (call on a successful login).
 
-        In-flight reservations for other concurrent requests are left untouched.
+        In-flight reservations for other concurrent requests are left untouched;
+        the entry is removed once it has neither a reservation nor a failure.
         """
         entry = self._entries.get(key)
-        if entry is not None:
-            entry.failures.clear()
+        if entry is None:
+            return
+        entry.failures.clear()
+        if entry.pending == 0:
+            del self._entries[key]
 
     def _make_room(self, now: float) -> bool:
         """Ensure there is room for one new key; return True if a slot is free.
