@@ -2307,26 +2307,29 @@ def create_app(args):
 
         # Reserve this attempt BEFORE the bcrypt await. verify runs on a worker
         # thread, so without pre-reserving, many concurrent requests would all
-        # pass the check above (count still below the limit) before any of them
-        # recorded a failure, bypassing the limit and the "no bcrypt once locked"
-        # guarantee (TOCTOU). retry_after + reserve here are synchronous with no
-        # await between them, so the counter is consistent at decision time.
+        # pass the check above before any resolved, bypassing the limit (TOCTOU).
+        # retry_after + reserve here are synchronous with no await between them,
+        # so the decision is consistent. The reservation is always released in
+        # the finally; only a confirmed wrong password becomes a real failure.
         login_rate_limiter.reserve_attempt(rate_limit_key)
+        try:
+            # verify_password runs a CPU-bound bcrypt for every attempt (incl.
+            # unknown usernames, to equalize timing). Run it in a worker thread
+            # so a login flood cannot block the event loop and starve the whole
+            # API (unauthenticated DoS).
+            password_ok = await asyncio.to_thread(
+                auth_handler.verify_password, username, form_data.password
+            )
+        finally:
+            login_rate_limiter.release(rate_limit_key)
 
-        # verify_password runs a CPU-bound bcrypt for every attempt (including
-        # unknown usernames, to equalize timing). Run it in a worker thread so a
-        # flood of login requests cannot block the event loop and starve the
-        # whole API (unauthenticated DoS).
-        password_ok = await asyncio.to_thread(
-            auth_handler.verify_password, username, form_data.password
-        )
         if not password_ok:
-            # Confirm the reserved attempt as a real failure (this is what emits
-            # the lockout alert, so a correct password on the Nth try does not).
+            # Confirmed failure -> count it (and emit the lockout alert only here,
+            # so a correct password on the Nth attempt never raises a false one).
             login_rate_limiter.commit_failure(rate_limit_key)
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
-        # Success: clear the reserved attempt and any earlier failures.
+        # Success clears the key's earlier failures.
         login_rate_limiter.reset(rate_limit_key)
 
         # Regular user login
