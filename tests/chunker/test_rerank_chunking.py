@@ -17,6 +17,17 @@ from lightrag.rerank import (
 class TestChunkDocumentsForRerank:
     """Test suite for chunk_documents_for_rerank function"""
 
+    def test_zero_max_tokens_raises(self):
+        """max_tokens < 1 must raise, not hang in a zero-width chunk loop."""
+        with pytest.raises(ValueError, match="max_tokens"):
+            chunk_documents_for_rerank(["hello world longer text"], max_tokens=0)
+        with pytest.raises(ValueError, match="max_tokens"):
+            chunk_documents_for_rerank(["hello"], max_tokens=-1)
+        # Valid size still works
+        docs, idxs = chunk_documents_for_rerank(["short"], max_tokens=100)
+        assert docs == ["short"]
+        assert idxs == [0]
+
     def test_no_chunking_needed_for_short_docs(self):
         """Documents shorter than max_tokens should not be chunked"""
         documents = [
