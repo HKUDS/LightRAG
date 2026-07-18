@@ -29,6 +29,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lightrag import LightRAG
+from lightrag.api.utils_api import internal_server_error
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.constants import (
     FILE_EXTRACTION_SUMMARY_PREFIX,
@@ -3109,7 +3110,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
             # If we reserved a slot but never scheduled the bg task
             # (e.g. early validation rejection or streaming-write
@@ -3191,7 +3192,13 @@ def create_document_routes(
             try:
                 _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                # Controlled chunking-config validation message (numeric sizes
+                # only, no internal detail); kept as client-facing 422 feedback
+                # but wrapped so it is never a bare raw-exception passthrough.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
+                )
 
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
@@ -3232,7 +3239,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
             if not handed_off:
                 await _release_enqueue_slot(rag, enqueue_token)
@@ -3332,7 +3339,13 @@ def create_document_routes(
             try:
                 _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                # Controlled chunking-config validation message (numeric sizes
+                # only, no internal detail); kept as client-facing 422 feedback
+                # but wrapped so it is never a bare raw-exception passthrough.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
+                )
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
@@ -3373,7 +3386,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
             if not handed_off:
                 await _release_enqueue_slot(rag, enqueue_token)
@@ -3602,7 +3615,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             if "history_messages" in pipeline_status:
                 pipeline_status["history_messages"].append(error_msg)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
             # Reset busy + destructive_busy after completion so the next
             # reservation / scan sees an idle pipeline. Owner-checked +
@@ -3739,7 +3752,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error getting pipeline status: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     # TODO: Deprecated, use /documents/paginated instead
     @router.get(
@@ -3843,7 +3856,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     class DeleteDocByIdResponse(BaseModel):
         """Response model for single document deletion operation."""
@@ -3970,7 +3983,7 @@ def create_document_routes(
             error_msg = f"Error initiating document deletion for {delete_request.doc_ids}: {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
+            raise internal_server_error(e)
         finally:
             # Release by the pre-generated token unless the managed task took
             # over. Covers a cancellation delivered while _acquire_destructive_busy
@@ -4013,7 +4026,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.get(
         "/track_status/{track_id}",
@@ -4087,7 +4100,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.post(
         "/paginated",
@@ -4268,7 +4281,7 @@ def create_document_routes(
             )
             logger.error(f"Error getting paginated documents: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.get(
         "/status_counts",
@@ -4295,7 +4308,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.post(
         "/reprocess_failed",
@@ -4386,7 +4399,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.post(
         "/recovery/force_reset",
@@ -4528,6 +4541,6 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error requesting pipeline cancellation: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     return router
