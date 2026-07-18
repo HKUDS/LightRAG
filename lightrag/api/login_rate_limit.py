@@ -41,6 +41,21 @@ DEFAULT_MAX_TRACKED_KEYS = 10_000
 DEFAULT_ALERT_INTERVAL_SECONDS = 60.0
 
 
+def _safe_log_value(value: str, max_length: int = 200) -> str:
+    """Make an untrusted value (e.g. an attacker-supplied username embedded in a
+    rate-limit key) safe to put in a log line.
+
+    Replaces non-printable characters -- notably CR/LF, which could otherwise be
+    used to forge extra log lines (log injection) -- with '?' and truncates
+    over-long values. Only the *logged* value is sanitized; the limiter's
+    internal key is left untouched so counting is unaffected.
+    """
+    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "…(truncated)"
+    return sanitized
+
+
 class LoginRateLimiter:
     def __init__(
         self,
@@ -96,8 +111,14 @@ class LoginRateLimiter:
         # Locked until the oldest in-window failure ages out.
         return max(0.0, self.window_seconds - (now - dq[0]))
 
-    def record_failure(self, key: str) -> None:
-        """Record one failed attempt for ``key``."""
+    def reserve_attempt(self, key: str) -> None:
+        """Reserve one attempt for ``key`` *before* password verification.
+
+        Counts toward the limit so that many concurrent requests cannot all pass
+        ``retry_after`` while bcrypt is in flight (TOCTOU). Does NOT alert -- the
+        attempt may still succeed. Call ``commit_failure`` after a confirmed
+        wrong password, or ``reset`` after a successful login.
+        """
         if not self.enabled:
             return
         now = self._clock()
@@ -112,16 +133,26 @@ class LoginRateLimiter:
             dq = self._failures[key] = deque()
         dq.append(now)
         self._failures.move_to_end(key)  # mark most-recently-active
-        if len(dq) == self.max_attempts:
-            # This attempt just tripped the lockout (the count reaches the limit
-            # exactly once per lockout cycle, so this does not fire on every
-            # subsequent rejected request).
+
+    def commit_failure(self, key: str) -> None:
+        """Confirm a reserved attempt as a genuine failure (wrong password).
+
+        Emits the throttled lockout alert if this failure has tripped the limit.
+        Because it runs only after the password is verified *wrong*, a correct
+        password on the Nth attempt no longer produces a false lockout alert.
+        """
+        if not self.enabled:
+            return
+        now = self._clock()
+        dq = self._recent_failures(key, now)
+        if dq is not None and len(dq) >= self.max_attempts:
             self._alert(
                 now,
                 "lockout",
-                f"Login rate limit tripped for '{key}': {self.max_attempts} "
-                f"failed attempts within {self.window_seconds:.0f}s; "
-                f"further attempts are blocked (HTTP 429)",
+                f"Login rate limit tripped for '{_safe_log_value(key)}': "
+                f"{self.max_attempts} failed attempts within "
+                f"{self.window_seconds:.0f}s; further attempts are blocked "
+                f"(HTTP 429)",
             )
 
     def _alert(self, now: float, category: str, message: str) -> None:

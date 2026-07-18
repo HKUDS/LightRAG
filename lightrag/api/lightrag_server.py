@@ -2309,10 +2309,9 @@ def create_app(args):
         # thread, so without pre-reserving, many concurrent requests would all
         # pass the check above (count still below the limit) before any of them
         # recorded a failure, bypassing the limit and the "no bcrypt once locked"
-        # guarantee (TOCTOU). retry_after + record here are synchronous with no
-        # await between them, so the counter is consistent at decision time; a
-        # successful login clears it below.
-        login_rate_limiter.record_failure(rate_limit_key)
+        # guarantee (TOCTOU). retry_after + reserve here are synchronous with no
+        # await between them, so the counter is consistent at decision time.
+        login_rate_limiter.reserve_attempt(rate_limit_key)
 
         # verify_password runs a CPU-bound bcrypt for every attempt (including
         # unknown usernames, to equalize timing). Run it in a worker thread so a
@@ -2322,6 +2321,9 @@ def create_app(args):
             auth_handler.verify_password, username, form_data.password
         )
         if not password_ok:
+            # Confirm the reserved attempt as a real failure (this is what emits
+            # the lockout alert, so a correct password on the Nth try does not).
+            login_rate_limiter.commit_failure(rate_limit_key)
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Success: clear the reserved attempt and any earlier failures.
