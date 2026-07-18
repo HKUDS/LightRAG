@@ -2697,6 +2697,9 @@ def split_text_by_token_limit(
     """Split text by token limit with sentence-first, token-window fallback."""
     if not text:
         return []
+    # Match truncate_list_by_token_size: non-positive budget cannot form a window.
+    if max_tokens <= 0:
+        return []
 
     try:
         total_tokens = len(tokenizer.encode(text))
