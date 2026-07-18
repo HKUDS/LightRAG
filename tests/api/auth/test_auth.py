@@ -110,6 +110,58 @@ def test_verify_password_unknown_user_runs_dummy_verification(auth_module, monke
     assert calls == [("whatever", auth_module._DUMMY_VERIFY_SPEC)]
 
 
+def test_known_plaintext_user_also_runs_dummy_bcrypt(auth_module, monkeypatch):
+    """A known plaintext account must run the dummy bcrypt in addition to the
+    microsecond-scale plaintext compare, so its timing matches the unknown-user
+    and {bcrypt} paths. Otherwise a fast response would reveal that a username
+    exists and is stored as plaintext (username enumeration, CWE-208). The real
+    comparison result must still be returned.
+    """
+    handler = auth_module.AuthHandler()
+    handler.accounts = {"alice": "password123"}
+
+    specs = []
+    real_verify = auth_module.verify_password
+
+    def spy(plain, stored):
+        specs.append(stored)
+        return real_verify(plain, stored)
+
+    monkeypatch.setattr(auth_module, "verify_password", spy)
+
+    # Correct password -> True; both the real compare and the dummy bcrypt ran.
+    assert handler.verify_password("alice", "password123") is True
+    assert specs == ["password123", auth_module._DUMMY_VERIFY_SPEC]
+
+    # Wrong password -> False, with the same two-step timing profile.
+    specs.clear()
+    assert handler.verify_password("alice", "nope") is False
+    assert specs == ["password123", auth_module._DUMMY_VERIFY_SPEC]
+
+
+def test_known_bcrypt_user_runs_single_verification(auth_module, monkeypatch):
+    """A known {bcrypt} account already costs one bcrypt; it must NOT run an
+    extra dummy bcrypt, which would make it slower than the other paths and
+    reintroduce a timing signal.
+    """
+    handler = auth_module.AuthHandler()
+    bcrypt_spec = build_bcrypt_value("user_pass")
+    handler.accounts = {"user": bcrypt_spec}
+
+    specs = []
+    real_verify = auth_module.verify_password
+
+    def spy(plain, stored):
+        specs.append(stored)
+        return real_verify(plain, stored)
+
+    monkeypatch.setattr(auth_module, "verify_password", spy)
+
+    assert handler.verify_password("user", "user_pass") is True
+    # Exactly one verification (the real bcrypt), no dummy appended.
+    assert specs == [bcrypt_spec]
+
+
 def test_verify_password_unicode_plaintext(auth_module):
     """Non-ASCII plaintext passwords still verify through the utf-8 encoded
     constant-time comparison path.

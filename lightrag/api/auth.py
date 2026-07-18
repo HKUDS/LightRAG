@@ -14,15 +14,18 @@ from .passwords import BCRYPT_PASSWORD_PREFIX, verify_password
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-# A syntactically valid bcrypt spec used only to equalize the timing of the
-# "unknown username" path (see AuthHandler.verify_password). It is a bcrypt
-# hash of a throwaway value that never matches any real password, and it is not
-# a secret. Running a full verification against it when the username is unknown
-# keeps the response time close to the known-user bcrypt path, so an attacker
-# cannot enumerate valid usernames from the ~100 ms bcrypt delay (CWE-208).
-# Note: this equalizes against the bcrypt cost. Deployments that store only
-# plaintext passwords still respond faster for known accounts; the robust fix
-# for such deployments is to switch to {bcrypt} values (see GHSA-c759-cx9p-mrwq).
+# A syntactically valid bcrypt spec used only to equalize login timing (see
+# AuthHandler.verify_password). It is a bcrypt hash of a throwaway value that
+# never matches any real password, and it is not a secret. Every login path
+# runs exactly one bcrypt verification (a real one for {bcrypt} accounts, this
+# dummy for unknown usernames and for plaintext accounts) so response time does
+# not reveal whether an account exists or whether it is stored as plaintext
+# (username enumeration via the ~100 ms bcrypt delay, CWE-208).
+#
+# The cost factor is 12, matching hash_password()/bcrypt.gensalt() defaults.
+# Accounts stored with a hand-chosen, different bcrypt cost will still differ
+# somewhat; fully closing that gap requires enforcing a uniform cost (or
+# dropping plaintext support altogether). See GHSA-c759-cx9p-mrwq.
 _DUMMY_VERIFY_SPEC = (
     BCRYPT_PASSWORD_PREFIX
     + "$2b$12$ilI0sY2jGfy4h0AVtn6WuutU6BFwzZq5MVvrQYY9fbyQ59NI2NBKa"
@@ -88,15 +91,25 @@ class AuthHandler:
         Returns:
             bool: True if password is correct, False otherwise
         """
+        # Every branch performs exactly one bcrypt verification so response time
+        # cannot be used to enumerate usernames or distinguish plaintext from
+        # bcrypt accounts (CWE-208). See _DUMMY_VERIFY_SPEC.
         stored_password = self.accounts.get(username)
+
         if stored_password is None:
-            # Unknown username: still run a full verification against a dummy
-            # spec so the response time matches the known-user path, then fail.
-            # This prevents username enumeration via the bcrypt timing delta
-            # (CWE-208). The dummy never matches, so the result is always False.
+            # Unknown username: run the dummy bcrypt, then fail.
             verify_password(plain_password, _DUMMY_VERIFY_SPEC)
             return False
 
+        if not stored_password.startswith(BCRYPT_PASSWORD_PREFIX):
+            # Known plaintext account: the constant-time plaintext compare is
+            # only microseconds, so add one dummy bcrypt to match the cost of an
+            # unknown username and a {bcrypt} account. Keep the real result.
+            password_matches = verify_password(plain_password, stored_password)
+            verify_password(plain_password, _DUMMY_VERIFY_SPEC)
+            return password_matches
+
+        # Known {bcrypt} account: the real verification already costs one bcrypt.
         return verify_password(plain_password, stored_password)
 
     def create_token(
