@@ -1,6 +1,16 @@
 """Unit tests for LoginRateLimiter (brute-force protection, CWE-307)."""
 
+from types import SimpleNamespace
+
+import lightrag.api.login_rate_limit as lrl_module
 from lightrag.api.login_rate_limit import LoginRateLimiter
+
+
+def _capture_warnings(monkeypatch):
+    """Redirect the module logger's WARNING output into a list for assertions."""
+    messages: list[str] = []
+    monkeypatch.setattr(lrl_module, "logger", SimpleNamespace(warning=messages.append))
+    return messages
 
 
 class _FakeClock:
@@ -145,3 +155,55 @@ def test_active_lockout_survives_flood_of_unique_keys():
 
     assert limiter.retry_after(admin) is not None  # lockout preserved
     assert len(limiter._failures) <= 3  # still bounded
+
+
+def test_lockout_emits_warning(monkeypatch):
+    messages = _capture_warnings(monkeypatch)
+    limiter, _clock = _make(max_attempts=2, window_seconds=300)
+    key = "1.2.3.4:admin"
+
+    limiter.record_failure(key)
+    assert messages == []  # one failure -> not yet locked, no alert
+
+    limiter.record_failure(key)  # trips the lockout
+    assert len(messages) == 1
+    assert "tripped" in messages[0]
+    assert key in messages[0]
+
+
+def test_lockout_alerts_are_throttled_with_suppressed_count(monkeypatch):
+    """A burst of lockouts must not flood the log: only one WARNING per interval,
+    with the suppressed count reported on the next emitted line.
+    """
+    messages = _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    limiter = LoginRateLimiter(
+        max_attempts=1, window_seconds=300, clock=clock, alert_interval_seconds=60
+    )
+
+    for i in range(5):  # each distinct key locks on its first failure
+        limiter.record_failure(f"10.0.0.{i}:admin")
+    assert len(messages) == 1  # first emitted; the other 4 suppressed
+
+    clock.advance(61)  # interval elapsed
+    limiter.record_failure("10.0.0.9:admin")
+    assert len(messages) == 2
+    assert "4 more since last alert" in messages[1]
+
+
+def test_table_full_emits_throttled_warning(monkeypatch):
+    messages = _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    limiter = LoginRateLimiter(
+        max_attempts=5, window_seconds=300, clock=clock, max_tracked_keys=1
+    )
+
+    limiter.record_failure("a")  # fills the table, not locked (max_attempts=5)
+    assert messages == []
+
+    limiter.record_failure("b")  # table full of live keys -> refuse + warn
+    assert len(messages) == 1
+    assert "table is full" in messages[0]
+
+    limiter.record_failure("c")  # still full, within interval -> suppressed
+    assert len(messages) == 1

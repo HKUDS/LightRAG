@@ -29,9 +29,16 @@ import time
 from collections import OrderedDict, deque
 from typing import Callable, Optional
 
+from ..utils import logger
+
 # Upper bound on distinct keys held in memory (see module docstring). Each key
 # holds at most ``max_attempts`` timestamps, so total memory stays small.
 DEFAULT_MAX_TRACKED_KEYS = 10_000
+
+# Minimum seconds between two WARNING logs of the same category. Attack traffic
+# is high-volume, so alerts are throttled (with a suppressed-count summary) to
+# keep them from filling the log.
+DEFAULT_ALERT_INTERVAL_SECONDS = 60.0
 
 
 class LoginRateLimiter:
@@ -41,14 +48,20 @@ class LoginRateLimiter:
         window_seconds: float = 300.0,
         clock: Callable[[], float] = time.monotonic,
         max_tracked_keys: int = DEFAULT_MAX_TRACKED_KEYS,
+        alert_interval_seconds: float = DEFAULT_ALERT_INTERVAL_SECONDS,
     ) -> None:
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
         self.max_tracked_keys = max_tracked_keys
+        self.alert_interval_seconds = alert_interval_seconds
         self._clock = clock
         # key -> timestamps of recent failed attempts (oldest first). Ordered so
         # the least-recently-active key can be evicted in O(1) when at capacity.
         self._failures: "OrderedDict[str, deque]" = OrderedDict()
+        # Per-category throttle state for _alert: last emit time and how many
+        # alerts have been suppressed since then.
+        self._alert_last: dict[str, float] = {}
+        self._alert_suppressed: dict[str, int] = {}
 
     @property
     def enabled(self) -> bool:
@@ -99,6 +112,36 @@ class LoginRateLimiter:
             dq = self._failures[key] = deque()
         dq.append(now)
         self._failures.move_to_end(key)  # mark most-recently-active
+        if len(dq) == self.max_attempts:
+            # This attempt just tripped the lockout (the count reaches the limit
+            # exactly once per lockout cycle, so this does not fire on every
+            # subsequent rejected request).
+            self._alert(
+                now,
+                "lockout",
+                f"Login rate limit tripped for '{key}': {self.max_attempts} "
+                f"failed attempts within {self.window_seconds:.0f}s; "
+                f"further attempts are blocked (HTTP 429)",
+            )
+
+    def _alert(self, now: float, category: str, message: str) -> None:
+        """Emit a throttled WARNING for ``category``.
+
+        At most one WARNING per ``alert_interval_seconds`` per category is
+        logged; alerts arriving inside that window are counted and reported as a
+        summary on the next emitted line, so an attack cannot flood the log.
+        """
+        last = self._alert_last.get(category)
+        if last is not None and now - last < self.alert_interval_seconds:
+            self._alert_suppressed[category] = (
+                self._alert_suppressed.get(category, 0) + 1
+            )
+            return
+        suppressed = self._alert_suppressed.pop(category, 0)
+        self._alert_last[category] = now
+        if suppressed:
+            message += f" ({suppressed} more since last alert)"
+        logger.warning(message)
 
     def _make_room(self, now: float) -> bool:
         """Ensure there is room for one new key; return True if a slot is free.
@@ -112,7 +155,18 @@ class LoginRateLimiter:
         while len(self._failures) >= self.max_tracked_keys:
             _key, dq = next(iter(self._failures.items()))  # least-recently-active
             if dq and dq[-1] > cutoff:
-                return False  # oldest key is live -> so are all others
+                # Oldest key is live -> so are all others. Capacity is exhausted
+                # by in-window records: a likely flood. New keys go untracked
+                # until a slot frees, so warn (throttled) to surface it.
+                self._alert(
+                    now,
+                    "table_full",
+                    f"Login rate-limit table is full ({self.max_tracked_keys} "
+                    f"active keys); new client/username pairs are temporarily "
+                    f"not rate-limited -- possible flood, consider an upstream "
+                    f"reverse proxy / WAF rate limit",
+                )
+                return False
             self._failures.popitem(last=False)  # fully expired -> reclaim
         return True
 
