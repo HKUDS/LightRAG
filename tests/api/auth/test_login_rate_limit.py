@@ -94,36 +94,54 @@ def test_keys_are_independent():
     assert limiter.retry_after(bob) is None  # different key, own bucket
 
 
-def test_tracked_keys_are_bounded_by_lru_eviction():
-    """A flood of unique keys must not grow the map without bound; the oldest
-    (least-recently-active) keys are evicted so memory stays capped.
-    """
+def test_tracked_keys_are_bounded():
+    """A flood of unique keys must not grow the map beyond the cap."""
     clock = _FakeClock()
     limiter = LoginRateLimiter(
         max_attempts=5, window_seconds=300, clock=clock, max_tracked_keys=3
     )
 
-    for i in range(10):
+    for i in range(100):
         limiter.record_failure(f"10.0.0.{i}:admin")
 
     assert len(limiter._failures) <= 3
-    assert "10.0.0.9:admin" in limiter._failures  # most recent retained
-    assert "10.0.0.0:admin" not in limiter._failures  # oldest evicted
 
 
-def test_active_key_survives_a_flood_of_unique_keys():
-    """A key that keeps failing stays most-recently-active and is not evicted by
-    a flood of one-off keys, so a real brute-force target keeps its counter.
+def test_expired_keys_are_reclaimed_for_new_keys():
+    """Once tracked keys age out of the window their slots are reclaimed, so new
+    keys can be tracked again after a full-but-stale table self-heals.
     """
     clock = _FakeClock()
     limiter = LoginRateLimiter(
-        max_attempts=5, window_seconds=300, clock=clock, max_tracked_keys=3
+        max_attempts=5, window_seconds=60, clock=clock, max_tracked_keys=2
     )
-    target = "1.2.3.4:admin"
+    limiter.record_failure("a")
+    limiter.record_failure("b")  # table full
+    assert len(limiter._failures) == 2
 
-    for i in range(10):
-        limiter.record_failure(f"flood:{i}")
-        limiter.record_failure(target)  # touched every round -> stays hot
+    clock.advance(61)  # "a" and "b" age out of the window
+    limiter.record_failure("c")  # expired slot reclaimed -> "c" is tracked
 
-    assert len(limiter._failures) <= 3
-    assert target in limiter._failures
+    assert "c" in limiter._failures
+    assert len(limiter._failures) <= 2
+
+
+def test_active_lockout_survives_flood_of_unique_keys():
+    """An in-window lockout must NOT be evicted to make room for new keys: an
+    attacker could otherwise lock 'admin', then flood the same IP with unique
+    fake usernames to push admin's record out and reset its counter.
+    """
+    clock = _FakeClock()
+    limiter = LoginRateLimiter(
+        max_attempts=2, window_seconds=300, clock=clock, max_tracked_keys=3
+    )
+    admin = "1.2.3.4:admin"
+    limiter.record_failure(admin)
+    limiter.record_failure(admin)  # admin now locked, in-window
+    assert limiter.retry_after(admin) is not None
+
+    for i in range(100):  # flood unique usernames from the same IP
+        limiter.record_failure(f"1.2.3.4:user{i}")
+
+    assert limiter.retry_after(admin) is not None  # lockout preserved
+    assert len(limiter._failures) <= 3  # still bounded

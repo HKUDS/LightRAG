@@ -14,6 +14,7 @@ import asyncio
 import sys
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
@@ -261,3 +262,31 @@ def test_login_lockout_is_per_username(monkeypatch):
         client.post("/login", data={"username": "bob", "password": "bad"}).status_code
         == 401
     )
+
+
+async def test_login_concurrent_attempts_cannot_bypass_limit(monkeypatch):
+    """Many simultaneous wrong-password requests must not all slip past the
+    limiter while bcrypt is in flight (TOCTOU): at most max_attempts may reach
+    verification, the rest must be rejected with 429.
+    """
+    monkeypatch.setenv("LOGIN_MAX_FAILED_ATTEMPTS", "5")
+    lightrag_server, app = _build_server(monkeypatch)
+    monkeypatch.setattr(
+        lightrag_server.auth_handler, "accounts", {"admin": "s3cret-plain"}
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = await asyncio.gather(
+            *(
+                client.post("/login", data={"username": "admin", "password": "bad"})
+                for _ in range(40)
+            )
+        )
+
+    codes = [r.status_code for r in responses]
+    # At most max_attempts guesses reach bcrypt (401); everyone else is locked
+    # out (429). Before the pre-reservation fix all 40 returned 401.
+    assert codes.count(401) <= 5
+    assert codes.count(429) >= 35
+    assert codes.count(401) + codes.count(429) == 40

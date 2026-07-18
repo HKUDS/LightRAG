@@ -13,11 +13,16 @@ enforcement is required.
 All access happens on a single worker's event-loop thread, so no locking is
 needed (mirrors the token-renewal cache in ``utils_api.py``).
 
-The number of tracked keys is capped at ``max_tracked_keys`` with least-recently-
-active eviction, so a flood of unique IP/username pairs cannot grow the map
-without bound (the map would otherwise be its own memory-exhaustion DoS). This
-is a basic in-process safety bound only; defending against large-scale or
-distributed attacks is the job of an upstream reverse proxy / WAF.
+The number of tracked keys is capped at ``max_tracked_keys`` so a flood of
+unique IP/username pairs cannot grow the map without bound (the map would
+otherwise be its own memory-exhaustion DoS). When at capacity, only keys whose
+failures have already aged out of the window are evicted; a key that is still
+in-window (possibly an active lockout) is never evicted -- otherwise an attacker
+could clear a lockout by flooding unique keys. If every tracked key is in-window,
+a brand-new key is simply not tracked until a slot frees. This is a basic
+in-process safety bound only; defending against large-scale or distributed
+attacks (including a sustained flood that keeps the table full of live keys) is
+the job of an upstream reverse proxy / WAF.
 """
 
 import time
@@ -85,13 +90,31 @@ class LoginRateLimiter:
         now = self._clock()
         dq = self._recent_failures(key, now)
         if dq is None:
-            # New key: evict the least-recently-active one when at capacity so a
-            # flood of unique keys cannot grow the map without bound.
-            if len(self._failures) >= self.max_tracked_keys:
-                self._failures.popitem(last=False)
+            if not self._make_room(now):
+                # Table is full of in-window records. Do NOT evict a live record
+                # to make space -- that would let an attacker clear an active
+                # lockout by flooding unique keys. Skip tracking this brand-new
+                # key instead; a slot frees once existing records age out.
+                return
             dq = self._failures[key] = deque()
         dq.append(now)
         self._failures.move_to_end(key)  # mark most-recently-active
+
+    def _make_room(self, now: float) -> bool:
+        """Ensure there is room for one new key; return True if a slot is free.
+
+        Evicts only keys whose most recent failure has aged out of the window.
+        Keys are ordered least-recently-active first, so once the front key is
+        still in-window every remaining key is too, and nothing more can be
+        evicted (returns False without touching any live record).
+        """
+        cutoff = now - self.window_seconds
+        while len(self._failures) >= self.max_tracked_keys:
+            _key, dq = next(iter(self._failures.items()))  # least-recently-active
+            if dq and dq[-1] > cutoff:
+                return False  # oldest key is live -> so are all others
+            self._failures.popitem(last=False)  # fully expired -> reclaim
+        return True
 
     def reset(self, key: str) -> None:
         """Clear all recorded failures for ``key`` (called on successful login)."""

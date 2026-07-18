@@ -2265,9 +2265,11 @@ def create_app(args):
     # Brute-force protection for /login (CWE-307): throttle failed attempts per
     # client IP + username. Checked before the bcrypt verification, so a locked
     # key is also rejected without paying the bcrypt cost.
+    # getattr defaults keep create_app working for callers that build args
+    # programmatically (e.g. tests, embedding) without these newer fields.
     login_rate_limiter = LoginRateLimiter(
-        max_attempts=args.login_max_failed_attempts,
-        window_seconds=args.login_lockout_window_seconds,
+        max_attempts=getattr(args, "login_max_failed_attempts", 5),
+        window_seconds=getattr(args, "login_lockout_window_seconds", 300.0),
     )
 
     @app.post("/login")
@@ -2303,6 +2305,15 @@ def create_app(args):
                 headers={"Retry-After": str(int(retry_after) + 1)},
             )
 
+        # Reserve this attempt BEFORE the bcrypt await. verify runs on a worker
+        # thread, so without pre-reserving, many concurrent requests would all
+        # pass the check above (count still below the limit) before any of them
+        # recorded a failure, bypassing the limit and the "no bcrypt once locked"
+        # guarantee (TOCTOU). retry_after + record here are synchronous with no
+        # await between them, so the counter is consistent at decision time; a
+        # successful login clears it below.
+        login_rate_limiter.record_failure(rate_limit_key)
+
         # verify_password runs a CPU-bound bcrypt for every attempt (including
         # unknown usernames, to equalize timing). Run it in a worker thread so a
         # flood of login requests cannot block the event loop and starve the
@@ -2311,9 +2322,9 @@ def create_app(args):
             auth_handler.verify_password, username, form_data.password
         )
         if not password_ok:
-            login_rate_limiter.record_failure(rate_limit_key)
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
+        # Success: clear the reserved attempt and any earlier failures.
         login_rate_limiter.reset(rate_limit_key)
 
         # Regular user login
