@@ -585,6 +585,74 @@ def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
     assert captured == {}
 
 
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        (
+            "/documents/text",
+            {
+                "text": "hello",
+                "file_source": "a.md",
+                "chunking": {
+                    "strategy": "fixed_token",
+                    "params": {"chunk_token_size": 50},
+                },
+            },
+        ),
+        (
+            "/documents/texts",
+            {
+                "texts": ["hello"],
+                "file_sources": ["a.md"],
+                "chunking": {
+                    "strategy": "fixed_token",
+                    "params": {"chunk_token_size": 50},
+                },
+            },
+        ),
+    ],
+)
+def test_insert_422_detail_is_wrapped_not_raw_exception(monkeypatch, path, body):
+    """The synchronous chunking-config 422 must not be a bare ``detail=str(exc)``
+    passthrough (GHSA-hrmj-7rvj-4hg8 / CWE-209).
+
+    The overlap-vs-size check raises the app's own controlled ``ValueError`` in
+    ``_resolve_text_chunking``; the handler wraps it as an explicit
+    ``"Invalid chunking configuration: ..."`` message. This pins, for both
+    /documents/text and /documents/texts:
+
+    - the wrapper prefix is present — the regression proof; the pre-fix code
+      returned the bare ``str(exc)`` with no prefix, so this assertion fails on
+      the old code and passes on the new;
+    - the offending config field still reaches the client (422 validation UX
+      preserved — we deliberately keep this feedback rather than genericizing);
+    - the body carries none of the raw-exception / infrastructure markers a
+      generic ``except Exception`` dump would leak (traceback text, object
+      reprs, absolute filesystem paths, errno).
+    """
+    addon = {
+        "chunker": {
+            "chunk_token_size": 1200,
+            "fixed_token": {"chunk_overlap_token_size": 100},
+        }
+    }
+    client, captured = _make_client(monkeypatch, addon_params=addon)
+    resp = client.post(path, headers=_HEADERS, json=body)
+
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    # Wrapper applied (fails on the pre-fix bare str(exc)).
+    assert detail.startswith("Invalid chunking configuration:")
+    # Useful validation info preserved.
+    assert "chunk_overlap_token_size" in detail
+    # No raw-exception / infrastructure text leaks into the body.
+    lowered = detail.lower()
+    for marker in ("traceback", " object at 0x", "/users/", "/app/", ".py", "errno"):
+        assert marker not in lowered, f"leaked marker {marker!r} in 422 detail"
+    # Rejected synchronously: background indexing never scheduled.
+    assert captured == {}
+
+
 def test_insert_text_allows_amount_override_inheriting_std_type(monkeypatch):
     # Reviewer scenario: deployment sets standard_deviation; a request
     # overrides only breakpoint_threshold_amount (> 100). This must be
