@@ -651,6 +651,14 @@ def parse_args() -> argparse.Namespace:
     args.token_auto_renew = get_env_value("TOKEN_AUTO_RENEW", True, bool)
     args.token_renew_threshold = get_env_value("TOKEN_RENEW_THRESHOLD", 0.5, float)
 
+    # Login brute-force protection: max failed /login attempts per client IP +
+    # username within the window before further attempts are rejected with HTTP
+    # 429. Set LOGIN_MAX_FAILED_ATTEMPTS=0 to disable (CWE-307).
+    args.login_max_failed_attempts = get_env_value("LOGIN_MAX_FAILED_ATTEMPTS", 5, int)
+    args.login_lockout_window_seconds = get_env_value(
+        "LOGIN_LOCKOUT_WINDOW_SECONDS", 300, float
+    )
+
     # Rerank model configuration
     args.rerank_model = get_env_value("RERANK_MODEL", None)
     args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)

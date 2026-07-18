@@ -14,6 +14,7 @@ import asyncio
 import sys
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
@@ -180,3 +181,112 @@ def test_login_offloads_verification_to_thread(monkeypatch):
 
     assert resp.status_code == 200
     assert "verify_password" in offloaded
+
+
+def test_login_locks_out_after_max_failed_attempts(monkeypatch):
+    monkeypatch.setenv("LOGIN_MAX_FAILED_ATTEMPTS", "3")
+    monkeypatch.setenv("LOGIN_LOCKOUT_WINDOW_SECONDS", "300")
+    _server, client = _client_with_account(monkeypatch)
+
+    for _ in range(3):
+        resp = client.post("/login", data={"username": "admin", "password": "bad"})
+        assert resp.status_code == 401
+
+    locked = client.post("/login", data={"username": "admin", "password": "bad"})
+    assert locked.status_code == 429
+    assert int(locked.headers["Retry-After"]) >= 1
+
+
+def test_login_lockout_returns_429_without_bcrypt(monkeypatch):
+    """A locked-out attempt must be rejected before the bcrypt verification, so
+    lockout also caps the CPU/DoS cost of a login flood.
+    """
+    monkeypatch.setenv("LOGIN_MAX_FAILED_ATTEMPTS", "2")
+    lightrag_server, app = _build_server(monkeypatch)
+    monkeypatch.setattr(
+        lightrag_server.auth_handler, "accounts", {"admin": "s3cret-plain"}
+    )
+
+    verify_calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy(func, *args, **kwargs):
+        verify_calls.append(getattr(func, "__name__", func))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(lightrag_server.asyncio, "to_thread", spy)
+
+    client = TestClient(app)
+    for _ in range(2):
+        client.post("/login", data={"username": "admin", "password": "bad"})
+    calls_before_lockout = len(verify_calls)
+
+    resp = client.post("/login", data={"username": "admin", "password": "bad"})
+    assert resp.status_code == 429
+    assert len(verify_calls) == calls_before_lockout  # no bcrypt on the locked call
+
+
+def test_login_success_resets_lockout(monkeypatch):
+    """A successful login clears the failure counter. With max=2, the sequence
+    fail, success, fail, fail must stay 401 throughout; without the reset the
+    last attempt would be 429.
+    """
+    monkeypatch.setenv("LOGIN_MAX_FAILED_ATTEMPTS", "2")
+    _server, client = _client_with_account(monkeypatch)
+
+    def status(password):
+        return client.post(
+            "/login", data={"username": "admin", "password": password}
+        ).status_code
+
+    assert status("bad") == 401
+    assert status("s3cret-plain") == 200  # resets the counter
+    assert status("bad") == 401
+    assert status("bad") == 401  # would be 429 if the success had not reset
+
+
+def test_login_lockout_is_per_username(monkeypatch):
+    """Locking one username must not lock a different one from the same IP."""
+    monkeypatch.setenv("LOGIN_MAX_FAILED_ATTEMPTS", "2")
+    _server, client = _client_with_account(monkeypatch)  # only "admin" configured
+
+    for _ in range(2):
+        client.post("/login", data={"username": "admin", "password": "bad"})
+    assert (
+        client.post("/login", data={"username": "admin", "password": "bad"}).status_code
+        == 429
+    )
+
+    # A different username has its own bucket and is still only rejected as 401.
+    assert (
+        client.post("/login", data={"username": "bob", "password": "bad"}).status_code
+        == 401
+    )
+
+
+async def test_login_concurrent_attempts_cannot_bypass_limit(monkeypatch):
+    """Many simultaneous wrong-password requests must not all slip past the
+    limiter while bcrypt is in flight (TOCTOU): at most max_attempts may reach
+    verification, the rest must be rejected with 429.
+    """
+    monkeypatch.setenv("LOGIN_MAX_FAILED_ATTEMPTS", "5")
+    lightrag_server, app = _build_server(monkeypatch)
+    monkeypatch.setattr(
+        lightrag_server.auth_handler, "accounts", {"admin": "s3cret-plain"}
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = await asyncio.gather(
+            *(
+                client.post("/login", data={"username": "admin", "password": "bad"})
+                for _ in range(40)
+            )
+        )
+
+    codes = [r.status_code for r in responses]
+    # At most max_attempts guesses reach bcrypt (401); everyone else is locked
+    # out (429). Before the pre-reservation fix all 40 returned 401.
+    assert codes.count(401) <= 5
+    assert codes.count(429) >= 35
+    assert codes.count(401) + codes.count(429) == 40
