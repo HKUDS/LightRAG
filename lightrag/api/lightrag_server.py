@@ -16,6 +16,7 @@ import logging
 import logging.config
 import sys
 import textwrap
+import uuid
 import uvicorn
 import pipmaster as pm
 from typing import Any
@@ -31,6 +32,7 @@ from lightrag.api.utils_api import (
     get_auth_status_dependency,
     display_splash_screen,
     check_env_file,
+    internal_server_error,
 )
 from .config import (
     global_args,
@@ -1379,6 +1381,26 @@ def create_app(args):
             # For other endpoints, return the default FastAPI validation error
             return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
+    # Last-resort handler for any exception that escapes a route without being
+    # converted to an HTTPException. It guarantees raw exception text never
+    # reaches the client (CWE-209): the full detail and traceback are logged
+    # server-side under a correlation id, and the response body carries only a
+    # generic message plus that id. HTTPException (including the sanitized 500s
+    # raised via internal_server_error) is still handled by FastAPI's own
+    # handler and is intentionally not intercepted here.
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        error_id = uuid.uuid4().hex[:12]
+        logger.error(
+            f"Unhandled exception [error_id={error_id}] on "
+            f"{request.method} {request.url.path}",
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error (error_id: {error_id})"},
+        )
+
     def get_cors_origins():
         """Get allowed origins from global_args.
 
@@ -2470,7 +2492,7 @@ def create_app(args):
             return status_data
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     # Pre-render the runtime-config <script> once. The browser-visible URL
     # prefixes are NOT baked into the bundle anymore — index.html ships with

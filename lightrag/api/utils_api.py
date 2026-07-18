@@ -7,6 +7,7 @@ import argparse
 from typing import Optional, List, Tuple
 import sys
 import time
+import uuid
 import logging
 from ascii_colors import ASCIIColors
 from .._version import __api_version__ as api_version
@@ -22,6 +23,39 @@ from .auth import auth_handler
 from .config import ollama_server_infos, global_args, get_env_value
 
 logger = logging.getLogger("lightrag")
+
+# Generic body returned to clients for any HTTP 500 so that raw exception text
+# (which can carry DB hosts, credentials, filesystem paths, or SQL fragments) is
+# never disclosed in the response — see CWE-209.
+_INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error"
+
+
+def internal_server_error(exc: Exception) -> HTTPException:
+    """Build a client-safe HTTP 500 that never exposes raw exception text (CWE-209).
+
+    Callers are expected to have already logged the full exception (message and
+    traceback) server-side. This mints a short correlation id, emits one more log
+    line carrying it, and returns an ``HTTPException`` whose ``detail`` is only a
+    generic message plus that id. An operator can join the client-visible id to
+    the server log, while the response body never reveals internal infrastructure
+    such as database hosts, credentials, filesystem paths, or SQL fragments.
+
+    Usage::
+
+        except Exception as e:
+            logger.error(f"Error doing X: {e}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+    """
+    error_id = uuid.uuid4().hex[:12]
+    logger.error(
+        f"Returning HTTP 500 to client [error_id={error_id}] ({type(exc).__name__})"
+    )
+    return HTTPException(
+        status_code=500,
+        detail=f"{_INTERNAL_SERVER_ERROR_MESSAGE} (error_id: {error_id})",
+    )
+
 
 # ========== Token Renewal Rate Limiting ==========
 # Cache to track last renewal time per user (username as key)

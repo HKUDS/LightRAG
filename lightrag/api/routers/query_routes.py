@@ -6,9 +6,9 @@ import asyncio
 import json
 import time
 from typing import Any, Dict, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from lightrag.base import QueryParam
-from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
@@ -500,7 +500,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     def _build_stream_generator(
         *,
@@ -929,7 +929,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 )
         except Exception as e:
             logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.post(
         "/query/data",
@@ -1347,6 +1347,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 )
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     return router

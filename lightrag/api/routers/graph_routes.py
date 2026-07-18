@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag.base import DeletionResult
 from lightrag.utils import logger
-from ..utils_api import get_combined_auth_dependency
+from ..utils_api import get_combined_auth_dependency, internal_server_error
 from .document_routes import check_pipeline_busy_or_raise
 
 
@@ -131,9 +131,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error getting graph labels: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error getting graph labels: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
     async def get_popular_labels(
@@ -155,9 +153,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error getting popular labels: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error getting popular labels: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.get("/graph/label/search", dependencies=[Depends(combined_auth)])
     async def search_labels(
@@ -181,9 +177,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error searching labels with query '{q}': {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error searching labels: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
@@ -219,9 +213,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
@@ -242,9 +234,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error checking entity existence for '{name}': {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error checking entity existence: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
     async def update_entity(request: EntityUpdateRequest):
@@ -435,9 +425,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error updating entity '{request.entity_name}': {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error updating entity: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
     async def update_relation(request: RelationUpdateRequest):
@@ -473,9 +461,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}"
             )
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error updating relation: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
     async def create_entity(request: EntityCreateRequest):
@@ -549,9 +535,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error creating entity '{request.entity_name}': {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error creating entity: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
     async def create_relation(request: RelationCreateRequest):
@@ -641,9 +625,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 f"Error creating relation between '{request.source_entity}' and '{request.target_entity}': {str(e)}"
             )
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error creating relation: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
     async def merge_entities(request: EntityMergeRequest):
@@ -725,9 +707,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 f"Error merging entities {request.entities_to_change} into '{request.entity_to_change_into}': {str(e)}"
             )
             logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Error merging entities: {str(e)}"
-            )
+            raise internal_server_error(e)
 
     @router.delete(
         "/graph/entity/delete",
@@ -763,7 +743,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             error_msg = f"Error deleting entity '{request.entity_name}': {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
+            raise internal_server_error(e)
 
     @router.delete(
         "/graph/relation/delete",
@@ -802,6 +782,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             error_msg = f"Error deleting relation from '{request.source_entity}' to '{request.target_entity}': {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
+            raise internal_server_error(e)
 
     return router

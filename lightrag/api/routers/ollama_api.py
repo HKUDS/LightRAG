@@ -11,7 +11,7 @@ import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 from lightrag.utils import TiktokenTokenizer
-from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from fastapi import Depends
 
 
@@ -469,7 +469,7 @@ class OllamaAPI:
                     }
             except Exception as e:
                 logger.error(f"Ollama generate error: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+                raise internal_server_error(e)
 
         @self.router.post(
             "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
@@ -744,4 +744,4 @@ class OllamaAPI:
                     }
             except Exception as e:
                 logger.error(f"Ollama chat error: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+                raise internal_server_error(e)
