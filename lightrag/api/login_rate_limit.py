@@ -12,11 +12,21 @@ enforcement is required.
 
 All access happens on a single worker's event-loop thread, so no locking is
 needed (mirrors the token-renewal cache in ``utils_api.py``).
+
+The number of tracked keys is capped at ``max_tracked_keys`` with least-recently-
+active eviction, so a flood of unique IP/username pairs cannot grow the map
+without bound (the map would otherwise be its own memory-exhaustion DoS). This
+is a basic in-process safety bound only; defending against large-scale or
+distributed attacks is the job of an upstream reverse proxy / WAF.
 """
 
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Callable, Optional
+
+# Upper bound on distinct keys held in memory (see module docstring). Each key
+# holds at most ``max_attempts`` timestamps, so total memory stays small.
+DEFAULT_MAX_TRACKED_KEYS = 10_000
 
 
 class LoginRateLimiter:
@@ -25,12 +35,15 @@ class LoginRateLimiter:
         max_attempts: int = 5,
         window_seconds: float = 300.0,
         clock: Callable[[], float] = time.monotonic,
+        max_tracked_keys: int = DEFAULT_MAX_TRACKED_KEYS,
     ) -> None:
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
+        self.max_tracked_keys = max_tracked_keys
         self._clock = clock
-        # key -> timestamps of recent failed attempts (oldest first)
-        self._failures: dict[str, deque] = {}
+        # key -> timestamps of recent failed attempts (oldest first). Ordered so
+        # the least-recently-active key can be evicted in O(1) when at capacity.
+        self._failures: "OrderedDict[str, deque]" = OrderedDict()
 
     @property
     def enabled(self) -> bool:
@@ -69,7 +82,16 @@ class LoginRateLimiter:
         """Record one failed attempt for ``key``."""
         if not self.enabled:
             return
-        self._failures.setdefault(key, deque()).append(self._clock())
+        now = self._clock()
+        dq = self._recent_failures(key, now)
+        if dq is None:
+            # New key: evict the least-recently-active one when at capacity so a
+            # flood of unique keys cannot grow the map without bound.
+            if len(self._failures) >= self.max_tracked_keys:
+                self._failures.popitem(last=False)
+            dq = self._failures[key] = deque()
+        dq.append(now)
+        self._failures.move_to_end(key)  # mark most-recently-active
 
     def reset(self, key: str) -> None:
         """Clear all recorded failures for ``key`` (called on successful login)."""

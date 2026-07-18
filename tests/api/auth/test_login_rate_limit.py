@@ -92,3 +92,38 @@ def test_keys_are_independent():
 
     assert limiter.retry_after(admin) is not None  # admin locked
     assert limiter.retry_after(bob) is None  # different key, own bucket
+
+
+def test_tracked_keys_are_bounded_by_lru_eviction():
+    """A flood of unique keys must not grow the map without bound; the oldest
+    (least-recently-active) keys are evicted so memory stays capped.
+    """
+    clock = _FakeClock()
+    limiter = LoginRateLimiter(
+        max_attempts=5, window_seconds=300, clock=clock, max_tracked_keys=3
+    )
+
+    for i in range(10):
+        limiter.record_failure(f"10.0.0.{i}:admin")
+
+    assert len(limiter._failures) <= 3
+    assert "10.0.0.9:admin" in limiter._failures  # most recent retained
+    assert "10.0.0.0:admin" not in limiter._failures  # oldest evicted
+
+
+def test_active_key_survives_a_flood_of_unique_keys():
+    """A key that keeps failing stays most-recently-active and is not evicted by
+    a flood of one-off keys, so a real brute-force target keeps its counter.
+    """
+    clock = _FakeClock()
+    limiter = LoginRateLimiter(
+        max_attempts=5, window_seconds=300, clock=clock, max_tracked_keys=3
+    )
+    target = "1.2.3.4:admin"
+
+    for i in range(10):
+        limiter.record_failure(f"flood:{i}")
+        limiter.record_failure(target)  # touched every round -> stays hot
+
+    assert len(limiter._failures) <= 3
+    assert target in limiter._failures
