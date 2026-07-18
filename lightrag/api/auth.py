@@ -7,12 +7,29 @@ from pydantic import BaseModel
 
 from ..utils import logger
 from .config import DEFAULT_TOKEN_SECRET, global_args
-from .passwords import verify_password
+from .passwords import BCRYPT_PASSWORD_PREFIX, verify_password
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+# A syntactically valid bcrypt spec used only to equalize login timing (see
+# AuthHandler.verify_password). It is a bcrypt hash of a throwaway value that
+# never matches any real password, and it is not a secret. Every login path
+# runs exactly one bcrypt verification (a real one for {bcrypt} accounts, this
+# dummy for unknown usernames and for plaintext accounts) so response time does
+# not reveal whether an account exists or whether it is stored as plaintext
+# (username enumeration via the ~100 ms bcrypt delay, CWE-208).
+#
+# The cost factor is 12, matching hash_password()/bcrypt.gensalt() defaults.
+# Accounts stored with a hand-chosen, different bcrypt cost will still differ
+# somewhat; fully closing that gap requires enforcing a uniform cost (or
+# dropping plaintext support altogether). See GHSA-c759-cx9p-mrwq.
+_DUMMY_VERIFY_SPEC = (
+    BCRYPT_PASSWORD_PREFIX
+    + "$2b$12$ilI0sY2jGfy4h0AVtn6WuutU6BFwzZq5MVvrQYY9fbyQ59NI2NBKa"
+)
 
 
 class TokenPayload(BaseModel):
@@ -74,10 +91,25 @@ class AuthHandler:
         Returns:
             bool: True if password is correct, False otherwise
         """
-        if username not in self.accounts:
+        # Every branch performs exactly one bcrypt verification so response time
+        # cannot be used to enumerate usernames or distinguish plaintext from
+        # bcrypt accounts (CWE-208). See _DUMMY_VERIFY_SPEC.
+        stored_password = self.accounts.get(username)
+
+        if stored_password is None:
+            # Unknown username: run the dummy bcrypt, then fail.
+            verify_password(plain_password, _DUMMY_VERIFY_SPEC)
             return False
 
-        stored_password = self.accounts[username]
+        if not stored_password.startswith(BCRYPT_PASSWORD_PREFIX):
+            # Known plaintext account: the constant-time plaintext compare is
+            # only microseconds, so add one dummy bcrypt to match the cost of an
+            # unknown username and a {bcrypt} account. Keep the real result.
+            password_matches = verify_password(plain_password, stored_password)
+            verify_password(plain_password, _DUMMY_VERIFY_SPEC)
+            return password_matches
+
+        # Known {bcrypt} account: the real verification already costs one bcrypt.
         return verify_password(plain_password, stored_password)
 
     def create_token(

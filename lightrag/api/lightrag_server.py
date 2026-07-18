@@ -9,6 +9,7 @@ from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
+import asyncio
 import json
 import os
 import re
@@ -2278,7 +2279,14 @@ def create_app(args):
                 "webui_description": webui_description,
             }
         username = form_data.username
-        if not auth_handler.verify_password(username, form_data.password):
+        # verify_password runs a CPU-bound bcrypt for every attempt (including
+        # unknown usernames, to equalize timing). Run it in a worker thread so a
+        # flood of login requests cannot block the event loop and starve the
+        # whole API (unauthenticated DoS). Login rate limiting is still advisable.
+        password_ok = await asyncio.to_thread(
+            auth_handler.verify_password, username, form_data.password
+        )
+        if not password_ok:
             raise HTTPException(status_code=401, detail="Incorrect credentials")
 
         # Regular user login
