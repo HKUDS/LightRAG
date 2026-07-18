@@ -238,15 +238,66 @@ def _allowed_non_public_networks() -> list:
     return nets
 
 
+def _unwrap_embedded_ipv4(ip):
+    """Return the IPv4 embedded in an IPv6 transition wrapper so it is judged by
+    IPv4 rules; otherwise return ``ip`` unchanged.
+
+    ``ipaddress.is_global`` is evaluated on the literal address, and CPython
+    classifies several IPv6 wrappers that embed an *internal* IPv4 as globally
+    routable, so a bare ``is_global`` check passes them. On a host with
+    NAT64/DNS64 (or 6to4) routing the request is then delivered to the embedded
+    internal target (loopback / RFC1918 / cloud metadata). We therefore decode
+    the embedded IPv4 and classify by *that* before the ``is_global`` gate.
+
+    Handled wrappers: IPv4-mapped (``::ffff:0:0/96``), IPv4-compatible
+    (``::/96``, minus ``::``/``::1``), the NAT64 well-known prefix
+    (``64:ff9b::/96``, RFC 6052) and the RFC 8215 local-use prefix
+    (``64:ff9b:1::/48``), and 6to4 (``2002::/16``). A NAT64-wrapped *public*
+    IPv4 (e.g. ``64:ff9b::808:808`` = 8.8.8.8) still resolves to a global IPv4
+    and is left allowed; genuine native global IPv6 is returned untouched.
+
+    Boundary: a NAT64 deployment using a *custom*, globally-routable Network-
+    Specific Prefix (RFC 6052 permits any /32../96) is not recognised here — the
+    prefix is deployment-specific and indistinguishable from ordinary global
+    IPv6. Such operators should pin the download egress or use
+    ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` deliberately.
+    """
+    if ip.version != 6:
+        return ip
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if getattr(ip, "sixtofour", None) is not None:
+        return ip.sixtofour
+    b = ip.packed
+    # IPv4-compatible ``::a.b.c.d`` (top 96 bits zero), excluding ``::`` and
+    # ``::1`` which are not IPv4 wrappers (and are non-global anyway).
+    if b[:12] == b"\x00" * 12 and b[12:] not in (
+        b"\x00\x00\x00\x00",
+        b"\x00\x00\x00\x01",
+    ):
+        return ip_address(b[12:])
+    # NAT64 well-known prefix ``64:ff9b::/96`` — IPv4 in the low 32 bits.
+    if b[:12] == b"\x00\x64\xff\x9b" + b"\x00" * 8:
+        return ip_address(b[12:])
+    # RFC 8215 local-use NAT64 ``64:ff9b:1::/48``.
+    if b[:6] == b"\x00\x64\xff\x9b\x00\x01":
+        return ip_address(b[12:])
+    return ip
+
+
 def _validated_addresses(host: str) -> list[str]:
     """Resolve ``host`` and return its addresses iff ALL are safe to fetch.
 
-    Default-deny: an address is accepted only when ``ip.is_global`` (so SSRF to
-    loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10`` /
-    TEST-NET and any other non-globally-routable range is blocked) or it matches
-    the operator-configured ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` escape
-    hatch. Returns ``[]`` when resolution fails or *any* resolved address is
-    non-public — so a single poisoned A/AAAA record rejects the whole host.
+    Default-deny: an address is accepted only when it is globally routable (so
+    SSRF to loopback / private / link-local / reserved / CGNAT ``100.64.0.0/10``
+    / TEST-NET and any other non-globally-routable range is blocked) or it
+    matches the operator-configured ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``
+    escape hatch. The ``is_global`` verdict is taken on the IPv4 embedded in any
+    IPv6 transition wrapper (see :func:`_unwrap_embedded_ipv4`) so a NAT64 /
+    6to4 / IPv4-compatible literal that wraps an internal IPv4 cannot smuggle
+    past the gate. Returns ``[]`` when resolution fails or *any* resolved
+    address is non-public — so a single poisoned A/AAAA record rejects the whole
+    host.
 
     The returned addresses are what the connection actually dials (see
     :class:`_GuardedHTTPConnection`): validating and connecting share one
@@ -265,7 +316,8 @@ def _validated_addresses(host: str) -> list[str]:
             ip = ip_address(addr)
         except ValueError:
             return []
-        if not (ip.is_global or any(ip in net for net in allow)):
+        judged = _unwrap_embedded_ipv4(ip)
+        if not (judged.is_global or any(ip in net for net in allow)):
             return []
         addrs.append(addr)
     return addrs

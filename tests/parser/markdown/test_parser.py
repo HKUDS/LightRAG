@@ -22,6 +22,7 @@ from lightrag.parser.markdown.parser import (
     _image_ext_from_magic,
     _looks_like_svg,
     _pin_socket,
+    _unwrap_embedded_ipv4,
 )
 
 # A 1x1 transparent PNG.
@@ -157,6 +158,59 @@ def test_host_is_public_rejects_internal(monkeypatch):
     assert _host_is_public("100.64.0.1") is False
     # TEST-NET (192.0.2.0/24) is likewise non-global.
     assert _host_is_public("192.0.2.1") is False
+
+
+def test_host_is_public_rejects_ipv6_transition_wrapped_internal(monkeypatch):
+    # GHSA-vv3m-f8x4-7377: an internal IPv4 smuggled inside an IPv6 transition
+    # wrapper must be judged by its embedded IPv4, not the wrapper's own
+    # ``is_global``. On a NAT64/DNS64 host these literals route to the internal
+    # target, so every wrapped form of a non-public IPv4 must be blocked.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    # 127.0.0.1 (loopback) wrapped four ways.
+    assert _host_is_public("64:ff9b::7f00:1") is False  # NAT64 well-known /96
+    assert _host_is_public("64:ff9b:1::7f00:1") is False  # RFC 8215 /48
+    assert _host_is_public("::7f00:1") is False  # IPv4-compatible ::a.b.c.d
+    assert _host_is_public("2002:7f00:1::") is False  # 6to4 2002::/16
+    # IPv4-mapped form of the same loopback (already blocked pre-fix).
+    assert _host_is_public("::ffff:7f00:1") is False
+    # Cloud instance-metadata endpoint (169.254.169.254) via NAT64.
+    assert _host_is_public("64:ff9b::a9fe:a9fe") is False
+    # RFC1918 host (10.66.0.2) via NAT64 and via IPv4-compatible.
+    assert _host_is_public("64:ff9b::a42:2") is False
+    assert _host_is_public("::a42:2") is False
+
+
+def test_host_is_public_allows_genuine_and_nat64_wrapped_public(monkeypatch):
+    # The fix must not create false positives: genuine global IPv6 and a NAT64
+    # wrapper of a *public* IPv4 both resolve to a globally routable address and
+    # must still be fetchable.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    assert _host_is_public("2606:4700:4700::1111") is True  # Cloudflare DNS
+    assert _host_is_public("2001:4860:4860::8888") is True  # Google DNS
+    assert _host_is_public("64:ff9b::808:808") is True  # NAT64 of 8.8.8.8
+
+
+def test_unwrap_embedded_ipv4_isolated():
+    from ipaddress import ip_address
+
+    # Internal IPv4 wrappers decode to the embedded (non-global) IPv4.
+    assert _unwrap_embedded_ipv4(ip_address("64:ff9b::7f00:1")) == ip_address(
+        "127.0.0.1"
+    )
+    assert _unwrap_embedded_ipv4(ip_address("::7f00:1")) == ip_address("127.0.0.1")
+    assert _unwrap_embedded_ipv4(ip_address("2002:7f00:1::")) == ip_address("127.0.0.1")
+    assert _unwrap_embedded_ipv4(ip_address("::ffff:7f00:1")) == ip_address("127.0.0.1")
+    # NAT64 of a public IPv4 decodes to that public IPv4 (still global).
+    assert _unwrap_embedded_ipv4(ip_address("64:ff9b::808:808")) == ip_address(
+        "8.8.8.8"
+    )
+    # ``::`` and ``::1`` are not IPv4 wrappers — left untouched.
+    assert _unwrap_embedded_ipv4(ip_address("::1")) == ip_address("::1")
+    assert _unwrap_embedded_ipv4(ip_address("::")) == ip_address("::")
+    # Genuine global IPv6 and plain IPv4 pass through unchanged.
+    genuine = ip_address("2606:4700:4700::1111")
+    assert _unwrap_embedded_ipv4(genuine) == genuine
+    assert _unwrap_embedded_ipv4(ip_address("8.8.8.8")) == ip_address("8.8.8.8")
 
 
 def test_allowlist_permits_configured_non_public(monkeypatch):
