@@ -140,12 +140,17 @@ class LoginRateLimiter:
         entry = self._live_entry(key, now)
         if entry is None:
             return None
-        if len(entry.failures) + entry.pending < self.max_attempts:
+        confirmed = len(entry.failures)
+        if confirmed + entry.pending < self.max_attempts:
             return None
-        if entry.failures:
+        if confirmed >= self.max_attempts:
+            # Genuine failure lockout: advise waiting until the oldest confirmed
+            # failure ages out of the window.
             return max(0.0, self.window_seconds - (now - entry.failures[0]))
-        # Blocked only by in-flight reservations (no confirmed failures yet);
-        # they resolve quickly, so advise a short retry.
+        # Blocked only because in-flight reservations push the total to the
+        # limit (confirmed failures are still below it). Those resolve in well
+        # under a second and may all succeed -- clearing the failures -- so
+        # advise a short retry rather than the full window.
         return _PENDING_RETRY_AFTER_SECONDS
 
     def reserve_attempt(self, key: str) -> None:

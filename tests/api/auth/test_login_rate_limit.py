@@ -3,7 +3,11 @@
 from types import SimpleNamespace
 
 import lightrag.api.login_rate_limit as lrl_module
-from lightrag.api.login_rate_limit import LoginRateLimiter, _safe_log_value
+from lightrag.api.login_rate_limit import (
+    _PENDING_RETRY_AFTER_SECONDS,
+    LoginRateLimiter,
+    _safe_log_value,
+)
 
 
 def _capture_warnings(monkeypatch):
@@ -128,7 +132,39 @@ def test_pending_reservations_block_without_confirmed_failures():
     limiter.reserve_attempt(key)
     limiter.reserve_attempt(key)  # 2 in-flight, none resolved yet
 
-    assert limiter.retry_after(key) is not None  # blocked by pending
+    # Blocked, but only by pending -> short retry hint, not the full window.
+    assert limiter.retry_after(key) == _PENDING_RETRY_AFTER_SECONDS
+
+
+def test_retry_after_is_short_when_block_is_only_from_pending():
+    """A request blocked only because in-flight reservations push the total to
+    the limit (confirmed failures still below it) should get the short pending
+    hint, not the full window -- those reservations may resolve as successes.
+    """
+    limiter, _clock = _make(max_attempts=5, window_seconds=300)
+    key = "1.2.3.4:admin"
+
+    _fail(limiter, key)  # 1 confirmed failure (< max)
+    for _ in range(4):
+        limiter.reserve_attempt(key)  # 4 in-flight -> total 5 reaches the limit
+
+    assert limiter.retry_after(key) == _PENDING_RETRY_AFTER_SECONDS
+
+
+def test_retry_after_is_full_window_on_genuine_failure_lockout():
+    """Once confirmed failures alone reach the limit, the retry hint is the time
+    until the oldest failure ages out (close to the full window).
+    """
+    limiter, _clock = _make(max_attempts=3, window_seconds=300)
+    key = "1.2.3.4:admin"
+
+    for _ in range(3):
+        _fail(limiter, key)  # 3 confirmed failures == max
+
+    retry_after = limiter.retry_after(key)
+    assert retry_after is not None
+    assert retry_after > _PENDING_RETRY_AFTER_SECONDS
+    assert 299 <= retry_after <= 300
 
 
 def test_tracked_keys_are_bounded():
