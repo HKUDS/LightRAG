@@ -182,11 +182,12 @@ def test_host_is_public_rejects_ipv6_transition_wrapped_internal(monkeypatch):
 
 
 def test_host_is_public_rejects_6to4_block_even_wrapping_public(monkeypatch):
-    # 6to4 (2002::/16) is deprecated (RFC 7526) and not globally reachable per
-    # IANA; current CPython classifies the whole block non-global. The guard must
-    # never be more permissive than the stdlib, so decoding the embedded IPv4
-    # must not re-permit it: 2002::/16 is default-denied as a whole block —
-    # including a 6to4 wrapper of a *public* IPv4 — regardless of interpreter.
+    # 6to4 (2002::/16) is not globally reachable per IANA and current CPython
+    # classifies the whole block non-global. The guard must never be more
+    # permissive than the stdlib, so decoding the embedded IPv4 must not
+    # re-permit it: 2002::/16 is default-denied as a whole block — including a
+    # 6to4 wrapper of a *public* IPv4 — regardless of interpreter. (RFC 7526
+    # deprecated only the 6to4 anycast relay path, not the 2002::/16 prefix.)
     monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
     assert _host_is_public("2002:808:808::") is False  # 6to4 of public 8.8.8.8
     assert _host_is_public("2002:7f00:1::") is False  # 6to4 of loopback

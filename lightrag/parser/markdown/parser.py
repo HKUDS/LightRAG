@@ -243,11 +243,15 @@ def _allowed_non_public_networks() -> list:
 #   - ``64:ff9b:1::/48`` — RFC 8215 local-use NAT64. Technology-agnostic; the
 #     embedded-IPv4 position is not guaranteed (RFC 8215 §5), so a fixed-offset
 #     decode is itself bypassable. IANA marks the whole /48 not-globally-reachable.
-#   - ``2002::/16`` — 6to4 (deprecated, RFC 7526). IANA global-reachability N/A;
-#     CPython 3.13+ / the gh-113171 backports treat it as private.
+#   - ``2002::/16`` — 6to4. IANA marks its global-reachability N/A and CPython
+#     3.13+ / the gh-113171 backports treat the whole block as private, so a
+#     decode of the embedded IPv4 must not re-permit it. (RFC 7526 deprecated
+#     only the 6to4 *anycast relay* path, 192.88.99.0/24; basic unicast 6to4 and
+#     the 2002::/16 prefix itself are not deprecated — but the block is still not
+#     globally reachable.)
 # Both are default-denied as whole blocks, independent of the interpreter, so we
-# never decode past them. An operator who genuinely runs a local NAT64 / legacy
-# 6to4 there can still opt in via ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``.
+# never decode past them. An operator who genuinely runs a local NAT64 / 6to4
+# there can still opt in via ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS``.
 _FORCE_NON_GLOBAL_V6 = (ip_network("64:ff9b:1::/48"), ip_network("2002::/16"))
 
 
