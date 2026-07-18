@@ -7,12 +7,26 @@ from pydantic import BaseModel
 
 from ..utils import logger
 from .config import DEFAULT_TOKEN_SECRET, global_args
-from .passwords import verify_password
+from .passwords import BCRYPT_PASSWORD_PREFIX, verify_password
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+# A syntactically valid bcrypt spec used only to equalize the timing of the
+# "unknown username" path (see AuthHandler.verify_password). It is a bcrypt
+# hash of a throwaway value that never matches any real password, and it is not
+# a secret. Running a full verification against it when the username is unknown
+# keeps the response time close to the known-user bcrypt path, so an attacker
+# cannot enumerate valid usernames from the ~100 ms bcrypt delay (CWE-208).
+# Note: this equalizes against the bcrypt cost. Deployments that store only
+# plaintext passwords still respond faster for known accounts; the robust fix
+# for such deployments is to switch to {bcrypt} values (see GHSA-c759-cx9p-mrwq).
+_DUMMY_VERIFY_SPEC = (
+    BCRYPT_PASSWORD_PREFIX
+    + "$2b$12$ilI0sY2jGfy4h0AVtn6WuutU6BFwzZq5MVvrQYY9fbyQ59NI2NBKa"
+)
 
 
 class TokenPayload(BaseModel):
@@ -74,10 +88,15 @@ class AuthHandler:
         Returns:
             bool: True if password is correct, False otherwise
         """
-        if username not in self.accounts:
+        stored_password = self.accounts.get(username)
+        if stored_password is None:
+            # Unknown username: still run a full verification against a dummy
+            # spec so the response time matches the known-user path, then fail.
+            # This prevents username enumeration via the bcrypt timing delta
+            # (CWE-208). The dummy never matches, so the result is always False.
+            verify_password(plain_password, _DUMMY_VERIFY_SPEC)
             return False
 
-        stored_password = self.accounts[username]
         return verify_password(plain_password, stored_password)
 
     def create_token(

@@ -72,6 +72,55 @@ def test_plaintext_password_with_bcrypt_prefix_stays_plaintext(auth_module):
     assert not handler.verify_password("user", "anything-else")
 
 
+def test_plaintext_verify_uses_constant_time_comparison():
+    """Plaintext specs must be compared with hmac.compare_digest rather than a
+    short-circuiting ``==`` that leaks length/content via timing (CWE-208,
+    GHSA-c759-cx9p-mrwq). Behavior across lengths and unicode is the regression
+    anchor for the constant-time path.
+    """
+    from lightrag.api.passwords import verify_password as verify
+
+    assert verify("secret", "secret")
+    assert not verify("secret", "secre")  # shorter guess
+    assert not verify("secret", "secretx")  # longer guess
+    assert verify("pässwörd-пароль", "pässwörd-пароль")  # unicode via utf-8
+    assert not verify("pässwörd-пароль", "wrong")
+
+
+def test_verify_password_unknown_user_runs_dummy_verification(auth_module, monkeypatch):
+    """Unknown usernames must still trigger a password verification so response
+    time does not reveal whether the account exists (username enumeration via
+    the bcrypt timing delta, CWE-208). The old code returned early without
+    comparing anything.
+    """
+    handler = auth_module.AuthHandler()
+    handler.accounts = {"admin": "admin_pass"}
+
+    calls = []
+    real_verify = auth_module.verify_password
+
+    def spy(plain, stored):
+        calls.append((plain, stored))
+        return real_verify(plain, stored)
+
+    monkeypatch.setattr(auth_module, "verify_password", spy)
+
+    assert handler.verify_password("does-not-exist", "whatever") is False
+    # Verification ran against the dummy spec instead of being skipped.
+    assert calls == [("whatever", auth_module._DUMMY_VERIFY_SPEC)]
+
+
+def test_verify_password_unicode_plaintext(auth_module):
+    """Non-ASCII plaintext passwords still verify through the utf-8 encoded
+    constant-time comparison path.
+    """
+    handler = auth_module.AuthHandler()
+    handler.accounts = {"admin": "pässw0rd-пароль"}
+
+    assert handler.verify_password("admin", "pässw0rd-пароль")
+    assert not handler.verify_password("admin", "pässw0rd-wrong")
+
+
 def test_invalid_auth_accounts_raises(monkeypatch):
     config = import_real_api_module("lightrag.api.config")
 

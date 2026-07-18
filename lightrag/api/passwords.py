@@ -1,3 +1,5 @@
+import hmac
+
 import bcrypt
 
 BCRYPT_PASSWORD_PREFIX = "{bcrypt}"
@@ -23,4 +25,10 @@ def verify_password(plain_password: str, stored_password: str) -> bool:
         except ValueError:
             return False
 
-    return stored_password == plain_password
+    # Constant-time comparison for plaintext specs. A plain ``==`` short-circuits
+    # on the first mismatched byte, leaking password length and content through
+    # response timing (CWE-208, GHSA-c759-cx9p-mrwq). compare_digest runs in time
+    # independent of where the first difference occurs.
+    return hmac.compare_digest(
+        stored_password.encode("utf-8"), plain_password.encode("utf-8")
+    )
