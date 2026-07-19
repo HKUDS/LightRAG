@@ -1760,7 +1760,17 @@ def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
 def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     """Build a reservation owner record: the cancellation-safety token plus the
     process identity used to detect a dead owner (see :func:`_process_alive`) and
-    the ``kind`` that decides recovery semantics."""
+    the ``kind`` that decides recovery semantics.
+
+    ``kind`` is the reservation-holding operation, one of:
+
+    * ``processing`` / ``scan`` — re-runnable: in-flight docs sit in doc_status
+      and are reset to PENDING / retried, so a dead owner's slot is simply
+      cleared (see :data:`_RERUNNABLE_RESERVATION_KINDS`).
+    * ``custom_chunks`` / ``delete`` / ``clear`` — destructive and may have
+      half-committed, so a dead owner fences the workspace with
+      ``recovery_required`` instead of being cleared for re-run.
+    """
     return {
         "token": token,
         "pid": os.getpid(),
