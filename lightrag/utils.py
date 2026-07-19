@@ -643,9 +643,29 @@ def compute_args_hash(*args: Any) -> str:
         *args: Arguments to hash
     Returns:
         str: Hash string
+
+    Note:
+        - **Single-argument calls preserve the original algorithm** (plain
+          ``str(arg)``) so that ``compute_mdhash_id(content)`` keeps producing
+          the same document IDs across upgrades. Existing persisted IDs stay valid.
+        - **Two or more arguments** use length-prefixed encoding
+          (``"{len}:{str(arg)}"`` joined without separators) so that adjacent
+          field boundaries are unambiguously recoverable. This prevents the
+          cache-key collisions that the delimiter-less join could produce
+          (e.g. ``("abc","x")`` vs ``("ab","cx")`` both hashed to the same MD5).
+          Length-prefixing is used instead of a sentinel character because
+          query text and free-form fields can contain arbitrary characters,
+          so any fixed delimiter could still be constructed to collide.
     """
-    # Convert all arguments to strings and join them
-    args_str = "".join([str(arg) for arg in args])
+    if len(args) <= 1:
+        # Single-arg (or no-arg) path: keep the legacy behavior unchanged so
+        # compute_mdhash_id(content) document IDs remain stable.
+        args_str = "".join([str(arg) for arg in args])
+    else:
+        # Multi-arg path: length-prefix each field to make boundaries unique.
+        # Format: "3:abc1:x2:10" — the leading length makes the field extent
+        # unambiguous regardless of the field content.
+        args_str = "".join(f"{len(s)}:{s}" for s in (str(arg) for arg in args))
 
     # Use 'replace' error handling to safely encode problematic Unicode characters
     # This replaces invalid characters with Unicode replacement character (U+FFFD)
