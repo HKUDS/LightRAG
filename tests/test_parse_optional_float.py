@@ -1,10 +1,12 @@
-"""Regression: parse_optional_float rejects non-finite env values."""
+"""Regression tests for :func:`lightrag.utils.parse_optional_float`."""
 
 from __future__ import annotations
 
 import pytest
 
 from lightrag.utils import parse_optional_float
+
+pytestmark = pytest.mark.offline
 
 
 @pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "+inf", "-inf"])
