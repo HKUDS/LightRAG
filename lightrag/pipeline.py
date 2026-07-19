@@ -82,6 +82,7 @@ from lightrag.utils import (
     save_to_cache,
     serialize_llm_cache_identity,
     strip_control_characters,
+    tolerant_load_json_dict,
 )
 from lightrag.utils_pipeline import (
     # Re-exported through the pipeline namespace (not used by this module
@@ -3774,10 +3775,10 @@ class _PipelineMixin:
                         return repair_vlm_json_escape_damage_nested(obj)
                 except Exception:
                     pass
-                m = re.search(r"\{[\s\S]*\}", candidate)
-                if m:
+                brace = candidate.find("{")
+                if brace != -1:
                     try:
-                        obj = json_repair.loads(m.group(0))
+                        obj, _end = json.JSONDecoder().raw_decode(candidate[brace:])
                         if isinstance(obj, dict):
                             return repair_vlm_json_escape_damage_nested(obj)
                     except Exception:

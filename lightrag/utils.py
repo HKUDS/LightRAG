@@ -35,6 +35,7 @@ from typing import (
 )
 import numpy as np
 from dotenv import load_dotenv
+import json_repair
 
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -4103,6 +4104,41 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
             repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
         ]
     return obj
+
+
+def tolerant_load_json_dict(text: str) -> dict[str, Any]:
+    """Load a JSON object from LLM text that may include fences or trailing prose.
+
+    Tries ``json_repair.loads`` on the full candidate first, then
+    ``json.JSONDecoder().raw_decode`` from the first ``{`` so a trailing
+    prose brace cannot extend a greedy ``{...}`` slice past the real value.
+    Returns ``{}`` when no object can be recovered.
+    """
+    if not text:
+        return {}
+    candidate = text.strip()
+    fence_match = re.match(
+        r"^```(?:json)?\s*\n(.*?)\n```$",
+        candidate,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+    try:
+        obj = json_repair.loads(candidate)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    brace = candidate.find("{")
+    if brace != -1:
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(candidate[brace:])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+    return {}
 
 
 def check_storage_env_vars(storage_name: str) -> None:
