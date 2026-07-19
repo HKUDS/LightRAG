@@ -3948,3 +3948,58 @@ def test_engine_params_survive_persist_to_full_docs(tmp_path, monkeypatch):
         await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_idle_trigger_releases_slot_silently_without_stop_message(
+    tmp_path, monkeypatch
+):
+    """A process trigger on an empty queue MUST take the ``busy`` slot first — so
+    the doc_status read is protected against a concurrent clear/delete/scan that
+    rewrites storage — then release it SILENTLY: a run that did no work records no
+    ``pipeline stopped`` bookkeeping.
+    """
+    import lightrag.pipeline as pipeline_mod
+    from lightrag.kg.shared_storage import get_namespace_data
+
+    calls = {"acquire": 0}
+    real_acquire = pipeline_mod.acquire_processing_reservation
+
+    async def _spy_acquire(*args, **kwargs):
+        calls["acquire"] += 1
+        return await real_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_mod, "acquire_processing_reservation", _spy_acquire)
+
+    async def _run():
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            # Nothing enqueued: the queue is empty.
+            await rag.apipeline_process_enqueue_documents()
+
+            assert calls["acquire"] == 1, (
+                "empty-queue run must take the slot so the doc_status read is "
+                "protected against a concurrent clear/delete/scan"
+            )
+
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            # Slot released after the empty read...
+            assert not pipeline_status.get("busy")
+            assert pipeline_status.get("busy_owner") is None
+            history = [
+                str(m).lower() for m in (pipeline_status.get("history_messages") or [])
+            ]
+            assert not any("stopped" in m for m in history), (
+                f"idle trigger emitted a stop message: {history!r}"
+            )
+            assert (
+                "stopped"
+                not in str(pipeline_status.get("latest_message") or "").lower()
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())

@@ -8,6 +8,8 @@ from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing import Manager
 import time
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from contextvars import ContextVar
 from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
 
@@ -1720,6 +1722,7 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
     "pending_enqueue_tokens",
     "operation_record",
     "recovery_required",
+    "scan_deferred_processing",
 )
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
@@ -1779,12 +1782,12 @@ def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     }
 
 
-def _recover_dead_reservation(
-    pipeline_status: Dict[str, Any],
+def _dead_reservation_updates(
+    pipeline_status: Mapping[str, Any],
     owner_key: str,
     flags: tuple,
     rec: Dict[str, Any],
-) -> None:
+) -> Dict[str, Any]:
     """Reclaim a single-holder reservation whose owner is confirmed dead.
 
     processing / scan → clear flags + owner (the work is re-runnable). Everything
@@ -1803,52 +1806,159 @@ def _recover_dead_reservation(
             # snapshot of what the dead owner was doing (doc_id / scope), if any
             "operation_record": pipeline_status.get("operation_record"),
         }
-    pipeline_status.update(updates)
+    return updates
 
 
-def reconcile_dead_pipeline_reservations(pipeline_status: Dict[str, Any]) -> None:
-    """Reclaim reservations whose owning process is confirmed dead.
+def _dead_pipeline_reservation_updates(
+    status_snapshot: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compute dead-owner recovery updates from one local status snapshot.
 
     No-op unless Linux multi-worker (:func:`_reservation_recovery_enabled`).
-    Called inside the ``pipeline_status_lock`` critical section, BEFORE conflict
-    checks, so a dead owner's slot is lazily reclaimed at the next acquire. Uses
-    a FIXED flag→owner mapping (not the generic reject_when set, which only knows
-    the acquirer's own owner_key) and only reclaims a CONFIRMED-dead owner
-    (:func:`_process_alive`); a live-but-slow owner is never preempted.
+    The input MUST be a plain local snapshot, not a Manager ``DictProxy``: all
+    field reads stay local so a reconciliation decision costs one proxy ``copy``
+    at its caller instead of one RPC per ``get``. Only confirmed-dead owners are
+    reclaimed; a live-but-slow owner is never preempted.
     """
     if not _reservation_recovery_enabled():
-        return
+        return {}
+
+    snapshot = dict(status_snapshot)
+    updates: Dict[str, Any] = {}
     # busy_owner covers busy + destructive_busy; scanning_owner covers
     # scanning + scanning_exclusive.
     for owner_key, flags in (
         ("busy_owner", ("busy", "destructive_busy")),
         ("scanning_owner", ("scanning", "scanning_exclusive")),
     ):
-        rec = pipeline_status.get(owner_key)
+        rec = snapshot.get(owner_key)
         if not isinstance(rec, dict):
             continue
-        if not any(pipeline_status.get(flag) for flag in flags):
+        if not any(snapshot.get(flag) for flag in flags):
             continue
         if _process_alive(rec.get("pid"), rec.get("process_start_id")):
             continue
-        _recover_dead_reservation(pipeline_status, owner_key, flags, rec)
+        owner_updates = _dead_reservation_updates(snapshot, owner_key, flags, rec)
+        snapshot.update(owner_updates)
+        updates.update(owner_updates)
 
     # pending_enqueues: {token: {pid, process_start_id}} — drop confirmed-dead
     # tokens (an enqueue is re-runnable: its doc sits in doc_status). Always
     # recalibrate the mirrored count, covering a crash between "dropped token"
     # and "updated count".
-    tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
+    tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
     alive = {
         token: meta
         for token, meta in tokens.items()
         if _process_alive((meta or {}).get("pid"), (meta or {}).get("process_start_id"))
     }
-    if len(alive) != len(tokens) or pipeline_status.get("pending_enqueues") != len(
-        alive
-    ):
-        pipeline_status.update(
+    if len(alive) != len(tokens) or snapshot.get("pending_enqueues") != len(alive):
+        updates.update(
             {"pending_enqueue_tokens": alive, "pending_enqueues": len(alive)}
         )
+
+    return updates
+
+
+def _pipeline_status_snapshot(
+    pipeline_status: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Return one local snapshot of a dict or Manager ``DictProxy``.
+
+    ``DictProxy.copy()`` is one Manager RPC. ``dict(proxy)`` may use the mapping
+    protocol and fetch values individually, so all reservation/status paths use
+    this helper before reading more than one field.
+    """
+    return pipeline_status.copy()
+
+
+def reconcile_dead_pipeline_reservations(
+    pipeline_status: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reclaim dead reservations with one snapshot and at most one update.
+
+    Call only while holding ``pipeline_status_lock``. Production acquire and
+    mutation paths should use the reservation helpers below, which combine these
+    recovery updates with their own state transition. This wrapper remains for
+    focused recovery tests and compatibility with existing internal callers.
+    """
+    snapshot = _pipeline_status_snapshot(pipeline_status)
+    updates = _dead_pipeline_reservation_updates(snapshot)
+    if updates:
+        pipeline_status.update(updates)
+    return updates
+
+
+class PipelineReservationConflict(str, Enum):
+    """Structured reason why a pipeline reservation was refused."""
+
+    BUSY = "busy"
+    SCANNING = "scanning"
+    PENDING_ENQUEUE = "pending_enqueue"
+    DESTRUCTIVE = "destructive"
+    RECOVERY_REQUIRED = "recovery_required"
+
+
+@dataclass(frozen=True)
+class PipelineReservationResult:
+    """Result of an atomic reservation or mutation-fence decision."""
+
+    acquired: bool
+    conflict: Optional[PipelineReservationConflict] = None
+    message: Optional[str] = None
+    snapshot: Optional[Dict[str, Any]] = None
+
+
+def _recovery_required_result(
+    snapshot: Dict[str, Any],
+) -> PipelineReservationResult:
+    return PipelineReservationResult(
+        acquired=False,
+        conflict=PipelineReservationConflict.RECOVERY_REQUIRED,
+        message=pipeline_recovery_blocked_message(snapshot),
+        snapshot=snapshot,
+    )
+
+
+def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
+    try:
+        return {
+            "busy": PipelineReservationConflict.BUSY,
+            "scanning": PipelineReservationConflict.SCANNING,
+            "scanning_exclusive": PipelineReservationConflict.SCANNING,
+            "pending_enqueues": PipelineReservationConflict.PENDING_ENQUEUE,
+            "destructive_busy": PipelineReservationConflict.DESTRUCTIVE,
+        }[flag_key]
+    except KeyError:
+        # Fail-fast on an unmapped reject_when flag: a silent BUSY fallback would
+        # mislabel the conflict (and its HTTP status) and hide the typo.
+        raise ValueError(
+            f"No reservation conflict mapping for status flag {flag_key!r}; add it "
+            "to _conflict_for_status_flag when introducing a new reject_when flag."
+        ) from None
+
+
+def _prepare_pipeline_reservation_decision(
+    pipeline_status: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Take one proxy snapshot and locally apply computed recovery updates."""
+    snapshot = _pipeline_status_snapshot(pipeline_status)
+    recovery_updates = _dead_pipeline_reservation_updates(snapshot)
+    snapshot.update(recovery_updates)
+    return snapshot, recovery_updates
+
+
+def _commit_pipeline_reservation_updates(
+    pipeline_status: Dict[str, Any],
+    recovery_updates: Mapping[str, Any],
+    operation_updates: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Commit recovery plus operation changes in at most one proxy update."""
+    updates = dict(recovery_updates)
+    if operation_updates:
+        updates.update(operation_updates)
+    if updates:
+        pipeline_status.update(updates)
 
 
 async def run_to_completion(factory, *, max_restarts: int = 3):
@@ -1898,30 +2008,46 @@ async def acquire_reservation(
     pipeline_status_lock,
     *,
     owner_key: str,
-    owner: Any,
+    owner: Any = None,
+    owner_kind: Optional[str] = None,
     flags: Dict[str, Any],
     reject_when,
-) -> tuple[bool, Optional[str]]:
+) -> PipelineReservationResult:
     """Atomically take a single-holder reservation.
 
-    ``reject_when`` is a sequence of ``(flag_key, reason)``: if any flag is set
-    the reservation is refused and ``(False, reason)`` is returned. Otherwise the
-    ``flags`` and ``pipeline_status[owner_key] = owner`` are written in a SINGLE
-    ``status.update`` (atomic against a mid-write crash) and ``(True, None)`` is
-    returned. ``owner`` may be a bare token or an owner record dict.
+    ``reject_when`` is a sequence of ``(flag_key, reason)``. The structured
+    result reports either the matching conflict or a mandatory recovery fence.
+    Otherwise ``flags`` and ``pipeline_status[owner_key] = owner`` are written in
+    one update together with any dead-owner cleanup. ``owner`` may be a bare
+    token or an owner record dict; ``owner_kind`` converts a token into a process
+    identity record inside this shared coordination layer.
 
     The caller MUST have entered its ``try`` before calling this so a cancel at
     the lock exit still runs the ``finally`` that releases ``owner`` by token.
     """
+    if owner_kind is not None:
+        owner = make_owner_record(str(owner), owner_kind)
     async with pipeline_status_lock:
-        reconcile_dead_pipeline_reservations(pipeline_status)
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
         for flag_key, reason in reject_when:
-            if pipeline_status.get(flag_key):
-                return False, reason
+            if snapshot.get(flag_key):
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=_conflict_for_status_flag(flag_key),
+                    message=reason,
+                    snapshot=snapshot,
+                )
         updates = dict(flags)
         updates[owner_key] = owner
-        pipeline_status.update(updates)
-    return True, None
+        snapshot.update(updates)
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
+    return PipelineReservationResult(acquired=True, snapshot=snapshot)
 
 
 async def acquire_enqueue_reservation(
@@ -1930,7 +2056,7 @@ async def acquire_enqueue_reservation(
     *,
     token: str,
     reject_when,
-) -> tuple[bool, Optional[str]]:
+) -> PipelineReservationResult:
     """Take one of the (concurrent) pending-enqueue reservations.
 
     ``pending_enqueue_tokens`` is a ``{token: metadata}`` set; several enqueues
@@ -1938,16 +2064,192 @@ async def acquire_enqueue_reservation(
     ``pending_enqueues`` in a single atomic update.
     """
     async with pipeline_status_lock:
-        reconcile_dead_pipeline_reservations(pipeline_status)
-        for flag_key, reason in reject_when:
-            if pipeline_status.get(flag_key):
-                return False, reason
-        tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
-        tokens[token] = {"pid": os.getpid(), "process_start_id": _my_start_id()}
-        pipeline_status.update(
-            {"pending_enqueue_tokens": tokens, "pending_enqueues": len(tokens)}
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
         )
-    return True, None
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        for flag_key, reason in reject_when:
+            if snapshot.get(flag_key):
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=_conflict_for_status_flag(flag_key),
+                    message=reason,
+                    snapshot=snapshot,
+                )
+        tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
+        tokens[token] = {"pid": os.getpid(), "process_start_id": _my_start_id()}
+        updates = {
+            "pending_enqueue_tokens": tokens,
+            "pending_enqueues": len(tokens),
+        }
+        snapshot.update(updates)
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
+    return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+async def check_pipeline_status_mutation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    reject_when=(),
+) -> PipelineReservationResult:
+    """Reconcile and evaluate a mutation fence without taking a reservation.
+
+    The recovery fence is mandatory. Optional status conflicts are evaluated
+    from the same local snapshot, and recovery writes use at most one update.
+    """
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        for flag_key, reason in reject_when:
+            if snapshot.get(flag_key):
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=_conflict_for_status_flag(flag_key),
+                    message=reason,
+                    snapshot=snapshot,
+                )
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+        return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+async def acquire_processing_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    token: str,
+    already_held: bool,
+    flags: Mapping[str, Any],
+) -> PipelineReservationResult:
+    """Acquire/take over the single processing slot from one proxy snapshot.
+
+    Refuses the slot (without taking it) while a scan holds ``scanning_exclusive``
+    — its classification phase mutates doc_status — and reduces a competing
+    ``busy`` holder to a ``request_pending`` nudge, both in the same update used
+    for any recovery changes. A handed-off run (``already_held``) is exempt from
+    both: it already owns the slot. The caller may owner-check release
+    unconditionally because the token is stamped atomically with ``busy``.
+    """
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return _recovery_required_result(snapshot)
+        # A scan's classification phase (``scanning_exclusive``) mutates
+        # doc_status; a new processor must not read/process concurrently or it
+        # races those rewrites. A handed-off run (``already_held``) took the slot
+        # before scanning could start, so it is exempt. Plain ``scanning`` (the
+        # scan's own post-classification queue drive) is NOT fenced here: the scan
+        # releases ``scanning_exclusive`` before it drives processing.
+        if not already_held and snapshot.get("scanning_exclusive"):
+            # Record the turned-away request so the scan drives the queue once it
+            # releases scanning_exclusive (run_scanning_process finally): an SDK
+            # insert's PENDING doc may have no scan-visible file and no other
+            # trigger. Cleared below when any processing run takes the slot.
+            updates = {"scan_deferred_processing": True}
+            snapshot.update(updates)
+            _commit_pipeline_reservation_updates(
+                pipeline_status, recovery_updates, updates
+            )
+            return PipelineReservationResult(
+                acquired=False,
+                conflict=PipelineReservationConflict.SCANNING,
+                message=(
+                    "Document scan is classifying files; processing resumes after "
+                    "the classification phase finishes."
+                ),
+                snapshot=snapshot,
+            )
+        if not already_held and snapshot.get("busy"):
+            updates = {"request_pending": True}
+            snapshot.update(updates)
+            _commit_pipeline_reservation_updates(
+                pipeline_status, recovery_updates, updates
+            )
+            return PipelineReservationResult(
+                acquired=False,
+                conflict=PipelineReservationConflict.BUSY,
+                message="Another process is already processing the document queue.",
+                snapshot=snapshot,
+            )
+
+        updates = dict(flags)
+        updates.update(
+            {
+                "busy": True,
+                "busy_owner": make_owner_record(token, "processing"),
+                # This run drains the queue, satisfying any request the
+                # scanning_exclusive fence deferred earlier — clear the flag so the
+                # scan's post-release drive stays a no-op.
+                "scan_deferred_processing": False,
+            }
+        )
+        snapshot.update(updates)
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
+        # history_messages is a ListProxy and must remain the same shared object.
+        del snapshot["history_messages"][:]
+        return PipelineReservationResult(acquired=True, snapshot=snapshot)
+
+
+async def transition_scanning_reservation(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    token: str,
+) -> bool:
+    """Owner-checked transition from scan classification to processing.
+
+    The transition is cancellation-resistant and performs one snapshot plus at
+    most one update. It deliberately does not reconcile other reservations: the
+    live scan owner is only narrowing its own reservation.
+    """
+
+    async def _run() -> bool:
+        async with pipeline_status_lock:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if _reservation_owner_token(snapshot.get("scanning_owner")) != token:
+                return False
+            if not snapshot.get("scanning_exclusive"):
+                return True
+            pipeline_status.update({"scanning_exclusive": False})
+            return True
+
+    return await run_to_completion(_run)
+
+
+async def has_scan_deferred_processing(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+) -> bool:
+    """Report whether a scan's ``scanning_exclusive`` fence deferred a processing
+    request that no run has since picked up.
+
+    Read-only ON PURPOSE — it does NOT clear the flag. ``scan_deferred_processing``
+    is set when the fence turns a request away and cleared atomically by
+    ``acquire_processing_reservation`` only when a run actually takes the ``busy``
+    slot. ``run_scanning_process`` checks this after releasing its reservation and
+    drives the queue once when True; the drive's own acquire then clears it.
+
+    Clearing HERE would reopen a cancellation race: the ``pipeline_status_lock``
+    exit awaits, so a ``CancelledError`` delivered AFTER the clear but BEFORE the
+    queue drive would lose both the request and the flag, stranding the PENDING
+    doc. Leaving the clear to the acquire means a cancelled or failed drive keeps
+    the flag set for the next scan — the handoff is only ``done`` once a run owns
+    the slot.
+    """
+    async with pipeline_status_lock:
+        snapshot = _pipeline_status_snapshot(pipeline_status)
+        return bool(snapshot.get("scan_deferred_processing"))
 
 
 async def with_reservation_lock(
@@ -1973,7 +2275,8 @@ async def with_reservation_lock(
 
     async def _run():
         async with pipeline_status_lock:
-            if _reservation_owner_token(pipeline_status.get(owner_key)) != token:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if _reservation_owner_token(snapshot.get(owner_key)) != token:
                 return None
             return action(pipeline_status)
 
@@ -1999,7 +2302,8 @@ async def with_token_set_reservation_lock(
 
     async def _run():
         async with pipeline_status_lock:
-            tokens = dict(pipeline_status.get(tokens_key, {}))
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            tokens = dict(snapshot.get(tokens_key, {}))
             if token not in tokens:
                 return None
             del tokens[token]
@@ -2044,7 +2348,8 @@ async def release_owned_reservation(
             "pipeline_status", workspace=workspace
         )
         async with pipeline_status_lock:
-            if _reservation_owner_token(pipeline_status.get(owner_key)) != token:
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            if _reservation_owner_token(snapshot.get(owner_key)) != token:
                 return None
             return action(pipeline_status)
 
@@ -2079,7 +2384,8 @@ async def release_token_set_reservation(
             "pipeline_status", workspace=workspace
         )
         async with pipeline_status_lock:
-            tokens = dict(pipeline_status.get(tokens_key, {}))
+            snapshot = _pipeline_status_snapshot(pipeline_status)
+            tokens = dict(snapshot.get(tokens_key, {}))
             if token not in tokens:
                 return None
             del tokens[token]

@@ -13,7 +13,10 @@ import pytest
 import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.shared_storage import (
     acquire_enqueue_reservation,
+    acquire_processing_reservation,
     acquire_reservation,
+    check_pipeline_status_mutation,
+    has_scan_deferred_processing,
     finalize_share_data,
     get_namespace_data,
     get_namespace_lock,
@@ -27,6 +30,28 @@ from lightrag.kg.shared_storage import (
 )
 
 
+class _CountingStatus(dict):
+    """DictProxy-shaped fake that counts remote-style method calls."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.copy_calls = 0
+        self.get_calls = 0
+        self.update_calls = 0
+
+    def copy(self):
+        self.copy_calls += 1
+        return dict.copy(self)
+
+    def get(self, key, default=None):
+        self.get_calls += 1
+        return super().get(key, default)
+
+    def update(self, *args, **kwargs):
+        self.update_calls += 1
+        return super().update(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # acquire_reservation — plain dict + asyncio.Lock (no shared-data needed)
 # ---------------------------------------------------------------------------
@@ -37,7 +62,7 @@ async def test_acquire_reservation_takes_atomically_and_rejects():
     ps = {"busy": False, "scanning": False, "busy_owner": None}
     lock = asyncio.Lock()
 
-    ok, reason = await acquire_reservation(
+    result = await acquire_reservation(
         ps,
         lock,
         owner_key="busy_owner",
@@ -45,11 +70,11 @@ async def test_acquire_reservation_takes_atomically_and_rejects():
         flags={"busy": True},
         reject_when=[("busy", "pipeline busy"), ("scanning", "scanning")],
     )
-    assert ok is True and reason is None
+    assert result.acquired is True and result.message is None
     # flag and owner land together (single atomic update).
     assert ps["busy"] is True and ps["busy_owner"] == "tok1"
 
-    ok2, reason2 = await acquire_reservation(
+    result2 = await acquire_reservation(
         ps,
         lock,
         owner_key="busy_owner",
@@ -57,8 +82,184 @@ async def test_acquire_reservation_takes_atomically_and_rejects():
         flags={"busy": True},
         reject_when=[("busy", "pipeline busy")],
     )
-    assert ok2 is False and reason2 == "pipeline busy"
+    assert result2.acquired is False and result2.message == "pipeline busy"
     assert ps["busy_owner"] == "tok1"  # untouched
+
+
+@pytest.mark.offline
+async def test_mutation_check_uses_one_snapshot_and_no_update_when_idle(monkeypatch):
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: False)
+    ps = _CountingStatus(
+        {
+            "busy": False,
+            "busy_owner": None,
+            "scanning_owner": None,
+            "pending_enqueue_tokens": {},
+            "pending_enqueues": 0,
+        }
+    )
+
+    result = await check_pipeline_status_mutation(ps, asyncio.Lock())
+
+    assert result.acquired is True
+    assert ps.copy_calls == 1
+    assert ps.get_calls == 0
+    assert ps.update_calls == 0
+
+
+@pytest.mark.offline
+async def test_enqueue_acquire_combines_recovery_and_reservation_update(monkeypatch):
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
+    monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)
+    ps = _CountingStatus(
+        {
+            "busy": False,
+            "busy_owner": None,
+            "scanning": False,
+            "scanning_exclusive": False,
+            "scanning_owner": None,
+            "destructive_busy": False,
+            "pending_enqueue_tokens": {"dead": {"pid": 999999}},
+            "pending_enqueues": 1,
+        }
+    )
+
+    result = await acquire_enqueue_reservation(
+        ps,
+        asyncio.Lock(),
+        token="new",
+        reject_when=(("destructive_busy", "destructive"),),
+    )
+
+    assert result.acquired is True
+    assert set(ps["pending_enqueue_tokens"]) == {"new"}
+    assert ps["pending_enqueues"] == 1
+    assert ps.copy_calls == 1
+    assert ps.get_calls == 0
+    assert ps.update_calls == 1
+
+
+@pytest.mark.offline
+async def test_single_owner_acquire_always_honors_recovery_fence(monkeypatch):
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
+    monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)
+    ps = _CountingStatus(
+        {
+            "busy": True,
+            "destructive_busy": True,
+            "busy_owner": {
+                "token": "dead",
+                "pid": 999999,
+                "kind": "clear",
+            },
+            "scanning_owner": None,
+            "pending_enqueue_tokens": {},
+            "pending_enqueues": 0,
+        }
+    )
+
+    result = await acquire_reservation(
+        ps,
+        asyncio.Lock(),
+        owner_key="busy_owner",
+        owner="new",
+        owner_kind="processing",
+        flags={"busy": True},
+        reject_when=(),
+    )
+
+    assert result.acquired is False
+    assert (
+        result.conflict is shared_storage.PipelineReservationConflict.RECOVERY_REQUIRED
+    )
+    assert ps["busy"] is False
+    assert ps["busy_owner"] is None
+    assert ps["recovery_required"]["kind"] == "clear"
+    assert ps.copy_calls == 1
+    assert ps.get_calls == 0
+    assert ps.update_calls == 1
+
+
+@pytest.mark.offline
+async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
+    """acquire_processing_reservation must NOT take the slot while a destructive
+    op holds ``busy`` or a scan holds ``scanning_exclusive``: reading/processing
+    doc_status then would race their storage rewrites. A handed-off run
+    (``already_held``) already owns the slot and is exempt from both fences.
+    """
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: False)
+    lock = asyncio.Lock()
+    flags = {"job_name": "Default Job"}
+
+    # A clear/delete holds ``busy`` → processing is nudged (request_pending); the
+    # destructive slot is left untouched.
+    busy_ps = {
+        "busy": True,
+        "scanning_exclusive": False,
+        "busy_owner": {"token": "destructive", "pid": 1, "kind": "clear"},
+        "history_messages": [],
+    }
+    busy_res = await acquire_processing_reservation(
+        busy_ps, lock, token="proc", already_held=False, flags=flags
+    )
+    assert busy_res.acquired is False
+    assert busy_res.conflict is shared_storage.PipelineReservationConflict.BUSY
+    assert busy_ps["busy"] is True
+    assert busy_ps["busy_owner"]["token"] == "destructive"
+    assert busy_ps["request_pending"] is True
+
+    # A scan classification phase holds ``scanning_exclusive`` → processing is
+    # refused without flipping ``busy`` mid-classification.
+    scan_ps = {
+        "busy": False,
+        "scanning_exclusive": True,
+        "scanning_owner": {"token": "scan", "pid": 1, "kind": "scan"},
+        "history_messages": [],
+    }
+    scan_res = await acquire_processing_reservation(
+        scan_ps, lock, token="proc", already_held=False, flags=flags
+    )
+    assert scan_res.acquired is False
+    assert scan_res.conflict is shared_storage.PipelineReservationConflict.SCANNING
+    assert scan_ps["busy"] is False
+    assert scan_ps.get("busy_owner") is None
+    # The turned-away request is recorded so the scan drives the queue on release.
+    assert scan_ps["scan_deferred_processing"] is True
+
+    # A handed-off run already owns the slot: exempt from the scanning fence and
+    # takes it over (owner stamped, history cleared).
+    handoff_ps = {
+        "busy": True,
+        "scanning_exclusive": True,
+        "busy_owner": {"token": "proc", "pid": 1, "kind": "processing"},
+        "history_messages": ["stale"],
+    }
+    handoff_res = await acquire_processing_reservation(
+        handoff_ps, lock, token="proc", already_held=True, flags=flags
+    )
+    assert handoff_res.acquired is True
+    assert handoff_ps["busy"] is True
+    assert handoff_ps["busy_owner"]["token"] == "proc"
+    assert list(handoff_ps["history_messages"]) == []
+    # Taking the slot clears any deferred-processing flag: this run drains it.
+    assert handoff_ps["scan_deferred_processing"] is False
+
+
+@pytest.mark.offline
+async def test_has_scan_deferred_processing_is_read_only():
+    """The deferred-processing check reports the flag WITHOUT clearing it — the
+    clear is owned by acquire_processing_reservation when a run takes the slot, so
+    a cancelled or failed post-scan drive keeps the flag for the next scan."""
+    lock = asyncio.Lock()
+    ps = {"scan_deferred_processing": True}
+    assert await has_scan_deferred_processing(ps, lock) is True
+    assert ps["scan_deferred_processing"] is True  # NOT cleared by the check
+    # Missing / false → False.
+    assert await has_scan_deferred_processing({}, lock) is False
+    assert (
+        await has_scan_deferred_processing({"scan_deferred_processing": False}, lock)
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +340,7 @@ async def test_with_reservation_lock_is_owner_checked():
         ps = await get_namespace_data("pipeline_status", workspace=ws)
         lock = get_namespace_lock("pipeline_status", workspace=ws)
 
-        ok, _ = await acquire_reservation(
+        result = await acquire_reservation(
             ps,
             lock,
             owner_key="busy_owner",
@@ -147,7 +348,7 @@ async def test_with_reservation_lock_is_owner_checked():
             flags={"busy": True},
             reject_when=[("busy", "busy")],
         )
-        assert ok
+        assert result.acquired
 
         # Correct owner → action runs and releases.
         res = await with_reservation_lock(
@@ -227,13 +428,13 @@ async def test_enqueue_token_set_acquire_and_idempotent_release():
         ps = await get_namespace_data("pipeline_status", workspace=ws)
         lock = get_namespace_lock("pipeline_status", workspace=ws)
 
-        ok1, _ = await acquire_enqueue_reservation(
+        res1 = await acquire_enqueue_reservation(
             ps, lock, token="e1", reject_when=[("destructive_busy", "d")]
         )
-        ok2, _ = await acquire_enqueue_reservation(
+        res2 = await acquire_enqueue_reservation(
             ps, lock, token="e2", reject_when=[("destructive_busy", "d")]
         )
-        assert ok1 and ok2
+        assert res1.acquired and res2.acquired
         assert ps["pending_enqueues"] == 2
         assert set(ps["pending_enqueue_tokens"]) == {"e1", "e2"}
 
