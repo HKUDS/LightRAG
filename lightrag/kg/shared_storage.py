@@ -1689,6 +1689,71 @@ async def initialize_pipeline_status(workspace: str | None = None):
         )
 
 
+def _debug_log_failure(message: str, exc: Exception) -> None:
+    """Record a swallowed ``append_pipeline_log`` failure without ever raising.
+
+    The never-raise contract of :func:`append_pipeline_log` extends to its own
+    diagnostics: if even the logging call fails (e.g. a broken handler), we must
+    not let it propagate and mask the caller's real exception.
+    """
+    try:
+        logging.getLogger("lightrag").debug("append_pipeline_log: %s: %r", message, exc)
+    except Exception:
+        pass
+
+
+def append_pipeline_log(pipeline_status, *messages, set_latest=True):
+    """Lock-free, best-effort write of pipeline status log messages.
+
+    Writes ``latest_message`` and appends to ``history_messages`` WITHOUT taking
+    ``pipeline_status_lock``. This is safe ONLY for pure status logging, never for
+    coordination state: ``busy`` / ``request_pending`` / ``cancellation_*`` /
+    reservation owner tokens / ``cur_batch`` / the ``history_messages`` trim all
+    stay in ``async with pipeline_status_lock`` read-modify-write blocks.
+
+    Why lock-free is safe here: each of ``dict.__setitem__`` and ``list.extend``
+    is a single indivisible operation on the backing dict/list under the Manager
+    server's CPython GIL (for plain str/tuple args). Dropping the lock only makes
+    the human-facing status log eventually consistent (``latest_message`` may lag
+    the tail of ``history_messages``, and concurrent writers may interleave) — no
+    coordination invariant depends on it. This mirrors the already-lock-free hot
+    loop in the processing pipeline.
+
+    ``extend`` (not a per-message ``append`` loop) keeps a multi-message call to a
+    single Manager RPC and appends the group atomically.
+
+    Contract — NEVER raises (a raising status write would mask the real exception
+    at call sites such as ``except ...: append_pipeline_log(...); raise e``):
+
+    - ``pipeline_status is None`` or no ``messages`` → no-op.
+    - ``pipeline_status`` present → best-effort: write ``latest_message`` if able,
+      extend ``history_messages`` if able. ``latest`` and ``history`` are guarded
+      independently so a failure of one still attempts the other. A missing/None
+      ``history_messages`` simply skips the append.
+
+    Args:
+        pipeline_status: the pipeline status mapping (plain dict or Manager
+            DictProxy), or None.
+        *messages: one or more log messages. With multiple, ``latest_message``
+            becomes the last one and all are appended to history in order.
+        set_latest: when False, only append to history (do not touch
+            ``latest_message``).
+    """
+    if pipeline_status is None or not messages:
+        return
+    if set_latest:
+        try:
+            pipeline_status["latest_message"] = messages[-1]
+        except Exception as exc:
+            _debug_log_failure("latest_message write skipped", exc)
+    try:
+        history = pipeline_status.get("history_messages")
+        if history is not None:
+            history.extend(messages)
+    except Exception as exc:
+        _debug_log_failure("history append skipped", exc)
+
+
 # ============================================================================
 # Pipeline reservation primitives (cancellation-safe owner-token release)
 # ============================================================================
