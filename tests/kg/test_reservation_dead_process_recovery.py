@@ -14,6 +14,7 @@ the logic off-Linux. The ``recovery_required`` *guard* (refusing mutations while
 fenced) is NOT gated and is tested directly.
 """
 
+import asyncio
 import importlib
 import os
 import subprocess
@@ -400,3 +401,45 @@ async def test_pipeline_status_filters_internal_fields(tmp_path):
             assert field not in dumped, f"{field} leaked to /pipeline_status"
     finally:
         finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_pipeline_status_reads_one_proxy_snapshot(monkeypatch, tmp_path):
+    class SnapshotOnlyStatus(dict):
+        copy_calls = 0
+
+        def copy(self):
+            self.copy_calls += 1
+            return dict.copy(self)
+
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("pipeline status must be read from one snapshot")
+
+    status = SnapshotOnlyStatus(
+        {
+            "busy": False,
+            "history_messages": [],
+            "job_start": None,
+        }
+    )
+
+    async def fake_get_namespace_data(*_args, **_kwargs):
+        return status
+
+    async def fake_update_flags(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(shared_storage, "get_namespace_data", fake_get_namespace_data)
+    monkeypatch.setattr(
+        shared_storage, "get_namespace_lock", lambda *_a, **_k: asyncio.Lock()
+    )
+    monkeypatch.setattr(
+        shared_storage, "get_all_update_flags_status", fake_update_flags
+    )
+
+    rag = _Rag()
+    router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+    response = await _endpoint(router, "get_pipeline_status")()
+
+    assert response.busy is False
+    assert status.copy_calls == 1

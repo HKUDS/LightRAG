@@ -14,6 +14,7 @@ import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.shared_storage import (
     acquire_enqueue_reservation,
     acquire_reservation,
+    check_pipeline_status_mutation,
     finalize_share_data,
     get_namespace_data,
     get_namespace_lock,
@@ -25,6 +26,28 @@ from lightrag.kg.shared_storage import (
     with_reservation_lock,
     with_token_set_reservation_lock,
 )
+
+
+class _CountingStatus(dict):
+    """DictProxy-shaped fake that counts remote-style method calls."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.copy_calls = 0
+        self.get_calls = 0
+        self.update_calls = 0
+
+    def copy(self):
+        self.copy_calls += 1
+        return dict.copy(self)
+
+    def get(self, key, default=None):
+        self.get_calls += 1
+        return super().get(key, default)
+
+    def update(self, *args, **kwargs):
+        self.update_calls += 1
+        return super().update(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +82,100 @@ async def test_acquire_reservation_takes_atomically_and_rejects():
     )
     assert ok2 is False and reason2 == "pipeline busy"
     assert ps["busy_owner"] == "tok1"  # untouched
+
+
+@pytest.mark.offline
+async def test_mutation_check_uses_one_snapshot_and_no_update_when_idle(monkeypatch):
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: False)
+    ps = _CountingStatus(
+        {
+            "busy": False,
+            "busy_owner": None,
+            "scanning_owner": None,
+            "pending_enqueue_tokens": {},
+            "pending_enqueues": 0,
+        }
+    )
+
+    result = await check_pipeline_status_mutation(ps, asyncio.Lock())
+
+    assert result.acquired is True
+    assert ps.copy_calls == 1
+    assert ps.get_calls == 0
+    assert ps.update_calls == 0
+
+
+@pytest.mark.offline
+async def test_enqueue_acquire_combines_recovery_and_reservation_update(monkeypatch):
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
+    monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)
+    ps = _CountingStatus(
+        {
+            "busy": False,
+            "busy_owner": None,
+            "scanning": False,
+            "scanning_exclusive": False,
+            "scanning_owner": None,
+            "destructive_busy": False,
+            "pending_enqueue_tokens": {"dead": {"pid": 999999}},
+            "pending_enqueues": 1,
+        }
+    )
+
+    result = await acquire_enqueue_reservation(
+        ps,
+        asyncio.Lock(),
+        token="new",
+        reject_when=(("destructive_busy", "destructive"),),
+    )
+
+    assert result.acquired is True
+    assert set(ps["pending_enqueue_tokens"]) == {"new"}
+    assert ps["pending_enqueues"] == 1
+    assert ps.copy_calls == 1
+    assert ps.get_calls == 0
+    assert ps.update_calls == 1
+
+
+@pytest.mark.offline
+async def test_single_owner_acquire_always_honors_recovery_fence(monkeypatch):
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
+    monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)
+    ps = _CountingStatus(
+        {
+            "busy": True,
+            "destructive_busy": True,
+            "busy_owner": {
+                "token": "dead",
+                "pid": 999999,
+                "kind": "clear",
+            },
+            "scanning_owner": None,
+            "pending_enqueue_tokens": {},
+            "pending_enqueues": 0,
+        }
+    )
+
+    result = await acquire_reservation(
+        ps,
+        asyncio.Lock(),
+        owner_key="busy_owner",
+        owner="new",
+        owner_kind="processing",
+        flags={"busy": True},
+        reject_when=(),
+    )
+
+    assert result.acquired is False
+    assert (
+        result.conflict is shared_storage.PipelineReservationConflict.RECOVERY_REQUIRED
+    )
+    assert ps["busy"] is False
+    assert ps["busy_owner"] is None
+    assert ps["recovery_required"]["kind"] == "clear"
+    assert ps.copy_calls == 1
+    assert ps.get_calls == 0
+    assert ps.update_calls == 1
 
 
 # ---------------------------------------------------------------------------
