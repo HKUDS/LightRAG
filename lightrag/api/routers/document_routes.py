@@ -3745,10 +3745,12 @@ def create_document_routes(
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
 
-            # Convert history_messages to a regular list if it's a Manager.list
-            # and limit to latest 1000 entries with truncation message if needed
+            # Materialize history_messages to a regular list if it's a Manager
+            # ListProxy, then limit to latest 1000 with a truncation banner. A
+            # slice is one Manager RPC; list(proxy) walks the sequence protocol
+            # with one __getitem__ RPC per element (history can hold 10k lines).
             if "history_messages" in status_dict:
-                history_list = list(status_dict["history_messages"])
+                history_list = status_dict["history_messages"][:]
                 total_count = len(history_list)
 
                 if total_count > 1000:

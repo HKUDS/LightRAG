@@ -140,6 +140,13 @@ _waiter_stale_ttl: float = DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL
 _lease_ns_cache: Optional[Dict[str, Any]] = None
 _queue_stats_ns_cache: Optional[Dict[str, Any]] = None
 
+# Per-process cache of get_namespace_data() results, keyed by final namespace.
+# The underlying shared dict for a namespace is created once and never removed
+# at runtime (the only clear is in finalize_share_data), so a hot-path hit can
+# safely skip the internal lock and the __contains__/__getitem__ RPCs. Reset by
+# initialize_share_data()/finalize_share_data() to preserve workspace isolation.
+_namespace_data_cache: Optional[Dict[str, Any]] = None
+
 # Rate limiting for acquire-failure warnings (fail-closed path).
 _ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
 _last_acquire_failure_log: float = 0.0
@@ -1535,7 +1542,8 @@ def initialize_share_data(
         _last_mp_cleanup_time, \
         _global_concurrency_limits, \
         _lease_ns_cache, \
-        _queue_stats_ns_cache
+        _queue_stats_ns_cache, \
+        _namespace_data_cache
 
     # Check if already initialized
     if _initialized:
@@ -1556,6 +1564,7 @@ def initialize_share_data(
     )
     _lease_ns_cache = None
     _queue_stats_ns_cache = None
+    _namespace_data_cache = {}
     if _global_concurrency_limits:
         direct_log(
             f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
@@ -2556,9 +2565,12 @@ async def set_all_update_flags(namespace: str, workspace: str | None = None):
     async with get_internal_lock():
         if final_namespace not in _update_flags:
             raise ValueError(f"Namespace {final_namespace} not found in update flags")
-        # Update flags for both modes
-        for i in range(len(_update_flags[final_namespace])):
-            _update_flags[final_namespace][i].value = True
+        # Snapshot the ListProxy handles once with a slice (one Manager RPC)
+        # instead of re-indexing the DictProxy+ListProxy on every iteration.
+        # Setting .value on each returned ValueProxy still writes through to
+        # the shared object; the internal lock excludes concurrent appends.
+        for flag in _update_flags[final_namespace][:]:
+            flag.value = True
 
 
 async def clear_all_update_flags(namespace: str, workspace: str | None = None):
@@ -2572,9 +2584,9 @@ async def clear_all_update_flags(namespace: str, workspace: str | None = None):
     async with get_internal_lock():
         if final_namespace not in _update_flags:
             raise ValueError(f"Namespace {final_namespace} not found in update flags")
-        # Update flags for both modes
-        for i in range(len(_update_flags[final_namespace])):
-            _update_flags[final_namespace][i].value = False
+        # See set_all_update_flags: one slice RPC to snapshot the flag handles.
+        for flag in _update_flags[final_namespace][:]:
+            flag.value = False
 
 
 async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str, list]:
@@ -2607,8 +2619,11 @@ async def get_all_update_flags_status(workspace: str | None = None) -> Dict[str,
                 if workspace:
                     continue
 
+            # flags is a ListProxy in multiprocess mode; iterating it directly
+            # would cost one getitem RPC per element. Slice once to a local list
+            # of ValueProxy handles, then read each .value.
             worker_statuses = []
-            for flag in flags:
+            for flag in flags[:]:
                 if _is_multiprocess:
                     worker_statuses.append(flag.value)
                 else:
@@ -2667,6 +2682,16 @@ async def get_namespace_data(
 
     final_namespace = get_final_namespace(namespace, workspace)
 
+    # Hot path: a namespace dict, once created, is a stable shared object for the
+    # life of the shared data, so a cached reference is safe to return without
+    # the internal lock or the __contains__/__getitem__ RPCs. The cache only ever
+    # holds already-created namespaces, so the PipelineNotInitializedError guard
+    # below (a miss) is unaffected.
+    if _namespace_data_cache is not None:
+        cached = _namespace_data_cache.get(final_namespace)
+        if cached is not None:
+            return cached
+
     async with get_internal_lock():
         if final_namespace not in _shared_dicts:
             # Special handling for pipeline_status namespace
@@ -2684,7 +2709,12 @@ async def get_namespace_data(
             else:
                 _shared_dicts[final_namespace] = {}
 
-    return _shared_dicts[final_namespace]
+        namespace_data = _shared_dicts[final_namespace]
+
+    if _namespace_data_cache is not None:
+        _namespace_data_cache[final_namespace] = namespace_data
+
+    return namespace_data
 
 
 class NamespaceLock:
@@ -2815,7 +2845,8 @@ def finalize_share_data():
         _default_workspace, \
         _global_concurrency_limits, \
         _lease_ns_cache, \
-        _queue_stats_ns_cache
+        _queue_stats_ns_cache, \
+        _namespace_data_cache
 
     # Check if already initialized
     if not _initialized:
@@ -2882,6 +2913,7 @@ def finalize_share_data():
     _global_concurrency_limits = None
     _lease_ns_cache = None
     _queue_stats_ns_cache = None
+    _namespace_data_cache = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
