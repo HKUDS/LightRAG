@@ -1,3 +1,5 @@
+name: lightrag
+
 services:
   lightrag:
     image: ghcr.io/hkuds/lightrag:latest
@@ -12,19 +14,71 @@ services:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
       - ./data/prompts:/app/data/prompts
-      - ./.env:/app/.env
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 10
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ./.env:/app/.env:ro
     environment:
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      LIGHTRAG_RUNTIME_TARGET: "docker"
       WORKING_DIR: "/app/data/rag_storage"
       INPUT_DIR: "/app/data/inputs"
       PROMPT_DIR: "/app/data/prompts"
-      # The container must listen on 0.0.0.0 to be reachable via the published port.
-      # SECURITY: set LIGHTRAG_API_KEY (or AUTH_ACCOUNTS with TOKEN_SECRET) in .env
-      # so the exposed server is authenticated — without it every endpoint is public.
-      HOST: "0.0.0.0"
-      PORT: "9621"
+      LIGHTRAG_KV_STORAGE: "PGKVStorage"
+      LIGHTRAG_DOC_STATUS_STORAGE: "PGDocStatusStorage"
+      LIGHTRAG_VECTOR_STORAGE: "PGVectorStorage"
+      LIGHTRAG_GRAPH_STORAGE: "Neo4JStorage"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      NEO4J_URI: "neo4j://neo4j:7687"
+      MINERU_API_MODE: "local"
+      MINERU_LOCAL_ENDPOINT: "http://mineru-api:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    networks:
+      - default
+      - mineru_lightrag
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DATABASE:?POSTGRES_DATABASE must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:?NEO4J_USERNAME must be set in .env}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      NEO4J_dbms_default__database: "neo4j"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'PORT_HEX="$$(printf ''%04X'' 7687)"; cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q ":$${PORT_HEX} "'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  neo4j_data:
+
+networks:
+  mineru_lightrag:
+    name: mineru-lightrag-internal
+    external: true

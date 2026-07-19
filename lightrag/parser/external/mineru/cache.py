@@ -49,6 +49,7 @@ DEFAULT_MINERU_LANGUAGE = "ch"
 DEFAULT_MINERU_LOCAL_BACKEND = "hybrid-auto-engine"
 DEFAULT_MINERU_LOCAL_PARSE_METHOD = "auto"
 DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS = False
+DEFAULT_MINERU_LOCAL_EFFORT = ""
 DEFAULT_MINERU_LOCAL_START_PAGE_ID = 0
 DEFAULT_MINERU_LOCAL_END_PAGE_ID = 99999
 DEFAULT_MINERU_ENABLE_TABLE = True
@@ -193,6 +194,7 @@ class MinerUParserOptions:
     local_backend: str
     local_parse_method: str
     local_image_analysis: bool
+    local_effort: str
     local_start_page_id: int
     local_end_page_id: int
 
@@ -238,6 +240,14 @@ class MinerUParserOptions:
             ).strip()
             or DEFAULT_MINERU_LOCAL_PARSE_METHOD
         )
+        local_effort = os.getenv(
+            "MINERU_LOCAL_EFFORT", DEFAULT_MINERU_LOCAL_EFFORT
+        ).strip().lower()
+        if local_effort and local_effort not in {"medium", "high"}:
+            raise ValueError(
+                "MINERU_LOCAL_EFFORT must be empty, 'medium', or 'high', "
+                f"got {local_effort!r}"
+            )
         local_start = _env_int(
             "MINERU_LOCAL_START_PAGE_ID", DEFAULT_MINERU_LOCAL_START_PAGE_ID
         )
@@ -267,6 +277,7 @@ class MinerUParserOptions:
             local_image_analysis=_env_bool(
                 "MINERU_LOCAL_IMAGE_ANALYSIS", DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS
             ),
+            local_effort=local_effort,
             local_start_page_id=local_start,
             local_end_page_id=local_end,
         )
@@ -287,6 +298,7 @@ def mineru_options_signature(
     local_backend: str = DEFAULT_MINERU_LOCAL_BACKEND,
     local_parse_method: str = DEFAULT_MINERU_LOCAL_PARSE_METHOD,
     local_image_analysis: bool = DEFAULT_MINERU_LOCAL_IMAGE_ANALYSIS,
+    local_effort: str = DEFAULT_MINERU_LOCAL_EFFORT,
     local_start_page_id: int = DEFAULT_MINERU_LOCAL_START_PAGE_ID,
     local_end_page_id: int = DEFAULT_MINERU_LOCAL_END_PAGE_ID,
 ) -> str:
@@ -319,6 +331,9 @@ def mineru_options_signature(
                 "local_end_page_id": int(local_end_page_id),
             }
         )
+        normalized_effort = str(local_effort or "").strip().lower()
+        if normalized_effort:
+            payload["local_effort"] = normalized_effort
 
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()

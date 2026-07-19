@@ -34,6 +34,16 @@ def test_mineru_signature_changes_with_language_and_parse_method(monkeypatch):
     assert current_mineru_options_signature({"local_parse_method": "ocr"}) != base
 
 
+def test_mineru_signature_changes_with_local_effort(monkeypatch):
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.delenv("MINERU_LOCAL_EFFORT", raising=False)
+    from lightrag.parser.external.mineru.cache import current_mineru_options_signature
+
+    base = current_mineru_options_signature()
+    monkeypatch.setenv("MINERU_LOCAL_EFFORT", "high")
+    assert current_mineru_options_signature() != base
+
+
 def test_mineru_options_reflect_override(monkeypatch):
     monkeypatch.setenv("MINERU_API_MODE", "official")
     from lightrag.parser.external.mineru.cache import MinerUParserOptions

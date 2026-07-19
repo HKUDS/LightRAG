@@ -405,6 +405,7 @@ async def test_client_local_mode_round_trip(
     monkeypatch.setenv("MINERU_API_MODE", "local")
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
     monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.delenv("MINERU_LOCAL_EFFORT", raising=False)
 
     src = tmp_path / "demo.pdf"
     src.write_bytes(b"PDFBYTES" * 200)
@@ -420,6 +421,7 @@ async def test_client_local_mode_round_trip(
     assert dispatcher.form_data["backend"] == "hybrid-auto-engine"
     assert dispatcher.form_data["parse_method"] == "auto"
     assert dispatcher.form_data["image_analysis"] == "false"
+    assert "effort" not in dispatcher.form_data
     assert dispatcher.form_data["response_format_zip"] == "true"
     assert dispatcher.form_data["return_content_list"] == "true"
     assert dispatcher.form_data["return_images"] == "true"
@@ -432,6 +434,30 @@ async def test_client_local_mode_round_trip(
     assert manifest.options_signature.startswith("sha256:")
     assert (raw / "content_list.json").is_file()
     assert (raw / "images" / "img_001.png").read_bytes() == b"\x89PNGnested"
+
+
+@pytest.mark.offline
+async def test_client_local_mode_forwards_configured_effort(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("MINERU_LOCAL_EFFORT", "high")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    dispatcher = _LocalDispatcher()
+    _CURRENT.dispatcher = dispatcher
+    await MinerURawClient().download_into(raw, src)
+
+    assert dispatcher.form_data
+    assert dispatcher.form_data["effort"] == "high"
 
 
 @pytest.mark.offline

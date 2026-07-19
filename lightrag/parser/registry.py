@@ -153,6 +153,7 @@ _MINERU_SUFFIXES = frozenset(
         "webp",
         "gif",
         "bmp",
+        "tiff",
     }
 )
 _DOCLING_SUFFIXES = frozenset(

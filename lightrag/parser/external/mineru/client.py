@@ -177,6 +177,7 @@ class MinerURawClient:
         self.local_backend = options.local_backend
         self.local_parse_method = options.local_parse_method
         self.local_image_analysis = options.local_image_analysis
+        self.local_effort = options.local_effort
         self.local_start_page_id = options.local_start_page_id
         self.local_end_page_id = options.local_end_page_id
 
@@ -360,7 +361,7 @@ class MinerURawClient:
             )
 
     def _local_form_data(self) -> dict[str, str]:
-        return {
+        form_data = {
             "lang_list": self.language,
             "backend": self.local_backend,
             "parse_method": self.local_parse_method,
@@ -377,6 +378,12 @@ class MinerURawClient:
             "start_page_id": str(self.local_start_page_id),
             "end_page_id": str(self.local_end_page_id),
         }
+        # ``effort`` is a MinerU 3.x local API option. Omit it unless
+        # explicitly configured so older self-hosted MinerU APIs retain their
+        # historical request shape and server-side default behaviour.
+        if self.local_effort:
+            form_data["effort"] = self.local_effort
+        return form_data
 
     async def _download_local(
         self,
