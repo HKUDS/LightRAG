@@ -90,6 +90,20 @@ def format_datetime(dt: Any) -> Optional[str]:
 # same router each time, accumulating duplicate routes and triggering
 # FastAPI's "Duplicate Operation ID" warnings.
 
+
+def _resolve_workspace_runtime(value: Any) -> Any:
+    """Unwrap a request-scoped workspace proxy for a background task.
+
+    API routes normally access the proxy synchronously while their workspace
+    dependency is active. Starlette background tasks run after that dependency
+    is cleaned up, so they must receive the concrete RAG / document manager
+    captured from the current request instead.
+    """
+
+    resolver = getattr(value, "_resolve_workspace_value", None)
+    return resolver() if callable(resolver) else value
+
+
 # Temporary file prefix
 temp_prefix = "__tmp__"
 UNKNOWN_FILE_SOURCE = "unknown_source"
@@ -2481,7 +2495,12 @@ def create_document_routes(
             # Workspace pipeline_status not yet bootstrapped (e.g. mocked
             # test rigs).  Treat as idle and allow the scan to proceed; the
             # scanning flag has nowhere to live so it is effectively skipped.
-            background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+            background_tasks.add_task(
+                run_scanning_process,
+                _resolve_workspace_runtime(rag),
+                _resolve_workspace_runtime(doc_manager),
+                track_id,
+            )
             return ScanResponse(
                 status="scanning_started",
                 message="Scanning process has been initiated in the background",
@@ -2553,7 +2572,12 @@ def create_document_routes(
 
         # Start the scanning process in the background with track_id.  The
         # task is responsible for clearing both flags in its finally block.
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+        background_tasks.add_task(
+            run_scanning_process,
+            _resolve_workspace_runtime(rag),
+            _resolve_workspace_runtime(doc_manager),
+            track_id,
+        )
         return ScanResponse(
             status="scanning_started",
             message="Scanning process has been initiated in the background",
@@ -2777,11 +2801,13 @@ def create_document_routes(
             # collapses to a ``request_pending=True`` nudge and returns,
             # so concurrent uploads/inserts cooperate via the running
             # loop's request_pending mechanism.
+            task_rag = _resolve_workspace_runtime(rag)
+
             async def _indexing_task():
                 try:
-                    await pipeline_index_file(rag, file_path, track_id)
+                    await pipeline_index_file(task_rag, file_path, track_id)
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot(task_rag)
 
             background_tasks.add_task(_indexing_task)
             # Ownership of the slot transferred to the bg task — the
@@ -2881,17 +2907,19 @@ def create_document_routes(
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
+            task_rag = _resolve_workspace_runtime(rag)
+
             async def _indexing_task():
                 try:
                     await pipeline_index_texts(
-                        rag,
+                        task_rag,
                         [request.text],
                         file_sources=[normalized_file_source],
                         track_id=track_id,
                         chunking=request.chunking,
                     )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot(task_rag)
 
             background_tasks.add_task(_indexing_task)
             slot_reserved = False
@@ -3005,17 +3033,19 @@ def create_document_routes(
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
+            task_rag = _resolve_workspace_runtime(rag)
+
             async def _indexing_task():
                 try:
                     await pipeline_index_texts(
-                        rag,
+                        task_rag,
                         request.texts,
                         file_sources=normalized_file_sources,
                         track_id=track_id,
                         chunking=request.chunking,
                     )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot(task_rag)
 
             background_tasks.add_task(_indexing_task)
             slot_reserved = False
@@ -3536,8 +3566,8 @@ def create_document_routes(
 
             background_tasks.add_task(
                 background_delete_documents,
-                rag,
-                doc_manager,
+                _resolve_workspace_runtime(rag),
+                _resolve_workspace_runtime(doc_manager),
                 doc_ids,
                 delete_request.delete_file,
                 delete_request.delete_llm_cache,

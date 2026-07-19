@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { getAuthStatus } from '@/api/lightrag'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
+import type { Workspace } from '@/stores/workspace'
 import { ZapIcon } from 'lucide-react'
 
 import GraphViewer from '@/features/GraphViewer'
@@ -18,7 +19,12 @@ import ApiSite from '@/features/ApiSite'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
-function App() {
+interface AppProps {
+  workspace: Workspace
+  onWorkspaceManager: () => void
+}
+
+function App({ workspace, onWorkspaceManager }: AppProps) {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
@@ -204,7 +210,7 @@ function App() {
               className="!m-0 flex grow flex-col !p-0 overflow-hidden"
               onValueChange={handleTabChange}
             >
-              <SiteHeader />
+              <SiteHeader workspace={workspace} onWorkspaceManager={onWorkspaceManager} />
               <div className="relative grow">
                 <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
                   <DocumentManager />

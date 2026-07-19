@@ -39,6 +39,43 @@
     "saving": "Saving...",
     "saveFailed": "Save failed"
   },
+  "workspace": {
+    "eyebrow": "Knowledge base isolation",
+    "title": "Workspaces",
+    "description": "Create isolated knowledge bases. Documents, graph data, retrieval, and processing pipelines stay within the selected workspace.",
+    "workspace": "Workspace",
+    "defaultWorkspace": "Default workspace",
+    "refresh": "Refresh",
+    "refreshSuccess": "Workspaces refreshed",
+    "create": "Create workspace",
+    "loading": "Loading workspaces...",
+    "open": "Open",
+    "edit": "Edit",
+    "delete": "Delete",
+    "name": "Name",
+    "descriptionLabel": "Description",
+    "noDescription": "No description",
+    "updatedAt": "Updated {{date}}",
+    "nameRequired": "Workspace name is required",
+    "createTitle": "Create workspace",
+    "editTitle": "Edit workspace",
+    "formDescription": "Use a clear name so collaborators can identify this knowledge base.",
+    "createSuccess": "Workspace created",
+    "updateSuccess": "Workspace updated",
+    "saveFailed": "Could not save workspace: {{error}}",
+    "loadFailed": "Could not load workspaces: {{error}}",
+    "deleteTitle": "Delete workspace",
+    "deleteDescription": "This permanently deletes \"{{name}}\" and its documents, graph, vectors, cache, and uploaded files. This cannot be undone.",
+    "deletePrompt": "Type \"{{name}}\" to confirm",
+    "deleteFailed": "Could not delete workspace: {{error}}",
+    "status": {
+      "provisioning": "Provisioning",
+      "active": "Ready",
+      "deleting": "Deleting",
+      "deleted": "Deleted",
+      "failed": "Failed"
+    }
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Clear",

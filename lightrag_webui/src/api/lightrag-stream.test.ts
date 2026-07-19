@@ -20,11 +20,16 @@ Object.defineProperty(globalThis, 'sessionStorage', {
   value: storageMock,
   configurable: true,
 })
-
 // Mock zustand stores — both return a vanilla store-like object with getState()
 let storeApiKey: string | null = null
 let storeIsGuestMode = false
+let selectedWorkspaceId: string | null = null
 const fakeSettingsStore = { getState: () => ({ apiKey: storeApiKey }) }
+const fakeWorkspaceStore = {
+  getState: () => ({
+    selectedWorkspace: selectedWorkspaceId ? { id: selectedWorkspaceId } : null
+  })
+}
 const fakeAuthStore = {
   getState: () => ({
     isGuestMode: storeIsGuestMode,
@@ -34,6 +39,7 @@ const fakeAuthStore = {
 }
 
 mock.module('@/stores/settings', () => ({ useSettingsStore: fakeSettingsStore }))
+mock.module('@/stores/workspace', () => ({ useWorkspaceStore: fakeWorkspaceStore }))
 mock.module('@/stores/state', () => ({ useAuthStore: fakeAuthStore }))
 mock.module('@/services/navigation', () => ({
   navigationService: { navigateToLogin: () => {} },
@@ -138,6 +144,7 @@ afterEach(() => {
   storageData.clear()
   storeApiKey = null
   storeIsGuestMode = false
+  selectedWorkspaceId = null
 })
 
 describe('queryTextStream — normal path', () => {
@@ -436,6 +443,24 @@ describe('queryTextStream — auth headers', () => {
 
     const sentHeaders = capturedHeaders as Record<string, string>
     expect(sentHeaders['Authorization']).toBeUndefined()
+  })
+
+  test('includes the selected workspace header', async () => {
+    selectedWorkspaceId = '16df2c7a-72ee-4df2-9f83-a0cb785dcc1e'
+    let capturedHeaders: HeadersInit | undefined
+    installFetchMock((_url: string, init?: RequestInit) => {
+      capturedHeaders = init?.headers
+      return makeNdjsonResponse(['{"response": "ok"}'])
+    })
+
+    await apiModule.queryTextStream(
+      makeQueryRequest(),
+      () => {},
+      () => {}
+    )
+
+    const sentHeaders = capturedHeaders as Record<string, string>
+    expect(sentHeaders['X-LightRAG-Workspace-ID']).toBe(selectedWorkspaceId)
   })
 
   test('calls /query/stream endpoint', async () => {

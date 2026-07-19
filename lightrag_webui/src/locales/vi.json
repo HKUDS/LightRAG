@@ -39,6 +39,43 @@
     "saving": "Đang lưu...",
     "saveFailed": "Lưu thất bại"
   },
+  "workspace": {
+    "eyebrow": "Cô lập kho tri thức",
+    "title": "Không gian làm việc",
+    "description": "Tạo các kho tri thức độc lập. Tài liệu, đồ thị, truy xuất và quy trình xử lý chỉ thuộc về không gian làm việc được chọn.",
+    "workspace": "Không gian làm việc",
+    "defaultWorkspace": "Không gian mặc định",
+    "refresh": "Làm mới",
+    "refreshSuccess": "Đã làm mới danh sách không gian làm việc",
+    "create": "Tạo không gian làm việc",
+    "loading": "Đang tải không gian làm việc...",
+    "open": "Mở",
+    "edit": "Chỉnh sửa",
+    "delete": "Xóa",
+    "name": "Tên",
+    "descriptionLabel": "Mô tả",
+    "noDescription": "Chưa có mô tả",
+    "updatedAt": "Cập nhật {{date}}",
+    "nameRequired": "Cần nhập tên không gian làm việc",
+    "createTitle": "Tạo không gian làm việc",
+    "editTitle": "Chỉnh sửa không gian làm việc",
+    "formDescription": "Dùng tên rõ ràng để mọi người có thể nhận diện kho tri thức này.",
+    "createSuccess": "Đã tạo không gian làm việc",
+    "updateSuccess": "Đã cập nhật không gian làm việc",
+    "saveFailed": "Không thể lưu không gian làm việc: {{error}}",
+    "loadFailed": "Không thể tải không gian làm việc: {{error}}",
+    "deleteTitle": "Xóa không gian làm việc",
+    "deleteDescription": "Thao tác này sẽ xóa vĩnh viễn \"{{name}}\", tài liệu, đồ thị, vector, cache và tệp đã tải lên. Không thể hoàn tác.",
+    "deletePrompt": "Nhập \"{{name}}\" để xác nhận",
+    "deleteFailed": "Không thể xóa không gian làm việc: {{error}}",
+    "status": {
+      "provisioning": "Đang khởi tạo",
+      "active": "Sẵn sàng",
+      "deleting": "Đang xóa",
+      "deleted": "Đã xóa",
+      "failed": "Lỗi"
+    }
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Xóa tất cả",

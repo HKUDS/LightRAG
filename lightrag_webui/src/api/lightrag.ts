@@ -3,6 +3,7 @@ import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } f
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
+import { useWorkspaceStore, type Workspace } from '@/stores/workspace'
 import { navigationService } from '@/services/navigation'
 
 // Types
@@ -330,6 +331,22 @@ export type AuthStatusResponse = {
   webui_description?: string
 }
 
+export type CreateWorkspaceRequest = {
+  display_name: string
+  description?: string | null
+}
+
+export type UpdateWorkspaceRequest = {
+  display_name?: string
+  description?: string | null
+}
+
+export type DeleteWorkspaceResponse = {
+  status: 'deleting'
+  workspace_id: string
+  job_id: string
+  message: string
+}
 export type PipelineStatusResponse = {
   autoscanned: boolean
   busy: boolean
@@ -432,6 +449,11 @@ axiosInstance.interceptors.request.use((config) => {
   }
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+
+  const workspaceId = useWorkspaceStore.getState().selectedWorkspace?.id
+  if (workspaceId) {
+    config.headers['X-LightRAG-Workspace-ID'] = workspaceId
   }
   return config
 })
@@ -569,6 +591,38 @@ export const checkHealth = async (): Promise<
   }
 }
 
+export const getWorkspaces = async (includeDeleted: boolean = false): Promise<Workspace[]> => {
+  const response = await axiosInstance.get('/v1/workspaces', {
+    params: includeDeleted ? { include_deleted: true } : undefined
+  })
+  return response.data
+}
+
+export const getWorkspace = async (workspaceId: string): Promise<Workspace> => {
+  const response = await axiosInstance.get(`/v1/workspaces/${encodeURIComponent(workspaceId)}`)
+  return response.data
+}
+
+export const createWorkspace = async (request: CreateWorkspaceRequest): Promise<Workspace> => {
+  const response = await axiosInstance.post('/v1/workspaces', request)
+  return response.data
+}
+
+export const updateWorkspace = async (
+  workspaceId: string,
+  request: UpdateWorkspaceRequest
+): Promise<Workspace> => {
+  const response = await axiosInstance.patch(
+    `/v1/workspaces/${encodeURIComponent(workspaceId)}`,
+    request
+  )
+  return response.data
+}
+
+export const deleteWorkspace = async (workspaceId: string): Promise<DeleteWorkspaceResponse> => {
+  const response = await axiosInstance.delete(`/v1/workspaces/${encodeURIComponent(workspaceId)}`)
+  return response.data
+}
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   const response = await axiosInstance.get('/documents')
   return response.data
@@ -700,6 +754,10 @@ function _buildStreamHeaders(): HeadersInit {
   }
   if (apiKey) {
     headers['X-API-Key'] = apiKey;
+  }
+  const workspaceId = useWorkspaceStore.getState().selectedWorkspace?.id;
+  if (workspaceId) {
+    headers['X-LightRAG-Workspace-ID'] = workspaceId;
   }
   return headers;
 }
@@ -1101,7 +1159,10 @@ type InFlightPaginatedDocumentRequest = {
 }
 
 const getPaginatedDocumentsRequestKey = (request: DocumentsRequest): string =>
-  JSON.stringify(request)
+  JSON.stringify({
+    workspace_id: useWorkspaceStore.getState().selectedWorkspace?.id ?? null,
+    request
+  })
 
 // Deduplicate in-flight paginated document requests with identical parameters.
 // This prevents duplicate backend calls caused by overlapping timers/effects or

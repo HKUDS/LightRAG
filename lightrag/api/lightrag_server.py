@@ -61,6 +61,12 @@ from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.workspace_routes import create_workspace_routes
+from lightrag.api.workspaces import (
+    WorkspaceRuntimeManager,
+    bind_workspace_context,
+    create_workspace_registry,
+)
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -1272,9 +1278,15 @@ def create_app(args):
         app.state.background_tasks = set()
 
         try:
-            # Initialize database connections
-            # Note: initialize_storages() now auto-initializes pipeline_status for rag.workspace
+            # Initialize database connections for the default workspace.
+            # Additional workspaces are initialized lazily by WorkspaceRuntimeManager.
             await rag.initialize_storages()
+
+            # Bootstrap the database-backed workspace registry after the default
+            # storage connection exists, so it shares the configured database pool.
+            # The default record preserves the deployment's existing WORKSPACE
+            # value for backward compatibility with already-ingested data.
+            await workspace_manager.initialize()
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
@@ -1284,6 +1296,9 @@ def create_app(args):
             yield
 
         finally:
+            await workspace_manager.finalize_non_default_contexts()
+            await workspace_manager.registry.finalize()
+
             # Clean up database connections
             await rag.finalize_storages()
 
@@ -1303,6 +1318,9 @@ def create_app(args):
     swagger_description = (
         base_description
         + (" (API-Key Enabled)" if api_key else "")
+        + "\n\nWorkspace-scoped data-plane APIs accept the optional "
+        + "`X-LightRAG-Workspace-ID` request header. Omit it to use the "
+        + "default workspace. Manage workspaces through `/v1/workspaces`."
         + "\n\n[View ReDoc documentation](/redoc)"
     )
 
@@ -2032,90 +2050,127 @@ def create_app(args):
         for spec in ROLES
     }
 
-    # Initialize RAG with unified configuration
-    try:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            workspace=args.workspace,
-            llm_model_func=create_llm_model_func(args.llm_binding),
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            summary_max_tokens=args.summary_max_tokens,
-            summary_context_size=args.summary_context_size,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs=create_llm_model_kwargs(
-                args.llm_binding, args, llm_timeout
-            ),
-            embedding_func=embedding_func,
-            default_llm_timeout=llm_timeout,
-            default_embedding_timeout=embedding_timeout,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            vlm_process_enable=args.vlm_process_enable,
-            rerank_model_func=rerank_model_func,
-            rerank_model_max_async=args.rerank_max_async,
-            default_rerank_timeout=args.rerank_timeout,
-            max_parallel_insert=args.max_parallel_insert,
-            max_graph_nodes=args.max_graph_nodes,
-            addon_params=addon_params,
-            ollama_server_infos=ollama_server_infos,
-            role_llm_configs={
-                spec.name: RoleLLMConfig(
-                    func=role_llm_configs[spec.name]["func"],
-                    kwargs=role_llm_configs[spec.name]["kwargs"],
-                    max_async=role_llm_configs[spec.name]["max_async"],
-                    timeout=role_llm_configs[spec.name]["timeout"],
-                    metadata={
-                        "base_binding": args.llm_binding,
-                        "binding": role_llm_configs[spec.name]["binding"],
-                        "model": role_llm_configs[spec.name]["model"],
-                        "host": role_llm_configs[spec.name]["host"],
-                        "api_key": role_llm_configs[spec.name]["api_key"],
-                        "provider_options": role_llm_configs[spec.name][
-                            "provider_options"
-                        ],
-                        "bedrock_aws_options": role_llm_configs[spec.name][
-                            "bedrock_aws_options"
-                        ],
-                        "is_cross_provider": role_llm_configs[spec.name][
-                            "is_cross_provider"
-                        ],
-                    },
-                )
-                for spec in ROLES
-            },
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize LightRAG: {e}")
-        raise
+    def create_rag_for_workspace(workspace: str) -> LightRAG:
+        """Build one isolated RAG runtime while sharing server-wide providers."""
 
+        try:
+            workspace_rag = LightRAG(
+                working_dir=args.working_dir,
+                workspace=workspace,
+                llm_model_func=create_llm_model_func(args.llm_binding),
+                llm_model_name=args.llm_model,
+                llm_model_max_async=args.max_async,
+                summary_max_tokens=args.summary_max_tokens,
+                summary_context_size=args.summary_context_size,
+                chunk_token_size=int(args.chunk_size),
+                chunk_overlap_token_size=int(args.chunk_overlap_size),
+                llm_model_kwargs=create_llm_model_kwargs(
+                    args.llm_binding, args, llm_timeout
+                ),
+                embedding_func=embedding_func,
+                default_llm_timeout=llm_timeout,
+                default_embedding_timeout=embedding_timeout,
+                kv_storage=args.kv_storage,
+                graph_storage=args.graph_storage,
+                vector_storage=args.vector_storage,
+                doc_status_storage=args.doc_status_storage,
+                vector_db_storage_cls_kwargs={
+                    "cosine_better_than_threshold": args.cosine_threshold
+                },
+                enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+                enable_llm_cache=args.enable_llm_cache,
+                vlm_process_enable=args.vlm_process_enable,
+                rerank_model_func=rerank_model_func,
+                rerank_model_max_async=args.rerank_max_async,
+                default_rerank_timeout=args.rerank_timeout,
+                max_parallel_insert=args.max_parallel_insert,
+                max_graph_nodes=args.max_graph_nodes,
+                addon_params=addon_params,
+                ollama_server_infos=ollama_server_infos,
+                role_llm_configs={
+                    spec.name: RoleLLMConfig(
+                        func=role_llm_configs[spec.name]["func"],
+                        kwargs=role_llm_configs[spec.name]["kwargs"],
+                        max_async=role_llm_configs[spec.name]["max_async"],
+                        timeout=role_llm_configs[spec.name]["timeout"],
+                        metadata={
+                            "base_binding": args.llm_binding,
+                            "binding": role_llm_configs[spec.name]["binding"],
+                            "model": role_llm_configs[spec.name]["model"],
+                            "host": role_llm_configs[spec.name]["host"],
+                            "api_key": role_llm_configs[spec.name]["api_key"],
+                            "provider_options": role_llm_configs[spec.name][
+                                "provider_options"
+                            ],
+                            "bedrock_aws_options": role_llm_configs[spec.name][
+                                "bedrock_aws_options"
+                            ],
+                            "is_cross_provider": role_llm_configs[spec.name][
+                                "is_cross_provider"
+                            ],
+                        },
+                    )
+                    for spec in ROLES
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to initialize LightRAG workspace '%s': %s", workspace, e
+            )
+            raise
+
+        workspace_rag.register_role_llm_builder(
+            lambda role, meta: (
+                create_role_llm_func(role, meta),
+                create_role_llm_model_kwargs(role, meta),
+            )
+        )
+        return workspace_rag
+
+    rag = create_rag_for_workspace(args.workspace)
     _log_role_provider_options(rag)
 
-    rag.register_role_llm_builder(
-        lambda role, meta: (
-            create_role_llm_func(role, meta),
-            create_role_llm_model_kwargs(role, meta),
-        )
+    workspace_manager = WorkspaceRuntimeManager(
+        registry=create_workspace_registry(
+            kv_storage=args.kv_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
+            graph_storage=args.graph_storage,
+        ),
+        default_rag=rag,
+        default_doc_manager=doc_manager,
+        rag_factory=create_rag_for_workspace,
+        input_dir=args.input_dir,
     )
+    app.state.workspace_manager = workspace_manager
+    workspace_rag = workspace_manager.rag_proxy()
+    workspace_doc_manager = workspace_manager.document_manager_proxy()
 
     # Add routes
     # root_path is set on the app for reverse proxy support;
     # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
-    app.include_router(create_document_routes(rag, doc_manager, api_key))
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_workspace_routes(workspace_manager, api_key))
+    app.include_router(
+        create_document_routes(workspace_rag, workspace_doc_manager, api_key),
+        dependencies=[Depends(bind_workspace_context)],
+    )
+    app.include_router(
+        create_query_routes(workspace_rag, api_key, args.top_k),
+        dependencies=[Depends(bind_workspace_context)],
+    )
+    app.include_router(
+        create_graph_routes(workspace_rag, api_key),
+        dependencies=[Depends(bind_workspace_context)],
+    )
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
-    app.include_router(ollama_api.router, prefix="/api")
+    ollama_api.rag = workspace_rag
+    app.include_router(
+        ollama_api.router,
+        prefix="/api",
+        dependencies=[Depends(bind_workspace_context)],
+    )
 
     # Custom Swagger UI endpoint for offline support
     @app.get("/docs", include_in_schema=False)

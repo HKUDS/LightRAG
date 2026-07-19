@@ -7,9 +7,10 @@ import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
-import { ZapIcon, LogOutIcon } from 'lucide-react'
+import { FolderKanbanIcon, ZapIcon, LogOutIcon } from 'lucide-react'
 import GithubIcon from '@/components/icons/GithubIcon'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import type { Workspace } from '@/stores/workspace'
 
 interface NavigationTabProps {
   value: string
@@ -55,7 +56,13 @@ function TabsNavigation() {
   )
 }
 
-export default function SiteHeader() {
+interface SiteHeaderProps {
+  workspace?: Workspace
+  onWorkspaceManager?: () => void
+  showTabs?: boolean
+}
+
+export default function SiteHeader({ workspace, onWorkspaceManager, showTabs = true }: SiteHeaderProps) {
   const { t } = useTranslation()
   const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
 
@@ -99,10 +106,22 @@ export default function SiteHeader() {
             </TooltipProvider>
           </div>
         )}
+        {workspace && onWorkspaceManager && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-2 max-w-56 justify-start"
+            tooltip={t('workspace.title')}
+            onClick={onWorkspaceManager}
+          >
+            <FolderKanbanIcon className="text-primary" />
+            <span className="truncate">{workspace.display_name}</span>
+          </Button>
+        )}
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center">
-        <TabsNavigation />
+        {showTabs ? <TabsNavigation /> : <span className="text-sm font-medium">{t('workspace.title')}</span>}
         {isGuestMode && (
           <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
             {t('login.guestMode', 'Guest Mode')}
