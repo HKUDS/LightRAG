@@ -42,6 +42,7 @@ from lightrag.exceptions import (
     IndexFlushError,
 )
 from lightrag.kg.shared_storage import (
+    PipelineReservationConflict,
     _reservation_owner_token,
     acquire_processing_reservation,
     check_pipeline_status_mutation,
@@ -1061,9 +1062,14 @@ class _PipelineMixin:
         busy_released_in_loop = False
 
         try:
-            # Pre-arm owner-checked cleanup before acquire: cancellation at the
-            # helper's lock exit may occur after the atomic update but before its
-            # result is returned.
+            # Acquire the processing slot BEFORE reading doc_status. The queue
+            # read and all downstream work MUST run under ``busy`` so a concurrent
+            # clear/delete (which takes ``busy`` then rewrites storage) and a scan
+            # classification phase (``scanning_exclusive``, refused by
+            # acquire_processing_reservation) are held off — reading doc_status
+            # outside the reservation would race their storage rewrites. A
+            # handed-off run (``_holding_busy``) already owns the slot and takes it
+            # over rather than re-acquiring.
             holds_busy = True
             reservation = await acquire_processing_reservation(
                 pipeline_status,
@@ -1085,22 +1091,44 @@ class _PipelineMixin:
             )
             if not reservation.acquired:
                 holds_busy = False
-                if reservation.message and reservation.conflict is not None:
-                    if reservation.conflict.value == "recovery_required":
-                        logger.warning(reservation.message)
-                    else:
-                        logger.info(
-                            "Another process is already processing the document "
-                            "queue. Request queued."
-                        )
+                if (
+                    reservation.conflict
+                    is PipelineReservationConflict.RECOVERY_REQUIRED
+                ):
+                    logger.warning(reservation.message)
+                elif reservation.conflict is PipelineReservationConflict.SCANNING:
+                    logger.info(
+                        "Scan is classifying files; processing will resume once "
+                        "the classification phase finishes."
+                    )
+                else:
+                    logger.info(
+                        "Another process is already processing the document "
+                        "queue. Request queued."
+                    )
                 return
 
             to_process_docs: dict[
                 str, DocProcessingStatus
             ] = await self.doc_status.get_docs_by_statuses(list(_INFLIGHT_DOC_STATUSES))
             if not to_process_docs:
+                # Empty queue. Release the slot we just took WITHOUT the "pipeline
+                # stopped" bookkeeping — a run that did no work should record
+                # nothing — but do it through the atomic release that also consumes
+                # a ``request_pending`` set by a concurrent enqueue AFTER our read,
+                # so a doc that landed in that gap is not stranded in PENDING.
                 logger.info("No documents to process")
-                return
+                if await self._atomic_release_busy_or_consume_pending(
+                    pipeline_status, pipeline_status_lock
+                ):
+                    # No pending work: slot released silently, finally is a no-op.
+                    holds_busy = False
+                    return
+                # request_pending was set: a doc arrived after our read. Re-fetch
+                # and fall through into the loop to process it.
+                to_process_docs = await self.doc_status.get_docs_by_statuses(
+                    list(_INFLIGHT_DOC_STATUSES)
+                )
 
             # Process documents until no more documents or requests
             while True:
@@ -1222,10 +1250,11 @@ class _PipelineMixin:
 
             async def _finalize():
                 # Cancellation-resistant, owner-checked release + bookkeeping.
-                # Only runs when THIS invocation actually held the slot: a queued
-                # request, a normal no-docs return, or a get-docs failure before
-                # acquiring never entered here (holds_busy stays False), so we
-                # never touch another run's state.
+                # Only runs when THIS invocation held the slot AND did work: a
+                # rejected acquire (busy/scanning/recovery) and an empty-queue run
+                # both release their slot inline and clear holds_busy, so they skip
+                # this — no spurious stop message, and we never touch another run's
+                # state.
                 if not holds_busy:
                     return
                 logger.info(stopped_message)

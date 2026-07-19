@@ -443,3 +443,77 @@ async def test_pipeline_status_reads_one_proxy_snapshot(monkeypatch, tmp_path):
 
     assert response.busy is False
     assert status.copy_calls == 1
+
+
+class _DeferRag:
+    """Minimal rag double for run_scanning_process's deferred-drive path."""
+
+    def __init__(self, workspace, process_calls):
+        self.workspace = workspace
+        self._process_calls = process_calls
+
+    async def arollback_failed_custom_chunk_patches(self, **_kwargs):
+        return None
+
+    async def apipeline_process_enqueue_documents(self):
+        self._process_calls.append(1)
+
+
+class _BoomDocManager:
+    """Raises during classification so no scan branch drives the queue."""
+
+    def scan_directory_for_new_files(self):
+        raise RuntimeError("classification boom")
+
+
+@pytest.mark.offline
+async def test_scan_drives_deferred_processing_on_error_path():
+    """A scan whose ``scanning_exclusive`` fence turned away a processing request
+    must still drive the queue once after releasing — otherwise the SDK-inserted
+    PENDING doc (no scan-visible file) is stranded. Here classification raises, so
+    only the finally's deferred-processing drive can trigger it."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        ws = "scan-defer-ws"
+        await initialize_pipeline_status(workspace=ws)
+        ps = await get_namespace_data("pipeline_status", workspace=ws)
+        # The scanning_exclusive fence deferred a processing request earlier.
+        ps["scan_deferred_processing"] = True
+
+        process_calls: list[int] = []
+        await dr.run_scanning_process(
+            _DeferRag(ws, process_calls), _BoomDocManager(), "track-defer"
+        )
+
+        # The deferred request was honoured despite the classification error.
+        assert process_calls == [1]
+        # The check is read-only: the real clear happens in
+        # acquire_processing_reservation when a run takes the slot, which this
+        # mock drive skips — so the flag stays set (a live acquire would clear it).
+        ps_after = await get_namespace_data("pipeline_status", workspace=ws)
+        assert ps_after.get("scan_deferred_processing") is True
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_scan_without_deferred_flag_does_not_extra_drive():
+    """The finally's deferred drive is gated on the flag: a scan that fenced no
+    processing request must not add a spurious drive (preserves the
+    process_calls==0 contract of the all-already-processed / error paths)."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        ws = "scan-nodefer-ws"
+        await initialize_pipeline_status(workspace=ws)
+        # scan_deferred_processing never set.
+
+        process_calls: list[int] = []
+        await dr.run_scanning_process(
+            _DeferRag(ws, process_calls), _BoomDocManager(), "track-nodefer"
+        )
+
+        assert process_calls == []
+    finally:
+        finalize_share_data()

@@ -1722,6 +1722,7 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
     "pending_enqueue_tokens",
     "operation_record",
     "recovery_required",
+    "scan_deferred_processing",
 )
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
@@ -1907,11 +1908,6 @@ class PipelineReservationResult:
     message: Optional[str] = None
     snapshot: Optional[Dict[str, Any]] = None
 
-    def __iter__(self):
-        """Keep the former ``(acquired, reason)`` internal unpacking contract."""
-        yield self.acquired
-        yield self.message
-
 
 def _recovery_required_result(
     snapshot: Dict[str, Any],
@@ -1925,13 +1921,21 @@ def _recovery_required_result(
 
 
 def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
-    return {
-        "busy": PipelineReservationConflict.BUSY,
-        "scanning": PipelineReservationConflict.SCANNING,
-        "scanning_exclusive": PipelineReservationConflict.SCANNING,
-        "pending_enqueues": PipelineReservationConflict.PENDING_ENQUEUE,
-        "destructive_busy": PipelineReservationConflict.DESTRUCTIVE,
-    }.get(flag_key, PipelineReservationConflict.BUSY)
+    try:
+        return {
+            "busy": PipelineReservationConflict.BUSY,
+            "scanning": PipelineReservationConflict.SCANNING,
+            "scanning_exclusive": PipelineReservationConflict.SCANNING,
+            "pending_enqueues": PipelineReservationConflict.PENDING_ENQUEUE,
+            "destructive_busy": PipelineReservationConflict.DESTRUCTIVE,
+        }[flag_key]
+    except KeyError:
+        # Fail-fast on an unmapped reject_when flag: a silent BUSY fallback would
+        # mislabel the conflict (and its HTTP status) and hide the typo.
+        raise ValueError(
+            f"No reservation conflict mapping for status flag {flag_key!r}; add it "
+            "to _conflict_for_status_flag when introducing a new reject_when flag."
+        ) from None
 
 
 def _prepare_pipeline_reservation_decision(
@@ -2127,8 +2131,11 @@ async def acquire_processing_reservation(
 ) -> PipelineReservationResult:
     """Acquire/take over the single processing slot from one proxy snapshot.
 
-    A competing processor is reduced to a ``request_pending`` nudge in the same
-    update used for any recovery changes. The caller may owner-check release
+    Refuses the slot (without taking it) while a scan holds ``scanning_exclusive``
+    — its classification phase mutates doc_status — and reduces a competing
+    ``busy`` holder to a ``request_pending`` nudge, both in the same update used
+    for any recovery changes. A handed-off run (``already_held``) is exempt from
+    both: it already owns the slot. The caller may owner-check release
     unconditionally because the token is stamped atomically with ``busy``.
     """
     async with pipeline_status_lock:
@@ -2138,6 +2145,31 @@ async def acquire_processing_reservation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
+        # A scan's classification phase (``scanning_exclusive``) mutates
+        # doc_status; a new processor must not read/process concurrently or it
+        # races those rewrites. A handed-off run (``already_held``) took the slot
+        # before scanning could start, so it is exempt. Plain ``scanning`` (the
+        # scan's own post-classification queue drive) is NOT fenced here: the scan
+        # releases ``scanning_exclusive`` before it drives processing.
+        if not already_held and snapshot.get("scanning_exclusive"):
+            # Record the turned-away request so the scan drives the queue once it
+            # releases scanning_exclusive (run_scanning_process finally): an SDK
+            # insert's PENDING doc may have no scan-visible file and no other
+            # trigger. Cleared below when any processing run takes the slot.
+            updates = {"scan_deferred_processing": True}
+            snapshot.update(updates)
+            _commit_pipeline_reservation_updates(
+                pipeline_status, recovery_updates, updates
+            )
+            return PipelineReservationResult(
+                acquired=False,
+                conflict=PipelineReservationConflict.SCANNING,
+                message=(
+                    "Document scan is classifying files; processing resumes after "
+                    "the classification phase finishes."
+                ),
+                snapshot=snapshot,
+            )
         if not already_held and snapshot.get("busy"):
             updates = {"request_pending": True}
             snapshot.update(updates)
@@ -2156,6 +2188,10 @@ async def acquire_processing_reservation(
             {
                 "busy": True,
                 "busy_owner": make_owner_record(token, "processing"),
+                # This run drains the queue, satisfying any request the
+                # scanning_exclusive fence deferred earlier — clear the flag so the
+                # scan's post-release drive stays a no-op.
+                "scan_deferred_processing": False,
             }
         )
         snapshot.update(updates)
@@ -2189,6 +2225,31 @@ async def transition_scanning_reservation(
             return True
 
     return await run_to_completion(_run)
+
+
+async def has_scan_deferred_processing(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+) -> bool:
+    """Report whether a scan's ``scanning_exclusive`` fence deferred a processing
+    request that no run has since picked up.
+
+    Read-only ON PURPOSE — it does NOT clear the flag. ``scan_deferred_processing``
+    is set when the fence turns a request away and cleared atomically by
+    ``acquire_processing_reservation`` only when a run actually takes the ``busy``
+    slot. ``run_scanning_process`` checks this after releasing its reservation and
+    drives the queue once when True; the drive's own acquire then clears it.
+
+    Clearing HERE would reopen a cancellation race: the ``pipeline_status_lock``
+    exit awaits, so a ``CancelledError`` delivered AFTER the clear but BEFORE the
+    queue drive would lose both the request and the flag, stranding the PENDING
+    doc. Leaving the clear to the acquire means a cancelled or failed drive keeps
+    the flag set for the next scan — the handoff is only ``done`` once a run owns
+    the slot.
+    """
+    async with pipeline_status_lock:
+        snapshot = _pipeline_status_snapshot(pipeline_status)
+        return bool(snapshot.get("scan_deferred_processing"))
 
 
 async def with_reservation_lock(

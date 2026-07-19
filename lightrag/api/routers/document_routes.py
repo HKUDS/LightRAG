@@ -2158,6 +2158,7 @@ async def run_scanning_process(
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         get_namespace_lock,
+        has_scan_deferred_processing,
         transition_scanning_reservation,
     )
 
@@ -2426,6 +2427,25 @@ async def run_scanning_process(
                         "scanning_owner": None,
                     }
                 )
+
+        # If this scan's ``scanning_exclusive`` fence turned away a concurrent
+        # processing request that no run then picked up, its PENDING doc has no
+        # other trigger — the branches above drive the queue only for new/resume
+        # files or an empty scan directory, so an all-already-processed scan or a
+        # classification error would strand it. Drain the queue once now that
+        # scanning has fully released. The check is READ-ONLY; the drive's own
+        # acquire clears the deferred flag, so a cancelled or failed drive leaves
+        # it set for the next scan to honour. Empty queue → silent no-op.
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            if await has_scan_deferred_processing(
+                pipeline_status, pipeline_status_lock
+            ):
+                try:
+                    await rag.apipeline_process_enqueue_documents()
+                except Exception as drive_error:
+                    logger.error(
+                        f"Deferred post-scan queue drive failed: {drive_error}"
+                    )
 
 
 async def background_delete_documents(
