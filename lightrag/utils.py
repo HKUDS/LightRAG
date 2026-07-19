@@ -4109,9 +4109,9 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
 def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     """Load a JSON object from LLM text that may include fences or trailing prose.
 
-    Tries ``json_repair.loads`` on the full candidate first, then
-    ``json.JSONDecoder().raw_decode`` from the first ``{`` so a trailing
-    prose brace cannot extend a greedy ``{...}`` slice past the real value.
+    Tries ``json_repair.loads`` on the full candidate first, then from the
+    first ``{`` (so bracketed prefix prose still repairs), then strict
+    ``raw_decode`` so a trailing prose brace cannot extend a greedy slice.
     Returns ``{}`` when no object can be recovered.
     """
     if not text:
@@ -4124,18 +4124,36 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     )
     if fence_match:
         candidate = fence_match.group(1).strip()
-    try:
-        obj = json_repair.loads(candidate)
+
+    def _dict_from(obj: Any) -> dict[str, Any] | None:
         if isinstance(obj, dict):
             return obj
+        if isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, dict):
+                    return item
+        return None
+
+    try:
+        found = _dict_from(json_repair.loads(candidate))
+        if found is not None:
+            return found
     except Exception:
         pass
     brace = candidate.find("{")
     if brace != -1:
+        suffix = candidate[brace:]
         try:
-            obj, _end = json.JSONDecoder().raw_decode(candidate[brace:])
-            if isinstance(obj, dict):
-                return obj
+            found = _dict_from(json_repair.loads(suffix))
+            if found is not None:
+                return found
+        except Exception:
+            pass
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(suffix)
+            found = _dict_from(obj)
+            if found is not None:
+                return found
         except Exception:
             pass
     return {}

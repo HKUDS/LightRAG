@@ -31,3 +31,14 @@ def test_greedy_regex_would_fail_same_input() -> None:
 
 def test_plain_object_still_loads() -> None:
     assert tolerant_load_json_dict('{"a": 1}') == {"a": 1}
+
+
+def test_bracketed_prefix_prose_still_repairs_object():
+    # Weaker VLMs sometimes prefix a repairable object with bracketed notes.
+    raw = 'analysis: [draft] {name:"x", type:"Chart", description:"ok",}'
+    assert tolerant_load_json_dict(raw) == {
+        "name": "x",
+        "type": "Chart",
+        "description": "ok",
+    }
+
