@@ -517,3 +517,40 @@ async def test_scan_without_deferred_flag_does_not_extra_drive():
         assert process_calls == []
     finally:
         finalize_share_data()
+
+
+class _CancelDocManager:
+    """Raises CancelledError to simulate a scan cancelled by server shutdown."""
+
+    def scan_directory_for_new_files(self):
+        raise asyncio.CancelledError()
+
+
+@pytest.mark.offline
+async def test_cancelled_scan_skips_deferred_drive():
+    """A cancelled scan (server shutdown) must NOT start a processing run in its
+    finally — shutdown is waiting for this task to exit, and one cancel injects
+    CancelledError only once, so an unguarded post-release drive would run to
+    completion and stall the shutdown. The deferred flag stays set for the next
+    scan / trigger instead of being driven or lost."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        ws = "scan-cancel-ws"
+        await initialize_pipeline_status(workspace=ws)
+        ps = await get_namespace_data("pipeline_status", workspace=ws)
+        ps["scan_deferred_processing"] = True
+
+        process_calls: list[int] = []
+        with pytest.raises(asyncio.CancelledError):
+            await dr.run_scanning_process(
+                _DeferRag(ws, process_calls), _CancelDocManager(), "track-cancel"
+            )
+
+        # No processing kicked off during shutdown...
+        assert process_calls == []
+        # ...and the deferred request is preserved for the next scan / trigger.
+        ps_after = await get_namespace_data("pipeline_status", workspace=ws)
+        assert ps_after.get("scan_deferred_processing") is True
+    finally:
+        finalize_share_data()

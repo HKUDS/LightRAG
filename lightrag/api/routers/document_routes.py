@@ -2164,6 +2164,12 @@ async def run_scanning_process(
 
     pipeline_status = None
     pipeline_status_lock = None
+    # Distinguish a normal exit from a cancellation (server shutdown / task
+    # cancel): a cancelled scan MUST NOT kick off a full processing run in its
+    # finally. Shutdown is waiting for THIS task to exit, and one cancel injects
+    # CancelledError only once, so a post-release ``await`` here would otherwise
+    # run parse/LLM/index to completion and stall the shutdown.
+    was_cancelled = False
     try:
         # Fetch INSIDE the release try: the scan endpoint already reserved
         # ``scanning``/``scanning_exclusive`` before scheduling us, so a
@@ -2404,6 +2410,11 @@ async def run_scanning_process(
             )
             await rag.apipeline_process_enqueue_documents()
 
+    except asyncio.CancelledError:
+        # Shutdown / task cancel: skip the deferred drive below and leave
+        # ``scan_deferred_processing`` set for the next scan / trigger.
+        was_cancelled = True
+        raise
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
@@ -2434,9 +2445,17 @@ async def run_scanning_process(
         # files or an empty scan directory, so an all-already-processed scan or a
         # classification error would strand it. Drain the queue once now that
         # scanning has fully released. The check is READ-ONLY; the drive's own
-        # acquire clears the deferred flag, so a cancelled or failed drive leaves
-        # it set for the next scan to honour. Empty queue → silent no-op.
-        if pipeline_status is not None and pipeline_status_lock is not None:
+        # acquire clears the deferred flag, so a failed drive leaves it set for
+        # the next scan to honour. Empty queue → silent no-op.
+        #
+        # Skipped on cancellation: a cancelled scan must not start a full
+        # processing run while shutdown waits for it. The flag is never checked
+        # or cleared here, so it stays set for the next scan / trigger.
+        if (
+            not was_cancelled
+            and pipeline_status is not None
+            and pipeline_status_lock is not None
+        ):
             if await has_scan_deferred_processing(
                 pipeline_status, pipeline_status_lock
             ):
