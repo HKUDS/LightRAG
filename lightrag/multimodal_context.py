@@ -792,6 +792,24 @@ _CONTENT_TRUNCATION_MARKER = (
 )
 
 
+
+def _trim_content_inner(
+    content: str,
+    *,
+    kind: str,
+    budget: int,
+    tokenizer: Tokenizer,
+) -> str:
+    """Kind-aware head trim for ``trim_content_to_budget`` (tables row-aware)."""
+    trimmed: str | None = None
+    if kind == "tables" and TABLE_TAG_RE.match(content.strip()):
+        # Keep head rows; fall back to char-level fits while preserving <table>.
+        trimmed = _row_trim_table_trailing(content, budget, tokenizer)
+    if trimmed is None:
+        trimmed = _char_trim_trailing(content, budget, tokenizer)
+    return trimmed
+
+
 def trim_content_to_budget(
     content: str,
     *,
@@ -833,22 +851,28 @@ def trim_content_to_budget(
         original=original_tokens, final=max_tokens
     )
     marker_tokens = _count_tokens(tokenizer, marker_probe)
+    # Marker alone can exceed a tiny budget; omit it and keep head content.
+    if marker_tokens >= max_tokens:
+        return _trim_content_inner(
+            content, kind=kind, budget=max_tokens, tokenizer=tokenizer
+        ), True
     inner_budget = max(0, max_tokens - marker_tokens)
 
-    trimmed_inner: str | None = None
-    if kind == "tables" and TABLE_TAG_RE.match(content.strip()):
-        # _row_trim_table_trailing keeps head rows and internally falls back
-        # to char-level fits while preserving the <table> wrapper.  Only
-        # malformed / unrecognized-format markup returns None.
-        trimmed_inner = _row_trim_table_trailing(content, inner_budget, tokenizer)
-    if trimmed_inner is None:
-        trimmed_inner = _char_trim_trailing(content, inner_budget, tokenizer)
+    trimmed_inner = _trim_content_inner(
+        content, kind=kind, budget=inner_budget, tokenizer=tokenizer
+    )
 
     final_tokens = _count_tokens(tokenizer, trimmed_inner)
     marker = _CONTENT_TRUNCATION_MARKER.format(
         original=original_tokens, final=final_tokens
     )
-    return trimmed_inner + marker, True
+    result = trimmed_inner + marker
+    # Tokenizer non-additivity can still push past the budget; drop marker then.
+    if _count_tokens(tokenizer, result) > max_tokens:
+        return _trim_content_inner(
+            content, kind=kind, budget=max_tokens, tokenizer=tokenizer
+        ), True
+    return result, True
 
 
 def build_surrounding(
