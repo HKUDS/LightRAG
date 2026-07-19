@@ -215,7 +215,7 @@ def test_budget_smaller_than_marker_stays_within_cap():
 
 
 @pytest.mark.offline
-def test_table_budget_smaller_than_marker_keeps_table_wrapper():
+def test_table_budget_too_small_for_wrapper_avoids_partial_tags():
     tok = _tokenizer()
     rows = [[f"r{i}c0", f"r{i}c1"] for i in range(10)]
     content = '<table id="t-tiny" format="json">' + json.dumps(rows) + "</table>"
@@ -224,5 +224,6 @@ def test_table_budget_smaller_than_marker_keeps_table_wrapper():
     )
     assert was_trimmed is True
     assert len(tok.encode(out)) <= 20
-    assert out.lstrip().startswith("<table ")
+    # Never spend the budget on a broken opening <table ... without </table>.
+    assert not (out.lstrip().startswith("<table") and "</table>" not in out)
     assert _MARKER_RE.search(out) is None

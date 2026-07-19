@@ -801,13 +801,16 @@ def _trim_content_inner(
     tokenizer: Tokenizer,
 ) -> str:
     """Kind-aware head trim for ``trim_content_to_budget`` (tables row-aware)."""
-    trimmed: str | None = None
-    if kind == "tables" and TABLE_TAG_RE.match(content.strip()):
-        # Keep head rows; fall back to char-level fits while preserving <table>.
-        trimmed = _row_trim_table_trailing(content, budget, tokenizer)
-    if trimmed is None:
-        trimmed = _char_trim_trailing(content, budget, tokenizer)
-    return trimmed
+    if kind == "tables":
+        match = TABLE_TAG_RE.match(content.strip())
+        if match:
+            trimmed = _row_trim_table_trailing(content, budget, tokenizer)
+            if trimmed is not None:
+                return trimmed
+            # Budget too small for a valid <table> wrapper; trim body text only
+            # so we never emit a partial opening tag.
+            return _char_trim_trailing(match.group("body"), budget, tokenizer)
+    return _char_trim_trailing(content, budget, tokenizer)
 
 
 def trim_content_to_budget(
