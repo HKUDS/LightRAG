@@ -85,7 +85,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
 )
-from lightrag.kg.shared_storage import get_storage_keyed_lock
+from lightrag.kg.shared_storage import append_pipeline_log, get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
 
@@ -1154,10 +1154,7 @@ async def rebuild_knowledge_from_chunks(
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
             )
             logger.warning(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            append_pipeline_log(pipeline_status, status_message)
             continue
 
     # Get max async tasks limit from global_config for semaphore control
@@ -1199,10 +1196,7 @@ async def rebuild_knowledge_from_chunks(
                     failed_entities_count += 1
                     status_message = f"Failed to rebuild `{entity_name}`: {e}"
                     logger.info(status_message)  # Per requirement, change to info
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
+                    append_pipeline_log(pipeline_status, status_message)
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1245,10 +1239,7 @@ async def rebuild_knowledge_from_chunks(
                     failed_relationships_count += 1
                     status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
                     logger.info(status_message)  # Per requirement, change to info
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
+                    append_pipeline_log(pipeline_status, status_message)
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1879,10 +1870,7 @@ async def _rebuild_single_entity(
         status_message += f" ({truncation_info})"
     logger.info(status_message)
     # Update pipeline status
-    if pipeline_status is not None and pipeline_status_lock is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
+    append_pipeline_log(pipeline_status, status_message)
     return False
 
 
@@ -2186,10 +2174,7 @@ async def _rebuild_single_relationship(
     logger.info(status_message)
 
     # Update pipeline status
-    if pipeline_status is not None and pipeline_status_lock is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
+    append_pipeline_log(pipeline_status, status_message)
     return degraded
 
 
@@ -2515,10 +2500,7 @@ async def _merge_nodes_then_upsert(
         # Add message to pipeline satus when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            append_pipeline_log(pipeline_status, status_message)
         else:
             logger.debug(status_message)
 
@@ -2902,10 +2884,7 @@ async def _merge_edges_then_upsert(
         # Add message to pipeline satus when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            append_pipeline_log(pipeline_status, status_message)
         else:
             logger.debug(status_message)
 
@@ -3100,10 +3079,7 @@ async def _merge_edges_then_upsert(
                         f"Chunks appended from relation: `{need_insert_id}`"
                     )
                     logger.info(status_message)
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
+                    append_pipeline_log(pipeline_status, status_message)
 
         edge_created_at = int(time.time())
         edge_upsert_started = time.perf_counter()
@@ -3948,10 +3924,7 @@ async def extract_entities(
         relations_count = len(maybe_edges)
         log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
         logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+        append_pipeline_log(pipeline_status, log_message)
 
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
