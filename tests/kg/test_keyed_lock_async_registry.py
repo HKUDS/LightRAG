@@ -71,6 +71,9 @@ async def test_entry_dropped_immediately_on_release():
 
 @pytest.mark.offline
 async def test_waiter_keeps_entry_alive_and_mutual_exclusion_holds():
+    """Event-gated choreography (no wall-clock windows): the holder cannot
+    release until the test has finished asserting, so the count == 2 state is
+    observed deterministically even if the test process stalls."""
     finalize_share_data()
     initialize_share_data(1)
     try:
@@ -78,22 +81,38 @@ async def test_waiter_keeps_entry_alive_and_mutual_exclusion_holds():
         combined = _get_combined_key("ns", "contended")
         active = 0
         max_active = 0
+        holder_entered = asyncio.Event()
+        release_holder = asyncio.Event()
 
-        async def worker():
+        async def holder():
             nonlocal active, max_active
             async with get_storage_keyed_lock("contended", namespace="ns"):
                 active += 1
                 max_active = max(max_active, active)
-                await asyncio.sleep(0.01)
+                holder_entered.set()
+                await release_holder.wait()  # held until the test opens the gate
                 active -= 1
 
-        a = asyncio.ensure_future(worker())
-        b = asyncio.ensure_future(worker())
+        async def waiter():
+            nonlocal active, max_active
+            async with get_storage_keyed_lock("contended", namespace="ns"):
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0)  # yield once inside the critical section
+                active -= 1
+
+        a = asyncio.ensure_future(holder())
+        await asyncio.wait_for(holder_entered.wait(), timeout=1.0)
+        b = asyncio.ensure_future(waiter())
+        # _settle is loop iterations, not wall time: the waiter registers its
+        # reference synchronously before its first await, so this is enough.
         await _settle()
 
-        # One holds, one waits: the entry is alive with both references.
+        # One demonstrably holds (gated), one waits: entry alive, both counted.
         assert keyed._async_lock_count[combined] == 2
+        assert combined in keyed._async_lock
 
+        release_holder.set()
         await asyncio.gather(a, b)
         assert max_active == 1  # never two holders at once
         assert combined not in keyed._async_lock
