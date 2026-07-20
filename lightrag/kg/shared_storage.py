@@ -81,12 +81,6 @@ _keyed_holder_table = None
 # Keyed-lock lease poll backoff bounds (seconds).
 _KEYED_LEASE_POLL_BASE = 0.02
 _KEYED_LEASE_POLL_MAX = 0.5
-# Timeout for keyed locks in seconds (Default 300)
-CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
-# Cleanup pending list threshold for triggering cleanup (Default 500)
-CLEANUP_THRESHOLD = 500
-# Minimum interval between cleanup operations in seconds (Default 30)
-MIN_CLEANUP_INTERVAL_SECONDS = 30
 
 _initialized = None
 
@@ -426,131 +420,6 @@ class UnifiedLock(Generic[T]):
 def _get_combined_key(factory_name: str, key: str) -> str:
     """Return the combined key for the factory and key."""
     return f"{factory_name}:{key}"
-
-
-def _perform_lock_cleanup(
-    lock_type: str,
-    cleanup_data: Dict[str, float],
-    lock_registry: Optional[Dict[str, Any]],
-    lock_count: Optional[Dict[str, int]],
-    earliest_cleanup_time: Optional[float],
-    last_cleanup_time: Optional[float],
-    current_time: float,
-    threshold_check: bool = True,
-) -> tuple[int, Optional[float], Optional[float]]:
-    """
-    Generic idle-lock cleanup for the per-process async keyed locks.
-
-    (Historically shared with the multiprocess lock registry; the multiprocess
-    keyed lock is now a server-side holder table with no idle bookkeeping to
-    clean, so only the async side calls this.)
-
-    Args:
-        lock_type: Lock type identifier (only "async" in production)
-        cleanup_data: Cleanup data dictionary
-        lock_registry: Lock registry dictionary
-        lock_count: Lock count dictionary
-        earliest_cleanup_time: Earliest cleanup time
-        last_cleanup_time: Last cleanup time
-        current_time: Current time
-        threshold_check: Whether to check threshold condition (default True, set to False in cleanup_expired_locks)
-
-    Returns:
-        tuple: (cleaned_count, new_earliest_time, new_last_cleanup_time)
-    """
-    if len(cleanup_data) == 0:
-        return 0, earliest_cleanup_time, last_cleanup_time
-
-    # If threshold check is needed and threshold not reached, return directly
-    if threshold_check and len(cleanup_data) < CLEANUP_THRESHOLD:
-        return 0, earliest_cleanup_time, last_cleanup_time
-
-    # Time rollback detection
-    if last_cleanup_time is not None and current_time < last_cleanup_time:
-        direct_log(
-            f"== {lock_type} Lock == Time rollback detected, resetting cleanup time",
-            level="WARNING",
-            enable_output=False,
-        )
-        last_cleanup_time = None
-
-    # Check cleanup conditions
-    has_expired_locks = (
-        earliest_cleanup_time is not None
-        and current_time - earliest_cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS
-    )
-
-    interval_satisfied = (
-        last_cleanup_time is None
-        or current_time - last_cleanup_time > MIN_CLEANUP_INTERVAL_SECONDS
-    )
-
-    if not (has_expired_locks and interval_satisfied):
-        return 0, earliest_cleanup_time, last_cleanup_time
-
-    try:
-        cleaned_count = 0
-        new_earliest_time = None
-
-        # Calculate total count before cleanup
-        total_cleanup_len = len(cleanup_data)
-
-        # Perform cleanup operation
-        for cleanup_key, cleanup_time in list(cleanup_data.items()):
-            if current_time - cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS:
-                # Remove from cleanup data
-                cleanup_data.pop(cleanup_key, None)
-
-                # Remove from lock registry if exists
-                if lock_registry is not None:
-                    lock_registry.pop(cleanup_key, None)
-                if lock_count is not None:
-                    lock_count.pop(cleanup_key, None)
-
-                cleaned_count += 1
-            else:
-                # Track the earliest time among remaining locks
-                if new_earliest_time is None or cleanup_time < new_earliest_time:
-                    new_earliest_time = cleanup_time
-
-        # Update state only after successful cleanup
-        if cleaned_count > 0:
-            new_last_cleanup_time = current_time
-
-            # Log cleanup results
-            next_cleanup_in = max(
-                (new_earliest_time + CLEANUP_KEYED_LOCKS_AFTER_SECONDS - current_time)
-                if new_earliest_time
-                else float("inf"),
-                MIN_CLEANUP_INTERVAL_SECONDS,
-            )
-
-            if lock_type == "async":
-                direct_log(
-                    f"== {lock_type} Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired {lock_type} locks, "
-                    f"next cleanup in {next_cleanup_in:.1f}s",
-                    enable_output=False,
-                    level="INFO",
-                )
-            else:
-                direct_log(
-                    f"== {lock_type} Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired locks, "
-                    f"next cleanup in {next_cleanup_in:.1f}s",
-                    enable_output=False,
-                    level="INFO",
-                )
-
-            return cleaned_count, new_earliest_time, new_last_cleanup_time
-        else:
-            return 0, earliest_cleanup_time, last_cleanup_time
-
-    except Exception as e:
-        direct_log(
-            f"== {lock_type} Lock == Cleanup failed: {e}",
-            level="ERROR",
-            enable_output=True,
-        )
-        return 0, earliest_cleanup_time, last_cleanup_time
 
 
 # ============================================================================
@@ -962,7 +831,14 @@ class KeyedUnifiedLock:
     """
     Manager for unified keyed locks, supporting both single and multi-process
 
-    • Keeps only a table of async keyed locks locally
+    • Keeps only a table of async keyed locks locally, alive exactly while
+      referenced: an entry exists ⟺ its refcount ≥ 1 (some coroutine holds or
+      awaits it) and is dropped on the release that takes the count to 0 — no
+      idle cache, no deferred cleanup. Same-key coroutines MUST share one
+      ``asyncio.Lock`` while any of them is active (that is the mutual
+      exclusion in single-process mode and the per-process RPC-poll gate in
+      multiprocess mode); recreating the lock for a later, non-overlapping
+      acquisition is safe and costs only the object allocation.
     • In multiprocess mode, builds a fresh per-acquire ``_KeyedLeaseLock``
       driving the server-side holder table (no shared lock objects to manage)
     • Builds a fresh `UnifiedLock` each time, so `enable_logging`
@@ -976,15 +852,6 @@ class KeyedUnifiedLock:
         self._async_lock_count: Dict[
             str, int
         ] = {}  # local keyed locks referenced count
-        self._async_lock_cleanup_data: Dict[
-            str, time.time
-        ] = {}  # local keyed locks timeout
-        self._earliest_async_cleanup_time: Optional[float] = (
-            None  # track earliest async cleanup time
-        )
-        self._last_async_cleanup_time: Optional[float] = (
-            None  # track last async cleanup time for minimum interval
-        )
 
     def __call__(
         self, namespace: str, keys: list[str], *, enable_logging: Optional[bool] = None
@@ -1005,49 +872,51 @@ class KeyedUnifiedLock:
         )
 
     def _get_or_create_async_lock(self, combined_key: str) -> asyncio.Lock:
+        """Take a reference on the per-process async lock for ``combined_key``.
+
+        Runs synchronously on the event loop, so lookup + refcount increment
+        is atomic with respect to other coroutines.
+        """
         async_lock = self._async_lock.get(combined_key)
-        count = self._async_lock_count.get(combined_key, 0)
         if async_lock is None:
             async_lock = asyncio.Lock()
             self._async_lock[combined_key] = async_lock
-        elif count == 0 and combined_key in self._async_lock_cleanup_data:
-            self._async_lock_cleanup_data.pop(combined_key)
-        count += 1
-        self._async_lock_count[combined_key] = count
+        self._async_lock_count[combined_key] = (
+            self._async_lock_count.get(combined_key, 0) + 1
+        )
         return async_lock
 
     def _release_async_lock(self, combined_key: str):
-        count = self._async_lock_count.get(combined_key, 0)
+        """Drop one reference; delete the entry when the count reaches 0.
+
+        count == 0 means no holder AND no waiter (every waiter increments
+        before awaiting, and a cancelled waiter's rollback releases its
+        reference), so the entry can be dropped immediately. An unmatched
+        release is a caller bug: logged, never applied, so it can neither
+        underflow the count nor resurrect a deleted entry.
+        """
+        count = self._async_lock_count.get(combined_key)
+        if count is None:
+            direct_log(
+                f"== Lock == Process {os.getpid()}: release without matching "
+                f"acquire for async keyed lock '{combined_key}'",
+                level="ERROR",
+                enable_output=True,
+            )
+            return
         count -= 1
-
-        current_time = time.time()
-        if count == 0:
-            self._async_lock_cleanup_data[combined_key] = current_time
-
-            # Update earliest async cleanup time (only when earlier)
-            if (
-                self._earliest_async_cleanup_time is None
-                or current_time < self._earliest_async_cleanup_time
-            ):
-                self._earliest_async_cleanup_time = current_time
-        self._async_lock_count[combined_key] = count
-
-        # Use generic cleanup function
-        cleaned_count, new_earliest_time, new_last_cleanup_time = _perform_lock_cleanup(
-            lock_type="async",
-            cleanup_data=self._async_lock_cleanup_data,
-            lock_registry=self._async_lock,
-            lock_count=self._async_lock_count,
-            earliest_cleanup_time=self._earliest_async_cleanup_time,
-            last_cleanup_time=self._last_async_cleanup_time,
-            current_time=current_time,
-            threshold_check=True,
-        )
-
-        # Update instance state if cleanup was performed
-        if cleaned_count > 0:
-            self._earliest_async_cleanup_time = new_earliest_time
-            self._last_async_cleanup_time = new_last_cleanup_time
+        if count <= 0:
+            if count < 0:
+                direct_log(
+                    f"== Lock == Process {os.getpid()}: async keyed lock "
+                    f"'{combined_key}' over-released (count {count})",
+                    level="ERROR",
+                    enable_output=True,
+                )
+            self._async_lock_count.pop(combined_key, None)
+            self._async_lock.pop(combined_key, None)
+        else:
+            self._async_lock_count[combined_key] = count
 
     def _get_lock_for_key(
         self, namespace: str, key: str, enable_logging: bool = False
@@ -1085,84 +954,27 @@ class KeyedUnifiedLock:
         combined_key = _get_combined_key(namespace, key)
         self._release_async_lock(combined_key)
 
-    def cleanup_expired_locks(self) -> Dict[str, Any]:
-        """
-        Cleanup expired ASYNC keyed locks (the per-process asyncio.Lock table).
-
-        Multiprocess keyed locks need no cleanup: the server-side holder table
-        holds a record only while a lock is HELD (release/reclaim pops it), so
-        there is nothing idle to expire. The ``mp_cleaned`` key is preserved
-        for response-schema compatibility and is always 0.
-
-        Returns:
-            Dict containing cleanup statistics and current status:
-            {
-                "process_id": 12345,
-                "cleanup_performed": {
-                    "mp_cleaned": 0,
-                    "async_cleaned": 3
-                },
-                "current_status": {
-                    "total_mp_locks": 10,
-                    "pending_mp_cleanup": 0,
-                    "total_async_locks": 8,
-                    "pending_async_cleanup": 1
-                }
-            }
-        """
-        cleanup_stats = {"mp_cleaned": 0, "async_cleaned": 0}
-
-        current_time = time.time()
-
-        # Cleanup async locks using generic function
-        try:
-            # Use generic cleanup function without threshold check
-            cleaned_count, new_earliest_time, new_last_cleanup_time = (
-                _perform_lock_cleanup(
-                    lock_type="async",
-                    cleanup_data=self._async_lock_cleanup_data,
-                    lock_registry=self._async_lock,
-                    lock_count=self._async_lock_count,
-                    earliest_cleanup_time=self._earliest_async_cleanup_time,
-                    last_cleanup_time=self._last_async_cleanup_time,
-                    current_time=current_time,
-                    threshold_check=False,  # Force cleanup in cleanup_expired_locks
-                )
-            )
-
-            # Update instance state if cleanup was performed
-            if cleaned_count > 0:
-                self._earliest_async_cleanup_time = new_earliest_time
-                self._last_async_cleanup_time = new_last_cleanup_time
-                cleanup_stats["async_cleaned"] = cleaned_count
-
-        except Exception as e:
-            direct_log(
-                f"Error during async lock cleanup: {e}",
-                level="ERROR",
-                enable_output=True,
-            )
-
-        # 3. Get current status after cleanup
-        current_status = self.get_lock_status()
-
-        return {
-            "process_id": os.getpid(),
-            "cleanup_performed": cleanup_stats,
-            "current_status": current_status,
-        }
-
     def get_lock_status(self) -> Dict[str, int]:
         """
         Get current status of both async and multiprocess keyed locks.
 
-        SEMANTIC NOTE: ``total_mp_locks`` counts the keys currently HELD in
-        the server-side holder table (one ``holder_count()`` RPC returning an
-        int). It previously counted lock objects kept alive in the (now
-        removed) registry, including idle ones awaiting cleanup — same key,
-        new value semantics. ``pending_mp_cleanup`` is always 0 (there is no
-        deferred multiprocess cleanup queue anymore); the key is preserved for
-        response-schema compatibility.
+        SEMANTIC NOTE — the two counts are instantaneous but differ in both
+        scope and criterion:
+
+        * ``total_mp_locks``: keys currently HELD in the server-side holder
+          table (one ``holder_count()`` RPC returning an int) — GLOBAL across
+          all workers, waiters not included.
+        * ``total_async_locks``: keys with at least one active local
+          reference (held OR awaited by a coroutine) — per THIS worker
+          process only. It previously counted cached entries including ones
+          idle for up to 300s awaiting cleanup; entries are now dropped on
+          the release that takes their refcount to 0, so an idle process
+          reports ~0 and a persistently non-zero value means a key is being
+          continuously held or waited on. Same key, new value semantics.
+
+        ``pending_mp_cleanup`` and ``pending_async_cleanup`` are always 0
+        (neither side has a deferred cleanup queue anymore); the keys are
+        preserved for response-schema compatibility.
 
         Returns:
             Dict containing lock counts:
@@ -1170,7 +982,7 @@ class KeyedUnifiedLock:
                 "total_mp_locks": 10,
                 "pending_mp_cleanup": 0,
                 "total_async_locks": 8,
-                "pending_async_cleanup": 1
+                "pending_async_cleanup": 0
             }
         """
         status = {
@@ -1185,9 +997,8 @@ class KeyedUnifiedLock:
             if _is_multiprocess and _keyed_holder_table is not None:
                 status["total_mp_locks"] = _keyed_holder_table.holder_count()
 
-            # Count async locks
+            # Count async locks (locally held or awaited keys)
             status["total_async_locks"] = len(self._async_lock_count)
-            status["pending_async_cleanup"] = len(self._async_lock_cleanup_data)
 
         except Exception as e:
             direct_log(
@@ -1540,42 +1351,52 @@ def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
 
 def cleanup_keyed_lock() -> Dict[str, Any]:
     """
-    Force cleanup of expired ASYNC keyed locks and return status information.
+    Report keyed-lock status; kept as a status shell for schema compatibility.
 
-    Multiprocess keyed locks are a server-side holder table with no idle
-    bookkeeping to clean; the ``mp_cleaned`` key in the response is preserved
-    for compatibility and is always 0.
+    There is nothing left to clean on either side: multiprocess locks live in
+    the server-side holder table only while HELD, and async locks are dropped
+    on the release that takes their refcount to 0. The ``cleanup_performed``
+    counters (``mp_cleaned`` / ``async_cleaned``) are preserved for
+    response-schema compatibility and are always 0.
 
     Returns:
-        Same as cleanup_expired_locks in KeyedUnifiedLock
+        {
+            "process_id": <pid of the answering worker>,
+            "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
+            "current_status": <get_lock_status() dict>
+        }
     """
     global _storage_keyed_lock
 
-    # Check if shared storage is initialized
     if not _initialized or _storage_keyed_lock is None:
-        return {
-            "process_id": os.getpid(),
-            "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
-            "current_status": {
-                "total_mp_locks": 0,
-                "pending_mp_cleanup": 0,
-                "total_async_locks": 0,
-                "pending_async_cleanup": 0,
-            },
+        current_status = {
+            "total_mp_locks": 0,
+            "pending_mp_cleanup": 0,
+            "total_async_locks": 0,
+            "pending_async_cleanup": 0,
         }
+    else:
+        current_status = _storage_keyed_lock.get_lock_status()
 
-    return _storage_keyed_lock.cleanup_expired_locks()
+    return {
+        "process_id": os.getpid(),
+        "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
+        "current_status": current_status,
+    }
 
 
 def get_keyed_lock_status() -> Dict[str, Any]:
     """
-    Get current status of keyed locks without performing cleanup.
+    Get current status of keyed locks.
 
-    This function provides a read-only view of the current lock counts
-    for both multiprocess and async locks, including pending cleanup counts.
+    Read-only view of the instantaneous lock counts: global holders
+    (``total_mp_locks``) and this worker's locally held-or-awaited keys
+    (``total_async_locks``) — see ``KeyedUnifiedLock.get_lock_status`` for the
+    scope/criterion distinction. The ``pending_*_cleanup`` keys are always 0
+    (schema compatibility).
 
     Returns:
-        Same as get_lock_status in KeyedUnifiedLock
+        Same as get_lock_status in KeyedUnifiedLock, plus ``process_id``
     """
     global _storage_keyed_lock
 
