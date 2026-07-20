@@ -1609,20 +1609,138 @@ async def initialize_pipeline_status(workspace: str | None = None):
 
 
 def _debug_log_failure(message: str, exc: Exception) -> None:
-    """Record a swallowed ``append_pipeline_log`` failure without ever raising.
+    """Record a swallowed pipeline-status log-write failure without ever raising.
 
-    The never-raise contract of :func:`append_pipeline_log` extends to its own
-    diagnostics: if even the logging call fails (e.g. a broken handler), we must
-    not let it propagate and mask the caller's real exception.
+    The never-raise contract of :class:`PipelineStatusLogger` and
+    :func:`append_pipeline_log` extends to their own diagnostics: if even the
+    logging call fails (e.g. a broken handler), we must not let it propagate and
+    mask the caller's real exception.
     """
     try:
-        logging.getLogger("lightrag").debug("append_pipeline_log: %s: %r", message, exc)
+        logging.getLogger("lightrag").debug("pipeline status log: %s: %r", message, exc)
     except Exception:
         pass
 
 
+_UNRESOLVED = object()
+"""Sentinel for :class:`PipelineStatusLogger`'s unfetched history cache.
+
+``None`` cannot serve as the sentinel: a ``.get()`` that *returned* None
+(missing key / late init) must NOT be cached, so the next write retries.
+"""
+
+
+class PipelineStatusLogger:
+    """Operation-scoped, lock-free pipeline status logger with a cached history list.
+
+    Amortizes the per-message cost of :func:`append_pipeline_log`: the first
+    history write fetches ``pipeline_status["history_messages"]`` once and
+    caches the returned list handle; every later message is a single ``extend``
+    on that handle. In multiprocess mode this drops the steady-state explicit
+    proxy operations per log line from 3 to 2 (``latest_message`` setitem +
+    history ``extend``), and reusing the cached nested ListProxy also avoids
+    the per-message proxy reconstruction and reference-management traffic that
+    a repeated ``DictProxy.get`` incurs.
+
+    Scope / lifecycle:
+    - One instance per pipeline *operation* (e.g. one ``extract_entities`` or
+      ``merge_nodes_and_edges`` call), shared by that operation's child tasks.
+    - MUST NOT be reused across ``finalize_share_data()``: after manager
+      shutdown both the cached proxy and the status dict are dead, and every
+      write degrades to a debug-logged no-op. Never store one at module level,
+      and never ship one to another process except by fork inheritance.
+    - Depends on the repo invariant that ``history_messages`` is only ever
+      reset IN PLACE (``del h[:]`` / ``h[:] = [...]``) and never replaced with
+      a new list object; a replacement would leave this logger appending to
+      the orphaned list for the rest of the operation.
+    - History *trimming* is deliberately not offered here: the ``len`` check
+      plus delete is a read-modify-write and must stay inside
+      ``async with pipeline_status_lock`` (see the processing loop).
+
+    Concurrency contract is identical to :func:`append_pipeline_log` — safe for
+    pure status logging only, never for coordination state, which stays under
+    ``async with pipeline_status_lock``.
+
+    Never-raise contract (call sites are shaped
+    ``except ...: log(...); raise e`` — a raising status write would mask the
+    real exception): ``pipeline_status is None`` or empty ``messages`` → no-op;
+    latest / history / diagnostics are each guarded independently.
+
+    Two deliberate behavioral deltas vs the pre-helper locked call sites
+    (pinned by tests): (1) logging no longer requires ``pipeline_status_lock``
+    to be provided; (2) a missing/None ``history_messages`` is silently
+    skipped instead of raising KeyError.
+
+    Cache recovery: a failed or None ``.get()`` is not cached and is retried
+    on the next write; a failed ``extend`` drops the cache so the next write
+    re-fetches a fresh handle. Messages of the FAILED call are never retried —
+    the write may have half-committed and a retry could duplicate them.
+    """
+
+    __slots__ = ("_pipeline_status", "_history")
+
+    def __init__(self, pipeline_status) -> None:
+        # Construction is deliberately proxy-free (no Manager round-trip), so
+        # building a logger for a pipeline_status=None caller costs nothing.
+        self._pipeline_status = pipeline_status
+        self._history = _UNRESOLVED
+
+    def log(self, *messages) -> None:
+        """Best-effort: set ``latest_message`` to the last message, then append
+        the whole group to history with one ``extend``."""
+        if self._pipeline_status is None or not messages:
+            return
+        try:
+            self._pipeline_status["latest_message"] = messages[-1]
+        except Exception as exc:
+            _debug_log_failure("latest_message write skipped", exc)
+        self._extend_history(messages)
+
+    def append(self, *messages) -> None:
+        """History-only append, for sites whose ``latest_message`` was already
+        written inside a locked ``status.update()``."""
+        if self._pipeline_status is None or not messages:
+            return
+        self._extend_history(messages)
+
+    def _resolve_history(self):
+        """Return the backing history list, fetching and caching on first
+        success. Returns None when unavailable; nothing is cached then, so the
+        next write retries the fetch."""
+        history = self._history
+        if history is not _UNRESOLVED:
+            return history
+        try:
+            history = self._pipeline_status.get("history_messages")
+        except Exception as exc:
+            _debug_log_failure("history fetch skipped", exc)
+            return None
+        if history is None:
+            return None
+        self._history = history
+        return history
+
+    def _extend_history(self, messages) -> None:
+        history = self._resolve_history()
+        if history is None:
+            return
+        try:
+            history.extend(messages)
+        except Exception as exc:
+            # Drop the cache (stale/dead handle) so the next call re-fetches.
+            # Do NOT retry these messages: the extend may have half-committed.
+            self._history = _UNRESOLVED
+            _debug_log_failure("history append skipped", exc)
+
+
 def append_pipeline_log(pipeline_status, *messages, set_latest=True):
     """Lock-free, best-effort write of pipeline status log messages.
+
+    One-shot compatibility wrapper over :class:`PipelineStatusLogger`: each
+    call builds a throwaway logger, so each call still pays one history fetch.
+    Operation-scoped code (hot logging paths) should hold a
+    ``PipelineStatusLogger`` instead, which caches the history handle after the
+    first write.
 
     Writes ``latest_message`` and appends to ``history_messages`` WITHOUT taking
     ``pipeline_status_lock``. This is safe ONLY for pure status logging, never for
@@ -1658,19 +1776,11 @@ def append_pipeline_log(pipeline_status, *messages, set_latest=True):
         set_latest: when False, only append to history (do not touch
             ``latest_message``).
     """
-    if pipeline_status is None or not messages:
-        return
+    one_shot = PipelineStatusLogger(pipeline_status)
     if set_latest:
-        try:
-            pipeline_status["latest_message"] = messages[-1]
-        except Exception as exc:
-            _debug_log_failure("latest_message write skipped", exc)
-    try:
-        history = pipeline_status.get("history_messages")
-        if history is not None:
-            history.extend(messages)
-    except Exception as exc:
-        _debug_log_failure("history append skipped", exc)
+        one_shot.log(*messages)
+    else:
+        one_shot.append(*messages)
 
 
 # ============================================================================
