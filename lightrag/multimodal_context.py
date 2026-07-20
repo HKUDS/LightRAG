@@ -792,7 +792,6 @@ _CONTENT_TRUNCATION_MARKER = (
 )
 
 
-
 def _trim_content_inner(
     content: str,
     *,
