@@ -4820,9 +4820,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|> -> <|#|>, <||> -> <|#|>
+    # Fix: <|> -> <|#|>, <||> -> <|#|> (glued only; keep free-text "a <|> b")
     record = re.sub(
-        r"<\|+>",
+        r"(?<=\S)<\|+>(?=\S)",
         tuple_delimiter,
         record,
     )
@@ -4869,9 +4869,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|| -> <|#|>
+    # Fix: <|| -> <|#|> (glued only; keep free-text/code "x <|| y")
     record = re.sub(
-        r"<\|\|(?!>)",
+        r"(?<=\S)<\|\|(?!>)",
         tuple_delimiter,
         record,
     )
