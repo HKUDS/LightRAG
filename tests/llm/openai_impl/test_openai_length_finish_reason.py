@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lightrag.llm.openai import InvalidResponseError, openai_complete_if_cache
+from lightrag.utils import is_truncated_response
 
 
 def _make_completion(
@@ -108,6 +109,54 @@ async def test_length_finish_reason_returns_raw_content():
     assert result == raw_json
     fake_client.chat.completions.create.assert_awaited_once()
     fake_client.close.assert_awaited_once()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_length_finish_reason_marks_result_truncated():
+    """Truncated content is returned but flagged so the cache layer skips it.
+
+    The partial payload is still usable (str equality holds for salvage), but
+    ``is_truncated_response`` reports True so callers do not persist it.
+    """
+    raw_json = '{"entities":[{"name":"Alice","type":"Person"'
+    completion = _make_completion(raw_json, finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        result = await openai_complete_if_cache(
+            model="test-model",
+            prompt="Extract entities",
+            response_format={"type": "json_object"},
+        )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_stop_finish_reason_is_not_marked_truncated():
+    """A normally-completed response is not flagged and remains cacheable."""
+    raw_json = '{"entities":[],"relationships":[]}'
+    completion = _make_completion(raw_json, finish_reason="stop")
+    fake_client = _make_fake_client(completion)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        result = await openai_complete_if_cache(
+            model="test-model",
+            prompt="Extract entities",
+            response_format={"type": "json_object"},
+        )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is False
 
 
 @pytest.mark.offline

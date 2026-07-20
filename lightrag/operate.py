@@ -29,6 +29,7 @@ from lightrag.utils import (
     handle_cache,
     save_to_cache,
     CacheData,
+    is_truncated_response,
     use_llm_func_with_cache,
     get_env_value,
     get_llm_cache_identity,
@@ -4196,7 +4197,11 @@ async def kg_query(
             stream=query_param.stream,
         )
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+        if (
+            hashing_kv
+            and hashing_kv.global_config.get("enable_llm_cache")
+            and not is_truncated_response(response)
+        ):
             queryparam_dict = {
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
@@ -4473,7 +4478,10 @@ async def extract_keywords_only(
     _, hl_keywords, ll_keywords = _parse_keywords_payload(result)
 
     # 6. Cache only the processed keywords with cache type
-    if hl_keywords or ll_keywords:
+    #    Skip caching when the LLM response was truncated by the token limit:
+    #    the parsed keyword set may be incomplete, and caching it would replay
+    #    the partial result on every later run.
+    if (hl_keywords or ll_keywords) and not is_truncated_response(result):
         cache_data = {
             "high_level_keywords": hl_keywords,
             "low_level_keywords": ll_keywords,
@@ -6216,7 +6224,11 @@ async def naive_query(
             stream=query_param.stream,
         )
 
-        if hashing_kv and hashing_kv.global_config.get("enable_llm_cache"):
+        if (
+            hashing_kv
+            and hashing_kv.global_config.get("enable_llm_cache")
+            and not is_truncated_response(response)
+        ):
             queryparam_dict = {
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
