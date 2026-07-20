@@ -14,6 +14,8 @@ from lightrag.base import DocStatus  # noqa: E402
 from lightrag.constants import PROCESS_OPTION_CHUNK_FIXED  # noqa: E402
 from lightrag.pipeline import _PipelineMixin  # noqa: E402
 
+pytestmark = pytest.mark.offline
+
 
 class DummyRAG:
     def __init__(self):

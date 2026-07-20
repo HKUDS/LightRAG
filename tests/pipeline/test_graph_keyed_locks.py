@@ -22,6 +22,8 @@ import pytest
 
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 
+pytestmark = pytest.mark.offline
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
