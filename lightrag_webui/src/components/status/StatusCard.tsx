@@ -237,8 +237,8 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
                     {' | '}
                   </>
                 )}
-                mp {status.keyed_locks.current_status.pending_mp_cleanup}/{status.keyed_locks.current_status.total_mp_locks} |
-                async {status.keyed_locks.current_status.pending_async_cleanup}/{status.keyed_locks.current_status.total_async_locks}
+                m_lock {status.keyed_locks.current_status.total_mp_locks} |
+                a_lock {status.keyed_locks.current_status.total_async_locks}
                 (pid: {status.keyed_locks.process_id})
               </span>
             </>
