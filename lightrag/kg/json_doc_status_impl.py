@@ -235,9 +235,12 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         async with self._storage_lock:
             if self.storage_updated.value:
-                data_dict = (
-                    dict(self._data) if hasattr(self._data, "_getvalue") else self._data
-                )
+                # DictProxy.copy() is a single Manager RPC that marshals the
+                # whole mapping server-side; dict(proxy) would walk the mapping
+                # protocol and fetch every value with its own RPC. Plain dicts
+                # (single-process mode) copy cheaply and identically — write_json
+                # only reads its argument, so the shallow copy is safe there too.
+                data_dict = self._data.copy()
                 logger.debug(
                     f"[{self.workspace}] Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
                 )

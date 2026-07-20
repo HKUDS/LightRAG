@@ -12,6 +12,7 @@ import inspect
 import json
 import logging
 import logging.handlers
+import math
 import os
 import re
 import time
@@ -243,13 +244,18 @@ def parse_optional_float(raw: str | None) -> float | None:
     the consuming code fall back to its own default.  Any other
     non-numeric value raises :class:`ValueError` so misconfigured envs
     fail loudly at parse time rather than silently downstream.
+    Non-finite values (``nan`` / ``inf``) are also rejected: they parse as
+    floats but corrupt semantic-chunker thresholds.
     """
     if raw is None:
         return None
     stripped = raw.strip()
     if not stripped or stripped.lower() == "none":
         return None
-    return float(stripped)
+    value = float(stripped)
+    if not math.isfinite(value):
+        raise ValueError(f"expected a finite float, got {raw!r}")
+    return value
 
 
 def get_env_value(
