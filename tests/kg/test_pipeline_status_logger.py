@@ -1,7 +1,6 @@
 """Unit tests for the operation-scoped ``PipelineStatusLogger``.
 
-Coverage beyond the one-shot ``append_pipeline_log`` tests (which stay
-untouched as the wrapper-equivalence baseline):
+Coverage:
 
   - history-handle caching: the first write fetches
     ``pipeline_status.get("history_messages")`` exactly once; later writes
@@ -25,7 +24,7 @@ import multiprocessing as mp
 
 import pytest
 
-from lightrag.kg.shared_storage import PipelineStatusLogger, append_pipeline_log
+from lightrag.kg.shared_storage import PipelineStatusLogger
 
 pytestmark = pytest.mark.offline
 
@@ -249,27 +248,6 @@ def test_never_raises_even_when_diagnostic_logging_itself_fails(monkeypatch):
     status_logger = PipelineStatusLogger(status)
     # Both the fetch AND its diagnostic logging fail — still must not raise.
     status_logger.log("a")
-
-
-# ---------------------------------------------------------------------------
-# Wrapper regression: append_pipeline_log stays one-shot (no cross-call cache).
-# ---------------------------------------------------------------------------
-
-
-def test_wrapper_is_one_shot_without_cross_call_cache():
-    status = _CountingStatus()
-    append_pipeline_log(status, "a")
-    append_pipeline_log(status, "b")
-    assert status.get_calls == 2  # one fetch per call, exactly as before
-    assert status.history == ["a", "b"]
-    assert status.latest == "b"
-
-
-def test_wrapper_set_latest_false_routes_to_history_only():
-    status = _CountingStatus()
-    append_pipeline_log(status, "a", set_latest=False)
-    assert status.latest is None
-    assert status.history == ["a"]
 
 
 # ---------------------------------------------------------------------------

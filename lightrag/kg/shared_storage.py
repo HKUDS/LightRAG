@@ -1611,10 +1611,9 @@ async def initialize_pipeline_status(workspace: str | None = None):
 def _debug_log_failure(message: str, exc: Exception) -> None:
     """Record a swallowed pipeline-status log-write failure without ever raising.
 
-    The never-raise contract of :class:`PipelineStatusLogger` and
-    :func:`append_pipeline_log` extends to their own diagnostics: if even the
-    logging call fails (e.g. a broken handler), we must not let it propagate and
-    mask the caller's real exception.
+    The never-raise contract of :class:`PipelineStatusLogger` extends to its
+    own diagnostics: if even the logging call fails (e.g. a broken handler), we
+    must not let it propagate and mask the caller's real exception.
     """
     try:
         logging.getLogger("lightrag").debug("pipeline status log: %s: %r", message, exc)
@@ -1633,14 +1632,15 @@ _UNRESOLVED = object()
 class PipelineStatusLogger:
     """Operation-scoped, lock-free pipeline status logger with a cached history list.
 
-    Amortizes the per-message cost of :func:`append_pipeline_log`: the first
-    history write fetches ``pipeline_status["history_messages"]`` once and
-    caches the returned list handle; every later message is a single ``extend``
-    on that handle. In multiprocess mode this drops the steady-state explicit
-    proxy operations per log line from 3 to 2 (``latest_message`` setitem +
-    history ``extend``), and reusing the cached nested ListProxy also avoids
-    the per-message proxy reconstruction and reference-management traffic that
-    a repeated ``DictProxy.get`` incurs.
+    Writes ``latest_message`` and appends to ``history_messages`` WITHOUT
+    taking ``pipeline_status_lock``. The first history write fetches
+    ``pipeline_status["history_messages"]`` once and caches the returned list
+    handle; every later message is a single ``extend`` on that handle. In
+    multiprocess mode this keeps the steady-state explicit proxy operations
+    per log line at 2 (``latest_message`` setitem + history ``extend``), and
+    reusing the cached nested ListProxy also avoids the per-message proxy
+    reconstruction and reference-management traffic that a repeated
+    ``DictProxy.get`` incurs.
 
     Scope / lifecycle:
     - One instance per pipeline *operation* (e.g. one ``extract_entities`` or
@@ -1657,9 +1657,17 @@ class PipelineStatusLogger:
       plus delete is a read-modify-write and must stay inside
       ``async with pipeline_status_lock`` (see the processing loop).
 
-    Concurrency contract is identical to :func:`append_pipeline_log` — safe for
-    pure status logging only, never for coordination state, which stays under
-    ``async with pipeline_status_lock``.
+    Why lock-free is safe: this is for pure status logging ONLY, never for
+    coordination state (``busy`` / ``request_pending`` / ``cancellation_*`` /
+    reservation owner tokens / ``cur_batch`` / the history trim), which stays
+    in ``async with pipeline_status_lock`` read-modify-write blocks. Each of
+    ``dict.__setitem__`` and ``list.extend`` is a single indivisible operation
+    on the backing dict/list under the Manager server's CPython GIL (for plain
+    str/tuple args), and ``extend`` (not a per-message ``append`` loop)
+    appends a multi-message group atomically in one round-trip. Dropping the
+    lock only makes the human-facing status log eventually consistent
+    (``latest_message`` may lag the history tail, and concurrent writers may
+    interleave) — no coordination invariant depends on it.
 
     Never-raise contract (call sites are shaped
     ``except ...: log(...); raise e`` — a raising status write would mask the
@@ -1731,56 +1739,6 @@ class PipelineStatusLogger:
             # Do NOT retry these messages: the extend may have half-committed.
             self._history = _UNRESOLVED
             _debug_log_failure("history append skipped", exc)
-
-
-def append_pipeline_log(pipeline_status, *messages, set_latest=True):
-    """Lock-free, best-effort write of pipeline status log messages.
-
-    One-shot compatibility wrapper over :class:`PipelineStatusLogger`: each
-    call builds a throwaway logger, so each call still pays one history fetch.
-    Operation-scoped code (hot logging paths) should hold a
-    ``PipelineStatusLogger`` instead, which caches the history handle after the
-    first write.
-
-    Writes ``latest_message`` and appends to ``history_messages`` WITHOUT taking
-    ``pipeline_status_lock``. This is safe ONLY for pure status logging, never for
-    coordination state: ``busy`` / ``request_pending`` / ``cancellation_*`` /
-    reservation owner tokens / ``cur_batch`` / the ``history_messages`` trim all
-    stay in ``async with pipeline_status_lock`` read-modify-write blocks.
-
-    Why lock-free is safe here: each of ``dict.__setitem__`` and ``list.extend``
-    is a single indivisible operation on the backing dict/list under the Manager
-    server's CPython GIL (for plain str/tuple args). Dropping the lock only makes
-    the human-facing status log eventually consistent (``latest_message`` may lag
-    the tail of ``history_messages``, and concurrent writers may interleave) — no
-    coordination invariant depends on it. This mirrors the already-lock-free hot
-    loop in the processing pipeline.
-
-    ``extend`` (not a per-message ``append`` loop) keeps a multi-message call to a
-    single Manager RPC and appends the group atomically.
-
-    Contract — NEVER raises (a raising status write would mask the real exception
-    at call sites such as ``except ...: append_pipeline_log(...); raise e``):
-
-    - ``pipeline_status is None`` or no ``messages`` → no-op.
-    - ``pipeline_status`` present → best-effort: write ``latest_message`` if able,
-      extend ``history_messages`` if able. ``latest`` and ``history`` are guarded
-      independently so a failure of one still attempts the other. A missing/None
-      ``history_messages`` simply skips the append.
-
-    Args:
-        pipeline_status: the pipeline status mapping (plain dict or Manager
-            DictProxy), or None.
-        *messages: one or more log messages. With multiple, ``latest_message``
-            becomes the last one and all are appended to history in order.
-        set_latest: when False, only append to history (do not touch
-            ``latest_message``).
-    """
-    one_shot = PipelineStatusLogger(pipeline_status)
-    if set_latest:
-        one_shot.log(*messages)
-    else:
-        one_shot.append(*messages)
 
 
 # ============================================================================
