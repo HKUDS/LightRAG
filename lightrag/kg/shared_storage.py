@@ -1,17 +1,22 @@
 import os
 import sys
 import asyncio
-import multiprocessing as mp
 import random
+import threading
 import uuid
 from multiprocessing.synchronize import Lock as ProcessLock
-from multiprocessing import Manager
+from multiprocessing.managers import BaseProxy, SyncManager
 import time
 import logging
 from dataclasses import dataclass
 from enum import Enum
 from contextvars import ContextVar
 from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
+
+try:
+    import psutil
+except ImportError:  # minimal core install (psutil ships with the api extra)
+    psutil = None
 
 from lightrag.constants import (
     DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL,
@@ -68,16 +73,11 @@ _is_multiprocess = None
 _workers = None
 _manager = None
 
-# Global singleton data for multi-process keyed locks
-_lock_registry: Optional[Dict[str, Any]] = None
-_lock_registry_count: Optional[Dict[str, int]] = None
-_lock_cleanup_data: Optional[Dict[str, time.time]] = None
-_registry_guard = None
-# Holder records for multi-process keyed locks (dead-worker recovery). Maps a
-# combined key to {owner_pid, process_start_id, lease_id} while the lock is held;
-# the record IS the lock (replaces manager.Lock()), so a SIGKILLed holder can be
-# reclaimed by a live worker instead of deadlocking every process.
-_keyed_lock_holders: Optional[Dict[str, Any]] = None
+# Server-side holder table for multi-process keyed locks (a _HolderTableProxy
+# in every worker, the KeyedHolderTable instance lives in the Manager server
+# process). The holder record IS the lock; one RPC per acquire/release. None in
+# single-process mode.
+_keyed_holder_table = None
 # Keyed-lock lease poll backoff bounds (seconds).
 _KEYED_LEASE_POLL_BASE = 0.02
 _KEYED_LEASE_POLL_MAX = 0.5
@@ -87,10 +87,6 @@ CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
 CLEANUP_THRESHOLD = 500
 # Minimum interval between cleanup operations in seconds (Default 30)
 MIN_CLEANUP_INTERVAL_SECONDS = 30
-# Track the earliest cleanup time for efficient cleanup triggering (multiprocess locks only)
-_earliest_mp_cleanup_time: Optional[float] = None
-# Track the last cleanup time to enforce minimum interval (multiprocess locks only)
-_last_mp_cleanup_time: Optional[float] = None
 
 _initialized = None
 
@@ -443,13 +439,17 @@ def _perform_lock_cleanup(
     threshold_check: bool = True,
 ) -> tuple[int, Optional[float], Optional[float]]:
     """
-    Generic lock cleanup function to unify cleanup logic for both multiprocess and async locks.
+    Generic idle-lock cleanup for the per-process async keyed locks.
+
+    (Historically shared with the multiprocess lock registry; the multiprocess
+    keyed lock is now a server-side holder table with no idle bookkeeping to
+    clean, so only the async side calls this.)
 
     Args:
-        lock_type: Lock type identifier ("mp" or "async")
+        lock_type: Lock type identifier (only "async" in production)
         cleanup_data: Cleanup data dictionary
-        lock_registry: Lock registry dictionary (can be None for async locks)
-        lock_count: Lock count dictionary (can be None for async locks)
+        lock_registry: Lock registry dictionary
+        lock_count: Lock count dictionary
         earliest_cleanup_time: Earliest cleanup time
         last_cleanup_time: Last cleanup time
         current_time: Current time
@@ -558,22 +558,50 @@ def _perform_lock_cleanup(
 # ============================================================================
 
 _MY_START_ID_CACHE: Optional[str] = None
-_MY_START_ID_COMPUTED: bool = False
+_MY_START_ID_PID: Optional[int] = None
+
+# Retries for the non-Linux sandwich sampling in _start_delta (each retry is
+# one anchor/owner/anchor read triple; a mismatch between the two anchor reads
+# means a clock adjustment crossed the sampling window).
+_START_DELTA_RETRIES = 3
+# Defensive slack for the non-Linux start-delta comparison (seconds). A clean
+# sample of the same process reproduces bit-for-bit (delta of two
+# kernel-stored values), so the theoretical tolerance is 0; 1.0s only absorbs
+# unknown platform timestamp resolution/conversion noise, at the cost of a
+# liveness (never a mutual-exclusion) window: a PID reuser whose start time is
+# within 1s of the dead owner's goes undetected until the PID itself dies.
+_NON_LINUX_START_DELTA_TOLERANCE = 1.0
 
 
 def _pid_alive(pid: int) -> bool:
-    """Best-effort liveness probe; errs on the side of 'alive'."""
+    """Best-effort liveness probe; errs on the side of 'alive'.
+
+    With psutil available, a zombie is reported DEAD: a zombie executes no
+    code and cannot be using a lock or reservation, while ``os.kill(pid, 0)``
+    would report it alive — wedging a keyed lock until the wedged parent
+    finally reaps the killed holder. Without psutil (minimal core install)
+    the historical ``os.kill`` behavior is preserved (zombies count as alive).
+    """
     if pid == os.getpid():
         return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        # PermissionError and friends: the process exists (or we cannot
-        # tell) — treat as alive so we never reclaim a live owner's lease.
+    if psutil is None:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            # PermissionError and friends: the process exists (or we cannot
+            # tell) — treat as alive so we never reclaim a live owner's lease.
+            return True
         return True
-    return True
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        # ZombieProcess is a NoSuchProcess subclass — either way, dead.
+        return False
+    except psutil.Error:
+        # AccessDenied and friends: uncertain → alive, never reclaim a live owner.
+        return True
 
 
 def _read_proc_starttime(pid: int) -> Optional[str]:
@@ -606,14 +634,22 @@ def _read_proc_starttime(pid: int) -> Optional[str]:
 
 
 def _my_start_id() -> Optional[str]:
-    """This process's start token (see :func:`_read_proc_starttime`), computed
-    once and cached. ``None`` on non-Linux / when ``/proc`` is unavailable, in
-    which case PID-reuse detection is disabled (dead-only reclaim still works via
-    :func:`_pid_alive`)."""
-    global _MY_START_ID_CACHE, _MY_START_ID_COMPUTED
-    if not _MY_START_ID_COMPUTED:
-        _MY_START_ID_CACHE = _read_proc_starttime(os.getpid())
-        _MY_START_ID_COMPUTED = True
+    """This process's start token (see :func:`_read_proc_starttime`), cached
+    per PID. ``None`` on non-Linux / when ``/proc`` is unavailable, in which
+    case PID-reuse detection is disabled (dead-only reclaim still works via
+    :func:`_pid_alive`).
+
+    The cache MUST be PID-aware: a plain "already computed" flag would be
+    inherited across ``fork``, making a worker publish reservation records
+    carrying its own PID but the master's start id — readers comparing against
+    the worker's real start time would then misjudge a LIVE worker as PID
+    reuse.
+    """
+    global _MY_START_ID_CACHE, _MY_START_ID_PID
+    pid = os.getpid()
+    if _MY_START_ID_PID != pid:  # first call, or PID changed after fork
+        _MY_START_ID_CACHE = _read_proc_starttime(pid)
+        _MY_START_ID_PID = pid
     return _MY_START_ID_CACHE
 
 
@@ -624,8 +660,9 @@ def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
     or the PID is alive but its start time differs from ``start_id`` (PID reuse =
     a different process now holds that PID). Every uncertainty — no recorded
     identity, no permission to probe, non-Linux, unreadable ``/proc`` — is
-    treated as ALIVE, so a live (merely slow) owner is never reclaimed. Shared by
-    the keyed-lock and pipeline-reservation dead-owner reclaim layers.
+    treated as ALIVE, so a live (merely slow) owner is never reclaimed. Used by
+    the pipeline-reservation dead-owner reclaim layer (the keyed lock's reclaim
+    runs inside the Manager server via :func:`_holder_dead`).
     """
     if pid is None:
         return True  # no owner identity recorded → cannot declare dead
@@ -649,6 +686,223 @@ def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
     return True
 
 
+def _read_create_time(pid: int) -> Optional[float]:
+    """psutil wall-clock ``create_time()`` for ``pid`` (seconds), or ``None``
+    when psutil is missing or the process cannot be read. Never used as an
+    identity on its own — only inside :func:`_start_delta` paired samples,
+    where clock-adjustment pollution is common-mode and cancels out."""
+    if psutil is None:
+        return None
+    try:
+        return psutil.Process(pid).create_time()
+    except psutil.Error:
+        return None
+
+
+def _start_delta(pid: Optional[int]) -> Optional[Union[int, float]]:
+    """Clock-adjustment-safe process identity for the keyed-lock holder table:
+    the difference between ``pid``'s start time and THIS process's start time.
+
+    Only ever called inside the Manager server process (grant-time stamp and
+    reclaim-time recompute), so the anchor is always the server itself and both
+    values come from the same platform track:
+
+    * Linux: integer ``/proc/<pid>/stat`` start ticks — monotonic since boot
+      and immune to wall-clock steps, so the plain difference needs no
+      tolerance and no sampling protection. Always preferred, even when psutil
+      is installed.
+    * elsewhere (psutil available): paired ``create_time()`` reads. A step of
+      the wall clock pollutes both reads identically ONLY if nothing moves the
+      clock between them, so the owner read is sandwiched between two anchor
+      reads — any anchor mismatch means an adjustment crossed the window and
+      the sample is retried, then conservatively discarded (``None`` = make no
+      reuse claim). Anchor reads are never cached: a cached anchor and a later
+      owner read are not same-instant, so pollution would no longer be
+      common-mode.
+
+    ``None`` (process gone, no psutil, or a persistently unstable window)
+    means "no identity"; callers must not judge PID reuse from it.
+    """
+    if pid is None:
+        return None
+    if sys.platform.startswith("linux"):
+        own = _read_proc_starttime(os.getpid())
+        target = _read_proc_starttime(pid)
+        if own is None or target is None:
+            return None
+        try:
+            return int(target) - int(own)
+        except ValueError:
+            return None
+    for _ in range(_START_DELTA_RETRIES):
+        a0 = _read_create_time(os.getpid())
+        d = _read_create_time(pid)
+        a1 = _read_create_time(os.getpid())
+        if a0 is None or d is None or a1 is None:
+            return None
+        if a1 == a0:  # same-process reads reproduce bit-for-bit; any
+            return d - a0  # difference = the clock moved inside the window
+    return None
+
+
+def _holder_dead(record: Mapping[str, Any]) -> bool:
+    """Server-side deadness check for a keyed-lock holder record.
+
+    Returns True ONLY for a *confirmed dead* owner: the PID is gone/zombie, or
+    the PID is alive but its recomputed ``start_delta`` proves it is a
+    different process that reused the PID. Every uncertainty (no identity,
+    polluted sample, no psutil off-Linux) is treated as alive so a live owner
+    is never reclaimed. Comparison per platform track:
+
+    * Linux: integer tick delta — ANY difference is a different process.
+    * elsewhere: one-sided ``d1 > d0 + tolerance``. Same boot and no backwards
+      clock step ⇒ a replacement starts later, so its delta only grows. Known
+      (deliberate) gap: after a LARGE backwards clock adjustment a reuser's
+      stored create_time can be smaller and goes undetected — a liveness
+      limitation (lock stays unreclaimable until the PID dies), never a
+      double-hold. An ``abs()`` criterion would close it but opens a
+      double-hold window if a delta ever shrinks for a live process, so it
+      stays out until empirically validated cross-platform.
+    """
+    pid = record.get("owner_pid")
+    if pid is None:
+        return False  # no identity → never declare dead
+    if not _pid_alive(pid):
+        return True  # PID gone or zombie → confirmed dead
+    d0 = record.get("start_delta")
+    if d0 is None:
+        return False  # no stamped identity → reuse undetectable, stay alive
+    d1 = _start_delta(pid)
+    if d1 is None:
+        return False  # polluted/uncertain sample never declares dead
+    if sys.platform.startswith("linux"):
+        return d1 != d0  # integer ticks: any difference = different process
+    return d1 > d0 + _NON_LINUX_START_DELTA_TOLERANCE
+
+
+# ============================================================================
+# Server-side atomic holder table for multi-process keyed locks
+# ============================================================================
+
+
+class KeyedHolderTable:
+    """Holder table for the multi-process keyed locks; the instance lives in
+    the Manager SERVER process, workers only hold a :class:`_HolderTableProxy`.
+
+    The holder record IS the lock: a key maps to
+    ``{owner_pid, lease_id, start_delta}`` while held (``owner_pid`` and
+    ``lease_id`` come from the client; ``start_delta`` is stamped by the
+    server at grant time, see :func:`_start_delta`). Each method is exactly
+    one Manager RPC and is atomic server-side, replacing the previous
+    client-held ``manager.RLock()`` guard around multiple dict RPCs — which
+    both cost ~23 RPCs per acquire/release cycle and deadlocked every process
+    forever when a guard holder was SIGKILLed (the server-side threading lock
+    behind a manager RLock is never released for a dead client). The
+    ``threading.Lock`` here is released by ``with`` before each method
+    returns and never spans an RPC boundary, and the server does not die with
+    any client, so client death cannot strand it.
+
+    Liveness helpers (:func:`_pid_alive`, :func:`_start_delta`,
+    :func:`_holder_dead`) are module-level functions of this same module and
+    resolve normally inside the server process; they are host-local probes and
+    the server runs on the same host as the workers.
+    """
+
+    def __init__(self) -> None:
+        self._holders: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def try_acquire(self, key: str, record: Dict[str, Any]) -> bool:
+        """One-shot claim of ``key`` for ``record``; True iff granted.
+
+        Never blocks waiting for the lock's release — contenders poll with
+        backoff client-side. ``start_delta`` sampling (a process start-time
+        query) happens only on grant paths: a poll rejected by a live holder
+        stamps nothing.
+        """
+        with self._lock:
+            cur = self._holders.get(key)
+            snap = dict(cur) if cur is not None else None
+        if snap is None:
+            # Empty slot: sample OUTSIDE the lock, then re-check-and-set.
+            candidate = {**record, "start_delta": _start_delta(record.get("owner_pid"))}
+            with self._lock:
+                cur = self._holders.get(key)
+                if cur is None:  # slot still empty → granted
+                    self._holders[key] = candidate
+                    return True
+                return False  # beaten during sampling → caller backs off
+        # Liveness probe outside the lock (system calls may be slow and must
+        # not stall RPCs for other keys).
+        if not _holder_dead(snap):
+            return False  # live holder → caller backs off and retries
+        candidate = {**record, "start_delta": _start_delta(record.get("owner_pid"))}
+        with self._lock:
+            # Dead holder: reclaim ONLY the exact record we probed (lease_id
+            # CAS) — if the slot changed while probing (released / reclaimed /
+            # taken over) the caller backs off; an empty slot is claimed by the
+            # next round's fast path.
+            cur = self._holders.get(key)
+            if cur is not None and cur.get("lease_id") == snap.get("lease_id"):
+                self._holders[key] = candidate
+                return True
+            return False
+
+    def release(self, key: str, lease_id: str) -> bool:
+        """Owner-checked release: pop ``key`` iff it still carries ``lease_id``."""
+        with self._lock:
+            cur = self._holders.get(key)
+            if cur is not None and cur.get("lease_id") == lease_id:
+                del self._holders[key]
+                return True
+            return False
+
+    def holder_count(self) -> int:
+        """Number of currently held keys (one int over the wire — /health must
+        not copy/serialize the whole table just to count it)."""
+        with self._lock:
+            return len(self._holders)
+
+    def holders_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Copy of the table for diagnostics / test introspection."""
+        with self._lock:
+            return {k: dict(v) for k, v in self._holders.items()}
+
+
+class _HolderTableProxy(BaseProxy):
+    """Explicit proxy for :class:`KeyedHolderTable`.
+
+    ``BaseProxy`` has no dynamic ``__getattr__`` — declaring ``_exposed_``
+    alone would NOT make the methods callable, so each one gets an explicit
+    ``_callmethod`` wrapper (deterministic, unlike AutoProxy).
+    """
+
+    _exposed_ = ("try_acquire", "release", "holder_count", "holders_snapshot")
+
+    def try_acquire(self, key: str, record: Dict[str, Any]) -> bool:
+        return self._callmethod("try_acquire", (key, record))
+
+    def release(self, key: str, lease_id: str) -> bool:
+        return self._callmethod("release", (key, lease_id))
+
+    def holder_count(self) -> int:
+        return self._callmethod("holder_count")
+
+    def holders_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        return self._callmethod("holders_snapshot")
+
+
+class _LightRAGManager(SyncManager):
+    """SyncManager plus the LightRAG-specific server-side types."""
+
+
+# Module level so the server process can import the class under both fork and
+# spawn start methods.
+_LightRAGManager.register(
+    "KeyedHolderTable", KeyedHolderTable, proxytype=_HolderTableProxy
+)
+
+
 def _keyed_lease_backoff(attempt: int) -> float:
     """Exponential backoff with jitter for the keyed-lock lease poll.
 
@@ -660,21 +914,21 @@ def _keyed_lease_backoff(attempt: int) -> float:
 
 
 class _KeyedLeaseLock:
-    """Multiprocess keyed lock backed by a holder record, not a manager.Lock().
+    """Multiprocess keyed lock driving the server-side holder table.
 
-    The record IS the lock: acquiring writes
-    ``_keyed_lock_holders[combined_key] = {owner_pid, process_start_id,
-    lease_id}`` under ``_registry_guard`` (a single manager.dict write, atomic);
-    releasing pops it iff we still own ``lease_id``. A record whose owner process
-    is *confirmed dead* (:func:`_process_alive` — PID gone or start-id mismatch)
-    is reclaimed lazily on the next acquire, so a SIGKILLed holder can no longer
-    deadlock every other worker. Dead-only: a live (merely slow) owner is never
-    preempted, so no fencing token is needed.
+    A per-process, per-acquire, 0-RPC-to-construct object: acquiring asks
+    :class:`KeyedHolderTable` (one ``try_acquire`` RPC per attempt, one RPC
+    total when uncontended) to install ``{owner_pid, lease_id}``; the server
+    stamps the clock-safe process identity (``start_delta``) at grant time, so
+    the lock path is structurally independent of any client-side identity
+    cache (:func:`_my_start_id` and its fork pitfalls). Releasing is one
+    owner-checked ``release`` RPC.
 
-    Per-process, per-acquire — each instance holds its own ``lease_id``; the only
-    shared state is ``_keyed_lock_holders``. The liveness probe runs OUTSIDE the
-    guard so ``os.kill`` / ``/proc`` reads never widen the (otherwise µs-scale)
-    guard window.
+    A holder whose owner is *confirmed dead* (PID gone/zombie, or PID reused —
+    see :func:`_holder_dead`) is reclaimed atomically inside the server by the
+    next ``try_acquire``; a SIGKILLed holder can never deadlock other workers.
+    Dead-only: a live (merely slow) owner is never preempted, so no fencing
+    token is needed.
     """
 
     __slots__ = ("_combined_key", "_lease_id")
@@ -684,31 +938,15 @@ class _KeyedLeaseLock:
         self._lease_id: Optional[str] = None
 
     async def acquire(self) -> None:
+        record = {"owner_pid": os.getpid(), "lease_id": uuid.uuid4().hex}
         attempt = 0
         while True:
-            with _registry_guard:
-                holder = _keyed_lock_holders.get(self._combined_key)
-                if holder is None:
-                    lease_id = uuid.uuid4().hex
-                    _keyed_lock_holders[self._combined_key] = {
-                        "owner_pid": os.getpid(),
-                        "process_start_id": _my_start_id(),
-                        "lease_id": lease_id,
-                    }
-                    self._lease_id = lease_id
-                    return
-                snap = dict(holder)
-            # Probe liveness outside the guard (os.kill / /proc can be slow).
-            if not _process_alive(snap.get("owner_pid"), snap.get("process_start_id")):
-                with _registry_guard:
-                    cur = _keyed_lock_holders.get(self._combined_key)
-                    # Recheck the SAME lease_id so a holder that changed between
-                    # the probe and the reclaim is never clobbered.
-                    if cur is not None and cur.get("lease_id") == snap.get("lease_id"):
-                        _keyed_lock_holders.pop(self._combined_key, None)
-                continue  # retry the claim immediately
-            # Live owner → back off (this is the only cancellation point; no
-            # lease is held here, so a cancel simply abandons the wait).
+            if _keyed_holder_table.try_acquire(self._combined_key, record):
+                self._lease_id = record["lease_id"]
+                return
+            # Slot held by a live owner (or lost a race) → back off. This is
+            # the only cancellation point; no lease is held here, so a cancel
+            # simply abandons the wait.
             await asyncio.sleep(_keyed_lease_backoff(attempt))
             attempt += 1
 
@@ -717,99 +955,7 @@ class _KeyedLeaseLock:
         if lease_id is None:
             return
         self._lease_id = None
-        with _registry_guard:
-            holder = _keyed_lock_holders.get(self._combined_key)
-            if holder is not None and holder.get("lease_id") == lease_id:
-                _keyed_lock_holders.pop(self._combined_key, None)
-
-
-def _get_or_create_shared_raw_mp_lock(
-    factory_name: str, key: str
-) -> Optional["_KeyedLeaseLock"]:
-    """Return a fresh holder-lease lock for a keyed lock (multiprocess only).
-
-    Refcount + idle-cleanup bookkeeping is preserved (``_lock_registry`` now holds
-    a presence sentinel rather than a manager.Lock); the actual mutual exclusion
-    lives in ``_keyed_lock_holders`` via :class:`_KeyedLeaseLock`. A FRESH lease
-    object is returned per call — each acquisition owns its own ``lease_id``.
-    """
-    if not _is_multiprocess:
-        return None
-
-    with _registry_guard:
-        combined_key = _get_combined_key(factory_name, key)
-        raw = _lock_registry.get(combined_key)
-        count = _lock_registry_count.get(combined_key)
-        if raw is None:
-            _lock_registry[combined_key] = True  # presence sentinel (bookkeeping)
-            count = 0
-        else:
-            if count is None:
-                raise RuntimeError(
-                    f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
-                )
-            if (
-                count == 0 and combined_key in _lock_cleanup_data
-            ):  # Reusing an key waiting for cleanup, remove it from cleanup list
-                _lock_cleanup_data.pop(combined_key)
-        count += 1
-        _lock_registry_count[combined_key] = count
-        return _KeyedLeaseLock(combined_key)
-
-
-def _release_shared_raw_mp_lock(factory_name: str, key: str):
-    """Release the *singleton* manager.Lock() proxy for *key*."""
-    if not _is_multiprocess:
-        return
-
-    global _earliest_mp_cleanup_time, _last_mp_cleanup_time
-
-    with _registry_guard:
-        combined_key = _get_combined_key(factory_name, key)
-        raw = _lock_registry.get(combined_key)
-        count = _lock_registry_count.get(combined_key)
-        if raw is None and count is None:
-            return
-        elif raw is None or count is None:
-            raise RuntimeError(
-                f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
-            )
-
-        count -= 1
-        if count < 0:
-            raise RuntimeError(
-                f"Attempting to release lock for {key} more times than it was acquired"
-            )
-
-        _lock_registry_count[combined_key] = count
-
-        current_time = time.time()
-        if count == 0:
-            _lock_cleanup_data[combined_key] = current_time
-
-            # Update earliest multiprocess cleanup time (only when earlier)
-            if (
-                _earliest_mp_cleanup_time is None
-                or current_time < _earliest_mp_cleanup_time
-            ):
-                _earliest_mp_cleanup_time = current_time
-
-        # Use generic cleanup function
-        cleaned_count, new_earliest_time, new_last_cleanup_time = _perform_lock_cleanup(
-            lock_type="mp",
-            cleanup_data=_lock_cleanup_data,
-            lock_registry=_lock_registry,
-            lock_count=_lock_registry_count,
-            earliest_cleanup_time=_earliest_mp_cleanup_time,
-            last_cleanup_time=_last_mp_cleanup_time,
-            current_time=current_time,
-            threshold_check=True,
-        )
-
-        # Update global state if cleanup was performed
-        if cleaned_count > 0:
-            _earliest_mp_cleanup_time = new_earliest_time
-            _last_mp_cleanup_time = new_last_cleanup_time
+        _keyed_holder_table.release(self._combined_key, lease_id)
 
 
 class KeyedUnifiedLock:
@@ -817,7 +963,8 @@ class KeyedUnifiedLock:
     Manager for unified keyed locks, supporting both single and multi-process
 
     • Keeps only a table of async keyed locks locally
-    • Fetches the multi-process keyed lock on every acquire
+    • In multiprocess mode, builds a fresh per-acquire ``_KeyedLeaseLock``
+      driving the server-side holder table (no shared lock objects to manage)
     • Builds a fresh `UnifiedLock` each time, so `enable_logging`
       (or future options) can vary per call.
     • Supports dynamic namespaces specified at lock usage time
@@ -832,9 +979,6 @@ class KeyedUnifiedLock:
         self._async_lock_cleanup_data: Dict[
             str, time.time
         ] = {}  # local keyed locks timeout
-        self._mp_locks: Dict[
-            str, mp.synchronize.Lock
-        ] = {}  # multi-process lock proxies
         self._earliest_async_cleanup_time: Optional[float] = (
             None  # track earliest async cleanup time
         )
@@ -915,25 +1059,22 @@ class KeyedUnifiedLock:
         # Is synchronous, so no need to acquire a lock
         async_lock = self._get_or_create_async_lock(combined_key)
 
-        # 3. fetch the shared raw lock
-        raw_lock = _get_or_create_shared_raw_mp_lock(namespace, key)
-        is_multiprocess = raw_lock is not None
-        if not is_multiprocess:
-            raw_lock = async_lock
-
-        # 4. build a *fresh* UnifiedLock with the chosen logging flag
-        if is_multiprocess:
+        # 3. build a *fresh* UnifiedLock with the chosen logging flag. In
+        # multiprocess mode the raw lock is a fresh per-acquire lease object
+        # (each acquisition owns its own lease_id); all shared state lives in
+        # the server-side holder table, so nothing is fetched or registered.
+        if _is_multiprocess:
             return UnifiedLock(
-                lock=raw_lock,
+                lock=_KeyedLeaseLock(combined_key),
                 is_async=False,  # holder-lease acquire is driven explicitly
                 name=combined_key,
                 enable_logging=enable_logging,
                 async_lock=async_lock,  # prevents event‑loop blocking
-                mp_is_lease=True,  # raw_lock is a _KeyedLeaseLock (async poll)
+                mp_is_lease=True,  # lock is a _KeyedLeaseLock (async poll)
             )
         else:
             return UnifiedLock(
-                lock=raw_lock,
+                lock=async_lock,
                 is_async=True,
                 name=combined_key,
                 enable_logging=enable_logging,
@@ -943,79 +1084,37 @@ class KeyedUnifiedLock:
     def _release_lock_for_key(self, namespace: str, key: str):
         combined_key = _get_combined_key(namespace, key)
         self._release_async_lock(combined_key)
-        _release_shared_raw_mp_lock(namespace, key)
 
     def cleanup_expired_locks(self) -> Dict[str, Any]:
         """
-        Cleanup expired locks for both async and multiprocess locks following the same
-        conditions as _release_shared_raw_mp_lock and _release_async_lock functions.
+        Cleanup expired ASYNC keyed locks (the per-process asyncio.Lock table).
 
-        Only performs cleanup when both has_expired_locks and interval_satisfied conditions are met
-        to avoid too frequent cleanup operations.
-
-        Since async and multiprocess locks work together, this method cleans up
-        both types of expired locks and returns comprehensive statistics.
+        Multiprocess keyed locks need no cleanup: the server-side holder table
+        holds a record only while a lock is HELD (release/reclaim pops it), so
+        there is nothing idle to expire. The ``mp_cleaned`` key is preserved
+        for response-schema compatibility and is always 0.
 
         Returns:
             Dict containing cleanup statistics and current status:
             {
                 "process_id": 12345,
                 "cleanup_performed": {
-                    "mp_cleaned": 5,
+                    "mp_cleaned": 0,
                     "async_cleaned": 3
                 },
                 "current_status": {
                     "total_mp_locks": 10,
-                    "pending_mp_cleanup": 2,
+                    "pending_mp_cleanup": 0,
                     "total_async_locks": 8,
                     "pending_async_cleanup": 1
                 }
             }
         """
-        global _lock_registry, _lock_registry_count, _lock_cleanup_data
-        global _registry_guard, _earliest_mp_cleanup_time, _last_mp_cleanup_time
-
         cleanup_stats = {"mp_cleaned": 0, "async_cleaned": 0}
 
         current_time = time.time()
 
-        # 1. Cleanup multiprocess locks using generic function
-        if (
-            _is_multiprocess
-            and _lock_registry is not None
-            and _registry_guard is not None
-        ):
-            try:
-                with _registry_guard:
-                    if _lock_cleanup_data is not None:
-                        # Use generic cleanup function without threshold check
-                        cleaned_count, new_earliest_time, new_last_cleanup_time = (
-                            _perform_lock_cleanup(
-                                lock_type="mp",
-                                cleanup_data=_lock_cleanup_data,
-                                lock_registry=_lock_registry,
-                                lock_count=_lock_registry_count,
-                                earliest_cleanup_time=_earliest_mp_cleanup_time,
-                                last_cleanup_time=_last_mp_cleanup_time,
-                                current_time=current_time,
-                                threshold_check=False,  # Force cleanup in cleanup_expired_locks
-                            )
-                        )
-
-                        # Update global state if cleanup was performed
-                        if cleaned_count > 0:
-                            _earliest_mp_cleanup_time = new_earliest_time
-                            _last_mp_cleanup_time = new_last_cleanup_time
-                            cleanup_stats["mp_cleaned"] = cleaned_count
-
-            except Exception as e:
-                direct_log(
-                    f"Error during multiprocess lock cleanup: {e}",
-                    level="ERROR",
-                    enable_output=True,
-                )
-
-        # 2. Cleanup async locks using generic function
+        # Cleanup async locks using generic function
         try:
             # Use generic cleanup function without threshold check
             cleaned_count, new_earliest_time, new_last_cleanup_time = (
@@ -1055,22 +1154,25 @@ class KeyedUnifiedLock:
 
     def get_lock_status(self) -> Dict[str, int]:
         """
-        Get current status of both async and multiprocess locks.
+        Get current status of both async and multiprocess keyed locks.
 
-        Returns comprehensive lock counts for both types of locks since
-        they work together in the keyed lock system.
+        SEMANTIC NOTE: ``total_mp_locks`` counts the keys currently HELD in
+        the server-side holder table (one ``holder_count()`` RPC returning an
+        int). It previously counted lock objects kept alive in the (now
+        removed) registry, including idle ones awaiting cleanup — same key,
+        new value semantics. ``pending_mp_cleanup`` is always 0 (there is no
+        deferred multiprocess cleanup queue anymore); the key is preserved for
+        response-schema compatibility.
 
         Returns:
             Dict containing lock counts:
             {
                 "total_mp_locks": 10,
-                "pending_mp_cleanup": 2,
+                "pending_mp_cleanup": 0,
                 "total_async_locks": 8,
                 "pending_async_cleanup": 1
             }
         """
-        global _lock_registry_count, _lock_cleanup_data, _registry_guard
-
         status = {
             "total_mp_locks": 0,
             "pending_mp_cleanup": 0,
@@ -1079,13 +1181,9 @@ class KeyedUnifiedLock:
         }
 
         try:
-            # Count multiprocess locks
-            if _is_multiprocess and _lock_registry_count is not None:
-                if _registry_guard is not None:
-                    with _registry_guard:
-                        status["total_mp_locks"] = len(_lock_registry_count)
-                        if _lock_cleanup_data is not None:
-                            status["pending_mp_cleanup"] = len(_lock_cleanup_data)
+            # Count multiprocess locks (currently held keys, server-side count)
+            if _is_multiprocess and _keyed_holder_table is not None:
+                status["total_mp_locks"] = _keyed_holder_table.holder_count()
 
             # Count async locks
             status["total_async_locks"] = len(self._async_lock_count)
@@ -1442,10 +1540,11 @@ def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
 
 def cleanup_keyed_lock() -> Dict[str, Any]:
     """
-    Force cleanup of expired keyed locks and return comprehensive status information.
+    Force cleanup of expired ASYNC keyed locks and return status information.
 
-    This function actively cleans up expired locks for both async and multiprocess locks,
-    then returns detailed statistics about the cleanup operation and current lock status.
+    Multiprocess keyed locks are a server-side holder table with no idle
+    bookkeeping to clean; the ``mp_cleaned`` key in the response is preserved
+    for compatibility and is always 0.
 
     Returns:
         Same as cleanup_expired_locks in KeyedUnifiedLock
@@ -1525,11 +1624,7 @@ def initialize_share_data(
         _manager, \
         _workers, \
         _is_multiprocess, \
-        _lock_registry, \
-        _lock_registry_count, \
-        _lock_cleanup_data, \
-        _registry_guard, \
-        _keyed_lock_holders, \
+        _keyed_holder_table, \
         _internal_lock, \
         _data_init_lock, \
         _shared_dicts, \
@@ -1538,8 +1633,6 @@ def initialize_share_data(
         _update_flags, \
         _async_locks, \
         _storage_keyed_lock, \
-        _earliest_mp_cleanup_time, \
-        _last_mp_cleanup_time, \
         _global_concurrency_limits, \
         _lease_ns_cache, \
         _queue_stats_ns_cache, \
@@ -1573,12 +1666,12 @@ def initialize_share_data(
 
     if workers > 1:
         _is_multiprocess = True
-        _manager = Manager()
-        _lock_registry = _manager.dict()
-        _lock_registry_count = _manager.dict()
-        _lock_cleanup_data = _manager.dict()
-        _registry_guard = _manager.RLock()
-        _keyed_lock_holders = _manager.dict()
+        _manager = _LightRAGManager()
+        _manager.start()
+        # Server-side atomic holder table: the keyed-lock check-and-set runs
+        # inside the Manager server, so the keyed path holds no manager
+        # Lock/RLock a dying client could strand.
+        _keyed_holder_table = _manager.KeyedHolderTable()
         _internal_lock = _manager.Lock()
         _data_init_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
@@ -1601,7 +1694,7 @@ def initialize_share_data(
         _is_multiprocess = False
         _internal_lock = asyncio.Lock()
         _data_init_lock = asyncio.Lock()
-        _keyed_lock_holders = None  # multiprocess-only; unused single-process
+        _keyed_holder_table = None  # multiprocess-only; unused single-process
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
@@ -1609,10 +1702,6 @@ def initialize_share_data(
 
         _storage_keyed_lock = KeyedUnifiedLock()
         direct_log(f"Process {os.getpid()} Shared-Data created for Single Process")
-
-    # Initialize multiprocess cleanup times
-    _earliest_mp_cleanup_time = None
-    _last_mp_cleanup_time = None
 
     # Mark as initialized
     _initialized = True
@@ -2835,6 +2924,7 @@ def finalize_share_data():
     global \
         _manager, \
         _is_multiprocess, \
+        _keyed_holder_table, \
         _internal_lock, \
         _data_init_lock, \
         _shared_dicts, \
@@ -2899,8 +2989,10 @@ def finalize_share_data():
                 f"Process {os.getpid()} Error shutting down Manager: {e}", level="ERROR"
             )
 
-    # Reset global variables
+    # Reset global variables (a stale holder-table proxy must never leak into
+    # the next initialize_share_data cycle — its server is gone)
     _manager = None
+    _keyed_holder_table = None
     _initialized = None
     _is_multiprocess = None
     _shared_dicts = None
