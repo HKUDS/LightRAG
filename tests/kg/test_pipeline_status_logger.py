@@ -12,8 +12,7 @@ Coverage:
   - history identity: in-place resets (``del h[:]`` / ``h[:] = [...]``) keep
     the cached handle live, while replacing the list object orphans it (the
     documented limitation, pinned both ways);
-  - never-raise contract for ``log`` / ``append``, including a failing
-    diagnostic logger;
+  - never-raise contract for ``log``, including a failing diagnostic logger;
   - real Manager proxies: a fork-inherited cached ListProxy stays writable in
     the child and visible in the parent, and concurrent cached-handle writers
     lose no messages and never tear a multi-message group.
@@ -105,15 +104,6 @@ def test_first_write_fetches_history_once_then_reuses_cached_handle():
     assert status.get_calls == 1  # cached handle, no re-fetch
     assert status.history == [f"m{i}" for i in range(11)]
     assert status.latest == "m10"
-
-
-def test_append_writes_history_only():
-    status = _CountingStatus()
-    status_logger = PipelineStatusLogger(status)
-    status_logger.append("a", "b")
-    assert status.latest is None
-    assert status.history == ["a", "b"]
-    assert status.get_calls == 1
 
 
 def test_multi_message_log_sets_latest_to_last_and_appends_in_order():
@@ -216,17 +206,15 @@ def test_replacing_history_object_orphans_the_cache():
 # ---------------------------------------------------------------------------
 
 
-def test_none_status_all_methods_noop():
+def test_none_status_is_noop():
     status_logger = PipelineStatusLogger(None)
     status_logger.log("x")
-    status_logger.append("x")
 
 
 def test_no_messages_is_noop_and_fetch_free():
     status = _CountingStatus()
     status_logger = PipelineStatusLogger(status)
     status_logger.log()
-    status_logger.append()
     assert status.get_calls == 0
     assert status.latest is None
 

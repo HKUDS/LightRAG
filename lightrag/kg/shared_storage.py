@@ -1702,36 +1702,18 @@ class PipelineStatusLogger:
             self._pipeline_status["latest_message"] = messages[-1]
         except Exception as exc:
             _debug_log_failure("latest_message write skipped", exc)
-        self._extend_history(messages)
-
-    def append(self, *messages) -> None:
-        """History-only append, for sites whose ``latest_message`` was already
-        written inside a locked ``status.update()``."""
-        if self._pipeline_status is None or not messages:
-            return
-        self._extend_history(messages)
-
-    def _resolve_history(self):
-        """Return the backing history list, fetching and caching on first
-        success. Returns None when unavailable; nothing is cached then, so the
-        next write retries the fetch."""
         history = self._history
-        if history is not _UNRESOLVED:
-            return history
-        try:
-            history = self._pipeline_status.get("history_messages")
-        except Exception as exc:
-            _debug_log_failure("history fetch skipped", exc)
-            return None
-        if history is None:
-            return None
-        self._history = history
-        return history
-
-    def _extend_history(self, messages) -> None:
-        history = self._resolve_history()
-        if history is None:
-            return
+        if history is _UNRESOLVED:
+            try:
+                history = self._pipeline_status.get("history_messages")
+            except Exception as exc:
+                _debug_log_failure("history fetch skipped", exc)
+                return
+            if history is None:
+                # Missing/late-initialized key: nothing is cached, so the
+                # next call retries the fetch.
+                return
+            self._history = history
         try:
             history.extend(messages)
         except Exception as exc:

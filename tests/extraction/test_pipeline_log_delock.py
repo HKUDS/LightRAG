@@ -140,9 +140,6 @@ async def test_per_chunk_log_routes_through_logger_not_the_lock(
         def log(self, *messages):
             captured.append(messages)
 
-        def append(self, *messages):
-            captured.append(messages)
-
     monkeypatch.setattr(operate, "PipelineStatusLogger", _CaptureLogger)
 
     status = {"latest_message": "", "history_messages": []}
