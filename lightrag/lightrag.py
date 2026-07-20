@@ -752,7 +752,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
     cosine_better_than_threshold: float = field(
-        default=float(os.getenv("COSINE_THRESHOLD", 0.2))
+        default=get_env_value("COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float)
     )
 
     ollama_server_infos: Optional[OllamaServerInfos] = field(default=None)
