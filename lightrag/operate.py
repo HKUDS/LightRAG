@@ -1034,6 +1034,11 @@ async def rebuild_knowledge_from_chunks(
     if not entities_to_rebuild and not relationships_to_rebuild:
         return report
 
+    # Operation-scoped status logger for per-item FAILURE messages: errors must
+    # stay visible in the pipeline history (the WebUI reads it), while per-item
+    # success/completion detail goes to the backend log only (volume control).
+    status_logger = PipelineStatusLogger(pipeline_status)
+
     # Get all referenced chunk IDs
     all_referenced_chunk_ids = set()
     for chunk_ids in entities_to_rebuild.values():
@@ -1150,11 +1155,11 @@ async def rebuild_knowledge_from_chunks(
 
         except Exception as e:
             report.unusable_cache_chunk_ids.add(chunk_id)
-            # Per-item detail goes to the backend log only; pipeline history
-            # keeps the operation-level and summary messages (volume control).
-            logger.warning(
+            status_message = (
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
             )
+            logger.warning(status_message)
+            status_logger.log(status_message)
             continue
 
     # Get max async tasks limit from global_config for semaphore control
@@ -1194,9 +1199,9 @@ async def rebuild_knowledge_from_chunks(
                         report.degraded_entities[entity_name] = list(chunk_ids)
                 except Exception as e:
                     failed_entities_count += 1
-                    # Per-item detail goes to the backend log only; the final
-                    # summary reports the failure counts to pipeline history.
-                    logger.info(f"Failed to rebuild `{entity_name}`: {e}")
+                    status_message = f"Failed to rebuild `{entity_name}`: {e}"
+                    logger.info(status_message)
+                    status_logger.log(status_message)
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1235,9 +1240,9 @@ async def rebuild_knowledge_from_chunks(
                         report.degraded_relationships[(src, tgt)] = list(chunk_ids)
                 except Exception as e:
                     failed_relationships_count += 1
-                    # Per-item detail goes to the backend log only; the final
-                    # summary reports the failure counts to pipeline history.
-                    logger.info(f"Failed to rebuild `{src}`~`{tgt}`: {e}")
+                    status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
+                    logger.info(status_message)
+                    status_logger.log(status_message)
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.

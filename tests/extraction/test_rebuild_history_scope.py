@@ -1,22 +1,23 @@
-"""Pins semantic delta #3: KG-rebuild per-item detail stays OUT of pipeline
-history.
+"""Pins semantic delta #3: the KG-rebuild history split.
 
-``rebuild_knowledge_from_chunks`` writes per-item messages (per-chunk cache
-parse failures, per-entity / per-relationship rebuild failures and
-completions) to the backend logger ONLY; pipeline history keeps the
+Per-item FAILURE messages (per-chunk cache parse failures, per-entity /
+per-relationship rebuild failures) stay in pipeline history — the WebUI
+reads it and errors must remain visible there. Per-item SUCCESS/completion
+detail ("Rebuild `X` from N chunks") goes to the backend logger only: on
+large rebuilds one line per item swamps the history. History also keeps the
 operation-level and summary messages ("Rebuilding knowledge from ...",
-"Starting parallel rebuild ...", "KG rebuild completed: ...", cache-miss
-notices) — per-item volume would swamp the history on large rebuilds.
+"Starting parallel rebuild ...", "KG rebuild completed: ..." including
+failure counts, cache-miss notices).
 
 Coverage:
-- parameterized behavioral tests drive the three per-item paths that can
-  still reach ``pipeline_status`` through the enclosing function's closure
+- parameterized behavioral tests drive the three per-item failure paths
   (cache parse failure, entity rebuild failure, relationship rebuild
-  failure) and assert the detail is absent while the summaries survive;
+  failure) and assert the failure detail reaches history while completion
+  detail does not and the summaries survive;
 - a static signature test pins that ``_rebuild_single_entity`` /
   ``_rebuild_single_relationship`` no longer accept ``pipeline_status`` at
-  all, so their per-item completion logs ("Rebuild `X` from N chunks")
-  cannot reach history by construction.
+  all, so their per-item completion logs cannot reach history by
+  construction.
 """
 
 import asyncio
@@ -117,20 +118,20 @@ async def _boom_parse(**_kwargs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("case", "overrides", "detail_fragment"),
+    ("case", "overrides", "failure_fragment"),
     [
         # Cache parse failure (patched in the test body): the per-chunk
-        # "Failed to parse cached extraction result ..." detail is backend-only.
+        # "Failed to parse cached extraction result ..." error must be visible.
         ("parse_failure", {}, "Failed to parse cached extraction"),
-        # Entity rebuild failure: "Failed to rebuild `ALICE`: ..." is
-        # backend-only; the summary reports the failure count instead.
+        # Entity rebuild failure: "Failed to rebuild `ALICE`: ..." must be
+        # visible; the summary additionally reports the failure counts.
         (
             "entity_failure",
             {"knowledge_graph_inst": _FailingNodeGraph()},
-            "Failed to rebuild",
+            "Failed to rebuild `ALICE`",
         ),
-        # Relationship rebuild failure: "Failed to rebuild `A`~`B`: ..." is
-        # backend-only.
+        # Relationship rebuild failure: "Failed to rebuild `A`~`B`: ..." must
+        # be visible.
         (
             "relationship_failure",
             {
@@ -138,12 +139,12 @@ async def _boom_parse(**_kwargs):
                 "relationships_to_rebuild": {("A", "B"): ["c1"]},
                 "knowledge_graph_inst": _FailingEdgeGraph(),
             },
-            "Failed to rebuild",
+            "Failed to rebuild `A`~`B`",
         ),
     ],
 )
-async def test_per_item_rebuild_detail_stays_out_of_history(
-    monkeypatch, case, overrides, detail_fragment
+async def test_per_item_rebuild_failures_reach_history_but_completions_do_not(
+    monkeypatch, case, overrides, failure_fragment
 ):
     if case == "parse_failure":
         # A merely malformed cached string is absorbed inside the parser (it
@@ -155,10 +156,11 @@ async def test_per_item_rebuild_detail_stays_out_of_history(
     history = kwargs["pipeline_status"]["history_messages"]
     await rebuild_knowledge_from_chunks(**kwargs)
 
-    # Per-item detail must NOT reach pipeline history ...
-    assert not any(detail_fragment in message for message in history), history
+    # Per-item FAILURE detail must reach pipeline history (the WebUI reads it),
+    assert any(failure_fragment in message for message in history), history
+    # ... per-item completion detail must not ...
     assert not any("Rebuild `" in message for message in history), history
-    # ... while the operation-level and summary messages survive.
+    # ... and the operation-level and summary messages survive.
     assert any(
         message.startswith("Rebuilding knowledge from") for message in history
     ), history
@@ -172,8 +174,8 @@ async def test_per_item_rebuild_detail_stays_out_of_history(
 
 @pytest.mark.asyncio
 async def test_failure_counts_still_reach_the_summary():
-    """The demoted per-item failure detail is aggregated: the completion
-    summary carries the failure counts into history."""
+    """Besides the per-item failure lines, the completion summary carries the
+    aggregated failure counts into history."""
     kwargs = _rebuild_kwargs(knowledge_graph_inst=_FailingNodeGraph())
     history = kwargs["pipeline_status"]["history_messages"]
     await rebuild_knowledge_from_chunks(**kwargs)
