@@ -85,7 +85,11 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
 )
-from lightrag.kg.shared_storage import append_pipeline_log, get_storage_keyed_lock
+from lightrag.kg.shared_storage import (
+    PipelineStatusLogger,
+    append_pipeline_log,
+    get_storage_keyed_lock,
+)
 import time
 from dotenv import load_dotenv
 
@@ -2233,8 +2237,13 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    status_logger: PipelineStatusLogger | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
+    if status_logger is None:
+        # Fallback for direct callers that pass pipeline_status only; a
+        # throwaway logger reproduces the one-shot helper's behavior.
+        status_logger = PipelineStatusLogger(pipeline_status)
     timing_start = time.perf_counter()
     try:
         already_entity_types = []
@@ -2500,7 +2509,7 @@ async def _merge_nodes_then_upsert(
         # Add message to pipeline satus when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
-            append_pipeline_log(pipeline_status, status_message)
+            status_logger.log(status_message)
         else:
             logger.debug(status_message)
 
@@ -2565,7 +2574,12 @@ async def _merge_edges_then_upsert(
     added_entities: list = None,  # New parameter to track entities added during edge processing
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    status_logger: PipelineStatusLogger | None = None,
 ):
+    if status_logger is None:
+        # Fallback for direct callers that pass pipeline_status only; a
+        # throwaway logger reproduces the one-shot helper's behavior.
+        status_logger = PipelineStatusLogger(pipeline_status)
     timing_start = time.perf_counter()
     timing_relation = f"`{src_id}`~`{tgt_id}`"
     try:
@@ -2884,7 +2898,7 @@ async def _merge_edges_then_upsert(
         # Add message to pipeline satus when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
-            append_pipeline_log(pipeline_status, status_message)
+            status_logger.log(status_message)
         else:
             logger.debug(status_message)
 
@@ -3079,7 +3093,7 @@ async def _merge_edges_then_upsert(
                         f"Chunks appended from relation: `{need_insert_id}`"
                     )
                     logger.info(status_message)
-                    append_pipeline_log(pipeline_status, status_message)
+                    status_logger.log(status_message)
 
         edge_created_at = int(time.time())
         edge_upsert_started = time.perf_counter()
@@ -3262,6 +3276,11 @@ async def merge_nodes_and_edges(
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled during merge phase")
 
+    # Operation-scoped status logger shared by all entity/relation merge tasks
+    # of this document: the first history write fetches the shared list once;
+    # every merge log is then a single extend on the cached handle.
+    status_logger = PipelineStatusLogger(pipeline_status)
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -3374,6 +3393,7 @@ async def merge_nodes_and_edges(
                         pipeline_status_lock,
                         llm_response_cache,
                         entity_chunks_storage,
+                        status_logger=status_logger,
                     )
 
                     return entity_data
@@ -3463,6 +3483,7 @@ async def merge_nodes_and_edges(
                         added_entities,  # Pass list to collect added entities
                         relation_chunks_storage,
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
+                        status_logger=status_logger,
                     )
 
                     if edge_data is None:
@@ -3553,6 +3574,11 @@ async def extract_entities(
                 raise PipelineCancelledException(
                     "User cancelled during entity extraction"
                 )
+
+    # Operation-scoped status logger shared by all chunk tasks: the first
+    # history write fetches the shared list once; every per-chunk log is then
+    # a single extend on the cached handle.
+    status_logger = PipelineStatusLogger(pipeline_status)
 
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -3924,7 +3950,7 @@ async def extract_entities(
         relations_count = len(maybe_edges)
         log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
         logger.info(log_message)
-        append_pipeline_log(pipeline_status, log_message)
+        status_logger.log(log_message)
 
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges

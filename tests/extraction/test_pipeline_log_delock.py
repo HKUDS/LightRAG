@@ -1,17 +1,21 @@
-"""Stage-2 proof that the hot pipeline-status LOG sites in ``operate`` no longer
-acquire ``pipeline_status_lock``, while the KEEP cancellation-check blocks in the
-same functions still do.
+"""Proof that the hot pipeline-status LOG sites in ``operate`` no longer acquire
+``pipeline_status_lock``, while the KEEP cancellation-check blocks in the same
+functions still do.
 
 ``extract_entities`` is the ideal witness: it contains BOTH a converted per-chunk
-log site (was ``async with pipeline_status_lock`` around latest/append, now
-``append_pipeline_log``) AND cancellation-check KEEP blocks that legitimately take
-the lock. Because of the latter, a "raise-on-enter" lock CANNOT be used to prove
-the log site is de-locked (it would blow up at the cancel check) — so we use two
-complementary techniques, exactly as the design requires:
+log site (was ``async with pipeline_status_lock`` around latest/append, now the
+operation-scoped ``PipelineStatusLogger``) AND cancellation-check KEEP blocks
+that legitimately take the lock. Because of the latter, a "raise-on-enter" lock
+CANNOT be used to prove the log site is de-locked (it would blow up at the
+cancel check) — so we use two complementary techniques, exactly as the design
+requires:
 
-- raise-on-enter lock  → proves the cancel-check KEEP blocks still take the lock;
-- mock ``append_pipeline_log`` → proves the per-chunk log routes through the
-  lock-free helper rather than the lock.
+- raise-on-enter lock → proves the cancel-check KEEP blocks still take the lock;
+- inject a capture logger class (monkeypatch ``operate.PipelineStatusLogger``
+  BEFORE calling ``extract_entities`` — the instance is constructed inside the
+  function body, so patching the class in ``operate``'s namespace is the only
+  seam) → proves the per-chunk log routes through the lock-free logger rather
+  than the lock.
 """
 
 from unittest.mock import AsyncMock
@@ -112,18 +116,34 @@ async def test_cancel_check_keep_block_still_takes_the_lock(
         )
 
 
-async def test_per_chunk_log_routes_through_helper_not_the_lock(
+async def test_per_chunk_log_routes_through_logger_not_the_lock(
     monkeypatch, _high_token_limit
 ):
-    """mock ``append_pipeline_log``: the per-chunk extraction log must go through
-    the lock-free helper (proving that hot site is de-locked), while the lock is
-    still taken by the cancellation-check KEEP blocks."""
+    """Inject a capture logger class: the per-chunk extraction log must go
+    through the lock-free ``PipelineStatusLogger`` (proving that hot site is
+    de-locked), while the lock is still taken by the cancellation-check KEEP
+    blocks.
+
+    The class must be patched in ``operate``'s namespace (it is bound there by
+    ``from ... import``, so patching ``lightrag.kg.shared_storage`` would not
+    reach it) and BEFORE the call (the instance is constructed inside
+    ``extract_entities``). Capture state lives in this test's closure so
+    nothing leaks between tests."""
     captured: list[tuple] = []
+    created: list[object] = []
 
-    def _capture(pipeline_status, *messages, **kwargs):
-        captured.append(messages)
+    class _CaptureLogger:
+        def __init__(self, pipeline_status):
+            self.pipeline_status = pipeline_status
+            created.append(self)
 
-    monkeypatch.setattr(operate, "append_pipeline_log", _capture)
+        def log(self, *messages):
+            captured.append(messages)
+
+        def append(self, *messages):
+            captured.append(messages)
+
+    monkeypatch.setattr(operate, "PipelineStatusLogger", _CaptureLogger)
 
     status = {"latest_message": "", "history_messages": []}
     lock = _TrackingLock()
@@ -134,11 +154,29 @@ async def test_per_chunk_log_routes_through_helper_not_the_lock(
         pipeline_status_lock=lock,
     )
 
-    # The per-chunk "Chunk N of M extracted ..." log went through the helper.
+    # The per-chunk "Chunk N of M extracted ..." log went through the logger,
+    # and the logger was built for THIS operation's pipeline_status.
     flat = [m for group in captured for m in group]
     assert any("extracted" in m for m in flat), flat
+    assert created and created[0].pipeline_status is status
     # The lock is taken EXACTLY by the two KEEP cancellation checks for a single
     # chunk (extraction-entry + per-chunk), and NOT by the log site. Re-wrapping
     # the per-chunk log back in ``async with pipeline_status_lock`` would push
     # this to 3 — so the exact count guards against that regression.
     assert lock.enter_count == 2
+
+
+async def test_logs_written_even_without_pipeline_status_lock(_high_token_limit):
+    """Pins semantic delta #1: the old per-chunk site required
+    ``pipeline_status_lock`` and raised TypeError with ``None``
+    (``async with None``); the logger writes regardless of the lock. The KEEP
+    cancel checks skip themselves when the lock is None."""
+    status = {"latest_message": "", "history_messages": []}
+    await extract_entities(
+        chunks=_make_chunks(),
+        global_config=_make_global_config(),
+        pipeline_status=status,
+        pipeline_status_lock=None,
+    )
+    assert any("extracted" in m for m in status["history_messages"])
+    assert "extracted" in status["latest_message"]
