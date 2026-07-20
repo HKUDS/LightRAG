@@ -85,11 +85,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
 )
-from lightrag.kg.shared_storage import (
-    PipelineStatusLogger,
-    append_pipeline_log,
-    get_storage_keyed_lock,
-)
+from lightrag.kg.shared_storage import PipelineStatusLogger, get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
 
@@ -1154,11 +1150,11 @@ async def rebuild_knowledge_from_chunks(
 
         except Exception as e:
             report.unusable_cache_chunk_ids.add(chunk_id)
-            status_message = (
+            # Per-item detail goes to the backend log only; pipeline history
+            # keeps the operation-level and summary messages (volume control).
+            logger.warning(
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
             )
-            logger.warning(status_message)
-            append_pipeline_log(pipeline_status, status_message)
             continue
 
     # Get max async tasks limit from global_config for semaphore control
@@ -1198,9 +1194,9 @@ async def rebuild_knowledge_from_chunks(
                         report.degraded_entities[entity_name] = list(chunk_ids)
                 except Exception as e:
                     failed_entities_count += 1
-                    status_message = f"Failed to rebuild `{entity_name}`: {e}"
-                    logger.info(status_message)  # Per requirement, change to info
-                    append_pipeline_log(pipeline_status, status_message)
+                    # Per-item detail goes to the backend log only; the final
+                    # summary reports the failure counts to pipeline history.
+                    logger.info(f"Failed to rebuild `{entity_name}`: {e}")
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1231,8 +1227,6 @@ async def rebuild_knowledge_from_chunks(
                         global_config=global_config,
                         relation_chunks_storage=relation_chunks_storage,
                         entity_chunks_storage=entity_chunks_storage,
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
                         chunk_data_by_id=chunk_data_by_id,
                         structural_fallback=structural_fallback,
                     )
@@ -1241,9 +1235,9 @@ async def rebuild_knowledge_from_chunks(
                         report.degraded_relationships[(src, tgt)] = list(chunk_ids)
                 except Exception as e:
                     failed_relationships_count += 1
-                    status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
-                    logger.info(status_message)  # Per requirement, change to info
-                    append_pipeline_log(pipeline_status, status_message)
+                    # Per-item detail goes to the backend log only; the final
+                    # summary reports the failure counts to pipeline history.
+                    logger.info(f"Failed to rebuild `{src}`~`{tgt}`: {e}")
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1623,8 +1617,6 @@ async def _rebuild_single_entity(
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
     entity_chunks_storage: BaseKVStorage | None = None,
-    pipeline_status: dict | None = None,
-    pipeline_status_lock=None,
     chunk_data_by_id: dict[str, dict[str, Any]] | None = None,
     structural_fallback: bool = False,
 ) -> bool:
@@ -1868,13 +1860,13 @@ async def _rebuild_single_entity(
         truncation_info,
     )
 
-    # Log rebuild completion with truncation info
+    # Log rebuild completion with truncation info. Per-item detail goes to the
+    # backend log only; pipeline history keeps the rebuild summary (volume
+    # control).
     status_message = f"Rebuild `{entity_name}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
     logger.info(status_message)
-    # Update pipeline status
-    append_pipeline_log(pipeline_status, status_message)
     return False
 
 
@@ -1890,8 +1882,6 @@ async def _rebuild_single_relationship(
     global_config: dict[str, str],
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
-    pipeline_status: dict | None = None,
-    pipeline_status_lock=None,
     chunk_data_by_id: dict[str, dict[str, Any]] | None = None,
     structural_fallback: bool = False,
 ) -> bool:
@@ -2164,7 +2154,9 @@ async def _rebuild_single_relationship(
         logger.error(error_msg)
         raise  # Re-raise exception
 
-    # Log rebuild completion with truncation info
+    # Log rebuild completion with truncation info. Per-item detail goes to the
+    # backend log only; pipeline history keeps the rebuild summary (volume
+    # control).
     status_message = f"Rebuild `{src}`~`{tgt}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
@@ -2176,9 +2168,6 @@ async def _rebuild_single_relationship(
         status_message += truncation_info
 
     logger.info(status_message)
-
-    # Update pipeline status
-    append_pipeline_log(pipeline_status, status_message)
     return degraded
 
 
