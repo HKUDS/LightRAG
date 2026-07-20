@@ -41,4 +41,3 @@ def test_bracketed_prefix_prose_still_repairs_object():
         "type": "Chart",
         "description": "ok",
     }
-
