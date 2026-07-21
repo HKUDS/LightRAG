@@ -965,3 +965,67 @@ def test_health_pipeline_active_derivation(
         pipeline_state.get("pending_enqueues", 0)
     )
     assert body["pipeline_active"] is expected_active
+
+
+class _FakeTruncatedClient(_FakeBedrockClient):
+    def __init__(self, captured_calls: list[dict], stop_reason: str):
+        super().__init__(captured_calls)
+        self._stop_reason = stop_reason
+
+    async def converse(self, **kwargs):
+        self._captured_calls.append(kwargs)
+        return {
+            "output": {"message": {"content": [{"text": '{"entities":[{"name":"Ali'}]}},
+            "stopReason": self._stop_reason,
+        }
+
+
+class _FakeTruncatedSession(_FakeSession):
+    def __init__(self, captured_calls, client_kwargs_calls, stop_reason):
+        super().__init__(captured_calls, client_kwargs_calls)
+        self._stop_reason = stop_reason
+
+    def client(self, *_args, **kwargs):
+        self._client_kwargs_calls.append(dict(kwargs))
+        return _FakeTruncatedClient(self._captured_calls, self._stop_reason)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_max_tokens_stop_reason_marks_result_truncated(monkeypatch):
+    """Converse stopReason == "max_tokens" flags the response as uncacheable."""
+    from lightrag.utils import is_truncated_response
+
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeTruncatedSession([], [], "max_tokens"),
+    ):
+        result = await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="Extract entities",
+        )
+
+    assert result == '{"entities":[{"name":"Ali'
+    assert is_truncated_response(result) is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_end_turn_stop_reason_is_not_marked_truncated(monkeypatch):
+    from lightrag.utils import is_truncated_response
+
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeTruncatedSession([], [], "end_turn"),
+    ):
+        result = await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="Extract entities",
+        )
+
+    assert result == '{"entities":[{"name":"Ali'
+    assert is_truncated_response(result) is False

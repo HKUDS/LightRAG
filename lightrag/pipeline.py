@@ -76,6 +76,7 @@ from lightrag.utils import (
     get_env_value,
     get_llm_cache_identity,
     handle_cache,
+    is_truncated_response,
     logger,
     repair_vlm_json_escape_damage_nested,
     sanitize_text_for_encoding,
@@ -3859,7 +3860,10 @@ class _PipelineMixin:
                 """
 
                 def _attempt(raw: Any, fresh: bool) -> tuple[dict[str, str], str, bool]:
-                    text = str(raw)
+                    # Keep str input as-is: str(raw) would rebuild a plain str
+                    # and drop the TruncatedResponse marker the cache guards
+                    # below need to observe.
+                    text = raw if isinstance(raw, str) else str(raw)
                     return validate_result(_json_extract(text)), text, fresh
 
                 use_cached_response = cached is not None
@@ -4051,26 +4055,37 @@ class _PipelineMixin:
                 )
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
-                    audit_blob = image_audit_metadata(normalized_images)
-                    original_prompt = prompt + (
-                        f"\n<vlm_images>"
-                        f"{json.dumps(audit_blob, ensure_ascii=False)}"
-                        "</vlm_images>"
-                        if audit_blob
-                        else ""
-                    )
-                    await save_to_cache(
-                        self.llm_response_cache,
-                        CacheData(
-                            args_hash=args_hash,
-                            content=str(result_text),
-                            prompt=original_prompt,
-                            mode="default",
-                            cache_type="analysis",
-                            chunk_id=None,
-                        ),
-                    )
-                    cache_id_to_attach = cache_id
+                    if is_truncated_response(result_text):
+                        # A token-limit-truncated VLM response that still
+                        # parsed must not be persisted: the cache would replay
+                        # the partial analysis on every later run, even once a
+                        # larger token budget would have completed it.
+                        logger.warning(
+                            f"[analyze_multimodal] drawings/{item_id}: skipping "
+                            "analysis cache write for token-limit-truncated "
+                            "VLM response"
+                        )
+                    else:
+                        audit_blob = image_audit_metadata(normalized_images)
+                        original_prompt = prompt + (
+                            f"\n<vlm_images>"
+                            f"{json.dumps(audit_blob, ensure_ascii=False)}"
+                            "</vlm_images>"
+                            if audit_blob
+                            else ""
+                        )
+                        await save_to_cache(
+                            self.llm_response_cache,
+                            CacheData(
+                                args_hash=args_hash,
+                                content=str(result_text),
+                                prompt=original_prompt,
+                                mode="default",
+                                cache_type="analysis",
+                                chunk_id=None,
+                            ),
+                        )
+                        cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit: the entry exists, so attaching its id is
                     # safe (and necessary for document-delete cleanup).
@@ -4262,18 +4277,25 @@ class _PipelineMixin:
                     result_obj["equation"] = analysis_fields["equation"]
                 cache_id_to_attach: str | None = None
                 if fresh and analysis_cache_enabled:
-                    await save_to_cache(
-                        self.llm_response_cache,
-                        CacheData(
-                            args_hash=args_hash,
-                            content=str(result_text),
-                            prompt=prompt,
-                            mode="default",
-                            cache_type="analysis",
-                            chunk_id=None,
-                        ),
-                    )
-                    cache_id_to_attach = cache_id
+                    if is_truncated_response(result_text):
+                        logger.warning(
+                            f"[analyze_multimodal] {kind}/{item_id}: skipping "
+                            "analysis cache write for token-limit-truncated "
+                            "EXTRACT response"
+                        )
+                    else:
+                        await save_to_cache(
+                            self.llm_response_cache,
+                            CacheData(
+                                args_hash=args_hash,
+                                content=str(result_text),
+                                prompt=prompt,
+                                mode="default",
+                                cache_type="analysis",
+                                chunk_id=None,
+                            ),
+                        )
+                        cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit path (handle_cache already gated by flag):
                     # safe to surface the existing cache_id for cleanup.
