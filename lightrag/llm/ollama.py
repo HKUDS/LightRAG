@@ -27,6 +27,7 @@ from lightrag.api import __api_version__
 import numpy as np
 from typing import Any, Optional, Union
 from lightrag.utils import (
+    TruncatedResponse,
     wrap_embedding_func_with_attrs,
     logger,
 )
@@ -196,6 +197,19 @@ async def _ollama_model_if_cache(
             this information is not needed for the final
             response and can simply be trimmed.
             """
+
+            # Flag token-limit truncation (done_reason == "length", num_predict
+            # exhausted) so the cache layer skips persisting partial output.
+            # .get works on both the raw dict (ollama<0.4) and the
+            # SubscriptableBaseModel ChatResponse (ollama>=0.4); a missing key
+            # returns None and keeps the previous cache-everything behavior.
+            if response.get("done_reason") == "length":
+                logger.warning(
+                    "Ollama response truncated by token limit "
+                    f"(done_reason=length, content_len={len(model_response)}); "
+                    "returning partial content but not caching it"
+                )
+                model_response = TruncatedResponse(model_response)
 
             return model_response
     except Exception as e:
