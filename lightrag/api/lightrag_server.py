@@ -2424,14 +2424,16 @@ def create_app(args):
             pipeline_status = await get_namespace_data(
                 "pipeline_status", workspace=workspace
             )
-
-            pipeline_busy = bool(pipeline_status.get("busy", False))
-            pipeline_scanning = bool(pipeline_status.get("scanning", False))
+            # One DictProxy RPC in multi-worker mode; keep /health read-only and
+            # avoid one cross-process ``get`` per field.
+            pipeline_snapshot = pipeline_status.copy()
+            pipeline_busy = bool(pipeline_snapshot.get("busy", False))
+            pipeline_scanning = bool(pipeline_snapshot.get("scanning", False))
             pipeline_destructive_busy = bool(
-                pipeline_status.get("destructive_busy", False)
+                pipeline_snapshot.get("destructive_busy", False)
             )
             pipeline_pending_enqueues = int(
-                pipeline_status.get("pending_enqueues", 0) or 0
+                pipeline_snapshot.get("pending_enqueues", 0) or 0
             )
             pipeline_active = (
                 pipeline_busy

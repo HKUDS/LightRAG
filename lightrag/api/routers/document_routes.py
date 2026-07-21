@@ -1267,15 +1267,12 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
             ``pipeline_status['scanning_exclusive']`` or
             ``pipeline_status['destructive_busy']`` is set.
     """
-    import os
-
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
-        _my_start_id,
+        PipelineReservationConflict,
+        acquire_enqueue_reservation,
         get_namespace_data,
         get_namespace_lock,
-        pipeline_recovery_blocked_message,
-        reconcile_dead_pipeline_reservations,
     )
 
     try:
@@ -1287,38 +1284,31 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
-    async with pipeline_status_lock:
-        # Reclaim a dead owner's slot before the checks (Linux multi-worker
-        # only). A dead custom_chunks/delete/clear owner raises
-        # recovery_required, which fences new enqueues until an explicit recovery.
-        reconcile_dead_pipeline_reservations(pipeline_status)
-        if pipeline_status.get("recovery_required"):
-            raise HTTPException(
-                status_code=503,
-                detail=pipeline_recovery_blocked_message(pipeline_status),
-            )
-        if pipeline_status.get("scanning_exclusive"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Document scan is classifying files. "
-                    "Wait for the classification phase to finish before "
-                    "submitting new work."
-                ),
-            )
-        if pipeline_status.get("destructive_busy"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Pipeline is clearing or deleting documents. "
-                    "Wait for the running job to finish before submitting "
-                    "new work."
-                ),
-            )
-        tokens = dict(pipeline_status.get("pending_enqueue_tokens", {}))
-        tokens[token] = {"pid": os.getpid(), "process_start_id": _my_start_id()}
-        pipeline_status.update(
-            {"pending_enqueue_tokens": tokens, "pending_enqueues": len(tokens)}
+    result = await acquire_enqueue_reservation(
+        pipeline_status,
+        pipeline_status_lock,
+        token=token,
+        reject_when=(
+            (
+                "scanning_exclusive",
+                "Document scan is classifying files. Wait for the classification "
+                "phase to finish before submitting new work.",
+            ),
+            (
+                "destructive_busy",
+                "Pipeline is clearing or deleting documents. Wait for the running "
+                "job to finish before submitting new work.",
+            ),
+        ),
+    )
+    if not result.acquired:
+        raise HTTPException(
+            status_code=(
+                503
+                if result.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
+                else 409
+            ),
+            detail=result.message,
         )
     return True
 
@@ -1349,10 +1339,10 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
+        PipelineReservationConflict,
+        check_pipeline_status_mutation,
         get_namespace_data,
         get_namespace_lock,
-        pipeline_recovery_blocked_message,
-        reconcile_dead_pipeline_reservations,
     )
 
     try:
@@ -1364,26 +1354,26 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
-    async with pipeline_status_lock:
-        # Reclaim a dead owner first: reconcile clears ``busy`` when it fences a
-        # dead custom_chunks/delete/clear owner, so a plain ``busy`` check would
-        # wave the graph edit through onto a possibly partially-committed store.
-        # Refuse a fenced workspace with 503 (distinct from the 409 busy case).
-        reconcile_dead_pipeline_reservations(pipeline_status)
-        if pipeline_status.get("recovery_required"):
-            raise HTTPException(
-                status_code=503,
-                detail=pipeline_recovery_blocked_message(pipeline_status),
-            )
-        if pipeline_status.get("busy"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Pipeline is busy with another operation. "
-                    "Wait for the running job to finish before editing "
-                    "the knowledge graph."
-                ),
-            )
+    result = await check_pipeline_status_mutation(
+        pipeline_status,
+        pipeline_status_lock,
+        reject_when=(
+            (
+                "busy",
+                "Pipeline is busy with another operation. Wait for the running "
+                "job to finish before editing the knowledge graph.",
+            ),
+        ),
+    )
+    if not result.acquired:
+        raise HTTPException(
+            status_code=(
+                503
+                if result.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
+                else 409
+            ),
+            detail=result.message,
+        )
 
 
 async def _acquire_destructive_busy(
@@ -1429,11 +1419,9 @@ async def _acquire_destructive_busy(
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
+        acquire_reservation,
         get_namespace_data,
         get_namespace_lock,
-        make_owner_record,
-        pipeline_recovery_blocked_message,
-        reconcile_dead_pipeline_reservations,
     )
 
     try:
@@ -1445,36 +1433,32 @@ async def _acquire_destructive_busy(
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
-    async with pipeline_status_lock:
-        # Reclaim a dead owner's slot before the conflict checks; a dead
-        # custom_chunks/delete/clear owner sets recovery_required, which fences
-        # this (and every) mutation until an explicit recovery.
-        reconcile_dead_pipeline_reservations(pipeline_status)
-        if pipeline_status.get("recovery_required"):
-            return False, pipeline_recovery_blocked_message(pipeline_status)
-        if pipeline_status.get("busy"):
-            return False, "Pipeline is busy with another operation."
-        if pipeline_status.get("scanning"):
-            return False, (
-                "Document scan is in progress. "
-                "Wait for the scan to complete before clearing or deleting."
-            )
-        if pipeline_status.get("pending_enqueues", 0) > 0:
-            return False, (
-                "Document upload/insert is being enqueued. "
-                "Wait for in-flight work to complete before clearing or "
-                "deleting."
-            )
-        # Take the slot + stamp the owner (with recovery identity) atomically.
-        pipeline_status.update(
-            {
-                "busy": True,
-                "destructive_busy": True,
-                "busy_owner": make_owner_record(token, kind),
-                "operation_record": operation_record,
-            }
-        )
-    return True, None
+    result = await acquire_reservation(
+        pipeline_status,
+        pipeline_status_lock,
+        owner_key="busy_owner",
+        owner=token,
+        owner_kind=kind,
+        flags={
+            "busy": True,
+            "destructive_busy": True,
+            "operation_record": operation_record,
+        },
+        reject_when=(
+            ("busy", "Pipeline is busy with another operation."),
+            (
+                "scanning",
+                "Document scan is in progress. Wait for the scan to complete "
+                "before clearing or deleting.",
+            ),
+            (
+                "pending_enqueues",
+                "Document upload/insert is being enqueued. Wait for in-flight "
+                "work to complete before clearing or deleting.",
+            ),
+        ),
+    )
+    return result.acquired, result.message
 
 
 def _release_destructive_action(status) -> None:
@@ -2171,10 +2155,21 @@ async def run_scanning_process(
     # test rigs), the flags were never set so there's nothing to
     # clear — track that here to skip the namespace fetch.
     from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        has_scan_deferred_processing,
+        transition_scanning_reservation,
+    )
 
     pipeline_status = None
     pipeline_status_lock = None
+    # Distinguish a normal exit from a cancellation (server shutdown / task
+    # cancel): a cancelled scan MUST NOT kick off a full processing run in its
+    # finally. Shutdown is waiting for THIS task to exit, and one cancel injects
+    # CancelledError only once, so a post-release ``await`` here would otherwise
+    # run parse/LLM/index to completion and stall the shutdown.
+    was_cancelled = False
     try:
         # Fetch INSIDE the release try: the scan endpoint already reserved
         # ``scanning``/``scanning_exclusive`` before scheduling us, so a
@@ -2350,8 +2345,15 @@ async def run_scanning_process(
             # apipeline_enqueue_documents' in-batch dedup, identical to
             # the upload-during-busy case.
             if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["scanning_exclusive"] = False
+                if scanning_token is not None:
+                    await transition_scanning_reservation(
+                        pipeline_status,
+                        pipeline_status_lock,
+                        token=scanning_token,
+                    )
+                else:
+                    async with pipeline_status_lock:
+                        pipeline_status["scanning_exclusive"] = False
 
             # New files take the standard enqueue + process path.  When at
             # least one new file is successfully enqueued, pipeline_index_files
@@ -2394,13 +2396,25 @@ async def run_scanning_process(
             # release ``scanning_exclusive`` before driving the queue so
             # concurrent uploads can land while process_enqueue runs.
             if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["scanning_exclusive"] = False
+                if scanning_token is not None:
+                    await transition_scanning_reservation(
+                        pipeline_status,
+                        pipeline_status_lock,
+                        token=scanning_token,
+                    )
+                else:
+                    async with pipeline_status_lock:
+                        pipeline_status["scanning_exclusive"] = False
             logger.info(
                 "No upload file found, check if there are any documents in the queue..."
             )
             await rag.apipeline_process_enqueue_documents()
 
+    except asyncio.CancelledError:
+        # Shutdown / task cancel: skip the deferred drive below and leave
+        # ``scan_deferred_processing`` set for the next scan / trigger.
+        was_cancelled = True
+        raise
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
@@ -2424,6 +2438,33 @@ async def run_scanning_process(
                         "scanning_owner": None,
                     }
                 )
+
+        # If this scan's ``scanning_exclusive`` fence turned away a concurrent
+        # processing request that no run then picked up, its PENDING doc has no
+        # other trigger — the branches above drive the queue only for new/resume
+        # files or an empty scan directory, so an all-already-processed scan or a
+        # classification error would strand it. Drain the queue once now that
+        # scanning has fully released. The check is READ-ONLY; the drive's own
+        # acquire clears the deferred flag, so a failed drive leaves it set for
+        # the next scan to honour. Empty queue → silent no-op.
+        #
+        # Skipped on cancellation: a cancelled scan must not start a full
+        # processing run while shutdown waits for it. The flag is never checked
+        # or cleared here, so it stays set for the next scan / trigger.
+        if (
+            not was_cancelled
+            and pipeline_status is not None
+            and pipeline_status_lock is not None
+        ):
+            if await has_scan_deferred_processing(
+                pipeline_status, pipeline_status_lock
+            ):
+                try:
+                    await rag.apipeline_process_enqueue_documents()
+                except Exception as drive_error:
+                    logger.error(
+                        f"Deferred post-scan queue drive failed: {drive_error}"
+                    )
 
 
 async def background_delete_documents(
@@ -2699,11 +2740,10 @@ def create_document_routes(
         """
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import (
+            PipelineReservationConflict,
+            acquire_reservation,
             get_namespace_data,
             get_namespace_lock,
-            make_owner_record,
-            pipeline_recovery_blocked_message,
-            reconcile_dead_pipeline_reservations,
             start_reserved_background_task,
         )
 
@@ -2759,74 +2799,59 @@ def create_document_routes(
         reserved = False
         handed_off = False
         try:
-            async with pipeline_status_lock:
-                # Reclaim a dead owner's slot before the skip checks (Linux
-                # multi-worker only; no-op otherwise). A dead custom_chunks/
-                # delete/clear owner raises recovery_required → refuse the scan.
-                reconcile_dead_pipeline_reservations(pipeline_status)
-                if pipeline_status.get("recovery_required"):
-                    return ScanResponse(
-                        status="scanning_skipped_pipeline_busy",
-                        message=pipeline_recovery_blocked_message(pipeline_status),
-                        track_id=track_id,
-                    )
-                if pipeline_status.get("busy"):
+            # Pre-arm owner-checked cleanup before acquire: cancellation at the
+            # helper's lock exit may occur after the reservation update but before
+            # the result is returned.
+            reserved = True
+            result = await acquire_reservation(
+                pipeline_status,
+                pipeline_status_lock,
+                owner_key="scanning_owner",
+                owner=scanning_token,
+                owner_kind="scan",
+                flags={"scanning": True, "scanning_exclusive": True},
+                reject_when=(
+                    (
+                        "busy",
+                        "Pipeline is currently busy processing documents. Wait for "
+                        "the running job to finish before triggering another scan.",
+                    ),
+                    (
+                        "scanning",
+                        "Another scan is already in progress. Wait for it to finish "
+                        "before triggering a new one.",
+                    ),
+                    (
+                        "pending_enqueues",
+                        "Document upload/insert is being enqueued. Wait for in-flight "
+                        "work to complete before triggering a scan.",
+                    ),
+                ),
+            )
+            if not result.acquired:
+                reserved = False
+                if result.conflict is PipelineReservationConflict.BUSY:
                     logger.warning(
                         "Scan request skipped: pipeline is busy processing documents"
                     )
-                    return ScanResponse(
-                        status="scanning_skipped_pipeline_busy",
-                        message=(
-                            "Pipeline is currently busy processing documents. "
-                            "Wait for the running job to finish before triggering another scan."
-                        ),
-                        track_id=track_id,
-                    )
-                if pipeline_status.get("scanning"):
+                elif result.conflict is PipelineReservationConflict.SCANNING:
                     logger.warning(
                         "Scan request skipped: another scan is already in progress"
                     )
-                    return ScanResponse(
-                        status="scanning_skipped_pipeline_busy",
-                        message=(
-                            "Another scan is already in progress. "
-                            "Wait for it to finish before triggering a new one."
-                        ),
-                        track_id=track_id,
+                elif result.conflict is PipelineReservationConflict.PENDING_ENQUEUE:
+                    pending_enqueues = (result.snapshot or {}).get(
+                        "pending_enqueues", 0
                     )
-                pending_enqueues = pipeline_status.get("pending_enqueues", 0)
-                if pending_enqueues > 0:
                     logger.warning(
                         "Scan request skipped: "
                         f"{pending_enqueues} pending enqueue(s) reserved by "
                         "upload/insert endpoints"
                     )
-                    return ScanResponse(
-                        status="scanning_skipped_pipeline_busy",
-                        message=(
-                            "Document upload/insert is being enqueued. "
-                            "Wait for in-flight work to complete before triggering a scan."
-                        ),
-                        track_id=track_id,
-                    )
-                # ``scanning`` covers the whole scan task lifecycle (used by
-                # this endpoint to refuse overlapping scans).
-                # ``scanning_exclusive`` is True only during the
-                # classification phase: run_scanning_process clears it once
-                # classification is done so concurrent uploads can land
-                # while the scan-driven processing finishes.
-                # Take both flags + stamp the owner in a single atomic update.
-                pipeline_status.update(
-                    {
-                        "scanning": True,
-                        "scanning_exclusive": True,
-                        "scanning_owner": make_owner_record(scanning_token, "scan"),
-                    }
+                return ScanResponse(
+                    status="scanning_skipped_pipeline_busy",
+                    message=result.message or "Pipeline reservation is unavailable.",
+                    track_id=track_id,
                 )
-                # Slot now owned by scanning_token; arm the finally so a
-                # cancellation before hand-off releases it. Set inside the lock,
-                # immediately after the atomic update, with no await in between.
-                reserved = True
 
             # Hand the reservation to a managed background task. The start
             # barrier guarantees the child took over (started.set) before we
@@ -3704,8 +3729,9 @@ def create_document_routes(
                 processed_update_status[namespace] = processed_flags
 
             async with pipeline_status_lock:
-                # Convert to regular dict if it's a Manager.dict
-                status_dict = dict(pipeline_status)
+                # DictProxy.copy() is one Manager RPC; dict(proxy) may fetch
+                # values individually through the mapping protocol.
+                status_dict = pipeline_status.copy()
 
             # Drop internal reservation-ownership / dead-process-recovery
             # bookkeeping: these carry raw owner tokens, PIDs and per-token sets
@@ -3719,10 +3745,12 @@ def create_document_routes(
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
 
-            # Convert history_messages to a regular list if it's a Manager.list
-            # and limit to latest 1000 entries with truncation message if needed
+            # Materialize history_messages to a regular list if it's a Manager
+            # ListProxy, then limit to latest 1000 with a truncation banner. A
+            # slice is one Manager RPC; list(proxy) walks the sequence protocol
+            # with one __getitem__ RPC per element (history can hold 10k lines).
             if "history_messages" in status_dict:
-                history_list = list(status_dict["history_messages"])
+                history_list = status_dict["history_messages"][:]
                 total_count = len(history_list)
 
                 if total_count > 1000:
@@ -4344,10 +4372,9 @@ def create_document_routes(
         """
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import (
+            check_pipeline_status_mutation,
             get_namespace_data,
             get_namespace_lock,
-            pipeline_recovery_blocked_message,
-            reconcile_dead_pipeline_reservations,
             start_reserved_background_task,
         )
 
@@ -4362,13 +4389,9 @@ def create_document_routes(
             _ps = None
         if _ps is not None:
             _ps_lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
-            async with _ps_lock:
-                reconcile_dead_pipeline_reservations(_ps)
-                if _ps.get("recovery_required"):
-                    raise HTTPException(
-                        status_code=503,
-                        detail=pipeline_recovery_blocked_message(_ps),
-                    )
+            result = await check_pipeline_status_mutation(_ps, _ps_lock)
+            if not result.acquired:
+                raise HTTPException(status_code=503, detail=result.message)
 
         # Reprocess holds NO reservation of its own — apipeline_process_enqueue_documents
         # acquires (and releases) the busy slot itself. We only need the task to

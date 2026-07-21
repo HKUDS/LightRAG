@@ -20,7 +20,11 @@ from tenacity import (
 from collections.abc import AsyncIterator
 from typing import Any, Union
 
-from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.utils import (
+    TruncatedResponse,
+    logger,
+    wrap_embedding_func_with_attrs,
+)
 
 # Import botocore exceptions for proper exception handling
 try:
@@ -419,6 +423,16 @@ async def bedrock_complete_if_cache(
 
             if not content or content.strip() == "":
                 raise BedrockError("Received empty content from Bedrock API")
+
+            # Flag token-limit truncation (Converse API stopReason ==
+            # "max_tokens") so the cache layer skips persisting partial output.
+            if response.get("stopReason") == "max_tokens":
+                logger.warning(
+                    "Bedrock response truncated by token limit "
+                    f"(stopReason=max_tokens, content_len={len(content)}); "
+                    "returning partial content but not caching it"
+                )
+                content = TruncatedResponse(content)
 
             return content
 

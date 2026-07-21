@@ -7,9 +7,11 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
 import rehypeRaw from 'rehype-raw'
+import rehypeSanitize from 'rehype-sanitize'
 import remarkMath from 'remark-math'
 import mermaid from 'mermaid'
 import { remarkFootnotes } from '@/utils/remarkFootnotes'
+import { chatMarkdownSanitizeSchema } from '@/utils/markdownSanitizeSchema'
 
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -253,12 +255,16 @@ export const ChatMessage = ({
                 remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
                 rehypePlugins={[
                   rehypeRaw,
+                  // Thinking content is untrusted (derived from ingested
+                  // documents); sanitize the raw HTML rehypeRaw just parsed
+                  // before it can render (GHSA-xpjq-3w4w-w5wr).
+                  [rehypeSanitize, chatMarkdownSanitizeSchema],
                   ...((katexPlugin && (message.latexRendered ?? true)) ? [[katexPlugin, {
                     errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
                     throwOnError: false,
                     displayMode: false,
                     strict: false,
-                    trust: true,
+                    trust: false,
                     // Add silent error handling to avoid console noise
                     errorCallback: (error: string, latex: string) => {
                       // Only show detailed errors in development environment
@@ -349,6 +355,10 @@ const MessageMarkdown = memo(function MessageMarkdown({
           remarkPlugins={[remarkGfm, remarkFootnotes, remarkMath]}
           rehypePlugins={[
             rehypeRaw,
+            // Answer content is untrusted (derived from ingested documents);
+            // sanitize the raw HTML rehypeRaw just parsed before it can render
+            // (GHSA-xpjq-3w4w-w5wr).
+            [rehypeSanitize, chatMarkdownSanitizeSchema],
             ...((katexPlugin && latexRendered) ? [[
               katexPlugin,
               {
@@ -356,7 +366,7 @@ const MessageMarkdown = memo(function MessageMarkdown({
                 throwOnError: false,
                 displayMode: false,
                 strict: false,
-                trust: true,
+                trust: false,
                 // Add silent error handling to avoid console noise
                 errorCallback: (error: string, latex: string) => {
                   // Only show detailed errors in development environment
@@ -430,7 +440,13 @@ const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = fal
           mermaid.initialize({
             startOnLoad: false,
             theme: theme === 'dark' ? 'dark' : 'default',
-            securityLevel: 'loose',
+            // 'loose' disables mermaid's built-in DOMPurify output sanitization
+            // and enables HTML labels / click JS; since the rendered SVG is
+            // injected via innerHTML below, an attacker-controlled ```mermaid```
+            // block in answer content would be a script sink. 'strict' makes
+            // mermaid sanitize its output and disable interaction
+            // (GHSA-xpjq-3w4w-w5wr).
+            securityLevel: 'strict',
             suppressErrorRendering: true,
           });
 

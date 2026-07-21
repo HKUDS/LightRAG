@@ -20,10 +20,33 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+
+pytestmark = pytest.mark.offline
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def single_process_shared_data():
+    """Initialize the single-process shared_storage singleton.
+
+    ``LightRAG.ainsert_custom_kg`` calls ``_raise_if_recovery_required``,
+    which reads the ``pipeline_status`` namespace via ``get_namespace_data``.
+    That call raises ``ValueError`` if ``initialize_share_data()`` was never
+    called at all (as it never is running this file standalone), but is a
+    documented no-op — via a caught ``PipelineNotInitializedError`` — when
+    shared data is initialized yet ``pipeline_status`` itself was not. So we
+    only need ``initialize_share_data()`` here, not
+    ``initialize_pipeline_status()``. Mirrors the fixture in
+    ``tests/kg/test_shared_storage_rpc_counts.py``.
+    """
+    finalize_share_data()
+    initialize_share_data(1)
+    yield
+    finalize_share_data()
 
 
 def _make_keyed_lock_spy():
@@ -235,7 +258,9 @@ class _LockCaptured(RuntimeError):
 
 
 @pytest.mark.asyncio
-async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
+async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
+    single_process_shared_data,
+):
     """ainsert_custom_kg must hold a single coarse-grained keyed lock whose
     key set covers every entity name plus every relationship endpoint in the
     batch — sharing the doc-ingest namespace so concurrent callers on
@@ -314,7 +339,9 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock():
+async def test_ainsert_custom_kg_empty_batch_skips_keyed_lock(
+    single_process_shared_data,
+):
     """A custom_kg with no entities or relationships has nothing for the
     business-layer keyed lock to serialise on — no lock is acquired and the
     chunk-only path still completes."""

@@ -1309,3 +1309,67 @@ async def test_table_missing_format_hard_fails(tmp_path):
             content="<table><tr><td>A</td></tr></table>",
         )
     assert "tb-001" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_truncated_vlm_response_not_cached_and_recomputed(tmp_path):
+    """A token-limit-truncated VLM analysis is used but never cached.
+
+    Even when the truncated payload still parses as valid analysis JSON, the
+    cache write must be skipped (no entry, no ``llm_cache_list`` write-back)
+    so a later run re-invokes the VLM instead of replaying the partial result.
+    """
+    from lightrag.utils import TruncatedResponse
+
+    call_log: list[int] = []
+
+    async def truncated_vlm(prompt, **kwargs):
+        call_log.append(1)
+        return TruncatedResponse(
+            json.dumps(
+                {
+                    "name": "fig-1",
+                    "type": "Chart",
+                    "description": "partial but parseable description",
+                }
+            )
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=truncated_vlm)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 1
+
+        # The salvaged partial analysis is still used for this run...
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        item = payload["drawings"]["im-001"]
+        assert item["llm_analyze_result"]["status"] == "success"
+        # ...but no cache entry exists and no cache id was written back.
+        assert not item.get("llm_cache_list")
+        cache_file = (
+            Path(rag.working_dir) / rag.workspace / "kv_store_llm_response_cache.json"
+        )
+        if cache_file.exists():
+            cache_blob = json.loads(cache_file.read_text(encoding="utf-8"))
+            assert not [
+                k for k in cache_blob.keys() if k.startswith("default:analysis:")
+            ]
+
+        # Re-run: no cache hit, so the VLM must be invoked again.
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+        assert len(call_log) == 2
+    finally:
+        await rag.finalize_storages()

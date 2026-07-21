@@ -166,8 +166,13 @@ async def test_keyed_lock_real_release_and_reacquire_after_cancel():
         async with await asyncio.wait_for(_acquire_ctx(namespace, "k"), timeout=1.0):
             pass
 
+        # Immediate-delete invariant: once the last reference is released —
+        # including via the cancellation path — the registry entry is GONE,
+        # not parked at count 0. (`.get(combined, 0) == 0` would pass for
+        # both implementations; absence is the discriminating assertion.)
         keyed = shared_storage._storage_keyed_lock
-        assert keyed._async_lock_count.get(combined, 0) == 0
+        assert combined not in keyed._async_lock_count
+        assert combined not in keyed._async_lock
     finally:
         finalize_share_data()
 

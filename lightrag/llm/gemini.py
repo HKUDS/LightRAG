@@ -24,6 +24,7 @@ from tenacity import (
 )
 
 from lightrag.utils import (
+    TruncatedResponse,
     logger,
     remove_think_tags,
     safe_unicode_decode,
@@ -542,6 +543,21 @@ async def gemini_complete_if_cache(
         final_text = safe_unicode_decode(final_text.encode("utf-8"))
 
     final_text = remove_think_tags(final_text)
+
+    # Flag token-limit truncation so the cache layer skips persisting partial
+    # output. Must stay the last transformation of final_text: any later
+    # string operation would rebuild a plain str and drop the marker.
+    candidates = getattr(response, "candidates", None)
+    finish_reason = (
+        getattr(candidates[0], "finish_reason", None) if candidates else None
+    )
+    if finish_reason == types.FinishReason.MAX_TOKENS:
+        logger.warning(
+            "Gemini response truncated by token limit "
+            f"(finish_reason=MAX_TOKENS, content_len={len(final_text)}); "
+            "returning partial content but not caching it"
+        )
+        final_text = TruncatedResponse(final_text)
 
     usage = getattr(response, "usage_metadata", None)
     if token_tracker and usage:

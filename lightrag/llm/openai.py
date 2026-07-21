@@ -29,6 +29,7 @@ from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
     logger,
+    TruncatedResponse,
 )
 
 from lightrag.api import __api_version__
@@ -222,7 +223,9 @@ def create_openai_async_client(
         return AsyncOpenAI(**merged_configs)
 
 
-# TODO LengthFinishReasonError should not persist into LLM cache
+# Token-limit-truncated completions (finish_reason == "length") are returned
+# wrapped in TruncatedResponse so the cache layer skips persisting incomplete
+# output. See the "Note on truncated structured output" in the docstring below.
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -271,12 +274,13 @@ async def openai_complete_if_cache(
     - ``keyword_extraction`` is deprecated; prefer
       ``response_format={"type": "json_object"}`` instead.
 
-    Note on truncated structured output: when the OpenAI SDK raises
-    `LengthFinishReasonError`, callers may still receive partial raw JSON from
-    `completion.choices[0].message.content`. That payload should be treated as
-    best-effort recovery only. If the JSON was truncated or repaired after
-    truncation, it is safer not to persist it into the LLM cache because later
-    runs with a higher token budget could otherwise keep reusing incomplete data.
+    Note on truncated structured output: when a completion stops with
+    `finish_reason == "length"`, callers may still receive partial raw JSON from
+    `completion.choices[0].message.content`. That payload is returned unchanged
+    for best-effort recovery, but wrapped in `TruncatedResponse` (a `str`
+    subclass) so the cache layer can detect and skip persisting it. This
+    prevents later runs — even with a higher token budget — from reusing the
+    incomplete data. See `is_truncated_response` in `lightrag.utils`.
 
     Note on `reasoning_content`: This feature relies on a Deepseek Style `reasoning_content`
     in the API response, which may be provided by OpenAI-compatible endpoints that support
@@ -797,6 +801,18 @@ async def openai_complete_if_cache(
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:
                 final_content = safe_unicode_decode(final_content.encode("utf-8"))
+
+            # Flag token-limit truncation so the cache layer skips persisting
+            # partial output. The content is still returned unchanged for
+            # best-effort salvage (e.g. tolerant JSON parsing); TruncatedResponse
+            # is a str subclass, so downstream processing is unaffected.
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                logger.warning(
+                    "OpenAI response truncated by token limit "
+                    f"(finish_reason=length, content_len={len(final_content)}); "
+                    "returning partial content but not caching it"
+                )
+                final_content = TruncatedResponse(final_content)
 
             if token_tracker and hasattr(response, "usage"):
                 token_counts = {

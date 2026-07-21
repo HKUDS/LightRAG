@@ -15,6 +15,7 @@ matrix; immediate-write backends are covered by the mock-based unit suites.
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import numpy as np
@@ -328,5 +329,162 @@ async def test_audit_tool_detects_and_repairs_missing_anchor(tmp_path):
 
         report = await audit_kg_integrity(rag)
         assert report["missing_entity_anchors"] == {}
+    finally:
+        await rag.finalize_storages()
+
+
+def _wire_fake_extraction_with_relation(rag: LightRAG) -> None:
+    """Test-local extraction override: ALICE, BOB, and an edge between them
+    per chunk.
+
+    Overrides ``rag._process_extract_entities`` AFTER ``_build_rag`` has
+    already wired the shared ``_wire_fake_extraction`` (single-entity, no
+    relations) default. This function is applied only by the test below and
+    never mutates ``_wire_fake_extraction`` itself, so every sibling test in
+    this file that calls ``_build_rag`` keeps its original one-entity,
+    zero-relation wiring and is unaffected.
+    """
+
+    async def fake_extract(chunks, *args, **kwargs):
+        results = []
+        for chunk_id in chunks:
+            nodes = {
+                "ALICE": [
+                    {
+                        "entity_name": "ALICE",
+                        "entity_type": "person",
+                        "description": "ALICE description",
+                        "source_id": chunk_id,
+                        "file_path": "d.txt",
+                        "timestamp": 1,
+                    }
+                ],
+                "BOB": [
+                    {
+                        "entity_name": "BOB",
+                        "entity_type": "person",
+                        "description": "BOB description",
+                        "source_id": chunk_id,
+                        "file_path": "d.txt",
+                        "timestamp": 1,
+                    }
+                ],
+            }
+            edges = {
+                ("ALICE", "BOB"): [
+                    {
+                        "src_id": "ALICE",
+                        "tgt_id": "BOB",
+                        "description": "ALICE knows BOB",
+                        "keywords": "acquaintance",
+                        "source_id": chunk_id,
+                        "file_path": "d.txt",
+                        "weight": 1.0,
+                        "timestamp": 1,
+                    }
+                ]
+            }
+            results.append((nodes, edges))
+        return results
+
+    rag._process_extract_entities = fake_extract
+
+
+@pytest.mark.asyncio
+async def test_audit_tool_detects_true_orphan_after_anchor_loss_and_purge(tmp_path):
+    """Coverage for ``audit_kg_integrity``'s orphan-*detection* path itself,
+    for BOTH the entity and relation classification branches.
+
+    This is NOT a regression test for the test above
+    (``test_audit_tool_detects_and_repairs_missing_anchor``): that test's
+    entity is *unanchored* but still resolvable — its source chunk survives,
+    so the audit tool reports it under ``missing_entity_anchors`` and repairs
+    it. A "true" orphan (``report["orphan_entities"]`` /
+    ``report["orphan_relations"]``) is stronger: a node or edge whose
+    ``source_id`` points ONLY at chunks that no longer exist anywhere, so no
+    document can be determined at all. Every orphan assertion elsewhere in
+    this suite and in ``test_purge_primitive.py`` is ``== []`` — none of them
+    ever puts a real orphan in front of the tool. If ``audit_kg_integrity``'s
+    orphan-detection logic silently broke for either branch (e.g. stopped
+    flagging nodes/edges with an unresolvable ``source_id``, or either the
+    ``orphan_entities.append(...)`` or the ``orphan_relations.append(...)``
+    call in ``kg_integrity_repair.py`` were deleted), no test would fail.
+    This test exists solely to guard both paths at once.
+
+    Construction (matches the tool's own module docstring: "installations
+    that ingested documents BEFORE the write-ahead recovery anchors landed
+    may hold graph data that full_entities / full_relations do not
+    reference"): this test wires a test-local extraction override
+    (``_wire_fake_extraction_with_relation``) that produces ALICE, BOB, and
+    an edge between them per chunk — unlike the shared
+    ``_wire_fake_extraction`` default (ALICE only, no relations) every other
+    test in this file uses. After an ordinary ingest, BOTH the
+    ``full_entities`` AND ``full_relations`` anchor rows are deleted out
+    from under the already-ingested document, then the ordinary
+    whole-document purge runs. With both anchors gone,
+    ``_purge_kg_contributions``'s candidate discovery
+    (``full_entities.get_by_id(doc_id)`` / ``full_relations.get_by_id(doc_id)``)
+    resolves to an empty candidate set on both sides, so neither entity-node
+    removal nor edge removal happens — but chunk deletion proceeds
+    regardless, leaving ALICE, BOB, and the edge between them all pointing
+    at a chunk id that no longer resolves to any document.
+
+    IMPORTANT: this test asserts the AUDIT TOOL detects the orphans it was
+    built to find — it does NOT assert that purge leaving the nodes/edge
+    behind is correct or desired behavior. It is a known, documented gap
+    (see the module docstring of ``kg_integrity_repair.py``), and this test
+    merely exploits that documented gap to get real orphans on the board so
+    both detection paths are exercised. If a future change closes the gap
+    (e.g. ``_purge_kg_contributions`` learns to discover entities/relations
+    from the graph itself when the anchor row is missing, rather than only
+    from the anchor), ALICE/BOB/their edge would stop being orphaned and
+    this test's ``orphan_entities`` / ``orphan_relations`` assertions would
+    need to be deliberately updated — that is an intentional signal this
+    test is designed to raise, not a regression to work around.
+    """
+    workspace = f"fim-true-orphan-{uuid4().hex[:8]}"
+    doc_id = compute_mdhash_id("orphan.txt", prefix="doc-")
+
+    rag = await _build_rag(tmp_path, workspace)
+    _wire_fake_extraction_with_relation(rag)
+    try:
+        await rag.apipeline_enqueue_documents(
+            input="orphan doc", file_paths="orphan.txt"
+        )
+        await rag.apipeline_process_enqueue_documents()
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        chunk_ids = list(
+            dict.fromkeys(
+                c for c in (row.get("chunks_list") or []) if isinstance(c, str) and c
+            )
+        )
+        assert chunk_ids, "fixture must produce at least one chunk to purge"
+
+        # Simulate a pre-#3400 installation: BOTH recovery anchors were
+        # never written for this document.
+        await rag.full_entities.delete([doc_id])
+        await rag.full_relations.delete([doc_id])
+
+        status = {"latest_message": "", "history_messages": []}
+        lock = asyncio.Lock()
+        await rag._purge_doc_chunks_and_kg(
+            doc_id, chunk_ids, pipeline_status=status, pipeline_status_lock=lock
+        )
+
+        # The purge "succeeded" (no exception, chunk gone) but never
+        # discovered ALICE, BOB, or their edge as delete candidates: both
+        # nodes and the edge survive, now pointing at a chunk id that no
+        # longer resolves to any document.
+        assert await rag.chunk_entity_relation_graph.get_node("ALICE") is not None
+        assert await rag.chunk_entity_relation_graph.get_node("BOB") is not None
+        assert (
+            await rag.chunk_entity_relation_graph.get_edge("ALICE", "BOB") is not None
+        )
+        assert await rag.text_chunks.get_by_id(chunk_ids[0]) is None
+
+        report = await audit_kg_integrity(rag)
+        assert report["orphan_entities"] == ["ALICE", "BOB"]
+        assert report["orphan_relations"] == [["ALICE", "BOB"]]
     finally:
         await rag.finalize_storages()
