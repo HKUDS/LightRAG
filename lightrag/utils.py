@@ -4167,14 +4167,13 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                     return object_index, False
         if object_index is not None:
             assert object_array_start is not None
-            before_array = candidate[:object_array_start].strip()
             inside_array_prefix = candidate[
                 object_array_start + 1 : object_index
             ].strip()
-            if not before_array or not inside_array_prefix:
-                # A leading ``[`` or one that directly introduces the object
-                # is a truncated array container even without its closing
-                # bracket, so preserve the one-object response contract.
+            if not inside_array_prefix:
+                # A ``[`` that directly introduces the object is a truncated
+                # array container even without its closing bracket, so
+                # preserve the one-object response contract.
                 return object_index, True
             # Otherwise the unmatched bracket contains prefix prose such as
             # ``[draft:``; retain the recoverable object rather than forcing
