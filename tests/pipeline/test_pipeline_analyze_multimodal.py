@@ -1212,6 +1212,124 @@ async def test_extract_cap_below_prompt_frame_fails_item_without_llm_call(
         await rag.finalize_storages()
 
 
+@pytest.mark.asyncio
+async def test_content_budget_below_floor_fails_item_without_llm_call(
+    tmp_path, monkeypatch
+):
+    """A *positive* content budget that still falls below
+    ``MM_EXTRACT_CONTENT_MIN_TOKENS`` must fail the item without an LLM call.
+
+    Distinct from the ``content_budget <= 0`` case: here the frame fits and
+    some room remains, but too little to ground a useful analysis — trimming
+    would hand the LLM a near-empty stub.  The cap (8000) sits comfortably
+    above the ~4k-char template frame so ``content_budget`` (~3.7k) is
+    positive, while the floor is raised to 7000 so that budget lands *below*
+    it, isolating the new guard from the non-positive-budget path.
+    """
+    monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "8000")
+    monkeypatch.setenv("MM_EXTRACT_CONTENT_MIN_TOKENS", "7000")
+
+    extract_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=False,
+        extract_func=_make_extract_mock(extract_log),
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-floor"}) + "\n",
+            encoding="utf-8",
+        )
+        # Big enough that the full prompt exceeds the 8000 cap so the budget
+        # path engages.
+        rows = [[f"r{i}c0", f"r{i}c1"] for i in range(800)]
+        big_table = (
+            '<table id="tb-floor" format="json">' + json.dumps(rows) + "</table>"
+        )
+        assert len(rag.tokenizer.encode(big_table)) > 8000
+
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {"tables": {"tb-floor": {"format": "json", "content": big_table}}}
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(MultimodalAnalysisError) as excinfo:
+            await rag.analyze_multimodal(
+                doc_id="doc-floor",
+                file_path="fixture.pdf",
+                parsed_data={"blocks_path": str(blocks_path)},
+                process_options="t",
+            )
+
+        # No LLM call — we refused to send a meaningless stub.
+        assert extract_log == [], (
+            f"EXTRACT must not be called when content budget is below the "
+            f"floor; got {len(extract_log)} call(s)"
+        )
+
+        msg = str(excinfo.value)
+        assert "table/tb-floor" in msg
+        assert "content budget" in msg
+        assert "7000" in msg  # the configured floor
+        assert "MM_EXTRACT_CONTENT_MIN_TOKENS" in msg
+
+        # Sidecar records status=failure so operators can re-run after
+        # widening the budget.
+        payload = json.loads(tables_path.read_text(encoding="utf-8"))
+        item = payload["tables"]["tb-floor"]
+        assert item["llm_analyze_result"]["status"] == "failure"
+        assert "content budget" in item["llm_analyze_result"]["message"]
+    finally:
+        await rag.finalize_storages()
+
+
+def test_structurally_starved_config_warns_once(caplog, _propagate_lightrag_logger):
+    """``_warn_content_budget_structurally_starved`` emits a single WARNING
+    per unique config, and stays silent for a comfortable config."""
+    from lightrag.pipeline import _warn_content_budget_structurally_starved
+
+    # SURROUNDING caps (2000+2000) + reserve alone overrun a 3000 cap → warn,
+    # and only once despite repeated calls (lru_cache on the config tuple).
+    _warn_content_budget_structurally_starved.cache_clear()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        for _ in range(3):
+            _warn_content_budget_structurally_starved(
+                max_extract=3000,
+                leading_cap=2000,
+                trailing_cap=2000,
+                frame_reserve=256,
+                content_min=100,
+            )
+    starved = [
+        r
+        for r in caplog.records
+        if "leaves only" in r.getMessage()
+        and "MAX_EXTRACT_INPUT_TOKENS=3000" in r.getMessage()
+    ]
+    assert len(starved) == 1, "must fire exactly once despite repeats"
+
+    # A comfortable cap leaves ample room → no warning at all.
+    _warn_content_budget_structurally_starved.cache_clear()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        _warn_content_budget_structurally_starved(
+            max_extract=20480,
+            leading_cap=2000,
+            trailing_cap=2000,
+            frame_reserve=256,
+            content_min=100,
+        )
+    assert not [r for r in caplog.records if "leaves only" in r.getMessage()]
+
+
 # ---------------------------------------------------------------------------
 # Table content-format declaration (prompt tells the LLM html vs json).
 # ---------------------------------------------------------------------------

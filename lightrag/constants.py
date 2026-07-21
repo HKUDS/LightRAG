@@ -379,6 +379,16 @@ DEFAULT_MM_ANALYSIS_PRIORITY = DEFAULT_PROCESSING_PRIORITY
 # this floor leaves the description too thin to ground a useful entity
 # description, so the pipeline raises instead of producing a stub.
 DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS = 100
+# Minimum token budget the EXTRACT-role prompt must be able to spend on a
+# multimodal item's ``content`` (the table/equation body handed to the LLM).
+# When surrounding/captions/footnotes plus the fixed template frame consume so
+# much of MAX_EXTRACT_INPUT_TOKENS that fewer than this many tokens remain for
+# content, trimming would leave the LLM with a meaningless stub (a few chars of
+# a table body) — a wasted call that pollutes the graph.  The pipeline fails
+# the item instead (reprocessable once the budget is widened).  Input-side
+# mirror of DEFAULT_MM_CHUNK_DESCRIPTION_MIN_TOKENS; override via the env var
+# MM_EXTRACT_CONTENT_MIN_TOKENS.
+DEFAULT_MM_EXTRACT_CONTENT_MIN_TOKENS = 100
 # Minimum image side (width or height) in pixels accepted for VLM analysis.
 # Anything smaller is treated as decorative (icons, separators, etc.) and
 # written as status="skipped".
