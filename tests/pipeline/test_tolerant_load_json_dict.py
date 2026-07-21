@@ -45,6 +45,10 @@ def test_plain_object_still_loads() -> None:
         'Here is the result: ["note", {"name":"first"}',
         "['note', {'name':'first','description':'x'}]",
         "[note, {name:'first',description:'x'}]",
+        '[/* note */ {"name":"first","description":"x"}]',
+        '[// note\n{"name":"first","description":"x"}]',
+        '[# note\n{"name":"first","description":"x"}]',
+        '[1, /* note */ {"name":"first","description":"x"}]',
     ],
 )
 def test_top_level_array_is_rejected(raw: str) -> None:

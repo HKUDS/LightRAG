@@ -4146,15 +4146,14 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         def _object_is_array_element() -> bool:
             assert object_index is not None
             assert object_array_start is not None
-            prefix = candidate[object_array_start + 1 : object_index].strip()
-            if not prefix:
+            prefix = candidate[object_array_start + 1 : object_index]
+            if not prefix.strip():
                 return True
-            if not prefix.endswith(","):
-                return False
             try:
                 # Use the same tolerant grammar as response recovery. The
                 # sentinel proves that the repaired prefix and placeholder
-                # remain separate array elements.
+                # remain separate array elements, including when comments
+                # appear before the object or after an earlier element.
                 sentinel = "__lightrag_array_prefix_sentinel__"
                 repaired_prefix = json_repair.loads(
                     f"[{prefix} {json.dumps(sentinel)}]"
