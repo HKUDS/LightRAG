@@ -53,6 +53,7 @@ def test_plain_object_still_loads() -> None:
         '[// ]\n{"name":"first","description":"x"}]',
         '[# ]\n{"name":"first","description":"x"}]',
         "['note ]', {'name':'first','description':'x'}]",
+        '[http://example, {"name":"first","description":"x"}]',
     ],
 )
 def test_top_level_array_is_rejected(raw: str) -> None:
@@ -81,6 +82,24 @@ def test_leading_unmatched_bracketed_prose_still_recovers_object() -> None:
 
 def test_closed_bracketed_prose_still_recovers_object() -> None:
     raw = 'Analysis [draft: {"name":"n","description":"d"}]'
+    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example",
+        "https://example.test/path",
+        "git+ssh://example/repo//tree#readme",
+    ],
+)
+def test_prose_url_before_object_still_recovers_object(url: str) -> None:
+    raw = f'Source: {url} {{"name":"n","description":"d"}}'
+    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
+
+
+def test_bracketed_prose_url_before_object_still_recovers_object() -> None:
+    raw = '[draft: Source http://example {"name":"n","description":"d"}]'
     assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
 
 

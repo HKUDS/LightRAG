@@ -833,17 +833,21 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
-    """Slightly malformed VLM JSON (trailing comma) must be repaired via
-    ``json_repair`` instead of hard-failing the document — mirrors the
-    extraction-side repair contract in operate._process_json_extraction_result.
-    """
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"name": "fig-1", "type": "Chart", "description": "ok",}',
+        'Source: http://example {"name":"fig-1","type":"Chart","description":"ok"}',
+    ],
+    ids=["trailing-comma", "prose-url-prefix"],
+)
+async def test_repairable_json_is_accepted_without_retry(tmp_path, response):
+    """Repairable VLM JSON must not unnecessarily trigger conformance retry."""
     call_log: list[dict] = []
 
     async def vlm_func(prompt, **kwargs):
         call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
-        # Trailing comma after "description" — strict json.loads would reject.
-        return '{"name": "fig-1", "type": "Chart", "description": "ok",}'
+        return response
 
     rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag.initialize_storages()

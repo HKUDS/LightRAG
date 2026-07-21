@@ -4137,8 +4137,26 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     def _find_first_object() -> tuple[int, bool] | None:
         """Return the first object opener and whether array syntax encloses it."""
 
-        def _mask_comments(value: str) -> str:
-            """Replace comment contents with spaces while preserving offsets."""
+        def _mask_non_structural_tokens(value: str) -> str:
+            """Mask comments and URI tokens while preserving scan offsets."""
+
+            def _uri_scheme_start(slash_index: int) -> int | None:
+                colon_index = slash_index - 1
+                if colon_index <= 0 or value[colon_index] != ":":
+                    return None
+                scheme_start = colon_index
+                while scheme_start > 0:
+                    scheme_char = value[scheme_start - 1]
+                    if not scheme_char.isascii() or not (
+                        scheme_char.isalnum() or scheme_char in "+-."
+                    ):
+                        break
+                    scheme_start -= 1
+                scheme = value[scheme_start:colon_index]
+                if not scheme or not scheme[0].isascii() or not scheme[0].isalpha():
+                    return None
+                return scheme_start
+
             chars = list(value)
             quote: str | None = None
             escaped = False
@@ -4158,6 +4176,24 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                 if char in {'"', "'"}:
                     quote = char
                     index += 1
+                    continue
+                uri_start = (
+                    _uri_scheme_start(index)
+                    if char == "/" and next_char == "/"
+                    else None
+                )
+                if uri_start is not None:
+                    # URI text in leading prose may contain additional ``//``
+                    # or ``#`` characters, none of which are JSON structure.
+                    index += 2
+                    while (
+                        index < len(value)
+                        and not value[index].isspace()
+                        and value[index] not in ",]}"
+                    ):
+                        index += 1
+                    for uri_index in range(uri_start, index):
+                        chars[uri_index] = " "
                     continue
                 if char == "/" and next_char == "*":
                     comment_start = index
@@ -4183,7 +4219,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                         chars[comment_index] = " "
             return "".join(chars)
 
-        scan_candidate = _mask_comments(candidate)
+        scan_candidate = _mask_non_structural_tokens(candidate)
         array_starts: list[int] = []
         quote: str | None = None
         escaped = False
