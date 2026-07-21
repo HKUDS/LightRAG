@@ -950,6 +950,69 @@ async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(
     assert new_file.exists()
 
 
+async def test_download_document_file_from_input_dir(tmp_path):
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"original pdf")
+    rag = _FakeRag()
+    rag.doc_status.docs["doc-report"] = {"file_path": "report.pdf"}
+    router = create_document_routes(rag, DocumentManager(str(tmp_path)))
+    endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "download_document_file"
+    ][-1]
+
+    response = await endpoint("doc-report")
+
+    assert Path(response.path) == source
+    assert 'filename="report.pdf"' in response.headers["content-disposition"]
+
+
+async def test_download_document_file_from_parsed_archive(tmp_path):
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    source = parsed_dir / "report_001.pdf"
+    source.write_bytes(b"archived pdf")
+    rag = _FakeRag()
+    rag.doc_status.docs["doc-report"] = SimpleNamespace(file_path="report.pdf")
+    router = create_document_routes(rag, DocumentManager(str(tmp_path)))
+    endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "download_document_file"
+    ][-1]
+
+    response = await endpoint("doc-report")
+
+    assert Path(response.path) == source
+    assert 'filename="report.pdf"' in response.headers["content-disposition"]
+
+
+@pytest.mark.parametrize(
+    ("doc_status", "detail"),
+    [
+        (None, "Document not found"),
+        ({"file_path": "missing.pdf"}, "Document source file not found"),
+    ],
+)
+async def test_download_document_file_returns_404(tmp_path, doc_status, detail):
+    rag = _FakeRag()
+    if doc_status is not None:
+        rag.doc_status.docs["doc-missing"] = doc_status
+    router = create_document_routes(rag, DocumentManager(str(tmp_path)))
+    endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "download_document_file"
+    ][-1]
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await endpoint("doc-missing")
+
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail == detail
+
+
 async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
     tmp_path, monkeypatch
 ):

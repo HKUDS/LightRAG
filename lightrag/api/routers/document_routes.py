@@ -26,6 +26,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lightrag import LightRAG
@@ -1203,6 +1204,16 @@ def get_doc_track_id(doc_status: Any) -> str:
     return str(track_id or "")
 
 
+def get_doc_file_path(doc_status: Any) -> str:
+    """Read file_path from dict or DocProcessingStatus-like objects."""
+    file_path = (
+        doc_status.get("file_path")
+        if isinstance(doc_status, dict)
+        else getattr(doc_status, "file_path", None)
+    )
+    return normalize_file_path(str(file_path or ""))
+
+
 async def get_existing_doc_by_file_path_candidates(
     doc_status: Any, file_path: Path | str
 ) -> dict[str, Any] | None:
@@ -1582,6 +1593,29 @@ def find_existing_file_by_file_path(input_dir: Path, file_path: str) -> Path | N
             if not candidate.is_file():
                 continue
             if normalize_file_path(candidate.name) == file_path:
+                return candidate
+    except FileNotFoundError:
+        return None
+    return None
+
+
+def find_document_source_file(input_dir: Path, file_path: str) -> Path | None:
+    """Find a document source in the input directory or its archive."""
+    source = find_existing_file_by_file_path(input_dir, file_path)
+    if source is not None:
+        return source
+
+    parsed_dir = input_dir / PARSED_DIR_NAME
+    try:
+        for candidate in parsed_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            if (
+                canonicalize_archived_file_variant_basename(
+                    candidate.name, strip_archive_suffix=True
+                )
+                == file_path
+            ):
                 return candidate
     except FileNotFoundError:
         return None
@@ -4055,6 +4089,26 @@ def create_document_routes(
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
+
+    @router.get(
+        "/{doc_id}/file",
+        response_class=FileResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def download_document_file(doc_id: str) -> FileResponse:
+        """Download the original source file associated with a document."""
+        doc_status = await rag.doc_status.get_by_id(doc_id)
+        if doc_status is None:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        file_path = get_doc_file_path(doc_status)
+        source_file = find_document_source_file(doc_manager.input_dir, file_path)
+        if source_file is None:
+            raise HTTPException(
+                status_code=404, detail="Document source file not found"
+            )
+
+        return FileResponse(path=source_file, filename=file_path)
 
     @router.get(
         "/track_status/{track_id}",
