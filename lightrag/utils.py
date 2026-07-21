@@ -4221,15 +4221,20 @@ def _first_structural_opener(text: str) -> tuple[str | None, int]:
 def _first_balanced_object_slice(text: str) -> str:
     """Return the first brace-balanced ``{...}`` slice; ``text`` starts at ``{``.
 
-    Both ``"`` and ``'`` are tracked as string delimiters here (unlike
-    :func:`_first_structural_opener`) because we are now inside an object body
-    where weaker models may emit single-quoted JSON strings that legitimately
-    contain stray braces. Falls back to the whole string when no matching close
-    brace exists so an incomplete object stays repairable.
+    ``"`` always opens a string. ``'`` opens a string only in a value/key
+    position — right after ``{``, ``[``, ``,`` or ``:`` (spaces skipped) — so a
+    bare apostrophe inside an unquoted token (``O'Reilly``, ``it's``) is not
+    mistaken for a string start. Without that guard the scan would run past the
+    object's closing ``}`` and json_repair would fold trailing prose into the
+    last value — a silent, schema-valid but corrupted result. Single quotes are
+    tracked at all because weaker models emit single-quoted JSON strings that can
+    legitimately contain stray braces. Falls back to the whole string when no
+    matching close brace exists so an incomplete object stays repairable.
     """
     depth = 0
     quote: str | None = None
     escaped = False
+    previous_non_space = ""
     for index, char in enumerate(text):
         if quote is not None:
             if escaped:
@@ -4239,7 +4244,7 @@ def _first_balanced_object_slice(text: str) -> str:
             elif char == quote:
                 quote = None
             continue
-        if char in ('"', "'"):
+        if char == '"' or (char == "'" and previous_non_space in "{[,:"):
             quote = char
         elif char == "{":
             depth += 1
@@ -4247,6 +4252,8 @@ def _first_balanced_object_slice(text: str) -> str:
             depth -= 1
             if depth == 0:
                 return text[: index + 1]
+        if not char.isspace():
+            previous_non_space = char
     return text
 
 

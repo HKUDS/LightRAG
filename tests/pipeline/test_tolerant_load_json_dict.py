@@ -127,6 +127,30 @@ def test_balanced_object_slice_respects_nested_and_quoted_braces() -> None:
 
 
 @pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (
+            "{name: O'Reilly, type: Chart, description: ok} trailing {brace}",
+            {"name": "O'Reilly", "type": "Chart", "description": "ok"},
+        ),
+        (
+            "{name: n, desc: it's ok} trailing {x}",
+            {"name": "n", "desc": "it's ok"},
+        ),
+    ],
+)
+def test_bare_apostrophe_in_unquoted_token_does_not_pollute_object(
+    raw: str, expected: dict
+) -> None:
+    """A bare apostrophe in an unquoted token (O'Reilly, it's) must not be read
+    as a single-quoted string start. Otherwise the balanced-slice scan runs past
+    the object's real '}' and json_repair folds the trailing prose into the last
+    value — a silent, schema-valid but corrupted object (the dangerous case,
+    since it passes validation and never triggers a retry)."""
+    assert tolerant_load_json_dict(raw) == expected
+
+
+@pytest.mark.parametrize(
     "raw",
     [
         # Bracketed prose before the object reads as a top-level array without
