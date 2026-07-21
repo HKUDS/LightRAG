@@ -4296,17 +4296,16 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    # 2) The opener did not start a clean object: either a malformed leading
-    #    object (trailing comma / single quotes / unquoted keys) or pseudo-object
-    #    prose like '{note}'. Take the first balanced slice; if a top-level array
-    #    follows that non-object prefix, the real payload is an array -> reject,
-    #    rather than return the prefix or scavenge an element out of the array.
+    # 2) The opener did not start a clean object: a malformed leading object
+    #    (trailing comma / single quotes / unquoted keys), possibly followed by
+    #    trailing text such as a "[1]" citation, must still be recovered. Repair
+    #    the first balanced slice and accept it only if it is itself an object.
+    #    json_repair returns a *list* (not a dict) for pseudo-object prose like
+    #    '{note}', so a real payload of the form '{note} [ {...} ]' falls through
+    #    to {} here — a trailing top-level array is never scavenged for an
+    #    element (repairing only the slice, never the whole candidate, is what
+    #    keeps the array out of reach).
     slice_ = _first_balanced_object_slice(suffix)
-    if suffix[len(slice_) :].lstrip().startswith("["):
-        return {}
-
-    # 3) Repair the slice as an object. json_repair returns a list (not a dict)
-    #    for pseudo-objects like '{note}', so those fall through to {}.
     try:
         repaired = json_repair.loads(slice_)
         if isinstance(repaired, dict):

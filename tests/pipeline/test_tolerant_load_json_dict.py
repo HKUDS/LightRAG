@@ -209,10 +209,22 @@ def test_pseudo_object_prefix_before_array_is_rejected() -> None:
     [
         '{note} [{"a":1}]',
         '{note}[{"a":1}]',
-        # even a prefix that *does* repair to a dict ('{status: ok}') is rejected
-        # because a top-level array follows it.
-        '{status: ok} [{"a":1}]',
     ],
 )
 def test_pseudo_object_prefix_before_array_variants_rejected(raw: str) -> None:
+    """'{note}' is not a JSON object (json_repair turns it into a list), so a
+    trailing array behind it is not scavenged for an element."""
     assert tolerant_load_json_dict(raw) == {}
+
+
+def test_malformed_object_with_trailing_citation_recovers() -> None:
+    """Guard against over-rejection: a genuine (malformed) leading object
+    followed by trailing text starting with '[' — e.g. a '[1]' citation — must
+    still be recovered. The first balanced slice is repaired to an object
+    *before* any trailing consideration, so the object wins over the bracket."""
+    raw = '{"name":"fig","type":"Chart","description":"ok",} [1]'
+    assert tolerant_load_json_dict(raw) == {
+        "name": "fig",
+        "type": "Chart",
+        "description": "ok",
+    }
