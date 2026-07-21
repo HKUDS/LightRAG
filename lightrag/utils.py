@@ -3597,6 +3597,32 @@ async def update_chunk_cache_list(
         )
 
 
+class TruncatedResponse(str):
+    """An LLM response that was cut off by the model's output token limit.
+
+    Behaves exactly like ``str`` so every downstream consumer — tolerant JSON
+    parsing, text sanitization, entity/relation extraction — keeps working on
+    the partial content unchanged. The only added meaning is a signal to the
+    LLM cache layer: a truncated response must NOT be persisted, because a
+    cached partial payload (e.g. cut-off extraction JSON) would be replayed on
+    every later run, even when a larger token budget would have produced the
+    complete output. See ``is_truncated_response`` and the cache-write guards
+    in ``use_llm_func_with_cache`` and ``lightrag.operate``.
+    """
+
+    __slots__ = ()
+
+
+def is_truncated_response(value: Any) -> bool:
+    """Return True if ``value`` is an LLM response flagged as token-limit truncated.
+
+    Safe for any input: non-string values (e.g. streaming async iterators) and
+    plain ``str`` responses from providers that do not emit the marker return
+    False, so callers degrade to the pre-existing "cache everything" behavior.
+    """
+    return isinstance(value, TruncatedResponse)
+
+
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
 
@@ -3744,26 +3770,39 @@ async def use_llm_func_with_cache(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
 
+        # Capture the token-limit truncation flag before remove_think_tags
+        # rebuilds a plain str and drops the TruncatedResponse marker.
+        res_truncated = is_truncated_response(res)
+
         res = remove_think_tags(res)
 
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
-            await save_to_cache(
-                llm_response_cache,
-                CacheData(
-                    args_hash=arg_hash,
-                    content=res,
-                    prompt=_prompt,
-                    cache_type=cache_type,
-                    chunk_id=chunk_id,
-                ),
-            )
+            if res_truncated:
+                # Do not persist truncated extraction output: a cached partial
+                # payload would be replayed on every later run, even when a
+                # larger token budget would have completed the extraction.
+                logger.warning(
+                    f"Skipping LLM cache write for truncated {cache_type} response "
+                    f"(finish_reason=length, chunk_id={chunk_id})"
+                )
+            else:
+                await save_to_cache(
+                    llm_response_cache,
+                    CacheData(
+                        args_hash=arg_hash,
+                        content=res,
+                        prompt=_prompt,
+                        cache_type=cache_type,
+                        chunk_id=chunk_id,
+                    ),
+                )
 
-            # Add cache key to collector if provided
-            if cache_keys_collector is not None:
-                cache_keys_collector.append(cache_key)
+                # Add cache key to collector if provided
+                if cache_keys_collector is not None:
+                    cache_keys_collector.append(cache_key)
 
         return res, current_timestamp
 
