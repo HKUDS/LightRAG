@@ -4136,8 +4136,56 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
 
     def _find_first_object() -> tuple[int, bool] | None:
         """Return the first object opener and whether array syntax encloses it."""
+
+        def _mask_comments(value: str) -> str:
+            """Replace comment contents with spaces while preserving offsets."""
+            chars = list(value)
+            quote: str | None = None
+            escaped = False
+            index = 0
+            while index < len(value):
+                char = value[index]
+                next_char = value[index + 1] if index + 1 < len(value) else ""
+                if quote is not None:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == quote:
+                        quote = None
+                    index += 1
+                    continue
+                if char in {'"', "'"}:
+                    quote = char
+                    index += 1
+                    continue
+                if char == "/" and next_char == "*":
+                    comment_start = index
+                    index += 2
+                    while index < len(value) and value[index : index + 2] != "*/":
+                        index += 1
+                    index = min(index + 2, len(value))
+                elif char == "/" and next_char == "/":
+                    comment_start = index
+                    index += 2
+                    while index < len(value) and value[index] not in "\r\n":
+                        index += 1
+                elif char == "#":
+                    comment_start = index
+                    index += 1
+                    while index < len(value) and value[index] not in "\r\n":
+                        index += 1
+                else:
+                    index += 1
+                    continue
+                for comment_index in range(comment_start, index):
+                    if chars[comment_index] not in "\r\n":
+                        chars[comment_index] = " "
+            return "".join(chars)
+
+        scan_candidate = _mask_comments(candidate)
         array_starts: list[int] = []
-        in_string = False
+        quote: str | None = None
         escaped = False
         object_index: int | None = None
         object_array_depth = 0
@@ -4146,7 +4194,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         def _object_is_array_element() -> bool:
             assert object_index is not None
             assert object_array_start is not None
-            prefix = candidate[object_array_start + 1 : object_index]
+            prefix = scan_candidate[object_array_start + 1 : object_index]
             if not prefix.strip():
                 return True
             try:
@@ -4166,17 +4214,20 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
             except Exception:
                 return False
 
-        for index, char in enumerate(candidate):
-            if in_string:
+        index = 0
+        while index < len(scan_candidate):
+            char = scan_candidate[index]
+            if quote is not None:
                 if escaped:
                     escaped = False
                 elif char == "\\":
                     escaped = True
-                elif char == '"':
-                    in_string = False
+                elif char == quote:
+                    quote = None
+                index += 1
                 continue
-            if char == '"':
-                in_string = True
+            if char in {'"', "'"}:
+                quote = char
             elif char == "[":
                 array_starts.append(index)
             elif char == "]" and array_starts:
@@ -4189,6 +4240,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                 object_array_start = array_starts[-1] if array_starts else None
                 if object_array_depth == 0:
                     return object_index, False
+            index += 1
         if object_index is not None:
             return object_index, _object_is_array_element()
         return None

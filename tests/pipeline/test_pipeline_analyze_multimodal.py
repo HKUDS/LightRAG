@@ -658,6 +658,7 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
         )[:-1],
         "['note', {'name':'first','description':'first result'}]",
         '[/* note */ {"name":"first","description":"first result"}]',
+        '[/* ] */ {"name":"first","description":"first result"}]',
     ],
     ids=[
         "missing-required-field",
@@ -666,6 +667,7 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
         "truncated-top-level-array",
         "repairable-leading-element-array",
         "commented-top-level-array",
+        "bracket-in-comment-array",
     ],
 )
 async def test_table_extract_json_conformance_retry_succeeds(tmp_path, first_response):
