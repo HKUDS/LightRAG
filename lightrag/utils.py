@@ -4870,6 +4870,10 @@ def fix_tuple_delimiter_corruption(
     )
 
     # Fix: <|| -> <|#|> (glued only; keep free-text/code "x <|| y")
+    # Anchor the left side only: "<||" is an unterminated separator whose right
+    # side is the next field's raw content, so a right-hand \S anchor would add
+    # nothing while risking a boundary miss. The left \S is what distinguishes a
+    # glued corruption (name<||type) from a spaced free-text mention (x <|| y).
     record = re.sub(
         r"(?<=\S)<\|\|(?!>)",
         tuple_delimiter,
