@@ -4262,7 +4262,9 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     (entity extraction). Objects hidden behind bracketed prose (``[draft] {..}``)
     are intentionally *not* recovered — they are indistinguishable from a real
     array without heuristics, are not seen in practice, and the caller's retry /
-    text fallback covers the rare case.
+    text fallback covers the rare case. A top-level array reached through
+    pseudo-object prose (``{note} [..]``) or a broken array shell (``[}{..}]``)
+    is likewise rejected, not scavenged for an inner object.
 
     This helper does **not** apply ``repair_vlm_json_escape_damage_nested`` — the
     LaTeX-escape choke point stays owned by each caller.
@@ -4272,32 +4274,21 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     candidate = strip_markdown_code_fence(text).strip()
 
     # Decide the top-level shape from the raw structure FIRST: the first opener
-    # outside a double-quoted string. A leading '[' is a top-level array and is
-    # rejected even when json_repair would salvage an inner object from a broken
-    # array shell (e.g. '[}{...}]' -> the inner dict). A json_repair dict is only
-    # trusted once the input is known not to be a top-level array.
+    # outside a double-quoted string. json_repair is never run over the whole
+    # candidate — it scavenges a dict across structural boundaries (out of a
+    # broken array shell '[}{...}]', or past pseudo-object prose '{note} [..]'),
+    # which would bypass the top-level-array rejection contract.
     opener, index = _first_structural_opener(candidate)
     if opener != "{":
         # '[' is a top-level array. None means the structure is untrusted — e.g.
-        # an unclosed double quote swallows the openers ('"oops [}{"a":1}]') —
-        # and json_repair would still salvage an inner object from a broken array
-        # shell. Only a clear object opener may be trusted; otherwise reject so
-        # callers retry (multimodal) or fall back (entity extraction).
+        # an unclosed double quote swallows the openers ('"oops [}{"a":1}]').
+        # Reject either way so callers retry (multimodal) / fall back (entity).
         return {}
-
-    # 1) Whole-string repair (opener is '{' here). A dict is the answer; a list
-    #    is a json_repair trailing-prose artifact recovered below.
-    try:
-        obj = json_repair.loads(candidate)
-        if isinstance(obj, dict):
-            return obj
-    except Exception:
-        pass
-
     suffix = candidate[index:]
 
-    # 3) Strict decode from the object opener drops trailing prose — this is the
-    #    "{...} trailing {brace}" case a greedy '{...}' slice over-extends on.
+    # 1) Strict decode of the first object from the opener. A clean object,
+    #    optionally followed by trailing prose, is the answer — raw_decode stops
+    #    at the end of the first value, so "{...} trailing {brace}" is handled.
     try:
         obj, _end = json.JSONDecoder().raw_decode(suffix)
         if isinstance(obj, dict):
@@ -4305,11 +4296,19 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    # 4) Repair the first balanced object slice so a malformed leading object
-    #    (trailing comma, single quotes, unquoted keys) is still recovered
-    #    without absorbing trailing prose.
+    # 2) The opener did not start a clean object: either a malformed leading
+    #    object (trailing comma / single quotes / unquoted keys) or pseudo-object
+    #    prose like '{note}'. Take the first balanced slice; if a top-level array
+    #    follows that non-object prefix, the real payload is an array -> reject,
+    #    rather than return the prefix or scavenge an element out of the array.
+    slice_ = _first_balanced_object_slice(suffix)
+    if suffix[len(slice_) :].lstrip().startswith("["):
+        return {}
+
+    # 3) Repair the slice as an object. json_repair returns a list (not a dict)
+    #    for pseudo-objects like '{note}', so those fall through to {}.
     try:
-        repaired = json_repair.loads(_first_balanced_object_slice(suffix))
+        repaired = json_repair.loads(slice_)
         if isinstance(repaired, dict):
             return repaired
     except Exception:

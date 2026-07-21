@@ -184,3 +184,35 @@ def test_closed_quote_prose_before_object_still_recovers() -> None:
     object is still recovered."""
     raw = 'Source: "see [1] here" {"a":1}'
     assert tolerant_load_json_dict(raw) == {"a": 1}
+
+
+def test_pseudo_object_prefix_before_array_is_rejected() -> None:
+    """Fix-proof: whole-string json_repair scavenges the inner object out of a
+    pseudo-object-prose ('{note}') + array input. The helper must not trust that
+    — the real payload is a top-level array, so it is rejected (caller retries /
+    falls back) rather than returning an element out of the array."""
+    import json_repair
+
+    raw = 'Context {note} [{"name":"fig","type":"Chart","description":"ok"}]'
+    # whole-string json_repair would hand back the inner object (the leak)...
+    assert json_repair.loads(raw) == {
+        "name": "fig",
+        "type": "Chart",
+        "description": "ok",
+    }
+    # ...but the contract rejects a top-level array behind pseudo-object prose.
+    assert tolerant_load_json_dict(raw) == {}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{note} [{"a":1}]',
+        '{note}[{"a":1}]',
+        # even a prefix that *does* repair to a dict ('{status: ok}') is rejected
+        # because a top-level array follows it.
+        '{status: ok} [{"a":1}]',
+    ],
+)
+def test_pseudo_object_prefix_before_array_variants_rejected(raw: str) -> None:
+    assert tolerant_load_json_dict(raw) == {}
