@@ -650,11 +650,18 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
                 {"name": "second", "description": "second result"},
             ]
         ),
+        json.dumps(
+            [
+                {"name": "first", "description": "first result"},
+                {"name": "second", "description": "second result"},
+            ]
+        )[:-1],
     ],
     ids=[
         "missing-required-field",
         "top-level-array",
         "prose-prefixed-top-level-array",
+        "truncated-top-level-array",
     ],
 )
 async def test_table_extract_json_conformance_retry_succeeds(tmp_path, first_response):

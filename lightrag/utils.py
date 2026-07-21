@@ -4135,12 +4135,13 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         pass
 
     def _find_first_object() -> tuple[int, bool] | None:
-        """Return the first object opener and whether a closed array encloses it."""
-        array_depth = 0
+        """Return the first object opener and whether array syntax encloses it."""
+        array_starts: list[int] = []
         in_string = False
         escaped = False
         object_index: int | None = None
         object_array_depth = 0
+        object_array_start: int | None = None
         for index, char in enumerate(candidate):
             if in_string:
                 if escaped:
@@ -4153,20 +4154,31 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
             if char == '"':
                 in_string = True
             elif char == "[":
-                array_depth += 1
-            elif char == "]" and array_depth:
-                array_depth -= 1
-                if object_index is not None and array_depth < object_array_depth:
+                array_starts.append(index)
+            elif char == "]" and array_starts:
+                array_starts.pop()
+                if object_index is not None and len(array_starts) < object_array_depth:
                     return object_index, True
             elif char == "{" and object_index is None:
                 object_index = index
-                object_array_depth = array_depth
+                object_array_depth = len(array_starts)
+                object_array_start = array_starts[-1] if array_starts else None
                 if object_array_depth == 0:
                     return object_index, False
         if object_index is not None:
-            # An unmatched ``[`` before the object is damaged prose rather
-            # than a complete array container, so retain the recoverable
-            # object instead of forcing an unnecessary conformance retry.
+            assert object_array_start is not None
+            before_array = candidate[:object_array_start].strip()
+            inside_array_prefix = candidate[
+                object_array_start + 1 : object_index
+            ].strip()
+            if not before_array or not inside_array_prefix:
+                # A leading ``[`` or one that directly introduces the object
+                # is a truncated array container even without its closing
+                # bracket, so preserve the one-object response contract.
+                return object_index, True
+            # Otherwise the unmatched bracket contains prefix prose such as
+            # ``[draft:``; retain the recoverable object rather than forcing
+            # an unnecessary conformance retry.
             return object_index, False
         return None
 
