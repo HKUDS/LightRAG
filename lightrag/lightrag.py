@@ -3492,7 +3492,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     enable_cot=True,
                     stream=param.stream,
                 )
-                if type(response) is str:
+                # isinstance, not exact type: a truncated non-streaming
+                # response arrives as TruncatedResponse (a str subclass) and
+                # must not be misclassified as a streaming iterator.
+                if isinstance(response, str):
                     return {
                         "status": "success",
                         "message": "Bypass mode LLM non streaming response",

@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.llm.openai import InvalidResponseError, openai_complete_if_cache
+from lightrag.llm.openai import (
+    InvalidResponseError,
+    azure_openai_complete_if_cache,
+    openai_complete_if_cache,
+)
 from lightrag.utils import is_truncated_response
 
 
@@ -157,6 +161,34 @@ async def test_stop_finish_reason_is_not_marked_truncated():
 
     assert result == raw_json
     assert is_truncated_response(result) is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_azure_length_finish_reason_marks_result_truncated():
+    """Azure shares the unified non-streaming path, so it emits the marker too.
+
+    ``azure_openai_complete_if_cache`` delegates to ``openai_complete_if_cache``
+    (with ``use_azure=True`` affecting only client construction). This test
+    pins that delegation: if Azure ever grows its own completion path, the
+    truncation marker must move with it.
+    """
+    raw_json = '{"entities":[{"name":"Alice","type":"Person"'
+    completion = _make_completion(raw_json, finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        result = await azure_openai_complete_if_cache(
+            model="test-deployment",
+            prompt="Extract entities",
+            response_format={"type": "json_object"},
+        )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is True
 
 
 @pytest.mark.offline
