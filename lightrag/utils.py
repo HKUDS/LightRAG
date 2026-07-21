@@ -4271,9 +4271,17 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         return {}
     candidate = strip_markdown_code_fence(text).strip()
 
-    # 1) Whole-string repair. A dict is the answer; a list is a top-level array
-    #    (or a json_repair coalescing artifact) and is decided structurally in
-    #    step 2, since json_repair returns a list for both.
+    # Decide the top-level shape from the raw structure FIRST: the first opener
+    # outside a double-quoted string. A leading '[' is a top-level array and is
+    # rejected even when json_repair would salvage an inner object from a broken
+    # array shell (e.g. '[}{...}]' -> the inner dict). A json_repair dict is only
+    # trusted once the input is known not to be a top-level array.
+    opener, index = _first_structural_opener(candidate)
+    if opener == "[":
+        return {}
+
+    # 1) Whole-string repair (not a top-level array here). A dict is the answer;
+    #    a list is a json_repair trailing-prose artifact recovered below.
     try:
         obj = json_repair.loads(candidate)
         if isinstance(obj, dict):
@@ -4281,9 +4289,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    # 2) First structural opener outside a double-quoted string. A leading '['
-    #    (or no object at all) is a top-level array -> reject.
-    opener, index = _first_structural_opener(candidate)
+    # 2) No object opener at all -> nothing to recover.
     if opener != "{":
         return {}
     suffix = candidate[index:]

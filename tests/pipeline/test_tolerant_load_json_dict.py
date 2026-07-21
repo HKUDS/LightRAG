@@ -138,3 +138,29 @@ def test_balanced_object_slice_respects_nested_and_quoted_braces() -> None:
 )
 def test_bracketed_prose_prefix_is_rejected(raw: str) -> None:
     assert tolerant_load_json_dict(raw) == {}
+
+
+def test_broken_array_shell_yielding_dict_is_rejected() -> None:
+    """A broken top-level array shell where json_repair salvages the inner
+    object must still be rejected — a leading '[' is a top-level array. This
+    proves the structural check runs *before* a json_repair dict is trusted:
+    with the old ordering json_repair.loads returned the inner dict and the
+    helper leaked it, bypassing the array-rejection contract."""
+    import json_repair
+
+    raw = '[}{"name":"fig-1","type":"Chart","description":"ok"}]'
+    # json_repair on its own hands back the inner object (the old-ordering leak)...
+    assert isinstance(json_repair.loads(raw), dict)
+    # ...but the contract rejects any top-level array.
+    assert tolerant_load_json_dict(raw) == {}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[}{"a":1}]',
+        'Here is the result: [}{"a":1}]',
+    ],
+)
+def test_broken_array_shell_variants_rejected(raw: str) -> None:
+    assert tolerant_load_json_dict(raw) == {}
