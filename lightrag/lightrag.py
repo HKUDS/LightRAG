@@ -340,11 +340,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     )
     """Maximum total tokens in context (including system prompt, entities, relations and chunks)."""
 
-    cosine_threshold: int = field(
-        default=get_env_value("COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, int)
-    )
-    """Cosine threshold of vector DB retrieval for entities, relations and chunks."""
-
     related_chunk_number: int = field(
         default=get_env_value("RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int)
     )
@@ -752,7 +747,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
     cosine_better_than_threshold: float = field(
-        default=float(os.getenv("COSINE_THRESHOLD", 0.2))
+        default=get_env_value("COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, float)
     )
 
     ollama_server_infos: Optional[OllamaServerInfos] = field(default=None)
