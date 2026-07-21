@@ -633,16 +633,28 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_table_extract_json_conformance_retry_succeeds(tmp_path):
-    """Table analysis uses the EXTRACT role and retries once when the JSON
-    object is valid but missing required schema fields."""
+@pytest.mark.parametrize(
+    "first_response",
+    [
+        json.dumps({"description": "missing name"}),
+        json.dumps(
+            [
+                {"name": "first", "description": "first result"},
+                {"name": "second", "description": "second result"},
+            ]
+        ),
+    ],
+    ids=["missing-required-field", "top-level-array"],
+)
+async def test_table_extract_json_conformance_retry_succeeds(tmp_path, first_response):
+    """Table analysis retries once for invalid JSON object conformance."""
     extract_log: list[dict] = []
     vlm_log: list[dict] = []
 
     async def extract_func(prompt, **kwargs):
         extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
         if len(extract_log) == 1:
-            return json.dumps({"description": "missing name"})
+            return first_response
         return json.dumps(
             {
                 "name": "retry-table",

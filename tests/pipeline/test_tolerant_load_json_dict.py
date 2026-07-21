@@ -33,7 +33,18 @@ def test_plain_object_still_loads() -> None:
     assert tolerant_load_json_dict('{"a": 1}') == {"a": 1}
 
 
-def test_bracketed_prefix_prose_still_repairs_object():
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[{"name":"first"},{"name":"second"}]',
+        '```json\n[{"name":"first"},{"name":"second"}]\n```',
+    ],
+)
+def test_top_level_array_is_rejected(raw: str) -> None:
+    assert tolerant_load_json_dict(raw) == {}
+
+
+def test_bracketed_prefix_prose_still_repairs_object() -> None:
     # Weaker VLMs sometimes prefix a repairable object with bracketed notes.
     raw = 'analysis: [draft] {name:"x", type:"Chart", description:"ok",}'
     assert tolerant_load_json_dict(raw) == {

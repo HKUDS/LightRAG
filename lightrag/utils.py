@@ -4109,10 +4109,11 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
 def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     """Load a JSON object from LLM text that may include fences or trailing prose.
 
-    Tries ``json_repair.loads`` on the full candidate first, then from the
-    first ``{`` (so bracketed prefix prose still repairs), then strict
-    ``raw_decode`` so a trailing prose brace cannot extend a greedy slice.
-    Returns ``{}`` when no object can be recovered.
+    Tries ``json_repair.loads`` on the full candidate first, then strict
+    ``raw_decode`` from the first ``{`` so trailing prose cannot extend the
+    object. Finally, it repairs that object-prefixed suffix so malformed
+    objects after bracketed prose remain recoverable. Top-level arrays are
+    rejected because callers require exactly one JSON object.
     """
     if not text:
         return {}
@@ -4125,35 +4126,40 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     if fence_match:
         candidate = fence_match.group(1).strip()
 
-    def _dict_from(obj: Any) -> dict[str, Any] | None:
+    try:
+        obj = json_repair.loads(candidate)
         if isinstance(obj, dict):
             return obj
-        if isinstance(obj, list):
-            for item in obj:
-                if isinstance(item, dict):
-                    return item
-        return None
-
-    try:
-        found = _dict_from(json_repair.loads(candidate))
-        if found is not None:
-            return found
     except Exception:
         pass
+
+    # Preserve the response contract: a genuine top-level array must fail
+    # validation and trigger the caller's conformance retry, not silently lose
+    # every element after the first one.
+    if candidate.startswith("["):
+        return {}
+
     brace = candidate.find("{")
     if brace != -1:
         suffix = candidate[brace:]
         try:
-            found = _dict_from(json_repair.loads(suffix))
-            if found is not None:
-                return found
+            obj, _end = json.JSONDecoder().raw_decode(suffix)
+            if isinstance(obj, dict):
+                return obj
         except Exception:
             pass
         try:
-            obj, _end = json.JSONDecoder().raw_decode(suffix)
-            found = _dict_from(obj)
-            if found is not None:
-                return found
+            repaired = json_repair.loads(suffix)
+            if isinstance(repaired, dict):
+                return repaired
+            # Because suffix starts at an object opener, a list here is a
+            # json_repair recovery artifact caused by trailing prose. Limit
+            # list unwrapping to this branch so real top-level arrays remain
+            # invalid.
+            if isinstance(repaired, list):
+                for item in repaired:
+                    if isinstance(item, dict):
+                        return item
         except Exception:
             pass
     return {}
