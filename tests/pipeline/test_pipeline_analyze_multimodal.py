@@ -1330,6 +1330,66 @@ def test_structurally_starved_config_warns_once(caplog, _propagate_lightrag_logg
     assert not [r for r in caplog.records if "leaves only" in r.getMessage()]
 
 
+@pytest.mark.asyncio
+async def test_cap_disabled_skips_starvation_warning_and_analyzes(
+    tmp_path, caplog, _propagate_lightrag_logger, monkeypatch
+):
+    """``MAX_EXTRACT_INPUT_TOKENS=0`` opts out of the input cap: enforcement is
+    bypassed, so the structural-starvation warning must NOT fire (it would be
+    false — no item can fail) and analysis proceeds uncapped.
+
+    With the default SURROUNDING caps (2000 + 2000) the config would look
+    "starved" (static room < floor); the guard hinges on the cap being
+    disabled, not on the caps looking healthy.
+    """
+    monkeypatch.setenv("MAX_EXTRACT_INPUT_TOKENS", "0")
+
+    extract_log: list[dict] = []
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=False,
+        extract_func=_make_extract_mock(extract_log),
+    )
+    await rag.initialize_storages()
+    try:
+        parsed_dir = tmp_path / "parsed"
+        parsed_dir.mkdir()
+        blocks_path = parsed_dir / "doc.blocks.jsonl"
+        blocks_path.write_text(
+            json.dumps({"type": "meta", "doc_id": "doc-uncapped"}) + "\n",
+            encoding="utf-8",
+        )
+        table = '<table id="tb-uncapped" format="json">[["A","B"],["c","d"]]</table>'
+        tables_path = parsed_dir / "doc.tables.json"
+        tables_path.write_text(
+            json.dumps(
+                {"tables": {"tb-uncapped": {"format": "json", "content": table}}}
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            await rag.analyze_multimodal(
+                doc_id="doc-uncapped",
+                file_path="fixture.pdf",
+                parsed_data={"blocks_path": str(blocks_path)},
+                process_options="t",
+            )
+
+        # No false starvation warning for the disabled cap.
+        assert not [r for r in caplog.records if "leaves only" in r.getMessage()], (
+            "starvation warning must not fire when the cap is disabled"
+        )
+
+        # Analysis proceeds uncapped: the LLM was called and the item succeeded.
+        assert len(extract_log) == 1
+        payload = json.loads(tables_path.read_text(encoding="utf-8"))
+        item = payload["tables"]["tb-uncapped"]
+        assert item["llm_analyze_result"]["status"] == "success"
+    finally:
+        await rag.finalize_storages()
+
+
 # ---------------------------------------------------------------------------
 # Table content-format declaration (prompt tells the LLM html vs json).
 # ---------------------------------------------------------------------------

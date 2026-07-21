@@ -4234,15 +4234,21 @@ class _PipelineMixin:
                     # (before the per-item template frame) already starve
                     # content below its floor.  The per-item guard below is the
                     # real enforcement; this only surfaces gross misconfig once
-                    # instead of as a burst of per-item failures.
-                    leading_cap, trailing_cap = _resolve_surrounding_budget(None, None)
-                    _warn_content_budget_structurally_starved(
-                        max_extract=max_extract_tokens,
-                        leading_cap=leading_cap,
-                        trailing_cap=trailing_cap,
-                        frame_reserve=SAFETY_BUFFER,
-                        content_min=content_min_tokens,
-                    )
+                    # instead of as a burst of per-item failures.  Skip it when
+                    # the cap is disabled (max_extract_tokens <= 0): enforcement
+                    # is bypassed too, so no item can fail and the warning would
+                    # be false.
+                    if max_extract_tokens > 0:
+                        leading_cap, trailing_cap = _resolve_surrounding_budget(
+                            None, None
+                        )
+                        _warn_content_budget_structurally_starved(
+                            max_extract=max_extract_tokens,
+                            leading_cap=leading_cap,
+                            trailing_cap=trailing_cap,
+                            frame_reserve=SAFETY_BUFFER,
+                            content_min=content_min_tokens,
+                        )
                     total_tokens = len(tokenizer.encode(prompt))
                     if max_extract_tokens > 0 and total_tokens > max_extract_tokens:
                         frame_tokens = len(tokenizer.encode(_render("")))
