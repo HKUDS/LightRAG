@@ -36,6 +36,7 @@ from typing import (
 )
 import numpy as np
 from dotenv import load_dotenv
+import json_repair
 
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -4168,6 +4169,144 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
             repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
         ]
     return obj
+
+
+_CODE_FENCE_PATTERN = re.compile(
+    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL
+)
+
+
+def strip_markdown_code_fence(text: str) -> str:
+    """Strip a surrounding markdown code fence (```json ... ``` or ``` ... ```).
+
+    Why: LLM training priors strongly associate "JSON output" with fenced code
+    blocks, so providers routinely wrap responses despite explicit instructions
+    to the contrary. Stripping here avoids relying on ``json_repair`` and the
+    noisy warning it emits. The ``\\n?`` make the interior newlines optional so
+    single-line fences (```` ```json {...}``` ````) are handled too.
+    """
+
+    match = _CODE_FENCE_PATTERN.match(text)
+    return match.group(1) if match else text
+
+
+def _first_structural_opener(text: str) -> tuple[str | None, int]:
+    """Return the first ``[`` or ``{`` that sits outside a double-quoted string.
+
+    Only ``"`` is treated as a string delimiter: prose apostrophes (``Here's``)
+    are far too common to treat ``'`` as a quote, and leading prose that wraps a
+    ``[`` inside single quotes is rare enough to accept as graceful degradation.
+    The result drives the top-level array-vs-object decision — a leading ``[``
+    means a top-level array (rejected by the caller), a leading ``{`` marks where
+    object recovery starts.
+    """
+    quote_open = False
+    escaped = False
+    for index, char in enumerate(text):
+        if quote_open:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote_open = False
+            continue
+        if char == '"':
+            quote_open = True
+        elif char in "[{":
+            return char, index
+    return None, -1
+
+
+def _first_balanced_object_slice(text: str) -> str:
+    """Return the first brace-balanced ``{...}`` slice; ``text`` starts at ``{``.
+
+    Both ``"`` and ``'`` are tracked as string delimiters here (unlike
+    :func:`_first_structural_opener`) because we are now inside an object body
+    where weaker models may emit single-quoted JSON strings that legitimately
+    contain stray braces. Falls back to the whole string when no matching close
+    brace exists so an incomplete object stays repairable.
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[: index + 1]
+    return text
+
+
+def tolerant_load_json_dict(text: str) -> dict[str, Any]:
+    """Recover a single JSON object from LLM/VLM text.
+
+    Handles markdown fences, leading prose, trailing prose (including trailing
+    braces such as ``{...} note {x}``), and the common malformed-object slips
+    that ``json_repair`` fixes (trailing commas, single quotes, unquoted keys).
+
+    Top-level arrays are rejected (return ``{}``): callers require exactly one
+    object, so a ``{}`` lets them retry (multimodal conformance) or fall back
+    (entity extraction). Objects hidden behind bracketed prose (``[draft] {..}``)
+    are intentionally *not* recovered — they are indistinguishable from a real
+    array without heuristics, are not seen in practice, and the caller's retry /
+    text fallback covers the rare case.
+
+    This helper does **not** apply ``repair_vlm_json_escape_damage_nested`` — the
+    LaTeX-escape choke point stays owned by each caller.
+    """
+    if not text:
+        return {}
+    candidate = strip_markdown_code_fence(text).strip()
+
+    # 1) Whole-string repair. A dict is the answer; a list is a top-level array
+    #    (or a json_repair coalescing artifact) and is decided structurally in
+    #    step 2, since json_repair returns a list for both.
+    try:
+        obj = json_repair.loads(candidate)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # 2) First structural opener outside a double-quoted string. A leading '['
+    #    (or no object at all) is a top-level array -> reject.
+    opener, index = _first_structural_opener(candidate)
+    if opener != "{":
+        return {}
+    suffix = candidate[index:]
+
+    # 3) Strict decode from the object opener drops trailing prose — this is the
+    #    "{...} trailing {brace}" case a greedy '{...}' slice over-extends on.
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(suffix)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # 4) Repair the first balanced object slice so a malformed leading object
+    #    (trailing comma, single quotes, unquoted keys) is still recovered
+    #    without absorbing trailing prose.
+    try:
+        repaired = json_repair.loads(_first_balanced_object_slice(suffix))
+        if isinstance(repaired, dict):
+            return repaired
+    except Exception:
+        pass
+    return {}
 
 
 def check_storage_env_vars(storage_name: str) -> None:

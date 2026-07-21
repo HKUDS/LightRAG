@@ -633,16 +633,53 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_table_extract_json_conformance_retry_succeeds(tmp_path):
-    """Table analysis uses the EXTRACT role and retries once when the JSON
-    object is valid but missing required schema fields."""
+@pytest.mark.parametrize(
+    "first_response",
+    [
+        json.dumps({"description": "missing name"}),
+        json.dumps(
+            [
+                {"name": "first", "description": "first result"},
+                {"name": "second", "description": "second result"},
+            ]
+        ),
+        "Here is the result: "
+        + json.dumps(
+            [
+                {"name": "first", "description": "first result"},
+                {"name": "second", "description": "second result"},
+            ]
+        ),
+        json.dumps(
+            [
+                {"name": "first", "description": "first result"},
+                {"name": "second", "description": "second result"},
+            ]
+        )[:-1],
+        "['note', {'name':'first','description':'first result'}]",
+        '[/* note */ {"name":"first","description":"first result"}]',
+        '[/* ] */ {"name":"first","description":"first result"}]',
+    ],
+    ids=[
+        "missing-required-field",
+        "top-level-array",
+        "prose-prefixed-top-level-array",
+        "truncated-top-level-array",
+        "repairable-leading-element-array",
+        "commented-top-level-array",
+        "bracket-in-comment-array",
+    ],
+)
+async def test_table_extract_json_conformance_retry_succeeds(tmp_path, first_response):
+    """Table analysis retries once for invalid JSON object conformance
+    (missing required field, or any top-level array shape)."""
     extract_log: list[dict] = []
     vlm_log: list[dict] = []
 
     async def extract_func(prompt, **kwargs):
         extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
         if len(extract_log) == 1:
-            return json.dumps({"description": "missing name"})
+            return first_response
         return json.dumps(
             {
                 "name": "retry-table",
@@ -797,17 +834,32 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invalid_json_with_trailing_comma_is_repaired(tmp_path):
-    """Slightly malformed VLM JSON (trailing comma) must be repaired via
-    ``json_repair`` instead of hard-failing the document — mirrors the
-    extraction-side repair contract in operate._process_json_extraction_result.
-    """
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"name": "fig-1", "type": "Chart", "description": "ok",}',
+        'Source: http://example {"name":"fig-1","type":"Chart","description":"ok"}',
+        'Here\'s the result: {"name":"fig-1","type":"Chart","description":"ok"} trailing {brace}',
+        'Result #1: {"name":"fig-1","type":"Chart","description":"ok"}',
+        'Note // result: {"name":"fig-1","type":"Chart","description":"ok"}',
+    ],
+    ids=[
+        "trailing-comma",
+        "prose-url-prefix",
+        "prose-apostrophe-prefix",
+        "prose-hash-prefix",
+        "prose-slash-prefix",
+    ],
+)
+async def test_repairable_json_is_accepted_without_retry(tmp_path, response):
+    """Repairable / prose-wrapped VLM JSON must not unnecessarily trigger a
+    conformance retry — mirrors the extraction-side recovery contract in
+    operate._process_json_extraction_result."""
     call_log: list[dict] = []
 
     async def vlm_func(prompt, **kwargs):
         call_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
-        # Trailing comma after "description" — strict json.loads would reject.
-        return '{"name": "fig-1", "type": "Chart", "description": "ok",}'
+        return response
 
     rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
     await rag.initialize_storages()

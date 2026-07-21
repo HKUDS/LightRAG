@@ -22,6 +22,8 @@ from lightrag.utils import (
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
+    strip_markdown_code_fence,
+    tolerant_load_json_dict,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -788,7 +790,7 @@ def _looks_like_json_extraction_result(result: str) -> bool:
         return True
 
     if stripped.startswith("```"):
-        return _strip_markdown_code_fence(stripped).strip().startswith(("{", "["))
+        return strip_markdown_code_fence(stripped).strip().startswith(("{", "["))
 
     return False
 
@@ -802,7 +804,8 @@ async def _process_json_extraction_result(
     """Process a JSON-formatted extraction result from LLM.
 
     This function parses the LLM response as JSON and extracts entities and relationships.
-    It uses json_repair to handle slightly malformed JSON from weaker models.
+    It uses :func:`tolerant_load_json_dict` to recover JSON from fenced,
+    prose-wrapped, or slightly malformed responses from weaker models.
 
     Args:
         result: The JSON extraction result from LLM
@@ -816,17 +819,16 @@ async def _process_json_extraction_result(
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
 
-    try:
-        # Parse the JSON response using json_repair for robustness
-        parsed = json_repair.loads(_strip_markdown_code_fence(result).strip())
-    except Exception as e:
-        logger.warning(f"{chunk_key}: Failed to parse JSON extraction result: {e}")
-        return dict(maybe_nodes), dict(maybe_edges)
-
-    if not isinstance(parsed, dict):
-        logger.warning(
-            f"{chunk_key}: JSON extraction result is not a dict, got {type(parsed).__name__}"
-        )
+    # tolerant_load_json_dict strips fences, tolerates leading/trailing prose
+    # (including trailing braces), and repairs the malformed-object slips
+    # json_repair fixes. It never raises and returns {} for unparseable input or
+    # a top-level array (callers require exactly one object). Note: because the
+    # helper absorbs the underlying parse exception, only this single "empty or
+    # unrecoverable" warning is logged — the low-level decode error is no longer
+    # surfaced.
+    parsed = tolerant_load_json_dict(result)
+    if not parsed:
+        logger.warning(f"{chunk_key}: JSON extraction result is empty or unrecoverable")
         return dict(maybe_nodes), dict(maybe_edges)
 
     # Models quoting LaTeX in descriptions routinely under-escape backslashes
@@ -4323,24 +4325,6 @@ def _normalize_keyword_list(raw_values: Any, field_name: str) -> list[str]:
     return normalized
 
 
-_CODE_FENCE_PATTERN = re.compile(
-    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL
-)
-
-
-def _strip_markdown_code_fence(text: str) -> str:
-    """Strip a surrounding markdown code fence (```json ... ``` or ``` ... ```).
-
-    Why: LLM training priors strongly associate "JSON output" with fenced code
-    blocks, so providers routinely wrap responses despite explicit instructions
-    to the contrary. Stripping here avoids relying on ``json_repair`` and the
-    noisy warning it emits.
-    """
-
-    match = _CODE_FENCE_PATTERN.match(text)
-    return match.group(1) if match else text
-
-
 def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
     """Parse keyword extraction responses from heterogeneous provider outputs."""
 
@@ -4355,7 +4339,7 @@ def _parse_keywords_payload(result: Any) -> tuple[bool, list[str], list[str]]:
         payload = result
     elif isinstance(result, str):
         cleaned_result = remove_think_tags(result)
-        unfenced_result = _strip_markdown_code_fence(cleaned_result)
+        unfenced_result = strip_markdown_code_fence(cleaned_result)
         if unfenced_result is not cleaned_result:
             logger.debug(
                 "Stripped markdown code fence from keyword extraction response"
