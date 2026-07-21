@@ -1608,6 +1608,121 @@ async def initialize_pipeline_status(workspace: str | None = None):
         )
 
 
+def _debug_log_failure(message: str, exc: Exception) -> None:
+    """Record a swallowed pipeline-status log-write failure without ever raising.
+
+    The never-raise contract of :class:`PipelineStatusLogger` extends to its
+    own diagnostics: if even the logging call fails (e.g. a broken handler), we
+    must not let it propagate and mask the caller's real exception.
+    """
+    try:
+        logging.getLogger("lightrag").debug("pipeline status log: %s: %r", message, exc)
+    except Exception:
+        pass
+
+
+_UNRESOLVED = object()
+"""Sentinel for :class:`PipelineStatusLogger`'s unfetched history cache.
+
+``None`` cannot serve as the sentinel: a ``.get()`` that *returned* None
+(missing key / late init) must NOT be cached, so the next write retries.
+"""
+
+
+class PipelineStatusLogger:
+    """Operation-scoped, lock-free pipeline status logger with a cached history list.
+
+    Writes ``latest_message`` and appends to ``history_messages`` WITHOUT
+    taking ``pipeline_status_lock``. The first history write fetches
+    ``pipeline_status["history_messages"]`` once and caches the returned list
+    handle; every later message is a single ``extend`` on that handle. In
+    multiprocess mode this keeps the steady-state explicit proxy operations
+    per log line at 2 (``latest_message`` setitem + history ``extend``), and
+    reusing the cached nested ListProxy also avoids the per-message proxy
+    reconstruction and reference-management traffic that a repeated
+    ``DictProxy.get`` incurs.
+
+    Scope / lifecycle:
+    - One instance per pipeline *operation* (e.g. one ``extract_entities`` or
+      ``merge_nodes_and_edges`` call), shared by that operation's child tasks.
+    - MUST NOT be reused across ``finalize_share_data()``: after manager
+      shutdown both the cached proxy and the status dict are dead, and every
+      write degrades to a debug-logged no-op. Never store one at module level,
+      and never ship one to another process except by fork inheritance.
+    - Depends on the repo invariant that ``history_messages`` is only ever
+      reset IN PLACE (``del h[:]`` / ``h[:] = [...]``) and never replaced with
+      a new list object; a replacement would leave this logger appending to
+      the orphaned list for the rest of the operation.
+    - History *trimming* is deliberately not offered here: the ``len`` check
+      plus delete is a read-modify-write and must stay inside
+      ``async with pipeline_status_lock`` (see the processing loop).
+
+    Why lock-free is safe: this is for pure status logging ONLY, never for
+    coordination state (``busy`` / ``request_pending`` / ``cancellation_*`` /
+    reservation owner tokens / ``cur_batch`` / the history trim), which stays
+    in ``async with pipeline_status_lock`` read-modify-write blocks. Each of
+    ``dict.__setitem__`` and ``list.extend`` is a single indivisible operation
+    on the backing dict/list under the Manager server's CPython GIL (for plain
+    str/tuple args), and ``extend`` (not a per-message ``append`` loop)
+    appends a multi-message group atomically in one round-trip. Dropping the
+    lock only makes the human-facing status log eventually consistent
+    (``latest_message`` may lag the history tail, and concurrent writers may
+    interleave) — no coordination invariant depends on it.
+
+    Never-raise contract (call sites are shaped
+    ``except ...: log(...); raise e`` — a raising status write would mask the
+    real exception): ``pipeline_status is None`` or empty ``messages`` → no-op;
+    latest / history / diagnostics are each guarded independently.
+
+    Two deliberate behavioral deltas vs the pre-helper locked call sites
+    (pinned by tests): (1) logging no longer requires ``pipeline_status_lock``
+    to be provided; (2) a missing/None ``history_messages`` is silently
+    skipped instead of raising KeyError.
+
+    Cache recovery: a failed or None ``.get()`` is not cached and is retried
+    on the next write; a failed ``extend`` drops the cache so the next write
+    re-fetches a fresh handle. Messages of the FAILED call are never retried —
+    the write may have half-committed and a retry could duplicate them.
+    """
+
+    __slots__ = ("_pipeline_status", "_history")
+
+    def __init__(self, pipeline_status) -> None:
+        # Construction is deliberately proxy-free (no Manager round-trip), so
+        # building a logger for a pipeline_status=None caller costs nothing.
+        self._pipeline_status = pipeline_status
+        self._history = _UNRESOLVED
+
+    def log(self, *messages) -> None:
+        """Best-effort: set ``latest_message`` to the last message, then append
+        the whole group to history with one ``extend``."""
+        if self._pipeline_status is None or not messages:
+            return
+        try:
+            self._pipeline_status["latest_message"] = messages[-1]
+        except Exception as exc:
+            _debug_log_failure("latest_message write skipped", exc)
+        history = self._history
+        if history is _UNRESOLVED:
+            try:
+                history = self._pipeline_status.get("history_messages")
+            except Exception as exc:
+                _debug_log_failure("history fetch skipped", exc)
+                return
+            if history is None:
+                # Missing/late-initialized key: nothing is cached, so the
+                # next call retries the fetch.
+                return
+            self._history = history
+        try:
+            history.extend(messages)
+        except Exception as exc:
+            # Drop the cache (stale/dead handle) so the next call re-fetches.
+            # Do NOT retry these messages: the extend may have half-committed.
+            self._history = _UNRESOLVED
+            _debug_log_failure("history append skipped", exc)
+
+
 # ============================================================================
 # Pipeline reservation primitives (cancellation-safe owner-token release)
 # ============================================================================
