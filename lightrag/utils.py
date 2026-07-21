@@ -4142,6 +4142,24 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         object_index: int | None = None
         object_array_depth = 0
         object_array_start: int | None = None
+
+        def _object_is_array_element() -> bool:
+            assert object_index is not None
+            assert object_array_start is not None
+            prefix = candidate[object_array_start + 1 : object_index].strip()
+            if not prefix:
+                return True
+            if not prefix.endswith(","):
+                return False
+            try:
+                # A valid sequence of earlier array elements followed by a
+                # comma proves the object belongs to the array. Appending a
+                # placeholder completes the otherwise truncated container.
+                json.loads(f"[{prefix} null]")
+                return True
+            except json.JSONDecodeError:
+                return False
+
         for index, char in enumerate(candidate):
             if in_string:
                 if escaped:
@@ -4158,7 +4176,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
             elif char == "]" and array_starts:
                 array_starts.pop()
                 if object_index is not None and len(array_starts) < object_array_depth:
-                    return object_index, True
+                    return object_index, _object_is_array_element()
             elif char == "{" and object_index is None:
                 object_index = index
                 object_array_depth = len(array_starts)
@@ -4166,19 +4184,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                 if object_array_depth == 0:
                     return object_index, False
         if object_index is not None:
-            assert object_array_start is not None
-            inside_array_prefix = candidate[
-                object_array_start + 1 : object_index
-            ].strip()
-            if not inside_array_prefix:
-                # A ``[`` that directly introduces the object is a truncated
-                # array container even without its closing bracket, so
-                # preserve the one-object response contract.
-                return object_index, True
-            # Otherwise the unmatched bracket contains prefix prose such as
-            # ``[draft:``; retain the recoverable object rather than forcing
-            # an unnecessary conformance retry.
-            return object_index, False
+            return object_index, _object_is_array_element()
         return None
 
     location = _find_first_object()
@@ -4186,8 +4192,8 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         brace, enclosed_by_array = location
         # Preserve the response contract: an object inside a complete array
         # must trigger the caller's conformance retry, even when prose appears
-        # before it. Closed bracketed prose such as ``[draft]`` and unmatched
-        # prose brackets remain recoverable.
+        # before it. Bracketed prose with non-array text before the object and
+        # unmatched prose brackets remain recoverable.
         if enclosed_by_array:
             return {}
         suffix = candidate[brace:]
