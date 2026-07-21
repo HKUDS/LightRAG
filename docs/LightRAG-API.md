@@ -327,6 +327,8 @@ another pipeline is running).
   "enable_rerank": true,
   "include_references": true,
   "include_chunk_content": false,
+  "include_content_blocks": true,
+  "include_graph_context": false,
   "conversation_history": [
     {"role": "user", "content": "Summarize the report."},
     {"role": "assistant", "content": "It covers fiscal year 2025."}
@@ -355,13 +357,32 @@ Set `include_chunk_content=true` to include a `content` array in each
 reference. Set `only_need_context` or `only_need_prompt` when an application
 needs retrieval material instead of a generated answer.
 
+`include_content_blocks` and `include_graph_context` default to `false`. When
+enabled, the response keeps the existing keys and adds normalized structures:
+
+```json
+{
+  "content_blocks": [
+    {"type": "markdown", "markdown": "The answer ..."},
+    {"type": "image", "asset_id": "ast_01J...", "caption": "Model architecture", "page": 4},
+    {"type": "table", "html": "<table>...</table>", "caption": "Results"},
+    {"type": "equation", "latex": "A = \\sigma(Wx+b)"}
+  ],
+  "graph_context": {"nodes": ["ClinicalModernBERT"], "edges": ["rel_758"]}
+}
+```
+
+References preserve `reference_id` and `file_path`; when document metadata is
+available they additionally contain `document_id`, `display_name` and `page`.
+
 ### Streaming response
 
 `POST /query/stream` accepts the same JSON request and returns
 `application/x-ndjson`. Each line is an independent JSON object. The first line
-may contain `references`, following lines contain `response` fragments, and a
-failure is represented by `{"error":"..."}`. Use `stream:false` if a single
-complete JSON line is preferred.
+may contain `references`, `content_blocks` and `graph_context`; following lines
+contain `response` fragments, and a failure is represented by
+`{"error":"..."}`. Use `stream:false` if a single complete JSON line is
+preferred.
 
 ### Structured retrieval data
 
@@ -392,6 +413,72 @@ All graph operations are scoped by `X-LightRAG-Workspace-ID`.
 | `GET /graph/label/search?q=Tesla&limit=50` | required `q`; `limit`: 1–100 | JSON array |
 | `GET /graphs?label=Tesla&max_depth=3&max_nodes=1000` | optional label, depth and node limits | Graph object containing nodes/edges |
 | `GET /graph/entity/exists?name=Tesla` | required `name` | `{"exists": true}` |
+
+### Normalized graph projection
+
+`GET /graphs/projection`
+
+This endpoint converts the active graph backend's raw shape to one stable
+contract for applications. It is isolated by the workspace header.
+
+| Parameter | Default | Allowed/meaning |
+| --- | ---: | --- |
+| `view` | `pruned` | `full` or `pruned` |
+| `max_nodes` | `300` | Maximum returned nodes (1–10,000) |
+| `max_edges` | `800` | Maximum returned edges (1–50,000) |
+| `strategy` | `importance` | `importance`, `community` or `degree` |
+| `seed` | empty | Entity ID/label for a local projection |
+| `max_depth` | `2` | BFS depth when `seed` is supplied |
+| `include_media` | `true` | Attach asset references to nodes |
+| `cursor` | empty | Opaque cursor returned for a large graph |
+
+Example:
+
+```bash
+curl -sS "$LIGHTRAG_URL/graphs/projection?view=pruned&max_nodes=300&max_edges=800&strategy=importance" \
+  -H "$AUTH_HEADER" \
+  -H "X-LightRAG-Workspace-ID: $WORKSPACE_ID"
+```
+
+Response nodes use `entity_type`, `labels`, `source_document_ids`, `display`,
+`metadata` and (when enabled) `media`. Edges use `source`, `target`,
+`relation`, `keywords`, `weight` and `source_document_ids`:
+
+```json
+{
+  "workspace_id": "7b2e7ef9-7a25-4f7d-9d4b-b3c0e15d4b47",
+  "view": "pruned",
+  "revision": "2026-07-19T16:40:10Z",
+  "nodes": [{
+    "id": "ClinicalModernBERT",
+    "name": "ClinicalModernBERT",
+    "entity_type": "artifact",
+    "labels": ["ClinicalModernBERT"],
+    "description": "ClinicalModernBERT is an encoder-only transformer...",
+    "source_document_ids": ["doc-3266fbe1bed18306ea8ed3cb06c1a6f5"],
+    "display": {"kind": "note", "title": "ClinicalModernBERT"},
+    "media": [{"asset_id": "ast_01J...", "kind": "image", "mime_type": "image/png", "page": 4, "caption": "Model architecture"}],
+    "metadata": {"degree": 12}
+  }],
+  "edges": [{
+    "id": "rel_758",
+    "source": "ClinicalModernBERT",
+    "target": "FlashAttention",
+    "relation": "integrates",
+    "description": "ClinicalModernBERT integrates FlashAttention...",
+    "keywords": ["efficiency", "integration"],
+    "weight": 1.0,
+    "source_document_ids": ["doc-3266fbe1bed18306ea8ed3cb06c1a6f5"]
+  }],
+  "page": {"next_cursor": null, "truncated": false},
+  "stats": {"total_nodes": 1260, "total_edges": 3481, "returned_nodes": 300, "returned_edges": 800}
+}
+```
+
+`source_document_ids` are resolved from graph source/chunk IDs when the active
+KV backend contains the corresponding chunks. `media[].asset_id` is opaque;
+clients must use `/assets/{asset_id}` rather than parsing a sidecar or a
+filesystem path.
 
 ### Create or edit entities
 
@@ -466,7 +553,36 @@ Entity deletion body: `{"entity_name":"Tesla"}`. Relation deletion body:
 `status` (`success`, `not_found`, `not_allowed` or `fail`), `message` and may
 include `file_path`, `doc_id` and `status_code`.
 
-## 6. Ollama-compatible endpoints
+## 6. Multimodal assets
+
+### Download an asset
+
+`GET /assets/{asset_id}`
+
+Query parameters:
+
+- `variant`: `original` (default) or `thumbnail`.
+- `download`: `false` (default) serves inline; `true` sets an attachment
+  disposition for download.
+
+```bash
+curl -L "$LIGHTRAG_URL/assets/ast_01JH3JNG4YQKQY2F5VJ86YQ4K1?variant=thumbnail" \
+  -H "$AUTH_HEADER" \
+  -H "X-LightRAG-Workspace-ID: $WORKSPACE_ID" \
+  -o figure.png
+```
+
+Success is binary, not JSON. The response includes the detected `Content-Type`,
+`Content-Length`, `Content-Disposition`, an `ETag` in the form
+`"sha256-..."`, `Cache-Control: private, max-age=3600` and byte-range support.
+The server validates that the opaque ID belongs to the workspace selected by
+the header. Missing or cross-workspace assets always return `404`.
+
+If a parser has not produced a physical thumbnail, the service generates a
+bounded image thumbnail when the Pillow image extra is available; otherwise it
+safely falls back to the original bytes. No filesystem path is exposed.
+
+## 7. Ollama-compatible endpoints
 
 These routes make LightRAG usable by clients that speak the Ollama API. They
 also honor `X-LightRAG-Workspace-ID`.
@@ -513,7 +629,7 @@ Chat supports the mode prefixes `/local`, `/global`, `/hybrid`, `/naive`,
 was revenue in 2025?`. Responses follow the Ollama chat shape, with NDJSON for
 streaming and a single JSON object for `stream:false`.
 
-## 7. Service and UI endpoints
+## 8. Service and UI endpoints
 
 - `GET /health` is a liveness endpoint. Unauthenticated calls return basic
   status/version/pipeline signals; authenticated calls include operational
@@ -525,7 +641,7 @@ streaming and a single JSON object for `stream:false`.
 - `GET /docs`, `GET /redoc`, `GET /openapi.json` expose interactive and machine
   readable API documentation.
 
-## 8. Typical integration flow
+## 9. Typical integration flow
 
 ```text
 1. POST /v1/workspaces                         -> workspace UUID
@@ -541,7 +657,7 @@ Every request in steps 2–6 should include the same
 `DELETE /v1/workspaces/{workspace_id}` and wait for the deletion job to finish
 before reusing that identifier.
 
-## 9. Error handling
+## 10. Error handling
 
 Common statuses are:
 

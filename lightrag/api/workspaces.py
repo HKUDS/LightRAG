@@ -966,6 +966,12 @@ class WorkspaceRAGProxy:
 
         return self._manager.current_context().rag
 
+    @property
+    def workspace_id(self) -> str:
+        """Public UUID of the request-selected workspace."""
+
+        return self._manager.current_context().workspace.id
+
 
 class WorkspaceDocumentManagerProxy:
     """Delegate existing document routes to the request workspace manager."""

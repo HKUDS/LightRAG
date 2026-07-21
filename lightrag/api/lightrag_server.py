@@ -60,6 +60,7 @@ from lightrag.parser.routing import (
 from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
+from lightrag.api.routers.asset_routes import create_asset_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.routers.workspace_routes import create_workspace_routes
 from lightrag.api.workspaces import (
@@ -2155,11 +2156,15 @@ def create_app(args):
         dependencies=[Depends(bind_workspace_context)],
     )
     app.include_router(
-        create_query_routes(workspace_rag, api_key, args.top_k),
+        create_query_routes(workspace_rag, api_key, args.top_k, workspace_doc_manager),
         dependencies=[Depends(bind_workspace_context)],
     )
     app.include_router(
-        create_graph_routes(workspace_rag, api_key),
+        create_graph_routes(workspace_rag, api_key, workspace_doc_manager),
+        dependencies=[Depends(bind_workspace_context)],
+    )
+    app.include_router(
+        create_asset_routes(workspace_doc_manager, api_key),
         dependencies=[Depends(bind_workspace_context)],
     )
 

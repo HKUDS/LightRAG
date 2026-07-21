@@ -2,7 +2,7 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -11,6 +11,8 @@ from lightrag.base import DeletionResult
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
 from .document_routes import check_pipeline_busy_or_raise
+from lightrag.api.assets import WorkspaceAssetCatalog
+from lightrag.api.graph_projection import build_graph_projection
 
 
 class EntityUpdateRequest(BaseModel):
@@ -109,7 +111,9 @@ class RelationCreateRequest(BaseModel):
     )
 
 
-def create_graph_routes(rag, api_key: Optional[str] = None):
+def create_graph_routes(
+    rag, api_key: Optional[str] = None, document_manager: Any = None
+):
     # Fresh router per call. A module-level instance would accumulate
     # duplicate routes when the factory is invoked more than once in the
     # same process (e.g. across tests), which triggers FastAPI's
@@ -222,6 +226,55 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
             )
+
+    @router.get("/graphs/projection", dependencies=[Depends(combined_auth)])
+    async def get_graph_projection(
+        view: Literal["full", "pruned"] = Query(
+            "pruned", description="Projection view"
+        ),
+        max_nodes: int = Query(300, ge=1, le=10_000),
+        max_edges: int = Query(800, ge=1, le=50_000),
+        strategy: Literal["importance", "community", "degree"] = Query(
+            "importance", description="Node/edge prioritization strategy"
+        ),
+        seed: str = Query(
+            "", description="Entity ID or label for a local graph projection"
+        ),
+        max_depth: int = Query(2, ge=0, le=50),
+        include_media: bool = Query(True),
+        cursor: str = Query("", description="Opaque cursor for large graphs"),
+    ):
+        """Return a normalized, workspace-scoped graph projection."""
+        try:
+            catalog = WorkspaceAssetCatalog(document_manager) if document_manager else None
+            # A graph-only unit test may not provide a document manager. Keep
+            # the projection useful and return an empty media list in that case.
+            if catalog is None:
+                class _EmptyCatalog:
+                    def for_documents(self, _document_ids):
+                        return []
+
+                catalog = _EmptyCatalog()
+            workspace_id = str(getattr(rag, "workspace_id", getattr(rag, "workspace", "")))
+            return await build_graph_projection(
+                rag,
+                catalog,
+                workspace_id,
+                view=view,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+                strategy=strategy,
+                seed=seed.strip(),
+                max_depth=max_depth,
+                include_media=include_media,
+                cursor=cursor or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as e:
+            logger.error(f"Error building graph projection: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error building graph projection: {str(e)}") from e
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(

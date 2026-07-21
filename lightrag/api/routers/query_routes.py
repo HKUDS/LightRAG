@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.query_enrichment import QueryEnricher
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
@@ -103,6 +104,16 @@ class QueryRequest(BaseModel):
         description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
     )
 
+    include_content_blocks: bool = Field(
+        default=False,
+        description="If True, adds normalized markdown/image/table/equation content blocks.",
+    )
+
+    include_graph_context: bool = Field(
+        default=False,
+        description="If True, adds graph node and relation IDs used by retrieval.",
+    )
+
     stream: Optional[bool] = Field(
         default=None,
         description="If True, enables streaming output. Defaults to False for /query, True for /query/stream.",
@@ -132,7 +143,13 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True,
+            exclude={
+                "query",
+                "include_chunk_content",
+                "include_content_blocks",
+                "include_graph_context",
+            },
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -150,6 +167,9 @@ class ReferenceItem(BaseModel):
         default=None,
         description="List of chunk contents from this file (only present when include_chunk_content=True)",
     )
+    document_id: Optional[str] = None
+    display_name: Optional[str] = None
+    page: Optional[int] = None
 
 
 class QueryResponse(BaseModel):
@@ -160,6 +180,8 @@ class QueryResponse(BaseModel):
         default=None,
         description="Reference list (Disabled when include_references=False, /query/data always includes references.)",
     )
+    content_blocks: Optional[List[Dict[str, Any]]] = None
+    graph_context: Optional[Dict[str, Any]] = None
 
 
 class QueryDataResponse(BaseModel):
@@ -188,7 +210,12 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(
+    rag,
+    api_key: Optional[str] = None,
+    top_k: int = 60,
+    document_manager: Any = None,
+):
     # Fresh router per call. A module-level instance would accumulate
     # duplicate routes when the factory is invoked more than once in the
     # same process (e.g. across tests), which triggers FastAPI's
@@ -444,11 +471,36 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
+            content_blocks = None
+            graph_context = None
+            if request.include_content_blocks or request.include_graph_context:
+                enricher = QueryEnricher(document_manager) if document_manager else None
+                if enricher is not None:
+                    chunks = data.get("chunks", []) or []
+                    if request.include_references:
+                        references = enricher.enrich_references(references, chunks)
+                    content_blocks, graph_context = enricher.content_blocks(
+                        response_content,
+                        chunks,
+                        include_graph_context=request.include_graph_context,
+                        data=data,
+                    )
+
             # Return response with or without references based on request
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                return QueryResponse(
+                    response=response_content,
+                    references=references,
+                    content_blocks=content_blocks if request.include_content_blocks else None,
+                    graph_context=graph_context if request.include_graph_context else None,
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                return QueryResponse(
+                    response=response_content,
+                    references=None,
+                    content_blocks=content_blocks if request.include_content_blocks else None,
+                    graph_context=graph_context if request.include_graph_context else None,
+                )
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -458,6 +510,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         result: dict[str, Any],
         include_references: bool,
         include_chunk_content: bool,
+        include_content_blocks: bool,
+        include_graph_context: bool,
     ):
         """Shared async generator that yields NDJSON lines for streaming responses.
 
@@ -468,6 +522,28 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         async def _generate():
             references = result.get("data", {}).get("references", [])
             llm_response = result.get("llm_response", {})
+            data = result.get("data", {})
+            content_blocks = None
+            graph_context = None
+            if include_content_blocks or include_graph_context:
+                enricher = QueryEnricher(document_manager) if document_manager else None
+                if enricher is not None:
+                    chunks = data.get("chunks", []) or []
+                    if include_references:
+                        references = enricher.enrich_references(references, chunks)
+                    preview = llm_response.get("content", "") if not llm_response.get("is_streaming") else ""
+                    content_blocks, graph_context = enricher.content_blocks(
+                        preview,
+                        chunks,
+                        include_graph_context=include_graph_context,
+                        data=data,
+                    )
+            streamed_content_parts: list[str] = []
+            streamed_media_blocks = [
+                block
+                for block in (content_blocks or [])
+                if block.get("type") != "markdown"
+            ]
 
             # Enrich references with chunk content if requested
             if include_references and include_chunk_content:
@@ -492,17 +568,32 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if llm_response.get("is_streaming"):
                 # Streaming: references first, then response chunks
                 if include_references:
-                    yield f"{json.dumps({'references': references})}\n"
+                    first = {"references": references}
+                    if include_content_blocks:
+                        first["content_blocks"] = streamed_media_blocks
+                    if include_graph_context:
+                        first["graph_context"] = graph_context or {"nodes": [], "edges": []}
+                    yield f"{json.dumps(first)}\n"
+                elif include_content_blocks or include_graph_context:
+                    first = {}
+                    if include_content_blocks:
+                        first["content_blocks"] = streamed_media_blocks
+                    if include_graph_context:
+                        first["graph_context"] = graph_context or {"nodes": [], "edges": []}
+                    yield f"{json.dumps(first)}\n"
 
                 response_stream = llm_response.get("response_iterator")
                 if response_stream:
                     try:
                         async for chunk in response_stream:
                             if chunk:
+                                streamed_content_parts.append(str(chunk))
                                 yield f"{json.dumps({'response': chunk})}\n"
                     except Exception as e:
                         logger.error(f"Streaming error: {str(e)}")
                         yield f"{json.dumps({'error': str(e)})}\n"
+                    if include_content_blocks:
+                        yield f"{json.dumps({'content_blocks': [{'type': 'markdown', 'markdown': ''.join(streamed_content_parts)}] + streamed_media_blocks})}\n"
             else:
                 # Non-streaming: complete response in one message
                 response_content = llm_response.get("content", "")
@@ -512,6 +603,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 complete_response = {"response": response_content}
                 if include_references:
                     complete_response["references"] = references
+                if include_content_blocks:
+                    complete_response["content_blocks"] = content_blocks or []
+                if include_graph_context:
+                    complete_response["graph_context"] = graph_context or {"nodes": [], "edges": []}
 
                 yield f"{json.dumps(complete_response)}\n"
 
@@ -736,6 +831,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 result=result,
                 include_references=request.include_references,
                 include_chunk_content=request.include_chunk_content,
+                include_content_blocks=request.include_content_blocks,
+                include_graph_context=request.include_graph_context,
             )
 
             return StreamingResponse(
