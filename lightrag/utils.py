@@ -4152,12 +4152,19 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
             if not prefix.endswith(","):
                 return False
             try:
-                # A valid sequence of earlier array elements followed by a
-                # comma proves the object belongs to the array. Appending a
-                # placeholder completes the otherwise truncated container.
-                json.loads(f"[{prefix} null]")
-                return True
-            except json.JSONDecodeError:
+                # Use the same tolerant grammar as response recovery. The
+                # sentinel proves that the repaired prefix and placeholder
+                # remain separate array elements.
+                sentinel = "__lightrag_array_prefix_sentinel__"
+                repaired_prefix = json_repair.loads(
+                    f"[{prefix} {json.dumps(sentinel)}]"
+                )
+                return (
+                    isinstance(repaired_prefix, list)
+                    and bool(repaired_prefix)
+                    and repaired_prefix[-1] == sentinel
+                )
+            except Exception:
                 return False
 
         for index, char in enumerate(candidate):
