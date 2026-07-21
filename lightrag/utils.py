@@ -4224,7 +4224,9 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                     index += 2
                     while index < len(value) and value[index] not in "\r\n":
                         index += 1
-                elif char == "#":
+                # A hash in leading prose (for example ``Result #1:``) is not
+                # a comment and must not hide an object later on the line.
+                elif char == "#" and container_depth > 0:
                     comment_start = index
                     index += 1
                     while index < len(value) and value[index] not in "\r\n":

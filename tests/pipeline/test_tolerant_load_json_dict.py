@@ -19,6 +19,11 @@ def test_prose_apostrophe_before_object_still_recovers_object() -> None:
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
 
 
+def test_hash_prefixed_prose_before_object_still_recovers_object() -> None:
+    raw = 'Result #1: {"name":"n","description":"d"}'
+    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
+
+
 def test_quoted_prose_apostrophe_before_object_still_recovers_object() -> None:
     raw = 'Result: \'Here\'s context\' {"facts":[{"text":"ok"}]} trailing {brace}'
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
