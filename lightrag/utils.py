@@ -4137,6 +4137,16 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     def _find_first_object() -> tuple[int, bool] | None:
         """Return the first object opener and whether array syntax encloses it."""
 
+        def _starts_single_quoted_json_string(
+            value: str | list[str], quote_index: int, *, in_json_container: bool
+        ) -> bool:
+            if not in_json_container:
+                return False
+            previous_index = quote_index - 1
+            while previous_index >= 0 and value[previous_index].isspace():
+                previous_index -= 1
+            return previous_index >= 0 and value[previous_index] in "[{,:"
+
         def _mask_non_structural_tokens(value: str) -> str:
             """Mask comments and URI tokens while preserving scan offsets."""
 
@@ -4160,6 +4170,7 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
             chars = list(value)
             quote: str | None = None
             escaped = False
+            container_depth = 0
             index = 0
             while index < len(value):
                 char = value[index]
@@ -4173,7 +4184,14 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                         quote = None
                     index += 1
                     continue
-                if char in {'"', "'"}:
+                if char == '"' or (
+                    char == "'"
+                    and _starts_single_quoted_json_string(
+                        chars,
+                        index,
+                        in_json_container=container_depth > 0,
+                    )
+                ):
                     quote = char
                     index += 1
                     continue
@@ -4212,6 +4230,10 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                     while index < len(value) and value[index] not in "\r\n":
                         index += 1
                 else:
+                    if char in "[{":
+                        container_depth += 1
+                    elif char in "]}" and container_depth > 0:
+                        container_depth -= 1
                     index += 1
                     continue
                 for comment_index in range(comment_start, index):
@@ -4262,7 +4284,14 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                     quote = None
                 index += 1
                 continue
-            if char in {'"', "'"}:
+            if char == '"' or (
+                char == "'"
+                and _starts_single_quoted_json_string(
+                    scan_candidate,
+                    index,
+                    in_json_container=bool(array_starts) or object_index is not None,
+                )
+            ):
                 quote = char
             elif char == "[":
                 array_starts.append(index)

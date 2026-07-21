@@ -14,6 +14,16 @@ def test_trailing_brace_prose_recovers_object() -> None:
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
 
 
+def test_prose_apostrophe_before_object_still_recovers_object() -> None:
+    raw = 'Here\'s the result: {"facts":[{"text":"ok"}]} trailing {brace}'
+    assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
+
+
+def test_quoted_prose_apostrophe_before_object_still_recovers_object() -> None:
+    raw = 'Result: \'Here\'s context\' {"facts":[{"text":"ok"}]} trailing {brace}'
+    assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
+
+
 def test_greedy_regex_would_fail_same_input() -> None:
     import json_repair
     import re
