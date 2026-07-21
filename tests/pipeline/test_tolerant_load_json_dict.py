@@ -164,3 +164,23 @@ def test_broken_array_shell_yielding_dict_is_rejected() -> None:
 )
 def test_broken_array_shell_variants_rejected(raw: str) -> None:
     assert tolerant_load_json_dict(raw) == {}
+
+
+def test_unclosed_quote_before_broken_array_is_rejected() -> None:
+    """An unclosed double quote makes the opener scan miss the structure
+    (returns None); json_repair would still salvage the inner object from the
+    broken array shell. Only a clear '{' opener is trusted, so this is
+    rejected — a None opener must not fall through to json_repair."""
+    import json_repair
+
+    raw = '"oops [}{"a":1}]'
+    assert isinstance(json_repair.loads(raw), dict)  # json_repair would leak it
+    assert tolerant_load_json_dict(raw) == {}
+
+
+def test_closed_quote_prose_before_object_still_recovers() -> None:
+    """Guard against over-rejection: a properly closed quoted phrase (even one
+    containing a '[') before the object leaves the first opener as '{', so the
+    object is still recovered."""
+    raw = 'Source: "see [1] here" {"a":1}'
+    assert tolerant_load_json_dict(raw) == {"a": 1}

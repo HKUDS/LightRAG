@@ -4277,11 +4277,16 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     # array shell (e.g. '[}{...}]' -> the inner dict). A json_repair dict is only
     # trusted once the input is known not to be a top-level array.
     opener, index = _first_structural_opener(candidate)
-    if opener == "[":
+    if opener != "{":
+        # '[' is a top-level array. None means the structure is untrusted — e.g.
+        # an unclosed double quote swallows the openers ('"oops [}{"a":1}]') —
+        # and json_repair would still salvage an inner object from a broken array
+        # shell. Only a clear object opener may be trusted; otherwise reject so
+        # callers retry (multimodal) or fall back (entity extraction).
         return {}
 
-    # 1) Whole-string repair (not a top-level array here). A dict is the answer;
-    #    a list is a json_repair trailing-prose artifact recovered below.
+    # 1) Whole-string repair (opener is '{' here). A dict is the answer; a list
+    #    is a json_repair trailing-prose artifact recovered below.
     try:
         obj = json_repair.loads(candidate)
         if isinstance(obj, dict):
@@ -4289,9 +4294,6 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    # 2) No object opener at all -> nothing to recover.
-    if opener != "{":
-        return {}
     suffix = candidate[index:]
 
     # 3) Strict decode from the object opener drops trailing prose — this is the
