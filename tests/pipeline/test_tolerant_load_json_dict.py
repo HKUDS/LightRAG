@@ -126,28 +126,34 @@ def test_balanced_object_slice_respects_nested_and_quoted_braces() -> None:
     }
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        (
-            "{name: O'Reilly, type: Chart, description: ok} trailing {brace}",
-            {"name": "O'Reilly", "type": "Chart", "description": "ok"},
-        ),
-        (
-            "{name: n, desc: it's ok} trailing {x}",
-            {"name": "n", "desc": "it's ok"},
-        ),
-    ],
-)
-def test_bare_apostrophe_in_unquoted_token_does_not_pollute_object(
-    raw: str, expected: dict
-) -> None:
-    """A bare apostrophe in an unquoted token (O'Reilly, it's) must not be read
-    as a single-quoted string start. Otherwise the balanced-slice scan runs past
-    the object's real '}' and json_repair folds the trailing prose into the last
-    value — a silent, schema-valid but corrupted object (the dangerous case,
-    since it passes validation and never triggers a retry)."""
-    assert tolerant_load_json_dict(raw) == expected
+def test_bare_apostrophe_slice_stops_at_object_end() -> None:
+    """The fix lives in _first_balanced_object_slice: a bare apostrophe in an
+    unquoted token (O'Reilly, it's) must not be read as a single-quote string
+    start, or the slice runs past the object's real '}'. Asserted at the slice
+    level because the boundary is deterministic — the exact repaired dict is
+    json_repair-version-dependent, but the slice boundary is what the fix
+    controls."""
+    from lightrag.utils import _first_balanced_object_slice
+
+    assert (
+        _first_balanced_object_slice("{name: O'Reilly, type: Chart} tail {x}")
+        == "{name: O'Reilly, type: Chart}"
+    )
+    assert _first_balanced_object_slice("{a: it's ok} tail {x}") == "{a: it's ok}"
+    # a genuine single-quoted string (opened after a delimiter) still absorbs
+    # stray braces inside it — the guard must not break that.
+    assert _first_balanced_object_slice("{a: 'brace } ok'} tail") == "{a: 'brace } ok'}"
+
+
+def test_bare_apostrophe_object_recovers_without_trailing_pollution() -> None:
+    """End-to-end symptom of the bug: trailing prose folded into a value. The
+    exact repaired dict depends on the json_repair version, so this asserts only
+    that no value absorbs the trailing marker — which proves the slice ended at
+    the object's real '}' rather than running to the trailing '{brace}'."""
+    raw = "{name: O'Reilly, type: Chart, description: ok} trailing {brace}"
+    out = tolerant_load_json_dict(raw)
+    assert out, "object should be recovered"
+    assert all("trailing" not in str(v) and "brace" not in str(v) for v in out.values())
 
 
 @pytest.mark.parametrize(
@@ -218,13 +224,11 @@ def test_pseudo_object_prefix_before_array_is_rejected() -> None:
     import json_repair
 
     raw = 'Context {note} [{"name":"fig","type":"Chart","description":"ok"}]'
-    # whole-string json_repair would hand back the inner object (the leak)...
-    assert json_repair.loads(raw) == {
-        "name": "fig",
-        "type": "Chart",
-        "description": "ok",
-    }
-    # ...but the contract rejects a top-level array behind pseudo-object prose.
+    # whole-string json_repair hands back a dict scavenged from inside the array
+    # (the leak the helper must not reproduce). isinstance, not ==, so the test
+    # is not pinned to a specific json_repair version's exact repair.
+    assert isinstance(json_repair.loads(raw), dict)
+    # the contract rejects a top-level array behind pseudo-object prose.
     assert tolerant_load_json_dict(raw) == {}
 
 
