@@ -39,6 +39,7 @@ def test_plain_object_still_loads() -> None:
         '[{"name":"first"},{"name":"second"}]',
         '```json\n[{"name":"first"},{"name":"second"}]\n```',
         'Here is the result: [{"name":"first"},{"name":"second"}]',
+        'Here is the result: [{name:"first"},{name:"second"}]',
     ],
 )
 def test_top_level_array_is_rejected(raw: str) -> None:
@@ -53,3 +54,8 @@ def test_bracketed_prefix_prose_still_repairs_object() -> None:
         "type": "Chart",
         "description": "ok",
     }
+
+
+def test_unmatched_bracket_prefix_still_recovers_object() -> None:
+    raw = 'Analysis [draft: {"name":"n","description":"d"}'
+    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}

@@ -4134,10 +4134,12 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
         pass
 
     def _find_first_object() -> tuple[int, bool] | None:
-        """Return the first object opener and whether an array encloses it."""
+        """Return the first object opener and whether a closed array encloses it."""
         array_depth = 0
         in_string = False
         escaped = False
+        object_index: int | None = None
+        object_array_depth = 0
         for index, char in enumerate(candidate):
             if in_string:
                 if escaped:
@@ -4153,17 +4155,27 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                 array_depth += 1
             elif char == "]" and array_depth:
                 array_depth -= 1
-            elif char == "{":
-                return index, array_depth > 0
+                if object_index is not None and array_depth < object_array_depth:
+                    return object_index, True
+            elif char == "{" and object_index is None:
+                object_index = index
+                object_array_depth = array_depth
+                if object_array_depth == 0:
+                    return object_index, False
+        if object_index is not None:
+            # An unmatched ``[`` before the object is damaged prose rather
+            # than a complete array container, so retain the recoverable
+            # object instead of forcing an unnecessary conformance retry.
+            return object_index, False
         return None
 
     location = _find_first_object()
     if location is not None:
         brace, enclosed_by_array = location
-        # Preserve the response contract: an object inside a top-level array
+        # Preserve the response contract: an object inside a complete array
         # must trigger the caller's conformance retry, even when prose appears
-        # before the array. Closed bracketed prose such as ``[draft]`` leaves
-        # array_depth at zero and remains recoverable.
+        # before it. Closed bracketed prose such as ``[draft]`` and unmatched
+        # prose brackets remain recoverable.
         if enclosed_by_array:
             return {}
         suffix = candidate[brace:]
