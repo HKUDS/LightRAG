@@ -4219,7 +4219,9 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                     while index < len(value) and value[index : index + 2] != "*/":
                         index += 1
                     index = min(index + 2, len(value))
-                elif char == "/" and next_char == "/":
+                # A slash pair in leading prose (for example ``// result:``)
+                # is not a JSON comment and must not hide a later object.
+                elif char == "/" and next_char == "/" and container_depth > 0:
                     comment_start = index
                     index += 2
                     while index < len(value) and value[index] not in "\r\n":

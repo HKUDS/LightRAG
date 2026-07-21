@@ -840,12 +840,14 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
         'Source: http://example {"name":"fig-1","type":"Chart","description":"ok"}',
         'Here\'s the result: {"name":"fig-1","type":"Chart","description":"ok"} trailing {brace}',
         'Result #1: {"name":"fig-1","type":"Chart","description":"ok"}',
+        'Note // result: {"name":"fig-1","type":"Chart","description":"ok"}',
     ],
     ids=[
         "trailing-comma",
         "prose-url-prefix",
         "prose-apostrophe-prefix",
         "prose-hash-prefix",
+        "prose-slash-prefix",
     ],
 )
 async def test_repairable_json_is_accepted_without_retry(tmp_path, response):

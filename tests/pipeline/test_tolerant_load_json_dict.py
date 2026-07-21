@@ -24,6 +24,17 @@ def test_hash_prefixed_prose_before_object_still_recovers_object() -> None:
     assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '// result: {"name":"n","description":"d"}',
+        'Note // result: {"name":"n","description":"d"}',
+    ],
+)
+def test_slash_prefixed_prose_before_object_still_recovers_object(raw: str) -> None:
+    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
+
+
 def test_quoted_prose_apostrophe_before_object_still_recovers_object() -> None:
     raw = 'Result: \'Here\'s context\' {"facts":[{"text":"ok"}]} trailing {brace}'
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
