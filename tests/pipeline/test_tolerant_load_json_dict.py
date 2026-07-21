@@ -59,3 +59,17 @@ def test_bracketed_prefix_prose_still_repairs_object() -> None:
 def test_unmatched_bracket_prefix_still_recovers_object() -> None:
     raw = 'Analysis [draft: {"name":"n","description":"d"}'
     assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
+
+
+def test_repaired_object_excludes_trailing_prose() -> None:
+    raw = "analysis: [draft] {name:n,description:d} trailing"
+    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
+
+
+def test_balanced_object_slice_respects_nested_and_quoted_braces() -> None:
+    raw = "analysis {name:n,description:'brace } ok',meta:{unit:x}} trailing"
+    assert tolerant_load_json_dict(raw) == {
+        "name": "n",
+        "description": "brace } ok",
+        "meta": {"unit": "x"},
+    }

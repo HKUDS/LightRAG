@@ -4111,9 +4111,10 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
 
     Tries ``json_repair.loads`` on the full candidate first, then strict
     ``raw_decode`` from the first ``{`` so trailing prose cannot extend the
-    object. Finally, it repairs that object-prefixed suffix so malformed
-    objects after bracketed prose remain recoverable. Top-level arrays are
-    rejected because callers require exactly one JSON object.
+    object. Finally, it repairs the first balanced object slice so malformed
+    objects after bracketed prefix prose remain recoverable without absorbing
+    trailing prose. Top-level arrays are rejected because callers require
+    exactly one JSON object.
     """
     if not text:
         return {}
@@ -4185,8 +4186,33 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
                 return obj
         except Exception:
             pass
+
+        def _first_balanced_object_slice() -> str:
+            depth = 0
+            quote: str | None = None
+            escaped = False
+            for index, char in enumerate(suffix):
+                if quote is not None:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == quote:
+                        quote = None
+                    continue
+                if char in {'"', "'"}:
+                    quote = char
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return suffix[: index + 1]
+            # Keep incomplete objects repairable when no matching brace exists.
+            return suffix
+
         try:
-            repaired = json_repair.loads(suffix)
+            repaired = json_repair.loads(_first_balanced_object_slice())
             if isinstance(repaired, dict):
                 return repaired
             # Because suffix starts at an object opener, a list here is a
