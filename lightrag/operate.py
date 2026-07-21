@@ -85,7 +85,7 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
 )
-from lightrag.kg.shared_storage import get_storage_keyed_lock
+from lightrag.kg.shared_storage import PipelineStatusLogger, get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
 
@@ -1034,6 +1034,11 @@ async def rebuild_knowledge_from_chunks(
     if not entities_to_rebuild and not relationships_to_rebuild:
         return report
 
+    # Operation-scoped status logger for per-item FAILURE messages: errors must
+    # stay visible in the pipeline history (the WebUI reads it), while per-item
+    # success/completion detail goes to the backend log only (volume control).
+    status_logger = PipelineStatusLogger(pipeline_status)
+
     # Get all referenced chunk IDs
     all_referenced_chunk_ids = set()
     for chunk_ids in entities_to_rebuild.values():
@@ -1154,10 +1159,7 @@ async def rebuild_knowledge_from_chunks(
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
             )
             logger.warning(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            status_logger.log(status_message)
             continue
 
     # Get max async tasks limit from global_config for semaphore control
@@ -1198,11 +1200,8 @@ async def rebuild_knowledge_from_chunks(
                 except Exception as e:
                     failed_entities_count += 1
                     status_message = f"Failed to rebuild `{entity_name}`: {e}"
-                    logger.info(status_message)  # Per requirement, change to info
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
+                    logger.info(status_message)
+                    status_logger.log(status_message)
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1233,8 +1232,6 @@ async def rebuild_knowledge_from_chunks(
                         global_config=global_config,
                         relation_chunks_storage=relation_chunks_storage,
                         entity_chunks_storage=entity_chunks_storage,
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
                         chunk_data_by_id=chunk_data_by_id,
                         structural_fallback=structural_fallback,
                     )
@@ -1244,11 +1241,8 @@ async def rebuild_knowledge_from_chunks(
                 except Exception as e:
                     failed_relationships_count += 1
                     status_message = f"Failed to rebuild `{src}`~`{tgt}`: {e}"
-                    logger.info(status_message)  # Per requirement, change to info
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
+                    logger.info(status_message)
+                    status_logger.log(status_message)
                     if rebuild_policy == "rollback":
                         # A real storage/rebuild failure is retryable and must
                         # retain the custom-chunk journal.
@@ -1628,8 +1622,6 @@ async def _rebuild_single_entity(
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
     entity_chunks_storage: BaseKVStorage | None = None,
-    pipeline_status: dict | None = None,
-    pipeline_status_lock=None,
     chunk_data_by_id: dict[str, dict[str, Any]] | None = None,
     structural_fallback: bool = False,
 ) -> bool:
@@ -1873,16 +1865,13 @@ async def _rebuild_single_entity(
         truncation_info,
     )
 
-    # Log rebuild completion with truncation info
+    # Log rebuild completion with truncation info. Per-item detail goes to the
+    # backend log only; pipeline history keeps the rebuild summary (volume
+    # control).
     status_message = f"Rebuild `{entity_name}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
     logger.info(status_message)
-    # Update pipeline status
-    if pipeline_status is not None and pipeline_status_lock is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
     return False
 
 
@@ -1898,8 +1887,6 @@ async def _rebuild_single_relationship(
     global_config: dict[str, str],
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
-    pipeline_status: dict | None = None,
-    pipeline_status_lock=None,
     chunk_data_by_id: dict[str, dict[str, Any]] | None = None,
     structural_fallback: bool = False,
 ) -> bool:
@@ -2172,7 +2159,9 @@ async def _rebuild_single_relationship(
         logger.error(error_msg)
         raise  # Re-raise exception
 
-    # Log rebuild completion with truncation info
+    # Log rebuild completion with truncation info. Per-item detail goes to the
+    # backend log only; pipeline history keeps the rebuild summary (volume
+    # control).
     status_message = f"Rebuild `{src}`~`{tgt}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
@@ -2184,12 +2173,6 @@ async def _rebuild_single_relationship(
         status_message += truncation_info
 
     logger.info(status_message)
-
-    # Update pipeline status
-    if pipeline_status is not None and pipeline_status_lock is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
     return degraded
 
 
@@ -2248,8 +2231,13 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    status_logger: PipelineStatusLogger | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
+    if status_logger is None:
+        # Fallback for direct callers that pass pipeline_status only; a
+        # throwaway logger reproduces the one-shot helper's behavior.
+        status_logger = PipelineStatusLogger(pipeline_status)
     timing_start = time.perf_counter()
     try:
         already_entity_types = []
@@ -2515,10 +2503,7 @@ async def _merge_nodes_then_upsert(
         # Add message to pipeline satus when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            status_logger.log(status_message)
         else:
             logger.debug(status_message)
 
@@ -2583,7 +2568,12 @@ async def _merge_edges_then_upsert(
     added_entities: list = None,  # New parameter to track entities added during edge processing
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
+    status_logger: PipelineStatusLogger | None = None,
 ):
+    if status_logger is None:
+        # Fallback for direct callers that pass pipeline_status only; a
+        # throwaway logger reproduces the one-shot helper's behavior.
+        status_logger = PipelineStatusLogger(pipeline_status)
     timing_start = time.perf_counter()
     timing_relation = f"`{src_id}`~`{tgt_id}`"
     try:
@@ -2902,10 +2892,7 @@ async def _merge_edges_then_upsert(
         # Add message to pipeline satus when merge happens
         if already_fragment > 0 or llm_was_used:
             logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            status_logger.log(status_message)
         else:
             logger.debug(status_message)
 
@@ -3100,10 +3087,7 @@ async def _merge_edges_then_upsert(
                         f"Chunks appended from relation: `{need_insert_id}`"
                     )
                     logger.info(status_message)
-                    if pipeline_status is not None and pipeline_status_lock is not None:
-                        async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = status_message
-                            pipeline_status["history_messages"].append(status_message)
+                    status_logger.log(status_message)
 
         edge_created_at = int(time.time())
         edge_upsert_started = time.perf_counter()
@@ -3286,6 +3270,11 @@ async def merge_nodes_and_edges(
             if pipeline_status.get("cancellation_requested", False):
                 raise PipelineCancelledException("User cancelled during merge phase")
 
+    # Operation-scoped status logger shared by all entity/relation merge tasks
+    # of this document: the first history write fetches the shared list once;
+    # every merge log is then a single extend on the cached handle.
+    status_logger = PipelineStatusLogger(pipeline_status)
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -3398,6 +3387,7 @@ async def merge_nodes_and_edges(
                         pipeline_status_lock,
                         llm_response_cache,
                         entity_chunks_storage,
+                        status_logger=status_logger,
                     )
 
                     return entity_data
@@ -3487,6 +3477,7 @@ async def merge_nodes_and_edges(
                         added_entities,  # Pass list to collect added entities
                         relation_chunks_storage,
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
+                        status_logger=status_logger,
                     )
 
                     if edge_data is None:
@@ -3577,6 +3568,11 @@ async def extract_entities(
                 raise PipelineCancelledException(
                     "User cancelled during entity extraction"
                 )
+
+    # Operation-scoped status logger shared by all chunk tasks: the first
+    # history write fetches the shared list once; every per-chunk log is then
+    # a single extend on the cached handle.
+    status_logger = PipelineStatusLogger(pipeline_status)
 
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -3948,10 +3944,7 @@ async def extract_entities(
         relations_count = len(maybe_edges)
         log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
         logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+        status_logger.log(log_message)
 
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
