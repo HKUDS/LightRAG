@@ -4133,14 +4133,39 @@ def tolerant_load_json_dict(text: str) -> dict[str, Any]:
     except Exception:
         pass
 
-    # Preserve the response contract: a genuine top-level array must fail
-    # validation and trigger the caller's conformance retry, not silently lose
-    # every element after the first one.
-    if candidate.startswith("["):
-        return {}
+    def _find_first_object() -> tuple[int, bool] | None:
+        """Return the first object opener and whether an array encloses it."""
+        array_depth = 0
+        in_string = False
+        escaped = False
+        for index, char in enumerate(candidate):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "[":
+                array_depth += 1
+            elif char == "]" and array_depth:
+                array_depth -= 1
+            elif char == "{":
+                return index, array_depth > 0
+        return None
 
-    brace = candidate.find("{")
-    if brace != -1:
+    location = _find_first_object()
+    if location is not None:
+        brace, enclosed_by_array = location
+        # Preserve the response contract: an object inside a top-level array
+        # must trigger the caller's conformance retry, even when prose appears
+        # before the array. Closed bracketed prose such as ``[draft]`` leaves
+        # array_depth at zero and remains recoverable.
+        if enclosed_by_array:
+            return {}
         suffix = candidate[brace:]
         try:
             obj, _end = json.JSONDecoder().raw_decode(suffix)
