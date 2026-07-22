@@ -126,6 +126,21 @@ _INFLIGHT_DOC_STATUSES = (
 )
 
 
+def _vlm_image_budget_limits() -> tuple[int, int]:
+    """Resolve VLM image byte/pixel floors from env (empty → documented defaults)."""
+    from lightrag.constants import DEFAULT_MM_IMAGE_MIN_PIXEL
+
+    max_image_bytes = max(
+        256 * 1024,
+        get_env_value("VLM_MAX_IMAGE_BYTES", 5 * 1024 * 1024, int),
+    )
+    min_image_pixel = max(
+        1,
+        get_env_value("VLM_MIN_IMAGE_PIXEL", DEFAULT_MM_IMAGE_MIN_PIXEL, int),
+    )
+    return max_image_bytes, min_image_pixel
+
+
 @lru_cache(maxsize=64)
 def _warn_content_budget_structurally_starved(
     *,
@@ -3756,7 +3771,6 @@ class _PipelineMixin:
             )
             from lightrag.constants import (
                 DEFAULT_MM_ANALYSIS_PRIORITY,
-                DEFAULT_MM_IMAGE_MIN_PIXEL,
                 DEFAULT_SUMMARY_LANGUAGE,
             )
 
@@ -3768,16 +3782,7 @@ class _PipelineMixin:
                 or DEFAULT_SUMMARY_LANGUAGE
             )
             vlm_process_enable = bool(global_config.get("vlm_process_enable", False))
-            max_image_bytes = max(
-                256 * 1024,
-                get_env_value("VLM_MAX_IMAGE_BYTES", 5 * 1024 * 1024, int),
-            )
-            min_image_pixel = max(
-                1,
-                get_env_value(
-                    "VLM_MIN_IMAGE_PIXEL", DEFAULT_MM_IMAGE_MIN_PIXEL, int
-                ),
-            )
+            max_image_bytes, min_image_pixel = _vlm_image_budget_limits()
             # Multimodal analysis shares the entity-extraction cache flag
             # (both run with mode="default" — see handle_cache short-circuit
             # in lightrag.utils).  When the flag is off we must NOT save the
