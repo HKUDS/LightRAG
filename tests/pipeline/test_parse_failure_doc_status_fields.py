@@ -38,6 +38,8 @@ from lightrag.parser import registry
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 from lightrag.utils_pipeline import doc_status_parse_failure_fields
 
+from .conftest import request_failed_retry
+
 pytestmark = pytest.mark.offline
 
 
@@ -217,7 +219,9 @@ async def test_legacy_parse_failure_maps_ui_fields_and_retry_clears_them(
 
         # Retry: the source file now exists -> parse succeeds and every
         # error field is replaced/cleared (error keys are not carried over).
+        # FAILED docs re-enter only via an explicit manual retry request.
         source_path.write_text("recovered body text for retry")
+        await request_failed_retry(rag)
         await rag.apipeline_process_enqueue_documents()
 
         status = await rag.doc_status.get_by_id(doc_id)
@@ -332,8 +336,9 @@ async def test_repeat_failure_replaces_stale_generated_summary(tmp_path, monkeyp
         assert status["status"] == DocStatus.FAILED
         assert status["content_summary"] == "[File Extraction]failure #1"
 
-        # Retry: the FAILED doc is reset to PENDING (summary preserved),
-        # then the second attempt fails with a different message.
+        # Manual retry: the FAILED doc is reset to PENDING (summary
+        # preserved), then the second attempt fails with a different message.
+        await request_failed_retry(rag)
         await rag.apipeline_process_enqueue_documents()
         status = await rag.doc_status.get_by_id(doc_id)
         assert status["status"] == DocStatus.FAILED
