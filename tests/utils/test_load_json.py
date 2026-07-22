@@ -1,7 +1,8 @@
-"""load_json: empty or invalid store files must match the missing-file contract."""
+"""load_json: empty store files must match the missing-file contract."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,11 +24,11 @@ def test_empty_or_whitespace_file_returns_none(tmp_path: Path, payload: bytes) -
     assert (load_json(str(path)) or {}) == {}
 
 
-def test_invalid_json_file_returns_none(tmp_path: Path) -> None:
+def test_invalid_json_still_raises(tmp_path: Path) -> None:
     path = tmp_path / "kv.json"
     path.write_text("{not json", encoding="utf-8")
-    assert load_json(str(path)) is None
-    assert (load_json(str(path)) or {}) == {}
+    with pytest.raises(json.JSONDecodeError):
+        load_json(str(path))
 
 
 def test_valid_json_still_loads(tmp_path: Path) -> None:
