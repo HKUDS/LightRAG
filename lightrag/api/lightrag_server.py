@@ -1839,6 +1839,9 @@ def create_app(args):
                 ) -> str:
                     if history_messages is None:
                         history_messages = []
+                    # Server-configured timeout overrides any caller-passed value,
+                    # matching the OpenAI/Azure/Gemini role wrappers.
+                    kwargs["timeout"] = role_timeout
                     if role_provider_options:
                         kwargs = {**role_provider_options, **kwargs}
                     return await bedrock_complete_if_cache(
@@ -1966,6 +1969,9 @@ def create_app(args):
         # which drops them and emits deprecation warnings when booleans are set.
         if config_cache.bedrock_llm_options:
             kwargs = {**config_cache.bedrock_llm_options, **kwargs}
+        # Server-configured timeout overrides any caller-passed value, matching
+        # the OpenAI wrapper (create_optimized_openai_llm_func).
+        kwargs["timeout"] = llm_timeout
 
         return await bedrock_complete_if_cache(
             args.llm_model,

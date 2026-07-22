@@ -394,6 +394,97 @@ async def test_bedrock_complete_forwards_explicit_sigv4_client_kwargs(monkeypatc
     }
 
 
+class _FakeStreamingBedrockClient(_FakeBedrockClient):
+    async def converse_stream(self, **kwargs):
+        self._captured_calls.append(kwargs)
+
+        async def _events():
+            yield {"contentBlockDelta": {"delta": {"text": "chunk"}}}
+            yield {"messageStop": {}}
+
+        return {"stream": _events()}
+
+
+class _FakeStreamingSession(_FakeSession):
+    def client(self, *_args, **kwargs):
+        self._client_kwargs_calls.append(dict(kwargs))
+        return _FakeStreamingBedrockClient(self._captured_calls)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_timeout_maps_to_botocore_client_config(monkeypatch):
+    """timeout must reach the aioboto3 client as botocore connect/read timeouts.
+
+    Before the fix nothing consumed ``timeout``, so botocore's 60s defaults
+    applied and long generations failed with "Read timeout on endpoint URL"
+    regardless of LLM_TIMEOUT.
+    """
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
+    client_kwargs_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession(captured_calls, client_kwargs_calls),
+    ):
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            timeout=240,
+        )
+
+    config = client_kwargs_calls[-1]["config"]
+    assert config.connect_timeout == 240
+    assert config.read_timeout == 240
+    # timeout is not a Converse API parameter and must never leak into the call.
+    assert "timeout" not in captured_calls[-1]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_stream_timeout_maps_to_botocore_client_config(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
+    client_kwargs_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeStreamingSession(captured_calls, client_kwargs_calls),
+    ):
+        stream = await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+            stream=True,
+            timeout=240,
+        )
+        chunks = [chunk async for chunk in stream]
+
+    assert chunks == ["chunk"]
+    config = client_kwargs_calls[-1]["config"]
+    assert config.connect_timeout == 240
+    assert config.read_timeout == 240
+    assert "timeout" not in captured_calls[-1]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_no_timeout_keeps_botocore_defaults(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    client_kwargs_calls: list[dict] = []
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_FakeSession([], client_kwargs_calls),
+    ):
+        await bedrock_complete_if_cache(
+            model="bedrock-model",
+            prompt="hello",
+        )
+
+    assert "config" not in client_kwargs_calls[-1]
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_bedrock_extra_fields_maps_to_additional_model_request_fields(
@@ -736,6 +827,116 @@ async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
     assert mocked_bedrock.await_args.kwargs["aws_access_key_id"] == "query-akid"
     assert mocked_bedrock.await_args.kwargs["aws_secret_access_key"] == "query-secret"
     assert mocked_bedrock.await_args.kwargs["aws_session_token"] == "query-session"
+
+
+def _setup_bedrock_app_modules(monkeypatch, args):
+    """Prepare an isolated lightrag_server module for create_app tests."""
+    _reload_api_modules_if_mocked()
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    config = importlib.import_module("lightrag.api.config")
+    config.initialize_config(args, force=True)
+    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
+    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
+    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
+    monkeypatch.setattr(
+        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(
+        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
+    )
+    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+    return lightrag_server
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_create_app_bedrock_base_llm_func_passes_global_timeout(
+    tmp_path, monkeypatch
+):
+    """LLM_TIMEOUT must reach the Bedrock driver through the base llm_model_func.
+
+    This proves the server-layer wiring: the driver-level timeout tests pass
+    even if lightrag_server.py forgets to forward args.llm_timeout.
+    """
+    args = _make_args(tmp_path)
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
+
+    with patch(
+        "lightrag.llm.bedrock.bedrock_complete_if_cache",
+        AsyncMock(return_value="bedrock-ok"),
+    ) as mocked_bedrock:
+        lightrag_server.create_app(args)
+        base_func = _FakeLightRAG.last_init_kwargs["llm_model_func"]
+        await base_func("hello")
+
+    assert mocked_bedrock.await_args.kwargs["timeout"] == 180
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_create_app_bedrock_query_role_inherits_global_timeout(
+    tmp_path, monkeypatch
+):
+    args = _make_args(tmp_path)
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
+
+    with patch(
+        "lightrag.llm.bedrock.bedrock_complete_if_cache",
+        AsyncMock(return_value="bedrock-ok"),
+    ) as mocked_bedrock:
+        lightrag_server.create_app(args)
+        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
+        await query_func("hello")
+
+    assert mocked_bedrock.await_args.kwargs["timeout"] == 180
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_create_app_bedrock_query_role_uses_role_specific_timeout(
+    tmp_path, monkeypatch
+):
+    args = _make_args(tmp_path)
+    args.query_llm_timeout = 99
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
+
+    with patch(
+        "lightrag.llm.bedrock.bedrock_complete_if_cache",
+        AsyncMock(return_value="bedrock-ok"),
+    ) as mocked_bedrock:
+        lightrag_server.create_app(args)
+        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
+        await query_func("hello")
+
+    assert mocked_bedrock.await_args.kwargs["timeout"] == 99
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_create_app_bedrock_server_timeout_overrides_caller_value(
+    tmp_path, monkeypatch
+):
+    """Caller-passed timeout must not raise a duplicate-keyword TypeError and is
+    overridden by the server-configured value, matching the OpenAI wrappers."""
+    args = _make_args(tmp_path)
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
+
+    with patch(
+        "lightrag.llm.bedrock.bedrock_complete_if_cache",
+        AsyncMock(return_value="bedrock-ok"),
+    ) as mocked_bedrock:
+        lightrag_server.create_app(args)
+        base_func = _FakeLightRAG.last_init_kwargs["llm_model_func"]
+        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
+
+        await base_func("hello", timeout=5)
+        assert mocked_bedrock.await_args.kwargs["timeout"] == 180
+
+        await query_func("hello", timeout=5)
+        assert mocked_bedrock.await_args.kwargs["timeout"] == 180
 
 
 @pytest.mark.offline
