@@ -96,7 +96,7 @@ def test_local_drawing_dedups_assetspec_across_occurrences():
     assert ir.assets[0].source == b"BYTES"
 
 
-def test_external_drawing_uses_path_override_and_no_asset():
+def test_external_drawing_keeps_src_and_no_asset():
     blocks = [
         {
             "heading": "H",
@@ -117,8 +117,9 @@ def test_external_drawing_uses_path_override_and_no_asset():
     }
     ir = _normalize(blocks, meta)
     (drawing,) = ir.blocks[0].drawings
-    assert drawing.path_override == "http://x/y.png"
+    # Not materialized: no asset ref (renders as path=""), URL kept in src.
     assert drawing.asset_ref == ""
+    assert drawing.src == "http://x/y.png"
     assert ir.assets == []
 
 

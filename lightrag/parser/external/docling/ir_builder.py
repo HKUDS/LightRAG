@@ -913,8 +913,7 @@ def _build_ir_drawing(
 
     asset_ref = ""
     asset: AssetSpec | None = None
-    path_override: str | None = None
-    drawing_kwargs: dict[str, Any] = {}
+    src_val = str(item.get("src") or "")
 
     if not uri:
         return None
@@ -942,8 +941,10 @@ def _build_ir_drawing(
             )
             return None
     elif uri.startswith(("http://", "https://")):
-        path_override = uri
-        asset_ref = uri
+        # Remote image the engine did not materialize: no asset, path
+        # renders empty, and the URL survives only as src metadata.
+        src_val = uri
+        asset_ref = ""
     else:
         asset_ref = uri
         if asset_ref not in seen_asset_refs:
@@ -969,19 +970,15 @@ def _build_ir_drawing(
                 return None
             seen_asset_refs[asset_ref] = suggested
 
-    if path_override is not None:
-        drawing_kwargs["path_override"] = path_override
-
     drawing = IRDrawing(
         placeholder_key="",
         asset_ref=asset_ref,
         fmt=fmt,
         caption=" / ".join(captions),
         footnotes=footnotes,
-        src=str(item.get("src") or ""),
+        src=src_val,
         self_ref=str(item.get("self_ref") or ""),
         extras=extras,
-        **drawing_kwargs,
     )
     return drawing, asset
 

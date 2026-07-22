@@ -39,6 +39,7 @@ from typing import Any
 
 from lightrag.parser.docx.drawing_image_extractor import (
     DRAWING_TAG_PATTERN,
+    _infer_format_from_target,
     parse_drawing_attributes,
 )
 from lightrag.sidecar.ir import (
@@ -192,18 +193,19 @@ class _BlockBuilder:
         path_val = attrs.get("path", "") or ""
         src_val = attrs.get("src", "") or ""
         fmt = attrs.get("format", "") or ""
-        if not fmt and path_val:
-            fmt = Path(path_val).suffix.lower().lstrip(".")
+        if not fmt:
+            fmt = _infer_format_from_target(path_val or src_val) or ""
 
-        # Two flavours of <drawing path="…">:
-        #   1. Local asset under <base>.blocks.assets/ — already
-        #      extracted to disk by DrawingExtractionContext;
-        #      register as AssetSpec(source=None) and let the
-        #      writer resolve the path via asset_paths.
-        #   2. External/linked path (URL, or any path that does
-        #      not live under asset_prefix) — pass through
-        #      verbatim via IRDrawing.path_override; do NOT emit
-        #      an AssetSpec (no on-disk bytes to materialize).
+        # ``path`` is local-only: when it names a safe file under
+        # <base>.blocks.assets/ (already extracted to disk by
+        # DrawingExtractionContext) it is registered as
+        # AssetSpec(source=None) and the writer resolves the rendered
+        # path via asset_paths. Anything else (empty path, unsafe
+        # local-looking path) is dropped and renders as ``path=""``.
+        # External/linked references never travel through ``path``:
+        # the extractor emits them as the ``src`` attribute, which is
+        # passed through verbatim as IRDrawing.src (metadata only,
+        # never resolved to disk).
         rel_inside_assets = _safe_asset_ref_from_path(path_val, self.asset_prefix)
         if rel_inside_assets is not None:
             asset_ref = rel_inside_assets
@@ -217,20 +219,8 @@ class _BlockBuilder:
                     )
                 )
                 self.seen_asset_refs.add(asset_ref)
-            path_override: str | None = None
         else:
             asset_ref = ""
-            # Only mark as an external/linked reference when the
-            # upstream parser actually emitted a path. An empty
-            # ``path=""`` should fall back to the regular asset-
-            # resolution path (which will also produce ``path=""``
-            # downstream) rather than masquerading as an explicit
-            # builder override.
-            path_override = (
-                None
-                if self.asset_prefix and path_val.startswith(self.asset_prefix)
-                else path_val or None
-            )
 
         placeholder = self.next_key("im")
         self.drawings.append(
@@ -241,7 +231,6 @@ class _BlockBuilder:
                 caption="",
                 footnotes=[],
                 src=src_val,
-                path_override=path_override,
             )
         )
         return f"{{{{IMG:{placeholder}}}}}"

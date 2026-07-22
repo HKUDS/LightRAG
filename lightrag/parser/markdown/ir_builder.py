@@ -13,8 +13,8 @@ from the side tables.
 
 Image bytes are carried in ``metadata["md_assets"]`` (keyed by a stable
 identity), so assets are declared as ``AssetSpec(source=bytes)`` and the writer
-materializes + deduplicates them. External-link images carry no bytes and are
-rendered verbatim through ``IRDrawing.path_override``.
+materializes + deduplicates them. External-link images carry no bytes; the URL
+lands in the drawing's ``src`` and ``path`` stays empty.
 """
 
 from __future__ import annotations
@@ -197,12 +197,14 @@ def _build_drawing(
     fmt = str(spec.get("fmt") or "")
     src = str(spec.get("src") or "")
     if spec.get("kind") == "external":
+        # No bytes were materialized (download failed), so path stays empty
+        # (asset_ref="" resolves to path="" in the writer) and the original
+        # URL survives only as src metadata.
         return IRDrawing(
             placeholder_key=placeholder,
             asset_ref="",
             fmt=fmt,
-            src=src,
-            path_override=str(spec.get("url") or src),
+            src=src or str(spec.get("url") or ""),
         )
     asset_ref = str(spec.get("asset_ref") or "")
     if asset_ref and asset_ref not in seen_asset_refs:
@@ -220,7 +222,6 @@ def _build_drawing(
         asset_ref=asset_ref,
         fmt=fmt,
         src=src,
-        path_override=None,
     )
 
 
