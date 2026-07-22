@@ -346,6 +346,20 @@ def _env_optional_str(key: str) -> str | None:
     return raw
 
 
+def _env_r_separators() -> list[str]:
+    """Load CHUNK_R_SEPARATORS; empty/invalid JSON falls back to defaults."""
+    raw = os.getenv("CHUNK_R_SEPARATORS")
+    if not raw or not str(raw).strip():
+        return list(DEFAULT_R_SEPARATORS)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return list(DEFAULT_R_SEPARATORS)
+    if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
+        return parsed
+    return list(DEFAULT_R_SEPARATORS)
+
+
 def _env_bool(key: str, default: bool = False) -> bool:
     raw = os.getenv(key)
     if raw is None:
@@ -397,9 +411,7 @@ def default_chunker_config() -> dict[str, Any]:
             # boundaries instead of falling through to character-level
             # splitting.  See ``constants.DEFAULT_R_SEPARATORS`` for
             # cascade order rationale.
-            "separators": json.loads(
-                os.getenv("CHUNK_R_SEPARATORS", json.dumps(list(DEFAULT_R_SEPARATORS)))
-            ),
+            "separators": _env_r_separators(),
         },
         "semantic_vector": {
             "breakpoint_threshold_type": os.getenv(
