@@ -1240,6 +1240,10 @@ async def test_scan_endpoint_returns_skipped_when_pipeline_busy(tmp_path):
     assert len(managed) == 0
     # And ``scanning`` is left unchanged at False (we didn't acquire it).
     assert pipeline_status.get("scanning") is False
+    # Zero side effects: a refused scan publishes NO manual retry intent —
+    # the sticky request is committed only AFTER the reservation is granted.
+    ingress = await shared_storage.get_pipeline_ingress(rag.workspace)
+    assert ingress.snapshot_manual_retries() == []
 
 
 async def test_scan_endpoint_returns_skipped_when_already_scanning(tmp_path):
@@ -1507,8 +1511,9 @@ async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff
 ):
     """Regression (#3408): a cancellation delivered after the scan endpoint
     reserves ``scanning``/``scanning_exclusive`` but before the managed task
-    takes over (e.g. the request cancelled while start_reserved_background_task
-    awaits the start barrier) must not leak the reservation. The endpoint's
+    commits (pre-commit cancellation of start_committed_background_task) must
+    not leak the reservation — and must leave NO sticky manual retry request
+    behind (a refused/cancelled scan has zero side effects). The endpoint's
     finally releases the owner token so both flags return to False.
     """
     import asyncio
@@ -1531,12 +1536,12 @@ async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff
 
     async def _cancel_before_takeover(*args, **kwargs):
         # Simulate a cancellation delivered after scanning was reserved but
-        # before the managed task took over (request cancelled at the start
+        # before the managed task committed (request cancelled at the start
         # barrier). The endpoint's finally must still release the slot.
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(
-        shared_storage, "start_reserved_background_task", _cancel_before_takeover
+        shared_storage, "start_committed_background_task", _cancel_before_takeover
     )
 
     router = create_document_routes(rag, doc_manager)
@@ -1554,6 +1559,9 @@ async def test_scan_endpoint_releases_reservation_on_cancellation_before_handoff
     assert pipeline_status.get("scanning") is False
     assert pipeline_status.get("scanning_exclusive") is False
     assert pipeline_status.get("scanning_owner") is None
+    # Pre-commit teardown published nothing: the mailbox has no manual entry.
+    ingress = await shared_storage.get_pipeline_ingress(rag.workspace)
+    assert ingress.snapshot_manual_retries() == []
 
 
 async def test_clear_endpoint_releases_destructive_busy_on_cancellation_during_setup(
