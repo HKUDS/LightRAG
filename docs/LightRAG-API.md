@@ -457,7 +457,7 @@ Response nodes use `entity_type`, `labels`, `source_document_ids`, `display`,
     "description": "ClinicalModernBERT is an encoder-only transformer...",
     "source_document_ids": ["doc-3266fbe1bed18306ea8ed3cb06c1a6f5"],
     "display": {"kind": "note", "title": "ClinicalModernBERT"},
-    "media": [{"asset_id": "ast_01J...", "kind": "image", "mime_type": "image/png", "page": 4, "caption": "Model architecture"}],
+    "media": [{"asset_id": "ast_01J...", "kind": "image", "mime_type": "image/png", "page": 4, "caption": "Model architecture"}],+
     "metadata": {"degree": 12}
   }],
   "edges": [{
