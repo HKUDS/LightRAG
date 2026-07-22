@@ -4258,23 +4258,54 @@ def _first_balanced_object_slice(text: str) -> str:
 
 
 def tolerant_load_json_dict(text: str) -> dict[str, Any]:
-    """Recover a single JSON object from LLM/VLM text.
+    """Recover a single JSON object from noisy LLM/VLM text.
 
-    Handles markdown fences, leading prose, trailing prose (including trailing
-    braces such as ``{...} note {x}``), and the common malformed-object slips
-    that ``json_repair`` fixes (trailing commas, single quotes, unquoted keys).
+    Returns the first genuine JSON *object*, or ``{}`` when the text does not
+    yield exactly one object. ``{}`` is the signal callers act on: multimodal
+    analysis retries once, entity extraction falls back to delimiter parsing.
 
-    Top-level arrays are rejected (return ``{}``): callers require exactly one
-    object, so a ``{}`` lets them retry (multimodal conformance) or fall back
-    (entity extraction). Objects hidden behind bracketed prose (``[draft] {..}``)
-    are intentionally *not* recovered — they are indistinguishable from a real
-    array without heuristics, are not seen in practice, and the caller's retry /
-    text fallback covers the rare case. A top-level array reached through
-    pseudo-object prose (``{note} [..]``) or a broken array shell (``[}{..}]``)
-    is likewise rejected, not scavenged for an inner object.
+    Recovered — returns the object (the malformed shapes weak models emit):
 
-    This helper does **not** apply ``repair_vlm_json_escape_damage_nested`` — the
-    LaTeX-escape choke point stays owned by each caller.
+    * a clean object, optionally inside a markdown ``json`` code fence, with or
+      without interior newlines: ``{"a": 1}``
+    * leading prose before the object — a label, a ``#`` or ``//`` comment
+      lead-in, a URL, or an apostrophe: ``Here is the result: {"a":1}``,
+      ``Result #1: {"a":1}``, ``Source: http://x//y#z {"a":1}``,
+      ``Here's the note: {"a":1}``
+    * trailing prose after the object, even when it contains braces — the bug
+      this helper exists for, where a greedy ``{...}`` slice over-extends and
+      drops everything: ``{"facts":[...]} trailing {brace}``
+    * object-level slips ``json_repair`` fixes — trailing comma, single quotes,
+      unquoted keys, truncation: ``{"a":1,}``, ``{'a':1}``, ``{a:1}``, ``{"a":1``
+    * a genuine (possibly malformed) object followed by a bracket citation:
+      ``{"a":1,} [1]``
+
+    Rejected — returns ``{}`` so callers retry / fall back rather than accept a
+    non-object:
+
+    * any top-level array, so one element is never mistaken for the whole
+      answer — including prose-prefixed, truncated, single-quoted, and commented
+      arrays: ``[{"a":1},{"b":2}]``, ``Here is the result: [{...}]``,
+      ``['note', {...}]``, ``[/* ] */ {...}]``
+    * a top-level array reached past a broken array shell, an unclosed quote, or
+      pseudo-object prose — never scavenged for an inner object: ``[}{"a":1}]``,
+      ``"oops [}{"a":1}]``, ``{note} [{"a":1}]``
+    * an object behind bracketed prose — indistinguishable from a real array
+      without heuristics and not seen in practice: ``analysis: [draft] {"a":1}``
+
+    Two edge rules worth knowing when extending this:
+
+    * the top-level shape is decided by the first structural opener outside a
+      double-quoted string; ``json_repair`` runs only on the first balanced
+      ``{...}`` slice, never the whole string (it would scavenge a dict across
+      structural boundaries and defeat array rejection).
+    * a single quote is a string delimiter only in a value/key position, so a
+      bare apostrophe in an unquoted token (``O'Reilly``, ``it's``) does not
+      swallow the object's closing brace.
+
+    Not handled here: LaTeX-escape damage in string values — callers apply
+    ``repair_vlm_json_escape_damage_nested`` themselves, keeping that choke
+    point out of this helper.
     """
     if not text:
         return {}
