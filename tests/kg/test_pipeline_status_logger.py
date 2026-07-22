@@ -261,6 +261,10 @@ def _child_logs(status_logger, message):
 
 
 @_skip_no_fork
+@pytest.mark.filterwarnings(
+    r"ignore:This process .* is multi-threaded, use of fork\(\) may lead "
+    r"to deadlocks in the child\.:DeprecationWarning"
+)
 def test_fork_inherited_cached_proxy_writes_visible_in_parent():
     """A logger whose history handle was cached BEFORE the fork keeps working
     in the child (BaseProxy re-registers its connection after fork) and the
@@ -289,6 +293,10 @@ def _mp_cached_writer(status, prefix, n):
 
 
 @_skip_no_fork
+@pytest.mark.filterwarnings(
+    r"ignore:This process .* is multi-threaded, use of fork\(\) may lead "
+    r"to deadlocks in the child\.:DeprecationWarning"
+)
 def test_concurrent_cached_writers_lose_no_messages_and_groups_stay_intact():
     """Concurrent multi-message ``extend`` on cached ListProxies from several
     processes never drops a message NOR tears a group."""
