@@ -522,17 +522,13 @@ def _render_block_content(
         if drawing is None:
             return ""
         im_id = drawing_id_by_key.get(key, "")
-        if drawing.path_override is not None:
-            # Verbatim external/linked reference — pass through unchanged.
-            path = drawing.path_override
+        filename = asset_paths.get(drawing.asset_ref, "")
+        if not filename:
+            path = ""
+        elif block_drawing_path_style == "basename_only":
+            path = filename
         else:
-            filename = asset_paths.get(drawing.asset_ref, "")
-            if not filename:
-                path = ""
-            elif block_drawing_path_style == "basename_only":
-                path = filename
-            else:
-                path = f"{asset_prefix}{filename}"
+            path = f"{asset_prefix}{filename}"
         return render_drawing_tag(
             im_id,
             drawing.fmt,
@@ -626,11 +622,8 @@ def _drawing_item_dict(
     asset_paths: dict[str, str],
     asset_prefix: str,
 ) -> dict[str, Any]:
-    if drawing.path_override is not None:
-        path = drawing.path_override
-    else:
-        filename = asset_paths.get(drawing.asset_ref, "")
-        path = f"{asset_prefix}{filename}" if filename else ""
+    filename = asset_paths.get(drawing.asset_ref, "")
+    path = f"{asset_prefix}{filename}" if filename else ""
     item: dict[str, Any] = {
         "id": drawing_id,
         "blockid": blockid,
