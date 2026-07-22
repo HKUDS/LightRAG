@@ -863,7 +863,7 @@ class RedisDocStatusStorage(DocStatusStorage):
         return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching any of the given statuses in a single SCAN pass.
 
@@ -872,6 +872,9 @@ class RedisDocStatusStorage(DocStatusStorage):
         GET over the keyspace, filtering against a set of status values.  The
         previous pattern of N separate get_docs_by_status() calls would do N full
         SCANs (one per status), so this reduces keyspace traversal from N passes to one.
+        Transport errors always propagate (SCAN interruption re-raises below);
+        ``strict=True`` additionally raises on any record that cannot be parsed
+        (complete-or-raise scheduling contract, see base class).
         """
         if not statuses:
             return {}
@@ -911,6 +914,8 @@ class RedisDocStatusStorage(DocStatusStorage):
                                 logger.error(
                                     f"[{self.workspace}] Error processing document {key}: {e}"
                                 )
+                                if strict:
+                                    raise
                                 continue
 
                     if cursor == 0:

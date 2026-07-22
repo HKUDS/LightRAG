@@ -838,8 +838,13 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return None
+            # Scheduling-safe read contract: ``None`` means CONFIRMED absent
+            # (tombstone / not found / index not created). A transport or
+            # server error must raise — callers like the pipeline's
+            # consistency validator interpret None as "content missing" and
+            # would delete a live doc_status row on a transient failure.
             logger.error(f"[{self.workspace}] Error getting document {id}: {e}")
-            return None
+            raise
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple documents by IDs (read-your-writes), preserving order.
@@ -882,7 +887,12 @@ class OpenSearchKVStorage(BaseKVStorage):
                 if _is_missing_index_error(e):
                     self._mark_index_missing()
                 else:
+                    # Same scheduling-safe contract as get_by_id: a swallowed
+                    # transport error would report every remaining id as
+                    # absent, which callers cannot distinguish from a
+                    # confirmed miss.
                     logger.error(f"[{self.workspace}] Error getting documents: {e}")
+                    raise
 
         return [
             buffered[doc_id] if doc_id in buffered else doc_map.get(doc_id)
@@ -1469,8 +1479,20 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error getting status counts: {e}")
             return {}
 
-    async def _search_all_docs(self, query: dict) -> dict[str, DocProcessingStatus]:
-        """Fetch all documents matching a query using PIT + search_after."""
+    async def _search_all_docs(
+        self, query: dict, strict: bool = False
+    ) -> dict[str, DocProcessingStatus]:
+        """Fetch all documents matching a query using PIT + search_after.
+
+        ``strict=True`` is the complete-or-raise scheduling contract: a PIT
+        creation failure, ANY page failure and ANY hit that cannot be parsed
+        into :class:`DocProcessingStatus` propagate instead of degrading to a
+        partial result — the pipeline supervisor has already consumed its
+        wake-up signal when it calls this, so a silent partial read would
+        strand the missed documents.  A missing index is a legitimately empty
+        (complete) result in both modes, and PIT deletion stays best-effort —
+        it does not affect the completeness of an already-collected result.
+        """
         if not self._index_ready:
             return {}
         result = {}
@@ -1503,6 +1525,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                             logger.error(
                                 f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
                             )
+                            if strict:
+                                raise
                     search_after = hits[-1]["sort"]
                     if len(hits) < batch_size:
                         break
@@ -1516,6 +1540,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 self._mark_index_missing()
                 return {}
             logger.error(f"[{self.workspace}] Error fetching docs: {e}")
+            if strict:
+                raise
         return result
 
     async def get_docs_by_status(
@@ -1525,18 +1551,21 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching any of the given statuses in a single query.
 
         Uses OpenSearch's terms query (multi-value equivalent of term) to fetch
         all matching statuses in one PIT + search_after pass instead of one
-        full scan per status.
+        full scan per status.  ``strict=True`` = complete-or-raise (see
+        :meth:`_search_all_docs`).
         """
         if not statuses:
             return {}
         status_values = [s.value for s in statuses]
-        return await self._search_all_docs({"terms": {"status": status_values}})
+        return await self._search_all_docs(
+            {"terms": {"status": status_values}}, strict=strict
+        )
 
     async def get_docs_by_track_id(
         self, track_id: str

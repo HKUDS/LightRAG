@@ -696,12 +696,15 @@ class MongoDocStatusStorage(DocStatusStorage):
         return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching any of the given statuses in a single query.
 
         Uses MongoDB's $in operator to fetch all matching statuses in one
-        round-trip instead of one find() call per status.
+        round-trip instead of one find() call per status.  Transport errors
+        always propagate; ``strict=True`` additionally raises on any record
+        that cannot be converted (complete-or-raise scheduling contract, see
+        base class).
         """
         if not statuses:
             return {}
@@ -717,6 +720,8 @@ class MongoDocStatusStorage(DocStatusStorage):
                 logger.error(
                     f"[{self.workspace}] Missing required field for document {doc['_id']}: {e}"
                 )
+                if strict:
+                    raise
                 continue
         return result
 

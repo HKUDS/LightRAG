@@ -162,14 +162,15 @@ class JsonDocStatusStorage(DocStatusStorage):
         return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching any of the given statuses in a single pass.
 
         Acquires the storage lock once and scans the in-memory dict once,
         filtering against a set of status values.  More efficient than N separate
         get_docs_by_status() calls, which would acquire the lock N times and scan
-        the data N times.
+        the data N times.  ``strict=True`` raises on any record that cannot be
+        converted (complete-or-raise scheduling contract, see base class).
         """
         if not statuses:
             return {}
@@ -193,6 +194,8 @@ class JsonDocStatusStorage(DocStatusStorage):
                     logger.error(
                         f"[{self.workspace}] Missing required field for document {k}: {e}"
                     )
+                    if strict:
+                        raise
                     continue
         return result
 

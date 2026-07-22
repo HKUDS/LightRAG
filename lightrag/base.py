@@ -896,9 +896,25 @@ class DocStatusStorage(BaseKVStorage, ABC):
 
     @abstractmethod
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
-        """Get all documents matching any of the given statuses"""
+        """Get all documents matching any of the given statuses.
+
+        ``strict`` selects the completeness contract:
+
+        * ``strict=False`` (default) — best-effort read for UI/listing paths:
+          a record that fails to deserialize is logged and skipped, and a
+          backend MAY return what it collected before a transport error.
+        * ``strict=True`` — scheduling control-plane contract: the result is
+          COMPLETE or the call raises.  Implementations must propagate any
+          transport/pagination failure, any incomplete response structure and
+          any record that cannot be converted to
+          :class:`DocProcessingStatus` — a partial result silently consumed
+          by the pipeline supervisor would strand the missed documents (the
+          caller has already consumed its wake-up signal).  A legitimately
+          empty result (nothing matches, index/collection not created yet)
+          is complete and returns ``{}``.
+        """
 
     @abstractmethod
     async def get_docs_by_track_id(
