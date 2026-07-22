@@ -1978,11 +1978,11 @@ wheels = [
 
 [[package]]
 name = "json-repair"
-version = "0.59.9"
+version = "0.61.7"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d9/f4/bf2e3fb48517a74c75bc08a85f781f3229cfe09fb1292d6969228be378b7/json_repair-0.59.9.tar.gz", hash = "sha256:761f495a9c0d4ff7d56aa8859b470b072f9470a8280797ea5da246736c294324", size = 49000, upload-time = "2026-05-12T12:28:49.662Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/a3/6001c2448ee54a80f35a2501b848f4bbd87987bd41ead8cc17367a2bfd56/json_repair-0.61.7.tar.gz", hash = "sha256:a3754543f050093efcda6c9ab00b20a236b5d082c8c622bc65b88fa74ff8d51f", size = 51573, upload-time = "2026-07-21T13:01:15.085Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/6b/8c42827dc2a7ac4d28340da81f816ee89f9e0b1588497b5ada2de3aefca1/json_repair-0.59.9-py3-none-any.whl", hash = "sha256:5264909878c4214e16342485559998d9735befd6ad44a802f3768eb7b95d0a55", size = 47660, upload-time = "2026-05-12T12:28:47.937Z" },
+    { url = "https://files.pythonhosted.org/packages/76/da/7f9e2b0a1120b107a204bbab6d0ef7ff2ae37790bddc5ee21c9c1f961f3b/json_repair-0.61.7-py3-none-any.whl", hash = "sha256:45c99b8cffef404e846b60d3dc21fc6f0fd5a4595cebad169dfab083ffb8246a", size = 50146, upload-time = "2026-07-21T13:01:13.734Z" },
 ]
 
 [[package]]
@@ -2545,8 +2545,8 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'pytest'", specifier = ">=2.0.0" },
     { name = "httpx2", marker = "extra == 'test'", specifier = ">=2.0.0" },
     { name = "jiter", marker = "extra == 'api'" },
-    { name = "json-repair" },
-    { name = "json-repair", marker = "extra == 'api'" },
+    { name = "json-repair", specifier = ">=0.59.9,<1.0.0" },
+    { name = "json-repair", marker = "extra == 'api'", specifier = ">=0.59.9,<1.0.0" },
     { name = "langchain-experimental", marker = "extra == 'api'", specifier = ">=0.3.2,<1" },
     { name = "langchain-text-splitters", marker = "extra == 'api'", specifier = ">=0.3,<2" },
     { name = "langfuse", marker = "extra == 'observability'", specifier = ">=3.8.1" },

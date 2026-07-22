@@ -36,6 +36,7 @@ from typing import (
 )
 import numpy as np
 from dotenv import load_dotenv
+import json_repair
 
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -4168,6 +4169,188 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
             repair_vlm_json_escape_damage_nested(item, context=context) for item in obj
         ]
     return obj
+
+
+_CODE_FENCE_PATTERN = re.compile(
+    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL
+)
+
+
+def strip_markdown_code_fence(text: str) -> str:
+    """Strip a surrounding markdown code fence (```json ... ``` or ``` ... ```).
+
+    Why: LLM training priors strongly associate "JSON output" with fenced code
+    blocks, so providers routinely wrap responses despite explicit instructions
+    to the contrary. Stripping here avoids relying on ``json_repair`` and the
+    noisy warning it emits. The ``\\n?`` make the interior newlines optional so
+    single-line fences (```` ```json {...}``` ````) are handled too.
+    """
+
+    match = _CODE_FENCE_PATTERN.match(text)
+    return match.group(1) if match else text
+
+
+def _first_structural_opener(text: str) -> tuple[str | None, int]:
+    """Return the first ``[`` or ``{`` that sits outside a double-quoted string.
+
+    Only ``"`` is treated as a string delimiter: prose apostrophes (``Here's``)
+    are far too common to treat ``'`` as a quote, and leading prose that wraps a
+    ``[`` inside single quotes is rare enough to accept as graceful degradation.
+    The result drives the top-level array-vs-object decision — a leading ``[``
+    means a top-level array (rejected by the caller), a leading ``{`` marks where
+    object recovery starts.
+    """
+    quote_open = False
+    escaped = False
+    for index, char in enumerate(text):
+        if quote_open:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote_open = False
+            continue
+        if char == '"':
+            quote_open = True
+        elif char in "[{":
+            return char, index
+    return None, -1
+
+
+def _first_balanced_object_slice(text: str) -> str:
+    """Return the first brace-balanced ``{...}`` slice; ``text`` starts at ``{``.
+
+    ``"`` always opens a string. ``'`` opens a string only in a value/key
+    position — right after ``{``, ``[``, ``,`` or ``:`` (spaces skipped) — so a
+    bare apostrophe inside an unquoted token (``O'Reilly``, ``it's``) is not
+    mistaken for a string start. Without that guard the scan would run past the
+    object's closing ``}`` and json_repair would fold trailing prose into the
+    last value — a silent, schema-valid but corrupted result. Single quotes are
+    tracked at all because weaker models emit single-quoted JSON strings that can
+    legitimately contain stray braces. Falls back to the whole string when no
+    matching close brace exists so an incomplete object stays repairable.
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    previous_non_space = ""
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char == '"' or (char == "'" and previous_non_space in "{[,:"):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[: index + 1]
+        if not char.isspace():
+            previous_non_space = char
+    return text
+
+
+def tolerant_load_json_dict(text: str) -> dict[str, Any]:
+    """Recover a single JSON object from noisy LLM/VLM text.
+
+    Returns the first genuine JSON *object*, or ``{}`` when the text does not
+    yield exactly one object. ``{}`` is the signal callers act on: multimodal
+    analysis retries once, entity extraction falls back to delimiter parsing.
+
+    Recovered — returns the object (the malformed shapes weak models emit):
+
+    * a clean object, optionally inside a markdown ``json`` code fence, with or
+      without interior newlines: ``{"a": 1}``
+    * leading prose before the object — a label, a ``#`` or ``//`` comment
+      lead-in, a URL, or an apostrophe: ``Here is the result: {"a":1}``,
+      ``Result #1: {"a":1}``, ``Source: http://x//y#z {"a":1}``,
+      ``Here's the note: {"a":1}``
+    * trailing prose after the object, even when it contains braces — the bug
+      this helper exists for, where a greedy ``{...}`` slice over-extends and
+      drops everything: ``{"facts":[...]} trailing {brace}``
+    * object-level slips ``json_repair`` fixes — trailing comma, single quotes,
+      unquoted keys, truncation: ``{"a":1,}``, ``{'a':1}``, ``{a:1}``, ``{"a":1``
+    * a genuine (possibly malformed) object followed by a bracket citation:
+      ``{"a":1,} [1]``
+
+    Rejected — returns ``{}`` so callers retry / fall back rather than accept a
+    non-object:
+
+    * any top-level array, so one element is never mistaken for the whole
+      answer — including prose-prefixed, truncated, single-quoted, and commented
+      arrays: ``[{"a":1},{"b":2}]``, ``Here is the result: [{...}]``,
+      ``['note', {...}]``, ``[/* ] */ {...}]``
+    * a top-level array reached past a broken array shell, an unclosed quote, or
+      pseudo-object prose — never scavenged for an inner object: ``[}{"a":1}]``,
+      ``"oops [}{"a":1}]``, ``{note} [{"a":1}]``
+    * an object behind bracketed prose — indistinguishable from a real array
+      without heuristics and not seen in practice: ``analysis: [draft] {"a":1}``
+
+    Two edge rules worth knowing when extending this:
+
+    * the top-level shape is decided by the first structural opener outside a
+      double-quoted string; ``json_repair`` runs only on the first balanced
+      ``{...}`` slice, never the whole string (it would scavenge a dict across
+      structural boundaries and defeat array rejection).
+    * a single quote is a string delimiter only in a value/key position, so a
+      bare apostrophe in an unquoted token (``O'Reilly``, ``it's``) does not
+      swallow the object's closing brace.
+
+    Not handled here: LaTeX-escape damage in string values — callers apply
+    ``repair_vlm_json_escape_damage_nested`` themselves, keeping that choke
+    point out of this helper.
+    """
+    if not text:
+        return {}
+    candidate = strip_markdown_code_fence(text).strip()
+
+    # Decide the top-level shape from the raw structure FIRST: the first opener
+    # outside a double-quoted string. json_repair is never run over the whole
+    # candidate — it scavenges a dict across structural boundaries (out of a
+    # broken array shell '[}{...}]', or past pseudo-object prose '{note} [..]'),
+    # which would bypass the top-level-array rejection contract.
+    opener, index = _first_structural_opener(candidate)
+    if opener != "{":
+        # '[' is a top-level array. None means the structure is untrusted — e.g.
+        # an unclosed double quote swallows the openers ('"oops [}{"a":1}]').
+        # Reject either way so callers retry (multimodal) / fall back (entity).
+        return {}
+    suffix = candidate[index:]
+
+    # 1) Strict decode of the first object from the opener. A clean object,
+    #    optionally followed by trailing prose, is the answer — raw_decode stops
+    #    at the end of the first value, so "{...} trailing {brace}" is handled.
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(suffix)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # 2) The opener did not start a clean object: a malformed leading object
+    #    (trailing comma / single quotes / unquoted keys), possibly followed by
+    #    trailing text such as a "[1]" citation, must still be recovered. Repair
+    #    the first balanced slice and accept it only if it is itself an object.
+    #    json_repair returns a *list* (not a dict) for pseudo-object prose like
+    #    '{note}', so a real payload of the form '{note} [ {...} ]' falls through
+    #    to {} here — a trailing top-level array is never scavenged for an
+    #    element (repairing only the slice, never the whole candidate, is what
+    #    keeps the array out of reach).
+    slice_ = _first_balanced_object_slice(suffix)
+    try:
+        repaired = json_repair.loads(slice_)
+        if isinstance(repaired, dict):
+            return repaired
+    except Exception:
+        pass
+    return {}
 
 
 def check_storage_env_vars(storage_name: str) -> None:

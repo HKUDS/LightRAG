@@ -16,10 +16,8 @@ import base64
 import inspect
 import json
 
-import json_repair
 import mimetypes
 import os
-import re
 import threading
 import time
 import traceback
@@ -84,6 +82,7 @@ from lightrag.utils import (
     save_to_cache,
     serialize_llm_cache_identity,
     strip_control_characters,
+    tolerant_load_json_dict,
 )
 from lightrag.utils_pipeline import (
     # Re-exported through the pipeline namespace (not used by this module
@@ -3800,52 +3799,18 @@ class _PipelineMixin:
             _VLM_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
             def _json_extract(text: str) -> dict[str, Any]:
-                """Tolerant JSON object recovery.
+                """Tolerant JSON object recovery via :func:`tolerant_load_json_dict`.
 
-                Mirrors :func:`lightrag.operate._process_json_extraction_result`
-                so weaker models that emit ```json ... ``` fenced output,
-                trailing commas, or unquoted keys are still salvageable.
-                The order of attempts is:
-
-                1. Strip a leading ```json fence if present.
-                2. Hand the cleaned string to ``json_repair.loads`` (handles
-                   minor structural slips like trailing commas).
-                3. Fall back to a greedy ``{...}`` regex slice for outputs
-                   that wrap the JSON object in prose, then re-run
-                   ``json_repair.loads`` on the slice.
-
-                String values in the recovered object are passed through
-                ``repair_vlm_json_escape_damage``: models writing LaTeX
-                inside JSON strings routinely under-escape backslashes
-                (``"\\frac"`` is valid JSON meaning form feed + ``rac``),
-                and this is the single choke point both fresh responses
-                and cache hits flow through.
+                String values are passed through ``repair_vlm_json_escape_damage``,
+                the single choke point both fresh responses and cache hits flow
+                through: models writing LaTeX inside JSON strings routinely
+                under-escape backslashes (``"\\frac"`` is valid JSON meaning form
+                feed + ``rac``).
                 """
-                if not text:
+                obj = tolerant_load_json_dict(text)
+                if not obj:
                     return {}
-                candidate = text.strip()
-                fence_match = re.match(
-                    r"^```(?:json)?\s*\n(.*?)\n```$",
-                    candidate,
-                    re.DOTALL | re.IGNORECASE,
-                )
-                if fence_match:
-                    candidate = fence_match.group(1).strip()
-                try:
-                    obj = json_repair.loads(candidate)
-                    if isinstance(obj, dict):
-                        return repair_vlm_json_escape_damage_nested(obj)
-                except Exception:
-                    pass
-                m = re.search(r"\{[\s\S]*\}", candidate)
-                if m:
-                    try:
-                        obj = json_repair.loads(m.group(0))
-                        if isinstance(obj, dict):
-                            return repair_vlm_json_escape_damage_nested(obj)
-                    except Exception:
-                        pass
-                return {}
+                return repair_vlm_json_escape_damage_nested(obj)
 
             class _MMJSONConformanceError(Exception):
                 """Raised only when an LLM/VLM response violates MM JSON schema."""
