@@ -133,7 +133,7 @@ To let the P chunking strategy split body text without breaking multimodal objec
 | Tag | Meaning | Tag attributes |
 |---|---|---|
 | `<table id="tb-…" format="json">…</table>` | Table placeholder; the body is the raw table JSON / HTML | `id` points to the corresponding item in `tables.json`; `format` ∈ `json` / `html` |
-| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | Self-closing drawing placeholder | `id` points to `drawings.json`; `path` is relative to the `*.parsed/` directory; `src` is the reference name in the original document |
+| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | Self-closing drawing placeholder | `id` points to `drawings.json`; `path` is relative to the `*.parsed/` directory — empty string `""` when the image bytes were not materialized (external link not downloaded / download failed); `src` is the original reference from the source document (remote URL, external link target) |
 | `<equation id="eq-…" format="latex" caption="…">…</equation>` | Equation placeholder | Inline equations also use `<equation format="latex">`, but **without** `id`, and are not written to the sidecar; only block equations (occupying one or more entire lines) carry an `id` |
 
 When the text is fed to the LLM during entity/relation extraction, internal attributes such as `id / path / src` are stripped, but key attributes (`format / caption`) are preserved. The goal is to avoid extracting entities that are invisible in the article and injecting too much noise into the extraction results.
@@ -192,8 +192,8 @@ The top level is a dict container of the form `{"version": "1.0", "drawings": { 
 | `heading` | The section heading the drawing belongs to |
 | `parent_headings` | String array: the top-down list of ancestor headings, excluding the current `heading` (mirrors the `blocks.jsonl` field of the same name on the block this drawing belongs to) |
 | `format` | Original extension (no dot): `png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
-| `path` | Resource path relative to the `*.parsed/` directory; **always** points to a file inside `*.blocks.assets/` |
-| `src` | The reference alias of the drawing in the original document (empty in most cases) |
+| `path` | Resource path relative to the `*.parsed/` directory; when non-empty it **always** points to a file inside `*.blocks.assets/`. Empty string `""` ⇒ the image bytes were not cached locally (external link not downloaded / download failed) |
+| `src` | The original reference of the drawing in the source document (remote URL, external link target); empty in most cases |
 | `caption` | Visible caption (the parser may leave it empty) |
 | `footnotes` | List of footnote strings |
 | `surrounding` | Context object: see [§7](#7-surrounding) |
