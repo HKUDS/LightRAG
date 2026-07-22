@@ -3770,11 +3770,13 @@ class _PipelineMixin:
             vlm_process_enable = bool(global_config.get("vlm_process_enable", False))
             max_image_bytes = max(
                 256 * 1024,
-                int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024))),
+                get_env_value("VLM_MAX_IMAGE_BYTES", 5 * 1024 * 1024, int),
             )
             min_image_pixel = max(
                 1,
-                int(os.getenv("VLM_MIN_IMAGE_PIXEL", str(DEFAULT_MM_IMAGE_MIN_PIXEL))),
+                get_env_value(
+                    "VLM_MIN_IMAGE_PIXEL", DEFAULT_MM_IMAGE_MIN_PIXEL, int
+                ),
             )
             # Multimodal analysis shares the entity-extraction cache flag
             # (both run with mode="default" — see handle_cache short-circuit
