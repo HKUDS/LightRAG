@@ -258,3 +258,184 @@ async def test_kv_get_by_ids_raises_on_transient_error(global_config):
     storage = await _make_kv(global_config, client)
     with pytest.raises(TransportError):
         await storage.get_by_ids(["doc-1", "doc-2"])
+
+
+# ---------------------------------------------------------------------------
+# KV item-level mget errors (HTTP 200, but a single item failed)
+#
+# OpenSearch answers an ``mget`` with HTTP 200 even when individual items
+# failed: such an item carries an ``error`` object and NO ``found`` flag.
+# Reading missing/false ``found`` as "absent" turns a transient per-item
+# failure into a CONFIRMED miss, which the consistency validator then deletes a
+# live doc_status row over.  ``None`` must mean confirmed absent and nothing
+# else.
+# ---------------------------------------------------------------------------
+
+
+async def test_kv_get_by_id_raises_on_item_level_error(global_config):
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {
+                    "_id": "doc-1",
+                    "error": {"type": "shard", "reason": "x"},
+                    "status": 503,
+                }
+            ]
+        }
+    )
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.get_by_id("doc-1")
+
+
+async def test_kv_get_by_id_raises_on_malformed_or_missing_item(global_config):
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    # Empty docs array — no answer at all for the requested id.
+    client.mget = AsyncMock(return_value={"docs": []})
+    with pytest.raises(RuntimeError):
+        await storage.get_by_id("doc-1")
+    # 'found' flag absent entirely — cannot tell present from absent.
+    client.mget = AsyncMock(return_value={"docs": [{"_id": "doc-1"}]})
+    with pytest.raises(RuntimeError):
+        await storage.get_by_id("doc-1")
+    # found=True but no _source — malformed.
+    client.mget = AsyncMock(return_value={"docs": [{"_id": "doc-1", "found": True}]})
+    with pytest.raises(RuntimeError):
+        await storage.get_by_id("doc-1")
+    # Response id does not match the requested id.
+    client.mget = AsyncMock(
+        return_value={"docs": [{"_id": "other", "found": True, "_source": {"k": 1}}]}
+    )
+    with pytest.raises(RuntimeError):
+        await storage.get_by_id("doc-1")
+
+
+async def test_kv_get_by_id_none_only_for_explicit_found_false(global_config):
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    client.mget = AsyncMock(return_value={"docs": [{"_id": "doc-1", "found": False}]})
+    assert await storage.get_by_id("doc-1") is None
+
+
+async def test_kv_get_by_ids_raises_on_item_level_error(global_config):
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {"_id": "doc-1", "found": True, "_source": {"k": "v"}},
+                {"_id": "doc-2", "error": {"type": "shard"}, "status": 503},
+            ]
+        }
+    )
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.get_by_ids(["doc-1", "doc-2"])
+
+
+async def test_kv_get_by_ids_raises_on_omitted_id(global_config):
+    """A short docs list (an id silently dropped) must raise, not report the
+    missing id as absent."""
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    client.mget = AsyncMock(
+        return_value={"docs": [{"_id": "doc-1", "found": True, "_source": {"k": "v"}}]}
+    )
+    with pytest.raises(RuntimeError):
+        await storage.get_by_ids(["doc-1", "doc-2"])
+
+
+async def test_kv_get_by_ids_maps_found_and_confirmed_absent(global_config):
+    """Happy path preserved: found → materialized in position, explicit
+    found=False → None in position."""
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {"_id": "doc-1", "found": True, "_source": {"k": "v1"}},
+                {"_id": "doc-2", "found": False},
+            ]
+        }
+    )
+    result = await storage.get_by_ids(["doc-1", "doc-2"])
+    assert result[0]["k"] == "v1"
+    assert result[0]["_id"] == "doc-1"
+    assert result[1] is None
+
+
+# ---------------------------------------------------------------------------
+# filter_keys / doc-status batch reads: the SAME item-level contract
+#
+# ``filter_keys`` issues ``_source=False`` mget, so a found item legitimately
+# carries no ``_source``.  A per-item shard error still must NOT be read as
+# "missing" — otherwise an existing doc_id lands in the missing set and the
+# enqueue dedup (pipeline / custom-chunk create) re-ingests it.  Same contract
+# for OpenSearchDocStatusStorage.get_by_ids.
+# ---------------------------------------------------------------------------
+
+
+def _mget_error_for(bad_id: str, *, source: dict | None = None):
+    """Build an mget side_effect echoing requested-id order: ``bad_id`` gets an
+    item-level error, every other id is found (with ``source`` if given)."""
+
+    async def _side_effect(index=None, body=None, **kwargs):
+        docs = []
+        for doc_id in (body or {}).get("ids", []):
+            if doc_id == bad_id:
+                docs.append({"_id": doc_id, "error": {"type": "shard"}, "status": 503})
+            elif source is None:
+                docs.append({"_id": doc_id, "found": True})  # _source=False query
+            else:
+                docs.append({"_id": doc_id, "found": True, "_source": dict(source)})
+        return {"docs": docs}
+
+    return _side_effect
+
+
+async def test_kv_filter_keys_raises_on_item_level_error(global_config):
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    storage._index_ready = True
+    client.mget = AsyncMock(side_effect=_mget_error_for("bad"))
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.filter_keys({"good", "bad"})
+
+
+async def test_kv_filter_keys_returns_only_confirmed_absent(global_config):
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    storage._index_ready = True
+
+    async def _side_effect(index=None, body=None, **kwargs):
+        # "here" exists (found, no _source under _source=False); "gone" absent.
+        return {
+            "docs": [
+                {"_id": doc_id, "found": doc_id == "here"} for doc_id in body["ids"]
+            ]
+        }
+
+    client.mget = AsyncMock(side_effect=_side_effect)
+    assert await storage.filter_keys({"here", "gone"}) == {"gone"}
+
+
+async def test_doc_status_get_by_ids_raises_on_item_level_error(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    storage._index_ready = True
+    client.mget = AsyncMock(
+        side_effect=_mget_error_for("bad", source={"status": "failed"})
+    )
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.get_by_ids(["good", "bad"])
+
+
+async def test_doc_status_filter_keys_raises_on_item_level_error(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    storage._index_ready = True
+    client.mget = AsyncMock(side_effect=_mget_error_for("bad"))
+    with pytest.raises(RuntimeError, match="item error"):
+        await storage.filter_keys({"good", "bad"})
