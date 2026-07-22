@@ -24,6 +24,7 @@ from fastapi import (
     File,
     HTTPException,
     Request,
+    Response,
     UploadFile,
 )
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -983,6 +984,37 @@ class StatusCountsResponse(BaseModel):
     )
 
 
+class SupportedFileTypesResponse(BaseModel):
+    """Response model for the upload allowlist and parser capability matrix
+
+    Attributes:
+        supported_extensions: Dotted lowercase suffixes accepted for a bare
+            (unhinted) filename under the current parser routing rules
+        engines: Usable parser engine -> dotted suffixes it can parse, for
+            pre-validating filenames that carry a ``[engine]`` hint
+    """
+
+    supported_extensions: List[str] = Field(
+        description="Suffixes accepted for an unhinted filename (dotted, lowercase)"
+    )
+    engines: Dict[str, List[str]] = Field(
+        description="Usable parser engine -> dotted suffixes it can parse"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "supported_extensions": [".jpg", ".md", ".pdf", ".txt"],
+                "engines": {
+                    "legacy": [".md", ".pdf", ".txt"],
+                    "mineru": [".jpg", ".pdf", ".png"],
+                    "native": [".docx", ".md", ".textpack"],
+                },
+            }
+        }
+    )
+
+
 class PipelineStatusResponse(BaseModel):
     """Response model for pipeline status
 
@@ -1071,6 +1103,27 @@ class DocumentManager:
             if parser_engine_supports_suffix(engine, s):
                 out.append(f".{s}")
         return tuple(out)
+
+    @property
+    def engine_capabilities(self) -> Dict[str, List[str]]:
+        """Usable engine -> dotted suffixes it can parse, derived live.
+
+        Covers user-selectable engines whose endpoint (if any) is configured
+        — the same gate ``resolve_parser_directives`` applies to a filename
+        hint. Lets the WebUI pre-validate hinted names (``img.[mineru].png``)
+        locally instead of uploading the file only to receive a 400.
+        """
+        from lightrag.parser.registry import (
+            engine_endpoint_configured,
+            suffix_capabilities,
+            supported_parser_engines,
+        )
+
+        return {
+            engine: [f".{s}" for s in sorted(suffix_capabilities(engine))]
+            for engine in sorted(supported_parser_engines())
+            if engine_endpoint_configured(engine)
+        }
 
     def scan_directory_for_new_files(self) -> List[Path]:
         """Scan input directory for new, routable files.
@@ -4337,6 +4390,38 @@ def create_document_routes(
             logger.error(f"Error getting document status counts: {str(e)}")
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
+
+    @router.get(
+        "/supported_file_types",
+        response_model=SupportedFileTypesResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_supported_file_types(
+        response: Response,
+    ) -> SupportedFileTypesResponse:
+        """
+        Get the upload allowlist and the parser capability matrix.
+
+        ``supported_extensions`` is the live allowlist for bare (unhinted)
+        filenames — derived from the parser registry plus the current
+        ``LIGHTRAG_PARSER`` routing rules, the same source the upload
+        endpoint's 400 detail quotes. ``engines`` maps every usable engine
+        (user-selectable, endpoint configured) to the suffixes it can parse,
+        so the WebUI can pre-validate hinted filenames like
+        ``img.[mineru].png`` without uploading the file first.
+
+        Derived from process-level configuration today; when per-workspace
+        parser rules land, this endpoint resolves the ``LIGHTRAG-WORKSPACE``
+        header internally — the response contract stays unchanged (hence the
+        ``Vary`` header, declared ahead of time so caches never reuse a
+        response across workspaces).
+        """
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Vary"] = "LIGHTRAG-WORKSPACE"
+        return SupportedFileTypesResponse(
+            supported_extensions=list(doc_manager.supported_extensions),
+            engines=doc_manager.engine_capabilities,
+        )
 
     @router.post(
         "/reprocess_failed",
