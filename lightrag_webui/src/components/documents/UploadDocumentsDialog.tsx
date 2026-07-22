@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { FileRejection } from 'react-dropzone'
 import Button from '@/components/ui/Button'
 import {
@@ -11,8 +11,16 @@ import {
 } from '@/components/ui/Dialog'
 import FileUploader from '@/components/ui/FileUploader'
 import { toast } from 'sonner'
+import { supportedFileTypes } from '@/lib/constants'
+import {
+  deriveUploaderInputs,
+  flattenAcceptExtensions,
+  formatFileTypesLabel,
+  normalizeSupportedFileTypes,
+  type FileTypesState
+} from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
-import { uploadDocument } from '@/api/lightrag'
+import { getSupportedFileTypes, uploadDocument } from '@/api/lightrag'
 
 import { UploadIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -36,6 +44,29 @@ export default function UploadDocumentsDialog({
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const [fileTypes, setFileTypes] = useState<FileTypesState>({ status: 'idle' })
+
+  // Fetch the live allowlist + engine capability matrix while the dialog is
+  // open. `loading` is entered synchronously in onOpenChange (not here) so
+  // the very first open render already has the uploader disabled.
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    getSupportedFileTypes(controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return
+        const data = normalizeSupportedFileTypes(res)
+        setFileTypes(data ? { status: 'ready', data } : { status: 'fallback' })
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return
+        // Old backend (404) or transient failure: fall back to the static
+        // allowlist and let the server judge hinted filenames.
+        console.warn('Failed to fetch supported file types:', errorMessage(err))
+        setFileTypes({ status: 'fallback' })
+      })
+    return () => controller.abort()
+  }, [open])
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -203,18 +234,26 @@ export default function UploadDocumentsDialog({
     [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, onUploadBatchAccepted]
   )
 
+  const uploaderInputs = deriveUploaderInputs(fileTypes)
+
   return (
     <Dialog
       open={open}
-      onOpenChange={(open) => {
+      onOpenChange={(nextOpen) => {
         if (isUploading) {
           return
         }
-        if (!open) {
+        if (nextOpen) {
+          // Enter loading synchronously so the first open render already has
+          // the uploader disabled — no window where a hinted file could start
+          // uploading before the capability matrix arrives.
+          setFileTypes({ status: 'loading' })
+        } else {
           setProgresses({})
           setFileErrors({})
+          setFileTypes({ status: 'idle' })
         }
-        setOpen(open)
+        setOpen(nextOpen)
       }}
     >
       <DialogTrigger asChild>
@@ -232,12 +271,18 @@ export default function UploadDocumentsDialog({
         <FileUploader
           maxFileCount={Infinity}
           maxSize={200 * 1024 * 1024}
-          description={t('documentPanel.uploadDocuments.fileTypes')}
+          description={t('documentPanel.uploadDocuments.fileTypes', {
+            types: formatFileTypesLabel(
+              uploaderInputs.acceptedExtensions ?? flattenAcceptExtensions(supportedFileTypes)
+            )
+          })}
           onUpload={handleDocumentsUpload}
           onReject={handleRejectedFiles}
           progresses={progresses}
           fileErrors={fileErrors}
-          disabled={isUploading}
+          disabled={isUploading || uploaderInputs.disabled}
+          acceptedExtensions={uploaderInputs.acceptedExtensions}
+          engineCapabilities={uploaderInputs.engineCapabilities}
         />
       </DialogContent>
     </Dialog>

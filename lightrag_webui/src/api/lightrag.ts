@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
+import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
@@ -576,6 +577,11 @@ export const checkHealth = async (): Promise<
 
 export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   const response = await axiosInstance.get('/documents')
+  return response.data
+}
+
+export const getSupportedFileTypes = async (signal?: AbortSignal): Promise<SupportedFileTypes> => {
+  const response = await axiosInstance.get('/documents/supported_file_types', { signal })
   return response.data
 }
 

@@ -13,6 +13,11 @@ import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import Button from '@/components/ui/Button'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { supportedFileTypes } from '@/lib/constants'
+import {
+  flattenAcceptExtensions,
+  formatFileTypesLabel,
+  isAcceptedFilename
+} from '@/lib/fileTypes'
 
 interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
   /**
@@ -64,15 +69,31 @@ interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
   fileErrors?: Record<string, string>
 
   /**
-   * Accepted file types for the uploader.
+   * Accepted file types for the uploader. Static fallback source; only its
+   * extensions matter (validation is extension-based, MIME keys are ignored).
    * @type { [key: string]: string[]}
-   * @default
-   * ```ts
-   * { "text/*": [] }
-   * ```
-   * @example accept={["text/plain", "application/pdf"]}
+   * @default supportedFileTypes
    */
   accept?: DropzoneProps['accept']
+
+  /**
+   * Backend-provided allowlist for bare (unhinted) filenames, dotted
+   * lowercase. Overrides the extensions derived from `accept` when set.
+   * @type string[]
+   * @default undefined
+   * @example acceptedExtensions={['.md', '.pdf']}
+   */
+  acceptedExtensions?: string[]
+
+  /**
+   * Backend-provided parser capability matrix (engine -> dotted suffixes)
+   * used to pre-validate `[engine]`-hinted filenames locally. When absent,
+   * hinted filenames pass through for the server to judge.
+   * @type Record<string, string[]>
+   * @default undefined
+   * @example engineCapabilities={{ mineru: ['.png', '.pdf'] }}
+   */
+  engineCapabilities?: Record<string, string[]>
 
   /**
    * Maximum file size for the uploader.
@@ -137,6 +158,8 @@ function FileUploader(props: FileUploaderProps) {
     progresses,
     fileErrors,
     accept = supportedFileTypes,
+    acceptedExtensions,
+    engineCapabilities,
     maxSize = 1024 * 1024 * 200,
     maxFileCount = 1,
     multiple = false,
@@ -145,6 +168,12 @@ function FileUploader(props: FileUploaderProps) {
     className,
     ...dropzoneProps
   } = props
+
+  const acceptedExts = React.useMemo(
+    () => new Set(acceptedExtensions ?? flattenAcceptExtensions(accept)),
+    [acceptedExtensions, accept]
+  )
+  const engineMatrix = engineCapabilities ?? null
 
   const [files, setFiles] = useControllableState<File[]>({
     prop: valueProp,
@@ -212,11 +241,8 @@ function FileUploader(props: FileUploaderProps) {
             return false;
           }
 
-          // Check if file type is accepted
-          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
-          const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
-            return file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt));
-          });
+          // Same verdict as the dropzone validator (extension-based, hint-aware)
+          const isAccepted = isAcceptedFilename(file.name, acceptedExts, engineMatrix);
 
           // Check file size
           const isSizeValid = file.size <= maxSize;
@@ -229,7 +255,7 @@ function FileUploader(props: FileUploaderProps) {
         }
       }
     },
-    [files, maxFileCount, multiple, onUpload, onReject, setFiles, t, accept, maxSize]
+    [files, maxFileCount, multiple, onUpload, onReject, setFiles, t, acceptedExts, engineMatrix, maxSize]
   )
 
   function onRemove(index: number) {
@@ -275,14 +301,9 @@ function FileUploader(props: FileUploaderProps) {
             };
           }
 
-          // Safely extract file extension
-          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
-
-          // Ensure accept object exists and has correct format
-          const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
-            // Ensure extensions is an array before calling includes
-            return file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt));
-          });
+          // Extension-based verdict aligned with the backend (MIME is never
+          // consulted — the server routes purely on the suffix and hint)
+          const isAccepted = isAcceptedFilename(file.name, acceptedExts, engineMatrix);
 
           if (!isAccepted) {
             return {
@@ -342,7 +363,9 @@ function FileUploader(props: FileUploaderProps) {
                         isMultiple: maxFileCount === Infinity,
                         maxSize: formatBytes(maxSize)
                       })}
-                      {t('documentPanel.uploadDocuments.fileTypes')}
+                      {t('documentPanel.uploadDocuments.fileTypes', {
+                        types: formatFileTypesLabel([...acceptedExts])
+                      })}
                     </p>
                   )}
                 </div>
