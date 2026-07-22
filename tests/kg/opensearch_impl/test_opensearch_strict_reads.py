@@ -439,3 +439,41 @@ async def test_doc_status_filter_keys_raises_on_item_level_error(global_config):
     client.mget = AsyncMock(side_effect=_mget_error_for("bad"))
     with pytest.raises(RuntimeError, match="item error"):
         await storage.filter_keys({"good", "bad"})
+
+
+async def test_kv_filter_keys_raises_on_whole_call_transient(global_config):
+    """A whole-call transport error must NOT be read as 'all keys new': the
+    dedup gate raises so the caller aborts before any upsert (fail-closed)."""
+    client = _make_client()
+    storage = await _make_kv(global_config, client)
+    storage._index_ready = True
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.filter_keys({"a", "b"})
+
+
+async def test_doc_status_filter_keys_raises_on_whole_call_transient(global_config):
+    """First-layer enqueue dedup (pipeline.py): a transient whole-call failure
+    must raise, not report existing docs as new and re-schedule them."""
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    storage._index_ready = True
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.filter_keys({"a", "b"})
+
+
+async def test_filter_keys_missing_index_returns_all_keys(global_config):
+    """A genuinely missing index is confirmed-empty — every key is new. This
+    stays fail-open (unlike a transport error) for both KV and doc_status."""
+    kv_client = _make_client()
+    kv = await _make_kv(global_config, kv_client)
+    kv._index_ready = True
+    kv_client.mget = AsyncMock(side_effect=_missing_index_error())
+    assert await kv.filter_keys({"a", "b"}) == {"a", "b"}
+
+    ds_client = _make_client()
+    ds = await _make_doc_status(global_config, ds_client)
+    ds._index_ready = True
+    ds_client.mget = AsyncMock(side_effect=_missing_index_error())
+    assert await ds.filter_keys({"a", "b"}) == {"a", "b"}

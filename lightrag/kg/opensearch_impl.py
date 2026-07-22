@@ -1017,8 +1017,13 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return keys - pending_upserts
+            # Scheduling-safe: a whole-call transport error is NOT "every id is
+            # absent". filter_keys is the dedup gate (full_docs custom-chunk
+            # create, lightrag.py) — a fail-open here lets an existing document
+            # be re-created/overwritten. Raise so the caller aborts before any
+            # upsert. (missing-index above is a genuine confirmed-empty index.)
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
-            return keys - pending_upserts
+            raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Buffer documents for batched flush.
@@ -1513,8 +1518,13 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return keys
+            # Scheduling-safe: a whole-call transport error is NOT "every id is
+            # new". This is the FIRST-layer enqueue dedup (pipeline.py:757) — a
+            # fail-open reports existing docs as new, overwrites them to PENDING
+            # and re-schedules them. Raise so enqueue aborts before any upsert.
+            # (missing-index above is a genuine confirmed-empty index.)
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
-            return keys
+            raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Insert or update document status records."""
