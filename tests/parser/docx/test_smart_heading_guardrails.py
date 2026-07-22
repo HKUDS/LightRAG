@@ -136,17 +136,14 @@ def test_explicit_internal_sentence_boundary(text: str, expected: bool) -> None:
     assert has_explicit_internal_sentence_boundary(text) is expected
 
 
+@pytest.mark.requires_spacy_models
 def test_strong_body_spares_multi_level_numbered_heading() -> None:
     """Regression: zh spaCy splits a dotted multi-level number ("3.1.1 X" →
     "3.1." | "1 X") into two pseudo-sentences, which falsely demoted numbered
     headings as multi-sentence body. strong_body_reason must judge the title
     prose (label stripped), so a numbered heading is spared while genuine body
     still trips."""
-    from lightrag.parser.docx.smart_heading import nlp
     from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
-
-    if nlp.missing_spacy_models():
-        pytest.skip("spaCy models not installed")
 
     assert strong_body_reason("3.1.1 桌面及办公设备运维服务") is None
     assert strong_body_reason("3.1.2 政务信息化基础设施运维服务") is None
@@ -155,6 +152,7 @@ def test_strong_body_spares_multi_level_numbered_heading() -> None:
     assert strong_body_reason("本节介绍运维范围。") == "strong_body_sentence_end"
 
 
+@pytest.mark.requires_spacy_models
 def test_strong_body_spares_heading_with_nbsp_separator() -> None:
     """Regression (test8 应急管理部令第11号): an NBSP after the numbering label
     survived the separator strip, and zh spaCy counted the leading \\xa0 as its
@@ -164,9 +162,6 @@ def test_strong_body_spares_heading_with_nbsp_separator() -> None:
     from lightrag.parser.docx.smart_heading import nlp
     from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
 
-    if nlp.missing_spacy_models():
-        pytest.skip("spaCy models not installed")
-
     assert strong_body_reason("第二章 \xa0列入条件和管理措施") is None
     assert strong_body_reason("第三章 \xa0列入和移出程序") is None
     # A whitespace-only pseudo-sentence never inflates the count on its own.
@@ -175,6 +170,7 @@ def test_strong_body_spares_heading_with_nbsp_separator() -> None:
     assert strong_body_reason("本节介绍列入条件。") == "strong_body_sentence_end"
 
 
+@pytest.mark.requires_spacy_models
 def test_strong_body_multi_sentence_needs_explicit_terminator() -> None:
     """Regression (test13 事故调查报告): the pinned zh model's parser
     hallucinates a mid-word sentence break on short title fragments — a cover
@@ -189,9 +185,6 @@ def test_strong_body_multi_sentence_needs_explicit_terminator() -> None:
         has_explicit_internal_sentence_boundary,
         strong_body_reason,
     )
-
-    if nlp.missing_spacy_models():
-        pytest.skip("spaCy models not installed")
 
     lead_in = "广州市增城区“7.19”索菲亚定制家居项目"
     phrase = "投标单位廉洁自律承诺书"
@@ -906,14 +899,11 @@ def test_truncate_to_heading_length_raw_ceiling_above_cap(monkeypatch) -> None:
     assert out.endswith("...")
 
 
+@pytest.mark.requires_spacy_models
 def test_strong_body_length_floors_tiny_cap(monkeypatch) -> None:
     """strong_body_reason shares heading_max_chars: a nonsensical cap<3 must
     not demote an ordinary short heading via the length rule."""
-    from lightrag.parser.docx.smart_heading import nlp
     from lightrag.parser.docx.smart_heading.guardrails import strong_body_reason
-
-    if nlp.missing_spacy_models():
-        pytest.skip("spaCy models not installed")
 
     monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", "2")
     # Weighted 30 (10 CJK); with the floor (180) the length rule spares it.

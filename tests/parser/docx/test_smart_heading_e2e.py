@@ -11,7 +11,6 @@ tests skip when the pinned models are absent (see test_smart_heading_guards).
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
 import re
@@ -22,22 +21,9 @@ import pytest
 FIXTURE_ROOT = Path(__file__).resolve().parent / "golden" / "smart_heading"
 
 
-def _models_available() -> bool:
-    if importlib.util.find_spec("spacy") is None:
-        return False
-    import spacy.util
-
-    return spacy.util.is_package("zh_core_web_sm") and spacy.util.is_package(
-        "en_core_web_sm"
-    )
-
-
 pytestmark = [
     pytest.mark.offline,
-    pytest.mark.skipif(
-        not _models_available(),
-        reason="pinned spaCy models not installed (lightrag-download-cache --spacy)",
-    ),
+    pytest.mark.requires_spacy_models,
 ]
 
 

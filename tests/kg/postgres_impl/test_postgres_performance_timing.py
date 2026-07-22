@@ -1,4 +1,4 @@
-import importlib
+import importlib.util
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -118,21 +118,35 @@ async def test_graph_upsert_edge_passes_timing_label():
     )
 
 
-def test_performance_timing_logs_reads_new_env_only(monkeypatch):
-    with monkeypatch.context() as m:
-        m.setenv("LIGHTRAG_DOC_QUERY_TIMING_LOGS", "false")
-        m.setenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "true")
-        reloaded = importlib.reload(utils_module)
-        assert reloaded.PERFORMANCE_TIMING_LOGS is True
+def _read_performance_timing_flag() -> bool:
+    """Re-evaluate ``PERFORMANCE_TIMING_LOGS`` from the current environment.
 
-    importlib.reload(utils_module)
+    ``importlib.reload(utils_module)`` would rebind *every* class in
+    ``lightrag.utils`` to a brand-new object in the shared, in-place module,
+    silently breaking ``isinstance`` identity for the many modules that do
+    ``from lightrag.utils import X`` — most visibly the LLM providers' shared
+    ``TruncatedResponse`` marker, whose ``is_truncated_response`` check would
+    then return False for every test running after this one.
+
+    Executing a throwaway copy of the module in isolation re-runs its top-level
+    env parsing while leaving ``sys.modules['lightrag.utils']`` — and everyone's
+    by-value imports — untouched.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "lightrag.utils", utils_module.__file__
+    )
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    return probe.PERFORMANCE_TIMING_LOGS
+
+
+def test_performance_timing_logs_reads_new_env_only(monkeypatch):
+    monkeypatch.setenv("LIGHTRAG_DOC_QUERY_TIMING_LOGS", "false")
+    monkeypatch.setenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "true")
+    assert _read_performance_timing_flag() is True
 
 
 def test_performance_timing_logs_ignores_old_env(monkeypatch):
-    with monkeypatch.context() as m:
-        m.setenv("LIGHTRAG_DOC_QUERY_TIMING_LOGS", "true")
-        m.setenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false")
-        reloaded = importlib.reload(utils_module)
-        assert reloaded.PERFORMANCE_TIMING_LOGS is False
-
-    importlib.reload(utils_module)
+    monkeypatch.setenv("LIGHTRAG_DOC_QUERY_TIMING_LOGS", "true")
+    monkeypatch.setenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false")
+    assert _read_performance_timing_flag() is False

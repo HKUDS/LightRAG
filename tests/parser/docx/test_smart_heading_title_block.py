@@ -88,6 +88,7 @@ def test_multi_window_requires_two_paragraphs_and_big_line() -> None:
     assert _find(records) == []
 
 
+@pytest.mark.requires_spacy_models
 def test_two_line_cover_with_decimal_lead_in_forms_window() -> None:
     """Regression (test13 事故调查报告): a two-line 22pt cover whose first line
     is a lead-in carrying a decimal (广州市增城区"7.19"…) must form ONE
@@ -101,11 +102,6 @@ def test_two_line_cover_with_decimal_lead_in_forms_window() -> None:
     never marks the (short, non-terminated) lead-in strong, so it cannot
     reproduce the bug and would pass against the old implementation too.
     """
-    from lightrag.parser.docx.smart_heading import nlp
-
-    if nlp.missing_spacy_models():
-        pytest.skip("spaCy models not installed")
-
     records = [
         _para("广州市增城区“7.19”索菲亚定制家居项目", size=22.0),  # lead-in (引题)
         _para("建筑工地塔式起重机坍塌较大事故调查报告", size=22.0),  # main title
