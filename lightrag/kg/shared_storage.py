@@ -25,6 +25,11 @@ from lightrag.constants import (
     DEFAULT_QUEUE_STATS_STALE_TTL,
 )
 from lightrag.exceptions import PipelineNotInitializedError
+from lightrag.kg.pipeline_ingress import (
+    AsyncioPipelineIngress,
+    PipelineIngressMailbox,
+    _PipelineIngressMailboxProxy,
+)
 
 DEBUG_LOCKS = False
 
@@ -136,6 +141,20 @@ _queue_stats_ns_cache: Optional[Dict[str, Any]] = None
 # safely skip the internal lock and the __contains__/__getitem__ RPCs. Reset by
 # initialize_share_data()/finalize_share_data() to preserve workspace isolation.
 _namespace_data_cache: Optional[Dict[str, Any]] = None
+
+# Workspace pipeline ingress registry (see lightrag.kg.pipeline_ingress).
+# Deliberately OUTSIDE pipeline_status: the status dict is serialized into API
+# responses, an ingress object must never be. Two layers:
+#   * _pipeline_ingress_local — per-process cache, final namespace -> ingress
+#     (an AsyncioPipelineIngress single-process, a mailbox proxy multiprocess).
+#   * _pipeline_ingress_proxies — multiprocess only: a Manager dict sharing the
+#     mailbox proxies across workers (the nested-proxy pattern _update_flags
+#     already uses), so every worker resolves the SAME server-side mailbox.
+# Ownership: a mailbox belongs to the workspace, not to any LightRAG instance —
+# LightRAG.finalize_storages() must NOT touch it; only finalize_share_data(),
+# an explicit workspace teardown, or test cleanup may drop it.
+_pipeline_ingress_local: Optional[Dict[str, Any]] = None
+_pipeline_ingress_proxies: Optional[Any] = None
 
 # Rate limiting for acquire-failure warnings (fail-closed path).
 _ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
@@ -769,6 +788,11 @@ class _LightRAGManager(SyncManager):
 # spawn start methods.
 _LightRAGManager.register(
     "KeyedHolderTable", KeyedHolderTable, proxytype=_HolderTableProxy
+)
+_LightRAGManager.register(
+    "PipelineIngressMailbox",
+    PipelineIngressMailbox,
+    proxytype=_PipelineIngressMailboxProxy,
 )
 
 
@@ -1457,7 +1481,9 @@ def initialize_share_data(
         _global_concurrency_limits, \
         _lease_ns_cache, \
         _queue_stats_ns_cache, \
-        _namespace_data_cache
+        _namespace_data_cache, \
+        _pipeline_ingress_local, \
+        _pipeline_ingress_proxies
 
     # Check if already initialized
     if _initialized:
@@ -1479,6 +1505,7 @@ def initialize_share_data(
     _lease_ns_cache = None
     _queue_stats_ns_cache = None
     _namespace_data_cache = {}
+    _pipeline_ingress_local = {}
     if _global_concurrency_limits:
         direct_log(
             f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
@@ -1498,6 +1525,10 @@ def initialize_share_data(
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
+        # Cross-worker discovery table for workspace ingress mailboxes: values
+        # are mailbox proxies (nested-proxy pattern, like _update_flags'
+        # manager lists) so every worker reaches the same server-side object.
+        _pipeline_ingress_proxies = _manager.dict()
 
         _storage_keyed_lock = KeyedUnifiedLock()
 
@@ -1519,6 +1550,7 @@ def initialize_share_data(
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
+        _pipeline_ingress_proxies = None  # multiprocess-only discovery table
         _async_locks = None  # No need for async locks in single process mode
 
         _storage_keyed_lock = KeyedUnifiedLock()
@@ -1606,6 +1638,99 @@ async def initialize_pipeline_status(workspace: str | None = None):
         direct_log(
             f"Process {os.getpid()} Pipeline namespace '{final_namespace}' initialized"
         )
+
+
+def _check_ingress_owning_loop(ingress: Any, final_namespace: str) -> None:
+    """Fast-fail when a single-process ingress is used from a foreign loop.
+
+    An :class:`AsyncioPipelineIngress` is built on plain asyncio primitives
+    bound to the loop that created it; sharing it across event loops would
+    corrupt waits silently.  Multiprocess mailbox proxies are loop-agnostic.
+    """
+    owning_loop = getattr(ingress, "owning_loop", None)
+    if owning_loop is None:
+        return
+    if owning_loop is not asyncio.get_running_loop():
+        raise RuntimeError(
+            f"pipeline ingress '{final_namespace}' belongs to another event "
+            "loop; single-process ingress objects cannot be shared across "
+            "loops (create the LightRAG instances for one workspace on the "
+            "same loop, or run multi-worker mode)"
+        )
+
+
+async def get_pipeline_ingress(workspace: str | None = None):
+    """Get (or lazily create) the ingress for ``workspace``.
+
+    Same-workspace callers always resolve the SAME instance: single-process a
+    per-loop :class:`AsyncioPipelineIngress`, multiprocess a proxy to the one
+    server-side :class:`PipelineIngressMailbox` discovered through the shared
+    proxy table.  Creation is serialized by ``data_init_lock``; the per-process
+    cache makes the hot path lock- and RPC-free.
+    """
+    if _pipeline_ingress_local is None:
+        direct_log(
+            f"Error: Try to get pipeline ingress before initialization, pid={os.getpid()}",
+            level="ERROR",
+        )
+        raise ValueError("Shared dictionaries not initialized")
+
+    final_namespace = get_final_namespace("pipeline_ingress", workspace)
+
+    cached = _pipeline_ingress_local.get(final_namespace)
+    if cached is not None:
+        _check_ingress_owning_loop(cached, final_namespace)
+        return cached
+
+    async with get_data_init_lock():
+        cached = _pipeline_ingress_local.get(final_namespace)
+        if cached is not None:
+            _check_ingress_owning_loop(cached, final_namespace)
+            return cached
+        if _is_multiprocess and _manager is not None:
+            ingress = _pipeline_ingress_proxies.get(final_namespace)
+            if ingress is None:
+                ingress = _manager.PipelineIngressMailbox()
+                _pipeline_ingress_proxies[final_namespace] = ingress
+        else:
+            ingress = AsyncioPipelineIngress()
+        _pipeline_ingress_local[final_namespace] = ingress
+        direct_log(
+            f"Process {os.getpid()} Pipeline ingress '{final_namespace}' resolved"
+        )
+        return ingress
+
+
+async def initialize_pipeline_ingress(workspace: str | None = None) -> None:
+    """Ensure the workspace ingress exists (idempotent)."""
+    await get_pipeline_ingress(workspace)
+
+
+async def finalize_pipeline_ingress(workspace: str | None = None) -> None:
+    """Drop the workspace ingress from THIS process's registry.
+
+    Teardown/tests ONLY.  The ingress is shared by every LightRAG instance of
+    the workspace, so ``LightRAG.finalize_storages()`` must never call this —
+    a surviving instance would lose sticky manual requests and in-flight
+    notifications.  Idempotent.
+
+    Single-process, this fully drops the instance (a later
+    :func:`get_pipeline_ingress` builds a fresh, empty one).  Multiprocess, it
+    clears ONLY the local proxy cache and deliberately leaves the shared
+    discovery table intact: the table's own entry does not keep the mailbox
+    alive (values stored inside a Manager container unpickle server-side as
+    ``manager_owned`` and hold no refcount), and popping it while sibling
+    workers still hold cached proxies would split-brain the workspace — the
+    next resolver would mint a NEW mailbox while old workers keep
+    publishing/consuming on the orphaned one.  The server-side mailbox is
+    reclaimed only by :func:`finalize_share_data`; a destructive workspace
+    wipe empties it via ``mailbox.clear()`` instead.
+    """
+    if _pipeline_ingress_local is None:
+        return
+    final_namespace = get_final_namespace("pipeline_ingress", workspace)
+    async with get_data_init_lock():
+        _pipeline_ingress_local.pop(final_namespace, None)
 
 
 def _debug_log_failure(message: str, exc: Exception) -> None:
@@ -2872,7 +2997,9 @@ def finalize_share_data():
         _global_concurrency_limits, \
         _lease_ns_cache, \
         _queue_stats_ns_cache, \
-        _namespace_data_cache
+        _namespace_data_cache, \
+        _pipeline_ingress_local, \
+        _pipeline_ingress_proxies
 
     # Check if already initialized
     if not _initialized:
@@ -2916,6 +3043,11 @@ def finalize_share_data():
                 except Exception:
                     pass  # Ignore any errors during update flags cleanup
                 _update_flags.clear()
+            if _pipeline_ingress_proxies is not None:
+                try:
+                    _pipeline_ingress_proxies.clear()
+                except Exception:
+                    pass  # Manager shutdown below reclaims the mailboxes anyway
 
             # Shut down the Manager - this will automatically clean up all shared resources
             _manager.shutdown()
@@ -2942,6 +3074,8 @@ def finalize_share_data():
     _lease_ns_cache = None
     _queue_stats_ns_cache = None
     _namespace_data_cache = None
+    _pipeline_ingress_local = None
+    _pipeline_ingress_proxies = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
