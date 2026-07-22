@@ -10,6 +10,7 @@ cancellation contract that leaves the request sticky.
 import asyncio
 import importlib
 import sys
+from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
@@ -148,6 +149,55 @@ def test_classification_failure_fallback_drives_sticky_request(tmp_path):
             assert row["status"] == DocStatus.PROCESSED
             ingress = await get_pipeline_ingress(rag.workspace)
             assert ingress.snapshot_manual_retries() == []
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_new_files_all_fail_to_enqueue_still_drives_sticky_request(
+    tmp_path, monkeypatch
+):
+    """new_files are found but EVERY one fails to enqueue (duplicate / empty
+    body / extraction error), so pipeline_index_files never drives the queue
+    and returns False.  ``queue_drive_attempted`` must stay False so the
+    classification-failure fallback still gives this scan's sticky manual
+    request its run.
+
+    Fix-proof: the branch used to set ``queue_drive_attempted = True`` before
+    the call, so the fallback was skipped and the FAILED doc stayed stranded
+    until an unrelated trigger."""
+
+    async def _run():
+        extract = _FlippableExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            doc_id = await _make_failed_doc(rag, extract)
+            extract.fail = False
+
+            request_id = await _publish_manual(rag)
+            doc_manager = DocumentManager(str(tmp_path / "inputs"))
+
+            # A brand-new basename (no doc_status row) → classified as new;
+            # the file never has to exist on disk because enqueue is stubbed
+            # to fail for every file below.
+            doc_manager.scan_directory_for_new_files = lambda: [
+                Path(str(tmp_path / "inputs" / "brand_new.txt"))
+            ]
+
+            async def _enqueue_fails(rag, file_path, track_id=None, from_scan=False):
+                return (False, None)
+
+            monkeypatch.setattr(
+                _document_routes, "pipeline_enqueue_file", _enqueue_fails
+            )
+
+            await run_scanning_process(rag, doc_manager, manual_request_id=request_id)
+
+            row = await rag.doc_status.get_by_id(doc_id)
+            assert row["status"] == DocStatus.PROCESSED  # fallback drove it
+            ingress = await get_pipeline_ingress(rag.workspace)
+            assert ingress.snapshot_manual_retries() == []  # consumed + ACKed
         finally:
             await rag.finalize_storages()
 

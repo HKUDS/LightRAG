@@ -178,9 +178,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
-                if v["status"] not in status_values:
-                    continue
                 try:
+                    # Read ``status`` INSIDE the try: a record missing it (or
+                    # that is not a mapping) is then skipped in relaxed mode and
+                    # raised under strict — symmetric with the other required
+                    # fields below, instead of crashing every relaxed caller.
+                    if v["status"] not in status_values:
+                        continue
                     data = v.copy()
                     data.pop("content", None)
                     if not data.get("file_path"):

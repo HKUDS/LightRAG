@@ -194,3 +194,34 @@ async def test_get_docs_by_statuses_strict_raises_on_bad_record(tmp_path):
 
     with pytest.raises(TypeError):
         await storage.get_docs_by_statuses([DocStatus.FAILED], strict=True)
+
+
+@pytest.mark.asyncio
+async def test_get_docs_by_statuses_missing_status_skips_relaxed_raises_strict(
+    tmp_path,
+):
+    """A record missing its ``status`` key is just another undeserializable
+    record: skipped in relaxed mode, raised under strict.  Regression guard for
+    reading ``v["status"]`` OUTSIDE the try, which crashed every relaxed caller
+    on such a record instead of skipping it."""
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    await storage.initialize()
+
+    async with storage._storage_lock:
+        storage._data.update(
+            {
+                "doc-good": _doc("failed", "good.pdf"),
+                "doc-nostatus": {"file_path": "x.pdf"},  # no "status" key at all
+            }
+        )
+
+    relaxed = await storage.get_docs_by_statuses([DocStatus.FAILED])
+    assert set(relaxed) == {"doc-good"}  # skipped, not crashed
+
+    with pytest.raises(KeyError):
+        await storage.get_docs_by_statuses([DocStatus.FAILED], strict=True)

@@ -2249,8 +2249,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "pipeline_status", workspace=self.workspace
             )
 
+        # Scheduling-control-plane discovery: strict so a mid-pagination or
+        # per-record backend failure raises instead of returning a partial
+        # candidate set (which would roll back some journaled docs, silently
+        # miss the rest, and report the scan done). The scan-time caller
+        # catches the raise and keeps the journal/FAILED rows for the next
+        # scan — abort-and-retry beats partial administrative recovery.
         candidates = await self.doc_status.get_docs_by_statuses(
-            [DocStatus.FAILED, DocStatus.PROCESSING]
+            [DocStatus.FAILED, DocStatus.PROCESSING], strict=True
         )
         journaled_ids = [
             doc_id

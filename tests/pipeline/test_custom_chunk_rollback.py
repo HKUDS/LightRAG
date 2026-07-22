@@ -446,3 +446,30 @@ async def test_sdk_resume_still_possible_before_scan_rolls_back(tmp_path, monkey
         assert anchors["entity_names"] == ["ALICE", "BOB"]
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_rollback_candidate_discovery_uses_strict(tmp_path, monkeypatch):
+    """Candidate discovery is scheduling-control-plane: it must query
+    doc_status with strict=True so a mid-pagination / per-record backend
+    failure aborts the rollback (raise) instead of rolling back a partial
+    candidate set and reporting the scan done.  The scan-time caller catches
+    the raise and keeps the journal/FAILED rows for the next scan."""
+    rag = await _build_rag(tmp_path)
+    try:
+        seen_strict: list[bool] = []
+
+        async def _raising_query(statuses, strict=False):
+            seen_strict.append(strict)
+            if strict:
+                raise RuntimeError("backend page failure")
+            return {}  # relaxed would hide the failure behind a partial result
+
+        monkeypatch.setattr(rag.doc_status, "get_docs_by_statuses", _raising_query)
+
+        with pytest.raises(RuntimeError, match="backend page failure"):
+            await rag.arollback_failed_custom_chunk_patches()
+
+        assert seen_strict == [True]  # discovery used strict, not relaxed
+    finally:
+        await rag.finalize_storages()

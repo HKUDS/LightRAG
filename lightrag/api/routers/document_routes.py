@@ -1976,7 +1976,7 @@ async def pipeline_index_files(
     file_paths: List[Path],
     track_id: str = None,
     from_scan: bool = False,
-):
+) -> bool:
     """Index multiple files sequentially to avoid high CPU load
 
     Args:
@@ -1988,9 +1988,18 @@ async def pipeline_index_files(
             calls bypass the scanning guard inside
             ``apipeline_enqueue_documents`` (whose ``scanning`` flag the
             scan task itself owns).
+
+    Returns:
+        ``True`` iff ``apipeline_process_enqueue_documents`` was actually
+        invoked — i.e. at least one file enqueued.  Callers use this to know
+        whether the processing run (and its start-of-run mailbox peek) really
+        happened; when every file is rejected (duplicate, empty body,
+        extraction error, ...) nothing drives the queue and this returns
+        ``False`` so a sticky manual retry is not left waiting for an unrelated
+        trigger.
     """
     if not file_paths:
-        return
+        return False
     try:
         enqueued = False
 
@@ -2013,9 +2022,11 @@ async def pipeline_index_files(
         # Process the queue only if at least one file was successfully enqueued
         if enqueued:
             await rag.apipeline_process_enqueue_documents()
+        return enqueued
     except Exception as e:
         logger.error(f"Error indexing files: {str(e)}")
         logger.error(traceback.format_exc())
+        return False
 
 
 _STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
@@ -2429,15 +2440,19 @@ async def run_scanning_process(
             # least one new file is successfully enqueued, pipeline_index_files
             # internally invokes apipeline_process_enqueue_documents, which
             # selects work by doc_status state and so will also pick up any
-            # resume_files in the same run.
+            # resume_files in the same run.  Mark queue_drive_attempted only if
+            # a drive ACTUALLY ran: when every new file is rejected (duplicate,
+            # empty body, extraction error, ...) pipeline_index_files returns
+            # False, so the classification-failure fallback below still gets to
+            # drive this scan's sticky manual request instead of stranding it.
             if new_files:
-                queue_drive_attempted = True
-                await pipeline_index_files(
+                if await pipeline_index_files(
                     rag,
                     new_files,
                     track_id,
                     from_scan=True,
-                )
+                ):
+                    queue_drive_attempted = True
 
             # Resume targets must always trigger the pipeline explicitly:
             # pipeline_index_files only runs apipeline_process_enqueue_documents
