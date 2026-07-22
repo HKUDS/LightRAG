@@ -165,7 +165,7 @@ def test_cross_loop_access_fails_while_owner_loop_is_alive():
     thread.start()
     try:
         assert created.wait(5)
-        with pytest.raises(RuntimeError, match="still running"):
+        with pytest.raises(RuntimeError, match="has not been closed"):
             asyncio.run(get_pipeline_ingress("wsA"))
     finally:
         release.set()

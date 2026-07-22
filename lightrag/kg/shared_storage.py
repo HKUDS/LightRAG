@@ -1663,11 +1663,15 @@ def _ensure_ingress_on_current_loop(ingress: Any, final_namespace: str) -> None:
     if owning_loop.is_closed():
         ingress.rebind_to_current_loop()
         return
+    # A stopped-but-not-closed foreign loop is also rejected: it cannot be
+    # distinguished from one that will resume, and migrating out from under a
+    # resumable loop would corrupt its waiters. asyncio.run() always closes
+    # its loop, so the standard LightRAG sync-wrapper flow never hits this.
     raise RuntimeError(
         f"pipeline ingress '{final_namespace}' belongs to another event "
-        "loop that is still running; single-process ingress objects cannot "
-        "be shared across live loops (create the LightRAG instances for one "
-        "workspace on the same loop, or run multi-worker mode)"
+        "loop that has not been closed; single-process ingress objects "
+        "cannot be shared across live loops (create the LightRAG instances "
+        "for one workspace on the same loop, or run multi-worker mode)"
     )
 
 

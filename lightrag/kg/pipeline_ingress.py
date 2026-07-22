@@ -409,7 +409,16 @@ class PipelineIngressHub:
     hub proxy, so no refcount can reclaim one and no discovery entry can
     dangle).  A destructive workspace wipe empties a mailbox via
     ``clear(namespace)``; dropping entries is intentionally not offered until
-    a real cross-worker teardown protocol exists.
+    a real cross-worker teardown/fencing protocol exists.  Accepted lifecycle
+    trade-off: a deployment churning many short-lived workspaces accumulates
+    (small, emptied) mailboxes in the server until Manager shutdown — a
+    future workspace-deletion feature must pair entry removal with that
+    protocol.
+
+    Sharing topology follows the shared-storage architecture: the hub proxy
+    is created pre-fork and inherited by Gunicorn workers.  Handing the proxy
+    to a ``spawn`` child also works (plain pickled-proxy rebuild — the tests
+    do this), but pre-fork inheritance is the supported production boundary.
     """
 
     def __init__(self) -> None:
