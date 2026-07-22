@@ -53,8 +53,9 @@ class NativeExtractRuntime:
 class NativeParserBase(BaseParser):
     """Base for engines that parse a file locally into a sidecar."""
 
-    # ``write_sidecar`` block_drawing_path_style; docx keeps the legacy
-    # "basename_only" shape for byte-equivalence.
+    # ``write_sidecar`` block_drawing_path_style. All native engines use
+    # the spec shape ``<base>.blocks.assets/<filename>`` (a non-empty
+    # ``path`` always points inside ``*.blocks.assets/``).
     sidecar_path_style: str = "with_prefix"
     # Prefix used in the "empty content" error message.
     empty_content_label: str = "Native"

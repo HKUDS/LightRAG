@@ -86,8 +86,8 @@ class ResolvedImage:
       * ``"local"`` — bytes available; ``asset_ref`` is a stable identity used
         to deduplicate (same identity ⇒ one on-disk asset shared by every
         occurrence). ``data`` / ``suggested_name`` / ``fmt`` describe it.
-      * ``"external"`` — keep as an external link; ``url`` is rendered verbatim
-        into the drawing's ``path_override`` (no bytes materialized).
+      * ``"external"`` — keep as an external link; ``url`` is carried in the
+        drawing's ``src`` while ``path`` stays empty (no bytes materialized).
       * ``"skip"`` — drop the image (resolver already logged / counted it).
     """
 

@@ -678,6 +678,36 @@ def test_docling_adapter_picture_referenced_asset(tmp_path: Path) -> None:
     assert drawing.extras["intrinsic_size"] == [100.0, 200.0]
 
 
+def test_docling_adapter_picture_http_uri_kept_as_src(tmp_path: Path) -> None:
+    # A remote image the engine did not materialize: the drawing survives
+    # (placeholder + caption context), but with no asset — path renders
+    # empty and the URL is kept only as src metadata.
+    pictures = [
+        {
+            "self_ref": "#/pictures/0",
+            "label": "picture",
+            "content_layer": "body",
+            "image": {
+                "uri": "https://cdn.example.com/x.png",
+                "mimetype": "image/png",
+            },
+            "prov": [],
+        }
+    ]
+    raw_dir = _write_doc(
+        tmp_path,
+        _doc(body_children=["#/pictures/0"], pictures=pictures),
+    )
+
+    ir = DoclingIRBuilder().normalize_from_workdir(raw_dir, document_name="demo.pdf")
+    drawing = ir.blocks[0].drawings[0]
+    assert drawing.asset_ref == ""
+    assert drawing.src == "https://cdn.example.com/x.png"
+    assert drawing.fmt == "png"
+    assert ir.assets == []
+    assert "{{IMG:" in ir.blocks[0].content_template
+
+
 # ---------------------------------------------------------------------------
 # 6. Positions & bbox_attributes
 # ---------------------------------------------------------------------------

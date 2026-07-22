@@ -133,7 +133,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | 标签 | 含义 | 标签属性 |
 |---|---|---|
 | `<table id="tb-…" format="json">…</table>` | 表格占位，包体是表格原始 JSON / HTML | `id` 指向 `tables.json` 里对应 item；`format` ∈ `json` / `html` |
-| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录；`src` 是原文档里的引用名 |
+| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | 自闭合图形占位 | `id` 指向 `drawings.json`；`path` 相对 `*.parsed/` 目录——图片字节未落地时（外链未下载 / 下载失败）为空串 `""`；`src` 是原文档中的原始引用（远程 URL、外链 target） |
 | `<equation id="eq-…" format="latex" caption="…">…</equation>` | 公式占位 | 行内公式同样用 `<equation format="latex">` 但**不**带 `id`，不会进 sidecar； 仅块公式（独占一行或多行）时携带 `id` |
 
 在实体关系抽取的时候喂给大模型的文本会把 `id / path / src` 等内部属性剥掉，但为保留键属性（`format / caption`）。目的是避免抽取出文章不可见的实体，给抽取结果注入过多的噪声。
@@ -192,8 +192,8 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `heading` | 所在章节标题 |
 | `parent_headings` | 字符串数组：自顶向下的祖先标题列表，不含当前 `heading`（与该图形所属 block 在 `blocks.jsonl` 中的同名字段一致） |
 | `format` | 原始扩展名（去点）：`png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
-| `path` | 相对 `*.parsed/` 目录的资源路径，**永远**指向 `*.blocks.assets/` 内文件 |
-| `src` | 原文档里图形的引用别名（多数情况下为空） |
+| `path` | 相对 `*.parsed/` 目录的资源路径，非空时**永远**指向 `*.blocks.assets/` 内文件；空串 `""` ⇒ 图片字节未缓存到本地（外链未下载 / 下载失败） |
+| `src` | 原文档中图形的原始引用（远程 URL、外链 target）；多数情况下为空 |
 | `caption` | 可见标题（解析器可能留空） |
 | `footnotes` | 脚注字符串列表 |
 | `surrounding` | 上下文对象：参见[§七](#七、surrounding) |

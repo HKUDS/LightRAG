@@ -87,12 +87,12 @@ def write_sidecar(
         block_drawing_path_style: How ``<drawing path="...">`` in
             ``blocks.jsonl`` resolves the asset path. ``"with_prefix"``
             (default) renders ``<base>.blocks.assets/<filename>`` — matches
-            the path stored in ``drawings.json``. ``"basename_only"``
-            renders just ``<filename>``; legacy native docx convention
-            (downstream consumers read the file path from ``drawings.json``,
-            not from this attribute, so the basename-only form is purely
-            cosmetic but kept for byte-equivalence with the original
-            adapter).
+            the path stored in ``drawings.json`` and the spec contract
+            (a non-empty ``path`` always points inside ``*.blocks.assets/``).
+            ``"basename_only"`` renders just ``<filename>``; a legacy
+            convention no in-tree adapter uses anymore — the parameter is
+            kept only for public-API compatibility, and new callers should
+            not pass it.
 
     Returns:
         Dict shaped like the pipeline's existing ``parsed_data`` payload:
@@ -522,17 +522,13 @@ def _render_block_content(
         if drawing is None:
             return ""
         im_id = drawing_id_by_key.get(key, "")
-        if drawing.path_override is not None:
-            # Verbatim external/linked reference — pass through unchanged.
-            path = drawing.path_override
+        filename = asset_paths.get(drawing.asset_ref, "")
+        if not filename:
+            path = ""
+        elif block_drawing_path_style == "basename_only":
+            path = filename
         else:
-            filename = asset_paths.get(drawing.asset_ref, "")
-            if not filename:
-                path = ""
-            elif block_drawing_path_style == "basename_only":
-                path = filename
-            else:
-                path = f"{asset_prefix}{filename}"
+            path = f"{asset_prefix}{filename}"
         return render_drawing_tag(
             im_id,
             drawing.fmt,
@@ -626,11 +622,8 @@ def _drawing_item_dict(
     asset_paths: dict[str, str],
     asset_prefix: str,
 ) -> dict[str, Any]:
-    if drawing.path_override is not None:
-        path = drawing.path_override
-    else:
-        filename = asset_paths.get(drawing.asset_ref, "")
-        path = f"{asset_prefix}{filename}" if filename else ""
+    filename = asset_paths.get(drawing.asset_ref, "")
+    path = f"{asset_prefix}{filename}" if filename else ""
     item: dict[str, Any] = {
         "id": drawing_id,
         "blockid": blockid,
