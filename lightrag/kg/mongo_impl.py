@@ -716,7 +716,10 @@ class MongoDocStatusStorage(DocStatusStorage):
             try:
                 data = self._prepare_doc_status_data(doc)
                 result[doc["_id"]] = DocProcessingStatus(**data)
-            except KeyError as e:
+            except (KeyError, TypeError) as e:
+                # TypeError is what DocProcessingStatus(**data) actually raises
+                # on missing required fields — without it here, the relaxed
+                # skip-and-log contract silently becomes crash-the-whole-call.
                 logger.error(
                     f"[{self.workspace}] Missing required field for document {doc['_id']}: {e}"
                 )

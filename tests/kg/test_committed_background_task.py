@@ -241,6 +241,25 @@ async def test_commit_manual_retry_refuses_on_destructive_without_publish(
     assert ingress.peek_next_manual_retry().request_id == "req-2"
 
 
+async def test_commit_manual_retry_refuses_terminal_id_without_commit(share_data):
+    """A terminal (already ACKed/cleared) request id must be a refusal, not a
+    phantom commit — nothing was published and nothing is owned."""
+    ingress = await get_pipeline_ingress("wsC")
+    ingress.request_manual_retry(
+        "req-done",
+        PipelineIngressMessage(kind="rescan", retry_failed=True, request_id="req-done"),
+    )
+    ingress.ack_manual_retry("req-done")
+
+    state = {"committed": False}
+    refusal = await commit_manual_retry_request(
+        _base_status(), asyncio.Lock(), ingress, "req-done", state
+    )
+    assert refusal is not None and "already" in refusal
+    assert state["committed"] is False
+    assert not ingress.has_work()
+
+
 async def test_commit_manual_retry_is_idempotent_for_pending_id(share_data):
     ingress = await get_pipeline_ingress("wsC")
     state = {"committed": False}

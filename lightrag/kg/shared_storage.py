@@ -2714,7 +2714,15 @@ async def commit_manual_retry_request(
                 "it finishes."
             )
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
-        ingress.request_manual_retry(request_id, message)
+        if not ingress.request_manual_retry(request_id, message):
+            # The id is already terminal (ACKED / CANCELLED_BY_CLEAR): nothing
+            # was published and nothing is owned. Unreachable for the current
+            # callers (they mint a fresh uuid per request) but a future caller
+            # reusing ids must get a refusal, not a phantom commit.
+            return (
+                f"manual retry request id {request_id!r} was already "
+                "finalized; mint a new request id"
+            )
         state["committed"] = True
         return None
 
@@ -2733,6 +2741,14 @@ async def start_committed_background_task(
     recheck + sticky publish in one ``pipeline_status_lock`` critical
     section, setting ``state["committed"] = True`` synchronously after the
     publish) → ``COMMITTED_AND_OWNED`` → ``work()``.
+
+    HARD REQUIREMENT on ``commit`` implementations: between the fence
+    decision and ``state["committed"] = True`` there must be NO await other
+    than acquiring the pipeline status lock itself — the cancel-behavior
+    below keys on that marker, and an await in that window would open a race
+    where a caller cancellation lands mid-commit with the publish already
+    visible but the marker unset (the intent would be torn down as if never
+    published).
 
     Rules keyed on the commit state at caller-cancellation time:
 

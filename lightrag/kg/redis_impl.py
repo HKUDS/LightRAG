@@ -910,7 +910,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                                 if "error_msg" not in data:
                                     data["error_msg"] = None
                                 result[doc_id] = DocProcessingStatus(**data)
-                            except (json.JSONDecodeError, KeyError) as e:
+                            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                                # TypeError is what DocProcessingStatus(**data)
+                                # actually raises on missing required fields —
+                                # without it the relaxed skip-and-log contract
+                                # would crash the whole call instead.
                                 logger.error(
                                     f"[{self.workspace}] Error processing document {key}: {e}"
                                 )
