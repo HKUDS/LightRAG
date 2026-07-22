@@ -87,12 +87,12 @@ def write_sidecar(
         block_drawing_path_style: How ``<drawing path="...">`` in
             ``blocks.jsonl`` resolves the asset path. ``"with_prefix"``
             (default) renders ``<base>.blocks.assets/<filename>`` — matches
-            the path stored in ``drawings.json``. ``"basename_only"``
-            renders just ``<filename>``; legacy native docx convention
-            (downstream consumers read the file path from ``drawings.json``,
-            not from this attribute, so the basename-only form is purely
-            cosmetic but kept for byte-equivalence with the original
-            adapter).
+            the path stored in ``drawings.json`` and the spec contract
+            (a non-empty ``path`` always points inside ``*.blocks.assets/``).
+            ``"basename_only"`` renders just ``<filename>``; a legacy
+            convention no in-tree adapter uses anymore — the parameter is
+            kept only for public-API compatibility, and new callers should
+            not pass it.
 
     Returns:
         Dict shaped like the pipeline's existing ``parsed_data`` payload:

@@ -32,7 +32,6 @@ class NativeDocxParser(NativeParserBase):
     """
 
     engine_name = PARSER_ENGINE_NATIVE
-    sidecar_path_style = "basename_only"  # legacy native docx convention
     empty_content_label = "DOCX"
 
     def validate_source(self, source: Path, file_path: str) -> None:

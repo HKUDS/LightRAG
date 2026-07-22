@@ -9,8 +9,8 @@ job.
 It delegates the **entire** ``parse(ctx)`` to the matching concrete parser
 (rather than subclassing :class:`NativeParserBase` and only forwarding the
 ``extract`` / ``build_ir`` hooks) so each concrete parser keeps its own
-``sidecar_path_style`` — docx stays ``basename_only`` (byte-equivalent golden
-output) while markdown uses ``with_prefix``.
+hooks (``sidecar_path_style``, ``validate_source``, warning surfacing)
+without this dispatcher re-implementing them.
 """
 
 from __future__ import annotations
