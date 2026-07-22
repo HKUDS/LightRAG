@@ -432,6 +432,7 @@ def test_subtree_demotion_ignores_plain_anchored_child() -> None:
     assert "subtree_demoted" in child.rule_trail
 
 
+@pytest.mark.requires_spacy_models
 def test_source_multisentence_gate_real_spacy_end_to_end(monkeypatch) -> None:
     """test11 regression through real NLP and the block assembler, now via the
     source-level multi-sentence gate in ``strong_body_reason`` (a spaCy ≥2 vote
@@ -450,11 +451,9 @@ def test_source_multisentence_gate_real_spacy_end_to_end(monkeypatch) -> None:
     import json
 
     from lightrag.parser.docx.parse_document import _assemble_blocks_smart
-    from lightrag.parser.docx.smart_heading import guardrails, nlp
+    from lightrag.parser.docx.smart_heading import guardrails
     from lightrag.parser.docx.smart_heading.heading_flow import run_smart_heading
 
-    if nlp.missing_spacy_models():
-        pytest.skip("spaCy models not installed")
     monkeypatch.setenv("DOCX_SMART_MIN_TOKENS", "10")
 
     target = "2.3   投标单位廉洁自律承诺书"

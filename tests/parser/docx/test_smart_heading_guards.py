@@ -8,8 +8,6 @@ models are absent (e.g. a bare CI). The missing-model hard-error contract
 
 from __future__ import annotations
 
-import importlib.util
-
 import pytest
 
 from lightrag.parser.docx.smart_heading.style_key import classify_numbering
@@ -17,20 +15,7 @@ from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 pytestmark = pytest.mark.offline
 
 
-def _models_available() -> bool:
-    if importlib.util.find_spec("spacy") is None:
-        return False
-    import spacy.util
-
-    return spacy.util.is_package("zh_core_web_sm") and spacy.util.is_package(
-        "en_core_web_sm"
-    )
-
-
-requires_models = pytest.mark.skipif(
-    not _models_available(),
-    reason="pinned spaCy models not installed (lightrag-download-cache --spacy)",
-)
+requires_models = pytest.mark.requires_spacy_models
 
 
 # route_language is a pure function (no model load), so it always runs.
