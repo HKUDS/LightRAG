@@ -1,19 +1,21 @@
 """Workspace-scoped pipeline ingress: the notification channel that replaces
 ``request_pending``.
 
-One ingress instance exists per workspace (see ``shared_storage.
+One logical ingress exists per workspace (see ``shared_storage.
 get_pipeline_ingress``).  It carries three channels with three distinct
 reliability grades — deliberately NOT a single destructive FIFO:
 
 * **document** — ephemeral doc-id notifications published by enqueue after the
   ``doc_status`` row is persisted.  Messages may be lost or duplicated freely:
   ``doc_status`` is the source of truth and the next processing run's initial
-  scan rebuilds anything dropped.  Consumers re-read storage by id and skip
-  stale/terminal/duplicate ids.
+  scan rebuilds anything dropped.  The channel is bounded; an overflow
+  *coalesces* into the auto-rescan dirty flag instead of growing memory or
+  blocking the producer ("notifications are droppable, state is not").
 * **auto rescan** — a single dirty flag.  Publishers that cannot name precise
   doc ids (busy-refused processing requests, partial doc-status commits,
-  recovery paths) set it; the pipeline supervisor is the only consumer and
-  resets it atomically via :meth:`consume_auto_rescan`.
+  recovery paths, document-channel overflow) set it; the pipeline supervisor
+  is the only consumer and resets it atomically via
+  :meth:`~PipelineIngressMailbox.consume_auto_rescan`.
 * **manual retry** — sticky FIFO requests carrying user intent from
   ``/documents/scan`` and ``/documents/reprocess_failed``.  A request stays in
   the mailbox until explicitly ACKed *after* the FAILED→PENDING reset has been
@@ -32,9 +34,18 @@ documents must wait on the document channel alone (``wait_for_documents`` /
 control channels — otherwise a pending manual/auto entry keeps ``has_work()``
 true and turns the wait into a busy loop.
 
+Multiprocess topology mirrors ``KeyedHolderTable``: ONE server-side
+:class:`PipelineIngressHub` (created pre-fork in ``initialize_share_data``,
+inherited by every worker as a proxy) owns the ``{namespace: mailbox}`` map.
+Workers never hold client-side locks and never create per-workspace proxies —
+every operation is a single hub RPC that is atomic server-side, so a client
+SIGKILLed at any point can neither strand a lock nor split-brain the
+workspace.  :class:`ManagerPipelineIngress` is the thin per-workspace client
+view binding a namespace to the hub proxy.
+
 This module is dependency-free on purpose: :mod:`lightrag.kg.shared_storage`
-imports it to register :class:`PipelineIngressMailbox` on the LightRAG
-``SyncManager`` subclass and to build the per-workspace registry.
+imports it to register the hub on the LightRAG ``SyncManager`` subclass and to
+build the per-process registry.
 """
 
 from __future__ import annotations
@@ -57,6 +68,14 @@ MANUAL_RETRY_CANCELLED_BY_CLEAR = "cancelled_by_clear"
 # accepted again — the documented bounded-window limit of the idempotency
 # guarantee.
 TERMINAL_MANUAL_REQUEST_IDS_CAPACITY = 4096
+
+# Bound of the document notification channel per workspace.  Overflow never
+# blocks or fails the producer: the notification is dropped and coalesced into
+# the auto-rescan dirty flag, and the consumer recovers the missed work from
+# doc_status (the authoritative store).  In multiprocess mode the channel
+# lives in the Manager server process, so the bound also protects a shared
+# resource from one stalled workspace's feeder.
+DOCUMENT_CHANNEL_CAPACITY = 4096
 
 # Hard ceiling for one mailbox wait RPC.  A Manager server runs each client
 # connection on its own thread; a client SIGKILLed while a wait_for_* call is
@@ -116,6 +135,26 @@ class _BoundedTerminalIds:
         return len(self._ids)
 
 
+def _validate_document_message(msg: PipelineIngressMessage) -> None:
+    """Reject malformed document notifications AT the publisher.
+
+    Without this, a ``rescan`` or empty-``doc_id`` message rides the document
+    queue and only surfaces at the feeder — as a confusing defer/requeue loop
+    instead of an immediate error at the call site.  Both backends share this
+    single validator so they fail identically.
+    """
+    if msg.kind != "document" or not msg.doc_id:
+        raise ValueError(
+            "document channel requires kind='document' with a non-empty "
+            f"doc_id (got {msg!r})"
+        )
+    if msg.retry_failed or msg.request_id is not None:
+        raise ValueError(
+            "document messages must not carry control fields "
+            f"(retry_failed/request_id): {msg!r}"
+        )
+
+
 def _validate_manual_request(request_id: str, msg: PipelineIngressMessage) -> None:
     if not request_id:
         raise ValueError("manual retry requires a non-empty request_id")
@@ -132,8 +171,9 @@ class PipelineIngress(Protocol):
 
     Waiting primitives are intentionally NOT part of the protocol — they differ
     by mode (``await get_document()`` on :class:`AsyncioPipelineIngress`;
-    ``wait_for_documents(timeout)`` bridged via ``asyncio.to_thread`` on the
-    Manager proxy) and Phase 2's feeder branches on the mode anyway.
+    ``wait_for_documents(timeout)`` bridged via ``asyncio.to_thread`` on
+    :class:`ManagerPipelineIngress`) and Phase 2's feeder branches on the mode
+    anyway.
     """
 
     def put_document(self, msg: PipelineIngressMessage) -> None: ...
@@ -164,27 +204,28 @@ class PipelineIngress(Protocol):
 
 
 class PipelineIngressMailbox:
-    """Server-side ingress for multi-process mode.
+    """One workspace's ingress state (three channels + terminal ids).
 
-    The instance lives in the Manager SERVER process; workers only hold a
-    :class:`_PipelineIngressMailboxProxy`, so it survives any worker's death
-    (including SIGKILL) as long as the Manager server itself is alive.  Every
-    proxy method is exactly one RPC and is atomic server-side under one
-    ``threading.Condition``; only the two ``wait_for_*`` calls block, each
-    occupying just its own client connection's server thread while sleeping on
-    the condition (never while holding it across an RPC boundary).
+    In multiprocess mode instances live ONLY inside the Manager server as
+    values of :class:`PipelineIngressHub` — they are never proxied
+    individually, so no client refcount can reclaim one and no discovery
+    entry can dangle.  Thread-safe under one ``threading.Condition``; the
+    ``wait_for_*`` methods are the only blocking calls and sleep on the
+    condition without holding it.
 
     ``clear()`` is reserved for destructive operations: it tombstones every
     still-pending manual request id as ``CANCELLED_BY_CLEAR`` *before* wiping
     the three active channels, so a delayed replay of an already-accepted
-    request cannot re-enter the mailbox.  The terminal-id set itself is never
-    cleared here — only workspace teardown (dropping the whole mailbox) or
-    FIFO capacity eviction retires entries.
+    request cannot re-enter.  The terminal-id set itself is never cleared here
+    — only dropping the whole mailbox or FIFO capacity eviction retires
+    entries.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, document_capacity: int = DOCUMENT_CHANNEL_CAPACITY) -> None:
         self._cond = threading.Condition()
+        self._document_capacity = max(1, int(document_capacity))
         self._documents: deque[PipelineIngressMessage] = deque()
+        self._document_overflows = 0
         self._auto_rescan_pending = False
         self._manual_retries: OrderedDict[str, PipelineIngressMessage] = OrderedDict()
         self._terminal_ids = _BoundedTerminalIds()
@@ -192,8 +233,19 @@ class PipelineIngressMailbox:
     # -- publishing -----------------------------------------------------
 
     def put_document(self, msg: PipelineIngressMessage) -> None:
+        """Publish a document notification; never blocks, never fails on load.
+
+        At capacity the notification is coalesced into the auto-rescan dirty
+        flag: the consumer's next strict rescan recovers the doc from
+        doc_status, which is exactly the lossy-notification contract.
+        """
+        _validate_document_message(msg)
         with self._cond:
-            self._documents.append(msg)
+            if len(self._documents) >= self._document_capacity:
+                self._document_overflows += 1
+                self._auto_rescan_pending = True
+            else:
+                self._documents.append(msg)
             self._cond.notify_all()
 
     def request_auto_rescan(self) -> None:
@@ -286,14 +338,13 @@ class PipelineIngressMailbox:
 
     def has_work(self) -> bool:
         with self._cond:
-            return bool(
-                self._documents or self._auto_rescan_pending or self._manual_retries
-            )
+            return self._has_work_locked()
 
     def counts(self) -> Dict[str, Any]:
         with self._cond:
             return {
                 "documents": len(self._documents),
+                "document_overflows": self._document_overflows,
                 "auto_rescan_pending": self._auto_rescan_pending,
                 "manual_retries": len(self._manual_retries),
                 "terminal_manual_request_ids": len(self._terminal_ids),
@@ -343,14 +394,93 @@ class PipelineIngressMailbox:
         )
 
 
-class _PipelineIngressMailboxProxy(BaseProxy):
-    """Explicit proxy for :class:`PipelineIngressMailbox`.
+class PipelineIngressHub:
+    """Server-side ``{namespace: PipelineIngressMailbox}`` map — the ONE
+    Manager-registered ingress object (same topology as ``KeyedHolderTable``).
+
+    A mailbox is created lazily on first use, atomically under the hub lock —
+    entirely inside one server-side dispatch, so no client ever holds a
+    creation lock across RPCs and a SIGKILLed client can neither strand the
+    registry nor race a duplicate mailbox into existence.  The hub lock is
+    held only for the dict lookup; blocking waits happen on the target
+    mailbox's own condition after the hub lock is released.
+
+    Mailboxes live for the Manager server's lifetime (workers only hold the
+    hub proxy, so no refcount can reclaim one and no discovery entry can
+    dangle).  A destructive workspace wipe empties a mailbox via
+    ``clear(namespace)``; dropping entries is intentionally not offered until
+    a real cross-worker teardown protocol exists.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._mailboxes: Dict[str, PipelineIngressMailbox] = {}
+
+    def _mailbox(self, namespace: str) -> PipelineIngressMailbox:
+        with self._lock:
+            mailbox = self._mailboxes.get(namespace)
+            if mailbox is None:
+                mailbox = PipelineIngressMailbox()
+                self._mailboxes[namespace] = mailbox
+            return mailbox
+
+    # One delegating method per mailbox operation: each is a single RPC.
+
+    def put_document(self, namespace: str, msg: PipelineIngressMessage) -> None:
+        self._mailbox(namespace).put_document(msg)
+
+    def request_auto_rescan(self, namespace: str) -> None:
+        self._mailbox(namespace).request_auto_rescan()
+
+    def request_manual_retry(
+        self, namespace: str, request_id: str, msg: PipelineIngressMessage
+    ) -> bool:
+        return self._mailbox(namespace).request_manual_retry(request_id, msg)
+
+    def consume_auto_rescan(self, namespace: str) -> bool:
+        return self._mailbox(namespace).consume_auto_rescan()
+
+    def drain_documents(
+        self, namespace: str, limit: Optional[int] = None
+    ) -> List[PipelineIngressMessage]:
+        return self._mailbox(namespace).drain_documents(limit)
+
+    def peek_next_manual_retry(
+        self, namespace: str
+    ) -> Optional[PipelineIngressMessage]:
+        return self._mailbox(namespace).peek_next_manual_retry()
+
+    def snapshot_manual_retries(self, namespace: str) -> List[PipelineIngressMessage]:
+        return self._mailbox(namespace).snapshot_manual_retries()
+
+    def ack_manual_retry(self, namespace: str, request_id: str) -> bool:
+        return self._mailbox(namespace).ack_manual_retry(request_id)
+
+    def clear(self, namespace: str) -> None:
+        self._mailbox(namespace).clear()
+
+    def has_work(self, namespace: str) -> bool:
+        return self._mailbox(namespace).has_work()
+
+    def counts(self, namespace: str) -> Dict[str, Any]:
+        return self._mailbox(namespace).counts()
+
+    def wait_for_documents(self, namespace: str, timeout: float) -> bool:
+        return self._mailbox(namespace).wait_for_documents(timeout)
+
+    def wait_for_items(self, namespace: str, timeout: float) -> bool:
+        return self._mailbox(namespace).wait_for_items(timeout)
+
+
+class _PipelineIngressHubProxy(BaseProxy):
+    """Explicit proxy for :class:`PipelineIngressHub`.
 
     ``BaseProxy`` has no dynamic ``__getattr__`` — declaring ``_exposed_``
     alone would NOT make the methods callable, so each one gets an explicit
-    ``_callmethod`` wrapper (deterministic, unlike AutoProxy).  A feeder
-    blocking in ``wait_for_documents`` should hold its own proxy instance:
-    calls on one proxy serialize on its connection.
+    ``_callmethod`` wrapper (deterministic, unlike AutoProxy).  Connections
+    are per-thread (``BaseProxy`` keeps them in thread-local storage), so a
+    feeder blocking in ``wait_for_documents`` inside ``asyncio.to_thread``
+    never stalls the event-loop thread's calls on the same proxy.
     """
 
     _exposed_ = (
@@ -369,48 +499,108 @@ class _PipelineIngressMailboxProxy(BaseProxy):
         "wait_for_items",
     )
 
+    def put_document(self, namespace: str, msg: PipelineIngressMessage) -> None:
+        self._callmethod("put_document", (namespace, msg))
+
+    def request_auto_rescan(self, namespace: str) -> None:
+        self._callmethod("request_auto_rescan", (namespace,))
+
+    def request_manual_retry(
+        self, namespace: str, request_id: str, msg: PipelineIngressMessage
+    ) -> bool:
+        return self._callmethod("request_manual_retry", (namespace, request_id, msg))
+
+    def consume_auto_rescan(self, namespace: str) -> bool:
+        return self._callmethod("consume_auto_rescan", (namespace,))
+
+    def drain_documents(
+        self, namespace: str, limit: Optional[int] = None
+    ) -> List[PipelineIngressMessage]:
+        return self._callmethod("drain_documents", (namespace, limit))
+
+    def peek_next_manual_retry(
+        self, namespace: str
+    ) -> Optional[PipelineIngressMessage]:
+        return self._callmethod("peek_next_manual_retry", (namespace,))
+
+    def snapshot_manual_retries(self, namespace: str) -> List[PipelineIngressMessage]:
+        return self._callmethod("snapshot_manual_retries", (namespace,))
+
+    def ack_manual_retry(self, namespace: str, request_id: str) -> bool:
+        return self._callmethod("ack_manual_retry", (namespace, request_id))
+
+    def clear(self, namespace: str) -> None:
+        self._callmethod("clear", (namespace,))
+
+    def has_work(self, namespace: str) -> bool:
+        return self._callmethod("has_work", (namespace,))
+
+    def counts(self, namespace: str) -> Dict[str, Any]:
+        return self._callmethod("counts", (namespace,))
+
+    def wait_for_documents(self, namespace: str, timeout: float) -> bool:
+        return self._callmethod("wait_for_documents", (namespace, timeout))
+
+    def wait_for_items(self, namespace: str, timeout: float) -> bool:
+        return self._callmethod("wait_for_items", (namespace, timeout))
+
+
+class ManagerPipelineIngress:
+    """Per-workspace client view over the shared hub proxy.
+
+    Stateless besides the ``(hub, namespace)`` binding, so any process can
+    construct one at any time and always reaches the same server-side mailbox
+    — workspace identity is the namespace string, not a proxy lifetime.
+    """
+
+    def __init__(self, hub: Any, namespace: str) -> None:
+        self._hub = hub
+        self.namespace = namespace
+
     def put_document(self, msg: PipelineIngressMessage) -> None:
-        self._callmethod("put_document", (msg,))
+        _validate_document_message(msg)  # fail at the call site, pre-RPC
+        self._hub.put_document(self.namespace, msg)
 
     def request_auto_rescan(self) -> None:
-        self._callmethod("request_auto_rescan")
+        self._hub.request_auto_rescan(self.namespace)
 
     def request_manual_retry(
         self, request_id: str, msg: PipelineIngressMessage
     ) -> bool:
-        return self._callmethod("request_manual_retry", (request_id, msg))
+        _validate_manual_request(request_id, msg)  # fail at the call site
+        return self._hub.request_manual_retry(self.namespace, request_id, msg)
 
     def consume_auto_rescan(self) -> bool:
-        return self._callmethod("consume_auto_rescan")
+        return self._hub.consume_auto_rescan(self.namespace)
 
     def drain_documents(
         self, limit: Optional[int] = None
     ) -> List[PipelineIngressMessage]:
-        return self._callmethod("drain_documents", (limit,))
+        return self._hub.drain_documents(self.namespace, limit)
 
     def peek_next_manual_retry(self) -> Optional[PipelineIngressMessage]:
-        return self._callmethod("peek_next_manual_retry")
+        return self._hub.peek_next_manual_retry(self.namespace)
 
     def snapshot_manual_retries(self) -> List[PipelineIngressMessage]:
-        return self._callmethod("snapshot_manual_retries")
+        return self._hub.snapshot_manual_retries(self.namespace)
 
     def ack_manual_retry(self, request_id: str) -> bool:
-        return self._callmethod("ack_manual_retry", (request_id,))
+        return self._hub.ack_manual_retry(self.namespace, request_id)
 
     def clear(self) -> None:
-        self._callmethod("clear")
+        self._hub.clear(self.namespace)
 
     def has_work(self) -> bool:
-        return self._callmethod("has_work")
+        return self._hub.has_work(self.namespace)
 
     def counts(self) -> Dict[str, Any]:
-        return self._callmethod("counts")
+        return self._hub.counts(self.namespace)
 
     def wait_for_documents(self, timeout: float) -> bool:
-        return self._callmethod("wait_for_documents", (timeout,))
+        return self._hub.wait_for_documents(self.namespace, timeout)
 
     def wait_for_items(self, timeout: float) -> bool:
-        return self._callmethod("wait_for_items", (timeout,))
+        return self._hub.wait_for_items(self.namespace, timeout)
 
 
 class AsyncioPipelineIngress:
@@ -419,28 +609,66 @@ class AsyncioPipelineIngress:
     The document channel is a real ``asyncio.Queue`` (feeders simply
     ``await get_document()``); manual/auto state lives in plain containers.
     Every synchronous mutation happens on the owning event loop's thread, so
-    ``work_event.set()/clear()`` need no await and no extra locking.  The
-    instance is bound to the loop it was created on — cross-loop use is a
-    bug the registry rejects via :attr:`owning_loop`.
+    ``work_event.set()/clear()`` need no await and no extra locking.
 
-    Unlike the Manager mailbox, a process-level SIGKILL loses this instance
-    (and any sticky manual request in it) with the process — the documented
+    Loop affinity follows LightRAG's sync-wrapper convention (see
+    ``lightrag.py``: objects created under one ``asyncio.run()`` keep working
+    from later loops once the first loop closed): when the owning loop is
+    CLOSED the instance transparently rebinds to the current loop, migrating
+    every queued document, manual request, the auto flag and the terminal
+    tombstones.  Only genuine cross-loop sharing — a *live* foreign loop — is
+    rejected (by the registry's fast-fail).
+
+    Unlike the Manager hub, a process-level SIGKILL loses this instance (and
+    any sticky manual request in it) with the process — the documented
     single-process persistence boundary; ``doc_status`` plus the next run's
     initial scan recover the document backlog.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, document_capacity: int = DOCUMENT_CHANNEL_CAPACITY) -> None:
         self.owning_loop = asyncio.get_running_loop()
+        self._document_capacity = max(1, int(document_capacity))
         self.document_messages: asyncio.Queue[PipelineIngressMessage] = asyncio.Queue()
+        self._document_overflows = 0
         self._auto_rescan_pending = False
         self._manual_retries: OrderedDict[str, PipelineIngressMessage] = OrderedDict()
         self._terminal_ids = _BoundedTerminalIds()
         self.work_event = asyncio.Event()
 
+    def rebind_to_current_loop(self) -> None:
+        """In-place migration after the owning loop closed.
+
+        Rebuilds the loop-bound primitives (queue, event) on the current loop
+        and carries every message and all control state over.  In place so
+        callers that cached the instance keep a valid reference.  Must only be
+        called when ``owning_loop.is_closed()`` — the registry enforces that.
+        """
+        old_queue = self.document_messages
+        self.owning_loop = asyncio.get_running_loop()
+        self.document_messages = asyncio.Queue()
+        while True:
+            try:
+                self.document_messages.put_nowait(old_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        self.work_event = asyncio.Event()
+        if self.has_work():
+            self.work_event.set()
+
     # -- publishing -----------------------------------------------------
 
     def put_document(self, msg: PipelineIngressMessage) -> None:
-        self.document_messages.put_nowait(msg)
+        """Publish a document notification; never blocks, never fails on load.
+
+        Overflow coalesces into the auto-rescan flag exactly like the mailbox
+        variant — see :meth:`PipelineIngressMailbox.put_document`.
+        """
+        _validate_document_message(msg)
+        if self.document_messages.qsize() >= self._document_capacity:
+            self._document_overflows += 1
+            self._auto_rescan_pending = True
+        else:
+            self.document_messages.put_nowait(msg)
         self.work_event.set()
 
     def request_auto_rescan(self) -> None:
@@ -527,6 +755,7 @@ class AsyncioPipelineIngress:
     def counts(self) -> Dict[str, Any]:
         return {
             "documents": self.document_messages.qsize(),
+            "document_overflows": self._document_overflows,
             "auto_rescan_pending": self._auto_rescan_pending,
             "manual_retries": len(self._manual_retries),
             "terminal_manual_request_ids": len(self._terminal_ids),

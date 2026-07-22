@@ -1,17 +1,21 @@
 """Phase 1 tests for the workspace-scoped pipeline ingress.
 
-Covers the three-channel mailbox contract (document / auto-rescan dirty flag /
-sticky manual retries with bounded terminal ids), the single-process
+Covers the three-channel contract (bounded document channel with
+overflow-to-auto-rescan coalescing / auto-rescan dirty flag / sticky manual
+retries with bounded terminal ids), the single-process
 ``AsyncioPipelineIngress`` (real ``asyncio.Queue`` document channel, paired
-``task_done``, event-driven waits, owning-loop fast fail), the Manager-backed
-multiprocess mailbox (cross-process discovery through the shared proxy table,
-sticky survival after publisher death, observe-only waiting), and the
-shared_storage registry lifecycle (workspace isolation, idempotent
-initialization, teardown-only finalize).
+``task_done``, event-driven waits, closed-loop migration per the sync-wrapper
+convention, live-cross-loop fast fail), the Manager-backed hub topology
+(single pre-fork server object, no client-held locks — resolution survives a
+SIGKILLed lock holder, cross-process publish, sticky survival after publisher
+death, observe-only waiting), and the shared_storage registry lifecycle.
 """
 
 import asyncio
 import multiprocessing as mp
+import os
+import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -20,8 +24,11 @@ import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.pipeline_ingress import (
     MANUAL_RETRY_ACKED,
     MANUAL_RETRY_CANCELLED_BY_CLEAR,
+    MAX_MAILBOX_WAIT_SECONDS,
     AsyncioPipelineIngress,
+    ManagerPipelineIngress,
     PipelineIngress,
+    PipelineIngressMailbox,
     PipelineIngressMessage,
     _BoundedTerminalIds,
 )
@@ -101,33 +108,68 @@ async def test_finalize_pipeline_ingress_drops_and_recreates(
     assert not fresh.has_work()  # teardown really dropped the sticky request
 
 
-def test_mailbox_wait_timeout_is_required_and_clamped():
-    """A SIGKILLed waiter must strand its server thread at most for the
-    bounded window — unbounded waits are rejected by construction."""
-    from lightrag.kg.pipeline_ingress import (
-        MAX_MAILBOX_WAIT_SECONDS,
-        PipelineIngressMailbox,
-    )
-
-    assert PipelineIngressMailbox._bounded_wait(999.0) == MAX_MAILBOX_WAIT_SECONDS
-    assert PipelineIngressMailbox._bounded_wait(-1.0) == 0.0
-    assert PipelineIngressMailbox._bounded_wait(0.2) == 0.2
-    mailbox = PipelineIngressMailbox()  # in-process instance, no Manager needed
-    with pytest.raises(TypeError):
-        mailbox.wait_for_documents()  # timeout is required, no None default
-    assert mailbox.wait_for_documents(0.01) is False
-    assert mailbox.wait_for_items(0.01) is False
-
-
-def test_cross_loop_access_fast_fails():
-    """A single-process ingress belongs to the loop that created it."""
+def test_closed_loop_migration_preserves_all_state():
+    """Sync-wrapper convention: an ingress created under one asyncio.run()
+    keeps working — with every channel intact — from the next loop once the
+    first one closed (e.g. ``asyncio.run(initialize_rag())`` then a sync
+    ``rag.insert(...)``)."""
     finalize_share_data()
     initialize_share_data(workers=1)
     try:
-        asyncio.run(get_pipeline_ingress("wsA"))  # created on loop A
-        with pytest.raises(RuntimeError, match="another event loop"):
-            asyncio.run(get_pipeline_ingress("wsA"))  # loop B → fast fail
+
+        async def first_loop():
+            ingress = await get_pipeline_ingress("wsA")
+            ingress.put_document(_doc("d1"))
+            ingress.request_manual_retry("r1", _manual("r1"))
+            ingress.request_auto_rescan()
+            ingress.ack_manual_retry("r0")  # terminal tombstone to carry over
+            return ingress
+
+        created = asyncio.run(first_loop())
+
+        async def second_loop():
+            ingress = await get_pipeline_ingress("wsA")
+            assert ingress is created  # migrated in place, identity preserved
+            assert ingress.owning_loop is asyncio.get_running_loop()
+            # Queued document survives and the queue works on the new loop.
+            assert (await ingress.get_document()).doc_id == "d1"
+            # Control state survives.
+            assert ingress.peek_next_manual_retry().request_id == "r1"
+            assert ingress.consume_auto_rescan() is True
+            assert ingress.request_manual_retry("r0", _manual("r0")) is False
+            # New-loop primitives are live: publish + await again.
+            ingress.put_document(_doc("d2"))
+            assert (await ingress.get_document()).doc_id == "d2"
+
+        asyncio.run(second_loop())
     finally:
+        finalize_share_data()
+
+
+def test_cross_loop_access_fails_while_owner_loop_is_alive():
+    """Only genuine cross-loop sharing (owner loop still running) is rejected."""
+    finalize_share_data()
+    initialize_share_data(workers=1)
+    created = threading.Event()
+    release = threading.Event()
+
+    def owner_thread():
+        async def main():
+            await get_pipeline_ingress("wsA")
+            created.set()
+            await asyncio.to_thread(release.wait)  # keep the owner loop alive
+
+        asyncio.run(main())
+
+    thread = threading.Thread(target=owner_thread)
+    thread.start()
+    try:
+        assert created.wait(5)
+        with pytest.raises(RuntimeError, match="still running"):
+            asyncio.run(get_pipeline_ingress("wsA"))
+    finally:
+        release.set()
+        thread.join(5)
         finalize_share_data()
 
 
@@ -154,7 +196,7 @@ async def test_single_process_document_channel_is_asyncio_queue(
     assert isinstance(ingress.document_messages, asyncio.Queue)
     # No Manager involvement in single-process mode.
     assert shared_storage._manager is None
-    assert shared_storage._pipeline_ingress_proxies is None
+    assert shared_storage._pipeline_ingress_hub is None
 
 
 async def test_get_document_event_driven_and_task_done_paired(
@@ -269,6 +311,31 @@ async def test_clear_tombstones_pending_manual_ids(single_process_share_data):
     assert ingress.counts()["terminal_manual_request_ids"] == 1
 
 
+# ---------------------------------------------------------------------------
+# Message validation and channel bounds (both backends)
+# ---------------------------------------------------------------------------
+
+
+async def test_document_message_validation(single_process_share_data):
+    ingress = await get_pipeline_ingress("wsA")
+    with pytest.raises(ValueError, match="non-empty\\s+doc_id"):
+        ingress.put_document(PipelineIngressMessage(kind="document"))
+    with pytest.raises(ValueError, match="kind='document'"):
+        ingress.put_document(PipelineIngressMessage(kind="rescan", doc_id="d1"))
+    with pytest.raises(ValueError, match="control fields"):
+        ingress.put_document(
+            PipelineIngressMessage(kind="document", doc_id="d1", retry_failed=True)
+        )
+    with pytest.raises(ValueError, match="control fields"):
+        ingress.put_document(
+            PipelineIngressMessage(kind="document", doc_id="d1", request_id="r1")
+        )
+    # The mailbox backend shares the same validator and exception type.
+    mailbox = PipelineIngressMailbox()
+    with pytest.raises(ValueError, match="kind='document'"):
+        mailbox.put_document(PipelineIngressMessage(kind="rescan", doc_id="d1"))
+
+
 async def test_manual_request_message_validation(single_process_share_data):
     ingress = await get_pipeline_ingress("wsA")
     with pytest.raises(ValueError, match="non-empty request_id"):
@@ -277,6 +344,36 @@ async def test_manual_request_message_validation(single_process_share_data):
         ingress.request_manual_retry("r1", _doc("d1"))
     with pytest.raises(ValueError, match="matching request_id"):
         ingress.request_manual_retry("r1", _manual("other"))
+
+
+async def test_document_overflow_coalesces_into_auto_rescan():
+    """Bounded channel: overflow never blocks or grows memory — it degrades
+    to the auto-rescan flag and the consumer recovers from doc_status."""
+    ingress = AsyncioPipelineIngress(document_capacity=2)
+    ingress.put_document(_doc("d1"))
+    ingress.put_document(_doc("d2"))
+    ingress.put_document(_doc("d3"))  # overflow
+    counts = ingress.counts()
+    assert counts["documents"] == 2
+    assert counts["document_overflows"] == 1
+    assert counts["auto_rescan_pending"] is True
+
+    # Recovery path: drain what survived, consume the coalesced rescan.
+    assert [m.doc_id for m in ingress.drain_documents()] == ["d1", "d2"]
+    assert ingress.consume_auto_rescan() is True
+    assert not ingress.has_work()
+
+    # Mailbox backend behaves identically.
+    mailbox = PipelineIngressMailbox(document_capacity=2)
+    for i in range(4):
+        mailbox.put_document(_doc(f"m{i}"))
+    counts = mailbox.counts()
+    assert counts["documents"] == 2
+    assert counts["document_overflows"] == 2
+    assert counts["auto_rescan_pending"] is True
+    assert len(mailbox.drain_documents()) == 2
+    assert mailbox.consume_auto_rescan() is True
+    assert not mailbox.has_work()
 
 
 def test_bounded_terminal_ids_fifo_eviction():
@@ -290,23 +387,42 @@ def test_bounded_terminal_ids_fifo_eviction():
     assert "b" in ids and "c" in ids
 
 
+def test_mailbox_wait_timeout_is_required_and_clamped():
+    """A SIGKILLed waiter must strand its server thread at most for the
+    bounded window — unbounded waits are rejected by construction."""
+    assert PipelineIngressMailbox._bounded_wait(999.0) == MAX_MAILBOX_WAIT_SECONDS
+    assert PipelineIngressMailbox._bounded_wait(-1.0) == 0.0
+    assert PipelineIngressMailbox._bounded_wait(0.2) == 0.2
+    mailbox = PipelineIngressMailbox()  # in-process instance, no Manager needed
+    with pytest.raises(TypeError):
+        mailbox.wait_for_documents()  # timeout is required, no None default
+    assert mailbox.wait_for_documents(0.01) is False
+    assert mailbox.wait_for_items(0.01) is False
+
+
 # ---------------------------------------------------------------------------
-# Manager-backed mailbox (multiprocess mode, real Manager server)
+# Manager-backed hub (multiprocess mode, real Manager server)
 # ---------------------------------------------------------------------------
 
 
-def _child_publish(proxies_dict, final_namespace):
-    """Worker-side publisher: resolves the SAME server-side mailbox through
-    the shared proxy table, publishes, then exits (its death must not affect
-    the sticky request)."""
-    mailbox = proxies_dict.get(final_namespace)
-    mailbox.put_document(PipelineIngressMessage(kind="document", doc_id="from-child"))
-    mailbox.request_manual_retry(
+def _child_publish(hub, final_namespace):
+    """Worker-side publisher: binds the SAME namespace on the shared hub,
+    publishes, then exits (its death must not affect the sticky request)."""
+    ingress = ManagerPipelineIngress(hub, final_namespace)
+    ingress.put_document(PipelineIngressMessage(kind="document", doc_id="from-child"))
+    ingress.request_manual_retry(
         "req-child",
         PipelineIngressMessage(
             kind="rescan", retry_failed=True, request_id="req-child"
         ),
     )
+
+
+def _child_hold_lock_and_die(lock):
+    """Acquire the shared Manager lock, then SIGKILL ourselves while holding
+    it — the Manager never reclaims it, simulating a crashed lock holder."""
+    lock.acquire()
+    os.kill(os.getpid(), signal.SIGKILL)
 
 
 @pytest.fixture
@@ -323,11 +439,12 @@ async def test_multiprocess_cross_process_publish_and_sticky_survival(
 ):
     ingress = await get_pipeline_ingress("wsM")
     other_ws = await get_pipeline_ingress("wsOther")
+    assert isinstance(ingress, ManagerPipelineIngress)
     final_namespace = get_final_namespace("pipeline_ingress", "wsM")
 
     child = mp.get_context("spawn").Process(
         target=_child_publish,
-        args=(shared_storage._pipeline_ingress_proxies, final_namespace),
+        args=(shared_storage._pipeline_ingress_hub, final_namespace),
     )
     child.start()
     await asyncio.to_thread(child.join, 30)
@@ -343,13 +460,37 @@ async def test_multiprocess_cross_process_publish_and_sticky_survival(
     assert ingress.peek_next_manual_retry().request_id == "req-child"
     assert ingress.counts()["manual_retries"] == 1
 
-    # ACK + bounded-window replay guard, across proxies.
+    # ACK + bounded-window replay guard, across namespace views.
     assert ingress.ack_manual_retry("req-child") is True
     assert ingress.request_manual_retry("req-child", _manual("req-child")) is False
 
-    # Same-workspace resolution from this process yields the same mailbox.
+    # Same-workspace resolution from this process reaches the same mailbox.
     again = await get_pipeline_ingress("wsM")
     assert again.counts()["terminal_manual_request_ids"] == 1
+
+
+async def test_multiprocess_resolution_survives_dead_lock_holder(
+    multiprocess_share_data,
+):
+    """Regression for the client-held-creation-lock hazard: a worker that
+    dies while holding the shared data_init lock must NOT block ingress
+    resolution — the hub creates mailboxes atomically server-side and never
+    takes client-held locks."""
+    child = mp.get_context("spawn").Process(
+        target=_child_hold_lock_and_die,
+        args=(shared_storage._data_init_lock,),
+    )
+    child.start()
+    await asyncio.to_thread(child.join, 30)
+    assert child.exitcode == -signal.SIGKILL
+
+    # The Manager lock really is stranded by the dead holder.
+    assert shared_storage._data_init_lock.acquire(timeout=0.2) is False
+
+    # Ingress resolution for brand-new workspaces is unaffected.
+    ingress = await asyncio.wait_for(get_pipeline_ingress("wsFresh"), timeout=5.0)
+    ingress.put_document(_doc("d1"))
+    assert [m.doc_id for m in ingress.drain_documents()] == ["d1"]
 
 
 async def test_multiprocess_wait_isolation_and_cancelled_waiter_steals_nothing(
@@ -380,22 +521,17 @@ async def test_multiprocess_wait_isolation_and_cancelled_waiter_steals_nothing(
     assert not ingress.has_work()
 
 
-async def test_multiprocess_finalize_keeps_discovery_table_intact(
+async def test_multiprocess_finalize_keeps_server_side_state(
     multiprocess_share_data,
 ):
-    """Per-workspace finalize in multiprocess mode only clears the LOCAL
-    proxy cache: popping the shared discovery entry while sibling workers
-    still hold cached proxies would split-brain the workspace (the entry
-    itself holds no refcount — Manager-container values unpickle
-    ``manager_owned`` — so a later resolver would mint a brand-new mailbox
-    while old workers keep using the orphaned one)."""
+    """Per-workspace finalize only drops the LOCAL namespace view; the
+    server-side mailbox keeps its state inside the hub and re-resolution
+    (workspace identity = namespace string) reaches the same mailbox — no
+    split-brain is possible by construction."""
     ingress = await get_pipeline_ingress("wsM")
     ingress.request_manual_retry("r-sticky", _manual("r-sticky"))
-    final_namespace = get_final_namespace("pipeline_ingress", "wsM")
 
     await finalize_pipeline_ingress("wsM")
-    assert final_namespace in shared_storage._pipeline_ingress_proxies
-
-    # Re-resolution reaches the SAME server-side mailbox: state preserved.
     again = await get_pipeline_ingress("wsM")
-    assert again.peek_next_manual_retry().request_id == "r-sticky"
+    assert again is not ingress  # new local view ...
+    assert again.peek_next_manual_retry().request_id == "r-sticky"  # ... same state
