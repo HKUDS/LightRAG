@@ -123,7 +123,11 @@ class QueryRequest(BaseModel):
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
-        return query.strip()
+        # min_length runs before strip; re-check so pads cannot shrink below 3 chars.
+        stripped = query.strip()
+        if len(stripped) < 3:
+            raise ValueError("query must be at least 3 characters after stripping")
+        return stripped
 
     @field_validator("conversation_history", mode="after")
     @classmethod
