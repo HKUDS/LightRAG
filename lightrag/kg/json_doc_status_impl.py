@@ -1,12 +1,23 @@
 from dataclasses import dataclass
+import heapq
+import json
 import os
-from typing import Any, Union, final
+import uuid
+from typing import Any, ClassVar, Union, final
 
 from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    FailureGenerationMode,
 )
+from lightrag.constants import CUSTOM_CHUNK_PATCH_METADATA_KEY
 from lightrag.file_atomic import reap_orphan_tmp_files
 from lightrag.utils import (
     _cooperative_yield,
@@ -16,7 +27,11 @@ from lightrag.utils import (
     write_json,
     get_pinyin_sort_key,
 )
-from lightrag.exceptions import StorageNotInitializedError
+from lightrag.exceptions import (
+    StorageControlPlaneError,
+    StorageNotInitializedError,
+    StorageRecordNotFoundError,
+)
 from .shared_storage import (
     get_namespace_data,
     get_namespace_lock,
@@ -73,7 +88,27 @@ class JsonDocStatusStorage(DocStatusStorage):
         * ``drop`` — destructive, **not** serialized; the caller must
           hold the pipeline ``busy`` reservation (the
           ``/documents/clear`` endpoint does this).
+
+    Memory-bounding capability boundary (Phase 1): the paged scheduling
+    API below is a true keyset sweep (bounded page memory via a bounded
+    heap), but this backend inherently keeps the WHOLE store resident in
+    shared memory and rewrites the whole file on flush — that residency
+    is an independent, documented limitation, not something the page API
+    can fix. Deployments with very large doc counts should use a server
+    backend (Redis/PG/...).
     """
+
+    supports_bounded_scheduling_pages: ClassVar[bool] = True
+    supports_failure_generation: ClassVar[bool] = True
+    supports_strict_doc_identity_lookup: ClassVar[bool] = True
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Scheduling control-plane doc (failure-generation counter + mode
+    # marker + version stamps) lives in a SEPARATE sidecar file, never in
+    # ``self._data`` — a reserved key inside the data dict would leak into
+    # every full-scan reader. Version stamps guard marker integrity: a
+    # mismatch reads as MIGRATING (never LEGACY).
+    _CTRL_SCHEMA_VERSION: ClassVar[int] = 1
 
     def __post_init__(self):
         # Reject path traversal before using workspace in a file path
@@ -89,11 +124,15 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._file_name = os.path.join(workspace_dir, f"kv_store_{self.namespace}.json")
+        self._ctrl_file_name = os.path.join(
+            workspace_dir, f"kv_store_{self.namespace}_scheduling_ctrl.json"
+        )
         self._data = None
         self._storage_lock = None
         self.storage_updated = None
 
         reap_orphan_tmp_files(self._file_name, self.workspace or "_")
+        reap_orphan_tmp_files(self._ctrl_file_name, self.workspace or "_")
 
     async def initialize(self):
         """Bind to the shared namespace dict and load from disk on first init.
@@ -124,6 +163,50 @@ class JsonDocStatusStorage(DocStatusStorage):
                     logger.info(
                         f"[{self.workspace}] Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
                     )
+
+        # Scheduling control-plane bootstrap (Phase 1). JSON is a single-host
+        # backend whose process fleet upgrades atomically with the code, so
+        # the migrate-then-publish-ENFORCED step is safe at init time (server
+        # backends require the coordinated stop-write upgrade instead).
+        # Counter calibration runs on EVERY init: a restore-from-backup can
+        # roll the ctrl file behind persisted rows, and the reservation
+        # counter must stay monotonic — ``max(counter, max persisted)``.
+        async with self._storage_lock:
+            max_gen = 0
+            for row in self._data.values():
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    gen = int(row.get("failure_generation") or 0)
+                except (TypeError, ValueError):
+                    gen = 0
+                max_gen = max(max_gen, gen)
+            ctrl = load_json(self._ctrl_file_name)
+            if not isinstance(ctrl, dict):
+                ctrl = {
+                    "schema_version": self._CTRL_SCHEMA_VERSION,
+                    "mode": FailureGenerationMode.ENFORCED.value,
+                    "failure_generation_counter": max_gen,
+                }
+                write_json(ctrl, self._ctrl_file_name)
+                logger.info(
+                    f"[{self.workspace}] Published failure-generation marker "
+                    f"(mode=enforced, counter={max_gen}) for {self.namespace}"
+                )
+            elif ctrl.get("schema_version") == self._CTRL_SCHEMA_VERSION:
+                try:
+                    counter = int(ctrl.get("failure_generation_counter") or 0)
+                except (TypeError, ValueError):
+                    counter = 0
+                if counter < max_gen:
+                    ctrl["failure_generation_counter"] = max_gen
+                    write_json(ctrl, self._ctrl_file_name)
+                    logger.warning(
+                        f"[{self.workspace}] failure-generation counter behind "
+                        f"persisted rows ({counter} < {max_gen}); recalibrated"
+                    )
+            # An unknown schema_version is left untouched: mode reads report
+            # MIGRATING (never LEGACY) until an explicit migration handles it.
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
@@ -489,14 +572,30 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         return None
 
+    @staticmethod
+    def _is_duplicate_row(row: Any) -> bool:
+        """True for duplicate-attempt marker rows (``dup-*`` records and
+        post-parse content duplicates): ``metadata.is_duplicate == true``."""
+        if not isinstance(row, dict):
+            return False
+        metadata = row.get("metadata")
+        return bool(isinstance(metadata, dict) and metadata.get("is_duplicate"))
+
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose canonical basename matches.
+        """Find the PRIMARY record whose canonical basename matches.
 
         The caller is responsible for passing an already-canonical basename.
         Stored ``file_path`` values are canonicalized by the business layer, so
         this lookup intentionally performs an exact match only.
+
+        ``file_path`` is one-to-many (duplicate-attempt ``dup-*`` rows keep the
+        same canonical basename); this returns the single primary
+        (``metadata.is_duplicate != true``) row — callers doing identity
+        checks / dedup want the document, never a duplicate marker. When only
+        duplicate markers remain (primary deleted) the basename is free again
+        and this returns ``None``.
         """
         if not basename:
             return None
@@ -507,9 +606,35 @@ class JsonDocStatusStorage(DocStatusStorage):
             return None
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
-                if doc_data.get("file_path") == basename:
+                if doc_data.get("file_path") == basename and not self._is_duplicate_row(
+                    doc_data
+                ):
                     return doc_id, doc_data
         return None
+
+    async def get_doc_by_file_basename_strict(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Fail-closed basename lookup (see base contract).
+
+        The in-memory scan has no transport failure surface and never
+        swallows errors, so the aligned legacy lookup already satisfies the
+        strict contract: ``None`` here IS confirmed absence (uninitialized
+        storage raises instead of returning a miss).
+        """
+        return await self.get_doc_by_file_basename(basename)
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: complete-or-raise (base contract).
+
+        In-memory shared dict — a miss is a confirmed absence; the only
+        failure surface is uninitialized storage, which raises.
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            row = self._data.get(id)
+        return row.copy() if isinstance(row, dict) else row
 
     async def get_doc_by_content_hash(
         self, content_hash: str
@@ -525,6 +650,305 @@ class JsonDocStatusStorage(DocStatusStorage):
                 if doc_data.get("content_hash") == content_hash:
                     return doc_id, doc_data
         return None
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_sort_key(doc_id: str, row: dict[str, Any]) -> tuple[str, str]:
+        """(created_at, id) keyset key. A missing/non-string created_at sorts
+        deterministically first as "" — such legacy rows are consumed (and
+        skipped/raised per strictness) without ever moving mid-sweep."""
+        created = row.get("created_at")
+        return (created if isinstance(created, str) else "", doc_id)
+
+    @staticmethod
+    def _encode_cursor(key: tuple[str, str]) -> str:
+        return json.dumps(list(key), ensure_ascii=False)
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> tuple[str, str]:
+        try:
+            decoded = json.loads(opaque)
+            created, doc_id = decoded
+            if not isinstance(created, str) or not isinstance(doc_id, str):
+                raise ValueError("cursor fields must be strings")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for JsonDocStatusStorage: {e}"
+            ) from e
+        return (created, doc_id)
+
+    def _scheduling_record_from_row(
+        self, doc_id: str, row: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one raw row; strict raises on unusable rows, relaxed
+        returns None (the caller still counts the row as consumed)."""
+        try:
+            status = DocStatus(str(row["status"]))
+            created_at = row["created_at"]
+            updated_at = row.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = row.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=row.get("file_path") or "no-file-path",
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        max_failure_generation: int | None = None,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page over the in-memory store.
+
+        Selection uses a bounded heap (``heapq.nsmallest``) so page memory is
+        O(limit) even though each page re-scans the resident dict — the
+        O(total) residency itself is this backend's documented boundary.
+
+        Consumed-position contract: every selected candidate is consumed —
+        returned, dropped by the ``max_failure_generation`` predicate, or
+        skipped as unusable in relaxed mode — so the cursor advances past
+        filtered pages instead of re-reading them; fewer candidates than
+        ``limit`` proves exhaustion (CURSOR_END).
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        last_key: tuple[str, str] | None = None
+        if isinstance(position, CursorAfter):
+            last_key = self._decode_cursor(position.opaque)
+        status_values = {s.value for s in statuses}
+        failed_value = DocStatus.FAILED.value
+
+        def _candidates():
+            for doc_id, row in self._data.items():
+                if not isinstance(row, dict):
+                    if strict:
+                        raise TypeError(f"doc_status record {doc_id} is not a mapping")
+                    continue
+                if str(row.get("status")) not in status_values:
+                    continue
+                key = self._row_sort_key(doc_id, row)
+                if last_key is not None and key <= last_key:
+                    continue
+                yield key, doc_id, row
+
+        async with self._storage_lock:
+            selected = heapq.nsmallest(limit, _candidates(), key=lambda t: t[0])
+            docs: dict[str, DocSchedulingRecord] = {}
+            for key, doc_id, row in selected:
+                if (
+                    max_failure_generation is not None
+                    and str(row.get("status")) == failed_value
+                ):
+                    try:
+                        generation = int(row.get("failure_generation") or 0)
+                    except (TypeError, ValueError):
+                        generation = 0
+                    if generation > max_failure_generation:
+                        continue  # consumed by the cohort predicate
+                record = self._scheduling_record_from_row(doc_id, row, strict=strict)
+                if record is None:
+                    continue  # relaxed skip is still consumed
+                docs[doc_id] = record
+        if len(selected) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(self._encode_cursor(selected[-1][0]))
+        return DocStatusPage(docs=docs, next_position=next_position)
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count (full scan — documented JSON boundary)."""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        if not statuses:
+            return 0
+        status_values = {s.value for s in statuses}
+        count = 0
+        async with self._storage_lock:
+            for doc_id, row in self._data.items():
+                if not isinstance(row, dict) or "status" not in row:
+                    if strict:
+                        raise TypeError(
+                            f"doc_status record {doc_id} has no readable status"
+                        )
+                    continue
+                if str(row.get("status")) in status_values:
+                    count += 1
+        return count
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted field update with an immediate flush (doc-status is the
+        pipeline's recovery anchor — same rationale as ``upsert``)."""
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            row = self._data.get(doc_id)
+            if row is None:
+                if missing_ok:
+                    return
+                raise StorageRecordNotFoundError(doc_id)
+            self._data[doc_id] = {**row, **fields}
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
+        await self.index_done_callback()
+
+    # ------------------------------------------------------------------
+    # failure_generation write side (Phase 1)
+    # ------------------------------------------------------------------
+
+    def _read_ctrl_locked(self) -> dict[str, Any]:
+        """Read + validate the control-plane doc; caller holds the lock.
+
+        Raises a control-plane error instead of degrading: a missing or
+        version-mismatched marker on a workspace this backend already
+        initialized is corruption, never "new LEGACY workspace".
+        """
+        ctrl = load_json(self._ctrl_file_name)
+        if not isinstance(ctrl, dict) or ctrl.get("schema_version") != (
+            self._CTRL_SCHEMA_VERSION
+        ):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker missing or "
+                f"version-mismatched for {self.namespace}; refusing (never "
+                "degrades to LEGACY full-snapshot behaviour)"
+            )
+        return ctrl
+
+    async def get_failure_generation_mode(self) -> FailureGenerationMode:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            ctrl = load_json(self._ctrl_file_name)
+        if not isinstance(ctrl, dict):
+            return FailureGenerationMode.MIGRATING
+        if ctrl.get("schema_version") != self._CTRL_SCHEMA_VERSION:
+            return FailureGenerationMode.MIGRATING
+        try:
+            return FailureGenerationMode(str(ctrl.get("mode")))
+        except ValueError:
+            return FailureGenerationMode.MIGRATING
+
+    async def reserve_failure_generation(self) -> int:
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            return self._reserve_generation_locked()
+
+    def _reserve_generation_locked(self) -> int:
+        ctrl = self._read_ctrl_locked()
+        try:
+            counter = int(ctrl.get("failure_generation_counter") or 0)
+        except (TypeError, ValueError) as e:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation counter corrupt: {e}"
+            ) from e
+        counter += 1
+        ctrl["failure_generation_counter"] = counter
+        # Durability no weaker than the FAILED status write: persist the
+        # reservation before any row can publish it. A crash after this
+        # write leaves a permanent hole — allowed; reuse is not.
+        write_json(ctrl, self._ctrl_file_name)
+        return counter
+
+    async def mark_doc_failed(self, doc_id: str, fields: dict[str, Any]) -> int | None:
+        """FAILED transition funnel: reserve + publish under ONE lock.
+
+        The single storage lock makes reserve-before-publish atomic here
+        (window → 0). Idempotent per attempt: an already-FAILED row whose
+        ``failure_attempt_id`` equals the current attempt keeps its
+        generation; anything else assigns a fresh one. A caller-supplied
+        ``created_at`` is ignored for existing rows (immutable sort key);
+        a missing row is conditionally created (enqueue/parse errors can
+        fail before the PENDING row landed).
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        async with self._storage_lock:
+            existing = self._data.get(doc_id)
+            if isinstance(existing, dict):
+                current_attempt = existing.get("processing_attempt_id") or fields.get(
+                    "processing_attempt_id"
+                )
+            else:
+                current_attempt = fields.get("processing_attempt_id")
+            if (
+                isinstance(existing, dict)
+                and str(existing.get("status")) == DocStatus.FAILED.value
+                and current_attempt
+                and existing.get("failure_attempt_id") == current_attempt
+            ):
+                try:
+                    return int(existing.get("failure_generation") or 0)
+                except (TypeError, ValueError):
+                    return 0
+            generation = self._reserve_generation_locked()
+            row = {**existing, **fields} if isinstance(existing, dict) else dict(fields)
+            if isinstance(existing, dict) and "created_at" in existing:
+                row["created_at"] = existing["created_at"]
+            row["status"] = DocStatus.FAILED.value
+            row["failure_generation"] = generation
+            if current_attempt:
+                row["failure_attempt_id"] = current_attempt
+                row.setdefault("processing_attempt_id", current_attempt)
+            if "chunks_list" not in row:
+                row["chunks_list"] = []
+            self._data[doc_id] = row
+            await set_all_update_flags(self.namespace, workspace=self.workspace)
+        await self.index_done_callback()
+        return generation
+
+    async def ensure_processing_attempt_id(self, doc_id: str) -> str:
+        """Atomic (single-lock) mint-or-reuse of the row's attempt id."""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        minted = False
+        async with self._storage_lock:
+            row = self._data.get(doc_id)
+            if row is None:
+                raise StorageRecordNotFoundError(doc_id)
+            attempt = row.get("processing_attempt_id")
+            if not attempt:
+                attempt = uuid.uuid4().hex
+                self._data[doc_id] = {**row, "processing_attempt_id": attempt}
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
+                minted = True
+        if minted:
+            await self.index_done_callback()
+        return str(attempt)
 
     async def drop(self) -> dict[str, str]:
         """Clear shared memory and immediately persist the empty state.
