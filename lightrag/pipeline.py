@@ -1651,17 +1651,34 @@ class _PipelineMixin:
         return True  # admitted
 
     @staticmethod
-    def _feeder_should_yield(ctx: "_BatchRunContext", ingress) -> bool:
+    def _feeder_should_yield(
+        ctx: "_BatchRunContext", ingress, *, check_auto: bool
+    ) -> bool:
         """True when the feeder must stop admitting and let the batch reach its
-        quiescence point: cancellation requested (so ``/cancel_pipeline`` can
-        complete) or a sticky manual retry request waiting (so an unbounded batch
-        does not starve it). Checked before the drain AND before every single
-        admission, so the yield latency is one admission — not a whole drain.
-        NOT ``has_work()`` — that would busy-loop on a pending manual/auto signal.
+        quiescence point:
+
+        * cancellation requested (so ``/cancel_pipeline`` can complete);
+        * a sticky manual retry request waiting (so an unbounded batch does not
+          starve it) — both re-checked before every single admission, so the
+          yield latency is one admission, not a whole drain;
+        * (``check_auto``, at the top of each drain) the auto-rescan flag is
+          dirty — a document-channel overflow dropped notifications, a partial
+          upsert landed, or one of this feeder's own skips armed it. Yielding
+          hands the batch to its boundary, where the supervisor consumes the
+          flag and its strict rescan recovers those dropped/deferred PENDING
+          docs; without it a sustained stream that never lets the batch reach a
+          boundary would starve them. The feeder only PEEKS the flag (via
+          ``counts``); the supervisor remains its sole consumer.
+
+        NOT ``has_work()`` — that would busy-loop on a pending manual/auto entry.
         """
         if ctx.pipeline_cancel_event is not None and ctx.pipeline_cancel_event.is_set():
             return True
-        return ingress.peek_next_manual_retry() is not None
+        if ingress.peek_next_manual_retry() is not None:
+            return True
+        if check_auto and ingress.counts().get("auto_rescan_pending"):
+            return True
+        return False
 
     async def _pipeline_feeder(self, ctx: "_BatchRunContext", ingress) -> None:
         """Route documents that arrive DURING a batch into its parse queues so
@@ -1703,23 +1720,37 @@ class _PipelineMixin:
         deferred: list = []
         try:
             while True:
-                if self._feeder_should_yield(ctx, ingress):
-                    return
                 batch: list = []
                 reached = 0
                 try:
+                    # Top-of-drain yield check is INSIDE the try so a transient
+                    # manual-peek / counts RPC failure (multiprocess) is logged
+                    # and retried, not left to silently kill the feeder. Includes
+                    # the auto-rescan flag (overflow / partial upsert / this
+                    # feeder's own skips) so a sustained stream still reaches a
+                    # boundary where the supervisor's rescan recovers the dropped
+                    # PENDING docs.
+                    if self._feeder_should_yield(ctx, ingress, check_auto=True):
+                        return
                     batch = await self._feeder_next_batch(ingress)
                     if any(msg.doc_id for msg in batch):
                         pending = await self.doc_status.get_docs_by_statuses(
                             [DocStatus.PENDING], strict=True
                         )
                         for reached, msg in enumerate(batch):
-                            # Honor an in-flight cancel/manual WITHIN one doc.
-                            if self._feeder_should_yield(ctx, ingress):
+                            # Honor an in-flight cancel/manual WITHIN one doc
+                            # (auto-rescan is coarser — checked per drain above).
+                            if self._feeder_should_yield(
+                                ctx, ingress, check_auto=False
+                            ):
                                 deferred.extend(batch[reached:])  # unprocessed tail
                                 return
                             if not await self._route_one(ctx, msg, pending):
                                 deferred.append(msg)  # SKIP — survives to teardown
+                                # Arm the recovery signal so the skip is picked up
+                                # by the supervisor's next rescan even if this
+                                # feeder never otherwise reaches a boundary.
+                                ingress.request_auto_rescan()
                     reached = len(batch)  # every message reached a decision
                 except asyncio.CancelledError:
                     deferred.extend(batch[reached:])  # unprocessed tail → finally

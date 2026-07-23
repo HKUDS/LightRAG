@@ -339,12 +339,13 @@ def test_feeder_teardown_republishes_undrained_messages(tmp_path):
     asyncio.run(_run())
 
 
-def test_feeder_republishes_earlier_iteration_skip_on_teardown(tmp_path):
-    """Finding: a SKIP (full_docs not yet visible) from one feeder iteration must
-    survive to a LATER teardown — the deferred set is feeder-lifetime, not
-    per-iteration. Here doc B is skipped (not visible), the feeder then parks on
-    the next wait, and only then is it cancelled; B must still be re-published so
-    a cancel clearing request_pending does not strand it."""
+def test_feeder_arms_auto_rescan_and_republishes_on_skip(tmp_path):
+    """Finding: a SKIP (full_docs not yet visible) must not be able to starve
+    under a sustained stream that never otherwise reaches a boundary. Skipping B
+    arms the auto-rescan recovery flag (so the supervisor's rescan will pick it
+    up) and, because the flag is now dirty, the feeder yields to the boundary;
+    the feeder-lifetime deferred set re-publishes B on the way out. The feeder
+    only PEEKS auto-rescan — it stays pending for the supervisor to consume."""
 
     async def _run():
         rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
@@ -354,34 +355,60 @@ def test_feeder_republishes_earlier_iteration_skip_on_teardown(tmp_path):
 
             ingress = await get_pipeline_ingress(rag.workspace)
             ingress.drain_documents()
+            ingress.consume_auto_rescan()  # clear any flag from enqueue
             ingress.put_document(PipelineIngressMessage(kind="document", doc_id=b_id))
 
-            # First feeder read: report B not-yet-visible (SKIP) exactly once;
-            # afterwards behave normally so the feeder parks on the next wait.
-            entered = asyncio.Event()
+            # B reports not-yet-visible (ryw lag) → _route_one SKIPs it.
             orig_get = rag.full_docs.get_by_id
-            skipped_once = {"done": False}
 
-            async def flaky_get(doc_id):
-                if doc_id == b_id and not skipped_once["done"]:
-                    skipped_once["done"] = True
-                    entered.set()
-                    return None  # not visible → _route_one returns False (SKIP)
-                return await orig_get(doc_id)
+            async def not_visible(doc_id):
+                return None if doc_id == b_id else await orig_get(doc_id)
 
-            rag.full_docs.get_by_id = flaky_get
+            rag.full_docs.get_by_id = not_visible
 
             ctx = _make_feeder_ctx()
-            feeder = asyncio.create_task(rag._pipeline_feeder(ctx, ingress))
-            await asyncio.wait_for(entered.wait(), timeout=3)  # B skipped this round
-            await asyncio.sleep(0.05)  # feeder parks on the next get_document
-            feeder.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await feeder
+            # Returns on its own: the skip arms auto-rescan, the next top-of-drain
+            # check sees the dirty flag and yields.
+            await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
 
-            # B — skipped in the earlier iteration — is still re-published.
+            assert ctx.parse_queues["native"].qsize() == 0  # nothing routed
+            assert (
+                ingress.counts()["auto_rescan_pending"] is True
+            )  # armed, not consumed
             republished = {m.doc_id for m in ingress.drain_documents()}
-            assert b_id in republished
+            assert b_id in republished  # deferred restored on exit
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_yields_when_auto_rescan_pending(tmp_path):
+    """Finding: a document-channel overflow drops notifications and sets
+    auto_rescan_pending — the recovery signal for those dropped PENDING docs.
+    The feeder must yield on it so the batch reaches a boundary where the
+    supervisor consumes the flag and rescans; otherwise a sustained stream
+    starves the dropped docs. Fix-proof: without the auto check the feeder
+    would drain the (non-PENDING) notifications and then block forever."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+            for i in range(10):
+                ingress.put_document(
+                    PipelineIngressMessage(kind="document", doc_id=f"doc-{i}")
+                )
+            ingress.request_auto_rescan()  # stand in for the overflow signal
+
+            ctx = _make_feeder_ctx()
+            await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
+
+            # Yielded at the top before draining; the flag is left for the
+            # supervisor (the feeder only peeks it).
+            assert ctx.parse_queues["native"].qsize() == 0
+            assert ingress.counts()["auto_rescan_pending"] is True
+            assert ingress.has_work()  # the notifications are untouched
         finally:
             await rag.finalize_storages()
 
