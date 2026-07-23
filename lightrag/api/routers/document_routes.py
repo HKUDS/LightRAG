@@ -422,7 +422,11 @@ class InsertTextRequest(BaseModel):
     @field_validator("text", mode="after")
     @classmethod
     def strip_text_after(cls, text: str) -> str:
-        return text.strip()
+        # min_length runs before strip; reject whitespace-only so empty docs are not enqueued.
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError("text cannot be empty or whitespace-only")
+        return stripped
 
     @field_validator("file_source", mode="before")
     @classmethod
@@ -471,7 +475,10 @@ class InsertTextsRequest(BaseModel):
     @field_validator("texts", mode="after")
     @classmethod
     def strip_texts_after(cls, texts: list[str]) -> list[str]:
-        return [text.strip() for text in texts]
+        stripped = [text.strip() for text in texts]
+        if any(not text for text in stripped):
+            raise ValueError("texts cannot contain empty or whitespace-only entries")
+        return stripped
 
     @field_validator("file_sources", mode="before")
     @classmethod
