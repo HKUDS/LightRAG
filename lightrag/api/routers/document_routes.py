@@ -422,8 +422,7 @@ class InsertTextRequest(BaseModel):
     @field_validator("text", mode="after")
     @classmethod
     def strip_text_after(cls, text: str) -> str:
-        # min_length runs before strip; reject whitespace-only bodies so empty
-        # documents are not enqueued after a 200 response.
+        # min_length runs before strip; reject whitespace-only so empty docs are not enqueued.
         stripped = text.strip()
         if not stripped:
             raise ValueError("text cannot be empty or whitespace-only")
