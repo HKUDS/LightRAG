@@ -24,6 +24,7 @@ import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ from lightrag.kg.shared_storage import (
     check_pipeline_status_mutation,
     get_namespace_data,
     get_namespace_lock,
+    get_pipeline_ingress,
     run_to_completion,
 )
 from lightrag.operate import merge_nodes_and_edges
@@ -113,17 +115,43 @@ from lightrag.utils_pipeline import (
 )
 
 
-# Document statuses the pipeline considers "in-flight or pending" — used by
-# both the initial snapshot and every refetch after a request_pending
-# continuation.  Module-level so we don't reconstruct the list on every
-# pipeline entry.
-_INFLIGHT_DOC_STATUSES = (
-    DocStatus.PROCESSING,
-    DocStatus.FAILED,
+# Document statuses the pipeline resumes AUTOMATICALLY — the initial snapshot
+# of every run and every quiescence refetch.  PROCESSING/PARSING/ANALYZING are
+# dead-process orphans (an interrupted run left them mid-flight) and must
+# self-heal; FAILED is deliberately absent: a document that genuinely failed
+# is retried only through an explicit human request (see
+# ``_MANUAL_RETRY_DOC_STATUSES``), never as a side effect of an unrelated
+# upload or rescan.
+_AUTO_RESUME_DOC_STATUSES = (
     DocStatus.PENDING,
+    DocStatus.PROCESSING,
     DocStatus.PARSING,
     DocStatus.ANALYZING,
 )
+
+# Superset used exactly once per manual retry request (``/documents/scan`` /
+# ``/documents/reprocess_failed``): the sticky ingress request is the only
+# path that may pull FAILED documents back into the pipeline, and it is ACKed
+# after their reset-to-PENDING persists — so a doc that fails AGAIN inside
+# that run stays FAILED until the next explicit human request (no retry loop).
+_MANUAL_RETRY_DOC_STATUSES = (*_AUTO_RESUME_DOC_STATUSES, DocStatus.FAILED)
+
+
+class PipelineNextStep(Enum):
+    """Outcome of the atomic quiescence decision (see
+    :meth:`_PipelineMixin._decide_pipeline_next_step`)."""
+
+    RELEASED = "released"
+    CONTINUE_AUTO = "continue_auto"
+    CONTINUE_MANUAL = "continue_manual"
+
+
+@dataclass(frozen=True)
+class PipelineNextDecision:
+    step: PipelineNextStep
+    # Set only for CONTINUE_MANUAL: the sticky request this continuation
+    # serves; ACKed after the FAILED→PENDING reset persists.
+    manual_request_id: str | None = None
 
 
 @lru_cache(maxsize=64)
@@ -1151,26 +1179,64 @@ class _PipelineMixin:
                     )
                 return
 
-            to_process_docs: dict[
-                str, DocProcessingStatus
-            ] = await self.doc_status.get_docs_by_statuses(list(_INFLIGHT_DOC_STATUSES))
+            # Run-start peek protocol: the ingress mailbox is the ONLY source
+            # of manual retry intent (processing carries no manual params).
+            # The earliest sticky request — if any — selects the manual status
+            # tuple for the initial scan and is ACKed only after its
+            # FAILED→PENDING resets persist (in the loop, post-validation, or
+            # right below on a legitimately-empty complete result).  With no
+            # manual request pending, this run IS the rescan: absorb the
+            # auto-rescan dirty flag so quiescence doesn't re-trigger for work
+            # this very scan already picks up.
+            ingress = await get_pipeline_ingress(self.workspace)
+            pending_manual_ack: str | None = None
+            manual_msg = ingress.peek_next_manual_retry()
+            if manual_msg is not None:
+                initial_statuses = _MANUAL_RETRY_DOC_STATUSES
+                pending_manual_ack = manual_msg.request_id
+                absorbed_auto_rescan = False
+            else:
+                initial_statuses = _AUTO_RESUME_DOC_STATUSES
+                absorbed_auto_rescan = ingress.consume_auto_rescan()
+
+            try:
+                to_process_docs: dict[
+                    str, DocProcessingStatus
+                ] = await self.doc_status.get_docs_by_statuses(
+                    list(initial_statuses), strict=True
+                )
+            except Exception:
+                # The strict scan failed AFTER a wake-up signal may have been
+                # consumed: re-arm the absorbed auto flag before propagating
+                # (a manual request was only peeked and stays sticky).
+                if absorbed_auto_rescan:
+                    ingress.request_auto_rescan()
+                raise
+
             if not to_process_docs:
-                # Empty queue. Release the slot we just took WITHOUT the "pipeline
-                # stopped" bookkeeping — a run that did no work should record
-                # nothing — but do it through the atomic release that also consumes
-                # a ``request_pending`` set by a concurrent enqueue AFTER our read,
-                # so a doc that landed in that gap is not stranded in PENDING.
+                # Empty queue — a complete strict result, so a pending manual
+                # request is satisfied (nothing to retry) and can be ACKed.
+                if pending_manual_ack is not None:
+                    ingress.ack_manual_retry(pending_manual_ack)
+                    pending_manual_ack = None
+                # Release the slot we just took WITHOUT the "pipeline stopped"
+                # bookkeeping — a run that did no work should record nothing —
+                # but through the atomic quiescence decision that also consumes
+                # a wake-up signal (manual/auto/request_pending) set by a
+                # concurrent publisher AFTER our read, so a doc that landed in
+                # that gap is not stranded in PENDING.
                 logger.info("No documents to process")
-                if await self._atomic_release_busy_or_consume_pending(
-                    pipeline_status, pipeline_status_lock
-                ):
+                decision = await self._decide_pipeline_next_step(
+                    pipeline_status, pipeline_status_lock, ingress
+                )
+                if decision.step is PipelineNextStep.RELEASED:
                     # No pending work: slot released silently, finally is a no-op.
                     holds_busy = False
                     return
-                # request_pending was set: a doc arrived after our read. Re-fetch
-                # and fall through into the loop to process it.
-                to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    list(_INFLIGHT_DOC_STATUSES)
+                # A wake-up signal was pending: re-fetch per the decision and
+                # fall through into the loop to process it.
+                to_process_docs, pending_manual_ack = await self._refetch_for_decision(
+                    decision, ingress
                 )
 
             # Process documents until no more documents or requests
@@ -1213,24 +1279,41 @@ class _PipelineMixin:
                         return
 
                 if not to_process_docs:
+                    # The strict fetch that produced this empty view was
+                    # complete, so a manual request served by it is satisfied.
+                    if pending_manual_ack is not None:
+                        ingress.ack_manual_retry(pending_manual_ack)
+                        pending_manual_ack = None
                     log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    if await self._atomic_release_busy_or_consume_pending(
-                        pipeline_status, pipeline_status_lock
-                    ):
+                    decision = await self._decide_pipeline_next_step(
+                        pipeline_status, pipeline_status_lock, ingress
+                    )
+                    if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
                         break
-                    to_process_docs = await self.doc_status.get_docs_by_statuses(
-                        list(_INFLIGHT_DOC_STATUSES)
-                    )
+                    (
+                        to_process_docs,
+                        pending_manual_ack,
+                    ) = await self._refetch_for_decision(decision, ingress)
                     continue
 
                 # Validate document data consistency and fix any issues
                 to_process_docs = await self._validate_and_fix_document_consistency(
                     to_process_docs, pipeline_status, pipeline_status_lock
                 )
+
+                # ACK point for a manual retry request: the validation above
+                # persisted every FAILED→PENDING reset, and no worker has
+                # started yet — a crash after this line leaves the documents
+                # PENDING (recovered automatically), a crash before it leaves
+                # the request sticky (re-executed by the next run).  Validation
+                # raising skips this, so the request is never lost.
+                if pending_manual_ack is not None:
+                    ingress.ack_manual_retry(pending_manual_ack)
+                    pending_manual_ack = None
 
                 if not to_process_docs:
                     log_message = (
@@ -1239,14 +1322,16 @@ class _PipelineMixin:
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    if await self._atomic_release_busy_or_consume_pending(
-                        pipeline_status, pipeline_status_lock
-                    ):
+                    decision = await self._decide_pipeline_next_step(
+                        pipeline_status, pipeline_status_lock, ingress
+                    )
+                    if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
                         break
-                    to_process_docs = await self.doc_status.get_docs_by_statuses(
-                        list(_INFLIGHT_DOC_STATUSES)
-                    )
+                    (
+                        to_process_docs,
+                        pending_manual_ack,
+                    ) = await self._refetch_for_decision(decision, ingress)
                     continue
 
                 log_message = f"Processing {len(to_process_docs)} document(s)"
@@ -1267,14 +1352,16 @@ class _PipelineMixin:
                     pipeline_status_lock=pipeline_status_lock,
                 )
 
-                # Atomic exit handoff: if request_pending was set during
-                # this batch (e.g. a concurrent enqueue while busy=True),
-                # clear it and refetch.  Otherwise release ``busy`` under
-                # the SAME lock so a concurrent enqueue cannot squeeze a
-                # request_pending=True past us into a now-stranded state.
-                if await self._atomic_release_busy_or_consume_pending(
-                    pipeline_status, pipeline_status_lock
-                ):
+                # Atomic exit handoff: if a wake-up signal arrived during this
+                # batch (a manual retry request, the auto-rescan flag, or a
+                # request_pending set by a concurrent enqueue while busy=True),
+                # consume it and refetch.  Otherwise release ``busy`` under
+                # the SAME lock so a concurrent publisher cannot squeeze a
+                # signal past us into a now-stranded state.
+                decision = await self._decide_pipeline_next_step(
+                    pipeline_status, pipeline_status_lock, ingress
+                )
+                if decision.step is PipelineNextStep.RELEASED:
                     busy_released_in_loop = True
                     break
 
@@ -1283,9 +1370,9 @@ class _PipelineMixin:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-                # Check for pending documents again
-                to_process_docs = await self.doc_status.get_docs_by_statuses(
-                    list(_INFLIGHT_DOC_STATUSES)
+                # Check for pending documents again, per the decision's tuple
+                to_process_docs, pending_manual_ack = await self._refetch_for_decision(
+                    decision, ingress
                 )
 
         finally:
@@ -1757,40 +1844,88 @@ class _PipelineMixin:
 
         return to_process_docs
 
-    async def _atomic_release_busy_or_consume_pending(
+    async def _decide_pipeline_next_step(
         self,
         pipeline_status: dict,
         pipeline_status_lock,
-    ) -> bool:
-        """Atomically decide whether to release ``busy`` or consume a
-        pending request.
+        ingress,
+    ) -> PipelineNextDecision:
+        """Atomic quiescence decision: continue for a pending wake-up signal
+        or release ``busy`` in the same critical section.
 
-        Closes the loop-exit handoff race: a concurrent enqueue that
-        sets ``request_pending`` while the processing loop is on its
-        way out will be observed in the same critical section that
-        releases ``busy``, so the loop sees it and refetches instead
-        of stranding the new doc in PENDING.
+        Closes the loop-exit handoff race: a publisher that lands a signal
+        (sticky manual request, auto-rescan flag, or the transitional
+        ``request_pending``) while the processing loop is on its way out is
+        observed in the same critical section that would release ``busy``, so
+        the loop refetches instead of stranding the new work.
 
-        Returns:
-            True when ``busy`` has been cleared under the same lock
-            that observed ``request_pending=False`` — caller must
-            break out of the loop and skip clearing ``busy`` in its
-            finally block.
+        Signal priority and semantics — the lock covers only this decision
+        (mailbox calls are single in-memory/Manager RPCs; storage queries
+        happen strictly outside, in :meth:`_refetch_for_decision`):
 
-            False when ``request_pending`` was set: the flag is
-            cleared and the caller must refetch ``doc_status`` and
-            continue the loop.
+        1. **Manual retry** (peeked, NOT consumed): earliest sticky request,
+           at most one per quiescence cycle; ACKed only after its
+           FAILED→PENDING resets persist, so crashing anywhere in between
+           re-executes it instead of losing it.
+        2. **Auto rescan** (consumed atomically): the supervisor is the sole
+           consumer of the dirty flag; a failed follow-up query re-arms it in
+           :meth:`_refetch_for_decision` — without consumption here,
+           ``has_work()`` would stay true forever and ``busy`` could never
+           release.
+        3. **request_pending** (transitional dual-write fallback, removed in
+           Phase 4): consumed with the same CONTINUE_AUTO semantics.
+        4. Nothing pending: release the slot together with its owner token so
+           a later owner-checked release (the finally, or a fresh acquirer)
+           sees the slot as free and unowned — RELEASED, caller breaks and
+           skips clearing ``busy`` in its finally block.
         """
         async with pipeline_status_lock:
-            status_snapshot = pipeline_status.copy()
-            if status_snapshot.get("request_pending", False):
+            manual_msg = ingress.peek_next_manual_retry()
+            if manual_msg is not None:
+                return PipelineNextDecision(
+                    PipelineNextStep.CONTINUE_MANUAL,
+                    manual_request_id=manual_msg.request_id,
+                )
+            if ingress.consume_auto_rescan():
+                return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
+            if pipeline_status.get("request_pending", False):
                 pipeline_status.update({"request_pending": False})
-                return False
-            # Release the slot together with its owner token so a later
-            # owner-checked release (the finally, or a fresh acquirer) sees the
-            # slot as free and unowned.
+                return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
             pipeline_status.update({"busy": False, "busy_owner": None})
-            return True
+            return PipelineNextDecision(PipelineNextStep.RELEASED)
+
+    async def _refetch_for_decision(
+        self,
+        decision: PipelineNextDecision,
+        ingress,
+    ) -> tuple[dict[str, DocProcessingStatus], str | None]:
+        """Strict doc_status refetch for a CONTINUE_* decision.
+
+        Selects the status tuple by decision kind — manual continuations are
+        the only path that may pull FAILED documents back in — and restores
+        the consumed wake-up signal on failure: a CONTINUE_AUTO whose strict
+        query raises re-arms the auto-rescan flag before propagating (the
+        signal was already consumed in the decision), while a manual request
+        was only peeked and stays sticky on its own.
+
+        Returns ``(docs, pending_manual_ack)`` where ``pending_manual_ack``
+        is the request id the caller must ACK once the FAILED→PENDING resets
+        persist (post-validation), or immediately on a legitimately-empty
+        complete result.
+        """
+        if decision.step is PipelineNextStep.CONTINUE_MANUAL:
+            statuses = _MANUAL_RETRY_DOC_STATUSES
+        else:
+            statuses = _AUTO_RESUME_DOC_STATUSES
+        try:
+            docs = await self.doc_status.get_docs_by_statuses(
+                list(statuses), strict=True
+            )
+        except Exception:
+            if decision.step is PipelineNextStep.CONTINUE_AUTO:
+                ingress.request_auto_rescan()
+            raise
+        return docs, decision.manual_request_id
 
     @staticmethod
     def _format_job_name(

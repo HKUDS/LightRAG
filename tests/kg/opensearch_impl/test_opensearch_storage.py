@@ -218,6 +218,29 @@ def _make_client():
     return client
 
 
+def _mget_by_ids_side_effect(node_sources: dict[str, dict]):
+    """Build an mget ``side_effect`` returning exactly one doc per requested
+    id, keyed on ``body['ids']``.
+
+    Realistic for both the single-id ``get_node`` start-node read and any batch
+    node fetch: a shared canned multi-doc ``return_value`` would feed a
+    single-id ``get_node`` the wrong (or too many) items, which the strict mget
+    contract now rejects instead of silently taking ``docs[0]``.
+    """
+
+    async def _side_effect(index=None, body=None, **kwargs):
+        docs = []
+        for doc_id in (body or {}).get("ids", []):
+            source = node_sources.get(doc_id)
+            if source is None:
+                docs.append({"_id": doc_id, "found": False})
+            else:
+                docs.append({"_id": doc_id, "found": True, "_source": dict(source)})
+        return {"docs": docs}
+
+    return _side_effect
+
+
 @pytest.fixture
 def mock_client():
     """Fully-mocked AsyncOpenSearch client fixture."""
@@ -567,14 +590,18 @@ class TestKVStorage:
 
     @pytest.mark.asyncio
     async def test_filter_keys(self, global_config, embed_func, mock_client):
-        mock_client.mget = AsyncMock(
-            return_value={
+        # OpenSearch echoes the requested-id order; mirror that with a
+        # side_effect so the test does not depend on set-iteration order
+        # (filter_keys builds body["ids"] from a set, and the strict mget
+        # contract now verifies each item's _id against the request).
+        async def mget_side_effect(index=None, body=None, **kwargs):
+            return {
                 "docs": [
-                    {"_id": "a", "found": True},
-                    {"_id": "b", "found": False},
+                    {"_id": doc_id, "found": doc_id == "a"} for doc_id in body["ids"]
                 ]
             }
-        )
+
+        mock_client.mget = AsyncMock(side_effect=mget_side_effect)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -3455,14 +3482,16 @@ class TestGraphPPLDetection:
                 "_source": {"entity_type": "person", "description": "Node A"},
             }
         )
-        # mget for batch node fetch (only B and C, A is already added)
+        # mget returns one doc per requested id: the single-id get_node("A")
+        # start-node read AND the batch fetch of B/C both go through mget.
         mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {"_id": "B", "found": True, "_source": {"entity_type": "person"}},
-                    {"_id": "C", "found": True, "_source": {"entity_type": "person"}},
-                ]
-            }
+            side_effect=_mget_by_ids_side_effect(
+                {
+                    "A": {"entity_type": "person", "description": "Node A"},
+                    "B": {"entity_type": "person"},
+                    "C": {"entity_type": "person"},
+                }
+            )
         )
         # search for final edge fetch
         mock_client.search = AsyncMock(
@@ -3561,8 +3590,9 @@ class TestGraphPPLDetection:
         mock_client.transport.perform_request = AsyncMock(
             return_value={"datarows": [], "schema": []}
         )
-        mock_client.get = AsyncMock(
-            return_value={"_id": "A", "_source": {"entity_type": "person"}}
+        # get_node("A") for the start node goes through single-id mget.
+        mock_client.mget = AsyncMock(
+            side_effect=_mget_by_ids_side_effect({"A": {"entity_type": "person"}})
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -3589,8 +3619,9 @@ class TestGraphPPLDetection:
             "datarows": [["A", []]],
         }
         mock_client.transport.perform_request = AsyncMock(return_value=ppl_response)
-        mock_client.get = AsyncMock(
-            return_value={"_id": "A", "_source": {"entity_type": "person"}}
+        # get_node("A") for the start node goes through single-id mget.
+        mock_client.mget = AsyncMock(
+            side_effect=_mget_by_ids_side_effect({"A": {"entity_type": "person"}})
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)

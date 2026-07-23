@@ -1446,32 +1446,29 @@ def test_finalize_does_not_clobber_new_owner_bookkeeping(tmp_path):
 
 
 @pytest.mark.offline
-def test_atomic_release_busy_or_consume_pending(tmp_path):
-    """The loop-exit handoff is atomic via
-    ``_atomic_release_busy_or_consume_pending``: the same critical
-    section that reads ``request_pending`` also writes ``busy=False``.
+def test_decide_pipeline_next_step_atomic_handoff(tmp_path):
+    """The loop-exit handoff is atomic via ``_decide_pipeline_next_step``:
+    the same critical section that observes the wake-up signals (sticky
+    manual request > auto-rescan flag > transitional ``request_pending``)
+    also writes ``busy=False`` when none is pending.
 
-    This closes the race where a concurrent enqueue could set
-    ``request_pending=True`` between the loop's read of the flag and
-    the finally block's ``busy=False`` write — leaving newly-enqueued
-    docs stranded in PENDING with no running loop to consume them.
-
-    The helper has two outcomes:
-      * ``request_pending=True`` at entry → flag cleared, return False
-        (caller must continue the loop, refetching doc_status).
-      * ``request_pending=False`` at entry → ``busy`` cleared, return
-        True (caller must break out without re-clearing busy).
+    This closes the race where a concurrent publisher could land a signal
+    between the loop's read and the finally block's ``busy=False`` write —
+    leaving newly-arrived work stranded with no running loop to consume it.
 
     Tested directly because the closure pattern inside
-    ``apipeline_process_enqueue_documents`` is otherwise hard to
-    exercise from a unit test without orchestrating real concurrency.
+    ``apipeline_process_enqueue_documents`` is otherwise hard to exercise
+    from a unit test without orchestrating real concurrency.
     """
 
     async def _run():
+        from lightrag.kg.pipeline_ingress import PipelineIngressMessage
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
+            get_pipeline_ingress,
         )
+        from lightrag.pipeline import PipelineNextStep
 
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
@@ -1482,35 +1479,62 @@ def test_atomic_release_busy_or_consume_pending(tmp_path):
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=rag.workspace
             )
+            ingress = await get_pipeline_ingress(rag.workspace)
 
-            # Case 1: simulate the race — request_pending was set by a
-            # concurrent enqueue while busy=True.  Helper must consume
-            # the flag and return False (continue loop) rather than
-            # silently exit.
+            # Case 1: transitional request_pending set by a concurrent
+            # enqueue while busy=True → consumed, CONTINUE_AUTO, busy kept.
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
                 pipeline_status["request_pending"] = True
-            released = await rag._atomic_release_busy_or_consume_pending(
-                pipeline_status, pipeline_status_lock
+            decision = await rag._decide_pipeline_next_step(
+                pipeline_status, pipeline_status_lock, ingress
             )
-            assert released is False
+            assert decision.step is PipelineNextStep.CONTINUE_AUTO
             assert pipeline_status["busy"] is True  # NOT released
             assert pipeline_status["request_pending"] is False  # consumed
 
-            # Case 2: clean exit path — no concurrent enqueue.  Helper
-            # releases busy under the SAME lock so any post-call
-            # enqueue can either see busy=False (and trigger its own
-            # process pass) or had to set request_pending BEFORE this
-            # call (handled by Case 1).  No stranded flag possible.
+            # Case 2: auto-rescan dirty flag outranks request_pending and is
+            # consumed atomically (sole-consumer contract).
+            async with pipeline_status_lock:
+                pipeline_status["request_pending"] = True
+            ingress.request_auto_rescan()
+            decision = await rag._decide_pipeline_next_step(
+                pipeline_status, pipeline_status_lock, ingress
+            )
+            assert decision.step is PipelineNextStep.CONTINUE_AUTO
+            assert ingress.consume_auto_rescan() is False  # already consumed
+            assert pipeline_status["request_pending"] is True  # untouched
+
+            # Case 3: a sticky manual request outranks everything, is only
+            # PEEKED (stays pending until the run ACKs post-reset), and
+            # carries its request id.
+            ingress.request_manual_retry(
+                "req-1",
+                PipelineIngressMessage(
+                    kind="rescan", retry_failed=True, request_id="req-1"
+                ),
+            )
+            decision = await rag._decide_pipeline_next_step(
+                pipeline_status, pipeline_status_lock, ingress
+            )
+            assert decision.step is PipelineNextStep.CONTINUE_MANUAL
+            assert decision.manual_request_id == "req-1"
+            assert ingress.peek_next_manual_retry().request_id == "req-1"  # sticky
+            ingress.ack_manual_retry("req-1")
+            async with pipeline_status_lock:
+                pipeline_status["request_pending"] = False
+
+            # Case 4: clean exit path — no signal pending.  Busy released
+            # under the SAME lock so any post-call publisher either sees
+            # busy=False (and triggers its own process pass) or landed its
+            # signal BEFORE this call (handled by Cases 1-3).
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
-                pipeline_status["request_pending"] = False
-            released = await rag._atomic_release_busy_or_consume_pending(
-                pipeline_status, pipeline_status_lock
+            decision = await rag._decide_pipeline_next_step(
+                pipeline_status, pipeline_status_lock, ingress
             )
-            assert released is True
+            assert decision.step is PipelineNextStep.RELEASED
             assert pipeline_status["busy"] is False  # released
-            assert pipeline_status["request_pending"] is False
         finally:
             await rag.finalize_storages()
 

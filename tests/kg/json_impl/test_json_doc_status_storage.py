@@ -166,3 +166,62 @@ async def test_json_kv_upsert_preserves_caller_file_paths(tmp_path):
     assert (await text_chunks.get_by_id("chunk-1"))["file_path"] == (
         "/tmp/uploads/report.[native-Fi].pdf"
     )
+
+
+@pytest.mark.asyncio
+async def test_get_docs_by_statuses_strict_raises_on_bad_record(tmp_path):
+    """Strict scheduling contract: a record that cannot be converted raises;
+    the relaxed default keeps the historical skip-and-log behavior."""
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    await storage.initialize()
+
+    async with storage._storage_lock:
+        storage._data.update(
+            {
+                "doc-good": _doc("failed", "good.pdf"),
+                # Missing required fields → DocProcessingStatus(**data) raises.
+                "doc-bad": {"status": "failed"},
+            }
+        )
+
+    relaxed = await storage.get_docs_by_statuses([DocStatus.FAILED])
+    assert set(relaxed) == {"doc-good"}
+
+    with pytest.raises(TypeError):
+        await storage.get_docs_by_statuses([DocStatus.FAILED], strict=True)
+
+
+@pytest.mark.asyncio
+async def test_get_docs_by_statuses_missing_status_skips_relaxed_raises_strict(
+    tmp_path,
+):
+    """A record missing its ``status`` key is just another undeserializable
+    record: skipped in relaxed mode, raised under strict.  Regression guard for
+    reading ``v["status"]`` OUTSIDE the try, which crashed every relaxed caller
+    on such a record instead of skipping it."""
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    await storage.initialize()
+
+    async with storage._storage_lock:
+        storage._data.update(
+            {
+                "doc-good": _doc("failed", "good.pdf"),
+                "doc-nostatus": {"file_path": "x.pdf"},  # no "status" key at all
+            }
+        )
+
+    relaxed = await storage.get_docs_by_statuses([DocStatus.FAILED])
+    assert set(relaxed) == {"doc-good"}  # skipped, not crashed
+
+    with pytest.raises(KeyError):
+        await storage.get_docs_by_statuses([DocStatus.FAILED], strict=True)

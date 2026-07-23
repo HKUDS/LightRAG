@@ -12,6 +12,8 @@ from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.lightrag import LightRAG
+
+from .conftest import request_failed_retry
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
@@ -396,6 +398,9 @@ async def test_extract_failure_before_chunking_clears_stale_chunk_snapshot(
             }
         )
 
+        # FAILED docs re-enter only via an explicit manual retry request
+        # (the /reprocess_failed semantics).
+        await request_failed_retry(rag)
         await rag.apipeline_process_enqueue_documents()
 
         failed_status = await rag.doc_status.get_by_id(doc_id)

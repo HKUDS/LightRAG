@@ -543,6 +543,58 @@ def _build_index_name(workspace: str, namespace: str) -> tuple[str, str, str]:
     return effective, final_ns, index_name
 
 
+def _interpret_mget_item(
+    item: Any, doc_id: str, *, require_source: bool = True
+) -> dict[str, Any] | None:
+    """Interpret one OpenSearch ``mget`` ``docs`` entry for ``doc_id``.
+
+    OpenSearch answers an ``mget`` with HTTP 200 even when *individual* items
+    failed: such an item carries an ``error`` object (a shard was unavailable,
+    for instance) and no ``found`` flag.  Reading a missing/false ``found`` as
+    "document absent" therefore turns a transient per-item failure into a
+    CONFIRMED miss — which the pipeline's consistency validator translates into
+    deleting a live ``doc_status`` row (and, for the dedup callers, into
+    re-ingesting a document that already exists).
+
+    Scheduling-safe contract:
+
+    * ``found is True`` (with ``_source`` present unless ``require_source`` is
+      cleared) → return the item;
+    * ``found is False`` → return ``None`` (CONFIRMED absent);
+    * an item-level ``error``, an id mismatch, or any other malformed shape →
+      raise, because none of those mean "confirmed absent".
+
+    ``require_source=False`` is for existence-only callers (``filter_keys``
+    issues ``_source=False`` mget, so a found item legitimately has no
+    ``_source``); they use the truthy/``None`` distinction, not the payload.
+    """
+    if not isinstance(item, dict):
+        raise RuntimeError(
+            f"OpenSearch mget returned a non-object entry for id '{doc_id}': {item!r}"
+        )
+    if item.get("error") is not None:
+        raise RuntimeError(
+            f"OpenSearch mget item error for id '{doc_id}': {item['error']}"
+        )
+    returned_id = item.get("_id")
+    if returned_id != doc_id:
+        raise RuntimeError(
+            f"OpenSearch mget returned id '{returned_id}' for requested '{doc_id}'"
+        )
+    found = item.get("found")
+    if found is False:
+        return None
+    if found is True:
+        if require_source and "_source" not in item:
+            raise RuntimeError(
+                f"OpenSearch mget item for id '{doc_id}' is found but carries no _source"
+            )
+        return item
+    raise RuntimeError(
+        f"OpenSearch mget item for id '{doc_id}' has no boolean 'found' flag: {item!r}"
+    )
+
+
 async def _mget_optional_doc(
     client: AsyncOpenSearch,
     index_name: str,
@@ -554,18 +606,22 @@ async def _mget_optional_doc(
     ``source_excludes`` is forwarded to OpenSearch's ``_source_excludes`` so
     callers can ask the server to omit specific fields (e.g. ``["vector"]``)
     and save network bandwidth.
+
+    ``None`` means CONFIRMED absent; a per-item error, a missing/duplicated
+    item, or a malformed response raises (see ``_interpret_mget_item``) so a
+    transient failure is never mistaken for a miss.
     """
     kwargs: dict[str, Any] = {"index": index_name, "body": {"ids": [doc_id]}}
     if source_excludes:
         kwargs["_source_excludes"] = source_excludes
     response = await client.mget(**kwargs)
-    docs = response.get("docs", [])
-    if not docs:
-        return None
-    doc = docs[0]
-    if not doc.get("found"):
-        return None
-    return doc
+    docs = response.get("docs")
+    if not isinstance(docs, list) or len(docs) != 1:
+        raise RuntimeError(
+            f"OpenSearch mget for id '{doc_id}' returned "
+            f"{len(docs) if isinstance(docs, list) else 'no'} items, expected exactly 1"
+        )
+    return _interpret_mget_item(docs[0], doc_id)
 
 
 def _is_missing_index_error(exc: Exception) -> bool:
@@ -838,8 +894,13 @@ class OpenSearchKVStorage(BaseKVStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return None
+            # Scheduling-safe read contract: ``None`` means CONFIRMED absent
+            # (tombstone / not found / index not created). A transport or
+            # server error must raise — callers like the pipeline's
+            # consistency validator interpret None as "content missing" and
+            # would delete a live doc_status row on a transient failure.
             logger.error(f"[{self.workspace}] Error getting document {id}: {e}")
-            return None
+            raise
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple documents by IDs (read-your-writes), preserving order.
@@ -870,19 +931,38 @@ class OpenSearchKVStorage(BaseKVStorage):
                 response = await self.client.mget(
                     index=self._index_name, body={"ids": remaining}
                 )
-                for doc in response["docs"]:
-                    if doc.get("found"):
-                        data = doc["_source"]
-                        data.pop("__mirrored_id", None)
-                        data["_id"] = doc["_id"]
-                        data.setdefault("create_time", 0)
-                        data.setdefault("update_time", 0)
-                        doc_map[doc["_id"]] = data
+                docs = response.get("docs")
+                if not isinstance(docs, list) or len(docs) != len(remaining):
+                    # One item per requested id, or the response is malformed
+                    # and cannot be read as "every remaining id is absent".
+                    raise RuntimeError(
+                        f"[{self.workspace}] OpenSearch mget returned "
+                        f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                        f"for {len(remaining)} requested ids"
+                    )
+                # OpenSearch preserves request order; _interpret_mget_item also
+                # verifies each _id so a reordered/duplicated response raises
+                # rather than silently mislabelling an id as absent.
+                for requested_id, item in zip(remaining, docs):
+                    interpreted = _interpret_mget_item(item, requested_id)
+                    if interpreted is None:
+                        continue
+                    data = interpreted["_source"]
+                    data.pop("__mirrored_id", None)
+                    data["_id"] = interpreted["_id"]
+                    data.setdefault("create_time", 0)
+                    data.setdefault("update_time", 0)
+                    doc_map[requested_id] = data
             except OpenSearchException as e:
                 if _is_missing_index_error(e):
                     self._mark_index_missing()
                 else:
+                    # Same scheduling-safe contract as get_by_id: a swallowed
+                    # transport error would report every remaining id as
+                    # absent, which callers cannot distinguish from a
+                    # confirmed miss.
                     logger.error(f"[{self.workspace}] Error getting documents: {e}")
+                    raise
 
         return [
             buffered[doc_id] if doc_id in buffered else doc_map.get(doc_id)
@@ -903,7 +983,7 @@ class OpenSearchKVStorage(BaseKVStorage):
             index_ready = self._index_ready
 
         # Buffered upserts shadow OpenSearch -- they will exist after flush.
-        to_check = keys - pending_upserts - pending_deletes
+        to_check = list(keys - pending_upserts - pending_deletes)
         if not to_check:
             # All keys are accounted for by the buffer alone.
             return keys - pending_upserts
@@ -912,19 +992,38 @@ class OpenSearchKVStorage(BaseKVStorage):
         try:
             response = await self.client.mget(
                 index=self._index_name,
-                body={"ids": list(to_check)},
+                body={"ids": to_check},
                 _source=False,
             )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(to_check):
+                raise RuntimeError(
+                    f"[{self.workspace}] OpenSearch mget returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                    f"for {len(to_check)} requested ids"
+                )
+            # A per-item shard error is NOT "absent": interpret each item under
+            # the scheduling-safe contract (require_source=False — this mget is
+            # _source=False) so it raises instead of dropping an existing id
+            # into the "missing" set, which the enqueue dedup would re-ingest.
             existing_on_server = {
-                doc["_id"] for doc in response["docs"] if doc.get("found")
+                requested_id
+                for requested_id, item in zip(to_check, docs)
+                if _interpret_mget_item(item, requested_id, require_source=False)
+                is not None
             }
             return (keys - pending_upserts) - existing_on_server
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return keys - pending_upserts
+            # Scheduling-safe: a whole-call transport error is NOT "every id is
+            # absent". filter_keys is the dedup gate (full_docs custom-chunk
+            # create, lightrag.py) — a fail-open here lets an existing document
+            # be re-created/overwritten. Raise so the caller aborts before any
+            # upsert. (missing-index above is a genuine confirmed-empty index.)
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
-            return keys - pending_upserts
+            raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Buffer documents for batched flush.
@@ -1363,12 +1462,24 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             return [None] * len(ids)
         try:
             response = await self.client.mget(index=self._index_name, body={"ids": ids})
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(ids):
+                raise RuntimeError(
+                    f"[{self.workspace}] OpenSearch mget returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                    f"for {len(ids)} requested ids"
+                )
+            # OpenSearch preserves request order; _interpret_mget_item verifies
+            # each _id and raises on an item-level error rather than reading it
+            # as absent.
             doc_map = {}
-            for doc in response["docs"]:
-                if doc.get("found"):
-                    data = doc["_source"]
-                    data["_id"] = doc["_id"]
-                    doc_map[doc["_id"]] = data
+            for requested_id, item in zip(ids, docs):
+                interpreted = _interpret_mget_item(item, requested_id)
+                if interpreted is None:
+                    continue
+                data = interpreted["_source"]
+                data["_id"] = interpreted["_id"]
+                doc_map[requested_id] = data
             return [doc_map.get(id) for id in ids]
         except OpenSearchException as e:
             if _is_missing_index_error(e):
@@ -1381,18 +1492,39 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         """Return the subset of keys that do not exist in storage."""
         if not self._index_ready:
             return keys
+        to_check = list(keys)
         try:
             response = await self.client.mget(
-                index=self._index_name, body={"ids": list(keys)}, _source=False
+                index=self._index_name, body={"ids": to_check}, _source=False
             )
-            existing_ids = {doc["_id"] for doc in response["docs"] if doc.get("found")}
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(to_check):
+                raise RuntimeError(
+                    f"[{self.workspace}] OpenSearch mget returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                    f"for {len(to_check)} requested ids"
+                )
+            # A per-item shard error is NOT "absent": raise instead of letting
+            # an existing doc_id fall into the "missing" set, which the enqueue
+            # dedup (pipeline filter_keys) would then re-ingest.
+            existing_ids = {
+                requested_id
+                for requested_id, item in zip(to_check, docs)
+                if _interpret_mget_item(item, requested_id, require_source=False)
+                is not None
+            }
             return keys - existing_ids
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return keys
+            # Scheduling-safe: a whole-call transport error is NOT "every id is
+            # new". This is the FIRST-layer enqueue dedup (pipeline.py:757) — a
+            # fail-open reports existing docs as new, overwrites them to PENDING
+            # and re-schedules them. Raise so enqueue aborts before any upsert.
+            # (missing-index above is a genuine confirmed-empty index.)
             logger.error(f"[{self.workspace}] Error filtering keys: {e}")
-            return keys
+            raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Insert or update document status records."""
@@ -1469,8 +1601,20 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error getting status counts: {e}")
             return {}
 
-    async def _search_all_docs(self, query: dict) -> dict[str, DocProcessingStatus]:
-        """Fetch all documents matching a query using PIT + search_after."""
+    async def _search_all_docs(
+        self, query: dict, strict: bool = False
+    ) -> dict[str, DocProcessingStatus]:
+        """Fetch all documents matching a query using PIT + search_after.
+
+        ``strict=True`` is the complete-or-raise scheduling contract: a PIT
+        creation failure, ANY page failure and ANY hit that cannot be parsed
+        into :class:`DocProcessingStatus` propagate instead of degrading to a
+        partial result — the pipeline supervisor has already consumed its
+        wake-up signal when it calls this, so a silent partial read would
+        strand the missed documents.  A missing index is a legitimately empty
+        (complete) result in both modes, and PIT deletion stays best-effort —
+        it does not affect the completeness of an already-collected result.
+        """
         if not self._index_ready:
             return {}
         result = {}
@@ -1503,6 +1647,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                             logger.error(
                                 f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
                             )
+                            if strict:
+                                raise
                     search_after = hits[-1]["sort"]
                     if len(hits) < batch_size:
                         break
@@ -1516,6 +1662,8 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 self._mark_index_missing()
                 return {}
             logger.error(f"[{self.workspace}] Error fetching docs: {e}")
+            if strict:
+                raise
         return result
 
     async def get_docs_by_status(
@@ -1525,18 +1673,21 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents matching any of the given statuses in a single query.
 
         Uses OpenSearch's terms query (multi-value equivalent of term) to fetch
         all matching statuses in one PIT + search_after pass instead of one
-        full scan per status.
+        full scan per status.  ``strict=True`` = complete-or-raise (see
+        :meth:`_search_all_docs`).
         """
         if not statuses:
             return {}
         status_values = [s.value for s in statuses]
-        return await self._search_all_docs({"terms": {"status": status_values}})
+        return await self._search_all_docs(
+            {"terms": {"status": status_values}}, strict=strict
+        )
 
     async def get_docs_by_track_id(
         self, track_id: str

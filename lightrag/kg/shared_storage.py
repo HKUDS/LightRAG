@@ -29,6 +29,7 @@ from lightrag.kg.pipeline_ingress import (
     AsyncioPipelineIngress,
     ManagerPipelineIngress,
     PipelineIngressHub,
+    PipelineIngressMessage,
     _PipelineIngressHubProxy,
 )
 
@@ -2656,6 +2657,180 @@ async def start_reserved_background_task(
     if cancel is not None:
         raise cancel
     raise RuntimeError("reserved background task failed to start")
+
+
+class ManualIntentRefused(Exception):
+    """A manual-intent commit was refused by the pipeline fence.
+
+    Raised by :func:`start_committed_background_task` when ``commit`` returned
+    a refusal: the fence rejected the request BEFORE the sticky message was
+    published, so no side effect exists and the endpoint can surface the
+    message (e.g. as a 503) without any cleanup.
+    """
+
+
+async def commit_manual_retry_request(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    ingress,
+    request_id: str,
+    state: Dict[str, Any],
+) -> Optional[str]:
+    """Fence recheck + sticky manual-retry publish in ONE critical section.
+
+    The commit step of the two-state startup protocol for
+    ``/documents/reprocess_failed``: checking the fence and publishing in
+    separate critical sections would let a destructive clear take its
+    reservation in between — the request would then be accepted against
+    storages that are about to be dropped.  Refusals happen strictly BEFORE
+    the publish, so a refused call has zero side effects.
+
+    ``state["committed"] = True`` is set synchronously right after the
+    publish (no await in between): the startup helper keys its
+    cancel-behavior on it, and a cancellation landing in the lock's
+    ``__aexit__`` must already count as committed — the sticky request
+    exists and someone has to own driving it.
+
+    ``ingress`` must be resolved by the caller BEFORE this call — never
+    lazily while the pipeline status lock is held.
+
+    Returns ``None`` on success, or the human-readable refusal message.
+    """
+    message = PipelineIngressMessage(
+        kind="rescan", retry_failed=True, request_id=request_id
+    )
+    async with pipeline_status_lock:
+        snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
+            pipeline_status
+        )
+        if snapshot.get("recovery_required"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return pipeline_recovery_blocked_message(snapshot)
+        if snapshot.get("destructive_busy"):
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            return (
+                "A clear/delete operation is dropping storages; a manual "
+                "retry accepted now would be wiped with them. Retry after "
+                "it finishes."
+            )
+        _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+        if not ingress.request_manual_retry(request_id, message):
+            # The id is already terminal (ACKED / CANCELLED_BY_CLEAR): nothing
+            # was published and nothing is owned. Unreachable for the current
+            # callers (they mint a fresh uuid per request) but a future caller
+            # reusing ids must get a refusal, not a phantom commit.
+            return (
+                f"manual retry request id {request_id!r} was already "
+                "finalized; mint a new request id"
+            )
+        state["committed"] = True
+        return None
+
+
+async def start_committed_background_task(
+    background_tasks: set, *, commit, work, backstop_release
+):
+    """Two-state commit/ownership startup for manual-intent endpoints.
+
+    ``start_reserved_background_task`` cancels its child on ANY caller
+    cancellation — even after takeover — which would orphan a just-published
+    sticky manual request (the intent exists, but the task that owns driving
+    it is dead).  This helper splits startup into two states instead:
+
+    ``NOT_COMMITTED`` → ``commit(state)`` runs first inside the child (fence
+    recheck + sticky publish in one ``pipeline_status_lock`` critical
+    section, setting ``state["committed"] = True`` synchronously after the
+    publish) → ``COMMITTED_AND_OWNED`` → ``work()``.
+
+    HARD REQUIREMENT on ``commit`` implementations: between the fence
+    decision and ``state["committed"] = True`` there must be NO await other
+    than acquiring the pipeline status lock itself — the cancel-behavior
+    below keys on that marker, and an await in that window would open a race
+    where a caller cancellation lands mid-commit with the publish already
+    visible but the marker unset (the intent would be torn down as if never
+    published).
+
+    Rules keyed on the commit state at caller-cancellation time:
+
+    * NOT_COMMITTED: cancel the child, join it, run ``backstop_release`` —
+      no manual request was published, nothing is owned, the original
+      cancellation propagates.
+    * COMMITTED_AND_OWNED: the child is NOT cancelled — it keeps running and
+      releases its own reservation; the caller's cancellation propagates so
+      the endpoint knows ownership transferred and must not release again.
+
+    A child that ends without committing either refused (``commit`` returned
+    a message → :class:`ManualIntentRefused`) or crashed pre-commit; both run
+    ``backstop_release`` (owner-checked, idempotent).  A child that crashes
+    AFTER committing but before ``work`` still gets its reservation released
+    via ``backstop_release`` — the sticky request itself stays for the next
+    run to consume, which is exactly the sticky contract.
+
+    Known boundary (documented, not solved here): if the server commits but
+    the HTTP response never reaches the client, a client retry mints a new
+    request_id and earns one more attempt — server-generated ids cannot be
+    idempotent across that gap; supply a client idempotency key if that
+    matters.
+    """
+    state: Dict[str, Any] = {"committed": False, "refusal": None}
+    started = asyncio.Event()
+
+    async def _child():
+        refusal = await commit(state)
+        if refusal is not None:
+            state["refusal"] = refusal
+            return
+        started.set()
+        await work()
+
+    task = asyncio.ensure_future(_child())
+    background_tasks.add(task)
+
+    def _done(t):
+        background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                direct_log(
+                    f"Committed background task failed: {exc}",
+                    level="ERROR",
+                    enable_output=True,
+                )
+
+    task.add_done_callback(_done)
+
+    waiter = asyncio.ensure_future(started.wait())
+    caller_cancel = None
+    try:
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError as exc:
+        caller_cancel = exc
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+    if caller_cancel is not None:
+        if state["committed"]:
+            # Ownership transferred: the child owns its reservation and the
+            # published intent. Never cancel it; the endpoint's finally must
+            # not release either.
+            raise caller_cancel
+        task.cancel()
+        join_cancel = await _join_resistant(task)
+        await backstop_release()
+        raise caller_cancel or join_cancel
+
+    if started.is_set():
+        return task  # child took over; its own finally owns the release
+
+    # Child ended before takeover: refusal, or a crash before/inside commit.
+    join_cancel = await _join_resistant(task)
+    await backstop_release()
+    if join_cancel is not None:
+        raise join_cancel
+    if state["refusal"] is not None:
+        raise ManualIntentRefused(state["refusal"])
+    raise RuntimeError("committed background task failed to start")
 
 
 async def drain_reserved_background_tasks(

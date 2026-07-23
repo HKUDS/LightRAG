@@ -5234,13 +5234,16 @@ class PGDocStatusStorage(DocStatusStorage):
         return docs_by_status
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         """Fetch documents matching any of the given statuses in a single query.
 
         Replaces multiple sequential/parallel get_docs_by_status() calls when the
         caller needs documents across several statuses (e.g. PROCESSING + FAILED + PENDING).
-        Uses a single ANY($2) query instead of N separate round-trips.
+        Uses a single ANY($2) query instead of N separate round-trips.  Query
+        errors always propagate; ``strict=True`` additionally raises on any row
+        that cannot be converted (complete-or-raise scheduling contract, see
+        base class).
         """
         if not statuses:
             return {}
@@ -5298,6 +5301,8 @@ class PGDocStatusStorage(DocStatusStorage):
                     f"[{self.workspace}] Skipping document '{doc_id_hint}' — "
                     f"required field missing or wrong type while parsing DB row: {e!r}"
                 )
+                if strict:
+                    raise
                 continue
 
         return docs

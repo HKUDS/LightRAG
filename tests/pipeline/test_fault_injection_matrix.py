@@ -26,6 +26,8 @@ from lightrag.base import DocStatus
 from lightrag.tools.kg_integrity_repair import audit_kg_integrity
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
+from .conftest import request_failed_retry
+
 pytestmark = pytest.mark.offline
 
 
@@ -213,9 +215,12 @@ async def test_pipeline_failure_then_restart_converges(
     finally:
         await rag1.finalize_storages()
 
-    # ...and after a restart, an ordinary retry converges.
+    # ...and after a restart, an explicit manual retry converges (a FAILED
+    # doc re-enters only via the /reprocess_failed semantics; a doc left
+    # PENDING/interrupted by the crash is picked up automatically either way).
     rag2 = await _build_rag(tmp_path, workspace)
     try:
+        await request_failed_retry(rag2)
         await rag2.apipeline_process_enqueue_documents()
         await _assert_converged(rag2, doc_id)
     finally:
