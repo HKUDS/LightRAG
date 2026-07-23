@@ -4382,22 +4382,29 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         we_acquired_pipeline = False
         token = uuid.uuid4().hex
 
-        def _release_on_acquire_failure(status):
-            status.update(
-                {
-                    "busy": False,
-                    "busy_owner": None,
-                    "operation_record": None,
-                    "cancellation_requested": False,
-                }
-            )
+        # Initialized BEFORE the try so the finally can always read them, even
+        # when the acquire itself (or the post-acquire status logging) raises.
+        deletion_operations_started = False
+        deletion_fully_completed = False
+        in_final_delete_stage = False
+        original_exception = None
+        doc_llm_cache_ids: list[str] = []
+        deletion_stage = "initializing"
+        doc_status_data: dict[str, Any] | None = None
+        file_path: str | None = None
 
-        # Acquire (or join a batch delete) inside a try so a cancellation at the
-        # acquire/logging lock exit — before the main try/finally is armed — still
-        # releases the slot we took (owner-checked) instead of wedging it.
+        # Acquire (or join a batch delete) INSIDE the same handoff-aware
+        # try/finally as the deletion itself: any escape after the slot is
+        # stamped — a cancellation or RPC failure at the acquire/logging lock
+        # exit included — reaches the same owner-checked exit decision as the
+        # main flow (probe ``has_work()`` → handoff or release).  A concurrent
+        # enqueue can commit mailbox work the instant the reservation lock is
+        # released, so an unconditional early release in that window would
+        # strand it (PR #3467 review round 2).
         try:
-            # Pre-arm owner-checked cleanup before acquire so cancellation after
-            # the atomic update cannot leak this token's reservation.
+            # Pre-arm ownership before acquire so cancellation after the atomic
+            # update cannot leak this token's reservation (the finally is
+            # owner-checked; a stamp that never happened makes it a no-op).
             we_acquired_pipeline = True
             reservation = await acquire_reservation(
                 pipeline_status,
@@ -4451,34 +4458,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                 # Pipeline is busy with batch deletion - join without acquiring.
 
-            deletion_operations_started = False
-            deletion_fully_completed = False
-            in_final_delete_stage = False
-            original_exception = None
-            doc_llm_cache_ids: list[str] = []
-            deletion_stage = "initializing"
-            doc_status_data: dict[str, Any] | None = None
-            file_path: str | None = None
-
             async with pipeline_status_lock:
                 log_message = f"Starting deletion process for document {doc_id}"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
-        except BaseException:
-            # Cancel/error between taking the slot and arming the main try:
-            # release it (owner-checked) so it is never left wedged.
-            if we_acquired_pipeline:
-                await with_reservation_lock(
-                    pipeline_status,
-                    pipeline_status_lock,
-                    owner_key="busy_owner",
-                    token=token,
-                    action=_release_on_acquire_failure,
-                )
-            raise
 
-        try:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
             if not doc_status_data:

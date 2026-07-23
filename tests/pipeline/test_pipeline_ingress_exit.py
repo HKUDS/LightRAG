@@ -750,6 +750,119 @@ async def test_direct_delete_hands_off_mailbox_work(tmp_path):
         await rag.finalize_storages()
 
 
+async def test_direct_delete_acquire_window_failure_hands_off(tmp_path, monkeypatch):
+    """Fix-proof (PR #3467 review round 2, Medium): an escape AFTER the delete
+    stamped ``busy`` but BEFORE its main flow (the acquire/logging window)
+    must reach the same handoff-aware exit as the main flow.  Mailbox work
+    committed by a concurrent ``ainsert`` in that window (the reservation
+    lock is already released) was previously stranded by an unconditional
+    early ``busy`` release with no ``has_work()`` probe."""
+    import lightrag.lightrag as lightrag_module
+
+    extract = _MarkerExtract()
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        await asyncio.wait_for(rag.apipeline_process_enqueue_documents(), timeout=10)
+        a_id = compute_mdhash_id("a.txt", prefix="doc-")
+
+        real_acquire = lightrag_module.acquire_reservation
+        acquired_gate = asyncio.Event()
+        release_gate = asyncio.Event()
+
+        async def gated_acquire(*args, **kwargs):
+            # Stamp busy for real, then fail inside the acquire window.
+            reservation = await real_acquire(*args, **kwargs)
+            assert reservation.acquired is True
+            acquired_gate.set()
+            await release_gate.wait()
+            raise RuntimeError("post-acquire window failure")
+
+        monkeypatch.setattr(lightrag_module, "acquire_reservation", gated_acquire)
+        delete_task = asyncio.create_task(rag.adelete_by_doc_id(a_id))
+        await asyncio.wait_for(acquired_gate.wait(), timeout=5)
+
+        # Full public insert while the delete holds busy in its acquire window.
+        await asyncio.wait_for(rag.ainsert("BBBB body", file_paths="b.txt"), timeout=10)
+        ingress = await get_pipeline_ingress(rag.workspace)
+        assert ingress.has_work() is True
+
+        release_gate.set()
+        result = await asyncio.wait_for(delete_task, timeout=15)
+        # The window failure surfaces through the delete's uniform error
+        # contract (never swallowed) ...
+        assert result.status == "fail"
+        assert "post-acquire window failure" in result.message
+        # ... and the exit still handed the slot off: the concurrent doc is
+        # processed, the mailbox drained and the slot released.
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "processed"
+        assert extract.calls["BBBB"] == 1
+        status, _lock = await _pipeline_ns(rag)
+        assert status.get("busy") is False
+        assert ingress.has_work() is False
+    finally:
+        await rag.finalize_storages()
+
+
+async def test_direct_delete_acquire_window_cancel_releases_and_retains(
+    tmp_path, monkeypatch
+):
+    """Cancellation counterpart of the acquire-window escape: the slot must
+    be released (never wedged), the CancelledError must propagate, and the
+    concurrent work must never be lost.  Whether the handoff drive runs
+    depends on cancellation delivery timing — a CancelledError already
+    injected lets the finally's awaits proceed, one still pending re-raises
+    at the drive — so this asserts the invariant common to both outcomes:
+    the doc reaches PROCESSED after at most one explicit trigger."""
+    import lightrag.lightrag as lightrag_module
+
+    extract = _MarkerExtract()
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        await asyncio.wait_for(rag.apipeline_process_enqueue_documents(), timeout=10)
+        a_id = compute_mdhash_id("a.txt", prefix="doc-")
+
+        real_acquire = lightrag_module.acquire_reservation
+        acquired_gate = asyncio.Event()
+        never = asyncio.Event()
+
+        async def gated_acquire(*args, **kwargs):
+            reservation = await real_acquire(*args, **kwargs)
+            assert reservation.acquired is True
+            acquired_gate.set()
+            await never.wait()  # parked until the task is cancelled
+            return reservation
+
+        monkeypatch.setattr(lightrag_module, "acquire_reservation", gated_acquire)
+        delete_task = asyncio.create_task(rag.adelete_by_doc_id(a_id))
+        await asyncio.wait_for(acquired_gate.wait(), timeout=5)
+
+        await asyncio.wait_for(rag.ainsert("BBBB body", file_paths="b.txt"), timeout=10)
+        ingress = await get_pipeline_ingress(rag.workspace)
+        assert ingress.has_work() is True
+
+        delete_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await delete_task
+
+        status, _lock = await _pipeline_ns(rag)
+        assert status.get("busy") is False  # slot released, never wedged
+        # Signals retained by a deferred drive are drained by one explicit
+        # trigger; a drive that already ran leaves this a cheap no-op.
+        if ingress.has_work():
+            await asyncio.wait_for(
+                rag.apipeline_process_enqueue_documents(), timeout=10
+            )
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "processed"
+        assert extract.calls["BBBB"] == 1  # exactly once across both outcomes
+        assert ingress.has_work() is False
+    finally:
+        await rag.finalize_storages()
+
+
 async def test_custom_chunks_exit_hands_off_on_ingress_only_work(tmp_path):
     """Fix-proof (handoff probe): a document enqueued while
     ``ainsert_custom_chunks`` holds ``busy`` is visible ONLY through the
