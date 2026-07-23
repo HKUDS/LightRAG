@@ -687,6 +687,69 @@ async def test_journaled_pending_doc_does_not_hold_busy(tmp_path):
         await rag.finalize_storages()
 
 
+async def test_direct_delete_hands_off_mailbox_work(tmp_path):
+    """Fix-proof (PR #3467 review, High): a direct SDK ``adelete_by_doc_id``
+    holds ``busy`` WITHOUT ``destructive_busy``, so a concurrent full
+    ``ainsert`` succeeds — its PENDING row + document message land, and its
+    busy-refused process call arms the auto-rescan flag.  The delete's exit
+    must probe ``has_work()`` and hand the slot to a processing run;
+    releasing without the handoff strands the new doc in PENDING (both
+    public calls returned success) until an unrelated trigger."""
+    extract = _MarkerExtract()
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        # Seed and process the doc that will be deleted.
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        await asyncio.wait_for(rag.apipeline_process_enqueue_documents(), timeout=10)
+        a_id = compute_mdhash_id("a.txt", prefix="doc-")
+        assert _status_text(await rag.doc_status.get_by_id(a_id)) == "processed"
+
+        # Gate the delete right after it took ``busy`` (its first doc_status
+        # read), run the concurrent insert while it holds the slot, then
+        # release the gate.
+        orig_get_by_id = rag.doc_status.get_by_id
+        delete_entered = asyncio.Event()
+        release_delete = asyncio.Event()
+
+        async def gated_get_by_id(doc_id):
+            if doc_id == a_id and not delete_entered.is_set():
+                delete_entered.set()
+                await release_delete.wait()
+            return await orig_get_by_id(doc_id)
+
+        rag.doc_status.get_by_id = gated_get_by_id
+        try:
+            delete_task = asyncio.create_task(rag.adelete_by_doc_id(a_id))
+            await asyncio.wait_for(delete_entered.wait(), timeout=5)
+
+            # Full public insert while the delete holds busy: the enqueue is
+            # permitted (busy is not destructive) and the process call is
+            # busy-refused, arming auto-rescan.
+            await asyncio.wait_for(
+                rag.ainsert("BBBB body", file_paths="b.txt"), timeout=10
+            )
+            ingress = await get_pipeline_ingress(rag.workspace)
+            assert ingress.has_work() is True  # work landed during the delete
+
+            release_delete.set()
+            result = await asyncio.wait_for(delete_task, timeout=15)
+            assert result.status == "success"
+        finally:
+            release_delete.set()
+            rag.doc_status.get_by_id = orig_get_by_id
+
+        # The handoff run processed the doc that arrived during the delete:
+        # nothing stranded, mailbox drained, slot released.
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "processed"
+        assert extract.calls["BBBB"] == 1
+        status, _lock = await _pipeline_ns(rag)
+        assert status.get("busy") is False
+        assert ingress.has_work() is False
+    finally:
+        await rag.finalize_storages()
+
+
 async def test_custom_chunks_exit_hands_off_on_ingress_only_work(tmp_path):
     """Fix-proof (handoff probe): a document enqueued while
     ``ainsert_custom_chunks`` holds ``busy`` is visible ONLY through the
