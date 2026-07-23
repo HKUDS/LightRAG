@@ -95,7 +95,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/seedrandom": "^3.0.8",
     "@vitejs/plugin-react": "^6.0.3",
-    "eslint": "^10.6.0",
+    "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -103,11 +103,11 @@
     "globals": "^17.7.0",
     "graphology-types": "^0.24.8",
     "prettier": "^3.9.5",
-    "prettier-plugin-tailwindcss": "^0.8.0",
-    "typescript-eslint": "^8.63.0",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "typescript-eslint": "^8.64.0",
     "tailwindcss": "^4.3.2",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~6.0.3",
-    "vite": "^8.1.4"
+    "vite": "^8.1.5"
   }
 }
