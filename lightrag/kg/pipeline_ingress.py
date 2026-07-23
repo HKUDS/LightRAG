@@ -178,6 +178,8 @@ class PipelineIngress(Protocol):
 
     def put_document(self, msg: PipelineIngressMessage) -> None: ...
 
+    def put_documents(self, msgs: List[PipelineIngressMessage]) -> None: ...
+
     def request_auto_rescan(self) -> None: ...
 
     def consume_auto_rescan(self) -> bool: ...
@@ -241,12 +243,31 @@ class PipelineIngressMailbox:
         """
         _validate_document_message(msg)
         with self._cond:
-            if len(self._documents) >= self._document_capacity:
-                self._document_overflows += 1
-                self._auto_rescan_pending = True
-            else:
-                self._documents.append(msg)
+            self._put_document_locked(msg)
             self._cond.notify_all()
+
+    def put_documents(self, msgs: List[PipelineIngressMessage]) -> None:
+        """Publish a batch of document notifications in ONE server-side call.
+
+        Exists so a producer can publish inside the same
+        ``pipeline_status_lock`` critical section that the consumer's atomic
+        exit decision runs under, without holding that lock across N Manager
+        RPCs.  Per-message semantics are identical to :meth:`put_document`
+        (validation, overflow coalescing into the auto-rescan flag).
+        """
+        for msg in msgs:
+            _validate_document_message(msg)
+        with self._cond:
+            for msg in msgs:
+                self._put_document_locked(msg)
+            self._cond.notify_all()
+
+    def _put_document_locked(self, msg: PipelineIngressMessage) -> None:
+        if len(self._documents) >= self._document_capacity:
+            self._document_overflows += 1
+            self._auto_rescan_pending = True
+        else:
+            self._documents.append(msg)
 
     def request_auto_rescan(self) -> None:
         with self._cond:
@@ -438,6 +459,11 @@ class PipelineIngressHub:
     def put_document(self, namespace: str, msg: PipelineIngressMessage) -> None:
         self._mailbox(namespace).put_document(msg)
 
+    def put_documents(
+        self, namespace: str, msgs: List[PipelineIngressMessage]
+    ) -> None:
+        self._mailbox(namespace).put_documents(msgs)
+
     def request_auto_rescan(self, namespace: str) -> None:
         self._mailbox(namespace).request_auto_rescan()
 
@@ -494,6 +520,7 @@ class _PipelineIngressHubProxy(BaseProxy):
 
     _exposed_ = (
         "put_document",
+        "put_documents",
         "request_auto_rescan",
         "request_manual_retry",
         "consume_auto_rescan",
@@ -510,6 +537,11 @@ class _PipelineIngressHubProxy(BaseProxy):
 
     def put_document(self, namespace: str, msg: PipelineIngressMessage) -> None:
         self._callmethod("put_document", (namespace, msg))
+
+    def put_documents(
+        self, namespace: str, msgs: List[PipelineIngressMessage]
+    ) -> None:
+        self._callmethod("put_documents", (namespace, msgs))
 
     def request_auto_rescan(self, namespace: str) -> None:
         self._callmethod("request_auto_rescan", (namespace,))
@@ -569,6 +601,11 @@ class ManagerPipelineIngress:
     def put_document(self, msg: PipelineIngressMessage) -> None:
         _validate_document_message(msg)  # fail at the call site, pre-RPC
         self._hub.put_document(self.namespace, msg)
+
+    def put_documents(self, msgs: List[PipelineIngressMessage]) -> None:
+        for msg in msgs:
+            _validate_document_message(msg)  # fail at the call site, pre-RPC
+        self._hub.put_documents(self.namespace, msgs)
 
     def request_auto_rescan(self) -> None:
         self._hub.request_auto_rescan(self.namespace)
@@ -679,6 +716,18 @@ class AsyncioPipelineIngress:
         else:
             self.document_messages.put_nowait(msg)
         self.work_event.set()
+
+    def put_documents(self, msgs: List[PipelineIngressMessage]) -> None:
+        """Batch variant of :meth:`put_document` (same per-message semantics).
+
+        Single-process publishing is same-loop synchronous, so this is pure
+        API symmetry with the Manager-backed flavor's single-RPC batch —
+        including whole-batch validation before anything is enqueued.
+        """
+        for msg in msgs:
+            _validate_document_message(msg)
+        for msg in msgs:
+            self.put_document(msg)
 
     def request_auto_rescan(self) -> None:
         self._auto_rescan_pending = True

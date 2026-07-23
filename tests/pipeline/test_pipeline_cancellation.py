@@ -34,7 +34,11 @@ import pytest
 from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
-from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+from lightrag.kg.shared_storage import (
+    get_namespace_data,
+    get_namespace_lock,
+    get_pipeline_ingress,
+)
 from lightrag.pipeline import _BatchRunContext
 from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled, SyncLLMBridge
 from lightrag.parser.registry import parser_specs_snapshot
@@ -303,6 +307,7 @@ async def test_pipeline_cancel_interrupts_inflight_native_parser_llm(
                 {doc_id: status_doc},
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
+                ingress=await get_pipeline_ingress(rag.workspace),
             )
         )
         await asyncio.wait_for(submit_started.wait(), timeout=1.0)
