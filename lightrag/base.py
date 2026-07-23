@@ -3,10 +3,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum
 import os
+import uuid
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from typing import (
     Any,
+    ClassVar,
     Literal,
     TypedDict,
     TypeVar,
@@ -15,9 +17,14 @@ from typing import (
     List,
     AsyncIterator,
 )
-from .utils import EmbeddingFunc, get_env_value
+from .utils import EmbeddingFunc, get_env_value, logger
 from .types import KnowledgeGraph
+from .exceptions import (
+    StorageCapabilityError,
+    StorageRecordNotFoundError,
+)
 from .constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -383,9 +390,44 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 class BaseKVStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
 
+    supports_strict_point_reads: ClassVar[bool] = False
+    """Class-level capability flag: the backend implements
+    :meth:`get_by_id_strict` with complete-or-raise semantics.
+
+    ``False`` (the base default, and any third-party backend that has not
+    opted in) means strict point reads are unavailable — callers that would
+    take a destructive action on "confirmed absent" (e.g. deleting a FAILED
+    doc_status stub because its full_docs entry is gone) MUST NOT act and
+    should fall back to a safe path with a warning instead.
+    """
+
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get value by id"""
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Point read with complete-or-raise semantics.
+
+        Contract (implemented by backends that declare
+        ``supports_strict_point_reads = True``):
+
+        * ``None`` means **confirmed absent** — the backend positively
+          determined that no record with this id exists.
+        * Any transport/server error, an index/collection that is not ready,
+          or a state where absence cannot be positively confirmed (e.g. an
+          OpenSearch index that is unexpectedly missing after a restore)
+          MUST raise instead of returning ``None``.
+
+        This differs from :meth:`get_by_id`, whose implementations may treat
+        failures as a best-effort miss. The base implementation raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`; callers must
+        gate on :attr:`supports_strict_point_reads` before calling.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support strict point reads "
+            "(supports_strict_point_reads=False); the caller must fall back "
+            "to a non-destructive path instead of trusting a miss."
+        )
 
     @abstractmethod
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -844,6 +886,27 @@ class DocProcessingStatus:
     Used together with file_path basename for duplicate detection. Empty for
     pending_parse records whose content has not been extracted yet.
     """
+    failure_generation: int | None = None
+    """Monotonic failure-cohort generation assigned when the row transitioned
+    to FAILED via ``mark_doc_failed`` (memory-bounding Phase 1).
+
+    ``None`` on legacy rows and rows that never failed — query predicates
+    treat missing as logical 0, so all history belongs to the first manual
+    cutoff. Never reset on retry; a later failure assigns a fresh, larger
+    generation.
+    """
+    processing_attempt_id: str | None = None
+    """Identity of the current processing attempt.
+
+    Minted before a brand-new attempt starts, kept across PENDING→PARSING→
+    PROCESSING and across crash recovery of the same interrupted attempt; a
+    manual retry grant mints a new one. ``mark_doc_failed`` stamps it into
+    ``failure_attempt_id`` so concurrent failure writes of the same attempt
+    collapse idempotently.
+    """
+    failure_attempt_id: str | None = None
+    """The ``processing_attempt_id`` whose failure produced the current
+    FAILED state (None when never failed / legacy)."""
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
 
     def __post_init__(self):
@@ -864,9 +927,135 @@ class DocProcessingStatus:
                 self.status = DocStatus.PREPROCESSED
 
 
+class FailureGenerationMode(str, Enum):
+    """Per-workspace activation state of the failure-generation machinery.
+
+    Read through :meth:`DocStatusStorage.get_failure_generation_mode`. The
+    manual-retry scheduler dispatches EXHAUSTIVELY on this enum — never with
+    a default-else — because mapping an unknown/MIGRATING state to LEGACY
+    would silently reopen the full-materialization (OOM) window:
+
+    * ``LEGACY`` — workspace data/writers not migrated: manual retry uses the
+      old single-snapshot cohort; no generation predicate.
+    * ``MIGRATING`` — migration in flight or persisted version markers
+      disagree: scheduling features that depend on migrated state must raise
+      :class:`~lightrag.exceptions.StorageMigrationInProgressError`.
+    * ``DUAL_WRITE_READY`` — writers assign generations but the read side is
+      not yet authoritative: manual retry still uses the legacy snapshot.
+    * ``ENFORCED`` — migration complete (schema version + counter epoch +
+      migration version all consistent): manual retry uses paged
+      generation-cutoff cohorts.
+    """
+
+    LEGACY = "legacy"
+    MIGRATING = "migrating"
+    DUAL_WRITE_READY = "dual_write_ready"
+    ENFORCED = "enforced"
+
+
+class CursorPosition:
+    """Sealed three-state cursor for stable keyset sweeps.
+
+    Exactly three shapes exist: the :data:`CURSOR_START` singleton, the
+    :data:`CURSOR_END` singleton, and :class:`CursorAfter` (an opaque,
+    backend-defined continuation token). ``page.next_position is CURSOR_END``
+    is the ONLY termination signal — an empty ``docs`` dict is not (a page
+    may be fully filtered yet not exhausted).
+    """
+
+    __slots__ = ()
+
+
+class _CursorSentinel(CursorPosition):
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return self._name
+
+
+CURSOR_START = _CursorSentinel("CURSOR_START")
+"""Begin a sweep from the smallest ``(created_at, id)`` key."""
+
+CURSOR_END = _CursorSentinel("CURSOR_END")
+"""The sweep is exhausted; no further page exists."""
+
+
+@dataclass(frozen=True)
+class CursorAfter(CursorPosition):
+    """Opaque continuation token: resume strictly after the last CONSUMED
+    underlying record (see the consumed-position contract on
+    :meth:`DocStatusStorage.get_docs_by_statuses_page`)."""
+
+    opaque: str
+
+
+@dataclass(frozen=True)
+class DocSchedulingRecord:
+    """Lightweight scheduling projection of a doc_status row.
+
+    Deliberately excludes ``chunks_list``, large ``metadata`` blobs and full
+    error text so a page of records stays O(page_size × small constant) —
+    the pipeline hydrates full records per-document only when it actually
+    routes one.
+    """
+
+    id: str
+    status: DocStatus
+    created_at: str
+    updated_at: str
+    file_path: str
+    track_id: str | None
+    has_custom_chunk_journal: bool
+    """True when doc_status.metadata carries the custom-chunk patch journal —
+    such rows belong to scan/custom-chunk recovery, not ordinary routing."""
+
+
+@dataclass(frozen=True)
+class DocStatusPage:
+    """One page of a stable keyset sweep.
+
+    ``next_position is CURSOR_END`` terminates the sweep; any other value
+    (including with an empty ``docs``) means "call again".
+    """
+
+    docs: dict[str, DocSchedulingRecord]
+    next_position: CursorPosition
+
+
+# One-time-per-class warning registry for base-default page reads that must
+# ignore ``max_failure_generation`` (the class lacks failure-generation
+# support). Module-level so dataclass instances stay stateless.
+_PAGE_GENERATION_FILTER_WARNED: set[str] = set()
+
+
 @dataclass
 class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
+
+    supports_bounded_scheduling_pages: ClassVar[bool] = False
+    """The backend implements :meth:`get_docs_by_statuses_page` as a true
+    bounded keyset sweep. ``False`` (base default / third-party backends)
+    means the default single-page implementation is used, which materializes
+    ALL matching rows — correctness holds but there is NO memory-boundedness
+    guarantee. Operators can require boundedness via
+    ``PIPELINE_REQUIRE_BOUNDED_SCHEDULING`` (init fail-fast) or accept a
+    strong startup warning."""
+
+    supports_failure_generation: ClassVar[bool] = False
+    """The backend implements the failure-generation write side
+    (:meth:`reserve_failure_generation` + CAS :meth:`mark_doc_failed`).
+    Class-level implementation capability only — whether a given WORKSPACE
+    actually enforces generation cohorts is the per-workspace marker read via
+    :meth:`get_failure_generation_mode`."""
+
+    supports_strict_doc_identity_lookup: ClassVar[bool] = False
+    """The backend implements :meth:`get_doc_by_file_basename_strict` with
+    fail-closed semantics (None == confirmed absent). ``False`` means the
+    strict variant merely delegates to the legacy lookup: a ``None`` is only
+    a best-effort miss and callers must not present it as confirmation."""
 
     @staticmethod
     def resolve_status_filter_values(
@@ -997,6 +1186,278 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.
         """
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1). Every method below ships a
+    # concrete base default so existing third-party subclasses keep
+    # instantiating and working; built-in backends override for bounded /
+    # fail-closed behaviour and declare the matching capability flags.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _scheduling_record_from_status(
+        doc_id: str, status_doc: DocProcessingStatus
+    ) -> DocSchedulingRecord:
+        """Project a full status row into the lightweight scheduling record."""
+        metadata = status_doc.metadata if isinstance(status_doc.metadata, dict) else {}
+        return DocSchedulingRecord(
+            id=doc_id,
+            status=status_doc.status,
+            created_at=status_doc.created_at,
+            updated_at=status_doc.updated_at,
+            file_path=status_doc.file_path,
+            track_id=status_doc.track_id,
+            has_custom_chunk_journal=isinstance(
+                metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict
+            ),
+        )
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        max_failure_generation: int | None = None,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Read one page of a stable keyset sweep over the given statuses.
+
+        Contract for bounded implementations
+        (``supports_bounded_scheduling_pages = True``):
+
+        * **Sort (MUST)**: ``(created_at ASC, id ASC)`` keyset order across
+          ALL requested statuses combined (per-status keysets merged with a
+          bounded k-way merge where the backend cannot sort natively).
+          Live-view: the sweep observes concurrent writes; no snapshot
+          isolation is claimed. Termination is ``next_position is
+          CURSOR_END`` — never an empty ``docs``.
+        * **Immutable sort key**: ``created_at`` is written once at record
+          creation and preserved by every later transition
+          (``update_doc_status_fields`` refuses it; ``mark_doc_failed``
+          ignores a caller-supplied value for existing rows) so a record can
+          never move underneath a sweep.
+        * **Consumed-position advance**: ``next_position`` advances past the
+          last CONSUMED underlying record — records returned to the caller
+          plus records read and dropped by filtering (e.g. the
+          ``max_failure_generation`` predicate) are consumed; a record
+          prefetched for merging but NOT returned because the page filled is
+          NOT consumed (or must be encoded into the opaque cursor and
+          returned first on the next page). A fully-filtered page therefore
+          advances the cursor without terminating, never re-reads in place,
+          and never skips a prefetched head. With multiple statuses the
+          opaque cursor tracks each status stream's own consumed position.
+        * ``max_failure_generation`` (optional): return FAILED rows only when
+          ``failure_generation <= max_failure_generation`` (missing field ==
+          logical 0). Non-FAILED rows are unaffected. This is the manual
+          cohort-freeze predicate; AUTO sweeps pass ``None``.
+        * ``strict=True``: the page is complete or the call raises — on an
+          internal partial failure the implementation must raise WITHOUT
+          returning partial docs or a new cursor. All scheduling/control-plane
+          callers pass ``strict=True`` explicitly.
+
+        Base default (third-party compatibility, NOT memory-bounded):
+        ``CURSOR_START`` → delegate to ``get_docs_by_statuses(strict=True)``
+        and return everything as a single page ending the sweep (``limit`` is
+        ignored); any other position → empty terminal page. A non-``None``
+        ``max_failure_generation`` is ignored with a one-time warning because
+        the class lacks failure-generation support (missing == logical 0
+        keeps every legacy row eligible, which is the safe direction).
+        """
+        if max_failure_generation is not None and not self.supports_failure_generation:
+            cls_name = type(self).__name__
+            if cls_name not in _PAGE_GENERATION_FILTER_WARNED:
+                _PAGE_GENERATION_FILTER_WARNED.add(cls_name)
+                logger.warning(
+                    f"{cls_name} does not support failure_generation; "
+                    "max_failure_generation is ignored by the base "
+                    "single-page implementation (all FAILED rows stay "
+                    "eligible for this sweep)."
+                )
+        if position is not CURSOR_START:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        snapshot = await self.get_docs_by_statuses(statuses, strict=True)
+        docs = {
+            doc_id: self._scheduling_record_from_status(doc_id, status_doc)
+            for doc_id, status_doc in snapshot.items()
+        }
+        return DocStatusPage(docs=docs, next_position=CURSOR_END)
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Count documents in the given statuses, fail-closed.
+
+        Unlike ``get_status_counts()`` implementations that swallow errors
+        and report zeros, this method MUST either return an accurate count or
+        raise — admission control treats an error as "refuse", never as
+        "capacity available". The base implementation raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`; deployments
+        that enable ``MAX_PENDING_DOCUMENTS`` validate support at
+        initialization.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not implement strict "
+            "count_docs_by_statuses; admission control cannot run on this "
+            "backend."
+        )
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Update only the given fields of one doc_status record.
+
+        Contract:
+
+        * Fields not present in ``fields`` are left untouched — this is the
+          targeted alternative to read-modify-write upserts that would drag
+          a huge ``chunks_list`` through memory.
+        * Implementations MUST atomically maintain every secondary index
+          affected by the updated fields (e.g. Redis per-status ZSETs and the
+          basename→primary-doc index) in the same transaction as the write.
+        * ``created_at`` is an immutable sort key: passing it raises
+          ``ValueError`` (see the keyset-sweep contract).
+        * Unknown ``doc_id`` raises
+          :class:`~lightrag.exceptions.StorageRecordNotFoundError` unless
+          ``missing_ok=True`` (best-effort callers only).
+
+        The base default performs a read-modify-write via ``get_by_id`` +
+        ``upsert`` — correct but not memory-optimal; built-in backends
+        override with native partial updates.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        existing = await self.get_by_id(doc_id)
+        if existing is None:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+        merged = {**existing, **fields}
+        merged.pop("_id", None)
+        await self.upsert({doc_id: merged})
+
+    async def get_failure_generation_mode(self) -> FailureGenerationMode:
+        """Read the per-workspace failure-generation activation marker.
+
+        Built-in backends read a persisted per-workspace marker (never a
+        local config override) and MUST propagate read failures as
+        control-plane errors — a marker read failure never degrades to
+        ``LEGACY`` because LEGACY reopens the full-snapshot manual path.
+
+        The base default returns ``LEGACY``: third-party backends keep the
+        old single-snapshot manual behaviour with plain FAILED upserts.
+        """
+        return FailureGenerationMode.LEGACY
+
+    async def reserve_failure_generation(self) -> int:
+        """Atomically reserve the next failure-generation number.
+
+        Reserve-before-publish: the reservation is the linearization point of
+        a failure event; a reservation whose FAILED write later fails becomes
+        a permanent hole (never reused, never rolled back). Counter
+        durability must be no weaker than the FAILED status write itself.
+
+        Only called on ``ENFORCED`` workspaces, so the base default (no
+        generation support) raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support failure_generation "
+            "reservation (supports_failure_generation=False)."
+        )
+
+    async def mark_doc_failed(self, doc_id: str, fields: dict[str, Any]) -> int | None:
+        """Transition one document to FAILED.
+
+        This is the SINGLE funnel for FAILED writes (Phase 1 routes every
+        call site through it). Contract for generation-capable backends
+        (``supports_failure_generation = True``):
+
+        * Reserve a generation (:meth:`reserve_failure_generation`) and CAS
+          it into the row together with ``failure_attempt_id`` = the row's
+          current ``processing_attempt_id``; two concurrent failures of the
+          same attempt land exactly one effective generation (idempotent:
+          already-FAILED with the same attempt returns the existing
+          generation).
+        * For an EXISTING row a caller-supplied ``created_at`` is IGNORED —
+          the scheduling sort key is immutable.
+        * A missing row is conditionally created as FAILED (parse/enqueue
+          errors can fail before the PENDING row landed).
+        * Returns the effective failure generation.
+
+        The base default implements the LEGACY write side: a plain merge +
+        upsert with ``status=FAILED`` (no generation isolation), returning
+        ``None``.
+        """
+        existing = await self.get_by_id(doc_id)
+        if existing is None:
+            row = dict(fields)
+        else:
+            row = {**existing, **fields}
+            # Immutable sort key: never let a failure rewrite move the row.
+            if "created_at" in existing:
+                row["created_at"] = existing["created_at"]
+        row["status"] = DocStatus.FAILED
+        row.pop("_id", None)
+        await self.upsert({doc_id: row})
+        return None
+
+    async def ensure_processing_attempt_id(self, doc_id: str) -> str:
+        """Return the row's ``processing_attempt_id``, minting one if absent.
+
+        Idempotent per attempt: an interrupted call retried after a lost
+        response reuses the persisted id instead of minting a second one.
+        Used to bootstrap legacy active rows (PENDING/PARSING/ANALYZING/
+        PROCESSING without an attempt id) before recovery processing, and by
+        new documents before any step that can fail.
+
+        The base default is read-then-write (not atomic across processes);
+        built-in backends may override with a CAS variant.
+        """
+        existing = await self.get_by_id(doc_id)
+        if existing is None:
+            raise StorageRecordNotFoundError(doc_id)
+        attempt_id = existing.get("processing_attempt_id")
+        if attempt_id:
+            return str(attempt_id)
+        attempt_id = uuid.uuid4().hex
+        await self.update_doc_status_fields(
+            doc_id, {"processing_attempt_id": attempt_id}
+        )
+        return attempt_id
+
+    async def get_doc_by_file_basename_strict(
+        self, basename: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Fail-closed variant of :meth:`get_doc_by_file_basename`.
+
+        Contract for backends declaring
+        ``supports_strict_doc_identity_lookup = True``:
+
+        * Returns the PRIMARY (non-duplicate, ``metadata.is_duplicate !=
+          true``) document row for the canonical basename, or ``None`` when
+          absence was positively confirmed.
+        * Query failures, a not-ready index, or a schema/migration version
+          mismatch raise a control-plane error instead of returning ``None``
+          — scan classification and enqueue dedup treat ``None`` as
+          "confirmed new", so a swallowed failure would mint duplicate rows.
+
+        The base default DELEGATES to the legacy
+        :meth:`get_doc_by_file_basename` (old signature untouched — never
+        call the legacy method with new kwargs, third-party overrides would
+        raise ``TypeError``). Under delegation a ``None`` is only a
+        best-effort miss with the backend's own error semantics; deployments
+        see a startup warning and status-endpoint exposure for this
+        degradation.
+        """
+        return await self.get_doc_by_file_basename(basename)
 
 
 class StoragesStatus(str, Enum):

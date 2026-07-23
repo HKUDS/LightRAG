@@ -77,6 +77,44 @@ class StorageNotInitializedError(RuntimeError):
         )
 
 
+class StorageCapabilityError(RuntimeError):
+    """Raised when a storage backend lacks a capability the caller requires.
+
+    Callers that depend on a hard guarantee (strict counting, strict point
+    reads, failure-generation cohorts, ...) must fail closed on this error —
+    never silently substitute a weaker code path.
+    """
+
+
+class StorageControlPlaneError(RuntimeError):
+    """A storage control-plane read failed (mode marker, counter, version).
+
+    Distinct from a data-plane miss: the caller cannot know the true state and
+    MUST fail closed (retry with backoff / surface 503 / keep sticky work
+    unacknowledged). Degrading to a full-materialization or destructive
+    fallback on this error is forbidden — that is exactly the OOM/corruption
+    window the control plane exists to fence off.
+    """
+
+
+class StorageMigrationInProgressError(StorageControlPlaneError):
+    """The workspace is migrating, or its persisted version markers disagree.
+
+    Features that depend on migrated state (failure-generation cohorts,
+    bounded manual sweeps) must refuse with this error instead of falling
+    back to legacy full-snapshot behaviour.
+    """
+
+
+class StorageRecordNotFoundError(KeyError):
+    """A targeted doc_status field update referenced a non-existent record.
+
+    Raised by ``update_doc_status_fields(..., missing_ok=False)`` — the
+    default — so callers cannot silently patch a record that a concurrent
+    delete already removed.
+    """
+
+
 class PipelineNotInitializedError(KeyError):
     """Raised when pipeline status is accessed before initialization."""
 

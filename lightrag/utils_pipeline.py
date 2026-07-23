@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
 from lightrag.constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
     LIGHTRAG_DOC_CONTENT_PREFIX,
@@ -264,12 +265,8 @@ def resolve_doc_status_parse_engine(
     )
 
 
-# Reserved doc_status.metadata key holding the custom-chunk patch journal
-# (issue #3400 Phase 3). While present, the document has an in-flight or
-# failed ainsert_custom_chunks operation: the pipeline must NOT process the
-# row as ordinary ingestion, resets must NOT strip it, and deletion must
-# include its staged chunk IDs.
-CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
+# CUSTOM_CHUNK_PATCH_METADATA_KEY moved to lightrag.constants (imported
+# above) so base.py can share it without an import cycle.
 
 # Public, persistent audit trail for structurally successful but semantically
 # degraded KG recovery. The WebUI uses this key to distinguish a processed

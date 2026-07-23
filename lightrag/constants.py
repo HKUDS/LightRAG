@@ -272,6 +272,13 @@ PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
+# Reserved doc_status.metadata key holding the custom-chunk patch journal
+# (issue #3400 Phase 3). While present, the document has an in-flight or
+# failed ainsert_custom_chunks operation: the pipeline must NOT process the
+# row as ordinary ingestion, resets must NOT strip it, and deletion must
+# include its staged chunk IDs. Lives here (not utils_pipeline) so that
+# base.py can derive the scheduling projection without an import cycle.
+CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
 # Prefix marking a doc_status content_summary as GENERATED from a file
 # extraction error (enqueue-time error documents and parse-stage FAILED
 # upserts). Doubles as the match sentinel that lets a later failure replace
