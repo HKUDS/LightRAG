@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Trạng Thái Quy Trình",
       "busy": "Quy Trình Đang Bận",
-      "requestPending": "Yêu Cầu Đang Chờ",
       "cancellationRequested": "Đã Yêu Cầu Hủy",
       "jobName": "Tên Công Việc",
       "startTime": "Thời Gian Bắt Đầu",

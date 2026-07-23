@@ -810,12 +810,13 @@ __parsed__/<base>.docling_raw/
 
 | 字段 | 语义 |
 | --- | --- |
-| `busy` | 流水线繁忙的笼统标志。处理循环和破坏性作业（clear/delete）都会设它。**仅有 `busy=True`（处理循环）不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，每批结束后通过 `request_pending` 检查是否还有新工作。 |
+| `busy` | 流水线繁忙的笼统标志。处理循环和破坏性作业（clear/delete）都会设它。**仅有 `busy=True`（处理循环）不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，运行中到达的新工作经 workspace ingress mailbox 接入（批内 feeder + 批边界静默决策）。 |
 | `destructive_busy` | `busy` 的破坏性子集：`/documents/clear` 或 `/documents/{doc_id}`（删除）正在 drop 存储 / 删源文件。reservation 和 enqueue last-line guard 都会拒绝——并发 enqueue 会写入正被 drop 的存储，已接受的文档会静默丢失。处理循环不会设此字段。 |
 | `scanning` | `/documents/scan` 后台任务运行中（整个生命周期：分类阶段 + 处理阶段）。仅 `/scan` 端点用它拒绝重叠 scan，本身**不**阻塞 upload/insert。 |
 | `scanning_exclusive` | `scanning` 的独占子集：只在 scan 的**分类阶段**为 True——run_scanning_process 在读 doc_status 分类（已处理 / 续跑 / 删 stub / 归档），不能与并发写者交错。reservation 和 enqueue last-line guard 都会拒绝。分类完成后会立即清旗，scan 进入处理阶段后允许并发 upload。 |
 | `pending_enqueues` | 已通过 `_reserve_enqueue_slot` 但 bg task 未完成的 upload/insert 数。仅给 scan 端点参考——决定是否能拿独占。bg task 在 `finally` 里释放 slot。 |
-| `request_pending` | 让运行中的处理循环再扫一轮的信号。enqueue 在 `busy=True` 时写完 `doc_status` 后置位；处理循环每个 batch 结束后检查并重新拉快照。 |
+
+唤醒信号**不在** `pipeline_status` 里，而在 workspace 级 **pipeline ingress mailbox**（`lightrag/kg/pipeline_ingress.py`，三通道：逐文档 document 消息 / auto-rescan 脏标志 / sticky 人工重试请求）。enqueue 写完 `doc_status` 后在 `pipeline_status_lock` 下发布 document 消息；被 busy 拒绝的 processing 请求在 reservation 同一临界区内置 auto-rescan 标志；运行中的循环在批内（feeder）与每个批边界（原子静默决策，三通道全空时在同一临界区释放 `busy`）消费这些信号。`doc_status` 仍是事实来源——丢失的通知由下一次 run 的初始 strict 扫描兜底。
 
 ### 6.2 入口行为
 
@@ -828,7 +829,7 @@ __parsed__/<base>.docling_raw/
 | `/documents/clear` / `/documents/delete_document` | `busy=True` 或 `scanning=True` 或 `pending_enqueues>0` | 端点同步返回 `status="busy"`，不 schedule 后台任务 |
 | 同上 | 全部 idle | 端点**同步**在锁内设 `busy=True` + `destructive_busy=True`（`delete_document` 在返回 `deletion_started` 之前），bg task 的 finally 一并清旗 |
 | `apipeline_enqueue_documents` 内部 (last-line guard) | `scanning_exclusive=True` 且 `from_scan=False`，或 `destructive_busy=True` | 抛 `RuntimeError("Cannot enqueue while scan is classifying / clearing or deleting")` |
-| 同上 | 任何其它情况（含纯 `busy=True`、scan 处理阶段） | 正常入队；写完 `doc_status` 后若 `busy=True` 自动 nudge `request_pending=True` |
+| 同上 | 任何其它情况（含纯 `busy=True`、scan 处理阶段） | 正常入队；写完 `doc_status` 后向 ingress mailbox 发布逐文档消息（运行中的循环在批内或批边界接手） |
 
 `from_scan=True` 是 scan 后台任务自身入队时的旁路：scan 已持有 `scanning` 旗标，必须允许它把扫到的文件入队。
 
@@ -837,8 +838,8 @@ __parsed__/<base>.docling_raw/
 旧版本里 `busy=True` 一律拒绝任何新入队，理由是"修改 `doc_status` 会与流水线工作线程交错"。但实际上：
 
 1. **写入顺序保证一致性**：`apipeline_enqueue_documents` 总是先 upsert `full_docs`、再 upsert `doc_status`。处理循环开头的 consistency check 仅删除"`doc_status` 行没有对应 `full_docs`"的孤儿——这种状态在并发 enqueue 中不可能出现。
-2. **批次级快照**：处理循环每个 batch 拉一次 `get_docs_by_statuses` 快照，新写入的 `PENDING` 行不会破坏当前 batch；下一轮通过 `request_pending` 重拉快照即可看到新工作。
-3. **`request_pending` 设计本就为此**：旧版同时存在 `request_pending` 字段——它就是为"运行中又有新工作"设计的，但被 busy 守护堵死了。
+2. **批次级快照**：处理循环每个 batch 拉一次 `get_docs_by_statuses` 快照，新写入的 `PENDING` 行不会破坏当前 batch——它们的 document 消息由批内 feeder 直接路由进当前 batch，剩余的在批边界重拉快照接上。
+3. **ingress mailbox 设计本就为此**：enqueue 为"运行中又有新工作"这一场景逐文档发布通知；循环的静默决策在同一临界区内消费信号并释放 `busy`，信号不会落进缝隙。
 
 新契约把这个机制启用起来后，**用户在长批次处理过程中仍可继续上传新文档**，bg task 写完 `doc_status` 后由运行中的循环自动接管。
 
@@ -870,12 +871,12 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 1. A `_reserve_enqueue_slot` → `pending_enqueues=1`，写文件，schedule bg task A，返回 success。
 2. B `_reserve_enqueue_slot` → `pending_enqueues=2`，写文件，schedule bg task B，返回 success。
 3. bg task A `apipeline_enqueue_documents` → 写 `doc_status` → 调 `apipeline_process_enqueue_documents` → 设 `busy=True` 处理 A 的文档。
-4. bg task B `apipeline_enqueue_documents` → 看到 `scanning=False`，正常写入；写完后看到 `busy=True`，自动设 `request_pending=True`。
-5. bg task B 调 `apipeline_process_enqueue_documents` → 看到 `busy=True`，设 `request_pending=True` 立即返回。
-6. A 的处理循环跑完当前 batch，看到 `request_pending=True`，重拉快照，把 B 的 `PENDING` 行接上处理。
+4. bg task B `apipeline_enqueue_documents` → 看到 `scanning=False`，正常写入；写完后向 ingress mailbox 发布 B 的 document 消息。
+5. bg task B 调 `apipeline_process_enqueue_documents` → reservation 看到 `busy=True`，同一临界区内置 auto-rescan 标志后立即返回。
+6. A 的运行循环经批内 feeder 把 B 的 document 消息直接路由进当前 batch——若消息落在批边界，则由静默决策消费信号后重拉快照——B 的 `PENDING` 行被接上处理。
 7. 全部完成后 `busy=False`、`pending_enqueues=0`。
 
-任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份 batch——`request_pending` 只在 batch 间生效，且每次重拉前清零。
+任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份文档——批内准入按 routing/inflight 登记去重，auto-rescan 标志每个静默决策恰好消费一次。
 
 ### 6.7 enqueue 串行锁（防并发去重穿透）
 
@@ -895,7 +896,7 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 - 重复 FAILED 行的 upsert
 - `full_docs.upsert` + `doc_status.upsert`
 
-锁**不**覆盖 `request_pending` nudge（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
+锁**不**覆盖 ingress document 发布（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
 
 ### 6.8 流水线并发参数
 

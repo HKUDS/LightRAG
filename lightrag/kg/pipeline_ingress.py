@@ -1,5 +1,5 @@
-"""Workspace-scoped pipeline ingress: the notification channel that replaces
-``request_pending``.
+"""Workspace-scoped pipeline ingress: the pipeline's wake-up notification
+channel.
 
 One logical ingress exists per workspace (see ``shared_storage.
 get_pipeline_ingress``).  It carries three channels with three distinct
@@ -459,9 +459,7 @@ class PipelineIngressHub:
     def put_document(self, namespace: str, msg: PipelineIngressMessage) -> None:
         self._mailbox(namespace).put_document(msg)
 
-    def put_documents(
-        self, namespace: str, msgs: List[PipelineIngressMessage]
-    ) -> None:
+    def put_documents(self, namespace: str, msgs: List[PipelineIngressMessage]) -> None:
         self._mailbox(namespace).put_documents(msgs)
 
     def request_auto_rescan(self, namespace: str) -> None:
@@ -538,9 +536,7 @@ class _PipelineIngressHubProxy(BaseProxy):
     def put_document(self, namespace: str, msg: PipelineIngressMessage) -> None:
         self._callmethod("put_document", (namespace, msg))
 
-    def put_documents(
-        self, namespace: str, msgs: List[PipelineIngressMessage]
-    ) -> None:
+    def put_documents(self, namespace: str, msgs: List[PipelineIngressMessage]) -> None:
         self._callmethod("put_documents", (namespace, msgs))
 
     def request_auto_rescan(self, namespace: str) -> None:

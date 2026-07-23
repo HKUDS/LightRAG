@@ -386,9 +386,29 @@ async def test_custom_chunks_persist_before_extraction(monkeypatch):
     assert events.index("text_chunks_persisted") < events.index("extract")
 
 
+class _FakeExitIngress:
+    """Minimal mailbox stand-in for the custom-chunks exit handoff: the
+    ``has_work`` probe and the auto-rescan flag are the only channels these
+    tests drive."""
+
+    def __init__(self):
+        self.auto_rescan_pending = False
+
+    def request_auto_rescan(self):
+        self.auto_rescan_pending = True
+
+    def consume_auto_rescan(self):
+        pending, self.auto_rescan_pending = self.auto_rescan_pending, False
+        return pending
+
+    def has_work(self):
+        return self.auto_rescan_pending
+
+
 def _custom_chunks_rag(monkeypatch, status):
     """A bare LightRAG wired for ainsert_custom_chunks with a shared, mutable
-    ``status`` dict and a real asyncio lock, extraction/merge stubbed."""
+    ``status`` dict, a real asyncio lock and a fake exit-handoff ingress
+    (``rag._test_ingress``), extraction/merge stubbed."""
     from lightrag import LightRAG
     import lightrag.lightrag as lightrag_module
 
@@ -428,9 +448,18 @@ def _custom_chunks_rag(monkeypatch, status):
     async def fake_merge(**kwargs):
         return None
 
+    ingress = _FakeExitIngress()
+
+    async def fake_get_pipeline_ingress(workspace=None):
+        return ingress
+
     monkeypatch.setattr(lightrag_module, "get_namespace_data", fake_namespace_data)
     monkeypatch.setattr(lightrag_module, "get_namespace_lock", fake_namespace_lock)
     monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", fake_merge)
+    monkeypatch.setattr(
+        lightrag_module, "get_pipeline_ingress", fake_get_pipeline_ingress
+    )
+    rag._test_ingress = ingress
     return rag
 
 
@@ -468,20 +497,22 @@ async def test_custom_chunks_rejects_when_pipeline_busy(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
-    """A request_pending that arrived while custom-chunks held busy is handed
-    off to processing WITHOUT ever dropping busy to False first — otherwise a
-    clear/delete/scan reservation could start in the gap and drop the accepted
-    doc. The handoff must run with _holding_busy=True while busy is still True,
-    and the (real) processing run releases busy atomically."""
-    status = {"busy": False, "history_messages": [], "request_pending": False}
+    """A wake-up signal that landed in the ingress mailbox while custom-chunks
+    held busy is handed off to processing WITHOUT ever dropping busy to False
+    first — otherwise a clear/delete/scan reservation could start in the gap
+    and drop the accepted doc. The handoff must run with _holding_busy=True
+    while busy is still True, and the (real) processing run releases busy
+    atomically."""
+    status = {"busy": False, "history_messages": []}
     rag = _custom_chunks_rag(monkeypatch, status)
 
     observed = {}
 
     async def _process_extract_entities(chunks, ps=None, pl=None):
         observed["busy_during_extract"] = status["busy"]
-        # Simulate a concurrent enqueue arriving while we hold busy.
-        status["request_pending"] = True
+        # Simulate a concurrent busy-refused process request arriving while
+        # we hold busy: the reservation arms the auto-rescan flag.
+        rag._test_ingress.request_auto_rescan()
         return [({"E": [{"entity_name": "E"}]}, {})]
 
     drained = {}
@@ -492,8 +523,8 @@ async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
         drained["token"] = token
         # The slot must NOT have been released before handing off (no window).
         drained["busy_at_handoff"] = status["busy"]
-        # The real run consumes request_pending and releases busy (+owner) at exit.
-        status["request_pending"] = False
+        # The real run consumes the mailbox signal and releases busy (+owner).
+        rag._test_ingress.consume_auto_rescan()
         status.update({"busy": False, "busy_owner": None})
 
     rag._process_extract_entities = _process_extract_entities
@@ -506,25 +537,26 @@ async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
     assert drained["holding_busy"] is True  # atomic handoff, not a fresh acquire
     assert drained["token"] is not None  # handoff passes the owner token
     assert drained["busy_at_handoff"] is True  # busy never dropped before handoff
-    assert status["request_pending"] is False  # consumed by the handoff
+    assert rag._test_ingress.has_work() is False  # consumed by the handoff run
     assert status["busy"] is False  # released by the handoff run
 
 
 @pytest.mark.asyncio
 async def test_custom_chunks_handoff_runs_even_when_flush_errors(monkeypatch):
-    """Regression (#3408 Codex P2): a doc enqueued while custom-chunks held busy
-    (request_pending=True → decision="handoff", busy kept True) must still be
-    drained when the flush (_insert_done_with_cleanup) then raises. Old code put
-    the ``if decision == "handoff"`` branch AFTER the inner finally, so a flush
-    error skipped it and the outer terminal release cleared busy without
-    draining — stranding the queued docs behind request_pending=True with no
-    active processor. The flush error must still propagate after the handoff."""
-    status = {"busy": False, "history_messages": [], "request_pending": False}
+    """Regression (#3408 Codex P2): mailbox work that arrived while
+    custom-chunks held busy (has_work → decision="handoff", busy kept True)
+    must still be drained when the flush (_insert_done_with_cleanup) then
+    raises. Old code put the ``if decision == "handoff"`` branch AFTER the
+    inner finally, so a flush error skipped it and the outer terminal release
+    cleared busy without draining — stranding the queued docs in the mailbox
+    with no active processor. The flush error must still propagate after the
+    handoff."""
+    status = {"busy": False, "history_messages": []}
     rag = _custom_chunks_rag(monkeypatch, status)
 
     async def _process_extract_entities(chunks, ps=None, pl=None):
-        # A concurrent enqueue arrived while we held busy.
-        status["request_pending"] = True
+        # A concurrent busy-refused process request arrived while we held busy.
+        rag._test_ingress.request_auto_rescan()
         return [({"E": [{"entity_name": "E"}]}, {})]
 
     async def _flush_boom():
@@ -538,8 +570,8 @@ async def test_custom_chunks_handoff_runs_even_when_flush_errors(monkeypatch):
         # The slot must NOT have been released before handing off (no window),
         # even though the flush errored.
         drained["busy_at_handoff"] = status["busy"]
-        # The real run consumes request_pending and releases busy (+owner).
-        status["request_pending"] = False
+        # The real run consumes the mailbox signal and releases busy (+owner).
+        rag._test_ingress.consume_auto_rescan()
         status.update({"busy": False, "busy_owner": None})
 
     rag._process_extract_entities = _process_extract_entities
@@ -554,20 +586,59 @@ async def test_custom_chunks_handoff_runs_even_when_flush_errors(monkeypatch):
     assert drained["called"] is True
     assert drained["holding_busy"] is True  # atomic handoff, not a fresh acquire
     assert drained["busy_at_handoff"] is True  # busy never dropped before handoff
-    assert status["request_pending"] is False  # consumed by the handoff
+    assert rag._test_ingress.has_work() is False  # consumed by the handoff run
     assert status["busy"] is False  # released by the handoff run
 
 
 @pytest.mark.asyncio
+async def test_custom_chunks_resolve_failure_fails_toward_handoff(monkeypatch):
+    """If the ingress handle cannot be resolved at the custom-chunks exit, the
+    decision must fail TOWARD handoff (never silently release): the driven
+    run re-probes the mailbox itself and its finally releases busy — so
+    mailbox-only work is never deferred and the slot never wedges."""
+    import lightrag.lightrag as lightrag_module
+
+    status = {"busy": False, "history_messages": []}
+    rag = _custom_chunks_rag(monkeypatch, status)
+
+    async def _broken_get_pipeline_ingress(workspace=None):
+        raise RuntimeError("manager connection lost")
+
+    monkeypatch.setattr(
+        lightrag_module, "get_pipeline_ingress", _broken_get_pipeline_ingress
+    )
+
+    drained = {"called": False}
+
+    async def _drain(_holding_busy=False, token=None):
+        drained["called"] = True
+        drained["holding_busy"] = _holding_busy
+        # The real driven run releases the handed-off slot at its own exit.
+        status.update({"busy": False, "busy_owner": None})
+
+    async def _process_extract_entities(chunks, ps=None, pl=None):
+        return [({"E": [{"entity_name": "E"}]}, {})]
+
+    rag._process_extract_entities = _process_extract_entities
+    rag.apipeline_process_enqueue_documents = _drain
+
+    await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-rf")
+
+    assert drained["called"] is True  # failed toward handoff, not release
+    assert drained["holding_busy"] is True  # atomic handoff preserved
+    assert status["busy"] is False  # slot released by the handoff run
+
+
+@pytest.mark.asyncio
 async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
-    """With no request_pending, the busy slot is released directly and no
-    handoff runs."""
-    status = {"busy": False, "history_messages": [], "request_pending": False}
+    """With an empty mailbox (``has_work()`` False), the busy slot is released
+    directly and no handoff runs."""
+    status = {"busy": False, "history_messages": []}
     rag = _custom_chunks_rag(monkeypatch, status)
 
     drained = {"called": False}
 
-    async def _drain(_holding_busy=False):
+    async def _drain(_holding_busy=False, token=None):
         drained["called"] = True
 
     async def _process_extract_entities(chunks, ps=None, pl=None):
@@ -579,7 +650,6 @@ async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
     await rag.ainsert_custom_chunks("full text", ["chunk text"], doc_id="doc-np")
 
     assert status["busy"] is False
-    assert drained["called"] is False
     assert drained["called"] is False
 
 
@@ -618,7 +688,6 @@ async def test_custom_chunks_clears_stale_cancellation(monkeypatch):
     status = {
         "busy": False,
         "history_messages": [],
-        "request_pending": False,
         "cancellation_requested": True,  # stale from a prior cancelled job
         "cancellation_reason": "internal_error",
         "cancellation_detail": "stale",
@@ -654,7 +723,6 @@ async def test_custom_chunks_overwrites_stale_deletion_job_name(monkeypatch):
     status = {
         "busy": False,
         "history_messages": [],
-        "request_pending": False,
         "job_name": "Deleting 5 Documents",  # stale, from a finished batch delete
     }
     rag = _custom_chunks_rag(monkeypatch, status)
@@ -689,7 +757,7 @@ async def test_custom_chunks_release_survives_cancel_at_lock_exit(monkeypatch):
     from lightrag import LightRAG
     import lightrag.lightrag as lightrag_module
 
-    status = {"busy": False, "history_messages": [], "request_pending": False}
+    status = {"busy": False, "history_messages": []}
 
     class _CancelOnFirstExitLock:
         """Delivers CancelledError at the FIRST __aexit__ (the acquire block's

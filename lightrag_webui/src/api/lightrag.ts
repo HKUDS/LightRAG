@@ -344,7 +344,6 @@ export type PipelineStatusResponse = {
   docs: number
   batchs: number
   cur_batch: number
-  request_pending: boolean
   cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]

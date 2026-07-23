@@ -1990,18 +1990,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # pending buffers — doing so could commit or tear down another
             # running job's in-flight index ops.
             if busy_acquired:
-                # The handoff decision consults the ingress mailbox alongside
-                # the transitional ``request_pending`` flag: work that arrived
-                # while we held busy may live only in the mailbox (a document
-                # message, the auto-rescan flag, or a sticky manual retry
-                # request that was refused a drive because WE were the busy
-                # holder).  A resolve/probe failure fails TOWARD handoff: the
-                # driven run re-probes the mailbox itself, so a transient
+                # The handoff decision consults the ingress mailbox: work that
+                # arrived while we held busy lives only in the mailbox (a
+                # document message, the auto-rescan flag, or a sticky manual
+                # retry request that was refused a drive because WE were the
+                # busy holder).  A resolve/probe failure fails TOWARD handoff:
+                # the driven run re-probes the mailbox itself, so a transient
                 # flake self-heals, and a persistent failure raises inside
                 # that run whose finally releases busy — never a wedge, while
                 # releasing here instead would silently defer a committed
                 # manual retry or an enqueued document to the next unrelated
                 # trigger.
+                #
+                # This await precedes the cancellation-resistant release —
+                # safe only because get_pipeline_ingress is suspension-free
+                # by contract (see its docstring): a pending re-cancellation
+                # cannot be delivered here and skip the releases below.
                 try:
                     handoff_ingress = await get_pipeline_ingress(self.workspace)
                 except Exception as ingress_error:
@@ -2016,10 +2020,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # Clear cancellation (mirroring the processing loop) and
                     # decide, atomically: if a doc was enqueued while we held
                     # busy, hand the slot to a processing run WITHOUT releasing
-                    # busy (releasing first would open a busy=False +
-                    # request_pending window in which a clear/delete/scan
-                    # reservation could start and drop the accepted document);
-                    # otherwise release the slot.
+                    # busy (releasing first would open a busy=False window —
+                    # with work resident only in the mailbox — in which a
+                    # clear/delete/scan reservation could start and drop the
+                    # accepted document); otherwise release the slot.
                     updates = {
                         # custom_chunks work is complete here; clear its
                         # operation_record so a later dead-owner reclaim does not
@@ -2042,7 +2046,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 "retry or enqueued document is not silently "
                                 f"deferred: {probe_error}"
                             )
-                    if status.get("request_pending") or ingress_has_work:
+                    if ingress_has_work:
                         status.update(updates)
                         return "handoff"  # keep busy (owner stays ours)
                     updates.update({"busy": False, "busy_owner": None})
@@ -2069,7 +2073,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # cannot skip them: _exit_action keeps busy=True for a
                     # handoff, so if the queued docs were not drained here the
                     # outer terminal release would clear busy and strand them
-                    # behind request_pending=True with no active processor.
+                    # in the mailbox with no active processor.
                     try:
                         if op_failed:
                             # Failure path: do NOT blind-flush partial work
@@ -4378,22 +4382,29 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         we_acquired_pipeline = False
         token = uuid.uuid4().hex
 
-        def _release_on_acquire_failure(status):
-            status.update(
-                {
-                    "busy": False,
-                    "busy_owner": None,
-                    "operation_record": None,
-                    "cancellation_requested": False,
-                }
-            )
+        # Initialized BEFORE the try so the finally can always read them, even
+        # when the acquire itself (or the post-acquire status logging) raises.
+        deletion_operations_started = False
+        deletion_fully_completed = False
+        in_final_delete_stage = False
+        original_exception = None
+        doc_llm_cache_ids: list[str] = []
+        deletion_stage = "initializing"
+        doc_status_data: dict[str, Any] | None = None
+        file_path: str | None = None
 
-        # Acquire (or join a batch delete) inside a try so a cancellation at the
-        # acquire/logging lock exit — before the main try/finally is armed — still
-        # releases the slot we took (owner-checked) instead of wedging it.
+        # Acquire (or join a batch delete) INSIDE the same handoff-aware
+        # try/finally as the deletion itself: any escape after the slot is
+        # stamped — a cancellation or RPC failure at the acquire/logging lock
+        # exit included — reaches the same owner-checked exit decision as the
+        # main flow (probe ``has_work()`` → handoff or release).  A concurrent
+        # enqueue can commit mailbox work the instant the reservation lock is
+        # released, so an unconditional early release in that window would
+        # strand it (PR #3467 review round 2).
         try:
-            # Pre-arm owner-checked cleanup before acquire so cancellation after
-            # the atomic update cannot leak this token's reservation.
+            # Pre-arm ownership before acquire so cancellation after the atomic
+            # update cannot leak this token's reservation (the finally is
+            # owner-checked; a stamp that never happened makes it a no-op).
             we_acquired_pipeline = True
             reservation = await acquire_reservation(
                 pipeline_status,
@@ -4409,7 +4420,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "docs": 1,
                     "batchs": 1,
                     "cur_batch": 0,
-                    "request_pending": False,
                     "cancellation_requested": False,
                     "latest_message": f"Starting deletion for document: {doc_id}",
                 },
@@ -4448,34 +4458,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                 # Pipeline is busy with batch deletion - join without acquiring.
 
-            deletion_operations_started = False
-            deletion_fully_completed = False
-            in_final_delete_stage = False
-            original_exception = None
-            doc_llm_cache_ids: list[str] = []
-            deletion_stage = "initializing"
-            doc_status_data: dict[str, Any] | None = None
-            file_path: str | None = None
-
             async with pipeline_status_lock:
                 log_message = f"Starting deletion process for document {doc_id}"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
-        except BaseException:
-            # Cancel/error between taking the slot and arming the main try:
-            # release it (owner-checked) so it is never left wedged.
-            if we_acquired_pipeline:
-                await with_reservation_lock(
-                    pipeline_status,
-                    pipeline_status_lock,
-                    owner_key="busy_owner",
-                    token=token,
-                    action=_release_on_acquire_failure,
-                )
-            raise
 
-        try:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
             if not doc_status_data:
@@ -5296,23 +5284,77 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
 
         finally:
+            # A direct SDK delete holds ``busy`` WITHOUT ``destructive_busy``,
+            # so concurrent enqueues are permitted the whole time: an
+            # ``ainsert`` lands its PENDING row + document message, and its
+            # busy-refused process call arms the auto-rescan flag.  Those
+            # signals live only in the mailbox — releasing without a handoff
+            # would strand them until an unrelated trigger.  Mirror the
+            # custom-chunks exit: probe ``has_work()`` in the owner-checked
+            # critical section and hand the slot to a processing run instead
+            # of releasing.  A resolve/probe failure fails TOWARD handoff (the
+            # driven run re-probes and its finally releases — never a wedge).
+            #
+            # This await precedes the cancellation-resistant release — safe
+            # only because get_pipeline_ingress is suspension-free by contract
+            # (see its docstring).  Only resolved when WE own the slot: a
+            # joined batch delete leaves the handoff to the batch's own exit.
+            handoff_ingress = None
+            if we_acquired_pipeline:
+                try:
+                    handoff_ingress = await get_pipeline_ingress(self.workspace)
+                except Exception as ingress_error:
+                    logger.warning(
+                        "single-delete exit: pipeline ingress unavailable; "
+                        "failing toward handoff so mailbox-only work is not "
+                        f"silently deferred: {ingress_error}"
+                    )
 
             def _release_action(status):
-                # Owner-checked release (+ cancellation reset + completion log),
-                # applied atomically. Runs via with_reservation_lock so it is
-                # cancellation-resistant and cannot clobber a later holder.
+                # Owner-checked exit decision (+ cancellation reset +
+                # completion log), applied atomically. Runs via
+                # with_reservation_lock so it is cancellation-resistant and
+                # cannot clobber a later holder.
                 completion_msg = f"Deletion process completed for document: {doc_id}"
+                updates = {
+                    "operation_record": None,
+                    "cancellation_requested": False,
+                    "latest_message": completion_msg,
+                }
+                if handoff_ingress is None:
+                    ingress_has_work = True  # fail toward handoff
+                else:
+                    try:
+                        ingress_has_work = handoff_ingress.has_work()
+                    except Exception as probe_error:
+                        ingress_has_work = True  # fail toward handoff
+                        logger.warning(
+                            "single-delete exit: ingress has_work probe "
+                            "failed; handing off so a committed manual retry "
+                            "or enqueued document is not silently deferred: "
+                            f"{probe_error}"
+                        )
+                status["history_messages"].append(completion_msg)
+                logger.info(completion_msg)
+                if ingress_has_work:
+                    status.update(updates)
+                    return "handoff"  # keep busy (owner stays ours)
+                updates.update({"busy": False, "busy_owner": None})
+                status.update(updates)
+                return "released"
+
+            def _terminal_release(status):
+                # Owner-checked backstop: release the slot we still hold (a
+                # no-op when the handoff run — or a later holder — already
+                # released it).
                 status.update(
                     {
                         "busy": False,
                         "busy_owner": None,
                         "operation_record": None,
                         "cancellation_requested": False,
-                        "latest_message": completion_msg,
                     }
                 )
-                status["history_messages"].append(completion_msg)
-                logger.info(completion_msg)
 
             try:
                 # ALWAYS ensure persistence if any deletion operations were started
@@ -5354,17 +5396,44 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         f"No deletion operations were started for document {doc_id}, skipping persistence"
                     )
             finally:
-                # Release the slot even if the flush above was cancelled or
+                # Exit the slot even if the flush above was cancelled or
                 # returned — owner-checked + cancellation-resistant, so a cancel
                 # during _insert_done can never leave the pipeline wedged.
                 if we_acquired_pipeline:
-                    await with_reservation_lock(
-                        pipeline_status,
-                        pipeline_status_lock,
-                        owner_key="busy_owner",
-                        token=token,
-                        action=_release_action,
-                    )
+                    try:
+                        decision = await with_reservation_lock(
+                            pipeline_status,
+                            pipeline_status_lock,
+                            owner_key="busy_owner",
+                            token=token,
+                            action=_release_action,
+                        )
+                        if decision == "handoff":
+                            # busy is still True (ours); the handoff run takes
+                            # over the slot and releases it at its own exit.
+                            # Pass our token so it owns and releases the SAME
+                            # reservation. A pending cancellation makes this
+                            # await re-raise immediately, deferring the drain
+                            # to the next trigger — the backstop below still
+                            # releases the slot.
+                            try:
+                                await self.apipeline_process_enqueue_documents(
+                                    _holding_busy=True, token=token
+                                )
+                            except Exception as drain_error:
+                                logger.warning(
+                                    "Failed to process queued documents handed "
+                                    "off from a single-document delete: "
+                                    f"{drain_error}"
+                                )
+                    finally:
+                        await with_reservation_lock(
+                            pipeline_status,
+                            pipeline_status_lock,
+                            owner_key="busy_owner",
+                            token=token,
+                            action=_terminal_release,
+                        )
 
     async def _raise_if_recovery_required(self) -> None:
         """Refuse a graph/data mutation while the workspace is fenced for

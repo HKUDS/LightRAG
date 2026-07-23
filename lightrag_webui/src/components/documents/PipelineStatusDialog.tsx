@@ -174,10 +174,6 @@ export default function PipelineStatusDialog({
                 <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
                 <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
               </div>
-              <div className="flex items-center gap-2">
-                <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
-                <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
-              </div>
               {/* Only show cancellation status when it's requested */}
               {status?.cancellation_requested && (
                 <div className="flex items-center gap-2">

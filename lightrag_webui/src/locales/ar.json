@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "حالة خط الأنابيب",
       "busy": "خط الأنابيب مشغول",
-      "requestPending": "طلب معلق",
       "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",

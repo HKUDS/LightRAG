@@ -1004,17 +1004,17 @@ def test_resume_skips_purge_when_chunks_list_empty(tmp_path):
 @pytest.mark.offline
 def test_apipeline_enqueue_allows_concurrent_with_busy(tmp_path):
     """``busy=True`` no longer blocks enqueue.  Concurrent processing is
-    explicitly permitted — the running loop's request_pending mechanism
-    picks up newly-enqueued docs after the current batch.  Enqueue
-    nudges request_pending so a freshly-arrived doc is never stranded
-    when the call site does not subsequently invoke
-    ``apipeline_process_enqueue_documents``.
+    explicitly permitted — the running loop picks up newly-enqueued docs
+    via the ingress mailbox.  Enqueue publishes the document message so a
+    freshly-arrived doc is never stranded when the call site does not
+    subsequently invoke ``apipeline_process_enqueue_documents``.
     """
 
     async def _run():
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
+            get_pipeline_ingress,
         )
 
         rag = _new_rag(tmp_path)
@@ -1026,11 +1026,11 @@ def test_apipeline_enqueue_allows_concurrent_with_busy(tmp_path):
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=rag.workspace
             )
+            ingress = await get_pipeline_ingress(rag.workspace)
 
             # Simulate an in-flight indexing job.
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
-                pipeline_status["request_pending"] = False
             try:
                 returned_track_id = await rag.apipeline_enqueue_documents(
                     "concurrent with busy",
@@ -1038,12 +1038,12 @@ def test_apipeline_enqueue_allows_concurrent_with_busy(tmp_path):
                     track_id="track-concurrent",
                 )
                 assert returned_track_id == "track-concurrent"
-                # Enqueue nudged the running loop.
-                assert pipeline_status.get("request_pending") is True
+                # Enqueue published the wake-up message for the running loop.
+                assert ingress.counts()["documents"] == 1
             finally:
+                ingress.drain_documents()
                 async with pipeline_status_lock:
                     pipeline_status["busy"] = False
-                    pipeline_status["request_pending"] = False
         finally:
             await rag.finalize_storages()
 
@@ -1126,19 +1126,20 @@ def test_apipeline_enqueue_rejects_when_scanning(tmp_path):
 
 
 @pytest.mark.offline
-def test_enqueue_during_busy_sets_request_pending(tmp_path):
-    """While the processing loop is running (busy=True), a concurrent
-    enqueue must set ``request_pending`` so the loop knows to scan
-    doc_status again after its current batch.  This is the mechanism
-    that makes "upload while pipeline is busy" actually drain the new
-    work — without it, freshly enqueued docs would be stranded until
-    an unrelated trigger.
+def test_enqueue_publishes_document_messages(tmp_path):
+    """Enqueue publishes one document message per stored doc, busy or idle.
+    Busy: the running loop routes the message mid-batch (feeder) or at the
+    batch boundary (quiescence decision).  Idle: the message stays resident
+    in the mailbox for the next run — the designed idle-enqueue case —
+    without it, freshly enqueued docs would be stranded until an unrelated
+    trigger.
     """
 
     async def _run():
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
+            get_pipeline_ingress,
         )
 
         rag = _new_rag(tmp_path)
@@ -1150,41 +1151,36 @@ def test_enqueue_during_busy_sets_request_pending(tmp_path):
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=rag.workspace
             )
+            ingress = await get_pipeline_ingress(rag.workspace)
 
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
-                pipeline_status["request_pending"] = False
             try:
-                # First enqueue: nudges request_pending.
                 await rag.apipeline_enqueue_documents(
                     "first while busy",
                     file_paths="first.txt",
                     track_id="track-first",
                 )
-                assert pipeline_status.get("request_pending") is True
+                assert ingress.counts()["documents"] == 1
 
-                # Second enqueue while busy: stays True (idempotent).
-                async with pipeline_status_lock:
-                    pipeline_status["request_pending"] = False
                 await rag.apipeline_enqueue_documents(
                     "second while busy",
                     file_paths="second.txt",
                     track_id="track-second",
                 )
-                assert pipeline_status.get("request_pending") is True
+                assert ingress.counts()["documents"] == 2
             finally:
                 async with pipeline_status_lock:
                     pipeline_status["busy"] = False
-                    pipeline_status["request_pending"] = False
 
-            # When idle, enqueue does NOT set request_pending — there is
-            # no running loop to nudge.
+            # Idle: the message is published all the same and stays resident
+            # for the next run (enqueue-only SDK path never auto-starts).
             await rag.apipeline_enqueue_documents(
                 "while idle",
                 file_paths="idle.txt",
                 track_id="track-idle",
             )
-            assert pipeline_status.get("request_pending") is False
+            assert ingress.counts()["documents"] == 3
         finally:
             await rag.finalize_storages()
 
@@ -1195,14 +1191,15 @@ def test_enqueue_during_busy_sets_request_pending(tmp_path):
 def test_enqueue_status_upsert_failure_still_nudges_busy_loop(tmp_path, monkeypatch):
     """A DocStatus bulk upsert can partially commit PENDING rows before
     surfacing item-level failures. If the pipeline is already busy, enqueue
-    must still set request_pending before re-raising so committed rows are
-    picked up by the running loop.
+    must still arm the auto-rescan flag before re-raising so committed rows
+    are picked up by the running loop's quiescence decision.
     """
 
     async def _run():
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
+            get_pipeline_ingress,
         )
 
         rag = _new_rag(tmp_path)
@@ -1214,10 +1211,10 @@ def test_enqueue_status_upsert_failure_still_nudges_busy_loop(tmp_path, monkeypa
             pipeline_status_lock = get_namespace_lock(
                 "pipeline_status", workspace=rag.workspace
             )
+            ingress = await get_pipeline_ingress(rag.workspace)
 
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
-                pipeline_status["request_pending"] = False
 
             original_upsert = rag.doc_status.upsert
 
@@ -1239,11 +1236,85 @@ def test_enqueue_status_upsert_failure_still_nudges_busy_loop(tmp_path, monkeypa
                         file_paths="partial-busy.txt",
                         track_id="track-partial-busy",
                     )
-                assert pipeline_status.get("request_pending") is True
+                assert ingress.counts()["auto_rescan_pending"] is True
             finally:
+                ingress.consume_auto_rescan()
                 async with pipeline_status_lock:
                     pipeline_status["busy"] = False
-                    pipeline_status["request_pending"] = False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_acquire_failure_does_not_stamp_stopped_bookkeeping(tmp_path, monkeypatch):
+    """A run whose acquire raises (e.g. the busy-refusal auto-rescan arm on a
+    Manager outage) never owned the slot: its finally must neither log nor
+    stamp the 'pipeline stopped' bookkeeping into pipeline_status — an idle
+    pipeline would otherwise carry a misleading stop record for a run that
+    never started — and must not release a slot it does not own."""
+
+    async def _run():
+        import lightrag.pipeline as pipeline_mod
+        from lightrag.kg.shared_storage import get_namespace_data
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            baseline_history = list(pipeline_status["history_messages"])
+
+            async def _acquire_boom(*args, **kwargs):
+                raise RuntimeError("arm transport down")
+
+            monkeypatch.setattr(
+                pipeline_mod, "acquire_processing_reservation", _acquire_boom
+            )
+            with pytest.raises(RuntimeError, match="arm transport down"):
+                await rag.apipeline_process_enqueue_documents()
+
+            assert pipeline_status.get("busy") is False
+            latest = pipeline_status.get("latest_message") or ""
+            assert "stopped" not in latest.lower()
+            assert list(pipeline_status["history_messages"]) == baseline_history
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
+def test_enqueue_publish_failure_falls_back_to_auto_rescan(tmp_path, monkeypatch):
+    """A failed document publish after a successfully-committed enqueue must
+    arm the auto-rescan flag in the same critical section — otherwise the
+    stored PENDING rows would be left with no wake-up signal at all until
+    the next run's initial scan.  The enqueue itself still succeeds: the
+    wake-up is a side-effect, never a failure of durably-committed work."""
+
+    async def _run():
+        from lightrag.kg.shared_storage import get_pipeline_ingress
+
+        rag = _new_rag(tmp_path)
+        await rag.initialize_storages()
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+
+            def _publish_boom(messages):
+                raise RuntimeError("publish transport down")
+
+            monkeypatch.setattr(ingress, "put_documents", _publish_boom)
+
+            returned_track_id = await rag.apipeline_enqueue_documents(
+                "publish fails",
+                file_paths="publish-fails.txt",
+                track_id="track-publish-fails",
+            )
+            assert returned_track_id == "track-publish-fails"
+            assert ingress.counts()["documents"] == 0  # publish really failed
+            assert ingress.counts()["auto_rescan_pending"] is True  # fallback
         finally:
             await rag.finalize_storages()
 
@@ -1348,7 +1419,7 @@ def test_process_enqueue_holding_busy_releases_when_no_docs(tmp_path):
     """apipeline_process_enqueue_documents(_holding_busy=True) takes over an
     already-held busy slot instead of treating busy=True as "someone else is
     running", and releases it when there is nothing to process. This is the
-    handoff ainsert_custom_chunks uses to drain a request_pending atomically; it
+    handoff ainsert_custom_chunks uses to drain mailbox work atomically; it
     must never leave the pipeline wedged as busy on the empty path.
     """
 
@@ -1449,7 +1520,7 @@ def test_finalize_does_not_clobber_new_owner_bookkeeping(tmp_path):
 def test_decide_pipeline_next_step_atomic_handoff(tmp_path):
     """The loop-exit handoff is atomic via ``_decide_pipeline_next_step``:
     the same critical section that observes the wake-up signals (sticky
-    manual request > auto-rescan flag > transitional ``request_pending``)
+    manual request > auto-rescan flag > resident document messages)
     also writes ``busy=False`` when none is pending.
 
     This closes the race where a concurrent publisher could land a signal
@@ -1481,29 +1552,34 @@ def test_decide_pipeline_next_step_atomic_handoff(tmp_path):
             )
             ingress = await get_pipeline_ingress(rag.workspace)
 
-            # Case 1: transitional request_pending set by a concurrent
-            # enqueue while busy=True → consumed, CONTINUE_AUTO, busy kept.
+            # Case 1: a document message published by a concurrent enqueue
+            # while busy=True → CONTINUE_DOCUMENT (peeked, not drained),
+            # busy kept.
             async with pipeline_status_lock:
                 pipeline_status["busy"] = True
-                pipeline_status["request_pending"] = True
+            ingress.put_document(
+                PipelineIngressMessage(kind="document", doc_id="doc-case1")
+            )
             decision = await rag._decide_pipeline_next_step(
                 pipeline_status, pipeline_status_lock, ingress
             )
-            assert decision.step is PipelineNextStep.CONTINUE_AUTO
+            assert decision.step is PipelineNextStep.CONTINUE_DOCUMENT
             assert pipeline_status["busy"] is True  # NOT released
-            assert pipeline_status["request_pending"] is False  # consumed
+            ingress.drain_documents()
 
-            # Case 2: auto-rescan dirty flag outranks request_pending and is
-            # consumed atomically (sole-consumer contract).
-            async with pipeline_status_lock:
-                pipeline_status["request_pending"] = True
+            # Case 2: the auto-rescan dirty flag outranks the document
+            # channel and is consumed atomically (sole-consumer contract).
+            ingress.put_document(
+                PipelineIngressMessage(kind="document", doc_id="doc-case2")
+            )
             ingress.request_auto_rescan()
             decision = await rag._decide_pipeline_next_step(
                 pipeline_status, pipeline_status_lock, ingress
             )
             assert decision.step is PipelineNextStep.CONTINUE_AUTO
             assert ingress.consume_auto_rescan() is False  # already consumed
-            assert pipeline_status["request_pending"] is True  # untouched
+            assert ingress.counts()["documents"] == 1  # untouched
+            ingress.drain_documents()
 
             # Case 3: a sticky manual request outranks everything, is only
             # PEEKED (stays pending until the run ACKs post-reset), and
@@ -1521,8 +1597,6 @@ def test_decide_pipeline_next_step_atomic_handoff(tmp_path):
             assert decision.manual_request_id == "req-1"
             assert ingress.peek_next_manual_retry().request_id == "req-1"  # sticky
             ingress.ack_manual_retry("req-1")
-            async with pipeline_status_lock:
-                pipeline_status["request_pending"] = False
 
             # Case 4: clean exit path — no signal pending.  Busy released
             # under the SAME lock so any post-call publisher either sees

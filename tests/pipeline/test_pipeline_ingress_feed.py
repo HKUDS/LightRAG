@@ -3,8 +3,8 @@ routed into that batch's parse queues instead of waiting for the per-batch
 barrier.
 
 The feeder is a pure accelerator — anything it drops/skips is a PENDING
-``doc_status`` row that ``request_pending`` (dual-written by enqueue on the
-same busy pipeline) recovers on the next batch — so these tests pin the
+``doc_status`` row that the supervisor's quiescence rescan (or the next run's
+initial strict scan) recovers — so these tests pin the
 latency win (fed doc completes while an earlier doc is still stuck) and the
 safety invariants (dedup against inflight, no busy loop when only manual/auto
 signals are pending), all on a real LightRAG with in-memory JSON storages.
@@ -120,7 +120,7 @@ def test_document_arriving_mid_batch_is_fed_without_waiting(tmp_path):
     batch is routed by the feeder and reaches PROCESSED while A is still stuck.
 
     Without the feeder, B would only be picked up after A's batch finishes
-    (request_pending → next batch), but A's batch cannot finish while A is
+    (quiescence decision → next batch), but A's batch cannot finish while A is
     blocked — so B would never complete and this would time out."""
 
     async def _run():
@@ -256,7 +256,7 @@ def test_feeder_yields_on_cancellation(tmp_path):
     asyncio.run(_run())
 
 
-def test_feeder_yields_when_manual_request_pending(tmp_path):
+def test_feeder_yields_when_manual_request_waiting(tmp_path):
     """The feeder stops admitting when a sticky manual retry request is waiting,
     so an unbounded batch cannot starve it — it is consumed at the batch
     boundary the feeder now lets the run reach."""
@@ -289,8 +289,9 @@ def test_feeder_yields_when_manual_request_pending(tmp_path):
 def test_feeder_teardown_republishes_undrained_messages(tmp_path):
     """The document drain is destructive: on a teardown (cancel), messages the
     feeder had drained but not yet routed or confirmed stale/terminal must go
-    back to the mailbox — a user cancel clears request_pending, so without the
-    restore those PENDING docs would wait for an unrelated future trigger."""
+    back to the mailbox — a cancelled run consumes nothing further, so without
+    the restore those PENDING docs would wait for an unrelated future
+    trigger."""
 
     async def _run():
         rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)

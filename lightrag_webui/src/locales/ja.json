@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "パイプラインステータス",
       "busy": "パイプラインがビジー",
-      "requestPending": "リクエスト保留中",
       "cancellationRequested": "キャンセル要求済み",
       "jobName": "ジョブ名",
       "startTime": "開始時刻",

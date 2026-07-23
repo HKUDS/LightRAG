@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Статус конвейера",
       "busy": "Конвейер занят",
-      "requestPending": "Запрос ожидает",
       "cancellationRequested": "Запрошена отмена",
       "jobName": "Название задачи",
       "startTime": "Время начала",

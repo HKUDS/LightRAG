@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
-      "requestPending": "Request Pending",
       "cancellationRequested": "Cancellation Requested",
       "jobName": "Job Name",
       "startTime": "Start Time",
