@@ -46,7 +46,7 @@ from lightrag.parser.param_schema import (
     split_top_level,
     take_paren_block,
 )
-from lightrag.utils import logger, parse_optional_float
+from lightrag.utils import get_env_value, logger, parse_optional_float
 
 import json
 from collections.abc import Mapping
@@ -420,7 +420,7 @@ def default_chunker_config() -> dict[str, Any]:
             "breakpoint_threshold_amount": parse_optional_float(
                 os.getenv("CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT")
             ),
-            "buffer_size": int(os.getenv("CHUNK_V_BUFFER_SIZE", "1")),
+            "buffer_size": get_env_value("CHUNK_V_BUFFER_SIZE", 1, int),
             # Default extends LangChain's English-only sentence splitter
             # with CJK terminators so SemanticChunker can actually find
             # sentence boundaries on Chinese input.  Override per
