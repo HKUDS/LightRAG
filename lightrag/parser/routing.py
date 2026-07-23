@@ -46,7 +46,7 @@ from lightrag.parser.param_schema import (
     split_top_level,
     take_paren_block,
 )
-from lightrag.utils import get_env_value, logger, parse_optional_float
+from lightrag.utils import logger, parse_optional_float
 
 import json
 from collections.abc import Mapping
@@ -317,8 +317,8 @@ def slim_chunk_options(
     result[key] = deepcopy(dict(src.get(key) or {}))
     if key == "paragraph_semantic":
         if "chunk_token_size" not in result[key]:
-            result[key]["chunk_token_size"] = get_env_value(
-                "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE, int
+            result[key]["chunk_token_size"] = _chunk_env_int(
+                "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE
             )
         # Mirror the CHUNK_P_DROP_REFERENCES env default for the drop-references
         # switch here — this is the single chokepoint every enqueue path runs
@@ -343,6 +343,27 @@ def _env_optional_str(key: str) -> str | None:
     if not stripped or stripped.lower() == "none":
         return None
     return raw
+
+
+def _chunk_env_int(env_key: str, default: int | None) -> int | None:
+    """Read a chunk size/overlap env as int.
+
+    Unset, empty, whitespace, and literal ``None`` fall back to ``default``
+    (empty ``.env`` / Compose slots). Non-empty malformed values raise so a
+    typo like ``20OO`` does not silently change retrieval defaults.
+    """
+    raw = os.getenv(env_key)
+    if raw is None:
+        return default
+    stripped = raw.strip()
+    if not stripped or stripped.lower() == "none":
+        return default
+    try:
+        return int(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"Environment variable {env_key}={raw!r} is not a valid integer"
+        ) from exc
 
 
 def _env_r_separators() -> list[str]:
@@ -434,13 +455,13 @@ def default_chunker_config() -> dict[str, Any]:
     # Strategy-specific overlap envs only — leave the slot absent when
     # unset/empty so overlay can detect provenance and fill from the legacy
     # tier (constructor field → CHUNK_OVERLAP_SIZE env).
-    f_overlap = get_env_value("CHUNK_F_OVERLAP_SIZE", None, int)
+    f_overlap = _chunk_env_int("CHUNK_F_OVERLAP_SIZE", None)
     if f_overlap is not None:
         config["fixed_token"]["chunk_overlap_token_size"] = f_overlap
-    r_overlap = get_env_value("CHUNK_R_OVERLAP_SIZE", None, int)
+    r_overlap = _chunk_env_int("CHUNK_R_OVERLAP_SIZE", None)
     if r_overlap is not None:
         config["recursive_character"]["chunk_overlap_token_size"] = r_overlap
-    p_overlap = get_env_value("CHUNK_P_OVERLAP_SIZE", None, int)
+    p_overlap = _chunk_env_int("CHUNK_P_OVERLAP_SIZE", None)
     if p_overlap is not None:
         config["paragraph_semantic"]["chunk_overlap_token_size"] = p_overlap
 
@@ -454,8 +475,8 @@ def default_chunker_config() -> dict[str, Any]:
     # headroom than the global default to keep related paragraphs
     # together, and silently inheriting the smaller global ceiling
     # defeats the strategy's purpose.
-    config["paragraph_semantic"]["chunk_token_size"] = get_env_value(
-        "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE, int
+    config["paragraph_semantic"]["chunk_token_size"] = _chunk_env_int(
+        "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE
     )
 
     # F/R/V strategies likewise carry their own optional ``chunk_token_size``
@@ -464,13 +485,13 @@ def default_chunker_config() -> dict[str, Any]:
     # advisory ceiling).  Same slot-absent convention as P: leave the slot
     # absent when the env is unset/empty so the strategy inherits the top-level
     # ``chunk_token_size`` fallback at consumption time.
-    f_size = get_env_value("CHUNK_F_SIZE", None, int)
+    f_size = _chunk_env_int("CHUNK_F_SIZE", None)
     if f_size is not None:
         config["fixed_token"]["chunk_token_size"] = f_size
-    r_size = get_env_value("CHUNK_R_SIZE", None, int)
+    r_size = _chunk_env_int("CHUNK_R_SIZE", None)
     if r_size is not None:
         config["recursive_character"]["chunk_token_size"] = r_size
-    v_size = get_env_value("CHUNK_V_SIZE", None, int)
+    v_size = _chunk_env_int("CHUNK_V_SIZE", None)
     if v_size is not None:
         config["semantic_vector"]["chunk_token_size"] = v_size
 

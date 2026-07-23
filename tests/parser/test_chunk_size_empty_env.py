@@ -57,6 +57,28 @@ def test_valid_chunk_f_size_is_honored(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "env_key",
+    [
+        "CHUNK_P_SIZE",
+        "CHUNK_F_SIZE",
+        "CHUNK_R_SIZE",
+        "CHUNK_V_SIZE",
+        "CHUNK_F_OVERLAP_SIZE",
+        "CHUNK_R_OVERLAP_SIZE",
+        "CHUNK_P_OVERLAP_SIZE",
+    ],
+)
+@pytest.mark.parametrize("env_value", ["20OO", "1.5", "abc"])
+def test_malformed_chunk_size_envs_raise(
+    env_key: str, env_value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(env_key, env_value)
+    with pytest.raises(ValueError, match=env_key):
+        default_chunker_config()
+
+
+@pytest.mark.offline
 @pytest.mark.parametrize("env_value", ["", "  "])
 def test_empty_chunk_size_env_does_not_crash_lightrag_init(
     env_value: str, tmp_path: Path
