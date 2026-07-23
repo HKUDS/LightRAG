@@ -11,6 +11,7 @@ signals are pending), all on a real LightRAG with in-memory JSON storages.
 """
 
 import asyncio
+import threading
 from collections import Counter
 from uuid import uuid4
 
@@ -20,9 +21,25 @@ import pytest
 from lightrag import LightRAG
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.kg.shared_storage import get_pipeline_ingress
+from lightrag.pipeline import _BatchRunContext
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
 pytestmark = pytest.mark.offline
+
+
+def _make_feeder_ctx() -> _BatchRunContext:
+    """Minimal batch context for driving _pipeline_feeder directly."""
+    return _BatchRunContext(
+        pipeline_status={"docs": 0, "batchs": 0, "cur_batch": 0},
+        pipeline_status_lock=asyncio.Lock(),
+        semaphore=asyncio.Semaphore(1),
+        total_files=0,
+        parse_queues={"native": asyncio.Queue()},
+        parser_specs={},
+        q_analyze=asyncio.Queue(),
+        q_process=asyncio.Queue(),
+        pipeline_cancel_event=threading.Event(),
+    )
 
 
 class _SimpleTokenizerImpl:
@@ -201,6 +218,118 @@ def test_pending_manual_signal_does_not_busy_loop_the_feeder(tmp_path):
             await rag.apipeline_process_enqueue_documents()
             assert _status_text(await rag.doc_status.get_by_id(a_id)) == "processed"
             assert extract.calls["AAAA"] == 1
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_yields_on_cancellation(tmp_path):
+    """Finding: the feeder must STOP admitting when cancellation is requested,
+    or a sustained document stream keeps the parse queue non-empty, the join
+    cascade never returns, and /cancel_pipeline can never complete. With the
+    cancel-event check the feeder returns before draining, letting the batch
+    reach its quiescence point.
+
+    Fix-proof: without the check the feeder drains + loops forever on the mailbox
+    and never returns (this would time out)."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+            for i in range(50):
+                ingress.put_document(
+                    PipelineIngressMessage(kind="document", doc_id=f"doc-{i}")
+                )
+            ctx = _make_feeder_ctx()
+            ctx.pipeline_cancel_event.set()  # cancellation requested
+
+            await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
+
+            # Yielded before draining: nothing admitted, the stream is untouched.
+            assert ctx.parse_queues["native"].qsize() == 0
+            assert ingress.has_work()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_yields_when_manual_request_pending(tmp_path):
+    """The feeder stops admitting when a sticky manual retry request is waiting,
+    so an unbounded batch cannot starve it — it is consumed at the batch
+    boundary the feeder now lets the run reach."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+            for i in range(20):
+                ingress.put_document(
+                    PipelineIngressMessage(kind="document", doc_id=f"doc-{i}")
+                )
+            ingress.request_manual_retry(
+                "req-y",
+                PipelineIngressMessage(
+                    kind="rescan", retry_failed=True, request_id="req-y"
+                ),
+            )
+            ctx = _make_feeder_ctx()
+
+            await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
+
+            assert ctx.parse_queues["native"].qsize() == 0  # yielded, admitted nothing
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_teardown_republishes_undrained_messages(tmp_path):
+    """The document drain is destructive: on a teardown (cancel), messages the
+    feeder had drained but not yet routed or confirmed stale/terminal must go
+    back to the mailbox — a user cancel clears request_pending, so without the
+    restore those PENDING docs would wait for an unrelated future trigger."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            # Three real PENDING rows so the feeder's pending-scan sees them.
+            for i in range(3):
+                await rag.apipeline_enqueue_documents(
+                    input=f"BODY{i}", file_paths=f"d{i}.txt"
+                )
+            ids = {compute_mdhash_id(f"d{i}.txt", prefix="doc-") for i in range(3)}
+
+            ingress = await get_pipeline_ingress(rag.workspace)
+            ingress.drain_documents()  # clear enqueue's own notifications
+            for doc_id in ids:
+                ingress.put_document(
+                    PipelineIngressMessage(kind="document", doc_id=doc_id)
+                )
+
+            # Block the feeder mid-route (in full_docs.get_by_id) so its drained
+            # messages are still unresolved when it is cancelled.
+            gate = asyncio.Event()
+            orig_get = rag.full_docs.get_by_id
+
+            async def blocking_get(doc_id):
+                await gate.wait()
+                return await orig_get(doc_id)
+
+            rag.full_docs.get_by_id = blocking_get
+
+            ctx = _make_feeder_ctx()
+            feeder = asyncio.create_task(rag._pipeline_feeder(ctx, ingress))
+            await asyncio.sleep(0.15)  # feeder drained all 3, blocked on the first
+            feeder.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await feeder
+
+            # All three drained-but-unresolved messages were re-published.
+            republished = {m.doc_id for m in ingress.drain_documents()}
+            assert republished == ids
         finally:
             await rag.finalize_storages()
 

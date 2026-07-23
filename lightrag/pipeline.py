@@ -1576,90 +1576,131 @@ class _PipelineMixin:
             ctx.routing_doc_ids.discard(doc_id)
             ctx.inflight_doc_ids.add(doc_id)
 
+    def _republish_documents(self, ingress, messages) -> None:
+        """Best-effort re-publish of drained-but-unresolved document messages.
+
+        The document channel drain is destructive (``drain_documents`` removes
+        the messages).  On a teardown — user cancel, internal error, or the
+        exception backoff — the drained messages this feeder had not yet routed
+        or confirmed stale/terminal must go back to the mailbox: a user cancel
+        clears ``request_pending``, so without the restore those PENDING docs
+        would wait for an unrelated future trigger instead of the next run.  A
+        multiprocess ``put_document`` is a Manager RPC; swallow failures — the
+        docs are PENDING and still recovered by the next initial scan.
+        """
+        for msg in messages:
+            try:
+                ingress.put_document(msg)
+            except Exception as republish_error:
+                logger.debug(
+                    "[feeder] document re-publish failed for "
+                    f"{getattr(msg, 'doc_id', None)}: {republish_error}"
+                )
+
+    async def _route_one(
+        self,
+        ctx: "_BatchRunContext",
+        msg: "PipelineIngressMessage",
+        pending: dict,
+    ) -> bool:
+        """Resolve one fed document message.
+
+        Returns True when the message is fully RESOLVED — admitted into a parse
+        queue, or a confirmed stale/terminal / duplicate / journaled doc that is
+        correctly dropped — and False when it was only SKIPPED for now (full_docs
+        not yet visible, or a transient read) and so should be re-published if
+        the batch tears down before request_pending can recover it.
+        """
+        doc_id = msg.doc_id
+        if not doc_id:
+            return True  # malformed notification: nothing to route
+        async with ctx.pipeline_status_lock:
+            duplicate = doc_id in ctx.routing_doc_ids or doc_id in ctx.inflight_doc_ids
+        if duplicate:
+            return True  # already routing/inflight — dedup
+        status_doc = pending.get(doc_id)
+        if status_doc is None:
+            return True  # not PENDING (processed/failed/deleted) — stale/terminal
+        if doc_status_custom_chunk_patch(status_doc) is not None:
+            return True  # journaled → scan/custom-chunk recovery owns it
+        try:
+            full_doc = await self.full_docs.get_by_id(doc_id)
+        except Exception as read_error:
+            logger.debug(
+                f"[feeder] full_docs read failed for {doc_id}, deferring "
+                f"(request_pending recovers): {read_error}"
+            )
+            return False  # transient → skip, re-publish on teardown
+        if not full_doc:
+            return False  # not yet visible (ryw lag) → skip, re-publish on teardown
+        await self._admit_fed_document(ctx, doc_id, status_doc)
+        return True  # admitted
+
     async def _pipeline_feeder(self, ctx: "_BatchRunContext", ingress) -> None:
         """Route documents that arrive DURING a batch into its parse queues so
         they process without waiting for the batch barrier.
 
         Pure accelerator (Phase 2): every message it discards or skips is a
         PENDING ``doc_status`` row that ``request_pending`` — dual-written by
-        enqueue on the same busy pipeline — recovers on the next batch.  So the
-        feeder never writes ``doc_status`` and never has to re-publish a skipped
-        message; correctness is anchored by the existing request_pending loop,
-        and the feeder only removes latency.
+        enqueue on the same busy pipeline — recovers on the next batch.  The
+        feeder never writes ``doc_status``; correctness is anchored by the
+        existing request_pending loop and the feeder only removes latency.
 
-        Per drained message, three outcomes:
-          * ROUTED — PENDING, not already routing/inflight, full_docs visible →
-            two-stage admission into the parse queue;
-          * STALE/TERMINAL — not PENDING (processed/failed/deleted), a
-            duplicate of a routing/inflight id, or a journaled custom-chunk doc
-            (owned by scan/custom-chunk recovery) → dropped;
-          * NEEDS_RECONCILIATION — full_docs not yet visible (read-your-writes
-            lag) or a transient read error → skipped this batch, recovered by
-            request_pending (Phase 3 will reconcile these in-batch instead).
+        Per drained message: ROUTED (admitted), STALE/TERMINAL (dropped), or
+        SKIPPED (full_docs not yet visible / a transient read — recovered by
+        request_pending; re-published on a teardown, see ``_route_one`` and
+        ``_republish_documents``).
 
-        Stopped by cancellation; see :meth:`_feeder_next_batch`.  Any OTHER
-        per-iteration failure (the wait RPC, engine routing, an admission read)
-        is logged and skipped rather than left to silently kill the accelerator
-        for the rest of the batch — the affected docs stay PENDING and are
-        recovered by request_pending exactly like an intentional skip.
+        **Bounded liveness (yields to control signals):** the feeder stops
+        admitting — returns so the batch drains to its quiescence point — when
+        cancellation is requested (otherwise ``/cancel_pipeline`` could never
+        complete under a sustained upload stream that keeps the parse queue
+        non-empty) or when a sticky manual retry request is waiting (it is only
+        consumed at the batch boundary, so an unbounded batch would starve it).
+        It deliberately does NOT wait on ``has_work()`` — that would busy-loop on
+        a pending manual/auto signal (the document-only wait is the point).
+
+        An unexpected per-iteration failure (the wait RPC, engine routing, an
+        admission read) is logged, its unresolved messages re-published, and the
+        feeder backs off and continues rather than silently dying for the rest
+        of the batch.
         """
         while True:
+            # Yield to control signals BEFORE draining more work.
+            if (
+                ctx.pipeline_cancel_event is not None
+                and ctx.pipeline_cancel_event.is_set()
+            ):
+                return
+            if ingress.peek_next_manual_retry() is not None:
+                return
+
+            batch: list = []
+            reached = 0
+            undecided: list = []
             try:
                 batch = await self._feeder_next_batch(ingress)
-                doc_ids = [msg.doc_id for msg in batch if msg.doc_id]
-                if not doc_ids:
-                    continue
-                try:
+                if any(msg.doc_id for msg in batch):
                     pending = await self.doc_status.get_docs_by_statuses(
                         [DocStatus.PENDING], strict=True
                     )
-                except Exception as read_error:
-                    # Transient doc_status read: drop this drain (its messages
-                    # are committed PENDING rows recovered by request_pending on
-                    # the next batch). Logged so a persistent fault silently
-                    # zeroing feeder throughput stays diagnosable.
-                    logger.debug(
-                        "[feeder] doc_status read failed, dropping drain of "
-                        f"{len(doc_ids)} doc(s) (request_pending recovers): "
-                        f"{read_error}"
-                    )
-                    continue
-                for doc_id in doc_ids:
-                    async with ctx.pipeline_status_lock:
-                        duplicate = (
-                            doc_id in ctx.routing_doc_ids
-                            or doc_id in ctx.inflight_doc_ids
-                        )
-                    if duplicate:
-                        continue
-                    status_doc = pending.get(doc_id)
-                    if status_doc is None:
-                        continue  # not PENDING (processed/failed/deleted) — stale
-                    if doc_status_custom_chunk_patch(status_doc) is not None:
-                        continue  # journaled → scan/custom-chunk recovery owns it
-                    try:
-                        full_doc = await self.full_docs.get_by_id(doc_id)
-                    except Exception as read_error:
-                        logger.debug(
-                            f"[feeder] full_docs read failed for {doc_id}, "
-                            f"skipping (request_pending recovers): {read_error}"
-                        )
-                        continue
-                    if not full_doc:
-                        continue  # not yet visible (ryw lag); request_pending recovers
-                    await self._admit_fed_document(ctx, doc_id, status_doc)
+                    for reached, msg in enumerate(batch):
+                        if not await self._route_one(ctx, msg, pending):
+                            undecided.append(msg)  # SKIP — carry for re-publish
+                reached = len(batch)  # every message reached a decision
             except asyncio.CancelledError:
-                raise  # cooperative stop (quiescence or teardown)
+                # Teardown/quiescence stop: restore the messages this drain
+                # removed but did not resolve (unreached tail + skipped). On a
+                # normal quiescence stop the feeder is parked between drains, so
+                # both are empty and this restores nothing.
+                self._republish_documents(ingress, [*batch[reached:], *undecided])
+                raise
             except Exception as feeder_error:
-                # A wait-RPC failure, an engine-routing error, or an admission
-                # read fault must not silently disable the accelerator for the
-                # rest of the batch. Log, back off (so a persistent fault does
-                # not tight-loop), and continue; the docs stay PENDING and are
-                # recovered by request_pending.
                 logger.warning(
                     "[feeder] in-batch feeder iteration failed (batch continues; "
                     f"request_pending recovers docs): {feeder_error}"
                 )
+                self._republish_documents(ingress, [*batch[reached:], *undecided])
                 await asyncio.sleep(_FEEDER_POLL_SECONDS)
 
     async def _run_pipeline_batch(
