@@ -501,6 +501,110 @@ async def test_cancel_after_document_decision_restores_consumed_signal(tmp_path)
         await rag.finalize_storages()
 
 
+async def test_validation_failure_after_document_decision_restores_signal(tmp_path):
+    """Fix-proof (non-cancel escape closure): a transient validation failure
+    landing AFTER a CONTINUE_DOCUMENT refetch destructively drained the doc's
+    notification — but BEFORE a batch took the docs over — must not strand the
+    doc: the finally's bookkeeping re-arms auto-rescan on ANY exit with an
+    uncommitted consumption, not just on a cancel."""
+    extract = _MarkerExtract()
+    extract.block_marker = "AAAA"
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        status, lock = await _pipeline_ns(rag)
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        ingress = await get_pipeline_ingress(rag.workspace)
+
+        orig_batch = rag._run_pipeline_batch
+        orig_validate = rag._validate_and_fix_document_consistency
+        injected = False
+
+        async def failing_validate(*args, **kwargs):
+            raise ConnectionError("full_docs transient failure in validation")
+
+        async def batch_then_inject(to_process_docs, **kwargs):
+            nonlocal injected
+            await orig_batch(to_process_docs, **kwargs)
+            if not injected:
+                injected = True
+                # A PENDING doc whose ONLY signal is its resident message —
+                # and a validator that fails once that message is drained.
+                await rag.apipeline_enqueue_documents(
+                    input="BBBB body", file_paths="b.txt"
+                )
+                async with lock:
+                    status["request_pending"] = False
+                rag._validate_and_fix_document_consistency = failing_validate
+
+        rag._run_pipeline_batch = batch_then_inject
+
+        extract.release.set()
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(
+                rag.apipeline_process_enqueue_documents(), timeout=10
+            )
+
+        rag._validate_and_fix_document_consistency = orig_validate
+        assert status.get("busy") is False
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "pending"
+        # The drained notification survives the escape as the restored flag.
+        assert ingress.counts()["auto_rescan_pending"] is True
+    finally:
+        extract.release.set()
+        await rag.finalize_storages()
+
+
+async def test_validation_failure_after_auto_decision_restores_signal(tmp_path):
+    """Same escape for CONTINUE_AUTO: the decision consumed the auto flag;
+    a validation failure before the batch takes over must re-arm it."""
+    extract = _MarkerExtract()
+    extract.block_marker = "AAAA"
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        status, lock = await _pipeline_ns(rag)
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        ingress = await get_pipeline_ingress(rag.workspace)
+
+        orig_batch = rag._run_pipeline_batch
+        orig_validate = rag._validate_and_fix_document_consistency
+        injected = False
+
+        async def failing_validate(*args, **kwargs):
+            raise ConnectionError("full_docs transient failure in validation")
+
+        async def batch_then_arm_auto(to_process_docs, **kwargs):
+            nonlocal injected
+            await orig_batch(to_process_docs, **kwargs)
+            if not injected:
+                injected = True
+                await rag.apipeline_enqueue_documents(
+                    input="BBBB body", file_paths="b.txt"
+                )
+                ingress.drain_documents()
+                async with lock:
+                    status["request_pending"] = False
+                ingress.request_auto_rescan()
+                rag._validate_and_fix_document_consistency = failing_validate
+
+        rag._run_pipeline_batch = batch_then_arm_auto
+
+        extract.release.set()
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(
+                rag.apipeline_process_enqueue_documents(), timeout=10
+            )
+
+        rag._validate_and_fix_document_consistency = orig_validate
+        assert status.get("busy") is False
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "pending"
+        assert ingress.counts()["auto_rescan_pending"] is True  # re-armed
+    finally:
+        extract.release.set()
+        await rag.finalize_storages()
+
+
 async def test_internal_error_halt_preserves_ingress_and_surfaces_reason(tmp_path):
     """An internal-error abort exits like a cancel — no new epoch, ingress
     retained — but surfaces the actionable halt message instead of a plain

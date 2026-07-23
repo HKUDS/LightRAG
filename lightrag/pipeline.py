@@ -1219,6 +1219,19 @@ class _PipelineMixin:
         # sees busy=False and starts a new loop via its own process_enqueue).
         busy_released_in_loop = False
 
+        # Ownership of a consumed-but-not-yet-committed wake-up signal: True
+        # while a destructively-consumed signal (the entry absorb of the auto
+        # flag, or a CONTINUE_AUTO/CONTINUE_DOCUMENT quiescence consumption)
+        # has produced docs that NO batch has taken over yet.  The finally's
+        # cancellation-resistant bookkeeping re-arms auto-rescan whenever the
+        # run exits with this still set — a cancel, a validation failure, or
+        # ANY other escape in that window would otherwise strand the docs:
+        # they are PENDING rows whose channel entries were already drained, so
+        # no other signal is left.  Initialized (with the ingress handle)
+        # BEFORE the try so the finally can always read them.
+        uncommitted_wakeup = False
+        ingress = None
+
         try:
             # Acquire the processing slot BEFORE reading doc_status. The queue
             # read and all downstream work MUST run under ``busy`` so a concurrent
@@ -1300,20 +1313,13 @@ class _PipelineMixin:
                     ingress.request_auto_rescan()
                 raise
 
-            # Ownership of a consumed-but-not-yet-committed wake-up signal.
-            # True while a destructively-consumed signal (the absorbed auto
-            # flag here, or a CONTINUE_AUTO/CONTINUE_DOCUMENT consumption at a
-            # quiescence decision) has produced docs that NO batch has taken
-            # over yet: a cancellation landing in that window exits through
-            # the loop-top handler, which re-arms auto-rescan so the cancel
-            # leaves the ingress as if the run had stopped before consuming
-            # (drained document messages are represented by their PENDING
-            # rows; the auto flag is the canonical lost-notification recovery
-            # signal, same as channel overflow).  Cleared once the consistency
-            # validator has taken the docs over — from there the batch, its
-            # feeder teardown and the PENDING rows own recovery.  An empty
-            # strict result clears it too: a complete scan with nothing to do
-            # means the signal was fully served, not lost.
+            # Take ownership of the absorbed entry signal (see the definition
+            # above the try): restored by the finally on ANY exit until the
+            # consistency validator takes the docs over.  An empty strict
+            # result means the signal was fully served, not lost — the auto
+            # flag is the canonical lost-notification recovery signal and the
+            # drained document messages are represented by their PENDING rows,
+            # same as channel overflow.
             uncommitted_wakeup = absorbed_auto_rescan and bool(to_process_docs)
 
             if not to_process_docs:
@@ -1387,22 +1393,11 @@ class _PipelineMixin:
                         )
                         status_snapshot["history_messages"].append(log_message)
 
-                        # A signal the immediately-preceding decision (or the
-                        # entry absorb) consumed was never handed to a batch:
-                        # restore it so this cancel leaves the ingress as if
-                        # the run had stopped before consuming it.  Failure
-                        # only degrades — the docs are PENDING rows recovered
-                        # by the next explicit trigger's initial scan.
-                        if uncommitted_wakeup:
-                            try:
-                                ingress.request_auto_rescan()
-                            except Exception as restore_error:
-                                logger.warning(
-                                    "[pipeline] failed to restore the consumed "
-                                    "wake-up signal on cancellation (docs stay "
-                                    "PENDING until the next explicit trigger): "
-                                    f"{restore_error}"
-                                )
+                        # A signal consumed by the immediately-preceding
+                        # decision (or the entry absorb) that no batch took
+                        # over is restored by the finally's bookkeeping — one
+                        # restore point covers this exit and every non-cancel
+                        # escape (e.g. a validation failure) alike.
 
                         # Exit directly, skipping request_pending check
                         return
@@ -1561,6 +1556,25 @@ class _PipelineMixin:
                     "pipeline_status", workspace=run_workspace
                 )
                 async with lock:
+                    # Restore a wake-up signal a decision consumed but no
+                    # batch took over — regardless of WHY the run is exiting
+                    # (user cancel, a validation failure, any escape): the
+                    # docs behind it are PENDING rows whose channel entries
+                    # were already drained, so without this they would wait
+                    # for an unrelated trigger.  Before the release below, so
+                    # the next acquirer observes the signal; failure only
+                    # degrades to next-explicit-trigger recovery.
+                    if uncommitted_wakeup and ingress is not None:
+                        try:
+                            ingress.request_auto_rescan()
+                        except Exception as restore_error:
+                            logger.warning(
+                                "[pipeline] failed to restore the consumed "
+                                "wake-up signal on exit (docs stay PENDING "
+                                "until the next explicit trigger): "
+                                f"{restore_error}"
+                            )
+
                     status_snapshot = status.copy()
                     current_owner = _reservation_owner_token(
                         status_snapshot.get("busy_owner")
