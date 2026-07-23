@@ -1298,28 +1298,27 @@ class _PipelineMixin:
             else:
                 initial_statuses = _AUTO_RESUME_DOC_STATUSES
                 absorbed_auto_rescan = ingress.consume_auto_rescan()
+            # Own the absorbed signal from the INSTANT of consumption (see the
+            # definition above the try): if the strict scan below raises —
+            # Exception, CancelledError, any BaseException — the finally's
+            # bookkeeping re-arms the flag; a task cancellation delivered
+            # inside the scan would slip past any local `except Exception`
+            # compensation, so there is none.  (A manual request was only
+            # peeked and stays sticky on its own.)
+            uncommitted_wakeup = absorbed_auto_rescan
 
-            try:
-                to_process_docs: dict[
-                    str, DocProcessingStatus
-                ] = await self.doc_status.get_docs_by_statuses(
-                    list(initial_statuses), strict=True
-                )
-            except Exception:
-                # The strict scan failed AFTER a wake-up signal may have been
-                # consumed: re-arm the absorbed auto flag before propagating
-                # (a manual request was only peeked and stays sticky).
-                if absorbed_auto_rescan:
-                    ingress.request_auto_rescan()
-                raise
+            to_process_docs: dict[
+                str, DocProcessingStatus
+            ] = await self.doc_status.get_docs_by_statuses(
+                list(initial_statuses), strict=True
+            )
 
-            # Take ownership of the absorbed entry signal (see the definition
-            # above the try): restored by the finally on ANY exit until the
-            # consistency validator takes the docs over.  An empty strict
-            # result means the signal was fully served, not lost — the auto
-            # flag is the canonical lost-notification recovery signal and the
-            # drained document messages are represented by their PENDING rows,
-            # same as channel overflow.
+            # The scan is complete: an empty result means the signal was fully
+            # SERVED, not lost — release ownership.  A non-empty result keeps
+            # it owned until the consistency validator takes the docs over
+            # (the auto flag is the canonical lost-notification recovery
+            # signal and drained document messages are represented by their
+            # PENDING rows, same as channel overflow).
             uncommitted_wakeup = absorbed_auto_rescan and bool(to_process_docs)
 
             if not to_process_docs:

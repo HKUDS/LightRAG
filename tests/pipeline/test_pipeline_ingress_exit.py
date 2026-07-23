@@ -501,6 +501,33 @@ async def test_cancel_after_document_decision_restores_consumed_signal(tmp_path)
         await rag.finalize_storages()
 
 
+async def test_initial_scan_cancellation_restores_absorbed_auto_signal(tmp_path):
+    """Fix-proof (entry-window closure): the entry consumes the auto-rescan
+    flag BEFORE its strict scan, and a task cancellation delivered inside that
+    scan is a ``BaseException`` that slips past any ``except Exception``
+    compensation — ownership must therefore start at the instant of
+    consumption, so the finally re-arms the flag: busy released, signal
+    intact for the next explicit trigger."""
+    rag = await _build_rag(tmp_path, _MarkerExtract())
+    try:
+        status, _lock = await _pipeline_ns(rag)
+        ingress = await get_pipeline_ingress(rag.workspace)
+        ingress.request_auto_rescan()
+
+        async def cancelled_scan(*args, **kwargs):
+            raise asyncio.CancelledError()
+
+        rag.doc_status.get_docs_by_statuses = cancelled_scan
+
+        with pytest.raises(asyncio.CancelledError):
+            await rag.apipeline_process_enqueue_documents()
+
+        assert status.get("busy") is False
+        assert ingress.counts()["auto_rescan_pending"] is True  # re-armed
+    finally:
+        await rag.finalize_storages()
+
+
 async def test_validation_failure_after_document_decision_restores_signal(tmp_path):
     """Fix-proof (non-cancel escape closure): a transient validation failure
     landing AFTER a CONTINUE_DOCUMENT refetch destructively drained the doc's
