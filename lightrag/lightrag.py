@@ -96,6 +96,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     set_default_workspace,
     get_namespace_lock,
+    get_pipeline_ingress,
     get_storage_keyed_lock,
     with_reservation_lock,
 )
@@ -1989,6 +1990,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # pending buffers — doing so could commit or tear down another
             # running job's in-flight index ops.
             if busy_acquired:
+                # The handoff decision consults the ingress mailbox alongside
+                # the transitional ``request_pending`` flag: work that arrived
+                # while we held busy may live only in the mailbox (a document
+                # message, the auto-rescan flag, or a sticky manual retry
+                # request that was refused a drive because WE were the busy
+                # holder).  A resolve/probe failure fails TOWARD handoff: the
+                # driven run re-probes the mailbox itself, so a transient
+                # flake self-heals, and a persistent failure raises inside
+                # that run whose finally releases busy — never a wedge, while
+                # releasing here instead would silently defer a committed
+                # manual retry or an enqueued document to the next unrelated
+                # trigger.
+                try:
+                    handoff_ingress = await get_pipeline_ingress(self.workspace)
+                except Exception as ingress_error:
+                    handoff_ingress = None
+                    logger.warning(
+                        "custom-chunks exit: pipeline ingress unavailable; "
+                        "failing toward handoff so mailbox-only work is not "
+                        f"silently deferred: {ingress_error}"
+                    )
 
                 def _exit_action(status):
                     # Clear cancellation (mirroring the processing loop) and
@@ -2007,7 +2029,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "cancellation_reason": None,
                         "cancellation_detail": None,
                     }
-                    if status.get("request_pending"):
+                    if handoff_ingress is None:
+                        ingress_has_work = True  # fail toward handoff
+                    else:
+                        try:
+                            ingress_has_work = handoff_ingress.has_work()
+                        except Exception as probe_error:
+                            ingress_has_work = True  # fail toward handoff
+                            logger.warning(
+                                "custom-chunks exit: ingress has_work probe "
+                                "failed; handing off so a committed manual "
+                                "retry or enqueued document is not silently "
+                                f"deferred: {probe_error}"
+                            )
+                    if status.get("request_pending") or ingress_has_work:
                         status.update(updates)
                         return "handoff"  # keep busy (owner stays ours)
                     updates.update({"busy": False, "busy_owner": None})

@@ -159,6 +159,15 @@ class PipelineNextStep(Enum):
     RELEASED = "released"
     CONTINUE_AUTO = "continue_auto"
     CONTINUE_MANUAL = "continue_manual"
+    # Document messages still resident in the mailbox at quiescence (e.g. an
+    # enqueue that landed after the batch's feeder stopped, or a stale
+    # notification for a doc that has since reached a terminal state).  The
+    # refetch drains a bounded chunk and lets the strict scan decide: live
+    # docs come back as the next batch, provably-stale messages are dropped.
+    CONTINUE_DOCUMENT = "continue_document"
+    # Cancellation pending: the run must stop WITHOUT consuming any wake-up
+    # signal — the ingress is fully retained for the next explicit trigger.
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -167,6 +176,9 @@ class PipelineNextDecision:
     # Set only for CONTINUE_MANUAL: the sticky request this continuation
     # serves; ACKed after the FAILED→PENDING reset persists.
     manual_request_id: str | None = None
+    # Set only for CANCELLED: True when the cancellation is an internal-error
+    # abort, whose exit path surfaces the actionable halt message.
+    internal_error: bool = False
 
 
 @lru_cache(maxsize=64)
@@ -1169,11 +1181,18 @@ class _PipelineMixin:
         the no-work path, on a get-docs failure, and via the loop's finally —
         so a handoff can never wedge the pipeline as permanently busy.
         """
+        # Workspace snapshot: status, lock and ingress all resolve through the
+        # value captured at entry, so one run can never straddle two
+        # coordination namespaces if ``self.workspace`` were reassigned
+        # mid-run.  This pins the coordination layer only — the storages were
+        # bound at init and switching workspaces on a live instance stays
+        # unsupported.
+        run_workspace = self.workspace
         pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=self.workspace
+            "pipeline_status", workspace=run_workspace
         )
         pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=self.workspace
+            "pipeline_status", workspace=run_workspace
         )
 
         # Owner token for this run's ``busy`` reservation. A handed-off run
@@ -1253,7 +1272,7 @@ class _PipelineMixin:
             # manual request pending, this run IS the rescan: absorb the
             # auto-rescan dirty flag so quiescence doesn't re-trigger for work
             # this very scan already picks up.
-            ingress = await get_pipeline_ingress(self.workspace)
+            ingress = await get_pipeline_ingress(run_workspace)
             pending_manual_ack: str | None = None
             manual_msg = ingress.peek_next_manual_retry()
             if manual_msg is not None:
@@ -1297,6 +1316,11 @@ class _PipelineMixin:
                 if decision.step is PipelineNextStep.RELEASED:
                     # No pending work: slot released silently, finally is a no-op.
                     holds_busy = False
+                    return
+                if decision.step is PipelineNextStep.CANCELLED:
+                    # Nothing was processed and nothing was consumed: stop —
+                    # the finally resets the cancellation state (surfacing the
+                    # internal halt when applicable) and releases the slot.
                     return
                 # A wake-up signal was pending: re-fetch per the decision and
                 # fall through into the loop to process it.
@@ -1359,6 +1383,10 @@ class _PipelineMixin:
                     if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
                         break
+                    if decision.step is PipelineNextStep.CANCELLED:
+                        if decision.internal_error:
+                            break  # finally surfaces the actionable halt
+                        continue  # loop-top handler does the cancel bookkeeping
                     (
                         to_process_docs,
                         pending_manual_ack,
@@ -1393,6 +1421,10 @@ class _PipelineMixin:
                     if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
                         break
+                    if decision.step is PipelineNextStep.CANCELLED:
+                        if decision.internal_error:
+                            break  # finally surfaces the actionable halt
+                        continue  # loop-top handler does the cancel bookkeeping
                     (
                         to_process_docs,
                         pending_manual_ack,
@@ -1415,20 +1447,34 @@ class _PipelineMixin:
                     to_process_docs,
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
+                    ingress=ingress,
                 )
 
                 # Atomic exit handoff: if a wake-up signal arrived during this
-                # batch (a manual retry request, the auto-rescan flag, or a
-                # request_pending set by a concurrent enqueue while busy=True),
-                # consume it and refetch.  Otherwise release ``busy`` under
-                # the SAME lock so a concurrent publisher cannot squeeze a
-                # signal past us into a now-stranded state.
+                # batch (a manual retry request, the auto-rescan flag, resident
+                # document messages, or a request_pending set by a concurrent
+                # enqueue while busy=True), consume it and refetch.  Otherwise
+                # release ``busy`` under the SAME lock so a concurrent
+                # publisher cannot squeeze a signal past us into a
+                # now-stranded state.  A cancellation observed during the batch
+                # (user cancel or internal-error abort) wins INSIDE the same
+                # critical section and consumes nothing: cancellation stops the
+                # WHOLE run — no new epoch — with the ingress fully retained
+                # for the next explicit trigger.
                 decision = await self._decide_pipeline_next_step(
                     pipeline_status, pipeline_status_lock, ingress
                 )
                 if decision.step is PipelineNextStep.RELEASED:
                     busy_released_in_loop = True
                     break
+                if decision.step is PipelineNextStep.CANCELLED:
+                    if decision.internal_error:
+                        # Break to the finally, whose bookkeeping surfaces the
+                        # actionable halt message and resets the state.
+                        break
+                    # Loop back into the loop-top handler for its "Pipeline
+                    # cancelled" bookkeeping.
+                    continue
 
                 log_message = "Processing additional documents due to pending request"
                 logger.info(log_message)
@@ -1453,9 +1499,9 @@ class _PipelineMixin:
                 if not holds_busy:
                     return
                 logger.info(stopped_message)
-                lock = get_namespace_lock("pipeline_status", workspace=self.workspace)
+                lock = get_namespace_lock("pipeline_status", workspace=run_workspace)
                 status = await get_namespace_data(
-                    "pipeline_status", workspace=self.workspace
+                    "pipeline_status", workspace=run_workspace
                 )
                 async with lock:
                     status_snapshot = status.copy()
@@ -1590,7 +1636,7 @@ class _PipelineMixin:
             ctx.routing_doc_ids.discard(doc_id)
             ctx.inflight_doc_ids.add(doc_id)
 
-    def _republish_documents(self, ingress, messages) -> None:
+    def _republish_documents(self, ingress, messages, *, source: str = "feeder") -> None:
         """Best-effort re-publish of drained-but-unresolved document messages.
 
         The document channel drain is destructive (``drain_documents`` removes
@@ -1601,13 +1647,20 @@ class _PipelineMixin:
         would wait for an unrelated future trigger instead of the next run.  A
         multiprocess ``put_document`` is a Manager RPC; swallow failures — the
         docs are PENDING and still recovered by the next initial scan.
+
+        ``source`` selects the log level: the feeder path stays at debug (its
+        drops are per-message noise backed by request_pending / auto-rescan),
+        while the supervisor's quiescence compensation (``"quiescence"``) logs
+        a warning — there a swallowed drop is one of the last lines that can
+        attribute why a doc waited for an unrelated trigger.
         """
+        log = logger.debug if source == "feeder" else logger.warning
         for msg in messages:
             try:
                 ingress.put_document(msg)
             except Exception as republish_error:
-                logger.debug(
-                    "[feeder] document re-publish failed for "
+                log(
+                    f"[{source}] document re-publish failed for "
                     f"{getattr(msg, 'doc_id', None)}: {republish_error}"
                 )
 
@@ -1773,6 +1826,7 @@ class _PipelineMixin:
         *,
         pipeline_status: dict,
         pipeline_status_lock,
+        ingress,
     ) -> None:
         """Run one batch of pending documents through the parse → analyze →
         process queues.
@@ -1890,9 +1944,10 @@ class _PipelineMixin:
         for _ in range(max(1, self.max_parallel_insert)):
             workers.append(asyncio.create_task(self._process_worker(ctx)))
 
-        # In-batch feeder (Phase 2): resolved before the try so its cancellation
-        # is guaranteed by the finally alongside the workers.
-        ingress = await get_pipeline_ingress(self.workspace)
+        # In-batch feeder (Phase 2): ``ingress`` comes from the caller — the
+        # run resolves it once against its workspace snapshot — so a batch can
+        # never straddle two coordination namespaces; its cancellation is
+        # guaranteed by the finally alongside the workers.
         feeder_task: asyncio.Task | None = None
 
         # The workers above are live asyncio tasks; their cancellation MUST be
@@ -2225,6 +2280,13 @@ class _PipelineMixin:
         (mailbox calls are single in-memory/Manager RPCs; storage queries
         happen strictly outside, in :meth:`_refetch_for_decision`):
 
+        0. **Cancellation** (consumes NOTHING): checked first, INSIDE this
+           critical section — the cancel endpoint sets the flag under the same
+           lock, so a cancel can never land between its own check and a
+           consuming step below.  The run stops with the ingress fully
+           retained; the caller routes an internal-error abort to the finally
+           (which surfaces the halt message) and a user cancel to the loop-top
+           handler (its "Pipeline cancelled" bookkeeping).
         1. **Manual retry** (peeked, NOT consumed): earliest sticky request,
            at most one per quiescence cycle; ACKed only after its
            FAILED→PENDING resets persist, so crashing anywhere in between
@@ -2234,14 +2296,36 @@ class _PipelineMixin:
            :meth:`_refetch_for_decision` — without consumption here,
            ``has_work()`` would stay true forever and ``busy`` could never
            release.
-        3. **request_pending** (transitional dual-write fallback, removed in
+        3. **Document channel non-empty** (peeked via ``counts``, NOT drained):
+           a message published after this batch's feeder stopped, or a stale
+           notification for a doc that has since reached a terminal state.
+           The run stays busy and the CONTINUE_DOCUMENT refetch resolves it —
+           live docs become the next batch, provably-stale messages are
+           compacted (see :meth:`_refetch_for_decision`).  Without this check
+           a doc published into a quiescing run with no other signal would
+           strand in PENDING until an unrelated trigger (transitionally masked
+           by the dual-written ``request_pending``, gone in Phase 4).
+        4. **request_pending** (transitional dual-write fallback, removed in
            Phase 4): consumed with the same CONTINUE_AUTO semantics.
-        4. Nothing pending: release the slot together with its owner token so
-           a later owner-checked release (the finally, or a fresh acquirer)
-           sees the slot as free and unowned — RELEASED, caller breaks and
-           skips clearing ``busy`` in its finally block.
+        5. Nothing pending — ``has_work()`` is false and no transitional flag
+           is set: release the slot together with its owner token so a later
+           owner-checked release (the finally, or a fresh acquirer) sees the
+           slot as free and unowned — RELEASED, caller breaks and skips
+           clearing ``busy`` in its finally block.
+
+        Boundary (documented, not solved here): this closes every
+        published-but-missed handoff, but an enqueue that crashes BETWEEN its
+        doc_status persist and its publish leaves no signal at all — that doc
+        is recovered by the next run's initial strict scan, never by this
+        decision.
         """
         async with pipeline_status_lock:
+            if pipeline_status.get("cancellation_requested", False):
+                return PipelineNextDecision(
+                    PipelineNextStep.CANCELLED,
+                    internal_error=pipeline_status.get("cancellation_reason")
+                    == "internal_error",
+                )
             manual_msg = ingress.peek_next_manual_retry()
             if manual_msg is not None:
                 return PipelineNextDecision(
@@ -2250,6 +2334,8 @@ class _PipelineMixin:
                 )
             if ingress.consume_auto_rescan():
                 return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
+            if ingress.counts().get("documents"):
+                return PipelineNextDecision(PipelineNextStep.CONTINUE_DOCUMENT)
             if pipeline_status.get("request_pending", False):
                 pipeline_status.update({"request_pending": False})
                 return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
@@ -2270,6 +2356,24 @@ class _PipelineMixin:
         signal was already consumed in the decision), while a manual request
         was only peeked and stays sticky on its own.
 
+        CONTINUE_DOCUMENT resolves resident document messages with the same
+        drain→verify protocol the feeder uses, at the supervisor's quiescence
+        point: a bounded destructive drain FIRST, then the strict scan.  The
+        order is the correctness anchor — every drained message's doc that is
+        still live (its PENDING row persisted before its publish, which
+        preceded the drain) is necessarily in the scan result and comes back
+        as the next batch, so a drained message never needs re-publishing;
+        one absent from the scan is PROVABLY stale (terminal/FAILED/deleted —
+        FAILED is manual-only by ruling) and is compacted, which is what
+        keeps a stale notification from holding ``busy`` forever (the
+        has_work-only exit would otherwise livelock on it).  Messages
+        published after the drain stay in the mailbox for the next decision.
+        Crash/failure safety mirrors the feeder's drain: a strict-scan
+        failure re-publishes the drained messages and arms auto-rescan as a
+        backstop before propagating; a SIGKILL — or a Manager response lost
+        AFTER the server executed the drain (at-most-once RPC) — loses only
+        messages whose PENDING rows the next run's initial scan recovers.
+
         Returns ``(docs, pending_manual_ack)`` where ``pending_manual_ack``
         is the request id the caller must ACK once the FAILED→PENDING resets
         persist (post-validation), or immediately on a legitimately-empty
@@ -2279,13 +2383,38 @@ class _PipelineMixin:
             statuses = _MANUAL_RETRY_DOC_STATUSES
         else:
             statuses = _AUTO_RESUME_DOC_STATUSES
+        drained: list[PipelineIngressMessage] = []
+        if decision.step is PipelineNextStep.CONTINUE_DOCUMENT:
+            # Drain BEFORE the scan (see docstring proof). Bounded: a deeper
+            # backlog re-triggers CONTINUE_DOCUMENT on the next decision.
+            drained = ingress.drain_documents(limit=_FEEDER_DRAIN_LIMIT)
         try:
             docs = await self.doc_status.get_docs_by_statuses(
                 list(statuses), strict=True
             )
-        except Exception:
-            if decision.step is PipelineNextStep.CONTINUE_AUTO:
-                ingress.request_auto_rescan()
+        except BaseException:
+            # Compensations must not raise over the original error (multiproc
+            # mailbox calls are RPCs; BaseException here so even an interrupt
+            # in a compensation call cannot displace it): the docs behind a
+            # lost signal are still PENDING rows, recovered by the next run's
+            # initial scan.
+            try:
+                if decision.step is PipelineNextStep.CONTINUE_AUTO:
+                    ingress.request_auto_rescan()
+                elif drained:
+                    self._republish_documents(ingress, drained, source="quiescence")
+                    # Backstop for re-publishes swallowed above: the strict
+                    # rescan behind the flag recovers those PENDING docs.
+                    ingress.request_auto_rescan()
+            except BaseException as compensation_error:
+                logger.warning(
+                    "[pipeline] failed to restore the consumed wake-up signal "
+                    f"after a strict refetch failure ({len(drained)} drained "
+                    f"document message(s), first ids "
+                    f"{[m.doc_id for m in drained[:8]]}); the docs stay "
+                    "PENDING and are recovered by the NEXT explicit trigger, "
+                    f"not automatically: {compensation_error}"
+                )
             raise
         return docs, decision.manual_request_id
 

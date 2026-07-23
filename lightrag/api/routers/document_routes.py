@@ -3616,6 +3616,7 @@ def create_document_routes(
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
+            get_pipeline_ingress,
         )
 
         # Get pipeline status and lock
@@ -3667,6 +3668,32 @@ def create_document_routes(
                 del pipeline_status["history_messages"][:]
                 pipeline_status["history_messages"].append(
                     "Starting document clearing process"
+                )
+
+            # We own busy+destructive: every document the mailbox refers to is
+            # about to be dropped, so clear the ingress alongside the
+            # ``request_pending`` reset above — un-ACKed manual retry requests
+            # are retired as CANCELLED_BY_CLEAR (a delayed replay of the same
+            # request id is refused), and the document/auto channels are
+            # emptied.  ``destructive_busy`` already refuses new enqueues, so
+            # nothing repopulates the mailbox during the drop.  Clearing
+            # BEFORE the drops means a later partial drop failure has already
+            # retired manual requests for still-live FAILED docs — acceptable
+            # under the destructive intent and surfaced via partial_success.
+            # A failure here only degrades: residual stale messages are
+            # compacted by the next run's consumption idempotence, and a
+            # surviving sticky request strict-scans the emptied doc_status and
+            # ACKs harmlessly.
+            try:
+                ingress = await get_pipeline_ingress(rag.workspace)
+                ingress.clear()
+            except Exception as ingress_clear_error:
+                logger.warning(
+                    "/documents/clear: failed to clear the pipeline ingress "
+                    "mailbox; safe to continue — residual document messages "
+                    "are compacted by the next run and a surviving manual "
+                    "retry request ACKs harmlessly against the emptied "
+                    f"doc_status: {ingress_clear_error}"
                 )
 
             # Use drop method to clear all data
