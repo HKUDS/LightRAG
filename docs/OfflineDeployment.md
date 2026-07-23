@@ -24,7 +24,7 @@ LightRAG uses dynamic package installation (`pipmaster`) for optional features b
 
 LightRAG dynamically installs packages for:
 
-- **Storage Backends**: `redis`, `neo4j`, `pymilvus`, `pymongo`, `asyncpg`, `qdrant-client`
+- **Storage Backends**: `redis`, `neo4j`, `pymilvus`, `pymongo`, `asyncpg`, `qdrant-client`, `lancedb`
 - **LLM Providers**: `openai`, `anthropic`, `ollama`, `zhipuai`, `aioboto3`, `voyageai`, `llama-index`, `lmdeploy`, `transformers`, `torch`
 - **Tiktoken Models**: BPE encoding models downloaded from OpenAI CDN
 

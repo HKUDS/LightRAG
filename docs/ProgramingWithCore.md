@@ -69,10 +69,10 @@ Notes:
 | -------------- | ---------- | ----------------- | ------------- |
 | **working_dir** | `str` | Directory where the cache will be stored | `lightrag_cache+timestamp` |
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage`,`LanceDBKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage`,`LanceDBVectorStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage`,`LanceDBGraphStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage`,`LanceDBDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. | `TiktokenTokenizer` |
@@ -604,6 +604,7 @@ PGKVStorage          Postgres
 RedisKVStorage       Redis
 MongoKVStorage       MongoDB
 OpenSearchKVStorage  OpenSearch
+LanceDBKVStorage     LanceDB (embedded)
 ```
 
 **GRAPH_STORAGE**
@@ -613,6 +614,7 @@ Neo4JStorage             Neo4J
 PGGraphStorage           PostgreSQL with AGE plugin
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
+LanceDBGraphStorage      LanceDB (embedded)
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
@@ -626,6 +628,7 @@ FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
 OpenSearchVectorDBStorage   OpenSearch
+LanceDBVectorStorage        LanceDB (embedded)
 ```
 
 **DOC_STATUS_STORAGE**
@@ -634,6 +637,7 @@ JsonDocStatusStorage        JsonFile (default)
 PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 OpenSearchDocStatusStorage  OpenSearch
+LanceDBDocStatusStorage     LanceDB (embedded)
 ```
 
 Example connection configurations for each storage type can be found in the repository's `env.example` file. The database instance in the connection string must be created beforehand — LightRAG only creates tables within the instance, not the instance itself.
@@ -867,6 +871,49 @@ OPENAI_API_KEY=your-api-key \
 lightrag-server
 ```
 
+#### Using LanceDB Storage
+
+LanceDB provides a unified storage solution for all four LightRAG storage types (KV, Vector, Graph, DocStatus) in a single embedded database — no external server, no Docker. All data lives in one local directory using the Lance columnar format, with brute-force (exact) cosine vector search and a CJK-friendly BM25 full-text index on chunk content.
+
+**Requirements**: `pip install lancedb` (installed automatically on first use, or via `pip install lightrag-hku[offline-storage]`). Python 3.10+.
+
+**Configuration** (all optional, see `env.example` for the full list):
+```bash
+export LANCEDB_URI=./lancedb                # defaults to <working_dir>/lancedb
+export LANCEDB_ENABLE_FTS=true              # BM25 index on vector-storage content
+export LANCEDB_FTS_TOKENIZER=ngram          # CJK-friendly bigram tokenizer (default)
+```
+
+**Usage**:
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=your_llm_func,
+    embedding_func=your_embed_func,
+    kv_storage="LanceDBKVStorage",
+    doc_status_storage="LanceDBDocStatusStorage",
+    graph_storage="LanceDBGraphStorage",
+    vector_storage="LanceDBVectorStorage",
+)
+```
+
+**Notes**:
+- All data is derived and rebuildable: if the database is ever corrupted, delete the LanceDB directory and re-index the source documents.
+- Vector tables are suffixed with the embedding model name and dimension, so switching embedding models creates fresh tables instead of corrupting existing vectors.
+- Single-process deployments only (embedded database); use a server-based backend with multi-worker gunicorn.
+
+See `docs/lancedb.md` for the full setup and configuration guide.
+
+**Testing**:
+```bash
+# Unit + integration tests (no external services, real embedded LanceDB)
+python -m pytest tests/kg/lancedb_impl -v
+# Cross-backend graph storage conformance suite
+LIGHTRAG_GRAPH_STORAGE=LanceDBGraphStorage python -m pytest tests/kg/test_graph_storage.py --run-integration -v
+# Demo
+python examples/lightrag_lancedb_demo.py
+```
+
 
 ## Data Isolation Between LightRAG Instances
 
@@ -880,10 +927,11 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 | `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage` | `workspace` field in tables |
 | `Neo4JStorage` | Labels |
 | `OpenSearch*` | Index name prefixes |
+| `LanceDB*` | Table name prefixes |
 
 **Legacy compatibility**: Default workspace for PostgreSQL non-graph storage is `default`; for PostgreSQL AGE graph storage is null; for Neo4j graph storage is `base`.
 
-Storage-specific workspace environment variables override the common `WORKSPACE` variable: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
+Storage-specific workspace environment variables override the common `WORKSPACE` variable: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`, `LANCEDB_WORKSPACE`.
 
 For a practical demonstration of managing multiple isolated knowledge bases, see [Workspace Demo](examples/lightrag_gemini_workspace_demo.py).
 
