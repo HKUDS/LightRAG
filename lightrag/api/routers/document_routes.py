@@ -336,6 +336,17 @@ class SemanticVectorChunkParams(_StrictChunkParams):
             ) from exc
         return v
 
+    @field_validator("breakpoint_threshold_amount", mode="before")
+    @classmethod
+    def _reject_nonfinite_amount(cls, v: Any) -> Any:
+        # JSON decoders may deliver nan/inf as floats. Raising while leaving
+        # those values in ValidationError.input makes FastAPI's JSONResponse
+        # fail (non-compliant floats) and turn the 422 into a 500. Replace
+        # with a JSON-safe marker so strict float typing rejects cleanly.
+        if isinstance(v, float) and not math.isfinite(v):
+            return "non-finite"
+        return v
+
     @model_validator(mode="after")
     def _amount_in_range(self) -> "SemanticVectorChunkParams":
         amt = self.breakpoint_threshold_amount

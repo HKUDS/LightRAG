@@ -573,6 +573,34 @@ def test_insert_text_returns_422_on_malformed_chunking_without_scheduling(monkey
     assert captured == {}
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_insert_text_returns_422_on_nonfinite_breakpoint_amount(monkeypatch, bad):
+    """Non-finite amounts must 422 on the HTTP path, not 500 via JSONResponse."""
+    import json
+
+    client, captured = _make_client(monkeypatch)
+    payload = {
+        "text": "hello",
+        "file_source": "a.md",
+        "chunking": {
+            "strategy": "semantic_vector",
+            "params": {
+                "breakpoint_threshold_type": "percentile",
+                "breakpoint_threshold_amount": bad,
+            },
+        },
+    }
+    resp = client.post(
+        "/documents/text",
+        headers={**_HEADERS, "Content-Type": "application/json"},
+        content=json.dumps(payload, allow_nan=True),
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "detail" in body
+    assert captured == {}
+
+
 def test_insert_text_returns_422_when_size_below_inherited_overlap(monkeypatch):
     # chunk_token_size=50 in the request, overlap=100 inherited from the
     # rag's addon_params (not in the request). The model can't catch this;
