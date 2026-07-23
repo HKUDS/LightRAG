@@ -2,20 +2,29 @@ import os
 import re
 import json
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import numpy as np
 import configparser
 import asyncio
 
-from typing import Any, Union, final
+from typing import Any, ClassVar, Union, final
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    FailureGenerationMode,
 )
 from ..utils import (
     logger,
@@ -25,7 +34,16 @@ from ..utils import (
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
+from ..constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    GRAPH_FIELD_SEP,
+    DEFAULT_QUERY_PRIORITY,
+)
+from ..exceptions import (
+    StorageControlPlaneError,
+    StorageNotInitializedError,
+    StorageRecordNotFoundError,
+)
 from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -35,6 +53,7 @@ if not pm.is_installed("pymongo"):
     pm.install("pymongo")
 
 from pymongo import AsyncMongoClient  # type: ignore
+from pymongo import ReturnDocument  # type: ignore
 from pymongo import UpdateOne  # type: ignore
 from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
@@ -327,6 +346,8 @@ class MongoKVStorage(BaseKVStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
             namespace=namespace,
@@ -401,6 +422,15 @@ class MongoKVStorage(BaseKVStorage):
             doc.setdefault("create_time", 0)
             doc.setdefault("update_time", 0)
         return doc
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``find_one`` either answers definitively or raises a ``PyMongoError``
+        — nothing is swallowed on this path, so a ``None`` IS a confirmed
+        absence (the FAILED-stub deletion path may act on it).
+        """
+        return await self.get_by_id(id)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
@@ -551,6 +581,21 @@ class MongoKVStorage(BaseKVStorage):
 class MongoDocStatusStorage(DocStatusStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
+    _ctrl: AsyncCollection = field(default=None)
+
+    supports_bounded_scheduling_pages: ClassVar[bool] = True
+    supports_failure_generation: ClassVar[bool] = True
+    supports_strict_doc_identity_lookup: ClassVar[bool] = True
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Scheduling control-plane doc (failure-generation counter + mode marker
+    # + version stamp) lives in a SEPARATE per-workspace collection
+    # (``<final_namespace>_scheduling_ctrl``), never in ``self._data`` — a
+    # reserved _id inside the data collection would leak into every
+    # status/full-scan reader. The version stamp guards marker integrity: a
+    # mismatch reads as MIGRATING (never LEGACY).
+    _CTRL_SCHEMA_VERSION: ClassVar[int] = 1
+    _CTRL_DOC_ID: ClassVar[str] = "scheduling_ctrl"
 
     def _prepare_doc_status_data(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Normalize and migrate a raw Mongo document to DocProcessingStatus-compatible dict."""
@@ -619,6 +664,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._collection_name = self.final_namespace
+        # Same workspace isolation as the data collection: the ctrl collection
+        # name derives from the workspace-prefixed final_namespace.
+        self._ctrl_collection_name = f"{self.final_namespace}_scheduling_ctrl"
 
     async def initialize(self):
         async with get_data_init_lock():
@@ -630,8 +678,69 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Create and migrate all indexes including Chinese collation for file_path
             await self.create_and_migrate_indexes_if_not_exists()
 
+            # Scheduling control-plane bootstrap (Phase 1): publish or
+            # recalibrate the per-workspace failure-generation marker.
+            self._ctrl = await get_or_create_collection(
+                self.db, self._ctrl_collection_name
+            )
+            await self._bootstrap_scheduling_ctrl()
+
             logger.debug(
                 f"[{self.workspace}] Use MongoDB as DocStatus {self._collection_name}"
+            )
+
+    async def _bootstrap_scheduling_ctrl(self) -> None:
+        """Bootstrap/calibrate the failure-generation control-plane doc.
+
+        Runs on EVERY init (a restore-from-backup can roll the ctrl doc
+        behind persisted rows, and the reservation counter must stay
+        monotonic — ``max(counter, max persisted failure_generation)``):
+
+        * no ctrl doc → publish ``{schema_version=1, mode=enforced,
+          counter=max persisted}`` (``$setOnInsert`` upsert is idempotent
+          across racing processes);
+        * ctrl doc with the known schema_version → ``$max``-recalibrate the
+          counter against the persisted rows;
+        * unknown schema_version → left untouched; mode reads report
+          MIGRATING (never LEGACY) until an explicit migration handles it.
+        """
+        pipeline = [
+            {"$match": {"failure_generation": {"$type": "number"}}},
+            {"$group": {"_id": None, "max_gen": {"$max": "$failure_generation"}}},
+        ]
+        cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
+        rows = await cursor.to_list(length=None)
+        max_gen = 0
+        if rows and rows[0].get("max_gen") is not None:
+            max_gen = int(rows[0]["max_gen"])
+
+        result = await self._ctrl.update_one(
+            {"_id": self._CTRL_DOC_ID},
+            {
+                "$setOnInsert": {
+                    "schema_version": self._CTRL_SCHEMA_VERSION,
+                    "mode": FailureGenerationMode.ENFORCED.value,
+                    "failure_generation_counter": max_gen,
+                }
+            },
+            upsert=True,
+        )
+        if result.upserted_id is not None:
+            logger.info(
+                f"[{self.workspace}] Published failure-generation marker "
+                f"(mode=enforced, counter={max_gen}) for {self._collection_name}"
+            )
+            return
+        # Counter recalibration: only touch a marker whose schema version we
+        # understand; $max never moves the counter backwards.
+        recal = await self._ctrl.update_one(
+            {"_id": self._CTRL_DOC_ID, "schema_version": self._CTRL_SCHEMA_VERSION},
+            {"$max": {"failure_generation_counter": max_gen}},
+        )
+        if recal.modified_count:
+            logger.warning(
+                f"[{self.workspace}] failure-generation counter behind persisted "
+                f"rows (< {max_gen}); recalibrated for {self._collection_name}"
             )
 
     async def finalize(self):
@@ -639,8 +748,18 @@ class MongoDocStatusStorage(DocStatusStorage):
             await ClientManager.release_client(self.db)
             self.db = None
             self._data = None
+            self._ctrl = None
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+        return await self._data.find_one({"_id": id})
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``find_one`` either answers definitively or raises a ``PyMongoError``
+        — nothing is swallowed on this path, so a ``None`` IS a confirmed
+        absence.
+        """
         return await self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -843,6 +962,20 @@ class MongoDocStatusStorage(DocStatusStorage):
                         "content_hash": {"$exists": True, "$type": "string", "$gt": ""}
                     },
                 },
+                # Keyset sweep index for the bounded scheduling page API:
+                # matches the MUST sort of get_docs_by_statuses_page
+                # ((created_at ASC, _id ASC) within each status branch of a
+                # status $in — the server merges the per-status keysets).
+                {
+                    "name": f"{workspace_prefix}status_created_at_id_asc",
+                    "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
+                },
+                # failure_generation for the manual-cohort predicate and the
+                # startup counter-calibration aggregation ($max over rows).
+                {
+                    "name": f"{workspace_prefix}failure_generation",
+                    "keys": [("failure_generation", 1)],
+                },
             ]
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
@@ -1044,17 +1177,38 @@ class MongoDocStatusStorage(DocStatusStorage):
         stored ``file_path`` values are canonicalized by the business layer, so
         this lookup performs an exact match only and relies on the file_path
         index created by ``create_and_migrate_indexes_if_not_exists``.
+
+        Returns the PRIMARY (``metadata.is_duplicate != true``) row only —
+        duplicate-attempt ``dup-*`` markers keep the same canonical basename
+        and must never satisfy an identity lookup. Legacy error semantics:
+        query failures are logged and read as a best-effort miss (``None``);
+        callers that need "None == confirmed absent" must use
+        :meth:`get_doc_by_file_basename_strict`.
+        """
+        try:
+            return await self.get_doc_by_file_basename_strict(basename)
+        except PyMongoError as e:
+            logger.error(f"[{self.workspace}] Error in get_doc_by_file_basename: {e}")
+            return None
+
+    async def get_doc_by_file_basename_strict(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Fail-closed basename lookup (see base contract).
+
+        Same primary-row query as the legacy method, but transport errors
+        PROPAGATE instead of being read as a miss — scan classification and
+        enqueue dedup treat ``None`` as "confirmed new", so a swallowed
+        failure here would mint duplicate primary rows.
         """
         if not basename:
             return None
         if basename == "unknown_source":
             return None
 
-        try:
-            doc = await self._data.find_one({"file_path": basename})
-        except PyMongoError as e:
-            logger.error(f"[{self.workspace}] Error in get_doc_by_file_basename: {e}")
-            return None
+        doc = await self._data.find_one(
+            {"file_path": basename, "metadata.is_duplicate": {"$ne": True}}
+        )
         if not doc:
             return None
         doc_id = doc.get("_id")
@@ -1086,6 +1240,355 @@ class MongoDocStatusStorage(DocStatusStorage):
         if doc_id is None:
             return None
         return str(doc_id), doc
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _encode_cursor(created_at: str, doc_id: str) -> str:
+        return json.dumps([created_at, doc_id], ensure_ascii=False)
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> tuple[str, str]:
+        try:
+            decoded = json.loads(opaque)
+            created, doc_id = decoded
+            if not isinstance(created, str) or not isinstance(doc_id, str):
+                raise ValueError("cursor fields must be strings")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for MongoDocStatusStorage: {e}"
+            ) from e
+        return created, doc_id
+
+    @staticmethod
+    def _doc_cursor_key(doc: dict[str, Any]) -> tuple[str, str]:
+        """(created_at, _id) keyset key of a RAW query-returned doc. A
+        missing/non-string created_at encodes as "" — such legacy rows sort
+        first server-side (BSON missing < strings) and are consumed on the
+        first page, never moving mid-sweep (created_at is immutable)."""
+        created = doc.get("created_at")
+        return (created if isinstance(created, str) else "", str(doc.get("_id")))
+
+    def _scheduling_record_from_doc(
+        self, doc: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one raw Mongo doc; strict raises on unusable docs, relaxed
+        returns None (the caller still counts the doc as consumed)."""
+        doc_id = str(doc.get("_id"))
+        try:
+            status = DocStatus(str(doc["status"]))
+            created_at = doc["created_at"]
+            updated_at = doc.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = doc.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=doc.get("file_path") or "no-file-path",
+                track_id=doc.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        max_failure_generation: int | None = None,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page: one indexed ``find`` with ``sort`` + ``limit``.
+
+        ``created_at`` is stored as an ISO-8601 string, so the keyset
+        comparison stays string-typed end to end (cursor ↔ query ↔ sort).
+
+        Consumed-position contract: every predicate (status, keyset resume,
+        ``max_failure_generation`` cohort) is evaluated SERVER-side, so the
+        set of query-returned docs IS the set of consumed records — the
+        frontier is the last RETURNED doc's ``(created_at, _id)`` key, and
+        fewer returned docs than ``limit`` proves the sweep is exhausted
+        (CURSOR_END). A relaxed-mode conversion skip drops the doc from the
+        page but the doc was still returned by the query, hence consumed:
+        the cursor advances past it (never re-read, never terminal-by-skip).
+
+        Transport/query errors always propagate (never swallowed into a
+        partial page); ``strict=True`` additionally raises on any returned
+        doc that cannot be projected to :class:`DocSchedulingRecord`.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+
+        query: dict[str, Any] = {"status": {"$in": sorted({s.value for s in statuses})}}
+        and_clauses: list[dict[str, Any]] = []
+        if isinstance(position, CursorAfter):
+            created, doc_id = self._decode_cursor(position.opaque)
+            and_clauses.append(
+                {
+                    "$or": [
+                        {"created_at": {"$gt": created}},
+                        {"created_at": created, "_id": {"$gt": doc_id}},
+                    ]
+                }
+            )
+        if max_failure_generation is not None:
+            # Cohort predicate constrains ONLY failed rows; a missing
+            # failure_generation is logical 0 and therefore always eligible.
+            and_clauses.append(
+                {
+                    "$or": [
+                        {"status": {"$ne": DocStatus.FAILED.value}},
+                        {"failure_generation": {"$lte": max_failure_generation}},
+                        {"failure_generation": {"$exists": False}},
+                    ]
+                }
+            )
+        if and_clauses:
+            query["$and"] = and_clauses
+
+        cursor = (
+            self._data.find(query).sort([("created_at", 1), ("_id", 1)]).limit(limit)
+        )
+        raw_docs = await cursor.to_list(length=limit)
+
+        docs: dict[str, DocSchedulingRecord] = {}
+        for doc in raw_docs:
+            record = self._scheduling_record_from_doc(doc, strict=strict)
+            if record is None:
+                continue  # relaxed skip: query-returned, hence still consumed
+            docs[record.id] = record
+
+        if len(raw_docs) < limit:
+            return DocStatusPage(docs=docs, next_position=CURSOR_END)
+        last_created, last_id = self._doc_cursor_key(raw_docs[-1])
+        return DocStatusPage(
+            docs=docs,
+            next_position=CursorAfter(self._encode_cursor(last_created, last_id)),
+        )
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count: accurate ``count_documents`` or raise
+        (errors propagate — admission control treats an error as "refuse")."""
+        if not statuses:
+            return 0
+        return await self._data.count_documents(
+            {"status": {"$in": sorted({s.value for s in statuses})}}
+        )
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted ``$set`` of the given fields only (no read-modify-write,
+        so a huge ``chunks_list`` never travels through memory)."""
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        if not fields:
+            # Mongo rejects an empty $set document; still honour the
+            # existence contract for a no-op update.
+            if missing_ok:
+                return
+            if await self._data.find_one({"_id": doc_id}, {"_id": 1}) is None:
+                raise StorageRecordNotFoundError(doc_id)
+            return
+        result = await self._data.update_one({"_id": doc_id}, {"$set": fields})
+        if result.matched_count == 0:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+
+    # ------------------------------------------------------------------
+    # failure_generation write side (Phase 1)
+    # ------------------------------------------------------------------
+
+    async def get_failure_generation_mode(self) -> FailureGenerationMode:
+        """Read the per-workspace marker. Missing doc / unknown schema
+        version / invalid mode value all read as MIGRATING (never LEGACY —
+        LEGACY would reopen the full-snapshot manual path); transport errors
+        propagate as-is."""
+        if self._ctrl is None:
+            raise StorageNotInitializedError("MongoDocStatusStorage")
+        ctrl = await self._ctrl.find_one({"_id": self._CTRL_DOC_ID})
+        if not isinstance(ctrl, dict):
+            return FailureGenerationMode.MIGRATING
+        if ctrl.get("schema_version") != self._CTRL_SCHEMA_VERSION:
+            return FailureGenerationMode.MIGRATING
+        try:
+            return FailureGenerationMode(str(ctrl.get("mode")))
+        except ValueError:
+            return FailureGenerationMode.MIGRATING
+
+    async def reserve_failure_generation(self) -> int:
+        """Atomic ``$inc`` reservation on the ctrl doc.
+
+        The reservation is the linearization point of a failure event; a
+        reservation whose FAILED publish later fails becomes a permanent
+        hole (never reused, never rolled back). A missing or
+        version-mismatched ctrl doc raises a control-plane error — never a
+        silent degrade.
+        """
+        if self._ctrl is None:
+            raise StorageNotInitializedError("MongoDocStatusStorage")
+        ctrl = await self._ctrl.find_one_and_update(
+            {"_id": self._CTRL_DOC_ID, "schema_version": self._CTRL_SCHEMA_VERSION},
+            {"$inc": {"failure_generation_counter": 1}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if ctrl is None:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker missing or "
+                f"version-mismatched for {self._collection_name}; refusing "
+                "(never degrades to LEGACY full-snapshot behaviour)"
+            )
+        counter = ctrl.get("failure_generation_counter")
+        if isinstance(counter, bool) or not isinstance(counter, (int, float)):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation counter corrupt "
+                f"({counter!r}) for {self._collection_name}"
+            )
+        return int(counter)
+
+    async def mark_doc_failed(self, doc_id: str, fields: dict[str, Any]) -> int | None:
+        """FAILED transition funnel: read → reserve → conditional publish.
+
+        Mongo keeps reserve and publish as two steps (the plan's cohort
+        semantics explicitly account for this bounded reserve→publish
+        window; a reservation whose publish loses is a permanent hole).
+
+        * Idempotent per attempt: an already-FAILED row whose
+          ``failure_attempt_id`` equals the current attempt returns its
+          existing generation without reserving a new one.
+        * CAS publish: the update is guarded against a concurrent FAILED
+          publish of the SAME attempt — losing the race surfaces as a
+          ``DuplicateKeyError`` on the guarded upsert, and the winner's
+          generation is adopted.
+        * ``created_at`` goes only into ``$setOnInsert``: an existing row's
+          scheduling sort key is immutable (a caller-supplied value is
+          ignored), while a missing row is conditionally created as FAILED
+          (enqueue/parse errors can fail before the PENDING row landed).
+        """
+        existing = await self._data.find_one({"_id": doc_id})
+        if isinstance(existing, dict):
+            current_attempt = existing.get("processing_attempt_id") or fields.get(
+                "processing_attempt_id"
+            )
+        else:
+            current_attempt = fields.get("processing_attempt_id")
+        if (
+            isinstance(existing, dict)
+            and str(existing.get("status")) == DocStatus.FAILED.value
+            and current_attempt
+            and existing.get("failure_attempt_id") == current_attempt
+        ):
+            try:
+                return int(existing.get("failure_generation") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        generation = await self.reserve_failure_generation()
+
+        set_fields = dict(fields)
+        caller_created_at = set_fields.pop("created_at", None)
+        set_fields.pop("_id", None)
+        set_fields["status"] = DocStatus.FAILED.value
+        set_fields["failure_generation"] = generation
+        if current_attempt:
+            set_fields["failure_attempt_id"] = current_attempt
+            set_fields.setdefault("processing_attempt_id", current_attempt)
+        on_insert: dict[str, Any] = {
+            "created_at": caller_created_at or datetime.now(timezone.utc).isoformat(),
+        }
+        if "chunks_list" not in set_fields:
+            on_insert["chunks_list"] = []
+
+        publish_filter: dict[str, Any] = {"_id": doc_id}
+        if current_attempt:
+            # CAS guard: never overwrite a concurrent FAILED publish of the
+            # same attempt with a second generation.
+            publish_filter["$nor"] = [
+                {
+                    "status": DocStatus.FAILED.value,
+                    "failure_attempt_id": current_attempt,
+                }
+            ]
+        try:
+            await self._data.find_one_and_update(
+                publish_filter,
+                {"$set": set_fields, "$setOnInsert": on_insert},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            # Lost the CAS race: a concurrent failure of the same attempt
+            # published between our read and write (the guarded filter
+            # matched nothing, so the upsert tried to insert a second doc
+            # with the same _id). Adopt the winner's generation; ours
+            # becomes a permanent hole.
+            winner = await self._data.find_one({"_id": doc_id})
+            if not isinstance(winner, dict):
+                raise
+            try:
+                return int(winner.get("failure_generation") or 0)
+            except (TypeError, ValueError):
+                return 0
+        return generation
+
+    async def ensure_processing_attempt_id(self, doc_id: str) -> str:
+        """Mint-or-reuse the row's attempt id via a conditional update.
+
+        Two-op conditional write (not an aggregation-pipeline update — the
+        declared pymongo/server floor makes pipeline-update support
+        uncertain): the guarded ``update_one`` only ever fires when the row
+        has no attempt id, so a lost-response retry re-reads the persisted
+        winner instead of minting a second id.
+        """
+        for _ in range(3):
+            new_id = uuid.uuid4().hex
+            result = await self._data.update_one(
+                {
+                    "_id": doc_id,
+                    "$or": [
+                        {"processing_attempt_id": {"$exists": False}},
+                        {"processing_attempt_id": {"$in": [None, ""]}},
+                    ],
+                },
+                {"$set": {"processing_attempt_id": new_id}},
+            )
+            if result.matched_count:
+                return new_id
+            doc = await self._data.find_one(
+                {"_id": doc_id}, {"processing_attempt_id": 1}
+            )
+            if doc is None:
+                raise StorageRecordNotFoundError(doc_id)
+            attempt = doc.get("processing_attempt_id")
+            if attempt:
+                return str(attempt)
+            # Row appeared (without an attempt id) between the conditional
+            # write and the read — retry the conditional write.
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] could not settle processing_attempt_id for {doc_id}"
+        )
 
 
 @final

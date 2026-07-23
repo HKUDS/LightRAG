@@ -581,7 +581,11 @@ class TestMongoDocStatusLookup:
         doc_id, doc = result
         assert doc_id == "doc-1"
         assert doc["file_path"] == "report.pdf"
-        storage._data.find_one.assert_awaited_once_with({"file_path": "report.pdf"})
+        # Contract alignment (Phase 1): the lookup returns the PRIMARY row
+        # only, so the query excludes duplicate-attempt markers.
+        storage._data.find_one.assert_awaited_once_with(
+            {"file_path": "report.pdf", "metadata.is_duplicate": {"$ne": True}}
+        )
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_basename_empty_returns_none_without_query(self):
