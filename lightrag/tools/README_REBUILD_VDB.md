@@ -106,6 +106,10 @@ Menu options:
 The core rebuild/check functions are plain async functions that accept your
 own initialized storage instances:
 
+Rebuild targets must persist a queryable vector index. Passing a graph-only
+backend such as `NoopVectorDBStorage` raises before source records are read or
+the target is dropped; configure a persistent vector backend first.
+
 ```python
 from lightrag.tools.rebuild_vdb import (
     check_vdb_consistency,

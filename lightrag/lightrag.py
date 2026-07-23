@@ -3178,6 +3178,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if update_storage:
                 await self._insert_done_with_cleanup()
 
+    def _ensure_vector_query_supported(self, mode: str) -> None:
+        if mode == "bypass":
+            return
+
+        vector_storages = (
+            self.entities_vdb,
+            self.relationships_vdb,
+            self.chunks_vdb,
+        )
+        unsupported_storage_names = sorted(
+            {
+                type(storage).__name__
+                for storage in vector_storages
+                if not storage.supports_vector_queries
+            }
+        )
+        if unsupported_storage_names:
+            storage_names = ", ".join(unsupported_storage_names)
+            raise RuntimeError(
+                f"Vector retrieval mode '{mode}' is unavailable because "
+                f"{storage_names} does not persist a queryable vector index. "
+                "Configure a persistent vector storage and run "
+                "`lightrag-rebuild-vdb` before querying."
+            )
+
     def query(
         self,
         query: str,
@@ -3371,6 +3396,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             actual data is nested under the 'data' field, with 'status' and 'message'
             fields at the top level.
         """
+        self._ensure_vector_query_supported(param.mode)
         global_config = self._build_global_config()
 
         # Create a copy of param to avoid modifying the original
@@ -3487,6 +3513,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Returns:
             dict[str, Any]: Complete response with structured data and LLM response.
         """
+        self._ensure_vector_query_supported(param.mode)
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = self._build_global_config()

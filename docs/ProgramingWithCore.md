@@ -619,6 +619,7 @@ OpenSearchGraphStorage   OpenSearch
 
 **VECTOR_STORAGE**
 ```
+NoopVectorDBStorage         Disabled (graph-only ingestion)
 NanoVectorDBStorage         NanoVector (default)
 PGVectorStorage             Postgres
 MilvusVectorDBStorage       Milvus
@@ -627,6 +628,28 @@ QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
 OpenSearchVectorDBStorage   OpenSearch
 ```
+
+#### Graph-only ingestion
+
+Use `NoopVectorDBStorage` when a workload should extract and merge the
+knowledge graph before building vector indexes:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=None,
+    vector_storage="NoopVectorDBStorage",
+)
+```
+
+The backend accepts vector mutations without calling the embedding function or
+persisting vectors. Graph and KV writes continue normally. Vector-backed query
+modes raise an actionable error while this backend is active.
+
+After graph extraction, configure the intended persistent vector storage and
+run `lightrag-rebuild-vdb` to rebuild entity, relationship, and chunk indexes
+from the graph and text chunk stores.
 
 **DOC_STATUS_STORAGE**
 ```

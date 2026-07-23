@@ -131,6 +131,16 @@ def _new_stats(label: str, source_total: int) -> Dict[str, Any]:
     }
 
 
+def _ensure_vector_rebuild_supported(vdb) -> None:
+    if not getattr(vdb, "supports_vector_queries", True):
+        storage_name = type(vdb).__name__
+        raise RuntimeError(
+            f"{storage_name} does not persist vectors and cannot be used as a "
+            "rebuild target. Configure a persistent vector storage before "
+            "calling the rebuild library API."
+        )
+
+
 async def _drop_vdb(vdb, label: str) -> None:
     drop_result = await vdb.drop()
     if not isinstance(drop_result, dict) or drop_result.get("status") != "success":
@@ -242,6 +252,7 @@ async def rebuild_entities_vdb(
     Payloads mirror the authoritative write point in
     operate._merge_nodes_then_upsert field for field.
     """
+    _ensure_vector_rebuild_supported(entities_vdb)
     from lightrag.operate import _truncate_vdb_content
 
     nodes = await graph.get_all_nodes()
@@ -302,6 +313,7 @@ async def rebuild_relationships_vdb(
     undirected edge once per direction (e.g. Neo4j, Memgraph) are deduplicated
     by that normalized id.
     """
+    _ensure_vector_rebuild_supported(relationships_vdb)
     from lightrag.operate import _truncate_vdb_content
 
     edges = await graph.get_all_edges()
@@ -432,6 +444,7 @@ async def rebuild_chunks_vdb(
     keys (and silently drop a scheme), all keys are enumerated and the
     per-record ``content`` check below is the only filter.
     """
+    _ensure_vector_rebuild_supported(chunks_vdb)
     chunk_ids = [str(key) for key in await enumerate_kv_keys(text_chunks_kv)]
     stats = _new_stats("chunks", len(chunk_ids))
 
@@ -761,6 +774,29 @@ class RebuildTool:
             self.text_chunks,
         ]
 
+    def vector_rebuild_unavailable_reason(self) -> str | None:
+        vector_storages = (
+            self.entities_vdb,
+            self.relationships_vdb,
+            self.chunks_vdb,
+        )
+        unsupported_storage_names = sorted(
+            {
+                type(storage).__name__
+                for storage in vector_storages
+                if storage is not None
+                and not getattr(storage, "supports_vector_queries", True)
+            }
+        )
+        if not unsupported_storage_names:
+            return None
+
+        storage_names = ", ".join(unsupported_storage_names)
+        return (
+            f"{storage_names} does not persist vectors. Configure a persistent "
+            "vector storage before running `lightrag-rebuild-vdb`."
+        )
+
     # ------------------------------------------------------------------
     # CLI helpers
     # ------------------------------------------------------------------
@@ -973,12 +1009,15 @@ class RebuildTool:
                 return False
 
             while True:
+                rebuild_unavailable_reason = self.vector_rebuild_unavailable_reason()
                 print("\n=== Rebuild Options ===")
                 print("[1] Consistency check (diagnose only; no rebuild)")
-                if self.embedding_available:
+                if self.embedding_available and rebuild_unavailable_reason is None:
                     print("[2] Rebuild entities + relationships VDB")
                     print("[3] Rebuild chunks VDB")
                     print("[4] Rebuild ALL vector storages")
+                elif rebuild_unavailable_reason is not None:
+                    print(f"[2-4] (unavailable - {rebuild_unavailable_reason})")
                 else:
                     print("[2-4] (unavailable - embedding requires the api extra)")
                 print("[0] Exit")
@@ -998,6 +1037,10 @@ class RebuildTool:
                         "✗ Rebuild unavailable in check-only mode. "
                         'Install the api extra: pip install "lightrag-hku[api]"'
                     )
+                    continue
+                if rebuild_unavailable_reason is not None:
+                    print(f"✗ Rebuild unavailable: {rebuild_unavailable_reason}")
+                    success = False
                     continue
 
                 include_graph = choice in ("2", "4")

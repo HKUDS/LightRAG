@@ -12,9 +12,11 @@ Covers:
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
+from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
 from lightrag.tools.rebuild_vdb import (
     _strip_agtype_quotes,
     check_vdb_consistency,
@@ -34,6 +36,32 @@ pytestmark = pytest.mark.offline
 # ---------------------------------------------------------------------------
 # Mocks
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_library_rebuild_rejects_noop_vector_storage_before_source_reads():
+    noop_vdb = NoopVectorDBStorage(
+        namespace="test_vectors",
+        workspace="",
+        global_config={},
+        embedding_func=None,
+    )
+    graph = SimpleNamespace(
+        get_all_nodes=AsyncMock(),
+        get_all_edges=AsyncMock(),
+    )
+    text_chunks = SimpleNamespace()
+    error_match = "NoopVectorDBStorage.*persistent vector storage"
+
+    with pytest.raises(RuntimeError, match=error_match):
+        await rebuild_entities_vdb(graph, noop_vdb, {})
+    with pytest.raises(RuntimeError, match=error_match):
+        await rebuild_relationships_vdb(graph, noop_vdb, {})
+    with pytest.raises(RuntimeError, match=error_match):
+        await rebuild_chunks_vdb(text_chunks, noop_vdb)
+
+    graph.get_all_nodes.assert_not_awaited()
+    graph.get_all_edges.assert_not_awaited()
 
 
 class MockVDB:
@@ -859,6 +887,31 @@ async def test_run_returns_false_on_setup_failure(monkeypatch):
     tool.setup_storages = AsyncMock(return_value=False)
 
     assert await tool.run() is False
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_rebuild_for_non_queryable_vector_storage(
+    monkeypatch, capsys
+):
+    tool = _runnable_tool(monkeypatch, iter(["4", "0"]))
+    tool.setup_storages = AsyncMock(return_value=True)
+    tool.embedding_available = True
+    disabled_storage = SimpleNamespace(supports_vector_queries=False)
+    tool.entities_vdb = disabled_storage
+    tool.relationships_vdb = disabled_storage
+    tool.chunks_vdb = disabled_storage
+    tool.print_source_counts = AsyncMock()
+    tool.run_rebuild_entities_relations = AsyncMock()
+    tool.run_rebuild_chunks = AsyncMock()
+
+    assert await tool.run() is False
+
+    output = capsys.readouterr().out
+    assert "does not persist vectors" in output
+    assert "persistent vector storage" in output
+    tool.print_source_counts.assert_not_awaited()
+    tool.run_rebuild_entities_relations.assert_not_awaited()
+    tool.run_rebuild_chunks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
