@@ -376,6 +376,38 @@ async def test_document_overflow_coalesces_into_auto_rescan():
     assert not mailbox.has_work()
 
 
+async def test_put_documents_batch_matches_sequential_semantics():
+    """The single-call batch publish (one server-side RPC, so a producer can
+    publish inside the pipeline_status critical section) must behave exactly
+    like N sequential put_document calls: FIFO order, per-message validation
+    before anything is enqueued, and overflow coalescing into auto-rescan."""
+    mailbox = PipelineIngressMailbox(document_capacity=2)
+    mailbox.put_documents([_doc("d1"), _doc("d2"), _doc("d3")])  # d3 overflows
+    counts = mailbox.counts()
+    assert counts["documents"] == 2
+    assert counts["document_overflows"] == 1
+    assert counts["auto_rescan_pending"] is True
+    assert [m.doc_id for m in mailbox.drain_documents()] == ["d1", "d2"]
+
+    # Validation covers the WHOLE batch before any message is enqueued.
+    mailbox2 = PipelineIngressMailbox()
+    with pytest.raises(ValueError, match="kind='document'"):
+        mailbox2.put_documents([_doc("ok"), PipelineIngressMessage(kind="rescan")])
+    assert mailbox2.counts()["documents"] == 0
+
+    # Asyncio flavor behaves identically (including whole-batch validation).
+    ingress = AsyncioPipelineIngress(document_capacity=2)
+    ingress.put_documents([_doc("a1"), _doc("a2"), _doc("a3")])
+    counts = ingress.counts()
+    assert counts["documents"] == 2
+    assert counts["document_overflows"] == 1
+    assert counts["auto_rescan_pending"] is True
+    assert [m.doc_id for m in ingress.drain_documents()] == ["a1", "a2"]
+    with pytest.raises(ValueError, match="kind='document'"):
+        ingress.put_documents([_doc("ok"), PipelineIngressMessage(kind="rescan")])
+    assert ingress.counts()["documents"] == 0
+
+
 def test_bounded_terminal_ids_fifo_eviction():
     ids = _BoundedTerminalIds(capacity=2)
     ids.add("a", MANUAL_RETRY_ACKED)

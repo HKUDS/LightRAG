@@ -1048,38 +1048,41 @@ class _PipelineMixin:
             raise status_upsert_error
 
         # Notify any in-flight processing loop that new work has arrived.
-        # ``request_pending`` (set under the lock) is the correctness anchor: a
-        # busy loop checks it after each batch and re-queries doc_status for
-        # these PENDING rows. Without it a caller that does not subsequently
-        # call ``apipeline_process_enqueue_documents`` (or whose call races with
-        # the loop's just-finished batch) could strand the new docs.
+        # The document publish happens INSIDE the same critical section that
+        # sets ``request_pending``: the consumer's atomic exit decision
+        # (:meth:`_decide_pipeline_next_step`) checks the mailbox and releases
+        # ``busy`` under this very lock, so publishing outside it would let a
+        # quiescing run observe an empty mailbox, release, and only then see
+        # the messages land — stranding an enqueue-only doc in an idle mailbox
+        # once Phase 4 removes the transitional flag.  Serialized on the lock,
+        # a publish either lands before the decision (which then sees it) or
+        # after the release (busy already False — the designed idle-enqueue
+        # case).  ``put_documents`` is ONE server-side batch call, so the lock
+        # is never held across N Manager RPCs; overflow past the bounded
+        # channel coalesces into the auto-rescan flag server-side.
+        #
+        # A droppable accelerator side-effect must never fail an enqueue that
+        # already durably committed doc_status: a multiprocess batch publish
+        # is a Manager RPC that can raise on a Manager outage, so swallow-and-
+        # log — ``request_pending`` (set first, infallible in-process) remains
+        # the transitional recovery anchor for exactly this window until
+        # Phase 4 revisits the publish-failure path.
         async with pipeline_status_lock:
             if pipeline_status.get("busy"):
                 pipeline_status["request_pending"] = True
-
-        # Phase 2 dual-write: publish a document notification per new doc so a
-        # running batch's feeder routes it immediately (the latency win).
-        # Published AFTER releasing the lock so a large batch never holds
-        # pipeline_status_lock across N ingress RPCs; the feeder is best-effort,
-        # and a notification the feeder misses is still a PENDING row recovered
-        # by request_pending above. Overflow past the bounded channel coalesces
-        # into the auto-rescan flag inside put_document.
-        #
-        # A droppable accelerator side-effect must never fail an enqueue that
-        # already durably committed doc_status and armed request_pending: a
-        # multiprocess ``put_document`` is a Manager RPC that can raise on a
-        # Manager outage, so swallow-and-log rather than escalate a successful
-        # upload into a caller-visible error (the docs are recovered regardless).
-        try:
-            for doc_id in new_docs:
-                ingress.put_document(
-                    PipelineIngressMessage(kind="document", doc_id=doc_id)
+            try:
+                ingress.put_documents(
+                    [
+                        PipelineIngressMessage(kind="document", doc_id=doc_id)
+                        for doc_id in new_docs
+                    ]
                 )
-        except Exception as publish_error:
-            logger.warning(
-                "Ingress document notification failed after a successful enqueue "
-                f"(request_pending still recovers the docs): {publish_error}"
-            )
+            except Exception as publish_error:
+                logger.warning(
+                    "Ingress document notification failed after a successful "
+                    f"enqueue (request_pending still recovers the docs): "
+                    f"{publish_error}"
+                )
 
         return track_id
 
@@ -1297,6 +1300,22 @@ class _PipelineMixin:
                     ingress.request_auto_rescan()
                 raise
 
+            # Ownership of a consumed-but-not-yet-committed wake-up signal.
+            # True while a destructively-consumed signal (the absorbed auto
+            # flag here, or a CONTINUE_AUTO/CONTINUE_DOCUMENT consumption at a
+            # quiescence decision) has produced docs that NO batch has taken
+            # over yet: a cancellation landing in that window exits through
+            # the loop-top handler, which re-arms auto-rescan so the cancel
+            # leaves the ingress as if the run had stopped before consuming
+            # (drained document messages are represented by their PENDING
+            # rows; the auto flag is the canonical lost-notification recovery
+            # signal, same as channel overflow).  Cleared once the consistency
+            # validator has taken the docs over — from there the batch, its
+            # feeder teardown and the PENDING rows own recovery.  An empty
+            # strict result clears it too: a complete scan with nothing to do
+            # means the signal was fully served, not lost.
+            uncommitted_wakeup = absorbed_auto_rescan and bool(to_process_docs)
+
             if not to_process_docs:
                 # Empty queue — a complete strict result, so a pending manual
                 # request is satisfied (nothing to retry) and can be ACKed.
@@ -1327,6 +1346,10 @@ class _PipelineMixin:
                 to_process_docs, pending_manual_ack = await self._refetch_for_decision(
                     decision, ingress
                 )
+                uncommitted_wakeup = decision.step in (
+                    PipelineNextStep.CONTINUE_AUTO,
+                    PipelineNextStep.CONTINUE_DOCUMENT,
+                ) and bool(to_process_docs)
 
             # Process documents until no more documents or requests
             while True:
@@ -1364,6 +1387,23 @@ class _PipelineMixin:
                         )
                         status_snapshot["history_messages"].append(log_message)
 
+                        # A signal the immediately-preceding decision (or the
+                        # entry absorb) consumed was never handed to a batch:
+                        # restore it so this cancel leaves the ingress as if
+                        # the run had stopped before consuming it.  Failure
+                        # only degrades — the docs are PENDING rows recovered
+                        # by the next explicit trigger's initial scan.
+                        if uncommitted_wakeup:
+                            try:
+                                ingress.request_auto_rescan()
+                            except Exception as restore_error:
+                                logger.warning(
+                                    "[pipeline] failed to restore the consumed "
+                                    "wake-up signal on cancellation (docs stay "
+                                    "PENDING until the next explicit trigger): "
+                                    f"{restore_error}"
+                                )
+
                         # Exit directly, skipping request_pending check
                         return
 
@@ -1391,12 +1431,21 @@ class _PipelineMixin:
                         to_process_docs,
                         pending_manual_ack,
                     ) = await self._refetch_for_decision(decision, ingress)
+                    uncommitted_wakeup = decision.step in (
+                        PipelineNextStep.CONTINUE_AUTO,
+                        PipelineNextStep.CONTINUE_DOCUMENT,
+                    ) and bool(to_process_docs)
                     continue
 
                 # Validate document data consistency and fix any issues
                 to_process_docs = await self._validate_and_fix_document_consistency(
                     to_process_docs, pipeline_status, pipeline_status_lock
                 )
+                # The validator has taken the docs over (its FAILED→PENDING
+                # resets are persisted): the consumed signal is committed, and
+                # from here the batch/feeder teardown and the PENDING rows own
+                # recovery — a later cancel must NOT re-arm.
+                uncommitted_wakeup = False
 
                 # ACK point for a manual retry request: the validation above
                 # persisted every FAILED→PENDING reset, and no worker has
@@ -1429,6 +1478,10 @@ class _PipelineMixin:
                         to_process_docs,
                         pending_manual_ack,
                     ) = await self._refetch_for_decision(decision, ingress)
+                    uncommitted_wakeup = decision.step in (
+                        PipelineNextStep.CONTINUE_AUTO,
+                        PipelineNextStep.CONTINUE_DOCUMENT,
+                    ) and bool(to_process_docs)
                     continue
 
                 log_message = f"Processing {len(to_process_docs)} document(s)"
@@ -1485,6 +1538,10 @@ class _PipelineMixin:
                 to_process_docs, pending_manual_ack = await self._refetch_for_decision(
                     decision, ingress
                 )
+                uncommitted_wakeup = decision.step in (
+                    PipelineNextStep.CONTINUE_AUTO,
+                    PipelineNextStep.CONTINUE_DOCUMENT,
+                ) and bool(to_process_docs)
 
         finally:
             stopped_message = "Enqueued document processing pipeline stopped"

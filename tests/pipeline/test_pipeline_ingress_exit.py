@@ -257,6 +257,61 @@ async def test_refetch_document_failure_republishes_and_arms_auto(tmp_path):
         await rag.finalize_storages()
 
 
+async def test_enqueue_publishes_documents_inside_status_lock(tmp_path, monkeypatch):
+    """Fix-proof (atomic producer handoff): the document publish must happen
+    INSIDE the pipeline_status critical section that sets ``request_pending``
+    — the consumer's exit decision reads the mailbox and releases ``busy``
+    under the same lock, so a publish outside it can land just after a
+    quiescing run released, stranding an enqueue-only doc in an idle mailbox
+    once Phase 4 removes the transitional flag.  Serialization is the lock's,
+    flavor-independent; the probe records whether the enqueue task holds the
+    pipeline_status namespace lock at the moment it publishes."""
+    import lightrag.kg.shared_storage as shared_storage_module
+
+    rag = await _build_rag(tmp_path, _MarkerExtract())
+    try:
+        held: dict = {}
+        orig_aenter = shared_storage_module.NamespaceLock.__aenter__
+        orig_aexit = shared_storage_module.NamespaceLock.__aexit__
+
+        async def tracing_aenter(self):
+            result = await orig_aenter(self)
+            held.setdefault(asyncio.current_task(), set()).add(self._namespace)
+            return result
+
+        async def tracing_aexit(self, *args):
+            held.get(asyncio.current_task(), set()).discard(self._namespace)
+            return await orig_aexit(self, *args)
+
+        monkeypatch.setattr(
+            shared_storage_module.NamespaceLock, "__aenter__", tracing_aenter
+        )
+        monkeypatch.setattr(
+            shared_storage_module.NamespaceLock, "__aexit__", tracing_aexit
+        )
+
+        ingress = await get_pipeline_ingress(rag.workspace)
+        publish_lock_states: list[bool] = []
+        published_ids: list[str] = []
+        orig_put = ingress.put_documents
+
+        def probing_put(msgs):
+            namespaces = held.get(asyncio.current_task(), set())
+            publish_lock_states.append("pipeline_status" in namespaces)
+            published_ids.extend(m.doc_id for m in msgs)
+            return orig_put(msgs)
+
+        ingress.put_documents = probing_put
+
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+
+        a_id = compute_mdhash_id("a.txt", prefix="doc-")
+        assert published_ids == [a_id]
+        assert publish_lock_states == [True]
+    finally:
+        await rag.finalize_storages()
+
+
 async def test_refetch_compensation_failure_does_not_mask_original_error(tmp_path):
     """When even the compensation RPCs fail (Manager outage), the ORIGINAL
     strict-scan failure must still propagate — the compensation error is
@@ -317,6 +372,129 @@ async def test_user_cancel_preserves_ingress_and_stops_run(tmp_path):
         assert status.get("cancellation_requested") is False  # bookkeeping ran
         # No new epoch consumed the flag on the way out: it waits for the next
         # explicit trigger, ingress fully retained.
+        assert ingress.counts()["auto_rescan_pending"] is True
+    finally:
+        extract.release.set()
+        await rag.finalize_storages()
+
+
+async def test_cancel_after_auto_decision_restores_consumed_signal(tmp_path):
+    """Fix-proof (consume-then-discard closure): a cancel landing AFTER the
+    decision consumed the auto-rescan flag but BEFORE its refetched docs enter
+    a batch must not lose the signal — the loop-top cancel exit re-arms it, so
+    the cancel leaves the ingress as if the run had stopped before consuming."""
+    extract = _MarkerExtract()
+    extract.block_marker = "AAAA"
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        status, lock = await _pipeline_ns(rag)
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        ingress = await get_pipeline_ingress(rag.workspace)
+
+        orig_batch = rag._run_pipeline_batch
+        injected = False
+
+        async def batch_then_arm_auto(to_process_docs, **kwargs):
+            nonlocal injected
+            await orig_batch(to_process_docs, **kwargs)
+            if not injected:
+                injected = True
+                # A PENDING doc whose ONLY remaining signal is the auto flag.
+                await rag.apipeline_enqueue_documents(
+                    input="BBBB body", file_paths="b.txt"
+                )
+                ingress.drain_documents()
+                async with lock:
+                    status["request_pending"] = False
+                ingress.request_auto_rescan()
+
+        rag._run_pipeline_batch = batch_then_arm_auto
+
+        orig_decide = rag._decide_pipeline_next_step
+        cancelled_after = []
+
+        async def decide_then_cancel(ps, ps_lock, ing):
+            decision = await orig_decide(ps, ps_lock, ing)
+            if decision.step is PipelineNextStep.CONTINUE_AUTO and not cancelled_after:
+                cancelled_after.append(True)
+                # Lands in the exact window: decision consumed the flag, the
+                # refetched docs have not reached a batch yet.
+                async with ps_lock:
+                    ps["cancellation_requested"] = True
+            return decision
+
+        rag._decide_pipeline_next_step = decide_then_cancel
+
+        extract.release.set()
+        await asyncio.wait_for(rag.apipeline_process_enqueue_documents(), timeout=10)
+
+        assert cancelled_after  # the window was exercised
+        assert status.get("busy") is False
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "pending"
+        # The consumed flag was restored on the cancel exit.
+        assert ingress.counts()["auto_rescan_pending"] is True
+    finally:
+        extract.release.set()
+        await rag.finalize_storages()
+
+
+async def test_cancel_after_document_decision_restores_consumed_signal(tmp_path):
+    """Same window for CONTINUE_DOCUMENT: the refetch destructively drained
+    the doc's notification; a cancel before the batch takes the docs over must
+    leave a recovery signal — the drained message is represented by its
+    PENDING row and the restored auto-rescan flag (the canonical
+    lost-notification signal, as for channel overflow)."""
+    extract = _MarkerExtract()
+    extract.block_marker = "AAAA"
+    rag = await _build_rag(tmp_path, extract)
+    try:
+        status, lock = await _pipeline_ns(rag)
+        await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+        b_id = compute_mdhash_id("b.txt", prefix="doc-")
+        ingress = await get_pipeline_ingress(rag.workspace)
+
+        orig_batch = rag._run_pipeline_batch
+        injected = False
+
+        async def batch_then_inject(to_process_docs, **kwargs):
+            nonlocal injected
+            await orig_batch(to_process_docs, **kwargs)
+            if not injected:
+                injected = True
+                # A PENDING doc whose ONLY signal is its resident message.
+                await rag.apipeline_enqueue_documents(
+                    input="BBBB body", file_paths="b.txt"
+                )
+                async with lock:
+                    status["request_pending"] = False
+
+        rag._run_pipeline_batch = batch_then_inject
+
+        orig_decide = rag._decide_pipeline_next_step
+        cancelled_after = []
+
+        async def decide_then_cancel(ps, ps_lock, ing):
+            decision = await orig_decide(ps, ps_lock, ing)
+            if (
+                decision.step is PipelineNextStep.CONTINUE_DOCUMENT
+                and not cancelled_after
+            ):
+                cancelled_after.append(True)
+                async with ps_lock:
+                    ps["cancellation_requested"] = True
+            return decision
+
+        rag._decide_pipeline_next_step = decide_then_cancel
+
+        extract.release.set()
+        await asyncio.wait_for(rag.apipeline_process_enqueue_documents(), timeout=10)
+
+        assert cancelled_after
+        assert status.get("busy") is False
+        assert _status_text(await rag.doc_status.get_by_id(b_id)) == "pending"
+        # The message was drained by the refetch; the restored flag is the
+        # recovery signal that survives the cancel.
         assert ingress.counts()["auto_rescan_pending"] is True
     finally:
         extract.release.set()
