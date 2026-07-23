@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Статус пайплайну",
       "busy": "Пайплайн зайнятий",
-      "requestPending": "Запит очікує",
       "cancellationRequested": "Запит на скасування",
       "jobName": "Назва завдання",
       "startTime": "Час початку",

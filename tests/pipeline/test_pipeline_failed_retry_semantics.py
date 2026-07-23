@@ -1,4 +1,4 @@
-"""FAILED-retry semantics split (Phase 0 of the request_pending replacement).
+"""FAILED-retry semantics split (Phase 0 of the ingress-mailbox migration).
 
 Automatic pipeline runs resume only ``_AUTO_RESUME_DOC_STATUSES`` (PENDING +
 dead-process orphans); a FAILED document re-enters exclusively through a

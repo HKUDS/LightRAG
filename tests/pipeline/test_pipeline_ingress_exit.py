@@ -7,8 +7,7 @@ come back as the next batch, provably-stale notifications are compacted so a
 has_work-only exit can neither livelock on them nor strand a doc behind a
 released ``busy``.  Cancellation (user or internal error) exits BEFORE the
 decision so the ingress is fully retained for the next explicit trigger, and
-the custom-chunks exit handoff consults ``has_work()`` alongside the
-transitional ``request_pending`` flag.
+the custom-chunks exit handoff consults ``has_work()``.
 
 All on a real LightRAG with in-memory JSON storages (offline).
 """
@@ -113,11 +112,10 @@ def _manual_msg(request_id: str) -> PipelineIngressMessage:
 
 
 async def test_decision_priority_and_consumption_semantics(tmp_path):
-    """Priority is manual > auto > document > request_pending > release, and
-    each step consumes ONLY its own signal: manual is peeked (nothing removed),
-    auto is an atomic exchange, the document check never drains (the refetch
-    does), request_pending is the transitional fallback, and RELEASED clears
-    busy/busy_owner in the same critical section."""
+    """Priority is manual > auto > document > release, and each step consumes
+    ONLY its own signal: manual is peeked (nothing removed), auto is an atomic
+    exchange, the document check never drains (the refetch does), and RELEASED
+    clears busy/busy_owner in the same critical section."""
     rag = await _build_rag(tmp_path, _MarkerExtract())
     try:
         status, lock = await _pipeline_ns(rag)
@@ -127,7 +125,7 @@ async def test_decision_priority_and_consumption_semantics(tmp_path):
         ingress.request_auto_rescan()
         ingress.put_document(_doc_msg("doc-x"))
         async with lock:
-            status.update({"busy": True, "busy_owner": None, "request_pending": True})
+            status.update({"busy": True, "busy_owner": None})
 
         d1 = await rag._decide_pipeline_next_step(status, lock, ingress)
         assert d1.step is PipelineNextStep.CONTINUE_MANUAL
@@ -137,7 +135,6 @@ async def test_decision_priority_and_consumption_semantics(tmp_path):
         assert counts["manual_retries"] == 1
         assert counts["auto_rescan_pending"] is True
         assert counts["documents"] == 1
-        assert status.get("request_pending") is True
 
         ingress.ack_manual_retry("req-1")
         d2 = await rag._decide_pipeline_next_step(status, lock, ingress)
@@ -150,15 +147,10 @@ async def test_decision_priority_and_consumption_semantics(tmp_path):
         assert d3.step is PipelineNextStep.CONTINUE_DOCUMENT
         # The decision only PEEKS the channel; draining belongs to the refetch.
         assert ingress.counts()["documents"] == 1
-        assert status.get("request_pending") is True  # not consumed by document
 
         ingress.drain_documents()
         d4 = await rag._decide_pipeline_next_step(status, lock, ingress)
-        assert d4.step is PipelineNextStep.CONTINUE_AUTO
-        assert status.get("request_pending") is False  # transitional consumed
-
-        d5 = await rag._decide_pipeline_next_step(status, lock, ingress)
-        assert d5.step is PipelineNextStep.RELEASED
+        assert d4.step is PipelineNextStep.RELEASED
         assert status.get("busy") is False
         assert status.get("busy_owner") is None
     finally:
@@ -167,11 +159,10 @@ async def test_decision_priority_and_consumption_semantics(tmp_path):
 
 async def test_document_published_at_quiescence_starts_next_batch(tmp_path):
     """Fix-proof (has_work-only exit): a document whose ONLY signal is its
-    mailbox message — published after the batch's feeder stopped, with the
-    transitional ``request_pending`` flag cleared to simulate the Phase 4
-    world — must keep the run busy (CONTINUE_DOCUMENT) and be processed as the
-    next batch.  Without the document-channel check the decision releases
-    ``busy`` and the doc strands in PENDING with its message resident."""
+    mailbox message — published after the batch's feeder stopped — must keep
+    the run busy (CONTINUE_DOCUMENT) and be processed as the next batch.
+    Without the document-channel check the decision releases ``busy`` and the
+    doc strands in PENDING with its message resident."""
     extract = _MarkerExtract()
     rag = await _build_rag(tmp_path, extract)
     try:
@@ -192,8 +183,6 @@ async def test_document_published_at_quiescence_starts_next_batch(tmp_path):
                 await rag.apipeline_enqueue_documents(
                     input="BBBB body", file_paths="b.txt"
                 )
-                async with lock:
-                    status["request_pending"] = False  # kill the dual-write mask
 
         rag._run_pipeline_batch = batch_then_inject
 
@@ -259,11 +248,11 @@ async def test_refetch_document_failure_republishes_and_arms_auto(tmp_path):
 
 async def test_enqueue_publishes_documents_inside_status_lock(tmp_path, monkeypatch):
     """Fix-proof (atomic producer handoff): the document publish must happen
-    INSIDE the pipeline_status critical section that sets ``request_pending``
-    — the consumer's exit decision reads the mailbox and releases ``busy``
-    under the same lock, so a publish outside it can land just after a
-    quiescing run released, stranding an enqueue-only doc in an idle mailbox
-    once Phase 4 removes the transitional flag.  Serialization is the lock's,
+    INSIDE the pipeline_status critical section — the consumer's exit
+    decision reads the mailbox and releases ``busy`` under the same lock, so
+    a publish outside it can land just after a quiescing run released,
+    stranding an enqueue-only doc in an idle mailbox.  Serialization is the
+    lock's,
     flavor-independent; the probe records whether the enqueue task holds the
     pipeline_status namespace lock at the moment it publishes."""
     import lightrag.kg.shared_storage as shared_storage_module
@@ -405,8 +394,6 @@ async def test_cancel_after_auto_decision_restores_consumed_signal(tmp_path):
                     input="BBBB body", file_paths="b.txt"
                 )
                 ingress.drain_documents()
-                async with lock:
-                    status["request_pending"] = False
                 ingress.request_auto_rescan()
 
         rag._run_pipeline_batch = batch_then_arm_auto
@@ -466,8 +453,6 @@ async def test_cancel_after_document_decision_restores_consumed_signal(tmp_path)
                 await rag.apipeline_enqueue_documents(
                     input="BBBB body", file_paths="b.txt"
                 )
-                async with lock:
-                    status["request_pending"] = False
 
         rag._run_pipeline_batch = batch_then_inject
 
@@ -560,8 +545,6 @@ async def test_validation_failure_after_document_decision_restores_signal(tmp_pa
                 await rag.apipeline_enqueue_documents(
                     input="BBBB body", file_paths="b.txt"
                 )
-                async with lock:
-                    status["request_pending"] = False
                 rag._validate_and_fix_document_consistency = failing_validate
 
         rag._run_pipeline_batch = batch_then_inject
@@ -610,8 +593,6 @@ async def test_validation_failure_after_auto_decision_restores_signal(tmp_path):
                     input="BBBB body", file_paths="b.txt"
                 )
                 ingress.drain_documents()
-                async with lock:
-                    status["request_pending"] = False
                 ingress.request_auto_rescan()
                 rag._validate_and_fix_document_consistency = failing_validate
 
@@ -691,8 +672,6 @@ async def test_journaled_pending_doc_does_not_hold_busy(tmp_path):
             CUSTOM_CHUNK_PATCH_METADATA_KEY: {"phase": "staged"},
         }
         await rag.doc_status.upsert({j_id: row})
-        async with lock:
-            status["request_pending"] = False  # isolate the document channel
 
         await asyncio.wait_for(rag.apipeline_process_enqueue_documents(), timeout=10)
 
@@ -709,12 +688,11 @@ async def test_journaled_pending_doc_does_not_hold_busy(tmp_path):
 
 
 async def test_custom_chunks_exit_hands_off_on_ingress_only_work(tmp_path):
-    """Fix-proof (handoff dual-check): a document enqueued while
-    ``ainsert_custom_chunks`` holds ``busy`` may be visible ONLY through the
-    ingress mailbox once the transitional flag is cleared.  The exit decision
-    consults ``has_work()`` alongside ``request_pending`` and hands the slot
-    to a processing run; flag-only (Phase 2) would release and strand the doc
-    in PENDING behind an idle pipeline."""
+    """Fix-proof (handoff probe): a document enqueued while
+    ``ainsert_custom_chunks`` holds ``busy`` is visible ONLY through the
+    ingress mailbox.  The exit decision consults ``has_work()`` and hands the
+    slot to a processing run; without the probe the exit would release and
+    strand the doc in PENDING behind an idle pipeline."""
     extract = _MarkerExtract()
     rag = await _build_rag(tmp_path, extract)
     try:
@@ -731,8 +709,6 @@ async def test_custom_chunks_exit_hands_off_on_ingress_only_work(tmp_path):
                 await rag.apipeline_enqueue_documents(
                     input="BBBB body", file_paths="b.txt"
                 )
-                async with lock:
-                    status["request_pending"] = False  # kill the dual-write mask
             await orig_cleanup()
 
         rag._insert_done_with_cleanup = cleanup_then_inject
@@ -776,8 +752,6 @@ async def test_custom_chunks_exit_hands_off_when_probe_fails(tmp_path):
                 await rag.apipeline_enqueue_documents(
                     input="BBBB body", file_paths="b.txt"
                 )
-                async with lock:
-                    status["request_pending"] = False  # kill the dual-write mask
                 ingress.has_work = flaky_has_work  # trip the exit probe
             await orig_cleanup()
 

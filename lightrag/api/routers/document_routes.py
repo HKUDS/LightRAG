@@ -1026,7 +1026,6 @@ class PipelineStatusResponse(BaseModel):
         docs: Total number of documents to be indexed
         batchs: Number of batches for processing documents
         cur_batch: Current processing batch
-        request_pending: Flag for pending request for processing
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
         update_status: Status of update flags for all namespaces
@@ -1039,7 +1038,6 @@ class PipelineStatusResponse(BaseModel):
     docs: int = 0
     batchs: int = 0
     cur_batch: int = 0
-    request_pending: bool = False
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
     update_status: Optional[dict] = None
@@ -1281,8 +1279,8 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
     and a dead owner's token can later be reaped.
 
     Concurrent enqueues are permitted while the processing loop is
-    running — the loop is notified via ``request_pending`` and picks up
-    newly-enqueued docs after its current batch.  This includes the
+    running — the loop is notified via the ingress mailbox and picks up
+    newly-enqueued docs mid-batch or at the batch boundary.  This includes the
     scan task's processing phase: once classification is done, the
     scan transitions to driving the processing pipeline like any
     other enqueuer, and uploads can land alongside it.
@@ -2591,6 +2589,7 @@ async def background_delete_documents(
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         get_namespace_lock,
+        get_pipeline_ingress,
         release_owned_reservation,
     )
 
@@ -2767,6 +2766,26 @@ async def background_delete_documents(
         # Final summary + release the destructive slot, owner-checked +
         # cancellation-resistant so a cancel here cannot wedge the slot or
         # clobber a later holder. Returns whether an indexing request is pending.
+
+        # Resolve the ingress handle BEFORE the release: the pending-work
+        # probe runs inside the owner-checked critical section below, and a
+        # Manager RPC handle must never be resolved lazily while the status
+        # lock is held.  A resolution failure fails TOWARD driving — a
+        # spurious drive is a busy-gated cheap no-op, while skipping it would
+        # silently defer work that arrived during the delete to the next
+        # unrelated trigger.  This await precedes the cancellation-resistant
+        # release — safe only because get_pipeline_ingress is suspension-free
+        # by contract (see its docstring), so a pending re-cancellation
+        # cannot be delivered here and skip the release.
+        try:
+            delete_exit_ingress = await get_pipeline_ingress(rag.workspace)
+        except Exception as ingress_error:
+            delete_exit_ingress = None
+            logger.warning(
+                "batch-delete exit: pipeline ingress unavailable; failing "
+                f"toward the post-delete queue drive: {ingress_error}"
+            )
+
         def _delete_release(status):
             completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
             status.update(
@@ -2780,14 +2799,29 @@ async def background_delete_documents(
                 }
             )
             status["history_messages"].append(completion_msg)
-            return status.get("request_pending", False)
+            # Probe the mailbox INSIDE the same critical section that releases
+            # the slot: a processing request refused while we held busy armed
+            # the auto-rescan flag under this very lock, so it is either seen
+            # here (drive below) or was armed after busy=False — in which case
+            # the arming caller's own process call takes the slot itself.
+            if delete_exit_ingress is None:
+                return True  # fail toward driving
+            try:
+                return bool(delete_exit_ingress.has_work())
+            except Exception as probe_error:
+                logger.warning(
+                    "batch-delete exit: ingress has_work probe failed; "
+                    f"failing toward the post-delete queue drive: {probe_error}"
+                )
+                return True
 
         # Release the destructive slot with the fetch, lock and owner-checked
         # write ALL inside run_to_completion (release_owned_reservation), so a
         # cancellation delivered during the release — including a re-cancellation
         # of the namespace fetch after the initial fetch was already cancelled —
         # is retried rather than leaving busy/destructive_busy stuck. Returns the
-        # pending flag (or None when uninitialised / a later holder owns it).
+        # pending-work probe result (or None when uninitialised / a later holder
+        # owns it).
         has_pending_request = await release_owned_reservation(
             rag.workspace,
             owner_key="busy_owner",
@@ -3103,7 +3137,7 @@ def create_document_routes(
           processing phase (``scanning=True`` with
           ``scanning_exclusive=False``), do NOT block uploads — uploads
           are accepted concurrently and the running pipeline picks them
-          up via its ``request_pending`` mechanism.
+          up via the ingress mailbox.
 
         Args:
             managed_tasks: injected managed background-task set
@@ -3133,8 +3167,8 @@ def create_document_routes(
             # processing (``busy=True``) and a scan in its processing
             # phase (``scanning=True`` with
             # ``scanning_exclusive=False``) are permitted: the running
-            # loop's ``request_pending`` mechanism picks up our doc
-            # after the current batch.
+            # loop picks up our doc via the ingress mailbox, mid-batch
+            # or at the batch boundary.
             await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Sanitize filename to prevent Path Traversal attacks
@@ -3258,10 +3292,10 @@ def create_document_routes(
             # ``pipeline_index_file`` does both: it calls
             # ``pipeline_enqueue_file`` (writes doc_status / full_docs) and
             # then ``apipeline_process_enqueue_documents``.  The latter is
-            # safe to invoke even when the loop is already busy — it
-            # collapses to a ``request_pending=True`` nudge and returns,
+            # safe to invoke even when the loop is already busy — its
+            # refused reservation arms the auto-rescan flag and returns,
             # so concurrent uploads/inserts cooperate via the running
-            # loop's request_pending mechanism.
+            # loop's quiescence decision.
             async def _indexing_work(started):
                 # started.set() first (no await before it) so the endpoint's
                 # start-barrier confirms takeover before returning; a body-send
@@ -3325,7 +3359,7 @@ def create_document_routes(
           (clear / per-doc delete is in flight) is set.  ``busy=True``
           from the processing loop, and a scan in its processing phase,
           do NOT block — the running pipeline picks up the new doc via
-          ``request_pending``.
+          the ingress mailbox.
 
         Args:
             request (InsertTextRequest): The request body containing the text to be inserted.
@@ -3452,7 +3486,7 @@ def create_document_routes(
           (clear / per-doc delete is in flight) is set.  ``busy=True``
           from the processing loop, and a scan in its processing phase,
           do NOT block — the running pipeline picks up the new docs via
-          ``request_pending``.
+          the ingress mailbox.
 
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
@@ -3660,7 +3694,6 @@ def create_document_routes(
                         "docs": 0,
                         "batchs": 0,
                         "cur_batch": 0,
-                        "request_pending": False,  # Clear any previous request
                         "latest_message": "Starting document clearing process",
                     }
                 )
@@ -3672,7 +3705,7 @@ def create_document_routes(
 
             # We own busy+destructive: every document the mailbox refers to is
             # about to be dropped, so clear the ingress alongside the
-            # ``request_pending`` reset above — un-ACKed manual retry requests
+            # job-status reset above — un-ACKed manual retry requests
             # are retired as CANCELLED_BY_CLEAR (a delayed replay of the same
             # request id is refused), and the document/auto channels are
             # emptied.  ``destructive_busy`` already refuses new enqueues, so
@@ -3879,7 +3912,6 @@ def create_document_routes(
                 - docs (int): Total number of documents to be indexed
                 - batchs (int): Number of batches for processing documents
                 - cur_batch (int): Current processing batch
-                - request_pending (bool): Flag for pending request for processing
                 - latest_message (str): Latest message from pipeline processing
                 - history_messages (List[str], optional): List of history messages (limited to latest 1000 entries,
                   with truncation message if more than 1000 messages exist)

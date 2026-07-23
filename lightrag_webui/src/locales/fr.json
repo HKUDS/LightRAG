@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "État du Pipeline",
       "busy": "Pipeline Occupé",
-      "requestPending": "Demande en Attente",
       "cancellationRequested": "Annulation Demandée",
       "jobName": "Nom du Travail",
       "startTime": "Heure de Début",

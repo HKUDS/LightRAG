@@ -1990,18 +1990,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # pending buffers — doing so could commit or tear down another
             # running job's in-flight index ops.
             if busy_acquired:
-                # The handoff decision consults the ingress mailbox alongside
-                # the transitional ``request_pending`` flag: work that arrived
-                # while we held busy may live only in the mailbox (a document
-                # message, the auto-rescan flag, or a sticky manual retry
-                # request that was refused a drive because WE were the busy
-                # holder).  A resolve/probe failure fails TOWARD handoff: the
-                # driven run re-probes the mailbox itself, so a transient
+                # The handoff decision consults the ingress mailbox: work that
+                # arrived while we held busy lives only in the mailbox (a
+                # document message, the auto-rescan flag, or a sticky manual
+                # retry request that was refused a drive because WE were the
+                # busy holder).  A resolve/probe failure fails TOWARD handoff:
+                # the driven run re-probes the mailbox itself, so a transient
                 # flake self-heals, and a persistent failure raises inside
                 # that run whose finally releases busy — never a wedge, while
                 # releasing here instead would silently defer a committed
                 # manual retry or an enqueued document to the next unrelated
                 # trigger.
+                #
+                # This await precedes the cancellation-resistant release —
+                # safe only because get_pipeline_ingress is suspension-free
+                # by contract (see its docstring): a pending re-cancellation
+                # cannot be delivered here and skip the releases below.
                 try:
                     handoff_ingress = await get_pipeline_ingress(self.workspace)
                 except Exception as ingress_error:
@@ -2016,10 +2020,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # Clear cancellation (mirroring the processing loop) and
                     # decide, atomically: if a doc was enqueued while we held
                     # busy, hand the slot to a processing run WITHOUT releasing
-                    # busy (releasing first would open a busy=False +
-                    # request_pending window in which a clear/delete/scan
-                    # reservation could start and drop the accepted document);
-                    # otherwise release the slot.
+                    # busy (releasing first would open a busy=False window —
+                    # with work resident only in the mailbox — in which a
+                    # clear/delete/scan reservation could start and drop the
+                    # accepted document); otherwise release the slot.
                     updates = {
                         # custom_chunks work is complete here; clear its
                         # operation_record so a later dead-owner reclaim does not
@@ -2042,7 +2046,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 "retry or enqueued document is not silently "
                                 f"deferred: {probe_error}"
                             )
-                    if status.get("request_pending") or ingress_has_work:
+                    if ingress_has_work:
                         status.update(updates)
                         return "handoff"  # keep busy (owner stays ours)
                     updates.update({"busy": False, "busy_owner": None})
@@ -2069,7 +2073,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # cannot skip them: _exit_action keeps busy=True for a
                     # handoff, so if the queued docs were not drained here the
                     # outer terminal release would clear busy and strand them
-                    # behind request_pending=True with no active processor.
+                    # in the mailbox with no active processor.
                     try:
                         if op_failed:
                             # Failure path: do NOT blind-flush partial work
@@ -4409,7 +4413,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "docs": 1,
                     "batchs": 1,
                     "cur_batch": 0,
-                    "request_pending": False,
                     "cancellation_requested": False,
                     "latest_message": f"Starting deletion for document: {doc_id}",
                 },

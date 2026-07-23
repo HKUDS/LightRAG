@@ -52,6 +52,16 @@ class _CountingStatus(dict):
         return super().update(*args, **kwargs)
 
 
+class _IngressArmSpy:
+    """Minimal pipeline-ingress stand-in counting auto-rescan arms."""
+
+    def __init__(self):
+        self.armed = 0
+
+    def request_auto_rescan(self):
+        self.armed += 1
+
+
 # ---------------------------------------------------------------------------
 # acquire_reservation — plain dict + asyncio.Lock (no shared-data needed)
 # ---------------------------------------------------------------------------
@@ -190,9 +200,10 @@ async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
     monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: False)
     lock = asyncio.Lock()
     flags = {"job_name": "Default Job"}
+    ingress = _IngressArmSpy()
 
-    # A clear/delete holds ``busy`` → processing is nudged (request_pending); the
-    # destructive slot is left untouched.
+    # A clear/delete holds ``busy`` → the refusal arms the ingress auto-rescan
+    # flag inside the same critical section; the destructive slot is untouched.
     busy_ps = {
         "busy": True,
         "scanning_exclusive": False,
@@ -200,16 +211,22 @@ async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
         "history_messages": [],
     }
     busy_res = await acquire_processing_reservation(
-        busy_ps, lock, token="proc", already_held=False, flags=flags
+        busy_ps,
+        lock,
+        token="proc",
+        already_held=False,
+        pipeline_ingress=ingress,
+        flags=flags,
     )
     assert busy_res.acquired is False
     assert busy_res.conflict is shared_storage.PipelineReservationConflict.BUSY
     assert busy_ps["busy"] is True
     assert busy_ps["busy_owner"]["token"] == "destructive"
-    assert busy_ps["request_pending"] is True
+    assert ingress.armed == 1
 
     # A scan classification phase holds ``scanning_exclusive`` → processing is
-    # refused without flipping ``busy`` mid-classification.
+    # refused without flipping ``busy`` mid-classification, and WITHOUT arming
+    # auto-rescan (the scan_deferred_processing flag owns that handoff).
     scan_ps = {
         "busy": False,
         "scanning_exclusive": True,
@@ -217,7 +234,12 @@ async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
         "history_messages": [],
     }
     scan_res = await acquire_processing_reservation(
-        scan_ps, lock, token="proc", already_held=False, flags=flags
+        scan_ps,
+        lock,
+        token="proc",
+        already_held=False,
+        pipeline_ingress=ingress,
+        flags=flags,
     )
     assert scan_res.acquired is False
     assert scan_res.conflict is shared_storage.PipelineReservationConflict.SCANNING
@@ -225,6 +247,7 @@ async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
     assert scan_ps.get("busy_owner") is None
     # The turned-away request is recorded so the scan drives the queue on release.
     assert scan_ps["scan_deferred_processing"] is True
+    assert ingress.armed == 1
 
     # A handed-off run already owns the slot: exempt from the scanning fence and
     # takes it over (owner stamped, history cleared).
@@ -235,7 +258,12 @@ async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
         "history_messages": ["stale"],
     }
     handoff_res = await acquire_processing_reservation(
-        handoff_ps, lock, token="proc", already_held=True, flags=flags
+        handoff_ps,
+        lock,
+        token="proc",
+        already_held=True,
+        pipeline_ingress=ingress,
+        flags=flags,
     )
     assert handoff_res.acquired is True
     assert handoff_ps["busy"] is True
@@ -243,6 +271,41 @@ async def test_processing_reservation_fences_busy_and_scanning(monkeypatch):
     assert list(handoff_ps["history_messages"]) == []
     # Taking the slot clears any deferred-processing flag: this run drains it.
     assert handoff_ps["scan_deferred_processing"] is False
+    assert ingress.armed == 1
+
+
+@pytest.mark.offline
+async def test_processing_reservation_busy_arm_failure_propagates(monkeypatch):
+    """A busy refusal whose auto-rescan arm fails must RAISE, not return BUSY:
+    a swallowed arm failure would tell the caller "the current holder will pick
+    your docs up" while no committed signal exists — the loud failure leaves the
+    docs PENDING for the next initial scan and tells the caller so.
+    """
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: False)
+    lock = asyncio.Lock()
+
+    class _BrokenIngress:
+        def request_auto_rescan(self):
+            raise RuntimeError("manager connection lost")
+
+    busy_ps = {
+        "busy": True,
+        "scanning_exclusive": False,
+        "busy_owner": {"token": "destructive", "pid": 1, "kind": "clear"},
+        "history_messages": [],
+    }
+    with pytest.raises(RuntimeError, match="manager connection lost"):
+        await acquire_processing_reservation(
+            busy_ps,
+            lock,
+            token="proc",
+            already_held=False,
+            pipeline_ingress=_BrokenIngress(),
+            flags={"job_name": "Default Job"},
+        )
+    # The refusal never mutated the holder's slot.
+    assert busy_ps["busy"] is True
+    assert busy_ps["busy_owner"]["token"] == "destructive"
 
 
 @pytest.mark.offline

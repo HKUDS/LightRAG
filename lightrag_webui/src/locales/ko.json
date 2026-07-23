@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "파이프라인 상태",
       "busy": "파이프라인 작업 중",
-      "requestPending": "요청 대기 중",
       "cancellationRequested": "취소 요청됨",
       "jobName": "작업 이름",
       "startTime": "시작 시간",

@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "流水線狀態",
       "busy": "流水線忙碌",
-      "requestPending": "待處理請求",
       "cancellationRequested": "取消請求",
       "jobName": "作業名稱",
       "startTime": "開始時間",

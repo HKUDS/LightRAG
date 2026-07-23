@@ -1598,7 +1598,7 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # accepted document, so reservation and the enqueue
                 # last-line guard reject when this is True.  ``busy`` on
                 # its own (the processing loop) remains compatible with
-                # concurrent enqueue via request_pending.
+                # concurrent enqueue via the pipeline ingress mailbox.
                 "destructive_busy": False,
                 "scanning": False,  # /documents/scan task running (whole lifecycle)
                 # Exclusive subset of ``scanning``: only True during the
@@ -1622,7 +1622,6 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 "docs": 0,  # Total number of documents to be indexed
                 "batchs": 0,  # Number of batches for processing documents
                 "cur_batch": 0,  # Current processing batch
-                "request_pending": False,  # Flag for pending request for processing
                 "latest_message": "",  # Latest message from pipeline processing
                 "history_messages": history_messages,  # 使用共享列表对象
                 # ---- reservation owner tokens (cancellation-safe release) ----
@@ -1688,6 +1687,13 @@ async def get_pipeline_ingress(workspace: str | None = None):
     guards hypothetical multi-loop threads), multiprocess the hub creates the
     mailbox atomically inside one server-side dispatch — a client SIGKILLed
     at any point can neither strand creation nor race a duplicate.
+
+    SUSPENSION-FREE BY CONTRACT: despite being ``async`` (call-site
+    uniformity), this function must never contain a real ``await`` — the
+    custom-chunks and batch-delete exit paths resolve the ingress inside
+    slot-releasing ``finally`` blocks BEFORE their cancellation-resistant
+    release, where a suspension point would let a pending re-cancellation
+    skip the release and wedge ``busy``/``destructive_busy``.
     """
     if _pipeline_ingress_local is None:
         direct_log(
@@ -1792,7 +1798,7 @@ class PipelineStatusLogger:
       ``async with pipeline_status_lock`` (see the processing loop).
 
     Why lock-free is safe: this is for pure status logging ONLY, never for
-    coordination state (``busy`` / ``request_pending`` / ``cancellation_*`` /
+    coordination state (``busy`` / ``cancellation_*`` /
     reservation owner tokens / ``cur_batch`` / the history trim), which stays
     in ``async with pipeline_status_lock`` read-modify-write blocks. Each of
     ``dict.__setitem__`` and ``list.extend`` is a single indivisible operation
@@ -2295,16 +2301,25 @@ async def acquire_processing_reservation(
     *,
     token: str,
     already_held: bool,
+    pipeline_ingress,
     flags: Mapping[str, Any],
 ) -> PipelineReservationResult:
     """Acquire/take over the single processing slot from one proxy snapshot.
 
     Refuses the slot (without taking it) while a scan holds ``scanning_exclusive``
     — its classification phase mutates doc_status — and reduces a competing
-    ``busy`` holder to a ``request_pending`` nudge, both in the same update used
-    for any recovery changes. A handed-off run (``already_held``) is exempt from
-    both: it already owns the slot. The caller may owner-check release
-    unconditionally because the token is stamped atomically with ``busy``.
+    ``busy`` holder to an auto-rescan arm on ``pipeline_ingress``, inside the
+    same critical section as the refusal decision: arming after returning BUSY
+    would let the current holder release between the two and never see the
+    signal. A handed-off run (``already_held``) is exempt from both: it already
+    owns the slot. The caller may owner-check release unconditionally because
+    the token is stamped atomically with ``busy``.
+
+    ``pipeline_ingress`` MUST be resolved by the caller before this call — a
+    lazy resolve while ``pipeline_status_lock`` is held would nest a Manager
+    lookup inside the critical section. ``request_auto_rescan`` is a single
+    RPC; a failure propagates so the refused caller learns its wake-up signal
+    was NOT committed (the docs stay PENDING for the next initial scan).
     """
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
@@ -2339,11 +2354,15 @@ async def acquire_processing_reservation(
                 snapshot=snapshot,
             )
         if not already_held and snapshot.get("busy"):
-            updates = {"request_pending": True}
-            snapshot.update(updates)
-            _commit_pipeline_reservation_updates(
-                pipeline_status, recovery_updates, updates
-            )
+            # Commit any recovery changes first (idempotent — recomputed by
+            # the next acquire if the arm below raises), then arm the
+            # auto-rescan flag so the busy holder's quiescence decision picks
+            # this request up. Same critical section as the refusal: the
+            # holder's release runs under this very lock, so the arm either
+            # lands before its decision (seen) or the holder already released
+            # (busy=False — this acquire would have succeeded instead).
+            _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+            pipeline_ingress.request_auto_rescan()
             return PipelineReservationResult(
                 acquired=False,
                 conflict=PipelineReservationConflict.BUSY,
@@ -2433,7 +2452,7 @@ async def with_reservation_lock(
     ``token``); otherwise no-op and return ``None``.
 
     ``action`` is SYNCHRONOUS (no await) and must apply all correctness-critical
-    mutations (owner, busy/scanning flags, request_pending, cancellation flags,
+    mutations (owner, busy/scanning flags, cancellation flags,
     operation_record, recovery state) via a SINGLE ``status.update`` so a crash
     cannot tear them apart. ``history_messages`` (a Manager list) must be mutated
     in place, not replaced. Runs to completion even under repeated cancellation

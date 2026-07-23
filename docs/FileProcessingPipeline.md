@@ -810,12 +810,13 @@ To prevent `scan` / `upload` / `insert` from overwriting `doc_status` / `full_do
 
 | Field | Semantics |
 | --- | --- |
-| `busy` | Generic pipeline-busy flag. Both the processing loop and destructive jobs (clear/delete) set it. **`busy=True` (processing loop) alone does not block enqueue** — the loop pulls a `doc_status` snapshot per batch and checks `request_pending` between batches for any newly arrived work. |
+| `busy` | Generic pipeline-busy flag. Both the processing loop and destructive jobs (clear/delete) set it. **`busy=True` (processing loop) alone does not block enqueue** — the loop pulls a `doc_status` snapshot per batch; work arriving mid-run is picked up via the workspace ingress mailbox (in-batch feeder + batch-boundary quiescence decision). |
 | `destructive_busy` | A destructive subset of `busy`: `/documents/clear` or `/documents/{doc_id}` (delete) is dropping storages / removing source files. Both reservation and the enqueue last-line guard reject — a concurrent enqueue would write to storage being torn down, and accepted documents would be silently lost. The processing loop does not set this field. |
 | `scanning` | The `/documents/scan` background task is running (entire lifecycle: classification stage + processing stage). Only the `/scan` endpoint uses it to reject overlapping scans; it does **not** itself block upload/insert. |
 | `scanning_exclusive` | An exclusive subset of `scanning`: True only during scan's **classification phase** — run_scanning_process is reading doc_status to classify (already processed / resume / delete stub / archive) and cannot interleave with concurrent writers. Both reservation and the enqueue last-line guard reject. After classification, the flag is cleared immediately, and concurrent uploads are allowed once scan enters the processing phase. |
 | `pending_enqueues` | The number of upload/insert calls that have passed `_reserve_enqueue_slot` but whose bg task has not completed. Used only by the scan endpoint — to decide whether to take the exclusive lock. The bg task releases the slot in `finally`. |
-| `request_pending` | A signal nudging the running processing loop to scan another round. Enqueue sets it after writing to `doc_status` when `busy=True`; the processing loop checks it after each batch and re-pulls the snapshot. |
+
+Wake-up signals live **outside** `pipeline_status`, in the workspace **pipeline ingress mailbox** (`lightrag/kg/pipeline_ingress.py`, three channels: per-doc document messages / auto-rescan dirty flag / sticky manual retry requests). Enqueue publishes document messages under `pipeline_status_lock` after writing `doc_status`; a busy-refused processing request arms the auto-rescan flag inside the reservation's critical section; the running loop consumes these signals mid-batch (in-batch feeder) and at every batch boundary (atomic quiescence decision, which releases `busy` in the same critical section when all channels are empty). `doc_status` remains the source of truth — a dropped notification is recovered by the next run's initial strict scan.
 
 ### 6.2 Entry Point Behavior
 
@@ -828,7 +829,7 @@ To prevent `scan` / `upload` / `insert` from overwriting `doc_status` / `full_do
 | `/documents/clear` / `/documents/delete_document` | `busy=True` or `scanning=True` or `pending_enqueues>0` | The endpoint synchronously returns `status="busy"` and does not schedule a background task |
 | Same as above | All idle | The endpoint **synchronously** within the lock sets `busy=True` + `destructive_busy=True` (before `delete_document` returns `deletion_started`), and the bg task's finally clears both flags |
 | `apipeline_enqueue_documents` internal (last-line guard) | `scanning_exclusive=True` and `from_scan=False`, or `destructive_busy=True` | Throw `RuntimeError("Cannot enqueue while scan is classifying / clearing or deleting")` |
-| Same as above | Anything else (including pure `busy=True`, scan processing phase) | Enqueue normally; after writing `doc_status`, if `busy=True`, automatically nudge `request_pending=True` |
+| Same as above | Anything else (including pure `busy=True`, scan processing phase) | Enqueue normally; after writing `doc_status`, publish per-doc messages to the ingress mailbox (a running loop picks them up mid-batch or at the batch boundary) |
 
 `from_scan=True` is a bypass for scan's own background-task enqueue: scan already holds the `scanning` flag, so it must be allowed to enqueue the files it has scanned.
 
@@ -837,8 +838,8 @@ To prevent `scan` / `upload` / `insert` from overwriting `doc_status` / `full_do
 In the old version, `busy=True` always rejected any new enqueue, on the reasoning that "modifying `doc_status` would interleave with the pipeline worker thread." However, in practice:
 
 1. **Write order guarantees consistency**: `apipeline_enqueue_documents` always upserts `full_docs` first, then upserts `doc_status`. The consistency check at the start of the processing loop only deletes "orphan `doc_status` rows that have no corresponding `full_docs`" — a state that cannot occur with concurrent enqueue.
-2. **Batch-level snapshots**: each processing-loop batch pulls a `get_docs_by_statuses` snapshot once; newly written `PENDING` rows don't disturb the current batch, and the next round re-pulls the snapshot via `request_pending` to see the new work.
-3. **`request_pending` is designed for this**: the old version already had the `request_pending` field — it was designed for "new work arrives while running" — but was gated by busy.
+2. **Batch-level snapshots**: each processing-loop batch pulls a `get_docs_by_statuses` snapshot once; newly written `PENDING` rows don't disturb the current batch — their document messages are routed straight into the running batch by the in-batch feeder, and anything left over is re-pulled at the batch boundary.
+3. **The ingress mailbox is designed for this**: enqueue publishes a per-doc notification for exactly the "new work arrives while running" case; the loop's quiescence decision consumes the signals and releases `busy` atomically, so nothing lands in a gap.
 
 With this mechanism enabled in the new contract, **users can continue to upload new documents during long batch processing**, and the bg task, after writing `doc_status`, will be automatically picked up by the running loop.
 
@@ -870,12 +871,12 @@ When two uploads arrive simultaneously (scan cannot acquire exclusivity at this 
 1. A `_reserve_enqueue_slot` → `pending_enqueues=1`, write file, schedule bg task A, return success.
 2. B `_reserve_enqueue_slot` → `pending_enqueues=2`, write file, schedule bg task B, return success.
 3. bg task A `apipeline_enqueue_documents` → writes `doc_status` → calls `apipeline_process_enqueue_documents` → sets `busy=True` to process A's document.
-4. bg task B `apipeline_enqueue_documents` → sees `scanning=False`, writes normally; after writing, sees `busy=True`, automatically sets `request_pending=True`.
-5. bg task B calls `apipeline_process_enqueue_documents` → sees `busy=True`, sets `request_pending=True` and returns immediately.
-6. A's processing loop finishes the current batch, sees `request_pending=True`, re-pulls the snapshot, and picks up B's `PENDING` row.
+4. bg task B `apipeline_enqueue_documents` → sees `scanning=False`, writes normally; after writing, publishes B's document message to the ingress mailbox.
+5. bg task B calls `apipeline_process_enqueue_documents` → the reservation sees `busy=True`, arms the auto-rescan flag in the same critical section, and returns immediately.
+6. A's running loop routes B's document message into the current batch via the in-batch feeder — or, if the message lands at the boundary, the quiescence decision consumes the signal and re-pulls the snapshot — and picks up B's `PENDING` row.
 7. After all is complete: `busy=False`, `pending_enqueues=0`.
 
-No bg task will be falsely rejected due to busy — because enqueue no longer checks busy; the processing loop will not process the same batch repeatedly — because `request_pending` only takes effect between batches and is cleared before each re-pull.
+No bg task will be falsely rejected due to busy — because enqueue no longer checks busy; the processing loop will not process the same document twice — in-batch admission dedups against the routing/inflight registries, and the auto-rescan flag is consumed exactly once per quiescence decision.
 
 ### 6.7 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
 
@@ -895,7 +896,7 @@ With the serialization lock, the second enqueue's dedup read is guaranteed to se
 - Upsert of duplicate FAILED rows
 - `full_docs.upsert` + `doc_status.upsert`
 
-The lock does **not** cover the `request_pending` nudge (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
+The lock does **not** cover the ingress document publish (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
 
 ### 6.8 Pipeline Concurrency Parameters
 
