@@ -4,10 +4,11 @@ import hashlib
 import json
 import os
 import re
+import uuid
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, TypeVar, Union, final
+from typing import Any, Awaitable, Callable, ClassVar, TypeVar, Union, final
 import numpy as np
 import configparser
 import ssl
@@ -27,15 +28,26 @@ from tenacity import (
 )
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    FailureGenerationMode,
 )
-from ..constants import DEFAULT_QUERY_PRIORITY
-from ..exceptions import DataMigrationError
+from ..constants import CUSTOM_CHUNK_PATCH_METADATA_KEY, DEFAULT_QUERY_PRIORITY
+from ..exceptions import (
+    DataMigrationError,
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
+)
 from ..namespace import NameSpace, is_namespace
 from ..utils import (
     logger,
@@ -1566,6 +1578,129 @@ class PostgreSQLDB:
                 f"Failed to create partial content_hash index on LIGHTRAG_DOC_STATUS: {e}"
             )
 
+    async def _migrate_doc_status_add_scheduling_fields(self):
+        """Add memory-bounding scheduling columns to LIGHTRAG_DOC_STATUS (Phase 1).
+
+        * ``failure_generation`` — monotonic failure cohort stamped by
+          ``mark_doc_failed``. BIGINT NOT NULL DEFAULT 0 so legacy/never-failed
+          rows read as logical generation 0 (query predicates treat missing as
+          0; all history belongs to the first manual cutoff).
+        * ``processing_attempt_id`` / ``failure_attempt_id`` — attempt identity
+          used by the idempotent FAILED CAS funnel.
+
+        Also creates the keyset-sweep index (workspace, status, created_at, id)
+        backing ``get_docs_by_statuses_page`` and a (workspace,
+        failure_generation) index for counter recalibration (MAX scan at
+        bootstrap) and the FAILED cohort predicate. Each step is guarded
+        individually and idempotent — retried on every startup until present.
+        """
+        columns_to_add = [
+            ("failure_generation", "BIGINT NOT NULL DEFAULT 0"),
+            ("processing_attempt_id", "TEXT NULL"),
+            ("failure_attempt_id", "TEXT NULL"),
+        ]
+        try:
+            existing = await self.query(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'lightrag_doc_status'
+                  AND column_name = ANY($1)
+                """,
+                [[c for c, _ in columns_to_add]],
+                multirows=True,
+            )
+            existing_names = {row["column_name"] for row in (existing or [])}
+        except Exception as e:
+            logger.warning(
+                f"Failed to inspect LIGHTRAG_DOC_STATUS columns for scheduling migration: {e}"
+            )
+            existing_names = set()
+
+        for col_name, col_type in columns_to_add:
+            if col_name in existing_names:
+                logger.debug(f"Column {col_name} already exists in LIGHTRAG_DOC_STATUS")
+                continue
+            try:
+                logger.info(f"Adding {col_name} column to LIGHTRAG_DOC_STATUS table")
+                await self.execute(
+                    f"ALTER TABLE LIGHTRAG_DOC_STATUS ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info(
+                    f"Successfully added {col_name} column to LIGHTRAG_DOC_STATUS table"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to add column {col_name} to LIGHTRAG_DOC_STATUS: {e}"
+                )
+
+        # Keyset sweep index: (workspace, status, created_at, id) matches the
+        # page query's WHERE workspace/status equality prefix and its
+        # ORDER BY created_at ASC, id ASC keyset tail, so a page read is an
+        # index scan resuming at the row-value comparison — never a full-table
+        # sort. The (workspace, failure_generation) index serves the
+        # MAX(failure_generation) bootstrap calibration (failure_generation is
+        # never reset on retry, so the scan must cover all statuses).
+        indexes = [
+            (
+                "idx_lightrag_doc_status_ws_status_created_id",
+                "CREATE INDEX IF NOT EXISTS idx_lightrag_doc_status_ws_status_created_id "
+                "ON LIGHTRAG_DOC_STATUS (workspace, status, created_at, id)",
+            ),
+            (
+                "idx_lightrag_doc_status_ws_failure_generation",
+                "CREATE INDEX IF NOT EXISTS idx_lightrag_doc_status_ws_failure_generation "
+                "ON LIGHTRAG_DOC_STATUS (workspace, failure_generation)",
+            ),
+        ]
+        for index_name, create_sql in indexes:
+            try:
+                check_index_sql = """
+                SELECT indexname FROM pg_indexes
+                WHERE tablename = 'lightrag_doc_status'
+                  AND indexname = $1
+                """
+                index_info = await self.query(check_index_sql, [index_name])
+                if not index_info:
+                    logger.info(f"Creating index {index_name} on LIGHTRAG_DOC_STATUS")
+                    await self.execute(create_sql)
+            except Exception as e:
+                logger.error(
+                    f"Failed to create index {index_name} on LIGHTRAG_DOC_STATUS: {e}"
+                )
+
+    async def _migrate_create_doc_scheduling_ctrl_table(self):
+        """Create LIGHTRAG_DOC_SCHEDULING_CTRL if it doesn't exist.
+
+        One row per workspace: the failure-generation reservation counter, the
+        activation-mode marker and its schema version (see
+        PGDocStatusStorage._bootstrap_scheduling_ctrl). Deliberately NOT in the
+        TABLES dict: check_tables' generic index loop creates an ``(id)`` index
+        on every TABLES entry and this table has no ``id`` column — its key IS
+        the workspace. The row intentionally survives a workspace data drop so
+        the reservation counter never moves backwards (holes are allowed,
+        reuse is not).
+        """
+        try:
+            if await self.check_table_exists("LIGHTRAG_DOC_SCHEDULING_CTRL"):
+                logger.debug("Table LIGHTRAG_DOC_SCHEDULING_CTRL already exists")
+                return
+            logger.info("Creating table LIGHTRAG_DOC_SCHEDULING_CTRL")
+            await self.execute(
+                """CREATE TABLE LIGHTRAG_DOC_SCHEDULING_CTRL (
+                    workspace VARCHAR(255) NOT NULL,
+                    schema_version INT NOT NULL,
+                    mode VARCHAR(32) NOT NULL,
+                    failure_generation_counter BIGINT NOT NULL DEFAULT 0,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT LIGHTRAG_DOC_SCHEDULING_CTRL_PK PRIMARY KEY (workspace)
+                    )""",
+                ignore_if_exists=True,
+            )
+            logger.info("Successfully created table LIGHTRAG_DOC_SCHEDULING_CTRL")
+        except Exception as e:
+            logger.error(f"Failed to create table LIGHTRAG_DOC_SCHEDULING_CTRL: {e}")
+
     async def _migrate_text_chunks_add_heading_sidecar(self):
         """Add heading and sidecar JSONB columns to LIGHTRAG_DOC_CHUNKS if missing."""
         columns_to_add = [
@@ -1943,6 +2078,25 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(
                 f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_CHUNKS heading/sidecar fields: {e}"
+            )
+
+        # Migrate LIGHTRAG_DOC_STATUS to add memory-bounding scheduling columns
+        # (failure_generation / processing_attempt_id / failure_attempt_id) and
+        # the keyset-sweep indexes (Phase 1)
+        try:
+            await self._migrate_doc_status_add_scheduling_fields()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_STATUS scheduling fields: {e}"
+            )
+
+        # Create the per-workspace scheduling control-plane table (failure
+        # generation counter + mode marker)
+        try:
+            await self._migrate_create_doc_scheduling_ctrl_table()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to create LIGHTRAG_DOC_SCHEDULING_CTRL table: {e}"
             )
 
     async def _migrate_create_full_entities_relations_tables(self):
@@ -2544,6 +2698,8 @@ class ClientManager:
 class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = field(default=None)
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __post_init__(self):
         validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
@@ -2723,6 +2879,16 @@ class PGKVStorage(BaseKVStorage):
             response["update_time"] = create_time if update_time == 0 else update_time
 
         return response if response else None
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``db.query`` propagates every asyncpg transport/server error (nothing
+        in this class swallows it), so a ``None`` from the legacy read is a
+        positively confirmed absence — safe for callers that take destructive
+        action on a miss.
+        """
+        return await self.get_by_id(id)
 
     # Query by id
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -4823,10 +4989,50 @@ def _parse_doc_status_datetime(
         return None
 
 
+# Columns that the targeted-update paths (update_doc_status_fields /
+# mark_doc_failed) may write. Column names are interpolated into SQL, so they
+# MUST come from this whitelist — unknown keys raise instead of being quoted.
+# created_at is deliberately absent: it is the immutable keyset sort key
+# (update_doc_status_fields refuses it; mark_doc_failed ignores it for
+# existing rows and only writes it on conditional row creation).
+_DOC_STATUS_UPDATABLE_COLUMNS = frozenset(
+    {
+        "content_summary",
+        "content_length",
+        "chunks_count",
+        "status",
+        "file_path",
+        "chunks_list",
+        "track_id",
+        "metadata",
+        "error_msg",
+        "content_hash",
+        "updated_at",
+        "failure_generation",
+        "processing_attempt_id",
+        "failure_attempt_id",
+    }
+)
+# JSONB columns serialized exactly like the batch upsert does (json.dumps).
+_DOC_STATUS_JSON_COLUMNS = frozenset({"chunks_list", "metadata"})
+# TIMESTAMP columns converted via _parse_doc_status_datetime like the upsert.
+_DOC_STATUS_DATETIME_COLUMNS = frozenset({"updated_at", "created_at"})
+
+
 @final
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
     db: PostgreSQLDB = field(default=None)
+
+    supports_bounded_scheduling_pages: ClassVar[bool] = True
+    supports_failure_generation: ClassVar[bool] = True
+    supports_strict_doc_identity_lookup: ClassVar[bool] = True
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Version stamp of the LIGHTRAG_DOC_SCHEDULING_CTRL row layout. A row with
+    # a different schema_version reads as MIGRATING (never LEGACY) until an
+    # explicit migration handles it — see get_failure_generation_mode.
+    _CTRL_SCHEMA_VERSION: ClassVar[int] = 1
 
     def __post_init__(self):
         validate_workspace(self.workspace)
@@ -4869,6 +5075,72 @@ class PGDocStatusStorage(DocStatusStorage):
 
             # NOTE: Table creation is handled by PostgreSQLDB.initdb() during initialization
             # No need to create table here as it's already created in the TABLES dict
+
+            # Scheduling control-plane bootstrap (Phase 1). Errors propagate:
+            # the storage must not serve pipeline traffic behind a broken or
+            # unverifiable failure-generation marker (startup fence).
+            await self._bootstrap_scheduling_ctrl()
+
+    async def _bootstrap_scheduling_ctrl(self) -> None:
+        """Per-workspace failure-generation marker bootstrap + counter
+        recalibration (mirrors JsonDocStatusStorage.initialize).
+
+        Runs on EVERY initialize: a restore-from-backup can roll the ctrl row
+        behind persisted doc rows, and the reservation counter must stay
+        monotonic — ``max(counter, max persisted failure_generation)``.
+        Concurrent workers bootstrapping the same workspace are safe:
+        INSERT ... ON CONFLICT DO NOTHING for the first publish, GREATEST()
+        for recalibration. An unknown schema_version row is left untouched:
+        mode reads report MIGRATING (never LEGACY) until an explicit
+        migration handles it.
+        """
+        max_row = await self.db.query(
+            "SELECT COALESCE(MAX(failure_generation), 0) AS max_gen "
+            "FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1",
+            [self.workspace],
+        )
+        max_gen = int(max_row["max_gen"]) if max_row else 0
+
+        ctrl = await self.db.query(
+            "SELECT schema_version, failure_generation_counter "
+            "FROM LIGHTRAG_DOC_SCHEDULING_CTRL WHERE workspace=$1",
+            [self.workspace],
+        )
+        if ctrl is None:
+            await self.db.execute(
+                """INSERT INTO LIGHTRAG_DOC_SCHEDULING_CTRL
+                       (workspace, schema_version, mode, failure_generation_counter)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (workspace) DO NOTHING""",
+                {
+                    "workspace": self.workspace,
+                    "schema_version": self._CTRL_SCHEMA_VERSION,
+                    "mode": FailureGenerationMode.ENFORCED.value,
+                    "failure_generation_counter": max_gen,
+                },
+            )
+            logger.info(
+                f"[{self.workspace}] Published failure-generation marker "
+                f"(mode=enforced, counter={max_gen}) for {self.namespace}"
+            )
+        elif ctrl.get("schema_version") == self._CTRL_SCHEMA_VERSION:
+            counter = int(ctrl.get("failure_generation_counter") or 0)
+            if counter < max_gen:
+                await self.db.execute(
+                    """UPDATE LIGHTRAG_DOC_SCHEDULING_CTRL
+                       SET failure_generation_counter =
+                           GREATEST(failure_generation_counter, $3)
+                       WHERE workspace=$1 AND schema_version=$2""",
+                    {
+                        "workspace": self.workspace,
+                        "schema_version": self._CTRL_SCHEMA_VERSION,
+                        "max_gen": max_gen,
+                    },
+                )
+                logger.warning(
+                    f"[{self.workspace}] failure-generation counter behind "
+                    f"persisted rows ({counter} < {max_gen}); recalibrated"
+                )
 
     async def finalize(self):
         if self.db is not None:
@@ -5058,6 +5330,13 @@ class PGDocStatusStorage(DocStatusStorage):
         the canonical ``file_path`` column. The caller is responsible for
         passing an already-canonical basename; storage performs an exact match
         only.
+
+        ``file_path`` is one-to-many (duplicate-attempt ``dup-*`` rows keep the
+        same canonical basename); this returns the single PRIMARY
+        (``metadata.is_duplicate != true``) row — callers doing identity checks
+        / dedup want the document, never a duplicate marker. When only
+        duplicate markers remain (primary deleted) the basename is free again
+        and this returns ``None``.
         """
         if not basename:
             return None
@@ -5065,9 +5344,15 @@ class PGDocStatusStorage(DocStatusStorage):
         if basename == "unknown_source":
             return None
 
+        # COALESCE((metadata->>'is_duplicate')::boolean, false) excludes
+        # duplicate-marker rows; NULL/absent metadata keys coalesce to false
+        # (primary). metadata is JSONB, so ->> yields 'true'/'false' text that
+        # casts cleanly; a non-boolean value raises and propagates (fail
+        # closed) rather than silently matching.
         sql = (
             "SELECT * FROM LIGHTRAG_DOC_STATUS "
             "WHERE workspace=$1 AND file_path = $2 "
+            "AND COALESCE((metadata->>'is_duplicate')::boolean, false) = false "
             "ORDER BY created_at ASC, id ASC LIMIT 1"
         )
         params = [self.workspace, basename]
@@ -5164,6 +5449,494 @@ class PGDocStatusStorage(DocStatusStorage):
             content_hash=row.get("content_hash"),
         )
         return str(row["id"]), doc
+
+    async def get_doc_by_file_basename_strict(
+        self, basename: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Fail-closed basename lookup (see base contract).
+
+        The aligned legacy query already satisfies the strict contract: every
+        asyncpg transport/server error propagates out of ``db.query`` (nothing
+        in this class swallows it), so ``None`` here IS a positively confirmed
+        absence of a PRIMARY (non-duplicate) row.
+        """
+        return await self.get_doc_by_file_basename(basename)
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``db.query`` propagates every transport/server error, so a ``None``
+        from the aligned legacy read is a confirmed absence.
+        """
+        return await self.get_by_id(id)
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> tuple[datetime.datetime, str]:
+        """Decode an opaque page cursor into (created_at, id).
+
+        The opaque form is ``json.dumps([created_at_iso, id])`` produced by
+        ``_encode_cursor``. The ISO string round-trips exactly through
+        ``datetime.fromisoformat`` (microseconds preserved) and is normalized
+        back to the naive-UTC form the TIMESTAMP column stores, so the
+        parameterized row-value comparison resumes at exactly the last
+        consumed key. A malformed cursor raises
+        :class:`~lightrag.exceptions.StorageControlPlaneError`.
+        """
+        try:
+            decoded = json.loads(opaque)
+            created_iso, doc_id = decoded
+            if not isinstance(created_iso, str) or not isinstance(doc_id, str):
+                raise ValueError("cursor fields must be strings")
+            created = datetime.datetime.fromisoformat(created_iso)
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for PGDocStatusStorage: {e}"
+            ) from e
+        if created.tzinfo is not None:
+            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+        return created, doc_id
+
+    def _encode_cursor(self, row: dict[str, Any]) -> str:
+        """Encode the keyset key of a returned DB row as an opaque cursor."""
+        created = row.get("created_at")
+        if not isinstance(created, datetime.datetime):
+            # Only reachable when an entire page consists of rows whose
+            # created_at is NULL (corrupt writes — the column defaults to
+            # CURRENT_TIMESTAMP). Such rows have no stable sort key, so a
+            # cursor cannot be built over them: fail closed instead of
+            # skipping or re-reading in place.
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] scheduling row {row.get('id')!r} has no "
+                "usable created_at sort key; cannot advance the page cursor"
+            )
+        return json.dumps(
+            [self._format_datetime_with_timezone(created), str(row["id"])]
+        )
+
+    def _pg_scheduling_record_from_row(
+        self, row: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one DB row; strict raises on unusable rows, relaxed returns
+        None (the row was still returned by the scan and stays consumed)."""
+        doc_id = str(row.get("id") or "")
+        try:
+            if not doc_id:
+                raise KeyError("id")
+            status = DocStatus(str(row["status"]))
+            created_raw = row["created_at"]
+            if not isinstance(created_raw, datetime.datetime):
+                raise TypeError("created_at must be a timestamp")
+            updated_raw = row.get("updated_at") or created_raw
+            if not isinstance(updated_raw, datetime.datetime):
+                raise TypeError("updated_at must be a timestamp")
+            metadata = row.get("metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=self._format_datetime_with_timezone(created_raw),
+                updated_at=self._format_datetime_with_timezone(updated_raw),
+                file_path=row.get("file_path") or "no-file-path",
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=isinstance(
+                    metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(
+                f"[{self.workspace}] Unusable scheduling row "
+                f"{doc_id or '<unknown>'}: {e}"
+            )
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        max_failure_generation: int | None = None,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page over LIGHTRAG_DOC_STATUS.
+
+        A single combined keyset across all requested statuses is correct on
+        PG: ``ORDER BY created_at ASC, id ASC`` plus the composite row-value
+        comparison ``(created_at, id) > ($cur, $id)`` yields the global
+        (created_at, id) order natively — no k-way merge needed. The
+        ``idx_lightrag_doc_status_ws_status_created_id`` (workspace, status,
+        created_at, id) index backs the scan: for a single status it is a pure
+        index range scan resuming at the row-value comparison; for multiple
+        statuses the planner combines per-status index ranges under the LIMIT
+        (top-N bounded — page memory stays O(limit), never a full-table
+        materialization).
+
+        Consumed-position contract (SQL-side filtering makes it trivial):
+        every predicate — workspace, status membership AND the
+        ``max_failure_generation`` cohort predicate — is part of the DB scan
+        itself, so the database skips non-matching rows and keeps scanning
+        until LIMIT rows are collected or the keyset range ends. The rows
+        returned by the query therefore ARE the consumed frontier:
+
+        * ``next_position`` = key of the LAST RETURNED row, and
+        * ``returned < limit`` proves the (unfiltered) keyset range is
+          exhausted — the scan only stops early when the range ends, so a
+          short page can never hide rows that were merely filtered out
+          (unlike client-side filtering, where a fully-filtered page must
+          still advance without terminating).
+
+        ``max_failure_generation`` filters only FAILED rows:
+        ``status != 'failed' OR COALESCE(failure_generation, 0) <= cutoff``
+        (missing/legacy == logical 0). ``strict=True``: any DB error or
+        row-conversion failure raises without returning partial docs or a
+        cursor (single round-trip — there is no partial-page surface). In
+        relaxed mode an unusable row is skipped from the projection but stays
+        consumed (it was returned by the scan). Rows with a NULL created_at
+        (corrupt writes) sort last (NULLS LAST), raise under strict, and are
+        skipped under relaxed; a full page of them fails closed in
+        ``_encode_cursor``.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+
+        params: list[Any] = [self.workspace, [s.value for s in statuses]]
+        sql = (
+            "SELECT id, status, created_at, updated_at, file_path, track_id, "
+            "metadata, failure_generation "
+            "FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND status = ANY($2)"
+        )
+        if isinstance(position, CursorAfter):
+            cur_created, cur_id = self._decode_cursor(position.opaque)
+            params.append(cur_created)
+            params.append(cur_id)
+            sql += (
+                f" AND (created_at, id) > (${len(params) - 1}::timestamp, "
+                f"${len(params)})"
+            )
+        if max_failure_generation is not None:
+            params.append(DocStatus.FAILED.value)
+            sql += f" AND (status != ${len(params)}"
+            params.append(int(max_failure_generation))
+            sql += f" OR COALESCE(failure_generation, 0) <= ${len(params)})"
+        params.append(limit)
+        sql += f" ORDER BY created_at ASC, id ASC LIMIT ${len(params)}"
+
+        # Any asyncpg error propagates out of db.query — strict pages never
+        # commit a new cursor on failure.
+        rows = await self.db.query(sql, params, multirows=True) or []
+
+        docs: dict[str, DocSchedulingRecord] = {}
+        for row in rows:
+            record = self._pg_scheduling_record_from_row(row, strict=strict)
+            if record is None:
+                continue  # relaxed skip is still consumed (see docstring)
+            docs[record.id] = record
+
+        if len(rows) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(self._encode_cursor(rows[-1]))
+        return DocStatusPage(docs=docs, next_position=next_position)
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count: an accurate number or an exception.
+
+        Unlike ``get_status_counts`` implementations that swallow errors,
+        every DB failure propagates — admission control treats an error as
+        "refuse", never as "capacity available".
+        """
+        if not statuses:
+            return 0
+        sql = (
+            'SELECT COUNT(*) AS "count" FROM LIGHTRAG_DOC_STATUS '
+            "WHERE workspace=$1 AND status = ANY($2)"
+        )
+        row = await self.db.query(sql, [self.workspace, [s.value for s in statuses]])
+        if row is None or row.get("count") is None:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] COUNT query returned no row for "
+                "count_docs_by_statuses; refusing to report a count"
+            )
+        return int(row["count"])
+
+    def _prepare_doc_status_field_value(self, column: str, value: Any) -> Any:
+        """Serialize one field for a targeted UPDATE/INSERT, matching the
+        batch upsert's handling of JSONB and TIMESTAMP columns."""
+        if column in _DOC_STATUS_JSON_COLUMNS:
+            return value if isinstance(value, str) else json.dumps(value)
+        if column in _DOC_STATUS_DATETIME_COLUMNS:
+            return _parse_doc_status_datetime(
+                value, f"[{self.workspace}] doc status {column}"
+            )
+        return value
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted single-row UPDATE of the given fields only.
+
+        ``created_at`` is refused (immutable keyset sort key); unknown field
+        names are refused too — column names are interpolated into SQL and
+        must come from the whitelist. 0 rows updated raises
+        :class:`~lightrag.exceptions.StorageRecordNotFoundError` unless
+        ``missing_ok=True``.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        unknown = set(fields) - _DOC_STATUS_UPDATABLE_COLUMNS
+        if unknown:
+            raise ValueError(
+                f"update_doc_status_fields received unknown doc_status "
+                f"column(s): {sorted(unknown)}"
+            )
+        if not fields:
+            # Nothing to write; still honour the existence contract.
+            row = await self.db.query(
+                "SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id=$2",
+                [self.workspace, doc_id],
+            )
+            if row is None and not missing_ok:
+                raise StorageRecordNotFoundError(doc_id)
+            return
+
+        params: list[Any] = [self.workspace, doc_id]
+        set_clauses: list[str] = []
+        for column, value in fields.items():
+            params.append(self._prepare_doc_status_field_value(column, value))
+            set_clauses.append(f"{column} = ${len(params)}")
+        sql = (
+            "UPDATE LIGHTRAG_DOC_STATUS SET "
+            + ", ".join(set_clauses)
+            + " WHERE workspace=$1 AND id=$2 RETURNING id"
+        )
+        row = await self.db.query(sql, params)
+        if row is None:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+
+    async def get_failure_generation_mode(self) -> FailureGenerationMode:
+        """Read the per-workspace activation marker (fail-closed).
+
+        A DB error propagates (never degrades to LEGACY — that would reopen
+        the full-snapshot manual path). A missing row after init, an unknown
+        schema_version or an unparsable mode value all read as MIGRATING.
+        """
+        row = await self.db.query(
+            "SELECT schema_version, mode FROM LIGHTRAG_DOC_SCHEDULING_CTRL "
+            "WHERE workspace=$1",
+            [self.workspace],
+        )
+        if not row:
+            return FailureGenerationMode.MIGRATING
+        if row.get("schema_version") != self._CTRL_SCHEMA_VERSION:
+            return FailureGenerationMode.MIGRATING
+        try:
+            return FailureGenerationMode(str(row.get("mode")))
+        except ValueError:
+            return FailureGenerationMode.MIGRATING
+
+    async def reserve_failure_generation(self) -> int:
+        """Atomically reserve the next failure generation.
+
+        Counter row ``UPDATE ... RETURNING`` — deliberately NOT a sequence:
+        ``nextval`` does not participate in transaction rollback and can be
+        observed before the status commit, reopening the reserve/publish
+        boundary window (explicit review ruling). A missing or
+        version-mismatched ctrl row raises a control-plane error instead of
+        degrading. Crash after commit leaves a permanent hole — allowed;
+        reuse is not.
+        """
+        row = await self.db.query(
+            "UPDATE LIGHTRAG_DOC_SCHEDULING_CTRL "
+            "SET failure_generation_counter = failure_generation_counter + 1, "
+            "update_time = CURRENT_TIMESTAMP "
+            "WHERE workspace=$1 AND schema_version=$2 "
+            "RETURNING failure_generation_counter",
+            [self.workspace, self._CTRL_SCHEMA_VERSION],
+        )
+        if row is None:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker missing or "
+                f"version-mismatched for {self.namespace}; refusing (never "
+                "degrades to LEGACY full-snapshot behaviour)"
+            )
+        return int(row["failure_generation_counter"])
+
+    async def mark_doc_failed(self, doc_id: str, fields: dict[str, Any]) -> int | None:
+        """FAILED transition funnel: reserve + publish in ONE transaction.
+
+        The counter ``UPDATE ... RETURNING`` and the row CAS run in the same
+        transaction, so reserve-and-publish is atomic (boundary window → 0):
+        a rolled-back transaction reserves nothing, a committed one published
+        the FAILED row with its generation. Idempotent per attempt: an
+        already-FAILED row (read ``FOR UPDATE``) whose ``failure_attempt_id``
+        equals the current attempt keeps its generation without touching the
+        counter. A caller-supplied ``created_at`` is IGNORED for existing
+        rows (immutable sort key: it is simply never in the SET list); a
+        missing row is conditionally created (enqueue/parse errors can fail
+        before the PENDING row landed) with the caller's ``created_at``.
+        ``_run_with_retry`` may re-run the whole closure after a transient
+        error; the re-read idempotency check absorbs a commit whose response
+        was lost.
+        """
+        unknown = set(fields) - _DOC_STATUS_UPDATABLE_COLUMNS - {"created_at"}
+        if unknown:
+            raise ValueError(
+                f"mark_doc_failed received unknown doc_status column(s): "
+                f"{sorted(unknown)}"
+            )
+        workspace = self.workspace
+        ctrl_schema_version = self._CTRL_SCHEMA_VERSION
+
+        async def _mark_failed(connection: asyncpg.Connection) -> int:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT status, processing_attempt_id, failure_attempt_id, "
+                    "failure_generation "
+                    "FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id=$2 "
+                    "FOR UPDATE",
+                    workspace,
+                    doc_id,
+                )
+                if row is not None:
+                    current_attempt = row["processing_attempt_id"] or fields.get(
+                        "processing_attempt_id"
+                    )
+                else:
+                    current_attempt = fields.get("processing_attempt_id")
+
+                if (
+                    row is not None
+                    and row["status"] == DocStatus.FAILED.value
+                    and current_attempt
+                    and row["failure_attempt_id"] == current_attempt
+                ):
+                    # Same attempt already published its failure: idempotent
+                    # return of the existing generation, no counter touch.
+                    return int(row["failure_generation"] or 0)
+
+                gen_row = await connection.fetchrow(
+                    "UPDATE LIGHTRAG_DOC_SCHEDULING_CTRL "
+                    "SET failure_generation_counter = "
+                    "failure_generation_counter + 1, "
+                    "update_time = CURRENT_TIMESTAMP "
+                    "WHERE workspace=$1 AND schema_version=$2 "
+                    "RETURNING failure_generation_counter",
+                    workspace,
+                    ctrl_schema_version,
+                )
+                if gen_row is None:
+                    raise StorageControlPlaneError(
+                        f"[{workspace}] failure-generation marker missing or "
+                        "version-mismatched; refusing FAILED transition"
+                    )
+                generation = int(gen_row["failure_generation_counter"])
+
+                if row is not None:
+                    update_fields = {
+                        k: v for k, v in fields.items() if k != "created_at"
+                    }
+                    update_fields["status"] = DocStatus.FAILED.value
+                    update_fields["failure_generation"] = generation
+                    if current_attempt:
+                        update_fields["failure_attempt_id"] = current_attempt
+                        update_fields.setdefault(
+                            "processing_attempt_id",
+                            row["processing_attempt_id"] or current_attempt,
+                        )
+                    params: list[Any] = [workspace, doc_id]
+                    set_clauses: list[str] = []
+                    for column, value in update_fields.items():
+                        params.append(
+                            self._prepare_doc_status_field_value(column, value)
+                        )
+                        set_clauses.append(f"{column} = ${len(params)}")
+                    # created_at is never in the SET list: immutable sort key.
+                    await connection.execute(
+                        "UPDATE LIGHTRAG_DOC_STATUS SET "
+                        + ", ".join(set_clauses)
+                        + " WHERE workspace=$1 AND id=$2",
+                        *params,
+                    )
+                else:
+                    insert_fields = dict(fields)
+                    insert_fields["status"] = DocStatus.FAILED.value
+                    insert_fields["failure_generation"] = generation
+                    if current_attempt:
+                        insert_fields["failure_attempt_id"] = current_attempt
+                        insert_fields.setdefault(
+                            "processing_attempt_id", current_attempt
+                        )
+                    insert_fields.setdefault("chunks_list", [])
+                    columns = ["workspace", "id"]
+                    values: list[Any] = [workspace, doc_id]
+                    for column, value in insert_fields.items():
+                        columns.append(column)
+                        values.append(
+                            self._prepare_doc_status_field_value(column, value)
+                        )
+                    placeholders = ", ".join(f"${i}" for i in range(1, len(values) + 1))
+                    # FOR UPDATE on a missing row does not block a concurrent
+                    # insert; ON CONFLICT publishes our failure over the racing
+                    # row while preserving its created_at (immutable).
+                    conflict_sets = ", ".join(
+                        f"{c} = EXCLUDED.{c}"
+                        for c in insert_fields
+                        if c != "created_at"
+                    )
+                    await connection.execute(
+                        f"INSERT INTO LIGHTRAG_DOC_STATUS ({', '.join(columns)}) "
+                        f"VALUES ({placeholders}) "
+                        f"ON CONFLICT (id, workspace) DO UPDATE SET {conflict_sets}",
+                        *values,
+                    )
+                return generation
+
+        return await self.db._run_with_retry(_mark_failed)
+
+    async def ensure_processing_attempt_id(self, doc_id: str) -> str:
+        """Atomic mint-or-reuse of the row's attempt id (single-statement CAS).
+
+        ``COALESCE(processing_attempt_id, $new)`` keeps a persisted id and
+        only writes the freshly minted one when the column is NULL, so an
+        interrupted call retried after a lost response reuses the persisted
+        id instead of minting a second one.
+        """
+        minted = uuid.uuid4().hex
+        row = await self.db.query(
+            "UPDATE LIGHTRAG_DOC_STATUS "
+            "SET processing_attempt_id = COALESCE(processing_attempt_id, $3) "
+            "WHERE workspace=$1 AND id=$2 "
+            "RETURNING processing_attempt_id",
+            [self.workspace, doc_id, minted],
+        )
+        if row is None:
+            raise StorageRecordNotFoundError(doc_id)
+        return str(row["processing_attempt_id"])
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -8091,6 +8864,12 @@ TABLES = {
 	               -- 64-char SHA-256 hex; future algos (SHA-512, base64) do
 	               -- not require a schema change.
 	               content_hash TEXT NULL,
+	               -- Memory-bounding scheduling fields (Phase 1). NOT NULL
+	               -- DEFAULT 0 keeps legacy/never-failed rows at logical
+	               -- generation 0 (first manual cutoff covers all history).
+	               failure_generation BIGINT NOT NULL DEFAULT 0,
+	               processing_attempt_id TEXT NULL,
+	               failure_attempt_id TEXT NULL,
 	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
