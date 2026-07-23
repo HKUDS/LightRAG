@@ -38,6 +38,25 @@ def test_entity_update_rejects_whitespace_only_name(name):
         EntityUpdateRequest(entity_name=name, updated_data={"description": "x"})
 
 
+@pytest.mark.parametrize("name", ["  ", "\t", "\n"])
+def test_entity_update_rejects_whitespace_only_rename_target(name):
+    with pytest.raises(ValidationError):
+        EntityUpdateRequest(
+            entity_name="Tesla",
+            updated_data={"entity_name": name},
+            allow_rename=True,
+        )
+
+
+def test_entity_update_strips_rename_target_name():
+    req = EntityUpdateRequest(
+        entity_name="Tesla",
+        updated_data={"entity_name": "  Elon Musk  "},
+        allow_rename=True,
+    )
+    assert req.updated_data["entity_name"] == "Elon Musk"
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

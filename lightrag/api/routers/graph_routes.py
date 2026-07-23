@@ -5,7 +5,7 @@ This module contains all graph-related routes for the LightRAG API.
 from typing import Optional, Dict, Any
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lightrag.base import DeletionResult
 from lightrag.utils import logger
@@ -30,6 +30,17 @@ class EntityUpdateRequest(BaseModel):
     @classmethod
     def validate_entity_name(cls, entity_name: str) -> str:
         return _require_nonempty_entity_name(entity_name)
+
+    @model_validator(mode="after")
+    def validate_rename_target_name(self) -> "EntityUpdateRequest":
+        # Rename payloads put the new name in updated_data["entity_name"].
+        if "entity_name" not in self.updated_data:
+            return self
+        new_name = self.updated_data["entity_name"]
+        if not isinstance(new_name, str):
+            raise ValueError("Entity name cannot be empty")
+        self.updated_data["entity_name"] = _require_nonempty_entity_name(new_name)
+        return self
 
 
 class RelationUpdateRequest(BaseModel):
