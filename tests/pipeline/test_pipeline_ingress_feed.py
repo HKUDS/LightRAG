@@ -310,11 +310,14 @@ def test_feeder_teardown_republishes_undrained_messages(tmp_path):
                 )
 
             # Block the feeder mid-route (in full_docs.get_by_id) so its drained
-            # messages are still unresolved when it is cancelled.
+            # messages are still unresolved when cancelled. Deterministic: the
+            # gate SIGNALS when the feeder has actually entered the read.
+            entered = asyncio.Event()
             gate = asyncio.Event()
             orig_get = rag.full_docs.get_by_id
 
             async def blocking_get(doc_id):
+                entered.set()
                 await gate.wait()
                 return await orig_get(doc_id)
 
@@ -322,7 +325,7 @@ def test_feeder_teardown_republishes_undrained_messages(tmp_path):
 
             ctx = _make_feeder_ctx()
             feeder = asyncio.create_task(rag._pipeline_feeder(ctx, ingress))
-            await asyncio.sleep(0.15)  # feeder drained all 3, blocked on the first
+            await asyncio.wait_for(entered.wait(), timeout=3)  # drained all 3, in route
             feeder.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await feeder
@@ -330,6 +333,107 @@ def test_feeder_teardown_republishes_undrained_messages(tmp_path):
             # All three drained-but-unresolved messages were re-published.
             republished = {m.doc_id for m in ingress.drain_documents()}
             assert republished == ids
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_republishes_earlier_iteration_skip_on_teardown(tmp_path):
+    """Finding: a SKIP (full_docs not yet visible) from one feeder iteration must
+    survive to a LATER teardown — the deferred set is feeder-lifetime, not
+    per-iteration. Here doc B is skipped (not visible), the feeder then parks on
+    the next wait, and only then is it cancelled; B must still be re-published so
+    a cancel clearing request_pending does not strand it."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            await rag.apipeline_enqueue_documents(input="BODYB", file_paths="b.txt")
+            b_id = compute_mdhash_id("b.txt", prefix="doc-")
+
+            ingress = await get_pipeline_ingress(rag.workspace)
+            ingress.drain_documents()
+            ingress.put_document(PipelineIngressMessage(kind="document", doc_id=b_id))
+
+            # First feeder read: report B not-yet-visible (SKIP) exactly once;
+            # afterwards behave normally so the feeder parks on the next wait.
+            entered = asyncio.Event()
+            orig_get = rag.full_docs.get_by_id
+            skipped_once = {"done": False}
+
+            async def flaky_get(doc_id):
+                if doc_id == b_id and not skipped_once["done"]:
+                    skipped_once["done"] = True
+                    entered.set()
+                    return None  # not visible → _route_one returns False (SKIP)
+                return await orig_get(doc_id)
+
+            rag.full_docs.get_by_id = flaky_get
+
+            ctx = _make_feeder_ctx()
+            feeder = asyncio.create_task(rag._pipeline_feeder(ctx, ingress))
+            await asyncio.wait_for(entered.wait(), timeout=3)  # B skipped this round
+            await asyncio.sleep(0.05)  # feeder parks on the next get_document
+            feeder.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await feeder
+
+            # B — skipped in the earlier iteration — is still re-published.
+            republished = {m.doc_id for m in ingress.drain_documents()}
+            assert b_id in republished
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_yields_within_one_admission_on_mid_drain_cancel(tmp_path):
+    """Finding: control signals are re-checked before EVERY admission, so a
+    cancel that lands while the feeder is admitting a large drain is honored
+    within one document — not after the whole drain. Here the feeder drains
+    many notifications, admits the first, and a cancel set before the second is
+    honored immediately; the unadmitted tail is re-published."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            # Real PENDING docs so the feeder would route them one by one.
+            n = 8
+            for i in range(n):
+                await rag.apipeline_enqueue_documents(
+                    input=f"BODY{i}", file_paths=f"m{i}.txt"
+                )
+            ids = {compute_mdhash_id(f"m{i}.txt", prefix="doc-") for i in range(n)}
+
+            ingress = await get_pipeline_ingress(rag.workspace)
+            ingress.drain_documents()
+            for doc_id in ids:
+                ingress.put_document(
+                    PipelineIngressMessage(kind="document", doc_id=doc_id)
+                )
+
+            ctx = _make_feeder_ctx()
+            # Trip cancellation the moment the first admission's put happens, so
+            # the per-admission check fires before the second doc.
+            orig_put = ctx.parse_queues["native"].put
+
+            async def cancel_after_first_put(item):
+                await orig_put(item)
+                ctx.pipeline_cancel_event.set()
+
+            ctx.parse_queues["native"].put = cancel_after_first_put
+
+            await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
+
+            # Yielded after exactly one admission (fix-proof: without the
+            # per-admission check the feeder would admit all n before its next
+            # top-of-loop check), and the unadmitted tail was re-published so
+            # nothing is lost.
+            admitted = ctx.parse_queues["native"].qsize()
+            assert admitted == 1
+            republished = {m.doc_id for m in ingress.drain_documents()}
+            assert admitted + len(republished) == n
         finally:
             await rag.finalize_storages()
 
