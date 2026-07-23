@@ -60,7 +60,7 @@
     "react-dom": "^19.2.7",
     "react-dropzone": "^15.0.0",
     "react-error-boundary": "^6.1.2",
-    "react-i18next": "^17.0.9",
+    "react-i18next": "^17.0.10",
     "react-markdown": "^10.1.0",
     "react-number-format": "^5.4.5",
     "react-router-dom": "^7.18.1",
