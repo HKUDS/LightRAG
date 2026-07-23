@@ -1,7 +1,9 @@
 import os
 import logging
 import asyncio
-from typing import Any, final, Union
+import time
+import uuid
+from typing import Any, ClassVar, final, Union
 from dataclasses import dataclass
 import pipmaster as pm
 import configparser
@@ -13,7 +15,12 @@ if not pm.is_installed("redis"):
 
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
-from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
+from redis.exceptions import (  # type: ignore
+    RedisError,
+    ConnectionError,
+    TimeoutError,
+    WatchError,
+)
 from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
@@ -22,10 +29,23 @@ from lightrag.utils import (
 )
 
 from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
+    CursorAfter,
+    CursorPosition,
     BaseKVStorage,
+    DocSchedulingRecord,
+    DocStatusPage,
     DocStatusStorage,
     DocStatus,
     DocProcessingStatus,
+    FailureGenerationMode,
+)
+from lightrag.constants import CUSTOM_CHUNK_PATCH_METADATA_KEY
+from lightrag.exceptions import (
+    StorageControlPlaneError,
+    StorageMigrationInProgressError,
+    StorageRecordNotFoundError,
 )
 from ..kg.shared_storage import get_data_init_lock
 import json
@@ -193,6 +213,8 @@ class RedisConnectionManager:
 @final
 @dataclass
 class RedisKVStorage(BaseKVStorage):
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __post_init__(self):
         validate_workspace(self.workspace)
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
@@ -379,6 +401,12 @@ class RedisKVStorage(BaseKVStorage):
                 logger.error(f"[{self.workspace}] JSON decode error for id {id}: {e}")
                 raise
 
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read (base contract): ``get_by_id`` already
+        propagates every transport/decode failure (no swallow-and-None
+        path), so a ``None`` from a healthy GET is a confirmed absence."""
+        return await self.get_by_id(id)
+
     @redis_retry
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._get_redis_connection() as redis:
@@ -420,7 +448,6 @@ class RedisKVStorage(BaseKVStorage):
         if not data:
             return
 
-        import time
 
         current_time = int(time.time())  # Get current Unix timestamp
 
@@ -619,7 +646,53 @@ class RedisKVStorage(BaseKVStorage):
 @final
 @dataclass
 class RedisDocStatusStorage(DocStatusStorage):
-    """Redis implementation of document status storage"""
+    """Redis implementation of document status storage.
+
+    Memory-bounding scheduling sidecar (Phase 1)
+    --------------------------------------------
+    Alongside the primary ``{final_namespace}:{doc_id}`` JSON records this
+    class maintains, ATOMICALLY with every write (``WATCH``→``MULTI/EXEC``
+    with conflict retry), a scheduling sidecar under the
+    ``{final_namespace}__sched:`` prefix — deliberately NOT matched by the
+    ``{final_namespace}:*`` patterns the legacy SCAN readers and ``drop``
+    use, so sidecar keys never leak into full-scan reads:
+
+    * ``…__sched:status:{status}`` — one ZSET per status, score 0,
+      member ``"{created_at}|{doc_id}"``; ISO-8601 strings make
+      lexicographic member order the ``(created_at, id)`` keyset order, so
+      ``ZRANGEBYLEX`` pages the sweep and ``ZCARD`` gives O(1) counts.
+    * ``…__sched:basename:{canonical}`` — canonical basename → PRIMARY
+      doc_id (rows with ``metadata.is_duplicate != true`` and a real
+      file_path only). ``file_path`` is one-to-many across rows (duplicate
+      markers keep the canonical name) so ONLY the primary row is indexed;
+      maintenance is an eligibility state machine keyed on the (old, new)
+      row values — a primary that turns into a content-duplicate in place
+      deletes its own mapping (CAS: only if it still points to itself).
+    * ``…__sched:ctrl`` — HASH {schema_version, mode,
+      failure_generation_counter}. Counter and rows live in the same Redis
+      persistence unit, so restore rolls them back together — no per-init
+      recalibration is needed (unlike the JSON sidecar file); calibration
+      happens once at migration.
+
+    Existing deployments lack the sidecar: ``initialize`` runs a one-time
+    streaming migration (SCAN in bounded batches → ZADD/SET, then publishes
+    the ctrl marker LAST) guarded by a short-lease migration lock; ctrl
+    presence with a foreign schema_version reads as MIGRATING — never
+    LEGACY. NOTE: the migration lock only prevents duplicate migrations
+    among new workers; isolating OLD writers is a deployment prerequisite
+    (coordinated stop-write upgrade), not something this class can enforce.
+    """
+
+    supports_bounded_scheduling_pages: ClassVar[bool] = True
+    supports_failure_generation: ClassVar[bool] = True
+    supports_strict_doc_identity_lookup: ClassVar[bool] = True
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    _CTRL_SCHEMA_VERSION: ClassVar[str] = "1"
+    # Bounded retry budget for WATCH/MULTI conflict loops. High contention
+    # on a single doc key is not expected (per-doc writes are serialized by
+    # the pipeline); the cap turns a pathological livelock into an error.
+    _WATCH_RETRY_LIMIT: ClassVar[int] = 50
 
     def __post_init__(self):
         validate_workspace(self.workspace)
@@ -692,7 +765,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                     logger.info(
                         f"[{self.workspace}] Connected to Redis for doc status namespace {self.namespace}"
                     )
-                    self._initialized = True
+                # One-time scheduling sidecar bootstrap (no-op once the ctrl
+                # marker exists) — must complete before serving: the paged
+                # sweep, ZCARD counts and basename index all depend on it.
+                await self._migrate_scheduling_sidecar()
+                self._initialized = True
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Failed to connect to Redis for doc status: {e}"
@@ -1011,8 +1088,163 @@ class RedisDocStatusStorage(DocStatusStorage):
             return True
 
     @redis_retry
+    # ------------------------------------------------------------------
+    # Scheduling sidecar helpers (Phase 1) — see class docstring.
+    # ------------------------------------------------------------------
+
+    @property
+    def _sched_prefix(self) -> str:
+        return f"{self.final_namespace}__sched"
+
+    def _zset_key(self, status_value: str) -> str:
+        return f"{self._sched_prefix}:status:{status_value}"
+
+    def _basename_key(self, basename: str) -> str:
+        return f"{self._sched_prefix}:basename:{basename}"
+
+    @property
+    def _ctrl_key(self) -> str:
+        return f"{self._sched_prefix}:ctrl"
+
+    @staticmethod
+    def _zset_member(row: dict[str, Any], doc_id: str) -> str:
+        """``"{created_at}|{doc_id}"`` — ISO-8601 lexicographic order makes
+        member order the (created_at, id) keyset order. A missing/non-str
+        created_at sorts deterministically first as ""; '|' cannot occur in
+        ISO timestamps so the split is unambiguous."""
+        created = row.get("created_at")
+        return f"{created if isinstance(created, str) else ''}|{doc_id}"
+
+    @staticmethod
+    def _split_member(member: str) -> tuple[str, str]:
+        created, _, doc_id = member.partition("|")
+        return created, doc_id
+
+    @staticmethod
+    def _is_duplicate_row(row: Any) -> bool:
+        if not isinstance(row, dict):
+            return False
+        metadata = row.get("metadata")
+        return bool(isinstance(metadata, dict) and metadata.get("is_duplicate"))
+
+    @classmethod
+    def _basename_of(cls, row: Any) -> str | None:
+        """Canonical basename this row would claim in the primary index,
+        or None when the row is index-ineligible (duplicate marker /
+        placeholder file_path)."""
+        if not isinstance(row, dict) or cls._is_duplicate_row(row):
+            return None
+        file_path = row.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return None
+        if file_path in ("unknown_source", "no-file-path"):
+            return None
+        return file_path
+
+    def _queue_index_ops(
+        self,
+        pipe,
+        doc_id: str,
+        old_row: dict[str, Any] | None,
+        new_row: dict[str, Any] | None,
+        *,
+        old_basename_owner: str | None,
+    ) -> None:
+        """Queue sidecar maintenance into an open MULTI for one doc write.
+
+        Status ZSET: remove the old member, add the new one (created_at is
+        immutable for existing rows, but removing by the OLD row's member is
+        still the correct general form). Basename index: the eligibility
+        state machine on (old, new) — the caller supplies the CURRENT index
+        owner (read under WATCH) so deletes are CAS-like: only a mapping
+        that points to this doc is ever touched.
+        """
+        if old_row is not None:
+            old_status = str(old_row.get("status") or "")
+            if old_status:
+                pipe.zrem(
+                    self._zset_key(old_status), self._zset_member(old_row, doc_id)
+                )
+        if new_row is not None:
+            new_status = str(new_row.get("status") or "")
+            if new_status:
+                pipe.zadd(
+                    self._zset_key(new_status),
+                    {self._zset_member(new_row, doc_id): 0},
+                )
+
+        old_basename = self._basename_of(old_row)
+        new_basename = self._basename_of(new_row)
+        if old_basename == new_basename:
+            if new_basename is not None:
+                # eligible → eligible, same name: assert ownership
+                # (idempotent repair of a missing mapping).
+                pipe.set(self._basename_key(new_basename), doc_id)
+            return
+        if old_basename is not None and old_basename_owner == doc_id:
+            # eligible → ineligible (e.g. a primary rewritten in place as a
+            # post-parse content duplicate) or file_path moved: release only
+            # a mapping that still points to us.
+            pipe.delete(self._basename_key(old_basename))
+        if new_basename is not None:
+            # ineligible → eligible, or file_path moved: claim the new name.
+            pipe.set(self._basename_key(new_basename), doc_id)
+
+    async def _atomic_doc_write(
+        self,
+        redis,
+        doc_id: str,
+        mutate,
+    ) -> dict[str, Any] | None:
+        """WATCH→MULTI/EXEC skeleton for one doc: read the old row and the
+        current basename-index owners under WATCH, let ``mutate(old_row)``
+        produce the new row (or ``None`` to abort without writing), then
+        commit row + sidecar in one transaction; retry on conflict.
+
+        Returns the committed new row (or None when aborted).
+        """
+        main_key = f"{self.final_namespace}:{doc_id}"
+        for _ in range(self._WATCH_RETRY_LIMIT):
+            async with redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(main_key)
+                    old_raw = await pipe.get(main_key)
+                    old_row = json.loads(old_raw) if old_raw else None
+                    new_row = mutate(old_row)
+                    if new_row is None:
+                        await pipe.unwatch()
+                        return None
+                    old_basename = self._basename_of(old_row)
+                    old_owner = None
+                    if old_basename is not None:
+                        basename_key = self._basename_key(old_basename)
+                        await pipe.watch(basename_key)
+                        old_owner = await pipe.get(basename_key)
+                    pipe.multi()
+                    pipe.set(main_key, json.dumps(new_row))
+                    self._queue_index_ops(
+                        pipe,
+                        doc_id,
+                        old_row,
+                        new_row,
+                        old_basename_owner=old_owner,
+                    )
+                    await pipe.execute()
+                    return new_row
+                except WatchError:
+                    continue
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] doc_status write for {doc_id} exceeded the "
+            f"WATCH retry budget ({self._WATCH_RETRY_LIMIT})"
+        )
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update document status data"""
+        """Insert or update document status data.
+
+        Each record commits atomically with its scheduling sidecar (status
+        ZSET member + basename primary index) via a per-doc WATCH/MULTI
+        transaction — a few extra RPCs per doc, bounded by the enqueue
+        batch cap; correctness of the sidecar is the priority."""
         if not data:
             return
 
@@ -1020,21 +1252,15 @@ class RedisDocStatusStorage(DocStatusStorage):
             f"[{self.workspace}] Inserting {len(data)} records to {self.namespace}"
         )
         async with self._get_redis_connection() as redis:
-            try:
-                # Ensure chunks_list field exists for new documents
-                for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
-                    if "chunks_list" not in doc_data:
-                        doc_data["chunks_list"] = []
-                    await _cooperative_yield(i)
+            for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
+                if "chunks_list" not in doc_data:
+                    doc_data["chunks_list"] = []
 
-                pipe = redis.pipeline()
-                for i, (k, v) in enumerate(data.items(), start=1):
-                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
-                    await _cooperative_yield(i)
-                await pipe.execute()
-            except json.JSONDecodeError as e:
-                logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")
-                raise
+                def _replace(_old, _new=doc_data):
+                    return _new
+
+                await self._atomic_doc_write(redis, doc_id, _replace)
+                await _cooperative_yield(i)
 
     @redis_retry
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
@@ -1047,17 +1273,54 @@ class RedisDocStatusStorage(DocStatusStorage):
                 raise
 
     async def delete(self, doc_ids: list[str]) -> None:
-        """Delete specific records from storage by their IDs"""
+        """Delete records atomically with their scheduling sidecar entries.
+
+        Per-doc WATCH/MULTI: remove the primary key, its status-ZSET member
+        and — only when the basename index still points to THIS doc — the
+        basename mapping (deleting a duplicate marker or a non-owning row
+        must not strip another row's mapping)."""
         if not doc_ids:
             return
 
+        deleted_count = 0
         async with self._get_redis_connection() as redis:
-            pipe = redis.pipeline()
             for doc_id in doc_ids:
-                pipe.delete(f"{self.final_namespace}:{doc_id}")
-
-            results = await pipe.execute()
-            deleted_count = sum(results)
+                main_key = f"{self.final_namespace}:{doc_id}"
+                for _ in range(self._WATCH_RETRY_LIMIT):
+                    async with redis.pipeline(transaction=True) as pipe:
+                        try:
+                            await pipe.watch(main_key)
+                            old_raw = await pipe.get(main_key)
+                            if not old_raw:
+                                await pipe.unwatch()
+                                break
+                            old_row = json.loads(old_raw)
+                            old_basename = self._basename_of(old_row)
+                            old_owner = None
+                            if old_basename is not None:
+                                basename_key = self._basename_key(old_basename)
+                                await pipe.watch(basename_key)
+                                old_owner = await pipe.get(basename_key)
+                            pipe.multi()
+                            pipe.delete(main_key)
+                            old_status = str(old_row.get("status") or "")
+                            if old_status:
+                                pipe.zrem(
+                                    self._zset_key(old_status),
+                                    self._zset_member(old_row, doc_id),
+                                )
+                            if old_basename is not None and old_owner == doc_id:
+                                pipe.delete(self._basename_key(old_basename))
+                            await pipe.execute()
+                            deleted_count += 1
+                            break
+                        except WatchError:
+                            continue
+                else:
+                    raise StorageControlPlaneError(
+                        f"[{self.workspace}] doc_status delete for {doc_id} "
+                        f"exceeded the WATCH retry budget"
+                    )
             logger.info(
                 f"[{self.workspace}] Deleted {deleted_count} of {len(doc_ids)} doc status entries from {self.namespace}"
             )
@@ -1250,56 +1513,62 @@ class RedisDocStatusStorage(DocStatusStorage):
                 logger.error(f"[{self.workspace}] Error in get_doc_by_file_path: {e}")
                 return None
 
-    async def get_doc_by_file_basename(
+    async def _basename_lookup(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose canonical basename matches.
+        """Primary-row basename lookup via the sidecar index (O(1)).
 
-        The caller is responsible for passing an already-canonical basename.
-        Stored ``file_path`` values are canonicalized by the business layer, so
-        this lookup intentionally performs an exact match only.
+        The index only ever holds PRIMARY rows (``is_duplicate != true``),
+        maintained atomically with every write — so a hit is the document,
+        never a duplicate marker, and covers custom-ID rows that a
+        deterministic ``md5(canonical)`` key lookup would miss. A mapping
+        whose primary row is gone is a broken invariant: raise (the strict
+        caller must not treat it as confirmed absence).
         """
         if not basename:
             return None
         if basename == "unknown_source":
             return None
-
         async with self._get_redis_connection() as redis:
-            try:
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(
-                        cursor, match=f"{self.final_namespace}:*", count=1000
-                    )
-                    if keys:
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.get(key)
-                        values = await pipe.execute()
-
-                        for key, value in zip(keys, values):
-                            if not value:
-                                continue
-                            try:
-                                doc_data = json.loads(value)
-                            except json.JSONDecodeError as e:
-                                logger.error(
-                                    f"[{self.workspace}] JSON decode error in get_doc_by_file_basename: {e}"
-                                )
-                                continue
-                            if doc_data.get("file_path") == basename:
-                                doc_id = key.split(":", 1)[1]
-                                return doc_id, doc_data
-
-                    if cursor == 0:
-                        break
-
+            doc_id = await redis.get(self._basename_key(basename))
+            if not doc_id:
                 return None
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error in get_doc_by_file_basename: {e}"
+            raw = await redis.get(f"{self.final_namespace}:{doc_id}")
+            if not raw:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] basename index points at missing doc "
+                    f"{doc_id} for '{basename}' — sidecar invariant broken"
                 )
-                return None
+            return doc_id, json.loads(raw)
+
+    async def get_doc_by_file_basename(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Find the PRIMARY record whose canonical basename matches.
+
+        The caller is responsible for passing an already-canonical basename.
+        Stored ``file_path`` values are canonicalized by the business layer, so
+        this lookup intentionally performs an exact match only. Duplicate
+        marker rows (``metadata.is_duplicate``) are never returned — see the
+        class docstring's basename-index contract.
+
+        Legacy error semantics preserved: failures log and return ``None``
+        (best-effort miss). Identity-critical callers use
+        :meth:`get_doc_by_file_basename_strict` instead.
+        """
+        try:
+            return await self._basename_lookup(basename)
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error in get_doc_by_file_basename: {e}")
+            return None
+
+    async def get_doc_by_file_basename_strict(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Fail-closed variant: ``None`` only after a healthy index miss;
+        transport errors and broken index invariants propagate (base
+        contract — a swallowed failure would mint duplicate rows)."""
+        return await self._basename_lookup(basename)
 
     async def get_doc_by_content_hash(
         self, content_hash: str
@@ -1345,27 +1614,495 @@ class RedisDocStatusStorage(DocStatusStorage):
                 )
                 return None
 
-    async def drop(self) -> dict[str, str]:
-        """Drop all document status data from storage and clean up resources"""
-        try:
-            async with self._get_redis_connection() as redis:
-                # Use SCAN to find all keys with the namespace prefix
-                pattern = f"{self.final_namespace}:*"
-                cursor = 0
-                deleted_count = 0
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
 
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: ``get_by_id`` already propagates transport and
+        decode failures, so a ``None`` is a confirmed absence."""
+        return await self.get_by_id(id)
+
+    @staticmethod
+    def _encode_cursor(positions: dict[str, str]) -> str:
+        return json.dumps(positions, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> dict[str, str]:
+        try:
+            decoded = json.loads(opaque)
+            if not isinstance(decoded, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in decoded.items()
+            ):
+                raise ValueError("cursor must map status -> last member")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for RedisDocStatusStorage: {e}"
+            ) from e
+        return decoded
+
+    def _scheduling_record_from_row(
+        self, doc_id: str, row: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        try:
+            status = DocStatus(str(row["status"]))
+            created_at = row["created_at"]
+            updated_at = row.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = row.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=row.get("file_path") or "no-file-path",
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        max_failure_generation: int | None = None,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded k-way merge over the per-status ZSETs.
+
+        Each status stream is read with ``ZRANGEBYLEX (last_member +`` —
+        lexicographic member order IS the (created_at, id) keyset order.
+        The composite cursor records each status's own last CONSUMED member:
+        a candidate merged into the page window is consumed (returned,
+        dropped by the generation predicate, or skipped as unusable in
+        relaxed mode) and advances its stream; a prefetched head that did
+        not fit stays unconsumed and is re-read next page. A stream is
+        exhausted when its prefetch came back short AND fully consumed;
+        the sweep ends when every stream is exhausted.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        if isinstance(position, CursorAfter):
+            positions = self._decode_cursor(position.opaque)
+        else:
+            positions = {}
+        status_values = [s.value for s in statuses]
+        failed_value = DocStatus.FAILED.value
+
+        async with self._get_redis_connection() as redis:
+            # Prefetch up to `limit` members per stream, strictly after each
+            # stream's own consumed position.
+            pipe = redis.pipeline()
+            for value in status_values:
+                last = positions.get(value)
+                lex_min = f"({last}" if last else "-"
+                pipe.zrangebylex(self._zset_key(value), lex_min, "+", 0, limit)
+            prefetched: list[list[str]] = await pipe.execute()
+
+            streams: dict[str, list[str]] = dict(zip(status_values, prefetched))
+            short_streams = {
+                value for value, members in streams.items() if len(members) < limit
+            }
+
+            # Merge candidates globally by member (== (created_at, id) key),
+            # keep the first `limit` as this page's consumption window.
+            merged: list[tuple[str, str]] = []  # (member, status_value)
+            for value, members in streams.items():
+                merged.extend((member, value) for member in members)
+            merged.sort(key=lambda t: t[0])
+            window = merged[:limit]
+
+            # Hydrate the window's primary rows in one pipeline.
+            doc_ids = [self._split_member(member)[1] for member, _ in window]
+            rows: list[str | None] = []
+            if doc_ids:
+                pipe = redis.pipeline()
+                for doc_id in doc_ids:
+                    pipe.get(f"{self.final_namespace}:{doc_id}")
+                rows = await pipe.execute()
+
+        docs: dict[str, DocSchedulingRecord] = {}
+        consumed_counts: dict[str, int] = {value: 0 for value in status_values}
+        new_positions = dict(positions)
+        for (member, value), raw in zip(window, rows):
+            _, doc_id = self._split_member(member)
+            consumed_counts[value] += 1
+            new_positions[value] = member
+            if raw is None:
+                message = (
+                    f"[{self.workspace}] status ZSET member {member!r} has no "
+                    f"primary row — sidecar invariant broken"
+                )
+                if strict:
+                    raise StorageControlPlaneError(message)
+                logger.error(message)
+                continue  # consumed; the stale member self-heals on rewrite
+            row = json.loads(raw)
+            if max_failure_generation is not None and value == failed_value:
+                try:
+                    generation = int(row.get("failure_generation") or 0)
+                except (TypeError, ValueError):
+                    generation = 0
+                if generation > max_failure_generation:
+                    continue  # consumed by the cohort predicate
+            record = self._scheduling_record_from_row(doc_id, row, strict=strict)
+            if record is None:
+                continue  # relaxed skip is still consumed
+            docs[doc_id] = record
+
+        exhausted = all(
+            value in short_streams and consumed_counts[value] == len(streams[value])
+            for value in status_values
+        )
+        if exhausted:
+            return DocStatusPage(docs=docs, next_position=CURSOR_END)
+        return DocStatusPage(
+            docs=docs,
+            next_position=CursorAfter(self._encode_cursor(new_positions)),
+        )
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """O(1) fail-closed count: sum of per-status ZCARDs (errors
+        propagate — admission control must never read a failure as zero)."""
+        if not statuses:
+            return 0
+        async with self._get_redis_connection() as redis:
+            pipe = redis.pipeline()
+            for status in statuses:
+                pipe.zcard(self._zset_key(status.value))
+            cards = await pipe.execute()
+        return int(sum(cards))
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted field update, atomic with the sidecar (WATCH/MULTI)."""
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        missing = False
+
+        def _merge(old_row):
+            nonlocal missing
+            if old_row is None:
+                missing = True
+                return None
+            return {**old_row, **fields}
+
+        async with self._get_redis_connection() as redis:
+            await self._atomic_doc_write(redis, doc_id, _merge)
+        if missing and not missing_ok:
+            raise StorageRecordNotFoundError(doc_id)
+
+    # ------------------------------------------------------------------
+    # failure_generation write side (Phase 1)
+    # ------------------------------------------------------------------
+
+    async def get_failure_generation_mode(self) -> FailureGenerationMode:
+        """Read the per-workspace marker; transport errors propagate and a
+        missing/foreign marker reads MIGRATING — never LEGACY."""
+        async with self._get_redis_connection() as redis:
+            ctrl = await redis.hgetall(self._ctrl_key)
+        if not ctrl:
+            return FailureGenerationMode.MIGRATING
+        if ctrl.get("schema_version") != self._CTRL_SCHEMA_VERSION:
+            return FailureGenerationMode.MIGRATING
+        try:
+            return FailureGenerationMode(str(ctrl.get("mode")))
+        except ValueError:
+            return FailureGenerationMode.MIGRATING
+
+    async def reserve_failure_generation(self) -> int:
+        """Atomic counter reservation (WATCH on the ctrl hash so the marker
+        validation and the increment commit together)."""
+        async with self._get_redis_connection() as redis:
+            for _ in range(self._WATCH_RETRY_LIMIT):
+                async with redis.pipeline(transaction=True) as pipe:
+                    try:
+                        await pipe.watch(self._ctrl_key)
+                        ctrl = await pipe.hgetall(self._ctrl_key)
+                        self._validate_ctrl(ctrl)
+                        counter = int(ctrl.get("failure_generation_counter") or 0) + 1
+                        pipe.multi()
+                        pipe.hset(self._ctrl_key, "failure_generation_counter", counter)
+                        await pipe.execute()
+                        return counter
+                    except WatchError:
+                        continue
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] failure-generation reservation exceeded the "
+            f"WATCH retry budget"
+        )
+
+    def _validate_ctrl(self, ctrl: dict[str, str]) -> None:
+        if not ctrl or ctrl.get("schema_version") != self._CTRL_SCHEMA_VERSION:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker missing or "
+                f"version-mismatched for {self.namespace}; refusing (never "
+                "degrades to LEGACY full-snapshot behaviour)"
+            )
+
+    async def mark_doc_failed(self, doc_id: str, fields: dict[str, Any]) -> int | None:
+        """FAILED transition funnel: reserve + publish in ONE transaction.
+
+        WATCHes the doc key AND the ctrl hash, reads the counter, then
+        commits ``counter+1`` and the FAILED row together — a concurrent
+        reservation bumps the ctrl hash and retries this transaction, so the
+        reserve→publish window is zero. Idempotent per attempt; existing
+        created_at preserved; missing rows conditionally created.
+        """
+        main_key = f"{self.final_namespace}:{doc_id}"
+        async with self._get_redis_connection() as redis:
+            for _ in range(self._WATCH_RETRY_LIMIT):
+                async with redis.pipeline(transaction=True) as pipe:
+                    try:
+                        await pipe.watch(main_key, self._ctrl_key)
+                        old_raw = await pipe.get(main_key)
+                        old_row = json.loads(old_raw) if old_raw else None
+                        if isinstance(old_row, dict):
+                            current_attempt = old_row.get(
+                                "processing_attempt_id"
+                            ) or fields.get("processing_attempt_id")
+                        else:
+                            current_attempt = fields.get("processing_attempt_id")
+                        if (
+                            isinstance(old_row, dict)
+                            and str(old_row.get("status")) == DocStatus.FAILED.value
+                            and current_attempt
+                            and old_row.get("failure_attempt_id") == current_attempt
+                        ):
+                            await pipe.unwatch()
+                            try:
+                                return int(old_row.get("failure_generation") or 0)
+                            except (TypeError, ValueError):
+                                return 0
+                        ctrl = await pipe.hgetall(self._ctrl_key)
+                        self._validate_ctrl(ctrl)
+                        generation = (
+                            int(ctrl.get("failure_generation_counter") or 0) + 1
+                        )
+                        new_row = (
+                            {**old_row, **fields}
+                            if isinstance(old_row, dict)
+                            else dict(fields)
+                        )
+                        if isinstance(old_row, dict) and "created_at" in old_row:
+                            new_row["created_at"] = old_row["created_at"]
+                        new_row["status"] = DocStatus.FAILED.value
+                        new_row["failure_generation"] = generation
+                        if current_attempt:
+                            new_row["failure_attempt_id"] = current_attempt
+                            new_row.setdefault("processing_attempt_id", current_attempt)
+                        if "chunks_list" not in new_row:
+                            new_row["chunks_list"] = []
+                        old_basename = self._basename_of(old_row)
+                        old_owner = None
+                        if old_basename is not None:
+                            basename_key = self._basename_key(old_basename)
+                            await pipe.watch(basename_key)
+                            old_owner = await pipe.get(basename_key)
+                        pipe.multi()
+                        pipe.hset(
+                            self._ctrl_key, "failure_generation_counter", generation
+                        )
+                        pipe.set(main_key, json.dumps(new_row))
+                        self._queue_index_ops(
+                            pipe,
+                            doc_id,
+                            old_row,
+                            new_row,
+                            old_basename_owner=old_owner,
+                        )
+                        await pipe.execute()
+                        return generation
+                    except WatchError:
+                        continue
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] mark_doc_failed for {doc_id} exceeded the "
+            f"WATCH retry budget"
+        )
+
+    async def ensure_processing_attempt_id(self, doc_id: str) -> str:
+        """Atomic mint-or-reuse of the row's attempt id (WATCH/MULTI)."""
+        result: dict[str, str | None] = {"attempt": None}
+
+        def _ensure(old_row):
+            if old_row is None:
+                return None
+            attempt = old_row.get("processing_attempt_id")
+            if attempt:
+                result["attempt"] = str(attempt)
+                return None  # nothing to write
+            result["attempt"] = uuid.uuid4().hex
+            return {**old_row, "processing_attempt_id": result["attempt"]}
+
+        async with self._get_redis_connection() as redis:
+            await self._atomic_doc_write(redis, doc_id, _ensure)
+        if result["attempt"] is None:
+            raise StorageRecordNotFoundError(doc_id)
+        return result["attempt"]
+
+    # ------------------------------------------------------------------
+    # Sidecar migration (Phase 1)
+    # ------------------------------------------------------------------
+
+    async def _migrate_scheduling_sidecar(self) -> None:
+        """One-time streaming sidecar build for pre-existing deployments.
+
+        SCAN the primary rows in bounded batches, populate the status ZSETs
+        and the basename primary index, calibrate the counter to
+        ``max(persisted failure_generation)``, then publish the ctrl marker
+        LAST (atomic ENFORCED activation). A short-lease migration lock
+        prevents duplicate migrations among concurrently starting workers;
+        losers wait (bounded) for the marker. Old writers are NOT isolated
+        by this lock — the coordinated stop-write upgrade is a deployment
+        prerequisite (class docstring).
+        """
+        lock_key = f"{self._sched_prefix}:migrate_lock"
+        async with self._get_redis_connection() as redis:
+            ctrl = await redis.hgetall(self._ctrl_key)
+            if ctrl:
+                return  # marker present (any version): nothing to bootstrap
+            got_lock = await redis.set(lock_key, "1", nx=True, ex=300)
+            if not got_lock:
+                # Another worker is migrating: wait (bounded) for the marker.
+                for _ in range(60):
+                    await asyncio.sleep(1)
+                    if await redis.hgetall(self._ctrl_key):
+                        return
+                raise StorageMigrationInProgressError(
+                    f"[{self.workspace}] scheduling sidecar migration by "
+                    f"another worker did not complete in time"
+                )
+            try:
+                # Clear any half-built sidecar from a crashed prior attempt
+                # (marker absent ⇒ nothing published yet, rebuild is safe).
+                for pattern in (
+                    f"{self._sched_prefix}:status:*",
+                    f"{self._sched_prefix}:basename:*",
+                ):
+                    cursor = 0
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            await redis.delete(*keys)
+                        if cursor == 0:
+                            break
+
+                max_generation = 0
+                migrated = 0
+                cursor = 0
                 while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
+                    cursor, keys = await redis.scan(
+                        cursor, match=f"{self.final_namespace}:*", count=1000
+                    )
                     if keys:
-                        # Delete keys in batches
                         pipe = redis.pipeline()
                         for key in keys:
-                            pipe.delete(key)
-                        results = await pipe.execute()
-                        deleted_count += sum(results)
-
+                            pipe.get(key)
+                        values = await pipe.execute()
+                        write_pipe = redis.pipeline()
+                        for key, raw in zip(keys, values):
+                            if not raw:
+                                continue
+                            try:
+                                row = json.loads(raw)
+                            except json.JSONDecodeError:
+                                logger.error(
+                                    f"[{self.workspace}] skipping undecodable "
+                                    f"row {key} during sidecar migration"
+                                )
+                                continue
+                            if not isinstance(row, dict):
+                                continue
+                            doc_id = key.split(":", 1)[1]
+                            status = str(row.get("status") or "")
+                            if status:
+                                write_pipe.zadd(
+                                    self._zset_key(status),
+                                    {self._zset_member(row, doc_id): 0},
+                                )
+                            basename = self._basename_of(row)
+                            if basename is not None:
+                                write_pipe.set(self._basename_key(basename), doc_id)
+                            try:
+                                generation = int(row.get("failure_generation") or 0)
+                            except (TypeError, ValueError):
+                                generation = 0
+                            max_generation = max(max_generation, generation)
+                            migrated += 1
+                        await write_pipe.execute()
                     if cursor == 0:
                         break
+
+                # Publish the marker LAST: readers treat its absence as
+                # MIGRATING, so a crash before this line re-runs cleanly.
+                await redis.hset(
+                    self._ctrl_key,
+                    mapping={
+                        "schema_version": self._CTRL_SCHEMA_VERSION,
+                        "mode": FailureGenerationMode.ENFORCED.value,
+                        "failure_generation_counter": max_generation,
+                    },
+                )
+                logger.info(
+                    f"[{self.workspace}] scheduling sidecar migrated "
+                    f"({migrated} rows, counter={max_generation}) for "
+                    f"{self.namespace}"
+                )
+            finally:
+                await redis.delete(lock_key)
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all document status data from storage and clean up resources.
+
+        Also clears the scheduling sidecar's status ZSETs and basename index
+        (they mirror the dropped rows). The ctrl hash is KEPT: the
+        failure-generation counter must stay monotonic across a workspace
+        clear (holes are allowed, reuse is not)."""
+        try:
+            async with self._get_redis_connection() as redis:
+                deleted_count = 0
+                for pattern in (
+                    f"{self.final_namespace}:*",
+                    f"{self._sched_prefix}:status:*",
+                    f"{self._sched_prefix}:basename:*",
+                ):
+                    cursor = 0
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            # Delete keys in batches
+                            pipe = redis.pipeline()
+                            for key in keys:
+                                pipe.delete(key)
+                            results = await pipe.execute()
+                            deleted_count += sum(results)
+
+                        if cursor == 0:
+                            break
 
                 logger.info(
                     f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"
