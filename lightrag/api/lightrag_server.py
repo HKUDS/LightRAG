@@ -59,6 +59,7 @@ from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
 from lightrag.api.workspace_pool import RagPool, DocManagerPool
+from lightrag.exceptions import PipelineNotInitializedError
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -66,6 +67,7 @@ from lightrag.kg.shared_storage import (
     set_default_workspace,
     cleanup_keyed_lock,
     finalize_share_data,
+    initialize_share_data,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -1270,7 +1272,10 @@ def create_app(args):
         # Store background tasks
         app.state.background_tasks = set()
 
-        # No pre-initialization — workspaces are created lazily by RagPool.
+        # Initialize shared dictionaries early — the /health endpoint needs
+        # them even though workspaces are created lazily by RagPool.
+        initialize_share_data()
+
         try:
             yield
         finally:
@@ -2268,22 +2273,30 @@ def create_app(args):
         """
         try:
             ws = get_workspace_from_request(request, default_workspace=args.workspace)
-            pipeline_status = await get_namespace_data("pipeline_status", workspace=ws)
-
-            pipeline_busy = bool(pipeline_status.get("busy", False))
-            pipeline_scanning = bool(pipeline_status.get("scanning", False))
-            pipeline_destructive_busy = bool(
-                pipeline_status.get("destructive_busy", False)
-            )
-            pipeline_pending_enqueues = int(
-                pipeline_status.get("pending_enqueues", 0) or 0
-            )
-            pipeline_active = (
-                pipeline_busy
-                or pipeline_scanning
-                or pipeline_destructive_busy
-                or pipeline_pending_enqueues > 0
-            )
+            try:
+                pipeline_status = await get_namespace_data("pipeline_status", workspace=ws)
+            except PipelineNotInitializedError:
+                # Workspace hasn't been created yet (lazy init) — pipeline is idle.
+                pipeline_busy = False
+                pipeline_scanning = False
+                pipeline_destructive_busy = False
+                pipeline_pending_enqueues = 0
+                pipeline_active = False
+            else:
+                pipeline_busy = bool(pipeline_status.get("busy", False))
+                pipeline_scanning = bool(pipeline_status.get("scanning", False))
+                pipeline_destructive_busy = bool(
+                    pipeline_status.get("destructive_busy", False)
+                )
+                pipeline_pending_enqueues = int(
+                    pipeline_status.get("pending_enqueues", 0) or 0
+                )
+                pipeline_active = (
+                    pipeline_busy
+                    or pipeline_scanning
+                    or pipeline_destructive_busy
+                    or pipeline_pending_enqueues > 0
+                )
 
             if not auth_configured:
                 auth_mode = "disabled"
