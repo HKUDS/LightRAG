@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,12 +17,49 @@ PRESERVED_NOTICE = (
 )
 
 
+def _bash_version_major(candidate: str) -> int | None:
+    result = subprocess.run(
+        [candidate, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    match = re.search(r"version ([0-9]+)", first_line)
+    return int(match.group(1)) if match else None
+
+
+def _resolve_bash() -> str:
+    candidates = [
+        os.environ.get("LIGHTRAG_TEST_BASH"),
+        "/opt/homebrew/bin/bash",
+        "/usr/local/bin/bash",
+        shutil.which("bash"),
+        "/bin/bash",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_path = Path(candidate)
+        if candidate_path.is_absolute() and not candidate_path.exists():
+            continue
+        major = _bash_version_major(candidate)
+        if major is not None and major >= 4:
+            return candidate
+    return shutil.which("bash") or "bash"
+
+
+BASH_BIN = _resolve_bash()
+
+
 def run_bash_process(
     script: str, cwd: Path | None = None, stdin: str | None = ""
 ) -> subprocess.CompletedProcess[str]:
     """Run a bash snippet and return the completed process."""
     return subprocess.run(
-        ["bash", "--norc", "--noprofile", "-c", script],
+        [BASH_BIN, "--norc", "--noprofile", "-c", script],
         cwd=cwd or REPO_ROOT,
         input=stdin,
         capture_output=True,
