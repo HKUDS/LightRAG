@@ -105,6 +105,21 @@ _ALL_STRATEGY_KEYS = {
             },
         },
         {
+            # nan bypasses ``amt <= 0`` / ``amt > 100``; reject before chunker.
+            "strategy": "semantic_vector",
+            "params": {
+                "breakpoint_threshold_type": "percentile",
+                "breakpoint_threshold_amount": float("nan"),
+            },
+        },
+        {
+            "strategy": "semantic_vector",
+            "params": {
+                "breakpoint_threshold_type": "percentile",
+                "breakpoint_threshold_amount": float("inf"),
+            },
+        },
+        {
             # malformed regex must be compiled/rejected at parse time
             "strategy": "semantic_vector",
             "params": {"sentence_split_regex": "("},

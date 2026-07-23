@@ -3,6 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import math
 import re
 import shutil
 import time
@@ -340,6 +341,9 @@ class SemanticVectorChunkParams(_StrictChunkParams):
         amt = self.breakpoint_threshold_amount
         if amt is None:
             return self
+        # nan comparisons are always False, so reject non-finite before <= / > checks.
+        if not math.isfinite(amt):
+            raise ValueError("breakpoint_threshold_amount must be a finite number")
         # ``> 0`` is type-independent (every threshold type wants a positive
         # magnitude), so it is safe to enforce at parse time.
         if amt <= 0:
