@@ -2400,7 +2400,12 @@ def load_json(file_name):
     if not os.path.exists(file_name):
         return None
     with open(file_name, encoding="utf-8-sig") as f:
-        return json.load(f)
+        content = f.read()
+    # Empty/whitespace existing file: same contract as missing (callers use or {}).
+    if not content.strip():
+        logger.warning("Empty JSON file treated as missing: %s", file_name)
+        return None
+    return json.loads(content)
 
 
 def _sanitize_string_for_json(text: str) -> str:
