@@ -2199,7 +2199,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         elif status == DocStatus.PROCESSED:
             payload["error_msg"] = ""
 
-        await self.doc_status.upsert({doc_key: payload})
+        if status == DocStatus.FAILED:
+            # Phase 1: FAILED custom-chunk journal rows go through the single
+            # mark_doc_failed funnel too — they are FAILED rows a manual sweep
+            # will encounter, so they must carry a failure generation instead
+            # of leaking generation-0 into every cohort. The backend preserves
+            # an existing row's created_at.
+            failed_fields = dict(payload)
+            failed_fields.pop("status", None)
+            await self.doc_status.mark_doc_failed(doc_key, failed_fields)
+        else:
+            await self.doc_status.upsert({doc_key: payload})
         return payload
 
     async def _union_doc_recovery_anchors(

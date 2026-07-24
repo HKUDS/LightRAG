@@ -49,9 +49,15 @@ class DummyRAG:
 class CaptureDocStatus:
     def __init__(self):
         self.upserts = []
+        self.failed = []
 
     async def upsert(self, data):
         self.upserts.append(data)
+
+    async def mark_doc_failed(self, doc_id, fields):
+        # Phase 1: error documents land through the FAILED funnel.
+        self.failed.append((doc_id, fields))
+        return 1
 
 
 class DummyPipeline(_PipelineMixin):
@@ -171,7 +177,7 @@ async def test_error_document_enqueue_canonicalizes_file_path_before_upsert():
         track_id="track-1",
     )
 
-    saved = next(iter(rag.doc_status.upserts[0].values()))
+    _, saved = rag.doc_status.failed[0]
     assert saved["file_path"] == "report.pdf"
 
 

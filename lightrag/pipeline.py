@@ -931,9 +931,16 @@ class _PipelineMixin:
                         },
                     }
 
-                # Store duplicate records in doc_status
+                # Store duplicate records in doc_status through the FAILED
+                # funnel (Phase 1): duplicate-attempt markers are FAILED rows
+                # too and must carry a failure generation — a plain upsert
+                # would mint generation-0 rows that fall into every manual
+                # cohort forever. mark_doc_failed conditionally creates the
+                # missing dup-* rows.
+                for dup_record_id, dup_fields in duplicate_docs.items():
+                    dup_fields.pop("status", None)
+                    await self.doc_status.mark_doc_failed(dup_record_id, dup_fields)
                 if duplicate_docs:
-                    await self.doc_status.upsert(duplicate_docs)
                     logger.info(
                         f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                     )
@@ -1162,11 +1169,14 @@ class _PipelineMixin:
                 },
             }
 
-        # Store error documents in doc_status
+        # Store error documents through the FAILED funnel (Phase 1): these
+        # rows fail before any PENDING row landed, which is exactly the
+        # conditional-create branch of mark_doc_failed — and they must carry
+        # a failure generation like every other FAILED row.
         if error_docs:
-            await self.doc_status.upsert(error_docs)
-            # Log each error for debugging
             for doc_id, error_doc in error_docs.items():
+                error_doc.pop("status", None)
+                await self.doc_status.mark_doc_failed(doc_id, error_doc)
                 logger.error(
                     f"File processing error: - ID: {doc_id} {error_doc['file_path']}"
                 )
@@ -2079,6 +2089,18 @@ class _PipelineMixin:
                 # also raises; that escape is caught by the finally below (workers
                 # are cleanly cancelled) and the batch aborts as a whole.
                 try:
+                    # Attempt-identity bootstrap (Phase 1, §attempt lifecycle):
+                    # persist a processing_attempt_id BEFORE any step that can
+                    # fail, so mark_doc_failed can stamp failure_attempt_id and
+                    # collapse concurrent/retried failure writes of the same
+                    # attempt idempotently. Idempotent itself: an interrupted
+                    # attempt recovered by a later run reuses the persisted id.
+                    # Mirror it onto the in-memory snapshot: downstream
+                    # transitions rebuild the row FROM status_doc and would
+                    # otherwise strip the freshly persisted id.
+                    status_doc.processing_attempt_id = (
+                        await self.doc_status.ensure_processing_attempt_id(doc_id)
+                    )
                     content_data = await self.full_docs.get_by_id(doc_id) or {}
                 except Exception as e:
                     await self._finalize_doc_failure(
@@ -3857,8 +3879,25 @@ class _PipelineMixin:
                 status_doc, extra=metadata_extra
             ),
         }
+        # Attempt identity survives every transition (Phase 1): these upserts
+        # replace the whole row, so without the carry-over each PARSING/
+        # PROCESSING hop would strip the processing_attempt_id minted at the
+        # batch entry and mark_doc_failed could no longer stamp the failing
+        # attempt. Conditional: never overwrite a persisted id with None.
+        if status_doc.processing_attempt_id:
+            payload["processing_attempt_id"] = status_doc.processing_attempt_id
         if extra_fields:
             payload.update(extra_fields)
+        if status == DocStatus.FAILED:
+            # Phase 1 (memory bounding): every FAILED transition goes through
+            # the single mark_doc_failed funnel so it acquires a failure
+            # generation + attempt CAS — a plain upsert here would mint
+            # generation-0 "new" failures that leak into every manual cohort.
+            # Backends ignore the caller-supplied created_at for existing
+            # rows (immutable sort key), so passing it stays safe.
+            payload.pop("status", None)
+            await self.doc_status.mark_doc_failed(doc_id, payload)
+            return
         await self.doc_status.upsert({doc_id: payload})
 
     async def _raise_if_cancelled(
@@ -4168,33 +4207,36 @@ class _PipelineMixin:
             f"Original doc_id: {original_doc_id}, Status: {original_status}"
         )
 
-        await self.doc_status.upsert(
+        # Phase 1: this in-place primary→duplicate rewrite goes through the
+        # FAILED funnel — it acquires a failure generation and, on backends
+        # with a materialized basename index, atomically releases the row's
+        # own primary mapping (eligible → ineligible transition). The
+        # backend preserves the existing row's created_at.
+        await self.doc_status.mark_doc_failed(
+            doc_id,
             {
-                doc_id: {
-                    "status": DocStatus.FAILED,
-                    "content_summary": (
-                        f"[DUPLICATE:content_hash] Original document: {original_doc_id}"
-                    ),
-                    "content_length": content_length,
-                    "chunks_count": 0,
-                    "chunks_list": [],
-                    "created_at": status_doc.created_at,
-                    "updated_at": now,
-                    "file_path": file_path,
-                    "track_id": status_doc.track_id,
-                    "content_hash": content_hash,
-                    "error_msg": message,
-                    "metadata": doc_status_transition_metadata(
-                        status_doc,
-                        extra={
-                            "is_duplicate": True,
-                            "duplicate_kind": "content_hash",
-                            "original_doc_id": original_doc_id,
-                            "original_track_id": original_track_id,
-                        },
-                    ),
-                }
-            }
+                "content_summary": (
+                    f"[DUPLICATE:content_hash] Original document: {original_doc_id}"
+                ),
+                "content_length": content_length,
+                "chunks_count": 0,
+                "chunks_list": [],
+                "created_at": status_doc.created_at,
+                "updated_at": now,
+                "file_path": file_path,
+                "track_id": status_doc.track_id,
+                "content_hash": content_hash,
+                "error_msg": message,
+                "metadata": doc_status_transition_metadata(
+                    status_doc,
+                    extra={
+                        "is_duplicate": True,
+                        "duplicate_kind": "content_hash",
+                        "original_doc_id": original_doc_id,
+                        "original_track_id": original_track_id,
+                    },
+                ),
+            },
         )
         try:
             await self.full_docs.delete([doc_id])

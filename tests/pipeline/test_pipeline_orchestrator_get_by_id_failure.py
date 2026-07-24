@@ -221,7 +221,11 @@ async def test_full_outage_escape_still_cancels_workers(tmp_path, monkeypatch):
 
         monkeypatch.setattr(rag.full_docs, "get_by_id", dead_get)
         # _finalize_doc_failure's doc_status write also fails -> escape.
+        # Phase 1: FAILED transitions go through mark_doc_failed, so a full
+        # outage must kill that funnel too (upsert stays dead for the
+        # non-FAILED writes).
         monkeypatch.setattr(rag.doc_status, "upsert", dead_upsert)
+        monkeypatch.setattr(rag.doc_status, "mark_doc_failed", dead_upsert)
 
         # apipeline_process_enqueue_documents lets the storage error propagate
         # out (its finally releases busy but does not swallow the exception).
