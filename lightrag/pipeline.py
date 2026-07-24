@@ -60,7 +60,7 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_namespace_lock,
     get_pipeline_ingress,
-    make_owner_record,
+    make_manual_owner_record,
     run_to_completion,
     with_reservation_lock,
 )
@@ -2593,19 +2593,6 @@ class _PipelineMixin:
     # whole manual state and the sticky request is re-run from scratch.
     # ============================================================
 
-    def _manual_owner_record(self, request_id: str, token: str) -> dict:
-        """Build the ``manual_owner`` record — the busy run that holds the
-        freeze, identified by ``{request_id, owner_token, pid, process_start_id}``
-        (LR2 §6.1). Reuses the reservation owner record for the process identity
-        so liveness matches the busy owner's."""
-        owner = make_owner_record(token, "manual")
-        return {
-            "request_id": request_id,
-            "owner_token": owner["token"],
-            "pid": owner["pid"],
-            "process_start_id": owner["process_start_id"],
-        }
-
     async def _begin_manual_drain(
         self,
         request_id: str,
@@ -2619,7 +2606,7 @@ class _PipelineMixin:
         ``manual_phase=DRAIN_TO_IDLE`` and ``manual_owner`` in ONE update, only
         while we still own ``busy`` — never a True freeze flag with no owner
         (LR2 §6.1). Returns False if we no longer own the slot."""
-        owner = self._manual_owner_record(request_id, token)
+        owner = make_manual_owner_record(request_id, token)
 
         def _apply(status):
             status.update(

@@ -1996,6 +1996,23 @@ def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     }
 
 
+def make_manual_owner_record(request_id: str, token: str) -> Dict[str, Any]:
+    """Build the manual-retry freeze owner record (LR2 §6.1):
+    ``{request_id, owner_token, pid, process_start_id}``.
+
+    The freeze/drain/reset is driven BY the busy processing run, so the process
+    identity reuses :func:`make_owner_record` (same pid / process_start_id as the
+    busy owner) — a dead busy owner is therefore a dead manual owner. Kept in the
+    shared coordination layer so process identity is only ever captured here."""
+    owner = make_owner_record(token, "manual")
+    return {
+        "request_id": request_id,
+        "owner_token": owner["token"],
+        "pid": owner["pid"],
+        "process_start_id": owner["process_start_id"],
+    }
+
+
 def _dead_reservation_updates(
     pipeline_status: Mapping[str, Any],
     owner_key: str,
