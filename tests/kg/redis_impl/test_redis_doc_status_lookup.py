@@ -182,3 +182,39 @@ async def test_get_doc_by_content_hash_ignores_legacy_rows(redis_doc_status):
     assert result is not None
     doc_id, _ = result
     assert doc_id == "doc-new"
+
+
+async def test_get_doc_by_content_hash_exclude_doc_id_skips_self(redis_doc_status):
+    # LR2 Phase 2.5: exclude_doc_id skips that row in the SCAN pass so the
+    # duplicate check returns the OTHER holder, not the doc being processed.
+    _store_raw(
+        redis_doc_status,
+        "doc-a",
+        _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup"),
+    )
+    _store_raw(
+        redis_doc_status,
+        "doc-b",
+        _doc(DocStatus.PROCESSED.value, "b.pdf", content_hash="dup"),
+    )
+    _store_raw(
+        redis_doc_status,
+        "doc-solo",
+        _doc(DocStatus.PROCESSED.value, "s.pdf", content_hash="uniq"),
+    )
+    # Two docs hold "dup": excluding either deterministically yields the other.
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-a"
+    )
+    assert result is not None and result[0] == "doc-b"
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-b"
+    )
+    assert result is not None and result[0] == "doc-a"
+    # Excluding the sole holder of a hash yields None (no other match).
+    assert (
+        await redis_doc_status.get_doc_by_content_hash(
+            "uniq", exclude_doc_id="doc-solo"
+        )
+        is None
+    )

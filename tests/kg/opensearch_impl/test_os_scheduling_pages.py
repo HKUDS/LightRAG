@@ -1153,3 +1153,32 @@ async def test_legacy_basename_swallows_errors(global_config):
     storage = await _make_doc_status(global_config, client)
     client.search = AsyncMock(side_effect=_transient_error())
     assert await storage.get_doc_by_file_basename("report.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_exclude_doc_id_must_not_ids():
+    # LR2 Phase 2.5: exclude_doc_id becomes a bool must_not ids clause, still
+    # served by the content_hash keyword term — never a scan.
+    s = OpenSearchDocStatusStorage.__new__(OpenSearchDocStatusStorage)
+    s.workspace = "ws"
+    s._index_name = "idx"
+    s._index_ready = True
+    s.client = AsyncMock()
+    s.client.search = AsyncMock(
+        return_value={
+            "hits": {"hits": [{"_id": "doc-2", "_source": {"content_hash": "h"}}]}
+        }
+    )
+
+    result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+    assert result is not None and result[0] == "doc-2"
+    body = s.client.search.call_args.kwargs["body"]
+    assert body["query"]["bool"]["must"] == [{"term": {"content_hash": "h"}}]
+    assert body["query"]["bool"]["must_not"] == [{"ids": {"values": ["doc-1"]}}]
+
+    # No exclusion → plain term query.
+    s.client.search.reset_mock()
+    s.client.search.return_value = {"hits": {"hits": []}}
+    await s.get_doc_by_content_hash("h")
+    body = s.client.search.call_args.kwargs["body"]
+    assert body["query"] == {"term": {"content_hash": "h"}}

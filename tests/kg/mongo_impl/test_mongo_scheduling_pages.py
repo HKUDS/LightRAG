@@ -801,3 +801,27 @@ async def test_repair_primary_not_in_candidates_raises_value_error():
             expected_candidate_fingerprint="",
             dry_run=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_exclude_doc_id_adds_ne_filter():
+    # LR2 Phase 2.5: exclude_doc_id becomes an in-query _id $ne, still served
+    # by the partial content_hash index — never a scan.
+    from unittest.mock import AsyncMock
+
+    s = MongoDocStatusStorage.__new__(MongoDocStatusStorage)
+    s.workspace = "ws"
+    s._data = AsyncMock()
+    s._data.find_one = AsyncMock(return_value={"_id": "doc-2", "content_hash": "h"})
+
+    result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+    assert result is not None and result[0] == "doc-2"
+    s._data.find_one.assert_awaited_once_with(
+        {"content_hash": "h", "_id": {"$ne": "doc-1"}}
+    )
+
+    # No exclusion → plain content_hash filter.
+    s._data.find_one.reset_mock()
+    s._data.find_one.return_value = {"_id": "doc-2", "content_hash": "h"}
+    await s.get_doc_by_content_hash("h")
+    s._data.find_one.assert_awaited_once_with({"content_hash": "h"})

@@ -164,3 +164,30 @@ async def test_get_doc_by_content_hash_no_match_returns_none():
     storage = _make_storage()
     storage.db.query.return_value = []
     assert await storage.get_doc_by_content_hash("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_exclude_doc_id_is_pushed_into_query():
+    # LR2 Phase 2.5: the self-exclusion is an indexed AND id <> $3, NOT a scan.
+    storage = _make_storage()
+    storage.db.query.return_value = [_row(id="doc-2", content_hash="hash-abc")]
+
+    result = await storage.get_doc_by_content_hash("hash-abc", exclude_doc_id="doc-1")
+
+    assert result is not None and result[0] == "doc-2"
+    call = storage.db.query.call_args
+    sql, params = call.args[0], call.args[1]
+    assert "content_hash=$2" in sql
+    assert "id <> $3" in sql  # exclusion in-query, indexed
+    assert "ORDER BY created_at ASC, id ASC" in sql and "LIMIT 1" in sql
+    assert params == ["test_ws", "hash-abc", "doc-1"]
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_no_exclude_omits_clause():
+    storage = _make_storage()
+    storage.db.query.return_value = [_row(content_hash="hash-abc")]
+    await storage.get_doc_by_content_hash("hash-abc")
+    sql, params = storage.db.query.call_args.args[0], storage.db.query.call_args.args[1]
+    assert "id <>" not in sql  # no exclusion clause when exclude_doc_id is None
+    assert params == ["test_ws", "hash-abc"]

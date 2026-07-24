@@ -2276,21 +2276,33 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         )
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose content_hash field matches.
 
         Uses the content_hash keyword mapping created by
         ``_create_index_if_not_exists`` / ``_ensure_content_hash_mapping``.
         Empty values short-circuit so legacy rows without the field cannot
-        accidentally match via type coercion.
+        accidentally match via type coercion. ``exclude_doc_id`` adds a
+        ``must_not`` ids clause so the duplicate check excludes the doc being
+        processed in-query (see base contract), still served by the keyword
+        term.
         """
         if not content_hash:
             return None
         if not self._index_ready:
             return None
         try:
-            body = {"query": {"term": {"content_hash": content_hash}}, "size": 1}
+            if exclude_doc_id is not None:
+                query: dict[str, Any] = {
+                    "bool": {
+                        "must": [{"term": {"content_hash": content_hash}}],
+                        "must_not": [{"ids": {"values": [exclude_doc_id]}}],
+                    }
+                }
+            else:
+                query = {"term": {"content_hash": content_hash}}
+            body = {"query": query, "size": 1}
             response = await self.client.search(index=self._index_name, body=body)
             hits = response["hits"]["hits"]
             if not hits:

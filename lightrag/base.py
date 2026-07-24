@@ -1182,14 +1182,21 @@ class DocStatusStorage(BaseKVStorage, ABC):
 
     @abstractmethod
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> tuple[str, dict[str, Any]] | None:
-        """Get document by content_hash field.
+        """Get a document by its content_hash field.
 
         Used for content-hash deduplication of full documents.
 
         Args:
             content_hash: The content hash value to search for.
+            exclude_doc_id: When set, a row with this id is NOT a match — the
+                lookup returns the earliest OTHER doc sharing the hash (or
+                None). This lets the duplicate check exclude the very row being
+                processed (whose own content_hash is already persisted) in a
+                single bounded/indexed query, instead of a full-store scan
+                fallback. Every backend MUST honour it in-query so the
+                exclusion never widens the scan.
 
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.

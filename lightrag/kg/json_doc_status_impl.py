@@ -607,9 +607,15 @@ class JsonDocStatusStorage(DocStatusStorage):
         return row.copy() if isinstance(row, dict) else row
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose content_hash field matches."""
+        """Find an existing record whose content_hash field matches.
+
+        ``exclude_doc_id`` skips that row so the duplicate check can exclude
+        the doc being processed (see base contract). JSON has no content_hash
+        index, so this is a single full dict scan either way — the exclusion
+        only drops the self-row in the same pass, never adding a second scan.
+        """
         if not content_hash:
             return None
         if self._storage_lock is None:
@@ -617,6 +623,8 @@ class JsonDocStatusStorage(DocStatusStorage):
 
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
+                if doc_id == exclude_doc_id:
+                    continue
                 if doc_data.get("content_hash") == content_hash:
                     return doc_id, doc_data
         return None

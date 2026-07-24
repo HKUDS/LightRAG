@@ -1724,9 +1724,15 @@ class RedisDocStatusStorage(DocStatusStorage):
         )
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose content_hash field matches."""
+        """Find an existing record whose content_hash field matches.
+
+        ``exclude_doc_id`` skips that row so the duplicate check can exclude
+        the doc being processed (see base contract). Redis has no content_hash
+        index, so this SCANs the keyspace either way — the exclusion only drops
+        the self-row in the same pass, never adding a second scan.
+        """
         if not content_hash:
             return None
 
@@ -1746,6 +1752,9 @@ class RedisDocStatusStorage(DocStatusStorage):
                         for key, value in zip(keys, values):
                             if not value:
                                 continue
+                            doc_id = key.split(":", 1)[1]
+                            if doc_id == exclude_doc_id:
+                                continue
                             try:
                                 doc_data = json.loads(value)
                             except json.JSONDecodeError as e:
@@ -1754,7 +1763,6 @@ class RedisDocStatusStorage(DocStatusStorage):
                                 )
                                 continue
                             if doc_data.get("content_hash") == content_hash:
-                                doc_id = key.split(":", 1)[1]
                                 return doc_id, doc_data
 
                     if cursor == 0:

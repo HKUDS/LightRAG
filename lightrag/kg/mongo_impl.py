@@ -1175,20 +1175,25 @@ class MongoDocStatusStorage(DocStatusStorage):
         )
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Mongo-native override of content-hash document lookup.
 
         Uses the partial ``content_hash`` index. Empty strings are treated as a
         miss to align with the partial-index predicate; legacy rows missing the
         field cannot match a non-empty query because ``find_one`` requires an
-        exact value.
+        exact value. ``exclude_doc_id`` adds ``_id: {$ne: ...}`` so the
+        duplicate check excludes the doc being processed in-query (see base
+        contract), still served by the content_hash index.
         """
         if not content_hash:
             return None
 
+        query: dict[str, Any] = {"content_hash": content_hash}
+        if exclude_doc_id is not None:
+            query["_id"] = {"$ne": exclude_doc_id}
         try:
-            doc = await self._data.find_one({"content_hash": content_hash})
+            doc = await self._data.find_one(query)
         except PyMongoError as e:
             logger.error(f"[{self.workspace}] Error in get_doc_by_content_hash: {e}")
             return None
