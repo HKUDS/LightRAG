@@ -4531,16 +4531,19 @@ async def pick_by_vector_similarity(
             f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
         )
 
-        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
-            if not chunk_vectors:
-                logger.warning(
-                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
-                )
-            else:
-                logger.warning(
-                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
-                )
+        if not chunk_vectors:
+            logger.warning(
+                "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+            )
             return []
+
+        if len(chunk_vectors) != len(all_chunk_ids):
+            # Some candidate chunks have no stored vector (e.g. after deletions
+            # or a partial re-embed). Rank the ones we do have rather than
+            # discarding the whole selection; the loop below skips the missing.
+            logger.debug(
+                f"Vector similarity chunk selection: found {len(chunk_vectors)} of {len(all_chunk_ids)}; ranking the available chunks"
+            )
 
         # Calculate cosine similarities
         similarities = []
