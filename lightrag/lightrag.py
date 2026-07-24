@@ -79,6 +79,7 @@ from lightrag.constants import (
     DEFAULT_QUEUE_SIZE_PARSE,
     DEFAULT_QUEUE_SIZE_ANALYZE,
     DEFAULT_QUEUE_SIZE_INSERT,
+    DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
@@ -102,9 +103,12 @@ from lightrag.kg.shared_storage import (
 )
 
 from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorPosition,
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
@@ -680,6 +684,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         default=get_env_value("QUEUE_SIZE_INSERT", DEFAULT_QUEUE_SIZE_INSERT, int)
     )
 
+    pipeline_scheduling_page_size: int = field(
+        default=get_env_value(
+            "PIPELINE_SCHEDULING_PAGE_SIZE",
+            DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+            int,
+        )
+    )
+    """Bounded scheduling page size (LR2 Phase 2).
+
+    The scheduler sweeps the doc_status backlog through keyset pages of this
+    many records so memory stays O(page_size + inflight) instead of O(backlog).
+    ``0`` disables paging: one page holds the whole result set, exactly
+    reproducing the legacy single-scan behaviour. Negative values are rejected
+    at initialization.
+    """
+
     max_graph_nodes: int = field(
         default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
     )
@@ -994,6 +1014,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._replace_addon_params(addon_params, mark_dirty=False)
         self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
+
+        # Bounded scheduling page size: 0 disables paging (single-scan legacy
+        # behaviour); a negative value is a misconfiguration, fail fast.
+        if self.pipeline_scheduling_page_size < 0:
+            raise ValueError(
+                "PIPELINE_SCHEDULING_PAGE_SIZE must be >= 0 (0 disables "
+                f"paging); got {self.pipeline_scheduling_page_size}"
+            )
 
         # Handle deprecated parameters
         if self.log_level is not None:
@@ -2288,20 +2316,45 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "pipeline_status", workspace=self.workspace
             )
 
-        # Scheduling-control-plane discovery: strict so a mid-pagination or
-        # per-record backend failure raises instead of returning a partial
-        # candidate set (which would roll back some journaled docs, silently
-        # miss the rest, and report the scan done). The scan-time caller
-        # catches the raise and keeps the journal/FAILED rows for the next
-        # scan — abort-and-retry beats partial administrative recovery.
-        candidates = await self.doc_status.get_docs_by_statuses(
-            [DocStatus.FAILED, DocStatus.PROCESSING], strict=True
-        )
-        journaled_ids = [
-            doc_id
-            for doc_id, status_doc in candidates.items()
-            if doc_status_custom_chunk_patch(status_doc) is not None
-        ]
+        # Scheduling-control-plane discovery, memory-bounded (LR2 Phase 2):
+        # page the FAILED/PROCESSING keyset instead of materializing every such
+        # row, collecting journaled ids straight from the lightweight page's
+        # has_custom_chunk_journal flag (no per-row hydration — journaled docs
+        # are rare, so only the small id list accumulates). strict so a
+        # mid-pagination or per-record backend failure raises instead of
+        # returning a partial candidate set (which would roll back some
+        # journaled docs, silently miss the rest, and report the scan done);
+        # the scan-time caller catches the raise and keeps the journal/FAILED
+        # rows for the next scan — abort-and-retry beats partial recovery.
+        journaled_ids: list[str] = []
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size > 0:
+            position: CursorPosition = CURSOR_START
+            while True:
+                page = await self.doc_status.get_docs_by_statuses_page(
+                    [DocStatus.FAILED, DocStatus.PROCESSING],
+                    limit=page_size,
+                    position=position,
+                    strict=True,
+                )
+                journaled_ids.extend(
+                    doc_id
+                    for doc_id, record in page.docs.items()
+                    if record.has_custom_chunk_journal
+                )
+                if page.next_position is CURSOR_END:
+                    break
+                position = page.next_position
+        else:
+            # Paging disabled (PIPELINE_SCHEDULING_PAGE_SIZE=0): legacy scan.
+            candidates = await self.doc_status.get_docs_by_statuses(
+                [DocStatus.FAILED, DocStatus.PROCESSING], strict=True
+            )
+            journaled_ids = [
+                doc_id
+                for doc_id, status_doc in candidates.items()
+                if doc_status_custom_chunk_patch(status_doc) is not None
+            ]
 
         rolled_back: list[str] = []
         failed: list[str] = []

@@ -457,6 +457,10 @@ async def test_rollback_candidate_discovery_uses_strict(tmp_path, monkeypatch):
     the raise and keeps the journal/FAILED rows for the next scan."""
     rag = await _build_rag(tmp_path)
     try:
+        # Legacy single-scan discovery path so the failure lands on
+        # get_docs_by_statuses; the paged path (page_size>0) is likewise strict
+        # (it passes strict=True to get_docs_by_statuses_page).
+        rag.pipeline_scheduling_page_size = 0
         seen_strict: list[bool] = []
 
         async def _raising_query(statuses, strict=False):

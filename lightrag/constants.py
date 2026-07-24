@@ -358,6 +358,14 @@ DEFAULT_QUEUE_SIZE_PARSE = 20
 DEFAULT_QUEUE_SIZE_ANALYZE = 100
 DEFAULT_QUEUE_SIZE_INSERT = 4
 
+# Memory-bounding scheduling page size (LR2 Phase 2). The scheduler pages the
+# doc_status backlog through bounded keyset pages of this many records instead
+# of materializing every PENDING/orphan row at once, so RSS grows with
+# page-size + inflight rather than with the whole backlog. ``0`` disables
+# paging (one page holds the whole result set — byte-for-byte the legacy
+# single-scan behaviour).
+DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE = 500
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values

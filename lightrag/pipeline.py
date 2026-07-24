@@ -29,7 +29,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
+    CursorPosition,
+    DocProcessingStatus,
+    DocStatus,
+)
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
@@ -165,6 +171,12 @@ class PipelineNextStep(Enum):
     # refetch drains a bounded chunk and lets the strict scan decide: live
     # docs come back as the next batch, provably-stale messages are dropped.
     CONTINUE_DOCUMENT = "continue_document"
+    # The in-progress bounded AUTO sweep has more pages (its keyset cursor is
+    # not yet CURSOR_END).  No wake-up signal is consumed: the run simply
+    # fetches the next page of the SAME sweep before honouring quiescence
+    # signals, so a huge PENDING backlog drains page-by-page while cancellation
+    # and manual retry still preempt at every page boundary (LR2 Phase 2 §6.3).
+    CONTINUE_SWEEP_PAGE = "continue_sweep_page"
     # Cancellation pending: the run must stop WITHOUT consuming any wake-up
     # signal — the ingress is fully retained for the next explicit trigger.
     CANCELLED = "cancelled"
@@ -1325,11 +1337,19 @@ class _PipelineMixin:
             # peeked and stays sticky on its own.)
             uncommitted_wakeup = absorbed_auto_rescan
 
-            to_process_docs: dict[
-                str, DocProcessingStatus
-            ] = await self.doc_status.get_docs_by_statuses(
-                list(initial_statuses), strict=True
-            )
+            # Bounded scheduling sweep (LR2 Phase 2): the initial scan is now
+            # the first PAGE of a keyset sweep. ``sweep_statuses`` /
+            # ``sweep_cursor`` are threaded through every quiescence decision so
+            # the run drains the KNOWN backlog page-by-page (CONTINUE_SWEEP_PAGE)
+            # before honouring auto-rescan/document signals. A manual sweep and
+            # PIPELINE_SCHEDULING_PAGE_SIZE=0 both collapse to a single
+            # CURSOR_END page (legacy single-scan; see _next_scheduling_page).
+            sweep_statuses = initial_statuses
+            to_process_docs: dict[str, DocProcessingStatus]
+            (
+                to_process_docs,
+                sweep_cursor,
+            ) = await self._next_scheduling_page(sweep_statuses, CURSOR_START)
 
             # The scan is complete: an empty result means the signal was fully
             # SERVED, not lost — release ownership.  A non-empty result keeps
@@ -1353,7 +1373,7 @@ class _PipelineMixin:
                 # that gap is not stranded in PENDING.
                 logger.info("No documents to process")
                 decision = await self._decide_pipeline_next_step(
-                    pipeline_status, pipeline_status_lock, ingress
+                    pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                 )
                 if decision.step is PipelineNextStep.RELEASED:
                     # No pending work: slot released silently, finally is a no-op.
@@ -1364,10 +1384,15 @@ class _PipelineMixin:
                     # the finally resets the cancellation state (surfacing the
                     # internal halt when applicable) and releases the slot.
                     return
-                # A wake-up signal was pending: re-fetch per the decision and
-                # fall through into the loop to process it.
-                to_process_docs, pending_manual_ack = await self._refetch_for_decision(
-                    decision, ingress
+                # A wake-up signal (or an unfinished sweep) was pending: re-fetch
+                # per the decision and fall through into the loop to process it.
+                (
+                    to_process_docs,
+                    sweep_statuses,
+                    sweep_cursor,
+                    pending_manual_ack,
+                ) = await self._refetch_for_decision(
+                    decision, sweep_statuses, sweep_cursor, ingress
                 )
                 uncommitted_wakeup = decision.step in (
                     PipelineNextStep.CONTINUE_AUTO,
@@ -1431,7 +1456,7 @@ class _PipelineMixin:
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
                     decision = await self._decide_pipeline_next_step(
-                        pipeline_status, pipeline_status_lock, ingress
+                        pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
                     if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
@@ -1442,8 +1467,12 @@ class _PipelineMixin:
                         continue  # loop-top handler does the cancel bookkeeping
                     (
                         to_process_docs,
+                        sweep_statuses,
+                        sweep_cursor,
                         pending_manual_ack,
-                    ) = await self._refetch_for_decision(decision, ingress)
+                    ) = await self._refetch_for_decision(
+                        decision, sweep_statuses, sweep_cursor, ingress
+                    )
                     uncommitted_wakeup = decision.step in (
                         PipelineNextStep.CONTINUE_AUTO,
                         PipelineNextStep.CONTINUE_DOCUMENT,
@@ -1478,7 +1507,7 @@ class _PipelineMixin:
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
                     decision = await self._decide_pipeline_next_step(
-                        pipeline_status, pipeline_status_lock, ingress
+                        pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
                     if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
@@ -1489,8 +1518,12 @@ class _PipelineMixin:
                         continue  # loop-top handler does the cancel bookkeeping
                     (
                         to_process_docs,
+                        sweep_statuses,
+                        sweep_cursor,
                         pending_manual_ack,
-                    ) = await self._refetch_for_decision(decision, ingress)
+                    ) = await self._refetch_for_decision(
+                        decision, sweep_statuses, sweep_cursor, ingress
+                    )
                     uncommitted_wakeup = decision.step in (
                         PipelineNextStep.CONTINUE_AUTO,
                         PipelineNextStep.CONTINUE_DOCUMENT,
@@ -1528,7 +1561,7 @@ class _PipelineMixin:
                 # WHOLE run — no new epoch — with the ingress fully retained
                 # for the next explicit trigger.
                 decision = await self._decide_pipeline_next_step(
-                    pipeline_status, pipeline_status_lock, ingress
+                    pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                 )
                 if decision.step is PipelineNextStep.RELEASED:
                     busy_released_in_loop = True
@@ -1547,9 +1580,15 @@ class _PipelineMixin:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-                # Check for pending documents again, per the decision's tuple
-                to_process_docs, pending_manual_ack = await self._refetch_for_decision(
-                    decision, ingress
+                # Fetch the next batch: the next page of the current sweep
+                # (CONTINUE_SWEEP_PAGE) or a fresh sweep per the decision's tuple.
+                (
+                    to_process_docs,
+                    sweep_statuses,
+                    sweep_cursor,
+                    pending_manual_ack,
+                ) = await self._refetch_for_decision(
+                    decision, sweep_statuses, sweep_cursor, ingress
                 )
                 uncommitted_wakeup = decision.step in (
                     PipelineNextStep.CONTINUE_AUTO,
@@ -1840,6 +1879,27 @@ class _PipelineMixin:
             return True
         return False
 
+    def _feeder_epoch_full(self, ctx: "_BatchRunContext") -> bool:
+        """True when this epoch has admitted ``PIPELINE_SCHEDULING_PAGE_SIZE``
+        documents (``inflight`` + ``routing``) — the single-epoch bound of
+        LR2 §6.4.
+
+        ``inflight_doc_ids`` grows monotonically within a batch (it is the
+        dedup set of everything routed into this epoch, never shrunk on
+        completion), so this counts total admissions this epoch, not live
+        concurrency. Once the count reaches the page size the feeder stops
+        admitting and the remaining mailbox / doc_status work continues in the
+        NEXT epoch (a fresh page via CONTINUE_SWEEP_PAGE, or a CONTINUE_DOCUMENT
+        refetch). Disabled when paging is off (``page_size <= 0``) — the feeder
+        then admits freely, exactly as before Phase 2. Read without the lock: a
+        single-threaded ``len`` is a consistent snapshot and this is a soft
+        backpressure gate, not a hard invariant.
+        """
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size <= 0:
+            return False
+        return len(ctx.inflight_doc_ids) + len(ctx.routing_doc_ids) >= page_size
+
     async def _pipeline_feeder(self, ctx: "_BatchRunContext", ingress) -> None:
         """Route documents that arrive DURING a batch into its parse queues so
         they process without waiting for the batch barrier.
@@ -1894,11 +1954,27 @@ class _PipelineMixin:
                     # PENDING docs.
                     if self._feeder_should_yield(ctx, ingress, check_auto=True):
                         return
+                    # Single-epoch bound (LR2 §6.4): once this batch holds
+                    # PIPELINE_SCHEDULING_PAGE_SIZE docs the feeder stops
+                    # admitting; the rest continues in the next epoch (a fresh
+                    # page, or a CONTINUE_DOCUMENT refetch of the mailbox).
+                    if self._feeder_epoch_full(ctx):
+                        return
                     batch = await self._feeder_next_batch(ingress)
-                    if any(msg.doc_id for msg in batch):
-                        pending = await self.doc_status.get_docs_by_statuses(
-                            [DocStatus.PENDING], strict=True
+                    drained_ids = [msg.doc_id for msg in batch if msg.doc_id]
+                    if drained_ids:
+                        # Bounded to THIS drain's ids (not the whole PENDING
+                        # set): hydrate full status, keep only rows still
+                        # PENDING. A drained doc now processed/failed/deleted is
+                        # simply absent, and _route_one drops it as stale.
+                        hydrated = await self.doc_status.get_full_docs_by_ids(
+                            drained_ids, strict=True
                         )
+                        pending = {
+                            doc_id: doc
+                            for doc_id, doc in hydrated.items()
+                            if getattr(doc, "status", None) == DocStatus.PENDING
+                        }
                         for reached, msg in enumerate(batch):
                             # Honor an in-flight cancel/manual WITHIN one doc
                             # (auto-rescan is coarser — checked per drain above).
@@ -1906,6 +1982,11 @@ class _PipelineMixin:
                                 ctx, ingress, check_auto=False
                             ):
                                 deferred.extend(batch[reached:])  # unprocessed tail
+                                return
+                            # Re-check the epoch bound mid-drain: earlier
+                            # admissions in THIS loop may have reached the cap.
+                            if self._feeder_epoch_full(ctx):
+                                deferred.extend(batch[reached:])
                                 return
                             if not await self._route_one(ctx, msg, pending):
                                 deferred.append(msg)  # SKIP — survives to teardown
@@ -2371,11 +2452,77 @@ class _PipelineMixin:
 
         return to_process_docs
 
+    async def _next_scheduling_page(
+        self,
+        statuses,
+        position: CursorPosition,
+    ) -> tuple[dict[str, DocProcessingStatus], CursorPosition]:
+        """Fetch ONE bounded scheduling page and hydrate it to full status.
+
+        Returns ``(to_process_docs, next_position)`` — the full
+        :class:`DocProcessingStatus` map for the page, plus the cursor to pass
+        back for the next page (``next_position is CURSOR_END`` ends the
+        sweep). Memory stays O(page_size): the lightweight keyset page only
+        carries ids/status, and the survivors are hydrated to full rows via
+        ``get_full_docs_by_ids`` right before routing.
+
+        Two paths collapse to the LEGACY single-scan (one page terminating at
+        ``CURSOR_END``), so ``PIPELINE_SCHEDULING_PAGE_SIZE=0`` and every manual
+        retry sweep behave byte-for-byte as before Phase 2:
+
+        * ``page_size <= 0`` — paging disabled by configuration;
+        * ``DocStatus.FAILED in statuses`` — a MANUAL retry sweep. The manual
+          ACK contract requires every FAILED→PENDING reset to persist *before*
+          the request is ACKed; a multi-page manual sweep would ACK after the
+          first page while later pages still hold un-reset FAILED rows. Manual
+          backlog is bounded by the FAILED count today and bounded properly by
+          Phase 3's exclusive reset, so manual stays single-scan here.
+
+        The strict page + strict hydration are a complete-or-raise pair: any
+        backend error propagates so the caller neither advances the cursor nor
+        silently drops docs (they stay PENDING for the next sweep).
+        """
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        paged = page_size > 0 and DocStatus.FAILED not in statuses
+        if not paged:
+            docs = await self.doc_status.get_docs_by_statuses(
+                list(statuses), strict=True
+            )
+            return docs, CURSOR_END
+
+        page = await self.doc_status.get_docs_by_statuses_page(
+            list(statuses),
+            limit=page_size,
+            position=position,
+            strict=True,
+        )
+        if not page.docs:
+            # A fully-filtered page is not termination — the cursor still
+            # advances (or is CURSOR_END); return the empty map and let the
+            # caller loop on next_position.
+            return {}, page.next_position
+
+        hydrated = await self.doc_status.get_full_docs_by_ids(
+            list(page.docs.keys()), strict=True
+        )
+        # Keep only rows still in the requested statuses (matches the legacy
+        # get_docs_by_statuses view): a row raced out of the set between the
+        # page and its hydration is no longer routable. str-enum equality lets
+        # a raw string or a DocStatus member both match.
+        status_values = {s.value for s in statuses}
+        to_process_docs = {
+            doc_id: doc
+            for doc_id, doc in hydrated.items()
+            if getattr(doc, "status", None) in status_values
+        }
+        return to_process_docs, page.next_position
+
     async def _decide_pipeline_next_step(
         self,
         pipeline_status: dict,
         pipeline_status_lock,
         ingress,
+        sweep_cursor: CursorPosition = CURSOR_END,
     ) -> PipelineNextDecision:
         """Atomic quiescence decision: continue for a pending wake-up signal
         or release ``busy`` in the same critical section.
@@ -2439,6 +2586,14 @@ class _PipelineMixin:
                     PipelineNextStep.CONTINUE_MANUAL,
                     manual_request_id=manual_msg.request_id,
                 )
+            # The in-progress bounded sweep has more pages: finish draining the
+            # KNOWN backlog before consuming any quiescence signal. Preempted
+            # by cancellation and manual retry above (LR2 §6.3 "无 manual 时继续
+            # cursor"); consumes nothing, so auto-rescan/document stay pending
+            # for when the cursor reaches CURSOR_END. Collapses to a no-op when
+            # paging is off (cursor is CURSOR_END after a single-scan page).
+            if sweep_cursor is not CURSOR_END:
+                return PipelineNextDecision(PipelineNextStep.CONTINUE_SWEEP_PAGE)
             if ingress.consume_auto_rescan():
                 return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
             if ingress.counts().get("documents"):
@@ -2449,53 +2604,82 @@ class _PipelineMixin:
     async def _refetch_for_decision(
         self,
         decision: PipelineNextDecision,
+        sweep_statuses,
+        sweep_cursor: CursorPosition,
         ingress,
-    ) -> tuple[dict[str, DocProcessingStatus], str | None]:
-        """Strict doc_status refetch for a CONTINUE_* decision.
+    ) -> tuple[dict[str, DocProcessingStatus], tuple, CursorPosition, str | None]:
+        """Fetch the next batch for a CONTINUE_* decision (bounded, Phase 2).
 
-        Selects the status tuple by decision kind — manual continuations are
-        the only path that may pull FAILED documents back in — and restores
-        the consumed wake-up signal on failure: a CONTINUE_AUTO whose strict
-        query raises re-arms the auto-rescan flag before propagating (the
-        signal was already consumed in the decision), while a manual request
-        was only peeked and stays sticky on its own.
+        Returns ``(docs, next_statuses, next_cursor, pending_manual_ack)``:
 
-        CONTINUE_DOCUMENT resolves resident document messages with the same
-        drain→verify protocol the feeder uses, at the supervisor's quiescence
-        point: a bounded destructive drain FIRST, then the strict scan.  The
-        order is the correctness anchor — every drained message's doc that is
-        still live (its PENDING row persisted before its publish, which
-        preceded the drain) is necessarily in the scan result and comes back
-        as the next batch, so a drained message never needs re-publishing;
-        one absent from the scan is PROVABLY stale (terminal/FAILED/deleted —
-        FAILED is manual-only by ruling) and is compacted, which is what
-        keeps a stale notification from holding ``busy`` forever (the
-        has_work-only exit would otherwise livelock on it).  Messages
-        published after the drain stay in the mailbox for the next decision.
-        Crash/failure safety mirrors the feeder's drain: a strict-scan
-        failure re-publishes the drained messages and arms auto-rescan as a
-        backstop before propagating; a SIGKILL — or a Manager response lost
-        AFTER the server executed the drain (at-most-once RPC) — loses only
-        messages whose PENDING rows the next run's initial scan recovers.
+        * ``docs`` — the hydrated full-status map for the batch to process;
+        * ``next_statuses`` / ``next_cursor`` — the sweep state the caller
+          threads back into the next ``_decide``/refetch (``next_cursor is
+          CURSOR_END`` means this sweep is exhausted, so the next quiescence
+          decision falls through to auto-rescan/document/release);
+        * ``pending_manual_ack`` — the request id the caller must ACK once the
+          FAILED→PENDING resets persist (post-validation), or immediately on a
+          legitimately-empty complete result.
 
-        Returns ``(docs, pending_manual_ack)`` where ``pending_manual_ack``
-        is the request id the caller must ACK once the FAILED→PENDING resets
-        persist (post-validation), or immediately on a legitimately-empty
-        complete result.
+        The four continuations:
+
+        * **CONTINUE_SWEEP_PAGE** — advance the SAME sweep to its next page via
+          :meth:`_next_scheduling_page`. Consumes no signal; a page-fetch
+          failure does NOT advance the cursor and arms auto-rescan so the
+          remaining backlog is recovered (LR2 §6.3).
+        * **CONTINUE_MANUAL** — start a fresh MANUAL sweep from ``CURSOR_START``
+          (single-scan: FAILED is in the tuple, so ``_next_scheduling_page``
+          returns one CURSOR_END page — the manual ACK contract needs every
+          reset persisted before ACK).
+        * **CONTINUE_AUTO** — start a fresh bounded AUTO sweep from
+          ``CURSOR_START``. The signal was consumed in the decision, so a
+          first-page failure re-arms auto-rescan before propagating.
+        * **CONTINUE_DOCUMENT** — bounded destructive drain of resident
+          document messages FIRST, then a fresh bounded AUTO sweep from
+          ``CURSOR_START``. Drain-before-scan is the correctness anchor: every
+          drained message's doc that is still live (its PENDING row persisted
+          before its publish, which preceded the drain) is a PENDING row the
+          multi-page sweep necessarily reaches, so a drained message never
+          needs re-publishing; a provably-stale one (terminal/deleted; FAILED
+          is manual-only by ruling) is compacted, which keeps a stale
+          notification from holding ``busy`` forever. A sweep-start failure
+          re-publishes the drained messages and arms auto-rescan as a backstop
+          before propagating; a SIGKILL — or a Manager response lost AFTER the
+          drain executed (at-most-once RPC) — loses only messages whose PENDING
+          rows the next run's initial scan recovers.
         """
-        if decision.step is PipelineNextStep.CONTINUE_MANUAL:
+        step = decision.step
+
+        # (A) Continue the current bounded sweep — same statuses, next page.
+        if step is PipelineNextStep.CONTINUE_SWEEP_PAGE:
+            try:
+                docs, next_cursor = await self._next_scheduling_page(
+                    sweep_statuses, sweep_cursor
+                )
+            except BaseException:
+                try:
+                    ingress.request_auto_rescan()
+                except BaseException as compensation_error:
+                    logger.warning(
+                        "[pipeline] failed to arm auto-rescan after a paged "
+                        "sweep refetch failure; the remaining backlog is "
+                        f"recovered by the NEXT explicit trigger: {compensation_error}"
+                    )
+                raise
+            return docs, sweep_statuses, next_cursor, None
+
+        # (B) Start a FRESH sweep from CURSOR_START. CONTINUE_DOCUMENT drains
+        # the mailbox first (bounded); a deeper backlog re-triggers on the next
+        # decision.
+        drained: list[PipelineIngressMessage] = []
+        if step is PipelineNextStep.CONTINUE_MANUAL:
             statuses = _MANUAL_RETRY_DOC_STATUSES
         else:
             statuses = _AUTO_RESUME_DOC_STATUSES
-        drained: list[PipelineIngressMessage] = []
-        if decision.step is PipelineNextStep.CONTINUE_DOCUMENT:
-            # Drain BEFORE the scan (see docstring proof). Bounded: a deeper
-            # backlog re-triggers CONTINUE_DOCUMENT on the next decision.
+        if step is PipelineNextStep.CONTINUE_DOCUMENT:
             drained = ingress.drain_documents(limit=_FEEDER_DRAIN_LIMIT)
         try:
-            docs = await self.doc_status.get_docs_by_statuses(
-                list(statuses), strict=True
-            )
+            docs, next_cursor = await self._next_scheduling_page(statuses, CURSOR_START)
         except BaseException:
             # Compensations must not raise over the original error (multiproc
             # mailbox calls are RPCs; BaseException here so even an interrupt
@@ -2503,7 +2687,7 @@ class _PipelineMixin:
             # lost signal are still PENDING rows, recovered by the next run's
             # initial scan.
             try:
-                if decision.step is PipelineNextStep.CONTINUE_AUTO:
+                if step is PipelineNextStep.CONTINUE_AUTO:
                     ingress.request_auto_rescan()
                 elif drained:
                     self._republish_documents(ingress, drained, source="quiescence")
@@ -2520,7 +2704,7 @@ class _PipelineMixin:
                     f"not automatically: {compensation_error}"
                 )
             raise
-        return docs, decision.manual_request_id
+        return docs, statuses, next_cursor, decision.manual_request_id
 
     @staticmethod
     def _format_job_name(

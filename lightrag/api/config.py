@@ -34,6 +34,7 @@ from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
@@ -504,6 +505,11 @@ def parse_args() -> argparse.Namespace:
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value(
         "MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT, int
+    )
+
+    # Bounded scheduling page size (LR2 Phase 2); 0 disables paging.
+    args.pipeline_scheduling_page_size = get_env_value(
+        "PIPELINE_SCHEDULING_PAGE_SIZE", DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE, int
     )
 
     # Get MAX_GRAPH_NODES from environment
