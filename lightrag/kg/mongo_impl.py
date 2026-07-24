@@ -1246,16 +1246,18 @@ class MongoDocStatusStorage(DocStatusStorage):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _encode_cursor(created_at: str, doc_id: str) -> str:
+    def _encode_cursor(created_at: str | None, doc_id: str) -> str:
         return json.dumps([created_at, doc_id], ensure_ascii=False)
 
     @staticmethod
-    def _decode_cursor(opaque: str) -> tuple[str, str]:
+    def _decode_cursor(opaque: str) -> tuple[str | None, str]:
         try:
             decoded = json.loads(opaque)
             created, doc_id = decoded
-            if not isinstance(created, str) or not isinstance(doc_id, str):
-                raise ValueError("cursor fields must be strings")
+            if not isinstance(doc_id, str):
+                raise ValueError("cursor id must be a string")
+            if created is not None and not isinstance(created, str):
+                raise ValueError("cursor created_at must be a string or null")
         except (ValueError, TypeError) as e:
             raise StorageControlPlaneError(
                 f"Malformed scheduling cursor for MongoDocStatusStorage: {e}"
@@ -1263,13 +1265,18 @@ class MongoDocStatusStorage(DocStatusStorage):
         return created, doc_id
 
     @staticmethod
-    def _doc_cursor_key(doc: dict[str, Any]) -> tuple[str, str]:
-        """(created_at, _id) keyset key of a RAW query-returned doc. A
-        missing/non-string created_at encodes as "" — such legacy rows sort
-        first server-side (BSON missing < strings) and are consumed on the
-        first page, never moving mid-sweep (created_at is immutable)."""
+    def _doc_cursor_key(doc: dict[str, Any]) -> tuple[str | None, str]:
+        """(created_at, _id) keyset key of a RAW query-returned doc.
+
+        A missing/null/non-string created_at encodes as ``None`` — the
+        missing/null bucket, which BSON sorts BEFORE every string. Encoding
+        it as ``""`` would break the resume filter: ``{"created_at": ""}``
+        matches neither a missing field nor a null value, so a second corrupt
+        row past the page boundary would silently fall out of the sweep. The
+        ``None`` marker resumes with the ``{"created_at": None}`` predicate,
+        which Mongo defines to match BOTH missing and null."""
         created = doc.get("created_at")
-        return (created if isinstance(created, str) else "", str(doc.get("_id")))
+        return (created if isinstance(created, str) else None, str(doc.get("_id")))
 
     def _scheduling_record_from_doc(
         self, doc: dict[str, Any], *, strict: bool
@@ -1336,14 +1343,31 @@ class MongoDocStatusStorage(DocStatusStorage):
         and_clauses: list[dict[str, Any]] = []
         if isinstance(position, CursorAfter):
             created, doc_id = self._decode_cursor(position.opaque)
-            and_clauses.append(
-                {
-                    "$or": [
-                        {"created_at": {"$gt": created}},
-                        {"created_at": created, "_id": {"$gt": doc_id}},
-                    ]
-                }
-            )
+            if created is None:
+                # Cursor inside the missing/null bucket (sorted first by
+                # BSON): continue through its remaining docs by _id —
+                # {"created_at": None} matches BOTH missing and null — then
+                # every doc with a real (non-null, existing) value.
+                and_clauses.append(
+                    {
+                        "$or": [
+                            {"created_at": None, "_id": {"$gt": doc_id}},
+                            {"created_at": {"$ne": None}},
+                        ]
+                    }
+                )
+            else:
+                # Past the missing/null bucket: string-typed $gt/$eq never
+                # match missing or null fields, which is correct — that
+                # bucket was already consumed before this cursor.
+                and_clauses.append(
+                    {
+                        "$or": [
+                            {"created_at": {"$gt": created}},
+                            {"created_at": created, "_id": {"$gt": doc_id}},
+                        ]
+                    }
+                )
         if max_failure_generation is not None:
             # Cohort predicate constrains ONLY failed rows; a missing
             # failure_generation is logical 0 and therefore always eligible.

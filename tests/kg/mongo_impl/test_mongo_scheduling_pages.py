@@ -251,6 +251,42 @@ async def test_page_relaxed_skip_is_still_consumed_strict_raises():
         )
 
 
+async def test_missing_created_at_encodes_null_bucket_cursor():
+    """A doc whose created_at field is entirely ABSENT keys as (None, _id):
+    encoding it as "" would break the resume filter — {"created_at": ""}
+    matches neither a missing field nor a null value, so a second corrupt
+    doc past a page boundary would silently fall out of the sweep."""
+    from lightrag.kg.mongo_impl import MongoDocStatusStorage
+
+    assert MongoDocStatusStorage._doc_cursor_key({"_id": "doc-x"}) == (None, "doc-x")
+    assert MongoDocStatusStorage._doc_cursor_key(
+        {"_id": "doc-y", "created_at": None}
+    ) == (None, "doc-y")
+
+
+async def test_null_bucket_cursor_resumes_with_missing_matching_predicate():
+    """Cursor inside the missing/null bucket: the resume filter must use
+    {"created_at": None} (matches BOTH missing and null per Mongo $eq:null
+    semantics) plus the $ne:None arm for every later bucket."""
+    data = _FakeCollection(find_docs=[])
+    storage = _storage(data=data)
+
+    await storage.get_docs_by_statuses_page(
+        [DocStatus.FAILED],
+        limit=2,
+        position=CursorAfter(json.dumps([None, "doc-null-1"])),
+    )
+
+    query = data.find_queries[0]
+    (keyset_or,) = query["$and"]
+    assert keyset_or == {
+        "$or": [
+            {"created_at": None, "_id": {"$gt": "doc-null-1"}},
+            {"created_at": {"$ne": None}},
+        ]
+    }
+
+
 async def test_page_malformed_cursor_raises_control_plane_error():
     storage = _storage()
 

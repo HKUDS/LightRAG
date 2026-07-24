@@ -193,10 +193,68 @@ async def test_malformed_cursor_raises_control_plane_error(opaque):
         )
 
 
-async def test_encode_cursor_null_created_at_fails_closed():
+async def test_null_created_at_encodes_null_bucket_cursor():
+    """NULL created_at rows (corrupt writes) sort FIRST and stay reachable:
+    the cursor encodes [null, id] instead of failing closed — a row-value
+    comparison would otherwise starve them out of every later page."""
     storage = _storage()
-    with pytest.raises(StorageControlPlaneError):
-        storage._encode_cursor(_page_row(created_at=None))
+    opaque = storage._encode_cursor(_page_row(doc_id="doc-n", created_at=None))
+    assert json.loads(opaque) == [None, "doc-n"]
+    assert storage._decode_cursor(opaque) == (None, "doc-n")
+
+
+async def test_null_bucket_cursor_resumes_through_null_rows():
+    """Cursor inside the NULL bucket: remaining NULL rows continue by id,
+    then all real-timestamp rows — nothing is silently excluded."""
+    db = _FakeDB(results=[[]])
+    storage = _storage(db)
+    await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING],
+        limit=10,
+        position=CursorAfter(json.dumps([None, "doc-n"])),
+        strict=True,
+    )
+    sql, params, _ = db.calls[0]
+    assert "(created_at IS NULL AND id > $3) OR created_at IS NOT NULL" in sql
+    assert "ORDER BY created_at ASC NULLS FIRST, id ASC" in sql
+    assert params[2] == "doc-n"
+
+
+async def test_string_cursor_excludes_consumed_null_bucket():
+    db = _FakeDB(results=[[]])
+    storage = _storage(db)
+    await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING],
+        limit=10,
+        position=CursorAfter(json.dumps(["2026-01-01T00:00:00", "doc-1"])),
+        strict=True,
+    )
+    sql, _, _ = db.calls[0]
+    assert "created_at IS NOT NULL AND (created_at, id) >" in sql
+    assert "NULLS FIRST" in sql
+
+
+async def test_null_created_at_row_reachable_across_page_boundary():
+    """Fix-proof for the starvation bug: a NULL created_at row that fills a
+    page still yields a cursor that reaches the NEXT rows (bucket-aware
+    keyset), instead of a NULL-poisoned row-value comparison."""
+    null_row = _page_row(doc_id="doc-null", created_at=None)
+    real_row = _page_row(doc_id="doc-real")
+    db = _FakeDB(results=[[null_row], [real_row], []])
+    storage = _storage(db)
+    page1 = await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING], limit=1, strict=False
+    )
+    # The corrupt row is consumed (skipped from the projection in relaxed
+    # mode) and the cursor advances into the NULL bucket.
+    assert page1.docs == {}
+    assert isinstance(page1.next_position, CursorAfter)
+    page2 = await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING], limit=1, position=page1.next_position, strict=False
+    )
+    assert set(page2.docs) == {"doc-real"}
+    sql2, _, _ = db.calls[1]
+    assert "created_at IS NULL AND id >" in sql2
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +273,7 @@ async def test_page_sql_keyset_shape_without_cursor_or_cutoff():
 
     sql, params, multirows = db.calls[0]
     assert multirows is True
-    assert "ORDER BY created_at ASC, id ASC" in sql
+    assert "ORDER BY created_at ASC NULLS FIRST, id ASC" in sql
     assert "status = ANY($2)" in sql
     assert "(created_at, id) >" not in sql
     # Generation predicate must appear ONLY when a cutoff is given.
@@ -237,7 +295,7 @@ async def test_page_sql_with_cursor_and_generation_cutoff():
     sql, params, _ = db.calls[0]
     assert "(created_at, id) > ($3::timestamp, $4)" in sql
     assert "(status != $5 OR COALESCE(failure_generation, 0) <= $6)" in sql
-    assert "ORDER BY created_at ASC, id ASC LIMIT $7" in sql
+    assert "ORDER BY created_at ASC NULLS FIRST, id ASC LIMIT $7" in sql
     assert params[2] == _TS  # decoded back to the naive-UTC stored form
     assert params[3] == "doc-1"
     assert params[4] == DocStatus.FAILED.value

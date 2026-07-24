@@ -5475,11 +5475,13 @@ class PGDocStatusStorage(DocStatusStorage):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _decode_cursor(opaque: str) -> tuple[datetime.datetime, str]:
+    def _decode_cursor(opaque: str) -> tuple[datetime.datetime | None, str]:
         """Decode an opaque page cursor into (created_at, id).
 
-        The opaque form is ``json.dumps([created_at_iso, id])`` produced by
-        ``_encode_cursor``. The ISO string round-trips exactly through
+        The opaque form is ``json.dumps([created_at_iso | None, id])``
+        produced by ``_encode_cursor``. A ``None`` first element marks the
+        NULL-created_at bucket (corrupt rows, sorted FIRST — see the page
+        docstring); a string round-trips exactly through
         ``datetime.fromisoformat`` (microseconds preserved) and is normalized
         back to the naive-UTC form the TIMESTAMP column stores, so the
         parameterized row-value comparison resumes at exactly the last
@@ -5489,8 +5491,12 @@ class PGDocStatusStorage(DocStatusStorage):
         try:
             decoded = json.loads(opaque)
             created_iso, doc_id = decoded
-            if not isinstance(created_iso, str) or not isinstance(doc_id, str):
-                raise ValueError("cursor fields must be strings")
+            if not isinstance(doc_id, str):
+                raise ValueError("cursor id must be a string")
+            if created_iso is None:
+                return None, doc_id
+            if not isinstance(created_iso, str):
+                raise ValueError("cursor created_at must be a string or null")
             created = datetime.datetime.fromisoformat(created_iso)
         except (ValueError, TypeError) as e:
             raise StorageControlPlaneError(
@@ -5501,18 +5507,16 @@ class PGDocStatusStorage(DocStatusStorage):
         return created, doc_id
 
     def _encode_cursor(self, row: dict[str, Any]) -> str:
-        """Encode the keyset key of a returned DB row as an opaque cursor."""
+        """Encode the keyset key of a returned DB row as an opaque cursor.
+
+        Rows with a NULL created_at (corrupt writes — the column defaults to
+        CURRENT_TIMESTAMP) sort FIRST and encode as ``[null, id]`` so the
+        sweep traverses past them instead of losing them behind a row-value
+        comparison that NULL can never satisfy (matching the JSON/Redis
+        backends, which sort a missing created_at first as "")."""
         created = row.get("created_at")
         if not isinstance(created, datetime.datetime):
-            # Only reachable when an entire page consists of rows whose
-            # created_at is NULL (corrupt writes — the column defaults to
-            # CURRENT_TIMESTAMP). Such rows have no stable sort key, so a
-            # cursor cannot be built over them: fail closed instead of
-            # skipping or re-reading in place.
-            raise StorageControlPlaneError(
-                f"[{self.workspace}] scheduling row {row.get('id')!r} has no "
-                "usable created_at sort key; cannot advance the page cursor"
-            )
+            return json.dumps([None, str(row["id"])])
         return json.dumps(
             [self._format_datetime_with_timezone(created), str(row["id"])]
         )
@@ -5603,10 +5607,16 @@ class PGDocStatusStorage(DocStatusStorage):
         row-conversion failure raises without returning partial docs or a
         cursor (single round-trip — there is no partial-page surface). In
         relaxed mode an unusable row is skipped from the projection but stays
-        consumed (it was returned by the scan). Rows with a NULL created_at
-        (corrupt writes) sort last (NULLS LAST), raise under strict, and are
-        skipped under relaxed; a full page of them fails closed in
-        ``_encode_cursor``.
+        consumed (it was returned by the scan).
+
+        NULL created_at (corrupt writes): such rows sort FIRST
+        (``NULLS FIRST``, mirroring JSON/Redis where a missing created_at
+        sorts first as "") and the keyset comparison is bucket-aware — a
+        plain ``(created_at, id) > ($c, $i)`` row-value comparison evaluates
+        to NULL for them, which would silently starve them out of every page
+        after the first, violating the strict complete-or-raise promise.
+        They therefore stay reachable: raised under strict, skipped (but
+        consumed) under relaxed.
         """
         if limit <= 0:
             raise ValueError(f"page limit must be positive, got {limit}")
@@ -5621,19 +5631,31 @@ class PGDocStatusStorage(DocStatusStorage):
         )
         if isinstance(position, CursorAfter):
             cur_created, cur_id = self._decode_cursor(position.opaque)
-            params.append(cur_created)
-            params.append(cur_id)
-            sql += (
-                f" AND (created_at, id) > (${len(params) - 1}::timestamp, "
-                f"${len(params)})"
-            )
+            if cur_created is None:
+                # Cursor inside the NULL bucket (sorted first): continue
+                # through the remaining NULL rows by id, then everything
+                # with a real timestamp.
+                params.append(cur_id)
+                sql += (
+                    f" AND ((created_at IS NULL AND id > ${len(params)}) "
+                    "OR created_at IS NOT NULL)"
+                )
+            else:
+                # Past the NULL bucket: only real-timestamp rows can follow.
+                params.append(cur_created)
+                params.append(cur_id)
+                sql += (
+                    " AND created_at IS NOT NULL AND "
+                    f"(created_at, id) > (${len(params) - 1}::timestamp, "
+                    f"${len(params)})"
+                )
         if max_failure_generation is not None:
             params.append(DocStatus.FAILED.value)
             sql += f" AND (status != ${len(params)}"
             params.append(int(max_failure_generation))
             sql += f" OR COALESCE(failure_generation, 0) <= ${len(params)})"
         params.append(limit)
-        sql += f" ORDER BY created_at ASC, id ASC LIMIT ${len(params)}"
+        sql += f" ORDER BY created_at ASC NULLS FIRST, id ASC LIMIT ${len(params)}"
 
         # Any asyncpg error propagates out of db.query — strict pages never
         # commit a new cursor on failure.

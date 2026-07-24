@@ -728,6 +728,15 @@ class JsonDocStatusStorage(DocStatusStorage):
         skipped as unusable in relaxed mode — so the cursor advances past
         filtered pages instead of re-reading them; fewer candidates than
         ``limit`` proves exhaustion (CURSOR_END).
+
+        Strict failure surface (backend divergence, by design): because this
+        backend candidate-selects by scanning the WHOLE resident dict, a
+        ``strict=True`` page raises on a malformed (non-mapping) record even
+        when that record's status is NOT part of the requested sweep —
+        server-side backends (PG/Mongo/OpenSearch/Redis) never see
+        out-of-scope rows and would not fail on the same corruption. An
+        operator whose JSON-backed sweep fails closed should inspect the
+        whole store, not just the swept statuses.
         """
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
