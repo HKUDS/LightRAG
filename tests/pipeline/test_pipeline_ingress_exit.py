@@ -243,10 +243,17 @@ async def test_refetch_document_failure_republishes_and_arms_auto(tmp_path):
 
         rag.doc_status.get_docs_by_statuses = dead_scan
 
+        status, lock = await _pipeline_ns(rag)
         decision = PipelineNextDecision(PipelineNextStep.CONTINUE_DOCUMENT)
         with pytest.raises(ConnectionError):
             await rag._refetch_for_decision(
-                decision, _AUTO_RESUME_DOC_STATUSES, CURSOR_START, ingress
+                decision,
+                _AUTO_RESUME_DOC_STATUSES,
+                CURSOR_START,
+                ingress,
+                token="tok",
+                pipeline_status=status,
+                pipeline_status_lock=lock,
             )
 
         republished = {m.doc_id for m in ingress.drain_documents()}
@@ -335,10 +342,17 @@ async def test_refetch_compensation_failure_does_not_mask_original_error(tmp_pat
         ingress.put_document = dead_put
         ingress.request_auto_rescan = dead_arm
 
+        status, lock = await _pipeline_ns(rag)
         decision = PipelineNextDecision(PipelineNextStep.CONTINUE_DOCUMENT)
         with pytest.raises(ConnectionError, match="original strict-scan failure"):
             await rag._refetch_for_decision(
-                decision, _AUTO_RESUME_DOC_STATUSES, CURSOR_START, ingress
+                decision,
+                _AUTO_RESUME_DOC_STATUSES,
+                CURSOR_START,
+                ingress,
+                token="tok",
+                pipeline_status=status,
+                pipeline_status_lock=lock,
             )
     finally:
         await rag.finalize_storages()
