@@ -1,0 +1,466 @@
+"""RedisDocStatusStorage Phase 1 scheduling contract tests (offline fake).
+
+Covers: derived-sidecar rebuild on initialize (streaming build into a temp
+keyspace + atomic switch), per-status ZSET keyset pages with the composite
+per-status cursor and consumed-position advance, O(1) ZCARD counts, atomic
+WATCH/MULTI writes (status transitions move ZSET members; the source multimap
+follows the member-level eligibility state machine — including the post-parse
+content-duplicate in-place transition), the typed conflict-aware source
+resolver (Absent/Unique/Conflict with stale self-heal and early stop), the
+strict batch read, the operator conflict listing + CAS repair, and fail-closed
+strict lookups.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+from redis.exceptions import RedisError
+
+from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
+    CursorAfter,
+    DocStatus,
+    SourceAbsent,
+    SourceConflict,
+    SourceUnique,
+)
+from lightrag.exceptions import (
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
+)
+from lightrag.namespace import NameSpace
+
+from .fake_redis import FakeRedis
+
+pytestmark = pytest.mark.offline
+
+
+class _DummyEmbeddingFunc:
+    embedding_dim = 1
+    max_token_size = 1
+
+    async def __call__(self, texts, **kwargs):
+        return [[0.0] for _ in texts]
+
+
+def _doc(
+    status: str,
+    file_path: str = "a.pdf",
+    created_at: str = "2026-01-01T00:00:00+00:00",
+    **extra,
+) -> dict:
+    row = {
+        "content_summary": "s",
+        "content_length": 10,
+        "file_path": file_path,
+        "status": status,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "metadata": {},
+        "error_msg": None,
+        "chunks_list": [],
+    }
+    row.update(extra)
+    return row
+
+
+def _dup(status: str, file_path: str = "a.pdf", **extra) -> dict:
+    row = _doc(status, file_path=file_path, **extra)
+    row["metadata"] = {"is_duplicate": True}
+    return row
+
+
+@pytest.fixture
+def storage(monkeypatch):
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "lightrag.kg.redis_impl.RedisConnectionManager.get_pool",
+        lambda redis_url: MagicMock(name="fake_pool"),
+    )
+    monkeypatch.setattr(
+        "lightrag.kg.redis_impl.Redis", lambda connection_pool=None, **_: fake
+    )
+    from lightrag.kg.redis_impl import RedisDocStatusStorage
+
+    instance = RedisDocStatusStorage(
+        namespace=NameSpace.DOC_STATUS,
+        global_config={},
+        embedding_func=_DummyEmbeddingFunc(),
+        workspace="test",
+    )
+    instance._initialized = True
+    return instance
+
+
+async def _bootstrap(storage):
+    """Run the derived-sidecar rebuild the way initialize() would."""
+    await storage._rebuild_scheduling_sidecar()
+
+
+async def _sweep_ids(storage, statuses, *, limit):
+    ids: list[str] = []
+    pages = 0
+    position = CURSOR_START
+    while True:
+        page = await storage.get_docs_by_statuses_page(
+            statuses,
+            limit=limit,
+            position=position,
+            strict=True,
+        )
+        pages += 1
+        ids.extend(page.docs.keys())
+        if page.next_position is CURSOR_END:
+            return ids, pages
+        position = page.next_position
+        assert isinstance(position, CursorAfter)
+        assert pages < 100, "sweep failed to terminate"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_builds_sidecar_from_primary_rows(storage):
+    # Pre-existing deployment: raw rows only, no derived sidecar.
+    fake = storage._redis
+    fake.store[f"{storage.final_namespace}:doc-1"] = json.dumps(
+        _doc("pending", file_path="a.pdf")
+    )
+    fake.store[f"{storage.final_namespace}:doc-2"] = json.dumps(
+        _doc("failed", file_path="b.pdf")
+    )
+    fake.store[f"{storage.final_namespace}:dup-1"] = json.dumps(
+        _dup("failed", file_path="a.pdf")
+    )
+
+    await _bootstrap(storage)
+
+    # Status ZSETs populated from the actual rows.
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 1
+    assert await storage.count_docs_by_statuses([DocStatus.FAILED]) == 2
+    # Source multimap built; duplicate marker rows are NOT indexed.
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-1"
+    # No leftover rebuild temp keyspace after the atomic switch.
+    assert not any(
+        k.startswith(f"{storage._sched_prefix}_rebuild:") for k in fake.zsets
+    )
+    assert not any(k.startswith(f"{storage._sched_prefix}_rebuild:") for k in fake.sets)
+    # Re-running the rebuild is a no-op (index already present).
+    await _bootstrap(storage)
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 1
+
+
+@pytest.mark.asyncio
+async def test_sidecar_not_ready_raises_never_empty(storage):
+    # Simulate a not-yet-initialized instance: strict reads must refuse rather
+    # than read the empty index as confirmed absence.
+    storage._initialized = False
+    with pytest.raises(StorageControlPlaneError):
+        await storage.count_docs_by_statuses([DocStatus.PENDING])
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page([DocStatus.PENDING], limit=1)
+    with pytest.raises(StorageControlPlaneError):
+        await storage.resolve_doc_source_strict("a.pdf")
+
+
+@pytest.mark.asyncio
+async def test_page_kway_merge_and_consumed_position(storage):
+    await _bootstrap(storage)
+    await storage.upsert(
+        {
+            "doc-c": _doc("pending", created_at="2026-01-01T00:00:00+00:00"),
+            "doc-a": _doc("failed", created_at="2026-01-02T00:00:00+00:00"),
+            "doc-b": _doc("pending", created_at="2026-01-03T00:00:00+00:00"),
+        }
+    )
+    ids, pages = await _sweep_ids(
+        storage, [DocStatus.PENDING, DocStatus.FAILED], limit=1
+    )
+    # Global (created_at, id) order across BOTH status streams.
+    assert ids == ["doc-c", "doc-a", "doc-b"]
+    assert pages >= 3
+
+
+@pytest.mark.asyncio
+async def test_page_prefetched_head_not_consumed(storage):
+    """With limit=1 and two streams, the losing stream's prefetched head is
+    NOT consumed — it must reappear on the next page (no skips)."""
+    await _bootstrap(storage)
+    await storage.upsert(
+        {
+            "doc-p": _doc("pending", created_at="2026-01-01T00:00:00+00:00"),
+            "doc-f": _doc("failed", created_at="2026-01-01T00:00:00+00:00"),
+        }
+    )
+    page1 = await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING, DocStatus.FAILED], limit=1, strict=True
+    )
+    # (same created_at) id tie-break: doc-f < doc-p
+    assert list(page1.docs) == ["doc-f"]
+    page2 = await storage.get_docs_by_statuses_page(
+        [DocStatus.PENDING, DocStatus.FAILED],
+        limit=1,
+        position=page1.next_position,
+        strict=True,
+    )
+    assert list(page2.docs) == ["doc-p"]
+
+
+@pytest.mark.asyncio
+async def test_status_transition_moves_zset_membership(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending")})
+    await storage.update_doc_status_fields("doc-1", {"status": "processing"})
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 0
+    assert await storage.count_docs_by_statuses([DocStatus.PROCESSING]) == 1
+    ids, _ = await _sweep_ids(storage, [DocStatus.PROCESSING], limit=10)
+    assert ids == ["doc-1"]
+    with pytest.raises(ValueError, match="created_at"):
+        await storage.update_doc_status_fields("doc-1", {"created_at": "2030-01-01"})
+    with pytest.raises(StorageRecordNotFoundError):
+        await storage.update_doc_status_fields("missing", {"status": "pending"})
+
+
+@pytest.mark.asyncio
+async def test_atomic_write_retries_on_watch_conflict(storage):
+    """A concurrent bump of the doc key between the WATCH read and EXEC forces
+    a retry; the write still lands and the sidecar stays consistent."""
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending")})
+    fake = storage._redis
+    main_key = f"{storage.final_namespace}:doc-1"
+
+    original = FakeRedis.get
+    tripped = {"done": False}
+
+    async def get_with_interleaving(self, key):
+        result = await original(self, key)
+        if not tripped["done"] and key == main_key:
+            tripped["done"] = True
+            # Interleave a concurrent write AFTER the WATCH snapshot read.
+            self._bump(key)
+        return result
+
+    fake.get = get_with_interleaving.__get__(fake)
+    try:
+        await storage.update_doc_status_fields("doc-1", {"status": "processing"})
+    finally:
+        fake.get = original.__get__(fake)
+    assert tripped["done"] is True
+    assert (await storage.get_by_id("doc-1"))["status"] == "processing"
+    assert await storage.count_docs_by_statuses([DocStatus.PROCESSING]) == 1
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 0
+
+
+@pytest.mark.asyncio
+async def test_atomic_write_transport_failure_propagates(storage):
+    """A transport failure at EXEC propagates (not swallowed as WatchError);
+    the transaction commits nothing."""
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending")})
+    fake = storage._redis
+    fake.fail_next["execute"] = RedisError("boom")
+    with pytest.raises(RedisError):
+        await storage.update_doc_status_fields("doc-1", {"status": "processing"})
+    assert (await storage.get_by_id("doc-1"))["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_source_multimap_eligibility_state_machine(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending", file_path="a.pdf")})
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-1"
+
+    # eligible → ineligible IN PLACE: the primary row is rewritten as a
+    # post-parse content duplicate — its own membership must be released.
+    await storage.upsert(
+        {"doc-1": _dup("failed", file_path="a.pdf", duplicate_kind="content_hash")}
+    )
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceAbsent)
+
+    # A fresh ingestion may now legitimately claim the basename.
+    await storage.upsert({"doc-2": _doc("pending", file_path="a.pdf")})
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-2"
+
+    # Deleting a NON-owning row (the duplicate marker) must not strip the
+    # surviving primary's membership.
+    await storage.delete(["doc-1"])
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-2"
+
+    # Deleting the primary frees the name.
+    await storage.delete(["doc-2"])
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceAbsent)
+
+
+@pytest.mark.asyncio
+async def test_resolve_source_conflict(storage):
+    await _bootstrap(storage)
+    await storage.upsert(
+        {
+            "doc-1": _doc("pending", file_path="a.pdf"),
+            "doc-2": _doc("failed", file_path="a.pdf"),
+        }
+    )
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceConflict)
+    assert resolved.candidate_count is None  # only proved "at least two"
+    assert set(resolved.sample_doc_ids) == {"doc-1", "doc-2"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_source_stale_member_self_heals(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending", file_path="a.pdf")})
+    # Inject a stale member whose primary row does not exist.
+    fake = storage._redis
+    set_key = storage._basename_key("a.pdf")
+    fake.sets[set_key].add("gone")
+
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-1"
+    # The stale member was self-healed out of the set.
+    assert "gone" not in fake.sets.get(set_key, set())
+
+
+@pytest.mark.asyncio
+async def test_resolve_source_stops_after_two_valid_candidates(storage):
+    await _bootstrap(storage)
+    await storage.upsert(
+        {
+            "doc-a": _doc("pending", file_path="a.pdf"),
+            "doc-b": _doc("failed", file_path="a.pdf"),
+        }
+    )
+    fake = storage._redis
+    set_key = storage._basename_key("a.pdf")
+    # A third (stale) member that sorts LAST: if the resolver stopped after two
+    # valid candidates it is never examined, so it is not self-healed.
+    fake.sets[set_key].add("zzz-stale")
+
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceConflict)
+    assert set(resolved.sample_doc_ids) == {"doc-a", "doc-b"}
+    assert "zzz-stale" in fake.sets.get(set_key, set())
+
+
+@pytest.mark.asyncio
+async def test_get_docs_by_ids_present_and_missing(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending"), "doc-2": _doc("failed")})
+    result = await storage.get_docs_by_ids(["doc-1", "doc-2", "ghost"], strict=True)
+    assert set(result) == {"doc-1", "doc-2"}  # missing omitted, confirmed absent
+    assert result["doc-2"].status is DocStatus.FAILED
+    assert not hasattr(result["doc-1"], "chunks_list")
+
+
+@pytest.mark.asyncio
+async def test_list_and_repair_source_conflict(storage):
+    await _bootstrap(storage)
+    await storage.upsert(
+        {
+            "doc-1": _doc("pending", file_path="a.pdf"),
+            "doc-2": _doc("failed", file_path="a.pdf"),
+            "doc-3": _doc("pending", file_path="a.pdf"),
+            "solo": _doc("pending", file_path="b.pdf"),
+        }
+    )
+    page = await storage.list_source_conflicts_page(limit=10)
+    assert len(page.conflicts) == 1
+    conflict = page.conflicts[0]
+    assert conflict.canonical_source_key == "a.pdf"
+    assert conflict.candidate_count == 3
+    assert set(conflict.sample_doc_ids) == {"doc-1", "doc-2", "doc-3"}
+
+    # dry-run reports without mutating.
+    dry = await storage.repair_source_conflict(
+        "a.pdf",
+        primary_doc_id="doc-2",
+        expected_candidate_count=0,
+        expected_candidate_fingerprint="ignored-in-dry-run",
+    )
+    assert dry.committed is False
+    assert dry.candidate_count == 3
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+    # primary_doc_id must be a current candidate.
+    with pytest.raises(ValueError):
+        await storage.repair_source_conflict(
+            "a.pdf",
+            primary_doc_id="not-a-candidate",
+            expected_candidate_count=dry.candidate_count,
+            expected_candidate_fingerprint=dry.fingerprint,
+            dry_run=False,
+        )
+
+    # stale expectation → CAS failure.
+    with pytest.raises(StorageControlPlaneError):
+        await storage.repair_source_conflict(
+            "a.pdf",
+            primary_doc_id="doc-2",
+            expected_candidate_count=99,
+            expected_candidate_fingerprint=dry.fingerprint,
+            dry_run=False,
+        )
+
+    # correct expectation → commit; resolver returns the chosen primary.
+    result = await storage.repair_source_conflict(
+        "a.pdf",
+        primary_doc_id="doc-2",
+        expected_candidate_count=dry.candidate_count,
+        expected_candidate_fingerprint=dry.fingerprint,
+        dry_run=False,
+    )
+    assert result.committed is True
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-2"
+    # losers demoted to duplicates, content intact.
+    for loser in ("doc-1", "doc-3"):
+        row = await storage.get_by_id(loser)
+        assert row["metadata"]["is_duplicate"] is True
+        assert row["metadata"]["original_doc_id"] == "doc-2"
+    # no more conflicts.
+    page = await storage.list_source_conflicts_page(limit=10)
+    assert page.conflicts == ()
+
+
+@pytest.mark.asyncio
+async def test_count_and_strict_lookup_fail_closed(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending")})
+    fake = storage._redis
+
+    fake.fail_next["zcard"] = RedisError("boom")
+    with pytest.raises(RedisError):
+        await storage.count_docs_by_statuses([DocStatus.PENDING])
+
+    # The typed resolver propagates transport errors (never a false Absent).
+    fake.fail_next["sscan"] = RedisError("boom")
+    with pytest.raises(RedisError):
+        await storage.resolve_doc_source_strict("a.pdf")
+    # The legacy method keeps the swallow-and-None behaviour.
+    fake.fail_next["sscan"] = RedisError("boom")
+    assert await storage.get_doc_by_file_basename("a.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_cursor_raises_control_plane_error(storage):
+    await _bootstrap(storage)
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page(
+            [DocStatus.PENDING], limit=1, position=CursorAfter("[1,2]")
+        )
+
+
+@pytest.mark.asyncio
+async def test_drop_clears_rows_and_sidecar(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending", file_path="a.pdf")})
+    await storage.drop()
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 0
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceAbsent)
