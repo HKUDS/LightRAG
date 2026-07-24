@@ -230,6 +230,90 @@ def test_begin_manual_drain_freezes_new_enqueue_reservation(tmp_path):
     asyncio.run(_run())
 
 
+def test_exclusive_reset_returns_false_when_not_owner(tmp_path):
+    """LR2 §7.7 item 8 / §13.2 case 11: the exclusive reset is owner-checked. If
+    the busy owner changed (a dead-owner reaper reclaim handed the slot to a new
+    owner), a stale run's reset must not run — it returns False and touches
+    nothing, leaving every FAILED row intact for the real owner to reset."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            doc_id = await _make_failed(rag, "a.txt", extract)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            # The slot is owned by a DIFFERENT token than the stale run's.
+            status.update(
+                {"busy": True, "busy_owner": make_owner_record("owner-B", "processing")}
+            )
+
+            wrote = {"called": False}
+            orig_upsert = rag.doc_status.upsert
+
+            async def spy_upsert(data):
+                wrote["called"] = True
+                return await orig_upsert(data)
+
+            rag.doc_status.upsert = spy_upsert
+
+            ok = await rag._run_exclusive_failed_reset(
+                "req-stale", "owner-A", status, lock
+            )
+            assert ok is False
+            assert wrote["called"] is False  # no page write by the stale run
+            # phase never advanced to EXCLUSIVE_RESET (the enter transition was
+            # owner-checked and refused).
+            assert status["manual_resetting"] is False
+            assert await _status_of(rag, doc_id) == DocStatus.FAILED.value
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_reset_page_rejects_write_when_owner_changed(tmp_path):
+    """_reset_failed_page raises (discards the late write) rather than persist a
+    FAILED→PENDING page once the freeze owner no longer matches — so a reaper
+    reclaim mid-reset can never be overwritten by the stale task."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            await _make_failed(rag, "a.txt", extract)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            status.update(
+                {"busy": True, "busy_owner": make_owner_record("owner-B", "processing")}
+            )
+
+            docs, _ = await rag._next_failed_page(CURSOR_START)
+            assert docs  # a real FAILED page to attempt
+
+            wrote = {"called": False}
+            orig_upsert = rag.doc_status.upsert
+
+            async def spy_upsert(data):
+                wrote["called"] = True
+                return await orig_upsert(data)
+
+            rag.doc_status.upsert = spy_upsert
+
+            # token "owner-A" != current owner "owner-B" → reject before write.
+            with pytest.raises(RuntimeError, match="lost freeze ownership"):
+                await rag._reset_failed_page(docs, "owner-A", status, lock)
+            assert wrote["called"] is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
 def test_next_failed_page_single_scan_when_paging_off(tmp_path):
     """page_size<=0 collapses the FAILED reset to one strict scan ending at
     CURSOR_END (legacy path); paging on returns a keyset cursor."""
