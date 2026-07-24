@@ -76,6 +76,7 @@ from lightrag.constants import (
     DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
     DEFAULT_MAX_PARALLEL_PARSE_MINERU,
     DEFAULT_MAX_PARALLEL_PARSE_DOCLING,
+    DEFAULT_MAX_PARALLEL_PARSE_PADDLEOCR_VL,
     DEFAULT_QUEUE_SIZE_PARSE,
     DEFAULT_QUEUE_SIZE_ANALYZE,
     DEFAULT_QUEUE_SIZE_INSERT,
@@ -665,6 +666,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     max_parallel_parse_docling: int = field(
         default=get_env_value(
             "MAX_PARALLEL_PARSE_DOCLING", DEFAULT_MAX_PARALLEL_PARSE_DOCLING, int
+        )
+    )
+    max_parallel_parse_paddleocr_vl: int = field(
+        default=int(
+            os.getenv(
+                "MAX_PARALLEL_PARSE_PADDLEOCR_VL",
+                str(DEFAULT_MAX_PARALLEL_PARSE_PADDLEOCR_VL),
+            )
         )
     )
     max_parallel_analyze: int = field(

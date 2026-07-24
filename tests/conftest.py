@@ -81,6 +81,66 @@ def _hermetic_mineru_env(monkeypatch):
 _SPACY_DOWNLOAD_HINT = "lightrag-download-cache --spacy --spacy-install"
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_paddleocr_vl_env(monkeypatch):
+    """Make every test start with PaddleOCR-VL env vars in their unset state.
+
+    Mirrors ``_hermetic_mineru_env``: ``load_dotenv(override=False)`` at API
+    import time can leak a developer's local ``.env`` into the test process,
+    and the PaddleOCR-VL option defaults (e.g. ``useChartRecognition=true``)
+    feed both the live request payload and the cache options signature, so a
+    leaked non-default would silently break option/signature tests. Strip all
+    PaddleOCR-VL vars globally; tests that need a specific value still call
+    ``monkeypatch.setenv(...)`` and monkeypatch restores the inherited value
+    at teardown.
+    """
+    for name in (
+        "PADDLEOCR_VL_API_MODE",
+        "PADDLEOCR_VL_API_TOKEN",
+        "PADDLEOCR_VL_ENDPOINT",
+        "PADDLEOCR_VL_OFFICIAL_ENDPOINT",
+        "PADDLEOCR_VL_LOCAL_ENDPOINT",
+        "PADDLEOCR_VL_MODEL",
+        "PADDLEOCR_VL_PAGE_RANGES",
+        "PADDLEOCR_VL_BATCH_ID",
+        "PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY",
+        "PADDLEOCR_VL_USE_DOC_UNWARPING",
+        "PADDLEOCR_VL_USE_LAYOUT_DETECTION",
+        "PADDLEOCR_VL_USE_CHART_RECOGNITION",
+        "PADDLEOCR_VL_USE_SEAL_RECOGNITION",
+        "PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK",
+        "PADDLEOCR_VL_LAYOUT_THRESHOLD",
+        "PADDLEOCR_VL_LAYOUT_NMS",
+        "PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO",
+        "PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE",
+        "PADDLEOCR_VL_LAYOUT_SHAPE_MODE",
+        "PADDLEOCR_VL_PROMPT_LABEL",
+        "PADDLEOCR_VL_FORMAT_BLOCK_CONTENT",
+        "PADDLEOCR_VL_REPETITION_PENALTY",
+        "PADDLEOCR_VL_TEMPERATURE",
+        "PADDLEOCR_VL_TOP_P",
+        "PADDLEOCR_VL_MIN_PIXELS",
+        "PADDLEOCR_VL_MAX_PIXELS",
+        "PADDLEOCR_VL_MAX_NEW_TOKENS",
+        "PADDLEOCR_VL_MERGE_LAYOUT_BLOCKS",
+        "PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS",
+        "PADDLEOCR_VL_VLM_EXTRA_ARGS",
+        "PADDLEOCR_VL_SHOW_FORMULA_NUMBER",
+        "PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES",
+        "PADDLEOCR_VL_RESTRUCTURE_PAGES",
+        "PADDLEOCR_VL_MERGE_TABLES",
+        "PADDLEOCR_VL_RELEVEL_TITLES",
+        "PADDLEOCR_VL_PRETTIFY_MARKDOWN",
+        "PADDLEOCR_VL_VISUALIZE",
+        "PADDLEOCR_VL_ENGINE_VERSION",
+        "PADDLEOCR_VL_TIMEOUT_SECONDS",
+        "PADDLEOCR_VL_POLL_INTERVAL_SECONDS",
+        "PADDLEOCR_VL_MAX_POLLS",
+        "PADDLEOCR_VL_ALLOWED_ASSET_HOSTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def pytest_configure(config):
     """Register custom markers and capture the spaCy model / opt-in state."""
     config.addinivalue_line(

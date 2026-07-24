@@ -39,6 +39,7 @@ from lightrag.constants import (
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
+    PARSER_ENGINE_PADDLEOCR_VL,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -328,6 +329,11 @@ _BOOL_FALSE = frozenset({"0", "false", "no", "off", "f", "n"})
 # A single page-range segment: ``N`` or ``N-M`` (validated for positivity /
 # ordering separately).
 _PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-\d+)?$")
+# PaddleOCR-VL also supports a *relative-end* range ``N--M``: pages from ``N``
+# to the ``M``-th page from the end of the document (e.g. ``5--2`` = page 5
+# through second-to-last, ``1--1`` = the whole document). ``M`` counts from the
+# end, so it is always >= 1; there is no start/end ordering to enforce here.
+_PADDLEOCR_VL_PAGE_SEGMENT_RE = re.compile(r"^\d+(?:-(?:\d+|-\d+))?$")
 
 
 @dataclass(frozen=True)
@@ -373,6 +379,29 @@ _ENGINE_PARAM_SPECS: dict[str, tuple[EngineParamSpec, ...]] = {
     PARSER_ENGINE_DOCLING: (
         EngineParamSpec(canonical="force_ocr", aliases=frozenset({"ocr"}), kind="bool"),
     ),
+    PARSER_ENGINE_PADDLEOCR_VL: (
+        EngineParamSpec(
+            canonical="page_range",
+            aliases=frozenset({"pr"}),
+            kind="str",
+            is_list=True,
+        ),
+        EngineParamSpec(
+            canonical="use_ocr_for_image_block",
+            aliases=frozenset({"useOcrForImageBlock"}),
+            kind="bool",
+        ),
+        EngineParamSpec(
+            canonical="use_seal_recognition",
+            aliases=frozenset({"useSealRecognition"}),
+            kind="bool",
+        ),
+        EngineParamSpec(
+            canonical="use_doc_unwarping",
+            aliases=frozenset({"useDocUnwarping"}),
+            kind="bool",
+        ),
+    ),
     PARSER_ENGINE_NATIVE: (
         # Opt-in smart heading discovery for docx (LLM-assisted; the markdown
         # path warns and ignores it — font-size signals don't exist in md).
@@ -416,19 +445,46 @@ def _mineru_api_mode_is_local() -> bool:
     return (os.getenv("MINERU_API_MODE", "") or "").strip().lower() != "official"
 
 
-def _validate_page_range_segments(parts: list[str]) -> list[str]:
+def _paddleocr_vl_api_mode_is_local() -> bool:
+    """True when PaddleOCR-VL runs in local mode."""
+    return (
+        os.getenv("PADDLEOCR_VL_API_MODE", "official") or ""
+    ).strip().lower() == "local"
+
+
+def _validate_page_range_segments(engine: str, parts: list[str]) -> list[str]:
     """Validate page-range segment shape + the MinerU local single-segment rule.
 
-    ``official`` mode forwards a multi-segment list verbatim; ``local`` accepts
-    only a single page / range (mirrors ``cache.local_page_bounds``).  The
-    download-time ``local_page_bounds`` remains the final backstop.
+    MinerU ``official`` mode forwards a multi-segment list verbatim; MinerU
+    ``local`` accepts only a single page / range (mirrors
+    ``cache.local_page_bounds``). Other engines that expose their own
+    ``page_range`` / ``pageRanges`` field only share the segment-shape checks.
+
+    PaddleOCR-VL additionally supports a *relative-end* range ``N--M`` meaning
+    "from page ``N`` to the ``M``-th page from the end of the document" (e.g.
+    ``5--2`` = pages 5 through second-to-last). ``M`` counts from the end, so
+    ``--1`` is the last page and ``--2`` is the second-to-last. This mirrors
+    PaddleOCR-VL's own ``pageRanges`` convention.
     """
     errors: list[str] = []
     for seg in parts:
-        if not _PAGE_SEGMENT_RE.match(seg):
-            errors.append(
-                f"page_range segment {seg!r} must be a page 'N' or range 'N-M'"
+        if engine == PARSER_ENGINE_PADDLEOCR_VL:
+            pattern = _PADDLEOCR_VL_PAGE_SEGMENT_RE
+            shape = (
+                "page 'N', range 'N-M', or relative-end range 'N--M' "
+                "(N is the start page, M counts from the end: 5--2 = page 5 "
+                "through second-to-last)"
             )
+        else:
+            pattern = _PAGE_SEGMENT_RE
+            shape = "page 'N' or range 'N-M'"
+        if not pattern.match(seg):
+            errors.append(f"page_range segment {seg!r} must be a {shape}")
+            continue
+        if "--" in seg:
+            left, right = seg.split("--", maxsplit=1)
+            if int(left) < 1 or int(right) < 1:
+                errors.append(f"page_range segment {seg!r} must use positive pages")
             continue
         if "-" in seg:
             left, _, right = seg.partition("-")
@@ -438,7 +494,12 @@ def _validate_page_range_segments(parts: list[str]) -> list[str]:
                 errors.append(f"page_range segment {seg!r} must have end >= start")
         elif int(seg) < 1:
             errors.append(f"page_range segment {seg!r} must be a positive page")
-    if not errors and len(parts) > 1 and _mineru_api_mode_is_local():
+    if (
+        engine == PARSER_ENGINE_MINERU
+        and not errors
+        and len(parts) > 1
+        and _mineru_api_mode_is_local()
+    ):
         errors.append(
             "page_range with MINERU_API_MODE=local supports only a single page "
             "or range such as '1-10'; use MINERU_API_MODE=official for a "
@@ -448,7 +509,7 @@ def _validate_page_range_segments(parts: list[str]) -> list[str]:
 
 
 def _coerce_engine_value(
-    spec: EngineParamSpec, value: str, *, label: str
+    engine: str, spec: EngineParamSpec, value: str, *, label: str
 ) -> tuple[Any, str | None]:
     """Validate + coerce a single engine-param value to its canonical type.
 
@@ -465,6 +526,15 @@ def _coerce_engine_value(
         return None, (
             f"{label}: 'local_parse_method' only applies to "
             "MINERU_API_MODE=local (the default); the official API ignores it"
+        )
+    if (
+        engine == PARSER_ENGINE_PADDLEOCR_VL
+        and spec.canonical == "page_range"
+        and _paddleocr_vl_api_mode_is_local()
+    ):
+        return None, (
+            f"{label}: 'page_range' only applies to PADDLEOCR_VL_API_MODE=official; "
+            "local PaddleOCR-VL deployments do not support pageRanges"
         )
     if spec.kind == "bool":
         parsed = _parse_bool(value)
@@ -487,7 +557,7 @@ def _coerce_engine_value(
         return None, f"{label}: value for {spec.canonical!r} must be non-empty"
     if spec.is_list and spec.canonical == "page_range":
         segments = [p.strip() for p in value.split(",")]
-        seg_errors = _validate_page_range_segments(segments)
+        seg_errors = _validate_page_range_segments(engine, segments)
         if seg_errors:
             return None, f"{label}: " + "; ".join(seg_errors)
         return ",".join(segments), None
@@ -560,7 +630,7 @@ def parse_engine_params(
             errors.append(f"{label}: parameter {spec.canonical!r} may not be repeated")
             continue
         seen.add(spec.canonical)
-        coerced, error = _coerce_engine_value(spec, value, label=label)
+        coerced, error = _coerce_engine_value(engine, spec, value, label=label)
         if error is not None:
             errors.append(error)
             continue
@@ -569,7 +639,9 @@ def parse_engine_params(
     # Join repeated-key list params, then coerce/validate the joined value.
     for canonical, values in list_values.items():
         spec = by_name[canonical]
-        coerced, error = _coerce_engine_value(spec, ",".join(values), label=label)
+        coerced, error = _coerce_engine_value(
+            engine, spec, ",".join(values), label=label
+        )
         if error is not None:
             errors.append(error)
             continue
@@ -610,7 +682,7 @@ def normalize_engine_params(
         else:
             value = str(value).strip()
         coerced, error = _coerce_engine_value(
-            spec, value, label=f"engine parameter {spec.canonical!r}"
+            engine, spec, value, label=f"engine parameter {spec.canonical!r}"
         )
         if error is not None:
             errors.append(error)

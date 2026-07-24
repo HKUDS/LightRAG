@@ -271,6 +271,7 @@ PARSER_ENGINE_LEGACY = "legacy"
 PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
+PARSER_ENGINE_PADDLEOCR_VL = "paddleocr_vl"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
 # Prefix marking a doc_status content_summary as GENERATED from a file
 # extraction error (enqueue-time error documents and parse-stage FAILED
@@ -287,11 +288,13 @@ FILE_EXTRACTION_SUMMARY_PREFIX = "[File Extraction]"
 PARSED_DIR_SUFFIX = ".parsed"  # spec sidecar layout (every engine)
 MINERU_RAW_DIR_SUFFIX = ".mineru_raw"  # preserved MinerU raw bundle
 DOCLING_RAW_DIR_SUFFIX = ".docling_raw"  # preserved Docling raw bundle
+PADDLEOCR_VL_RAW_DIR_SUFFIX = ".paddleocr_vl_raw"  # PaddleOCR-VL raw bundle
 NATIVE_RAW_DIR_SUFFIX = ".native_raw"  # native md downloaded-image cache bundle
 PARSED_ARTIFACT_DIR_SUFFIXES: tuple[str, ...] = (
     PARSED_DIR_SUFFIX,
     MINERU_RAW_DIR_SUFFIX,
     DOCLING_RAW_DIR_SUFFIX,
+    PADDLEOCR_VL_RAW_DIR_SUFFIX,
     NATIVE_RAW_DIR_SUFFIX,
 )
 
@@ -338,13 +341,14 @@ SUPPORTED_PROCESS_OPTIONS = frozenset(
 
 DEFAULT_MAX_PARALLEL_ANALYZE = 5  # Multimodal analysis (VLM) concurrency
 
-# Per-engine parsing concurrency defaults.  mineru / docling are
+# Per-engine parsing concurrency defaults.  mineru / docling / paddleocr_vl are
 # resource-intensive (GPU/CPU + memory), so they default to a modest amount of
 # parallelism (2); lower to 1 when resources are tight, or raise via the
 # MAX_PARALLEL_PARSE_* env vars when you have spare capacity.
 DEFAULT_MAX_PARALLEL_PARSE_NATIVE = 5
 DEFAULT_MAX_PARALLEL_PARSE_MINERU = 2
 DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 2
+DEFAULT_MAX_PARALLEL_PARSE_PADDLEOCR_VL = 2
 
 # Staged pipeline queue size defaults.
 DEFAULT_QUEUE_SIZE_PARSE = 20
