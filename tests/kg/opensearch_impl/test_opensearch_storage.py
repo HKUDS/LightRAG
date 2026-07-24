@@ -241,6 +241,24 @@ def _mget_by_ids_side_effect(node_sources: dict[str, dict]):
     return _side_effect
 
 
+@pytest.fixture(autouse=True)
+def _skip_scheduling_bootstrap():
+    """Isolate these legacy-behaviour tests from the Phase 1 ctrl bootstrap
+    that ``initialize()`` now runs (it has dedicated coverage in
+    test_os_scheduling_pages.py); the mocked clients here predate it."""
+    with (
+        patch.object(
+            OpenSearchDocStatusStorage,
+            "_create_ctrl_index_if_not_exists",
+            AsyncMock(),
+        ),
+        patch.object(
+            OpenSearchDocStatusStorage, "_bootstrap_scheduling_ctrl", AsyncMock()
+        ),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_client():
     """Fully-mocked AsyncOpenSearch client fixture."""
@@ -1809,7 +1827,14 @@ class TestDocStatusStorage:
             body = mock_client.search.call_args.kwargs.get(
                 "body"
             ) or mock_client.search.call_args[1].get("body", {})
-            assert body["query"] == {"term": {"file_path": "report.pdf"}}
+            # Primary-row contract (Phase 1): the term query is wrapped in a
+            # bool filter that excludes duplicate-marker rows.
+            assert body["query"] == {
+                "bool": {
+                    "filter": [{"term": {"file_path": "report.pdf"}}],
+                    "must_not": [{"term": {"metadata.is_duplicate": True}}],
+                }
+            }
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_basename_empty_short_circuits(
@@ -1925,11 +1950,16 @@ class TestDocStatusStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.put_mapping.assert_awaited_once()
-            kwargs = mock_client.indices.put_mapping.call_args.kwargs
-            assert kwargs["body"] == {
-                "properties": {"content_hash": {"type": "keyword"}}
-            }
+            # Two mapping patches now: the legacy content_hash ensure plus the
+            # Phase 1 scheduling fields (failure_generation & attempt ids).
+            payloads = [
+                c.kwargs.get("body") or (c.args[1] if len(c.args) > 1 else {})
+                for c in mock_client.indices.put_mapping.await_args_list
+            ]
+            assert any("content_hash" in p.get("properties", {}) for p in payloads)
+            assert any(
+                "failure_generation" in p.get("properties", {}) for p in payloads
+            )
 
     @pytest.mark.asyncio
     async def test_ensure_content_hash_mapping_skipped_when_present(
@@ -1953,7 +1983,16 @@ class TestDocStatusStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            mock_client.indices.put_mapping.assert_not_awaited()
+            # content_hash must NOT be re-patched; the Phase 1 scheduling
+            # fields (absent from this mapping) still get their own patch.
+            payloads = [
+                c.kwargs.get("body") or (c.args[1] if len(c.args) > 1 else {})
+                for c in mock_client.indices.put_mapping.await_args_list
+            ]
+            assert not any("content_hash" in p.get("properties", {}) for p in payloads)
+            assert any(
+                "failure_generation" in p.get("properties", {}) for p in payloads
+            )
 
     @pytest.mark.asyncio
     async def test_prepare_doc_status_data(self, global_config, embed_func):

@@ -9,23 +9,37 @@ Requirements:
     - OpenSearch 3.x or higher with k-NN plugin enabled
 """
 
+import json
 import os
+import random
 import re
 import ssl as ssl_module
 import time
+import uuid
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Union, final
+from typing import Any, AsyncIterator, ClassVar, Union, final
 import numpy as np
 import configparser
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    FailureGenerationMode,
+)
+from ..exceptions import (
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
 )
 from ..utils import (
     logger,
@@ -35,7 +49,11 @@ from ..utils import (
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
+from ..constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    GRAPH_FIELD_SEP,
+    DEFAULT_QUERY_PRIORITY,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
 import pipmaster as pm
@@ -200,6 +218,22 @@ DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH = 1000
 # disabled (env value <= 0). async_bulk needs a positive int here, so we use a
 # large finite value in place of Mongo's float("inf").
 _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES = 1 << 62
+
+# Optimistic-concurrency (if_seq_no/if_primary_term) retry policy for the
+# scheduling control plane (failure-generation counter reservation, FAILED
+# CAS publish, attempt-id minting). Retries are bounded — exhausting them
+# raises a control-plane error instead of spinning — and each retry sleeps a
+# uniformly-jittered, linearly-growing backoff so two colliding writers
+# de-synchronize quickly.
+_SCHEDULING_CAS_MAX_RETRIES = 8
+_SCHEDULING_CAS_BACKOFF_BASE_SECONDS = 0.02
+
+
+async def _scheduling_cas_backoff(attempt: int) -> None:
+    """Jittered backoff between optimistic-concurrency retries."""
+    await asyncio.sleep(
+        random.uniform(0.0, _SCHEDULING_CAS_BACKOFF_BASE_SECONDS * (attempt + 1))
+    )
 
 
 def _resolve_bulk_batch_limits() -> tuple[int, int, int]:
@@ -658,6 +692,8 @@ async def _verify_mirrored_id_mapping(client: AsyncOpenSearch, index_name: str) 
 class OpenSearchKVStorage(BaseKVStorage):
     """Key-Value storage using OpenSearch. Uses dynamic mapping to support varied schemas."""
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
     _index_ready: bool = field(default=False, init=False)
@@ -901,6 +937,60 @@ class OpenSearchKVStorage(BaseKVStorage):
             # would delete a live doc_status row on a transient failure.
             logger.error(f"[{self.workspace}] Error getting document {id}: {e}")
             raise
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Point read with complete-or-raise semantics (base contract).
+
+        Three-state contract on top of the pending buffer:
+
+        * pending delete (tombstone) → ``None`` — the delete is already
+          decided, so absence after flush is a certainty;
+        * pending upsert → the buffered doc (present);
+        * ``_index_ready=False`` → raise ``StorageControlPlaneError``: the
+          index was dropped or previously observed missing, so this class
+          CANNOT positively confirm absence (unlike ``get_by_id``, which
+          reads that state as a best-effort miss);
+        * a live ``index_not_found`` error → raise as well — after
+          ``initialize()`` the index always exists, so it vanishing mid-read
+          (restore/concurrent drop) is indistinguishable from data loss and
+          must not be presented as "confirmed absent";
+        * healthy mget with ``found=False`` → ``None`` (confirmed absent);
+        * any other transport/server or item-level error → raise.
+        """
+        async with self._flush_lock:
+            if id in self._pending_kv_deletes:
+                return None
+            pending = self._pending_upserts.get(id)
+            if pending is not None:
+                return self._materialize_pending_kv_doc(id, pending)
+            if not self._index_ready:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' is not ready; cannot confirm "
+                    f"absence of '{id}' (strict point read)"
+                )
+        try:
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' unexpectedly missing; cannot "
+                    f"confirm absence of '{id}' (strict point read)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error strictly getting document {id}: {e}"
+            )
+            raise
+        if response is None:
+            return None
+        doc = response["_source"]
+        doc.pop("__mirrored_id", None)
+        doc["_id"] = response["_id"]
+        doc.setdefault("create_time", 0)
+        doc.setdefault("update_time", 0)
+        return doc
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple documents by IDs (read-your-writes), preserving order.
@@ -1295,7 +1385,44 @@ class OpenSearchKVStorage(BaseKVStorage):
 @final
 @dataclass
 class OpenSearchDocStatusStorage(DocStatusStorage):
-    """Document status storage using OpenSearch."""
+    """Document status storage using OpenSearch.
+
+    Memory-bounding scheduling API (Phase 1): implements native
+    ``search_after`` keyset pages sorted ``(created_at ASC, __mirrored_id
+    ASC)`` plus the failure-generation write side. The failure-generation
+    counter and per-workspace mode marker live in an INDEPENDENT small
+    metadata index (``<doc-status index>_scheduling_ctrl``, one ctrl doc)
+    so a reserved generation can never be lost to a doc-status bulk path,
+    and reservations use realtime GET + ``if_seq_no``/``if_primary_term``
+    optimistic CAS (bounded, jittered retries on 409).
+    """
+
+    supports_bounded_scheduling_pages: ClassVar[bool] = True
+    supports_failure_generation: ClassVar[bool] = True
+    supports_strict_doc_identity_lookup: ClassVar[bool] = True
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Scheduling control-plane doc (failure-generation counter + mode marker
+    # + schema version). Version stamps guard marker integrity: a mismatch
+    # reads as MIGRATING (never LEGACY).
+    _CTRL_SCHEMA_VERSION: ClassVar[int] = 1
+    _CTRL_DOC_ID: ClassVar[str] = "scheduling_ctrl"
+
+    # Phase-1 fields added to the doc-status mapping. NOTE (explicit review
+    # ruling): the ``long`` mapping does NOT make a missing
+    # ``failure_generation`` read as 0 — legacy rows simply lack the field —
+    # so every cohort query must pair ``range(lte)`` with
+    # ``must_not exists(failure_generation)``. ``__mirrored_id`` is included
+    # so legacy indexes (pre-mirrored-id, only tolerated on OpenSearch
+    # >= 3.3.0) gain the keyword tiebreaker mapping for new writes; their
+    # OLD docs still lack the field VALUE and sort behind everything with an
+    # unresolved tie until rewritten (every write path re-stamps it).
+    _SCHEDULING_FIELD_MAPPINGS: ClassVar[dict[str, dict[str, str]]] = {
+        "failure_generation": {"type": "long"},
+        "processing_attempt_id": {"type": "keyword"},
+        "failure_attempt_id": {"type": "keyword"},
+        "__mirrored_id": {"type": "keyword"},
+    }
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
@@ -1315,6 +1442,9 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         self.workspace, self.final_namespace, self._index_name = _build_index_name(
             self.workspace, self.namespace
         )
+        # Workspace isolation is inherited from the doc-status index name
+        # (already workspace-prefixed), so the ctrl index is per-workspace.
+        self._ctrl_index_name = f"{self._index_name}_scheduling_ctrl"
         (
             self._max_upsert_payload_bytes,
             self._max_upsert_records_per_batch,
@@ -1338,12 +1468,23 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         return data
 
     async def initialize(self):
-        """Initialize client connection and create doc status index."""
+        """Initialize client connection, create indexes and bootstrap the
+        scheduling control plane.
+
+        Ctrl bootstrap (Phase 1) runs on EVERY init: a missing ctrl doc is
+        seeded from a max-aggregation over persisted ``failure_generation``
+        (mode=enforced), and an existing counter that fell behind persisted
+        rows (restore-from-backup) is CAS-recalibrated so reservations stay
+        monotonic. Bootstrap failures propagate — the startup fence refuses
+        to serve rather than run with an unverified counter.
+        """
         async with get_data_init_lock():
             if self.client is None:
                 self.client = await ClientManager.get_client()
             await self._create_index_if_not_exists()
             self._index_ready = True
+            await self._create_ctrl_index_if_not_exists()
+            await self._bootstrap_scheduling_ctrl()
             logger.debug(
                 f"[{self.workspace}] OpenSearch DocStatus storage initialized: {self._index_name}"
             )
@@ -1377,6 +1518,9 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                             "content_hash": {"type": "keyword"},
                             "created_at": {"type": "date"},
                             "updated_at": {"type": "date"},
+                            "failure_generation": {"type": "long"},
+                            "processing_attempt_id": {"type": "keyword"},
+                            "failure_attempt_id": {"type": "keyword"},
                         },
                     },
                     "settings": {
@@ -1393,6 +1537,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             else:
                 await _verify_mirrored_id_mapping(self.client, self._index_name)
                 await self._ensure_content_hash_mapping()
+                await self._ensure_scheduling_fields_mapping()
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
@@ -1432,6 +1577,301 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 f"{self._index_name}: {e}"
             )
 
+    async def _ensure_scheduling_fields_mapping(self) -> None:
+        """Add the Phase-1 scheduling field mappings to a pre-existing index.
+
+        Same idempotent put_mapping pattern as ``_ensure_content_hash_mapping``
+        (new fields only — existing indexes need nothing else for new docs).
+        The mapping does NOT backfill legacy docs: rows that predate the
+        migration still lack ``failure_generation`` and are matched by the
+        ``must_not exists`` arm of the cohort predicate. A put failure is
+        logged rather than raised — ``dynamic: true`` maps the fields on
+        first write with the same types, and the strict page sort fails
+        loudly (never silently misorders) if ``__mirrored_id`` stays
+        unsortable.
+        """
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+        except OpenSearchException:
+            return
+        props = (
+            mapping.get(self._index_name, {}).get("mappings", {}).get("properties", {})
+        )
+        missing = {
+            name: spec
+            for name, spec in self._SCHEDULING_FIELD_MAPPINGS.items()
+            if name not in props
+        }
+        if not missing:
+            return
+        try:
+            await self.client.indices.put_mapping(
+                index=self._index_name,
+                body={"properties": missing},
+            )
+            logger.info(
+                f"[{self.workspace}] Added scheduling field mappings "
+                f"{sorted(missing)} to {self._index_name}"
+            )
+        except OpenSearchException as e:
+            logger.warning(
+                f"[{self.workspace}] Failed to add scheduling field mappings to "
+                f"{self._index_name}: {e}"
+            )
+
+    # ------------------------------------------------------------------
+    # Scheduling control plane (failure-generation counter + mode marker)
+    # ------------------------------------------------------------------
+
+    async def _create_ctrl_index_if_not_exists(self) -> None:
+        """Create the per-workspace scheduling ctrl index (one ctrl doc)."""
+        try:
+            if not await self.client.indices.exists(index=self._ctrl_index_name):
+                body = {
+                    "mappings": {
+                        "dynamic": True,
+                        "properties": {
+                            "schema_version": {"type": "integer"},
+                            "mode": {"type": "keyword"},
+                            "failure_generation_counter": {"type": "long"},
+                        },
+                    },
+                    "settings": {
+                        "index": {
+                            # Single doc — one shard suffices; replicas follow
+                            # the doc-status index so counter durability is no
+                            # weaker than the FAILED status write itself.
+                            "number_of_shards": 1,
+                            "number_of_replicas": _get_index_number_of_replicas(),
+                        },
+                    },
+                }
+                await self.client.indices.create(index=self._ctrl_index_name, body=body)
+                logger.info(
+                    f"[{self.workspace}] Created scheduling ctrl index: "
+                    f"{self._ctrl_index_name}"
+                )
+        except RequestError as e:
+            if "resource_already_exists_exception" not in str(e):
+                raise
+
+    async def _max_persisted_failure_generation(self) -> int:
+        """Max ``failure_generation`` across persisted rows (0 when none)."""
+        body = {
+            "size": 0,
+            "aggs": {
+                "max_failure_generation": {"max": {"field": "failure_generation"}}
+            },
+        }
+        try:
+            response = await self.client.search(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                return 0
+            raise
+        value = (
+            response.get("aggregations", {})
+            .get("max_failure_generation", {})
+            .get("value")
+        )
+        return int(value) if value is not None else 0
+
+    async def _bootstrap_scheduling_ctrl(self) -> None:
+        """Seed/calibrate the ctrl doc at startup (see ``initialize``).
+
+        * No ctrl doc → publish ``{schema_version, mode=enforced, counter=
+          max persisted failure_generation}`` with ``op_type=create`` so a
+          concurrent bootstrap cannot be clobbered (on 409 the winner's doc
+          is calibrated instead).
+        * Known schema + counter behind persisted rows → CAS recalibrate
+          (restore-from-backup can roll the ctrl index behind doc-status;
+          the reservation counter must stay monotonic).
+        * Unknown schema_version → left untouched; mode reads report
+          MIGRATING (never LEGACY) until an explicit migration handles it.
+        """
+        try:
+            ctrl = await self.client.get(
+                index=self._ctrl_index_name, id=self._CTRL_DOC_ID
+            )
+        except NotFoundError:
+            ctrl = None
+        if ctrl is None:
+            max_gen = await self._max_persisted_failure_generation()
+            body = {
+                "schema_version": self._CTRL_SCHEMA_VERSION,
+                "mode": FailureGenerationMode.ENFORCED.value,
+                "failure_generation_counter": max_gen,
+            }
+            try:
+                await self.client.index(
+                    index=self._ctrl_index_name,
+                    id=self._CTRL_DOC_ID,
+                    body=body,
+                    op_type="create",
+                )
+                logger.info(
+                    f"[{self.workspace}] Published failure-generation marker "
+                    f"(mode=enforced, counter={max_gen}) for {self.namespace}"
+                )
+                return
+            except ConflictError:
+                # A concurrent initialize() won the create — calibrate its doc.
+                ctrl = await self.client.get(
+                    index=self._ctrl_index_name, id=self._CTRL_DOC_ID
+                )
+
+        for attempt in range(_SCHEDULING_CAS_MAX_RETRIES):
+            source = ctrl.get("_source")
+            if (
+                not isinstance(source, dict)
+                or source.get("schema_version") != self._CTRL_SCHEMA_VERSION
+            ):
+                # Unknown/invalid marker: never rewrite it here — mode reads
+                # report MIGRATING until an explicit migration reconciles it.
+                logger.warning(
+                    f"[{self.workspace}] Scheduling ctrl doc for "
+                    f"{self.namespace} has an unknown schema; left untouched "
+                    f"(mode reads report MIGRATING)"
+                )
+                return
+            try:
+                counter = int(source.get("failure_generation_counter") or 0)
+            except (TypeError, ValueError):
+                counter = 0
+            max_gen = await self._max_persisted_failure_generation()
+            if counter >= max_gen:
+                return
+            try:
+                await self.client.index(
+                    index=self._ctrl_index_name,
+                    id=self._CTRL_DOC_ID,
+                    body={**source, "failure_generation_counter": max_gen},
+                    if_seq_no=ctrl["_seq_no"],
+                    if_primary_term=ctrl["_primary_term"],
+                )
+                logger.warning(
+                    f"[{self.workspace}] failure-generation counter behind "
+                    f"persisted rows ({counter} < {max_gen}); recalibrated"
+                )
+                return
+            except ConflictError:
+                await _scheduling_cas_backoff(attempt)
+                ctrl = await self.client.get(
+                    index=self._ctrl_index_name, id=self._CTRL_DOC_ID
+                )
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] failure-generation counter recalibration for "
+            f"{self.namespace} lost {_SCHEDULING_CAS_MAX_RETRIES} consecutive "
+            f"CAS races; refusing to serve with an unverified counter"
+        )
+
+    async def _get_ctrl_doc_or_raise(self) -> dict[str, Any]:
+        """Realtime GET of the ctrl doc, validated; failures are control-plane.
+
+        A missing or version-mismatched marker on a workspace this backend
+        already initialized is corruption, never "new LEGACY workspace" —
+        raising here is what keeps a reservation from inventing a counter.
+        """
+        try:
+            ctrl = await self.client.get(
+                index=self._ctrl_index_name, id=self._CTRL_DOC_ID
+            )
+        except NotFoundError as e:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker missing for "
+                f"{self.namespace}; refusing (never degrades to LEGACY "
+                f"full-snapshot behaviour)"
+            ) from e
+        except OpenSearchException as e:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker read failed "
+                f"for {self.namespace}: {e}"
+            ) from e
+        source = ctrl.get("_source")
+        if (
+            not isinstance(source, dict)
+            or source.get("schema_version") != self._CTRL_SCHEMA_VERSION
+        ):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation marker version-"
+                f"mismatched for {self.namespace}; refusing (never degrades "
+                f"to LEGACY full-snapshot behaviour)"
+            )
+        return ctrl
+
+    async def get_failure_generation_mode(self) -> FailureGenerationMode:
+        """Read the per-workspace activation marker (realtime GET).
+
+        Missing doc/index, unknown schema_version and an invalid mode value
+        all read as MIGRATING (fail-closed, never LEGACY); a transport error
+        RAISES — a marker read failure must never silently reopen the
+        full-snapshot manual path.
+        """
+        try:
+            ctrl = await self.client.get(
+                index=self._ctrl_index_name, id=self._CTRL_DOC_ID
+            )
+        except NotFoundError:
+            return FailureGenerationMode.MIGRATING
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] failure-generation mode read failed "
+                f"for {self.namespace}: {e}"
+            )
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] failure-generation mode read failed "
+                f"for {self.namespace}: {e}"
+            ) from e
+        source = ctrl.get("_source")
+        if not isinstance(source, dict):
+            return FailureGenerationMode.MIGRATING
+        if source.get("schema_version") != self._CTRL_SCHEMA_VERSION:
+            return FailureGenerationMode.MIGRATING
+        try:
+            return FailureGenerationMode(str(source.get("mode")))
+        except ValueError:
+            return FailureGenerationMode.MIGRATING
+
+    async def reserve_failure_generation(self) -> int:
+        """Atomically reserve the next failure generation (see base contract).
+
+        Realtime GET (consistent) → indexed rewrite guarded by
+        ``if_seq_no``/``if_primary_term``. A 409 means another reservation
+        won the race: re-GET and retry (bounded, jittered). The reservation
+        is durable once the index call returns (translog), i.e. no weaker
+        than the FAILED status write; a crash between reserve and publish
+        leaves a permanent hole — allowed, reuse is not.
+        """
+        last_conflict: Exception | None = None
+        for attempt in range(_SCHEDULING_CAS_MAX_RETRIES):
+            ctrl = await self._get_ctrl_doc_or_raise()
+            source = ctrl["_source"]
+            try:
+                counter = int(source.get("failure_generation_counter") or 0)
+            except (TypeError, ValueError) as e:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] failure-generation counter corrupt "
+                    f"for {self.namespace}: {e}"
+                ) from e
+            new_counter = counter + 1
+            try:
+                await self.client.index(
+                    index=self._ctrl_index_name,
+                    id=self._CTRL_DOC_ID,
+                    body={**source, "failure_generation_counter": new_counter},
+                    if_seq_no=ctrl["_seq_no"],
+                    if_primary_term=ctrl["_primary_term"],
+                )
+                return new_counter
+            except ConflictError as e:
+                last_conflict = e
+                await _scheduling_cas_backoff(attempt)
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] failure-generation reservation for "
+            f"{self.namespace} lost {_SCHEDULING_CAS_MAX_RETRIES} consecutive "
+            f"CAS races"
+        ) from last_conflict
+
     async def finalize(self):
         """Release the OpenSearch client connection."""
         if self.client is not None:
@@ -1455,6 +1895,41 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 return None
             logger.error(f"[{self.workspace}] Error getting doc status {id}: {e}")
             return None
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Point read with complete-or-raise semantics (base contract).
+
+        Unlike ``get_by_id`` (best-effort: errors and a not-ready index read
+        as a miss), ``None`` here is only returned on a healthy mget miss —
+        ``_index_ready=False``, a live missing-index error and any transport
+        or item-level error RAISE because absence cannot be positively
+        confirmed in those states.
+        """
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm absence of '{id}' (strict point "
+                f"read)"
+            )
+        try:
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot confirm absence of '{id}' "
+                    f"(strict point read)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error strictly getting doc status {id}: {e}"
+            )
+            raise
+        if response is None:
+            return None
+        doc = response["_source"]
+        doc["_id"] = response["_id"]
+        return doc
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple document status records by IDs."""
@@ -1840,15 +2315,38 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error getting doc by file_path: {e}")
             return None
 
+    @staticmethod
+    def _primary_basename_query(basename: str) -> dict[str, Any]:
+        """Exact basename match restricted to the PRIMARY row.
+
+        ``file_path`` is one-to-many (duplicate-attempt ``dup-*`` rows keep
+        the same canonical basename); ``metadata.is_duplicate == true`` rows
+        are excluded so identity checks / dedup always see the document,
+        never a duplicate marker. Legacy rows without the field are not
+        excluded (``must_not term`` matches nothing on a missing field).
+        """
+        return {
+            "query": {
+                "bool": {
+                    "filter": [{"term": {"file_path": basename}}],
+                    "must_not": [{"term": {"metadata.is_duplicate": True}}],
+                }
+            },
+            "size": 1,
+        }
+
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose canonical basename matches.
+        """Find the PRIMARY record whose canonical basename matches.
 
         The caller is responsible for passing an already-canonical basename;
         stored ``file_path`` values are canonicalized by the business layer, so
         this lookup performs an exact term query against the file_path keyword
-        field.
+        field, restricted to the primary (``metadata.is_duplicate != true``)
+        row. Legacy best-effort semantics: errors are swallowed and read as a
+        miss — dedup/identity callers that need fail-closed confirmation use
+        :meth:`get_doc_by_file_basename_strict`.
         """
         if not basename:
             return None
@@ -1857,7 +2355,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         if not self._index_ready:
             return None
         try:
-            body = {"query": {"term": {"file_path": basename}}, "size": 1}
+            body = self._primary_basename_query(basename)
             response = await self.client.search(index=self._index_name, body=body)
             hits = response["hits"]["hits"]
             if not hits:
@@ -1871,6 +2369,51 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 return None
             logger.error(f"[{self.workspace}] Error getting doc by file_basename: {e}")
             return None
+
+    async def get_doc_by_file_basename_strict(
+        self, basename: str
+    ) -> Union[tuple[str, dict[str, Any]], None]:
+        """Fail-closed basename lookup (see base contract).
+
+        Same primary-only query as :meth:`get_doc_by_file_basename`, but
+        ``None`` is only returned when absence was positively confirmed (a
+        healthy search with zero hits). ``_index_ready=False`` and a live
+        missing-index error raise ``StorageControlPlaneError`` — after
+        ``initialize()`` the index always exists, so it being missing means
+        we cannot distinguish a brand-new workspace from a lost index, and a
+        swallowed failure here would mint duplicate rows (scan/enqueue treat
+        ``None`` as "confirmed new"). Other transport errors propagate.
+        """
+        if not basename:
+            return None
+        if basename == "unknown_source":
+            return None
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm basename '{basename}' is absent "
+                f"(strict identity lookup)"
+            )
+        try:
+            body = self._primary_basename_query(basename)
+            response = await self.client.search(index=self._index_name, body=body)
+            hits = response["hits"]["hits"]
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot confirm basename "
+                    f"'{basename}' is absent (strict identity lookup)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error strictly getting doc by file_basename: {e}"
+            )
+            raise
+        if not hits:
+            return None
+        hit = hits[0]
+        return hit["_id"], hit["_source"]
 
     async def get_doc_by_content_hash(
         self, content_hash: str
@@ -1901,6 +2444,423 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 return None
             logger.error(f"[{self.workspace}] Error getting doc by content_hash: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_page_cursor(opaque: str) -> list[Any]:
+        """Decode an opaque page cursor back into ``search_after`` values.
+
+        The cursor is ``json.dumps(hits[-1]["sort"])`` — the last hit's sort
+        values verbatim, i.e. ``[created_at sort value, __mirrored_id]``.
+        Anything that does not decode to that two-element list is a corrupt
+        continuation token: raise a control-plane error instead of silently
+        restarting (or worse, mis-positioning) the sweep.
+        """
+        try:
+            decoded = json.loads(opaque)
+        except (TypeError, ValueError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for OpenSearchDocStatusStorage: {e}"
+            ) from e
+        if not isinstance(decoded, list) or len(decoded) != 2:
+            raise StorageControlPlaneError(
+                "Malformed scheduling cursor for OpenSearchDocStatusStorage: "
+                f"expected a 2-element sort-values list, got {decoded!r}"
+            )
+        return decoded
+
+    @staticmethod
+    def _build_scheduling_page_query(
+        status_values: list[str], max_failure_generation: int | None
+    ) -> dict[str, Any]:
+        """Server-side page query: status terms + optional cohort predicate.
+
+        The generation predicate must pair ``range(lte)`` with a
+        ``must_not exists`` arm (explicit review ruling): legacy docs LACK
+        the ``failure_generation`` field and the ``long`` mapping alone does
+        NOT make missing read as 0 — without the exists arm every legacy
+        FAILED row would silently drop out of the first manual cohort.
+        Non-FAILED rows are unaffected (first ``should`` arm).
+        """
+        terms_clause = {"terms": {"status": sorted(status_values)}}
+        if max_failure_generation is None:
+            return terms_clause
+        generation_predicate = {
+            "bool": {
+                "should": [
+                    {
+                        "bool": {
+                            "must_not": {"term": {"status": DocStatus.FAILED.value}}
+                        }
+                    },
+                    {"range": {"failure_generation": {"lte": max_failure_generation}}},
+                    {"bool": {"must_not": {"exists": {"field": "failure_generation"}}}},
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+        return {"bool": {"filter": [terms_clause, generation_predicate]}}
+
+    def _scheduling_record_from_hit(
+        self, hit: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one search hit; strict raises on unusable rows, relaxed
+        returns None (the row still counts as consumed — the cursor is the
+        last HIT's sort values, so skipped hits never re-appear)."""
+        doc_id = hit.get("_id")
+        source = hit.get("_source")
+        try:
+            if not isinstance(doc_id, str) or not isinstance(source, dict):
+                raise TypeError("malformed search hit")
+            status = DocStatus(str(source["status"]))
+            created_at = source["created_at"]
+            updated_at = source.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = source.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=source.get("file_path") or "no-file-path",
+                track_id=source.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        max_failure_generation: int | None = None,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page via native ``search_after`` (base contract).
+
+        Sort is ``(created_at ASC, __mirrored_id ASC)`` — ``_id`` is not
+        sortable in OpenSearch, so the id is tie-broken on the keyword field
+        every write path mirrors it into. Plain ``search_after`` (NO
+        point-in-time): the contract is live-view across requests, not a
+        snapshot. Filtering (status terms + generation predicate) is fully
+        server-side, so every hit is consumed by construction and
+        ``returned < limit`` proves exhaustion (CURSOR_END); a full page
+        continues with ``CursorAfter(json.dumps(hits[-1]["sort"]))`` — the
+        last hit's sort values are the natural consumed frontier (they cover
+        hits skipped as unusable in relaxed mode, too).
+
+        Strict/failure semantics: ``_index_ready=False`` raises under
+        ``strict`` (the index was dropped/lost — cannot confirm the sweep is
+        complete); a live missing-index error mirrors the existing
+        ``get_docs_by_statuses`` strict decision (legitimately empty →
+        empty terminal page); transport errors raise WITHOUT returning
+        partial docs or a new cursor; ``strict`` additionally turns
+        unusable-row skips into raises.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        if not self._index_ready:
+            if strict:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"is not ready; cannot serve a complete scheduling page"
+                )
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        search_after: list[Any] | None = None
+        if isinstance(position, CursorAfter):
+            search_after = self._decode_page_cursor(position.opaque)
+        body: dict[str, Any] = {
+            "query": self._build_scheduling_page_query(
+                [s.value for s in statuses], max_failure_generation
+            ),
+            "sort": [
+                {"created_at": {"order": "asc"}},
+                {"__mirrored_id": {"order": "asc"}},
+            ],
+            "size": limit,
+        }
+        if search_after is not None:
+            body["search_after"] = search_after
+        try:
+            response = await self.client.search(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return DocStatusPage(docs={}, next_position=CURSOR_END)
+            # Complete-or-raise in BOTH modes: a partial page + advanced
+            # cursor would silently strand the missed documents.
+            logger.error(f"[{self.workspace}] Scheduling page query failed: {e}")
+            raise
+        hits = response["hits"]["hits"]
+        docs: dict[str, DocSchedulingRecord] = {}
+        for hit in hits:
+            record = self._scheduling_record_from_hit(hit, strict=strict)
+            if record is None:
+                continue  # relaxed skip is still consumed (see cursor note)
+            docs[record.id] = record
+        if len(hits) < limit:
+            return DocStatusPage(docs=docs, next_position=CURSOR_END)
+        return DocStatusPage(
+            docs=docs,
+            next_position=CursorAfter(json.dumps(hits[-1]["sort"])),
+        )
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count via the ``_count`` API (base contract).
+
+        Always accurate-or-raise regardless of ``strict`` — admission
+        control must never read an error as "capacity available".
+        ``_index_ready=False`` raises; a live missing-index error mirrors
+        the existing strict ``get_docs_by_statuses`` decision (legitimately
+        empty → 0).
+        """
+        if not statuses:
+            return 0
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot produce an accurate status count"
+            )
+        body = {"query": {"terms": {"status": sorted({s.value for s in statuses})}}}
+        try:
+            response = await self.client.count(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                return 0
+            logger.error(f"[{self.workspace}] Error counting doc statuses: {e}")
+            raise
+        count = response.get("count")
+        if not isinstance(count, int):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] OpenSearch _count returned a malformed "
+                f"response for {self.namespace}: {response!r}"
+            )
+        return count
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted partial update via the ``_update`` doc-merge API.
+
+        No read-modify-write: untouched fields (including a huge
+        ``chunks_list``) never travel through memory. ``refresh="wait_for"``
+        matches the visibility of the bulk upsert path (search-based readers
+        may query immediately after). This class keeps no pending buffer for
+        doc-status writes, so the update is immediately authoritative.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        await self._ensure_index_ready()
+        try:
+            await self.client.update(
+                index=self._index_name,
+                id=doc_id,
+                body={"doc": fields},
+                refresh="wait_for",
+            )
+        except NotFoundError as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing while updating '{doc_id}'"
+                ) from e
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id) from e
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] Error updating doc status fields for {doc_id}: {e}"
+            )
+            raise
+
+    async def mark_doc_failed(self, doc_id: str, fields: dict[str, Any]) -> int | None:
+        """FAILED transition funnel: reserve → CAS publish (base contract).
+
+        Two-step by design on OpenSearch (independent ctrl index; the plan
+        accepts the reserve→publish window — cohort semantics account for
+        it):
+
+        1. Realtime GET of the row with ``seq_no``/``primary_term``.
+           Idempotency first: already-FAILED with ``failure_attempt_id`` ==
+           the current attempt returns the existing generation WITHOUT
+           touching the counter.
+        2. Reserve a generation (a publish failure leaves a permanent hole).
+        3. Publish the FAILED doc guarded by ``if_seq_no/if_primary_term``;
+           on 409 re-GET, re-check idempotency, retry (bounded). A missing
+           row is created with ``op_type=create`` so a concurrent create is
+           never clobbered (its 409 loops back into the existing-row path).
+
+        ``created_at`` of an existing row always wins over the caller's —
+        the scheduling sort key is immutable.
+        """
+        await self._ensure_index_ready()
+        for attempt in range(_SCHEDULING_CAS_MAX_RETRIES):
+            try:
+                row_resp = await self.client.get(index=self._index_name, id=doc_id)
+            except NotFoundError as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                    await self._ensure_index_ready()
+                row_resp = None
+            existing = row_resp.get("_source") if isinstance(row_resp, dict) else None
+
+            if isinstance(existing, dict):
+                current_attempt = existing.get("processing_attempt_id") or fields.get(
+                    "processing_attempt_id"
+                )
+                if (
+                    str(existing.get("status")) == DocStatus.FAILED.value
+                    and current_attempt
+                    and existing.get("failure_attempt_id") == current_attempt
+                ):
+                    # Same attempt already published its failure: idempotent,
+                    # no counter reservation.
+                    try:
+                        return int(existing.get("failure_generation") or 0)
+                    except (TypeError, ValueError):
+                        return 0
+                generation = await self.reserve_failure_generation()
+                row = {**existing, **fields}
+                if "created_at" in existing:
+                    row["created_at"] = existing["created_at"]
+                row["status"] = DocStatus.FAILED.value
+                row["failure_generation"] = generation
+                if current_attempt:
+                    row["failure_attempt_id"] = current_attempt
+                    row.setdefault("processing_attempt_id", current_attempt)
+                row.setdefault("chunks_list", [])
+                row.pop("_id", None)
+                row["__mirrored_id"] = doc_id
+                try:
+                    await self.client.index(
+                        index=self._index_name,
+                        id=doc_id,
+                        body=row,
+                        if_seq_no=row_resp["_seq_no"],
+                        if_primary_term=row_resp["_primary_term"],
+                        refresh="wait_for",
+                    )
+                    return generation
+                except ConflictError:
+                    logger.warning(
+                        f"[{self.workspace}] mark_doc_failed CAS conflict for "
+                        f"{doc_id} (generation {generation} becomes a hole); "
+                        f"retrying"
+                    )
+                    await _scheduling_cas_backoff(attempt)
+                    continue
+
+            # Missing row: parse/enqueue errors can fail before the PENDING
+            # row landed — conditionally create the FAILED record.
+            current_attempt = fields.get("processing_attempt_id")
+            generation = await self.reserve_failure_generation()
+            row = {k: v for k, v in fields.items() if k != "_id"}
+            row["status"] = DocStatus.FAILED.value
+            row["failure_generation"] = generation
+            if current_attempt:
+                row["failure_attempt_id"] = current_attempt
+            row.setdefault("chunks_list", [])
+            row["__mirrored_id"] = doc_id
+            try:
+                await self.client.index(
+                    index=self._index_name,
+                    id=doc_id,
+                    body=row,
+                    op_type="create",
+                    refresh="wait_for",
+                )
+                return generation
+            except ConflictError:
+                # A concurrent writer created the row first: loop back into
+                # the existing-row path (this generation becomes a hole).
+                logger.warning(
+                    f"[{self.workspace}] mark_doc_failed create conflict for "
+                    f"{doc_id} (generation {generation} becomes a hole); "
+                    f"retrying against the concurrent row"
+                )
+                await _scheduling_cas_backoff(attempt)
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] mark_doc_failed for {doc_id} lost "
+            f"{_SCHEDULING_CAS_MAX_RETRIES} consecutive CAS races"
+        )
+
+    async def ensure_processing_attempt_id(self, doc_id: str) -> str:
+        """Mint-or-reuse the row's attempt id with a CAS update (base contract).
+
+        Realtime GET; an existing id is returned as-is (idempotent — a lost
+        response retried reuses the persisted id). Minting uses the
+        ``_update`` API guarded by ``if_seq_no/if_primary_term``; a 409 means
+        a concurrent writer touched the row — re-GET (usually finding the
+        winner's id) and retry bounded.
+        """
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot ensure processing_attempt_id for "
+                f"'{doc_id}'"
+            )
+        last_conflict: Exception | None = None
+        for attempt in range(_SCHEDULING_CAS_MAX_RETRIES):
+            try:
+                row_resp = await self.client.get(index=self._index_name, id=doc_id)
+            except NotFoundError as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                    raise StorageControlPlaneError(
+                        f"[{self.workspace}] doc status index "
+                        f"'{self._index_name}' unexpectedly missing while "
+                        f"ensuring processing_attempt_id for '{doc_id}'"
+                    ) from e
+                raise StorageRecordNotFoundError(doc_id) from e
+            source = row_resp.get("_source")
+            attempt_id = (
+                source.get("processing_attempt_id")
+                if isinstance(source, dict)
+                else None
+            )
+            if attempt_id:
+                return str(attempt_id)
+            minted = uuid.uuid4().hex
+            try:
+                await self.client.update(
+                    index=self._index_name,
+                    id=doc_id,
+                    body={"doc": {"processing_attempt_id": minted}},
+                    if_seq_no=row_resp["_seq_no"],
+                    if_primary_term=row_resp["_primary_term"],
+                    refresh="wait_for",
+                )
+                return minted
+            except ConflictError as e:
+                last_conflict = e
+                await _scheduling_cas_backoff(attempt)
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] ensure_processing_attempt_id for {doc_id} "
+            f"lost {_SCHEDULING_CAS_MAX_RETRIES} consecutive CAS races"
+        ) from last_conflict
 
     async def index_done_callback(self) -> None:
         """Refresh index to make recently indexed documents searchable."""

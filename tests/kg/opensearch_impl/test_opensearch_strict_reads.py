@@ -95,6 +95,24 @@ class _EmbedFunc:
         raise AssertionError("doc-status/kv reads must not embed")
 
 
+@pytest.fixture(autouse=True)
+def _skip_scheduling_bootstrap():
+    """Isolate these legacy-behaviour tests from the Phase 1 ctrl bootstrap
+    that ``initialize()`` now runs (it has dedicated coverage in
+    test_os_scheduling_pages.py); the mocked clients here predate it."""
+    with (
+        patch.object(
+            OpenSearchDocStatusStorage,
+            "_create_ctrl_index_if_not_exists",
+            AsyncMock(),
+        ),
+        patch.object(
+            OpenSearchDocStatusStorage, "_bootstrap_scheduling_ctrl", AsyncMock()
+        ),
+    ):
+        yield
+
+
 def _make_client() -> AsyncMock:
     client = AsyncMock(spec=AsyncOpenSearch)
     client.indices = AsyncMock()
