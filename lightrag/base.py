@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from typing import (
     Any,
+    ClassVar,
     Literal,
+    Sequence,
     TypedDict,
     TypeVar,
     Optional,
@@ -17,7 +19,12 @@ from typing import (
 )
 from .utils import EmbeddingFunc, get_env_value
 from .types import KnowledgeGraph
+from .exceptions import (
+    StorageCapabilityError,
+    StorageRecordNotFoundError,
+)
 from .constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
     DEFAULT_TOP_K,
     DEFAULT_CHUNK_TOP_K,
     DEFAULT_MAX_ENTITY_TOKENS,
@@ -383,9 +390,47 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 class BaseKVStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
 
+    supports_strict_point_reads: ClassVar[bool] = False
+    """Class-level capability flag: the backend implements
+    :meth:`get_by_id_strict` with complete-or-raise semantics.
+
+    Unlike the doc_status scheduling API (mandatory ``@abstractmethod`` — see
+    :class:`DocStatusStorage`), strict point reads are an OPTIONAL KV
+    capability: ``BaseKVStorage`` serves many namespaces (``full_docs``,
+    ``text_chunks``, ``llm_response_cache``, ...) and only the ``full_docs``
+    stale-stub decision needs it. A backend that does not provide it degrades
+    to the conservative path (keep the FAILED stub, never delete on an
+    unconfirmed miss). Callers MUST gate on this flag before calling
+    :meth:`get_by_id_strict`.
+    """
+
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get value by id"""
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Point read with complete-or-raise semantics.
+
+        Contract (implemented by backends that declare
+        ``supports_strict_point_reads = True``):
+
+        * ``None`` means **confirmed absent** — the backend positively
+          determined that no record with this id exists.
+        * Any transport/server error, an index/collection that is not ready,
+          or a state where absence cannot be positively confirmed (e.g. an
+          OpenSearch index that is unexpectedly missing after a restore)
+          MUST raise instead of returning ``None``.
+
+        This differs from :meth:`get_by_id`, whose implementations may treat
+        failures as a best-effort miss. The base default raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`; callers must gate
+        on :attr:`supports_strict_point_reads` before calling.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support strict point reads "
+            "(supports_strict_point_reads=False); the caller must fall back "
+            "to a non-destructive path instead of trusting a miss."
+        )
 
     @abstractmethod
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -864,9 +909,161 @@ class DocProcessingStatus:
                 self.status = DocStatus.PREPROCESSED
 
 
+class CursorPosition:
+    """Sealed three-state cursor for stable keyset sweeps.
+
+    Exactly three shapes exist: the :data:`CURSOR_START` singleton, the
+    :data:`CURSOR_END` singleton, and :class:`CursorAfter` (an opaque,
+    backend-defined continuation token). ``page.next_position is CURSOR_END``
+    is the ONLY termination signal — an empty ``docs`` dict is not (a page
+    may be fully filtered yet not exhausted).
+    """
+
+    __slots__ = ()
+
+
+class _CursorSentinel(CursorPosition):
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial
+        return self._name
+
+
+CURSOR_START = _CursorSentinel("CURSOR_START")
+"""Begin a sweep from the smallest ``(created_at, id)`` key."""
+
+CURSOR_END = _CursorSentinel("CURSOR_END")
+"""The sweep is exhausted; no further page exists."""
+
+
+@dataclass(frozen=True)
+class CursorAfter(CursorPosition):
+    """Opaque continuation token: resume strictly after the last CONSUMED
+    underlying record (see the consumed-position contract on
+    :meth:`DocStatusStorage.get_docs_by_statuses_page`)."""
+
+    opaque: str
+
+
+@dataclass(frozen=True)
+class DocSchedulingRecord:
+    """Lightweight scheduling projection of a doc_status row.
+
+    Deliberately excludes ``chunks_list``, large ``metadata`` blobs and full
+    error text so a page of records stays O(page_size × small constant) —
+    the pipeline hydrates full records per-document only when it actually
+    routes one.
+    """
+
+    id: str
+    status: DocStatus
+    created_at: str
+    updated_at: str
+    file_path: str | None
+    track_id: str | None
+    has_custom_chunk_journal: bool
+    """True when doc_status.metadata carries the custom-chunk patch journal —
+    such rows belong to scan/custom-chunk recovery, not ordinary routing."""
+
+
+@dataclass(frozen=True)
+class DocStatusPage:
+    """One page of a stable keyset sweep.
+
+    ``next_position is CURSOR_END`` terminates the sweep; any other value
+    (including with an empty ``docs``) means "call again".
+    """
+
+    docs: dict[str, DocSchedulingRecord]
+    next_position: CursorPosition
+
+
+@dataclass(frozen=True)
+class SourceAbsent:
+    """No primary candidate exists for the canonical source key."""
+
+
+@dataclass(frozen=True)
+class SourceUnique:
+    """Exactly one primary (non-duplicate) candidate for the canonical source
+    key; ``doc_id`` is the identity every subsequent operation must use."""
+
+    doc_id: str
+    doc: DocSchedulingRecord
+
+
+@dataclass(frozen=True)
+class SourceConflict:
+    """Two or more primary candidates share the canonical source key.
+
+    Scan must not enqueue, delete, or archive — the job surfaces a repair
+    request instead. ``candidate_count`` is ``None`` when the backend only
+    proved "at least two" (via two samples) without a cheap exact count.
+    ``sample_doc_ids`` uses a fixed upper bound — never materialize the whole
+    conflicting set into memory.
+    """
+
+    candidate_count: int | None
+    sample_doc_ids: tuple[str, ...]
+
+
+# doc_id is the sole identity for records and downstream processing; the
+# canonical source key (a physical basename) only locates candidate rows and
+# is NOT assumed globally unique (custom-id inserts, legacy ids and historical
+# basename collisions can all share one basename).
+SourceResolution = SourceAbsent | SourceUnique | SourceConflict
+
+
+@dataclass(frozen=True)
+class SourceConflictSummary:
+    """One conflicting canonical source key with a bounded candidate sample."""
+
+    canonical_source_key: str
+    candidate_count: int | None
+    sample_doc_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SourceConflictPage:
+    """One page of the source-conflict listing (bounded projection)."""
+
+    conflicts: tuple[SourceConflictSummary, ...]
+    next_position: CursorPosition
+
+
+@dataclass(frozen=True)
+class SourceConflictRepairResult:
+    """Outcome of a source-conflict repair, dry-run or committed.
+
+    ``fingerprint`` is a deterministic digest over the candidate doc IDs in
+    stable sort order — the CAS token an operator echoes back on commit so a
+    concurrent change to the candidate set fails the repair instead of being
+    silently overwritten. ``demoted_sample_doc_ids`` is a bounded sample of
+    the rows that would be (dry-run) or were (commit) marked
+    ``metadata.is_duplicate=true``; content is never deleted.
+    """
+
+    canonical_source_key: str
+    primary_doc_id: str
+    candidate_count: int
+    fingerprint: str
+    demoted_sample_doc_ids: tuple[str, ...]
+    committed: bool
+
+
 @dataclass
 class DocStatusStorage(BaseKVStorage, ABC):
-    """Base class for document status storage"""
+    """Base class for document status storage.
+
+    All backends are first-party and MUST implement the bounded scheduling +
+    strict-read API (``get_docs_by_statuses_page`` / ``get_docs_by_ids`` /
+    ``resolve_doc_source_strict``) — these are ``@abstractmethod`` so a backend
+    missing any of them cannot instantiate. There is no degraded fallback and
+    no capability flag: instantiability IS the capability guarantee.
+    """
 
     @staticmethod
     def resolve_status_filter_values(
@@ -997,6 +1194,233 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.
         """
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1). The paging / batch / source
+    # methods are ``@abstractmethod`` — every (first-party) backend MUST
+    # implement them with bounded / fail-closed behaviour; there is no
+    # degraded base fallback. ``count`` / ``update`` / conflict-repair keep a
+    # concrete base default.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _scheduling_record_from_raw(
+        doc_id: str, raw: dict[str, Any]
+    ) -> DocSchedulingRecord:
+        """Project a raw doc_status dict into the lightweight scheduling record.
+
+        Used by base-default paths that only have the persisted dict (e.g. the
+        legacy-delegating source resolver). ``status`` may already be a
+        :class:`DocStatus` or its string value.
+        """
+        status_val = raw.get("status")
+        status = (
+            status_val if isinstance(status_val, DocStatus) else DocStatus(status_val)
+        )
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        return DocSchedulingRecord(
+            id=doc_id,
+            status=status,
+            created_at=raw.get("created_at") or "",
+            updated_at=raw.get("updated_at") or "",
+            file_path=raw.get("file_path"),
+            track_id=raw.get("track_id"),
+            has_custom_chunk_journal=isinstance(
+                metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict
+            ),
+        )
+
+    @abstractmethod
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Read one page of a stable keyset sweep over the given statuses.
+
+        Contract (every backend MUST implement this as a true bounded sweep):
+
+        * **Sort (MUST)**: ``(created_at ASC, id ASC)`` keyset order across
+          ALL requested statuses combined (per-status keysets merged with a
+          bounded k-way merge where the backend cannot sort natively).
+          Live-view: the sweep observes concurrent writes; no snapshot
+          isolation is claimed. Termination is ``next_position is
+          CURSOR_END`` — never an empty ``docs``.
+        * **Immutable sort key**: ``created_at`` is written once at record
+          creation and preserved by every later transition
+          (``update_doc_status_fields`` refuses it) so a record can never move
+          underneath a sweep. A missing/NULL ``created_at`` sorts FIRST (an
+          empty-string / NULL bucket) and stays reachable across page
+          boundaries via bucket-aware resume — it must never become
+          permanently unreachable behind a real-timestamp cursor.
+        * **Consumed-position advance**: ``next_position`` advances past the
+          last CONSUMED underlying record — records returned to the caller
+          plus records read and dropped by filtering are consumed; a record
+          prefetched for merging but NOT returned because the page filled is
+          NOT consumed (or must be encoded into the opaque cursor and returned
+          first on the next page). A fully-filtered page therefore advances
+          the cursor without terminating, never re-reads in place, and never
+          skips a prefetched head. With multiple statuses the opaque cursor
+          tracks each status stream's own consumed position.
+        * ``strict=True``: the page is complete or the call raises — on an
+          internal partial failure the implementation must raise WITHOUT
+          returning partial docs or a new cursor. All scheduling/control-plane
+          callers pass ``strict=True`` explicitly.
+        """
+
+    @abstractmethod
+    async def get_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocSchedulingRecord]:
+        """Batch strict read of scheduling records by doc id.
+
+        Contract (every backend MUST implement it as a true batch strict read):
+
+        * The returned mapping contains ONLY ids confirmed to exist; a missing
+          id may be omitted, but the backend must have positively confirmed
+          its absence.
+        * With ``strict=True`` any transport/server/chunking error fails the
+          WHOLE call — the implementation must not return a partial mapping
+          and let the feeder treat un-returned ids as stale.
+        * Results use the lightweight projection (no chunks / full content).
+        """
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Count documents in the given statuses, fail-closed.
+
+        Unlike ``get_status_counts()`` implementations that swallow errors and
+        report zeros, this method MUST either return an accurate count or
+        raise — admission control treats an error as "refuse", never as
+        "capacity available". The base implementation raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`; deployments that
+        enable ``MAX_PENDING_DOCUMENTS`` validate support at initialization.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not implement strict "
+            "count_docs_by_statuses; admission control cannot run on this "
+            "backend."
+        )
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Update only the given fields of one doc_status record.
+
+        Contract:
+
+        * Fields not present in ``fields`` are left untouched — this is the
+          targeted alternative to read-modify-write upserts that would drag a
+          huge ``chunks_list`` through memory.
+        * Implementations MUST atomically maintain every secondary index
+          affected by the updated fields (e.g. Redis per-status ZSETs and the
+          source multimap) in the same transaction as the write.
+        * ``created_at`` is an immutable sort key: passing it raises
+          ``ValueError`` (see the keyset-sweep contract).
+        * Unknown ``doc_id`` raises
+          :class:`~lightrag.exceptions.StorageRecordNotFoundError` unless
+          ``missing_ok=True`` (best-effort callers only).
+
+        The base default performs a read-modify-write via ``get_by_id`` +
+        ``upsert`` — correct but not memory-optimal; built-in backends
+        override with native partial updates.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        existing = await self.get_by_id(doc_id)
+        if existing is None:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+        merged = {**existing, **fields}
+        merged.pop("_id", None)
+        await self.upsert({doc_id: merged})
+
+    @abstractmethod
+    async def resolve_doc_source_strict(
+        self, canonical_source_key: str
+    ) -> SourceResolution:
+        """Resolve a canonical source key to a typed source resolution.
+
+        Contract (every backend MUST implement it fail-closed and
+        conflict-aware):
+
+        * Only rows with ``metadata.is_duplicate != true`` are primary
+          candidates.
+        * 0 candidates → :class:`SourceAbsent`; 1 → :class:`SourceUnique`;
+          ≥2 → :class:`SourceConflict` (found by locating just two candidates,
+          never materializing the whole conflicting set).
+        * Query failure, a not-ready index, or an ambiguous state raises a
+          control-plane error instead of returning ``SourceAbsent`` — scan and
+          enqueue treat Absent as "confirmed new", so a swallowed failure would
+          mint duplicate rows.
+        """
+
+    async def list_source_conflicts_page(
+        self,
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+    ) -> SourceConflictPage:
+        """List canonical source keys with more than one primary candidate.
+
+        Operator/admin tooling for the explicit repair flow (see
+        :meth:`repair_source_conflict`). The base default raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`; only backends
+        with a real strict resolver can enumerate conflicts.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not implement "
+            "list_source_conflicts_page (no strict source resolution)."
+        )
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key: str,
+        *,
+        primary_doc_id: str,
+        expected_candidate_count: int,
+        expected_candidate_fingerprint: str,
+        dry_run: bool = True,
+    ) -> SourceConflictRepairResult:
+        """Resolve a historical multi-primary conflict, CAS-guarded.
+
+        The system never picks a winner automatically; the operator names the
+        ``primary_doc_id`` to keep. Contract for capable backends:
+
+        * ``dry_run=True`` (default) makes no mutation and returns the bounded
+          summary plus the deterministic ``fingerprint`` / ``candidate_count``
+          computed under a workspace + canonical-source-key write lock.
+        * On commit, the current candidate set is re-read strictly under that
+          lock; a mismatch with ``expected_candidate_count`` /
+          ``expected_candidate_fingerprint`` fails as a CAS conflict rather
+          than overwriting a concurrent change.
+        * The other candidates are marked ``metadata.is_duplicate=true`` with
+          ``original_doc_id=primary_doc_id`` in bounded pages; content is never
+          deleted. After a successful commit the strict resolver returns
+          ``SourceUnique(primary_doc_id)``.
+
+        The base default raises
+        :class:`~lightrag.exceptions.StorageCapabilityError`.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not implement repair_source_conflict "
+            "(no strict source resolution)."
+        )
 
 
 class StoragesStatus(str, Enum):
