@@ -150,6 +150,45 @@ async def test_enqueue_acquire_combines_recovery_and_reservation_update(monkeypa
 
 
 @pytest.mark.offline
+async def test_enqueue_acquire_rejects_under_manual_freeze():
+    # LR2 Phase 3 §6.1/§7.2: a manual retry freeze rejects NEW enqueue
+    # reservations with the dedicated MANUAL_FREEZE conflict (HTTP 409).
+    ps = {
+        "busy": False,
+        "busy_owner": None,
+        "scanning_owner": None,
+        "destructive_busy": False,
+        "manual_freeze_requested": True,
+        "pending_enqueue_tokens": {},
+        "pending_enqueues": 0,
+    }
+
+    result = await acquire_enqueue_reservation(
+        ps,
+        asyncio.Lock(),
+        token="new",
+        reject_when=(
+            ("destructive_busy", "destructive"),
+            ("manual_freeze_requested", "manual retry draining"),
+        ),
+    )
+
+    assert result.acquired is False
+    assert result.conflict is shared_storage.PipelineReservationConflict.MANUAL_FREEZE
+    assert result.message == "manual retry draining"
+    # No slot taken while frozen.
+    assert ps["pending_enqueue_tokens"] == {} and ps["pending_enqueues"] == 0
+
+
+@pytest.mark.offline
+def test_manual_freeze_flag_maps_to_manual_freeze_conflict():
+    assert (
+        shared_storage._conflict_for_status_flag("manual_freeze_requested")
+        is shared_storage.PipelineReservationConflict.MANUAL_FREEZE
+    )
+
+
+@pytest.mark.offline
 async def test_single_owner_acquire_always_honors_recovery_fence(monkeypatch):
     monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
     monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)

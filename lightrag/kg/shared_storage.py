@@ -126,6 +126,15 @@ KEY_SEP = "\x1f"
 _CONCURRENCY_LEASE_NAMESPACE = "concurrency_leases"
 _QUEUE_STATS_NAMESPACE = "queue_stats"
 
+# Manual retry protocol phases (LR2 §6.1). Stored as PLAIN STRINGS in
+# ``pipeline_status["manual_phase"]`` — never enum members — so a Manager
+# ``DictProxy`` round-trip and any ``str(...)`` interpolation stay byte-stable
+# (cf. the Phase 2 enum-status bug where ``str(DocStatus.PENDING)`` yielded
+# "DocStatus.PENDING").
+MANUAL_PHASE_IDLE = "idle"
+MANUAL_PHASE_DRAIN_TO_IDLE = "drain_to_idle"
+MANUAL_PHASE_EXCLUSIVE_RESET = "exclusive_reset"
+
 # Heartbeat / staleness parameters (module-level so tests can monkeypatch).
 _heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
 _suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
@@ -1637,6 +1646,29 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 "busy_owner": None,
                 "scanning_owner": None,
                 "pending_enqueue_tokens": {},
+                # ---- manual retry coordination (LR2 §6.1) ----
+                # Runtime-only state for the freeze → DRAIN_TO_IDLE →
+                # EXCLUSIVE_RESET manual-retry protocol.  NEVER written to
+                # doc_status and NEVER surviving a Manager/whole-process restart
+                # (a restart resets them to idle; recovery is driven only by the
+                # persistent doc_status: PENDING resumes via AUTO, FAILED waits
+                # for the next explicit manual request).
+                #
+                # ``manual_freeze_requested`` rejects NEW enqueue reservations
+                # (upload/text/SDK direct enqueue) but lets already-reserved
+                # requests finish; ``manual_resetting`` marks the exclusive
+                # FAILED→PENDING phase (no worker runs); ``manual_phase`` is one
+                # of MANUAL_PHASE_{IDLE,DRAIN_TO_IDLE,EXCLUSIVE_RESET}.  The
+                # freeze/reset flags and ``manual_owner`` are ALWAYS written in
+                # a single atomic update: there is never a True flag with no
+                # owner (LR2 §6.1).  ``manual_owner`` is the busy processing run
+                # that holds the freeze — {request_id, owner_token, pid,
+                # process_start_id} — so a dead busy owner clears the manual
+                # state too (see _dead_reservation_updates).
+                "manual_freeze_requested": False,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
             }
         )
 
@@ -1897,6 +1929,14 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
     "operation_record",
     "recovery_required",
     "scan_deferred_processing",
+    # ``manual_owner`` carries a pid / process_start_id / owner token — internal
+    # coordination identity, never surfaced on /pipeline_status. The
+    # manual_freeze_requested / manual_resetting / manual_phase booleans+string
+    # are also hidden here in Phase 3; Phase 6 adds a curated observability view.
+    "manual_owner",
+    "manual_freeze_requested",
+    "manual_resetting",
+    "manual_phase",
 )
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
@@ -1973,6 +2013,22 @@ def _dead_reservation_updates(
     updates: Dict[str, Any] = {owner_key: None}
     for flag in flags:
         updates[flag] = False
+    # The manual-retry freeze/reset is driven BY the busy processing run
+    # (manual_owner shares its pid/process_start_id). A dead busy owner cannot
+    # legitimately still hold a freeze, so clear the whole manual state in the
+    # SAME atomic update — never leave a True freeze flag with no live owner
+    # (LR2 §6.1). The sticky manual request itself survives in the ingress
+    # mailbox and is re-run from scratch (idempotent drain→reset) by the next
+    # owner. ``processing`` is re-runnable, so busy is simply cleared here.
+    if owner_key == "busy_owner":
+        updates.update(
+            {
+                "manual_freeze_requested": False,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
+            }
+        )
     if rec.get("kind") not in _RERUNNABLE_RESERVATION_KINDS:
         updates["recovery_required"] = {
             "kind": rec.get("kind"),
@@ -2071,6 +2127,11 @@ class PipelineReservationConflict(str, Enum):
     PENDING_ENQUEUE = "pending_enqueue"
     DESTRUCTIVE = "destructive"
     RECOVERY_REQUIRED = "recovery_required"
+    # A manual retry has frozen new enqueues while it drains the pipeline to
+    # idle and exclusively resets FAILED→PENDING (LR2 §6.1/§7.2). Maps to HTTP
+    # 409 like every non-recovery conflict — the freeze is a bounded window,
+    # not a fenced workspace.
+    MANUAL_FREEZE = "manual_freeze"
 
 
 @dataclass(frozen=True)
@@ -2102,6 +2163,7 @@ def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
             "scanning_exclusive": PipelineReservationConflict.SCANNING,
             "pending_enqueues": PipelineReservationConflict.PENDING_ENQUEUE,
             "destructive_busy": PipelineReservationConflict.DESTRUCTIVE,
+            "manual_freeze_requested": PipelineReservationConflict.MANUAL_FREEZE,
         }[flag_key]
     except KeyError:
         # Fail-fast on an unmapped reject_when flag: a silent BUSY fallback would

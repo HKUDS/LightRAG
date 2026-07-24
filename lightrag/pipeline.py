@@ -455,7 +455,7 @@ class _PipelineMixin:
         # doc_status, so a consistency check never sees a ghost row, and
         # (b) the running loop observes the ingress mailbox mid-batch and
         # at every batch boundary, so work that arrives while busy is
-        # picked up without a new run.  Two states still block enqueue:
+        # picked up without a new run.  Three states still block enqueue:
         #   * ``scanning_exclusive`` — scan task is in its CLASSIFICATION
         #     phase, reading doc_status to classify files and possibly
         #     deleting stale stubs.  Concurrent enqueue would race
@@ -463,6 +463,10 @@ class _PipelineMixin:
         #     lifts this guard for the scan task's own enqueues.
         #     ``scanning`` alone (the processing phase) does NOT block,
         #     identical to the upload-during-busy case.
+        #   * ``manual_freeze_requested`` — a manual retry has frozen new
+        #     ingress while it drains the pipeline to idle and exclusively
+        #     resets FAILED→PENDING (LR2 §6.1/§7.2).  Also lifted by
+        #     ``from_scan=True`` (the scan owns the manual operation).
         #   * ``destructive_busy`` — clear / delete is dropping storages
         #     or removing input files; a concurrent write would be
         #     silently clobbered.
@@ -479,6 +483,17 @@ class _PipelineMixin:
                     "scanning_exclusive",
                     "Cannot enqueue while scan is classifying files; wait for the "
                     "classification phase to finish before retrying.",
+                )
+            )
+            # A manual retry (LR2 §6.1/§7.2) froze new ingress while it drains
+            # the pipeline and exclusively resets FAILED→PENDING. Lifted for
+            # ``from_scan=True`` exactly like scanning_exclusive: the scan is the
+            # manual operation's own driver, so its enqueues must not self-block.
+            reject_when.append(
+                (
+                    "manual_freeze_requested",
+                    "Cannot enqueue while a manual retry is draining the pipeline; "
+                    "wait for it to finish before retrying.",
                 )
             )
         reject_when.append(
