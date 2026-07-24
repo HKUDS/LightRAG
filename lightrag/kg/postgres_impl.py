@@ -5655,6 +5655,45 @@ class PGDocStatusStorage(DocStatusStorage):
             result[record.id] = record
         return result
 
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration of FULL DocProcessingStatus records (see base contract).
+
+        One indexed round-trip (``SELECT * ... WHERE workspace=$1 AND id =
+        ANY($2)``) mirroring :meth:`get_docs_by_ids`, but reusing the SAME raw
+        -> :class:`DocProcessingStatus` normalisation as
+        :meth:`get_docs_by_statuses` so every full field (content_summary /
+        content_length / chunks_list / metadata / ...) is populated. A missing
+        id is positively confirmed absent (simply not in the result set) and
+        omitted. ``strict=True`` fails the WHOLE call — any asyncpg error
+        propagates out of ``db.query`` and any row that cannot be converted
+        raises — rather than returning a partial mapping the scheduler would
+        mistake for stale ids.
+        """
+        ids = [str(d) for d in doc_ids]
+        if not ids:
+            return {}
+        sql = "SELECT * FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        rows = await self.db.query(sql, [self.workspace, ids], multirows=True) or []
+        result: dict[str, DocProcessingStatus] = {}
+        for element in rows:
+            try:
+                result[element["id"]] = self._pg_doc_processing_status_from_row(element)
+            except (KeyError, TypeError) as e:
+                doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
+                logger.error(
+                    f"[{self.workspace}] Skipping document '{doc_id_hint}' — "
+                    f"required field missing or wrong type while parsing DB row: {e!r}"
+                )
+                if strict:
+                    raise
+                continue
+        return result
+
     # ------------------------------------------------------------------
     # Source-conflict listing and explicit CAS repair
     # ------------------------------------------------------------------
@@ -5906,6 +5945,50 @@ class PGDocStatusStorage(DocStatusStorage):
 
         return docs_by_status
 
+    def _pg_doc_processing_status_from_row(
+        self, element: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalise a raw doc_status DB row into a FULL DocProcessingStatus.
+
+        Single source of the raw -> status construction shared by
+        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
+        path (chunks_list / metadata JSON decode, timezone-normalised
+        timestamps, file_path fallback). Raises ``KeyError``/``TypeError`` on a
+        malformed row; the caller decides strict (raise) vs relaxed (skip).
+        """
+        chunks_list = element.get("chunks_list", [])
+        if isinstance(chunks_list, str):
+            try:
+                chunks_list = json.loads(chunks_list)
+            except json.JSONDecodeError:
+                chunks_list = []
+
+        metadata = element.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        file_path = element.get("file_path") or "no-file-path"
+
+        return DocProcessingStatus(
+            content_summary=element["content_summary"],
+            content_length=element["content_length"],
+            status=element["status"],
+            created_at=self._format_datetime_with_timezone(element["created_at"]),
+            updated_at=self._format_datetime_with_timezone(element["updated_at"]),
+            chunks_count=element["chunks_count"],
+            file_path=file_path,
+            chunks_list=chunks_list,
+            metadata=metadata,
+            error_msg=element.get("error_msg"),
+            track_id=element.get("track_id"),
+            content_hash=element.get("content_hash"),
+        )
+
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
@@ -5932,42 +6015,7 @@ class PGDocStatusStorage(DocStatusStorage):
         docs: dict[str, DocProcessingStatus] = {}
         for element in result or []:
             try:
-                chunks_list = element.get("chunks_list", [])
-                if isinstance(chunks_list, str):
-                    try:
-                        chunks_list = json.loads(chunks_list)
-                    except json.JSONDecodeError:
-                        chunks_list = []
-
-                metadata = element.get("metadata", {})
-                if isinstance(metadata, str):
-                    try:
-                        metadata = json.loads(metadata)
-                    except json.JSONDecodeError:
-                        metadata = {}
-                if not isinstance(metadata, dict):
-                    metadata = {}
-
-                file_path = element.get("file_path") or "no-file-path"
-
-                docs[element["id"]] = DocProcessingStatus(
-                    content_summary=element["content_summary"],
-                    content_length=element["content_length"],
-                    status=element["status"],
-                    created_at=self._format_datetime_with_timezone(
-                        element["created_at"]
-                    ),
-                    updated_at=self._format_datetime_with_timezone(
-                        element["updated_at"]
-                    ),
-                    chunks_count=element["chunks_count"],
-                    file_path=file_path,
-                    chunks_list=chunks_list,
-                    metadata=metadata,
-                    error_msg=element.get("error_msg"),
-                    track_id=element.get("track_id"),
-                    content_hash=element.get("content_hash"),
-                )
+                docs[element["id"]] = self._pg_doc_processing_status_from_row(element)
             except (KeyError, TypeError) as e:
                 doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
                 logger.error(

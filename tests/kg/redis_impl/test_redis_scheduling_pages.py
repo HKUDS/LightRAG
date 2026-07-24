@@ -456,6 +456,48 @@ async def test_conflict_listing_is_bounded_and_resumable(storage, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_full_docs_by_ids_present_and_missing(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending"), "doc-2": _doc("failed")})
+    result = await storage.get_full_docs_by_ids(
+        ["doc-1", "doc-2", "ghost"], strict=True
+    )
+    # Missing id omitted (confirmed absent); present ids hydrated.
+    assert set(result) == {"doc-1", "doc-2"}
+    # status is the raw str value (DocStatus is a str-enum) -> use ==.
+    assert result["doc-2"].status == DocStatus.FAILED
+    # FULL projection: fields the lightweight scheduling record omits.
+    assert result["doc-1"].content_summary == "s"
+    assert result["doc-1"].content_length == 10
+    assert result["doc-1"].chunks_list == []
+
+
+@pytest.mark.asyncio
+async def test_get_full_docs_by_ids_strict_transport_error_raises(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending")})
+    fake = storage._redis
+    # Transport failure at the batched pipeline read fails the WHOLE call —
+    # never a partial mapping.
+    fake.fail_next["execute"] = RedisError("boom")
+    with pytest.raises(RedisError):
+        await storage.get_full_docs_by_ids(["doc-1"], strict=True)
+
+
+@pytest.mark.asyncio
+async def test_get_full_docs_by_ids_relaxed_skips_undecodable_row(storage):
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc("pending")})
+    fake = storage._redis
+    # An undecodable primary row: relaxed mode logs + skips it, returning the
+    # good ones.
+    fake.store[f"{storage.final_namespace}:bad"] = "not-json{"
+    result = await storage.get_full_docs_by_ids(["doc-1", "bad"], strict=False)
+    assert set(result) == {"doc-1"}
+    assert result["doc-1"].content_summary == "s"
+
+
+@pytest.mark.asyncio
 async def test_list_and_repair_source_conflict(storage):
     await _bootstrap(storage)
     await storage.upsert(

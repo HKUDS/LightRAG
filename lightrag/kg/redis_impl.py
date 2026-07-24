@@ -1034,6 +1034,28 @@ class RedisDocStatusStorage(DocStatusStorage):
         """Get all documents with a specific status"""
         return await self.get_docs_by_statuses([status])
 
+    @staticmethod
+    def _redis_doc_processing_status_from_data(
+        data: dict[str, Any],
+    ) -> DocProcessingStatus:
+        """Normalise a decoded doc_status row into a FULL DocProcessingStatus.
+
+        Single source of the decoded-JSON -> status construction shared by
+        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
+        path. Raises ``KeyError``/``TypeError`` on a malformed row (``TypeError``
+        is what ``DocProcessingStatus(**data)`` raises on missing required
+        fields); the caller decides strict (raise) vs relaxed (skip).
+        """
+        data = data.copy()
+        data.pop("content", None)
+        if "file_path" not in data:
+            data["file_path"] = "no-file-path"
+        if "metadata" not in data:
+            data["metadata"] = {}
+        if "error_msg" not in data:
+            data["error_msg"] = None
+        return DocProcessingStatus(**data)
+
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
@@ -1073,15 +1095,11 @@ class RedisDocStatusStorage(DocStatusStorage):
                                 if doc_data.get("status") not in status_values:
                                     continue
                                 doc_id = key.split(":", 1)[1]
-                                data = doc_data.copy()
-                                data.pop("content", None)
-                                if "file_path" not in data:
-                                    data["file_path"] = "no-file-path"
-                                if "metadata" not in data:
-                                    data["metadata"] = {}
-                                if "error_msg" not in data:
-                                    data["error_msg"] = None
-                                result[doc_id] = DocProcessingStatus(**data)
+                                result[doc_id] = (
+                                    self._redis_doc_processing_status_from_data(
+                                        doc_data
+                                    )
+                                )
                             except (json.JSONDecodeError, KeyError, TypeError) as e:
                                 # TypeError is what DocProcessingStatus(**data)
                                 # actually raises on missing required fields —
@@ -1986,6 +2004,47 @@ class RedisDocStatusStorage(DocStatusStorage):
             record = self._scheduling_record_from_row(doc_id, row, strict=strict)
             if record is not None:
                 result[doc_id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to FULL DocProcessingStatus by doc id (see base).
+
+        A single pipelined ``GET`` per id straight off the primary rows (same
+        by-id read mechanism as ``get_docs_by_ids``): a ``None`` is a confirmed
+        absence and is omitted. The pipeline is all-or-nothing at transport, so
+        any server/transport error fails the WHOLE call — the scheduler never
+        receives a partial mapping. ``strict=True`` additionally raises on an
+        undecodable/unconvertible row; ``strict=False`` logs and skips it.
+        Results are FULL records reusing the same raw -> DocProcessingStatus
+        normalisation as ``get_docs_by_statuses``."""
+        if not doc_ids:
+            return {}
+        ids = list(doc_ids)
+        async with self._get_redis_connection() as redis:
+            pipe = redis.pipeline()
+            for doc_id in ids:
+                pipe.get(f"{self.final_namespace}:{doc_id}")
+            raws = await pipe.execute()
+        result: dict[str, DocProcessingStatus] = {}
+        for doc_id, raw in zip(ids, raws):
+            if raw is None:
+                continue  # confirmed absent
+            try:
+                data = json.loads(raw)
+                result[doc_id] = self._redis_doc_processing_status_from_data(data)
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.error(
+                    f"[{self.workspace}] Unusable doc_status row hydrating "
+                    f"{doc_id} in get_full_docs_by_ids: {e}"
+                )
+                if strict:
+                    raise
+                continue
         return result
 
     # ------------------------------------------------------------------

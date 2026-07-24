@@ -1457,6 +1457,20 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 data.pop("error", None)
         return data
 
+    def _os_doc_processing_status_from_source(
+        self, source: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalize a raw OpenSearch ``_source`` into a FULL DocProcessingStatus.
+
+        Single source of the ``_source`` -> :class:`DocProcessingStatus`
+        construction shared by :meth:`get_docs_by_statuses` (via
+        :meth:`_search_all_docs`) and the :meth:`get_full_docs_by_ids`
+        hydration path. Raises ``KeyError``/``TypeError`` on a malformed
+        source; the caller decides strict (raise) vs relaxed (skip).
+        """
+        data = self._prepare_doc_status_data(source)
+        return DocProcessingStatus(**data)
+
     async def initialize(self):
         """Initialize client connection and create the doc-status index."""
         async with get_data_init_lock():
@@ -1926,8 +1940,11 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                         break
                     for hit in hits:
                         try:
-                            data = self._prepare_doc_status_data(hit["_source"])
-                            result[hit["_id"]] = DocProcessingStatus(**data)
+                            result[hit["_id"]] = (
+                                self._os_doc_processing_status_from_source(
+                                    hit["_source"]
+                                )
+                            )
                         except (KeyError, TypeError) as e:
                             logger.error(
                                 f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
@@ -2590,6 +2607,74 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             record = self._scheduling_record_from_hit(interpreted, strict=strict)
             if record is not None:
                 result[requested_id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to FULL DocProcessingStatus via a single mget.
+
+        Mirrors :meth:`get_docs_by_ids` (same ``mget`` by id, same
+        ``_interpret_mget_item`` absent-vs-error discipline) but fetches the
+        COMPLETE ``_source`` -- no ``_source_includes`` projection -- and
+        normalises each hit through
+        :meth:`_os_doc_processing_status_from_source`, so callers see every
+        field (``content_summary`` / ``content_length`` / ``chunks_list`` /
+        ``metadata`` / ...). A confirmed-absent id (``found=false``) is
+        omitted; with ``strict=True`` an unusable present row or any
+        transport/index error fails the WHOLE call rather than returning a
+        partial map (see base contract).
+        """
+        result: dict[str, DocProcessingStatus] = {}
+        ids = list(doc_ids)
+        if not ids:
+            return result
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm absence for a strict batch read"
+            )
+        try:
+            response = await self.client.mget(
+                index=self._index_name,
+                body={"ids": ids},
+            )
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot confirm absence for a strict "
+                    f"batch read"
+                ) from e
+            logger.error(f"[{self.workspace}] Error batch-reading doc statuses: {e}")
+            raise
+        docs = response.get("docs")
+        if not isinstance(docs, list) or len(docs) != len(ids):
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearch mget returned "
+                f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                f"for {len(ids)} requested ids"
+            )
+        for requested_id, item in zip(ids, docs):
+            interpreted = _interpret_mget_item(item, requested_id)
+            if interpreted is None:
+                continue  # confirmed absent
+            try:
+                result[requested_id] = self._os_doc_processing_status_from_source(
+                    interpreted["_source"]
+                )
+            except (KeyError, TypeError) as e:
+                logger.error(
+                    f"[{self.workspace}] Unusable doc_status row hydrating "
+                    f"{requested_id}: {e}"
+                )
+                if strict:
+                    raise
+                continue
         return result
 
     # ------------------------------------------------------------------

@@ -615,6 +615,21 @@ class MongoDocStatusStorage(DocStatusStorage):
                 data.pop("error", None)
         return data
 
+    def _mongo_doc_processing_status_from_doc(
+        self, doc: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalise a raw Mongo document into a FULL DocProcessingStatus.
+
+        Single source of the raw -> status construction shared by
+        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
+        path. Raises ``KeyError``/``TypeError`` on a malformed document
+        (``TypeError`` is what ``DocProcessingStatus(**data)`` raises on
+        missing required fields); the caller decides strict (raise) vs relaxed
+        (skip).
+        """
+        data = self._prepare_doc_status_data(doc)
+        return DocProcessingStatus(**data)
+
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
             namespace=namespace,
@@ -762,8 +777,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         result = {}
         for doc in docs:
             try:
-                data = self._prepare_doc_status_data(doc)
-                result[doc["_id"]] = DocProcessingStatus(**data)
+                result[doc["_id"]] = self._mongo_doc_processing_status_from_doc(doc)
             except (KeyError, TypeError) as e:
                 # TypeError is what DocProcessingStatus(**data) actually raises
                 # on missing required fields — without it here, the relaxed
@@ -1403,6 +1417,41 @@ class MongoDocStatusStorage(DocStatusStorage):
             if record is None:
                 continue
             result[record.id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to full DocProcessingStatus (see base contract).
+
+        One indexed ``find({"_id": {"$in": ids}})`` — the server answers
+        definitively or raises, so any id absent from the result set is a
+        CONFIRMED absence and is omitted. Reuses the SAME raw ->
+        DocProcessingStatus normalisation as ``get_docs_by_statuses``.
+        ``strict=True`` raises on any returned document that cannot be
+        converted, failing the WHOLE call rather than returning a partial
+        mapping.
+        """
+        ids = list(doc_ids)
+        if not ids:
+            return {}
+        cursor = self._data.find({"_id": {"$in": ids}})
+        raw_docs = await cursor.to_list(length=None)
+        result: dict[str, DocProcessingStatus] = {}
+        for doc in raw_docs:
+            try:
+                result[doc["_id"]] = self._mongo_doc_processing_status_from_doc(doc)
+            except (KeyError, TypeError) as e:
+                logger.error(
+                    f"[{self.workspace}] Unusable doc_status document hydrating "
+                    f"{doc.get('_id')}: {e}"
+                )
+                if strict:
+                    raise
+                continue
         return result
 
     # ------------------------------------------------------------------
