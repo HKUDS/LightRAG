@@ -177,6 +177,23 @@ def test_reconcile_is_noop_when_disabled():
     assert status["busy_owner"] is not None
 
 
+async def test_reap_dead_reservations_locked_drops_dead_token(recovery_enabled):
+    # LR2 Phase 3 liveness: the manual DRAIN_TO_IDLE wait reaps a dead
+    # enqueue token itself (the freeze blocks the uploads that would otherwise
+    # reap it), so the drain can reach the exclusive reset instead of polling
+    # forever on a phantom pending_enqueues count.
+    status = {
+        "pending_enqueues": 2,
+        "pending_enqueue_tokens": {
+            "live": {"pid": os.getpid(), "process_start_id": None},
+            "dead": {"pid": _dead_pid(), "process_start_id": "gone"},
+        },
+    }
+    await shared_storage.reap_dead_reservations_locked(status, asyncio.Lock())
+    assert set(status["pending_enqueue_tokens"]) == {"live"}
+    assert status["pending_enqueues"] == 1
+
+
 def test_pipeline_recovery_blocked_message():
     status = {
         "recovery_required": {

@@ -2136,6 +2136,23 @@ def reconcile_dead_pipeline_reservations(
     return updates
 
 
+async def reap_dead_reservations_locked(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+) -> None:
+    """Reap confirmed-dead reservation tokens under ``pipeline_status_lock``.
+
+    A liveness escape hatch for a caller that is NOT taking a reservation (so it
+    cannot use the acquire helpers, which reconcile as a side effect) but must
+    not stall on a phantom count — specifically the manual DRAIN_TO_IDLE wait,
+    where the freeze blocks the uploads whose acquire would otherwise reap a
+    worker SIGKILLed mid-enqueue. No-op off Linux multi-worker
+    (:func:`_reservation_recovery_enabled`). Keeps
+    ``reconcile_dead_pipeline_reservations`` shared-storage-private."""
+    async with pipeline_status_lock:
+        reconcile_dead_pipeline_reservations(pipeline_status)
+
+
 class PipelineReservationConflict(str, Enum):
     """Structured reason why a pipeline reservation was refused."""
 

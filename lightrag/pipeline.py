@@ -61,6 +61,7 @@ from lightrag.kg.shared_storage import (
     get_namespace_lock,
     get_pipeline_ingress,
     make_manual_owner_record,
+    reap_dead_reservations_locked,
     run_to_completion,
     with_reservation_lock,
 )
@@ -130,25 +131,19 @@ from lightrag.utils_pipeline import (
 
 
 # Document statuses the pipeline resumes AUTOMATICALLY — the initial snapshot
-# of every run and every quiescence refetch.  PROCESSING/PARSING/ANALYZING are
-# dead-process orphans (an interrupted run left them mid-flight) and must
-# self-heal; FAILED is deliberately absent: a document that genuinely failed
-# is retried only through an explicit human request (see
-# ``_MANUAL_RETRY_DOC_STATUSES``), never as a side effect of an unrelated
-# upload or rescan.
+# of every run and every quiescence refetch, AND the only statuses any
+# ``_next_scheduling_page`` sweep ever carries.  PROCESSING/PARSING/ANALYZING
+# are dead-process orphans (an interrupted run left them mid-flight) and must
+# self-heal; FAILED is deliberately absent: a document that genuinely failed is
+# retried only through an explicit manual request, whose EXCLUSIVE_RESET phase
+# pages FAILED→PENDING via ``_next_failed_page`` with no worker running (LR2
+# §7.3) — never as a side effect of an unrelated upload or rescan.
 _AUTO_RESUME_DOC_STATUSES = (
     DocStatus.PENDING,
     DocStatus.PROCESSING,
     DocStatus.PARSING,
     DocStatus.ANALYZING,
 )
-
-# Superset used exactly once per manual retry request (``/documents/scan`` /
-# ``/documents/reprocess_failed``): the sticky ingress request is the only
-# path that may pull FAILED documents back into the pipeline, and it is ACKed
-# after their reset-to-PENDING persists — so a doc that fails AGAIN inside
-# that run stays FAILED until the next explicit human request (no retry loop).
-_MANUAL_RETRY_DOC_STATUSES = (*_AUTO_RESUME_DOC_STATUSES, DocStatus.FAILED)
 
 # Multiprocess feeder poll interval: the Manager-backed ingress has no async
 # ``get_document``, so the feeder blocks a worker thread in
@@ -2534,6 +2529,10 @@ class _PipelineMixin:
             if not content_data:  # Fails consistency check; handled above
                 continue
             status = getattr(status_doc, "status", None)
+            # FAILED is DEFENSIVE here: post-Phase-3 the AUTO sweep that feeds
+            # this validator never carries FAILED (those are reset only by the
+            # manual EXCLUSIVE_RESET), so this branch handles orphan
+            # PROCESSING/PARSING/ANALYZING in practice.
             is_interrupted = status in (
                 DocStatus.PROCESSING,
                 DocStatus.FAILED,
@@ -2570,8 +2569,8 @@ class _PipelineMixin:
 
             async with pipeline_status_lock:
                 reset_message = (
-                    f"Reset {reset_count} documents from "
-                    "PARSING/ANALYZING/PROCESSING/FAILED to PENDING status"
+                    f"Reset {reset_count} interrupted document(s) from "
+                    "PARSING/ANALYZING/PROCESSING to PENDING status"
                     + (
                         f"; normalized {normalized_count} PENDING document(s) "
                         "with stale metadata"
@@ -2845,25 +2844,18 @@ class _PipelineMixin:
         carries ids/status, and the survivors are hydrated to full rows via
         ``get_full_docs_by_ids`` right before routing.
 
-        Two paths collapse to the LEGACY single-scan (one page terminating at
-        ``CURSOR_END``), so ``PIPELINE_SCHEDULING_PAGE_SIZE=0`` and every manual
-        retry sweep behave byte-for-byte as before Phase 2:
-
-        * ``page_size <= 0`` — paging disabled by configuration;
-        * ``DocStatus.FAILED in statuses`` — a MANUAL retry sweep. The manual
-          ACK contract requires every FAILED→PENDING reset to persist *before*
-          the request is ACKed; a multi-page manual sweep would ACK after the
-          first page while later pages still hold un-reset FAILED rows. Manual
-          backlog is bounded by the FAILED count today and bounded properly by
-          Phase 3's exclusive reset, so manual stays single-scan here.
+        ``PIPELINE_SCHEDULING_PAGE_SIZE=0`` collapses to the LEGACY single-scan
+        (one page terminating at ``CURSOR_END``), behaving byte-for-byte as
+        before Phase 2. Every caller passes ``_AUTO_RESUME_DOC_STATUSES`` (no
+        FAILED — those are reset only by the manual EXCLUSIVE_RESET's own
+        ``_next_failed_page``), so this sweep is always a plain AUTO drain.
 
         The strict page + strict hydration are a complete-or-raise pair: any
         backend error propagates so the caller neither advances the cursor nor
         silently drops docs (they stay PENDING for the next sweep).
         """
         page_size = getattr(self, "pipeline_scheduling_page_size", 0)
-        paged = page_size > 0 and DocStatus.FAILED not in statuses
-        if not paged:
+        if page_size <= 0:
             docs = await self.doc_status.get_docs_by_statuses(
                 list(statuses), strict=True
             )
@@ -2972,7 +2964,11 @@ class _PipelineMixin:
                 if pipeline_status.get("pending_enqueues", 0) > 0:
                     # Enqueues reserved BEFORE the freeze must finish (their
                     # PENDING docs join this cohort) before the reset can start
-                    # with no failed producer (LR2 §7.2 step 5 / §7.3).
+                    # with no failed producer (LR2 §7.2 step 5 / §7.3). The
+                    # CONTINUE_DRAIN_WAIT refetch reaps confirmed-dead tokens
+                    # before it waits, so a worker SIGKILLed mid-reserve (Linux
+                    # multi-worker) cannot leave a phantom count that wedges this
+                    # drain (the freeze blocks the uploads that would reap it).
                     return PipelineNextDecision(PipelineNextStep.CONTINUE_DRAIN_WAIT)
                 return PipelineNextDecision(PipelineNextStep.BEGIN_EXCLUSIVE_RESET)
             manual_msg = ingress.peek_next_manual_retry()
@@ -3067,9 +3063,15 @@ class _PipelineMixin:
             return docs, sweep_statuses, next_cursor
 
         # (A2) Manual drain: hold the freeze while the pre-freeze in-flight
-        # enqueues finish. Bounded async sleep (not a busy-loop); the next
-        # decision drains any doc they publish, then re-checks pending_enqueues.
+        # enqueues finish. Reap confirmed-dead reservation tokens FIRST — a
+        # worker SIGKILLed mid-reserve (Linux multi-worker) would otherwise leave
+        # a phantom pending_enqueues count that wedges this drain forever, since
+        # the freeze blocks the uploads whose acquire would normally reap it
+        # (no-op off Linux-multiworker). Then a bounded async sleep (not a
+        # busy-loop); the next decision drains any doc they publish, then
+        # re-checks pending_enqueues.
         if step is PipelineNextStep.CONTINUE_DRAIN_WAIT:
+            await reap_dead_reservations_locked(pipeline_status, pipeline_status_lock)
             await asyncio.sleep(_MANUAL_DRAIN_POLL_SECONDS)
             return {}, sweep_statuses, sweep_cursor
 
