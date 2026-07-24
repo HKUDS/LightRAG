@@ -25,6 +25,7 @@ from lightrag.kg.shared_storage import (
     acquire_enqueue_reservation,
     get_namespace_data,
     get_namespace_lock,
+    get_pipeline_ingress,
     make_owner_record,
 )
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
@@ -96,6 +97,128 @@ async def _make_failed(rag: LightRAG, name: str, extract: _CountingExtract) -> s
     doc_id = compute_mdhash_id(name, prefix="doc-")
     assert await _status_of(rag, doc_id) == DocStatus.FAILED.value
     return doc_id
+
+
+def test_manual_drains_auto_backlog_before_reset(tmp_path):
+    """LR2 §13.2 case 5: a manual retry arriving with an AUTO backlog freezes
+    new ingress, drains the AUTO (PENDING) backlog to idle FIRST, then resets
+    FAILED→PENDING and processes those too — all in one run."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            # A pre-existing FAILED doc (the manual retry target).
+            failed_id = await _make_failed(rag, "old.txt", extract)
+            # An AUTO-backlog PENDING doc enqueued but not yet processed.
+            extract.fail = False
+            await rag.apipeline_enqueue_documents(
+                input="fresh body", file_paths="new.txt"
+            )
+            pending_id = compute_mdhash_id("new.txt", prefix="doc-")
+            assert await _status_of(rag, pending_id) == DocStatus.PENDING.value
+
+            await request_failed_retry(rag)
+            await rag.apipeline_process_enqueue_documents()
+
+            # AUTO backlog drained AND the FAILED doc reset+reprocessed.
+            assert await _status_of(rag, pending_id) == DocStatus.PROCESSED.value
+            assert await _status_of(rag, failed_id) == DocStatus.PROCESSED.value
+            ingress = await get_pipeline_ingress(rag.workspace)
+            assert ingress.snapshot_manual_retries() == []  # ACKed
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_refail_during_process_stays_failed(tmp_path):
+    """LR2 §7.4 / §13.2 case 3: a doc the manual reset returns to PENDING that
+    FAILS AGAIN during the PROCESS phase stays FAILED — the SAME request never
+    resets it a second time (no retry loop)."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            failed_id = await _make_failed(rag, "a.txt", extract)
+            calls_after_failure = extract.calls
+
+            # Extraction still fails: the reset returns it to PENDING, it is
+            # processed once, fails again → FAILED, and is NOT reset again by
+            # the SAME request (no loop).
+            await request_failed_retry(rag)
+            await rag.apipeline_process_enqueue_documents()
+
+            assert await _status_of(rag, failed_id) == DocStatus.FAILED.value
+            # Exactly ONE extra attempt for this request (no retry loop).
+            assert extract.calls == calls_after_failure + 1
+            # A second run with no new signal must not retry again.
+            await rag.apipeline_process_enqueue_documents()
+            assert extract.calls == calls_after_failure + 1
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_reset_idempotent_across_mid_reset_failure(tmp_path):
+    """LR2 §13.2 case 2 / §7.3 "为什么不需要 generation": a reset that fails on a
+    later FAILED page leaves the already-reset rows PENDING; the next run
+    re-runs the reset from Start and does NOT re-reset them (they are no longer
+    on a FAILED page). Every doc is processed exactly once."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            rag.pipeline_scheduling_page_size = 1  # one FAILED per page
+            id_a = await _make_failed(rag, "a.txt", extract)
+            id_b = await _make_failed(rag, "b.txt", extract)
+            calls_after_setup = extract.calls
+
+            # Fail the SECOND FAILED page fetch of the reset (first page resets
+            # one doc, second raises → run aborts, request stays sticky).
+            original_page = rag.doc_status.get_docs_by_statuses_page
+            state = {"failed_pages": 0, "armed": True}
+
+            async def flaky(statuses, *, limit, position, strict=False):
+                if list(statuses) == [DocStatus.FAILED]:
+                    state["failed_pages"] += 1
+                    if state["failed_pages"] == 2 and state["armed"]:
+                        state["armed"] = False
+                        raise RuntimeError("mid-reset page boom")
+                return await original_page(
+                    statuses, limit=limit, position=position, strict=strict
+                )
+
+            rag.doc_status.get_docs_by_statuses_page = flaky
+
+            extract.fail = False
+            await request_failed_retry(rag)
+            with pytest.raises(RuntimeError, match="mid-reset page boom"):
+                await rag.apipeline_process_enqueue_documents()
+
+            ingress = await get_pipeline_ingress(rag.workspace)
+            assert ingress.snapshot_manual_retries()  # still sticky, not ACKed
+            # Freeze cleared on the aborted exit (no wedge).
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            assert status["manual_freeze_requested"] is False
+
+            # Next run completes: both docs processed exactly once, no double reset.
+            await rag.apipeline_process_enqueue_documents()
+            assert await _status_of(rag, id_a) == DocStatus.PROCESSED.value
+            assert await _status_of(rag, id_b) == DocStatus.PROCESSED.value
+            # Exactly two extra attempts (a + b, once each) — the already-reset
+            # a.txt is not reset/processed a second time.
+            assert extract.calls == calls_after_setup + 2
+            assert ingress.snapshot_manual_retries() == []  # ACKed
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
 
 
 def test_exclusive_reset_pages_failed_backlog(tmp_path):
