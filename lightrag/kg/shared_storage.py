@@ -1703,6 +1703,7 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # process_start_id} — so a dead busy owner clears the manual
                 # state too (see _dead_reservation_updates).
                 "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
                 "manual_resetting": False,
                 "manual_phase": MANUAL_PHASE_IDLE,
                 "manual_owner": None,
@@ -2008,6 +2009,7 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
     # are also hidden here in Phase 3; Phase 6 adds a curated observability view.
     "manual_owner",
     "manual_freeze_requested",
+    "manual_freeze_started_at",
     "manual_resetting",
     "manual_phase",
 )
@@ -2114,6 +2116,7 @@ def _dead_reservation_updates(
         updates.update(
             {
                 "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
                 "manual_resetting": False,
                 "manual_phase": MANUAL_PHASE_IDLE,
                 "manual_owner": None,

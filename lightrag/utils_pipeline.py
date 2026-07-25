@@ -549,6 +549,48 @@ ADMISSION_ACTIVE_STATUSES: tuple[DocStatus, ...] = (
 )
 
 
+def _overrides_base(doc_status: Any, method_name: str) -> bool:
+    """Whether this backend replaced ``DocStatusStorage``'s fail-closed default."""
+    base = getattr(DocStatusStorage, method_name, None)
+    implementation = getattr(type(doc_status), method_name, None)
+    return implementation is not None and implementation is not base
+
+
+def describe_doc_status_capabilities(doc_status: Any) -> dict[str, bool]:
+    """Report which strict capabilities this doc_status backend actually has.
+
+    The scheduling contract fails CLOSED on a missing capability: admission
+    refuses with 503, a stale FAILED stub is kept instead of deleted, source
+    conflicts cannot be listed. Each of those is a silent, confusing degradation
+    from the outside — an operator staring at 503s needs to be told that the
+    configured backend simply cannot count, not to go hunting for a database
+    problem (LR2 Phase 6 item 2).
+
+    Probes the class rather than calling anything: /health must stay cheap and
+    side-effect free.
+    """
+    return {
+        # Bounded keyset paging + typed source resolution are @abstractmethod on
+        # DocStatusStorage, so a first-party backend always has them; a
+        # third-party subclass that stubs them out shows up here as False.
+        "scheduling_pages": _overrides_base(doc_status, "get_docs_by_statuses_page"),
+        "typed_source_resolution": _overrides_base(
+            doc_status, "resolve_doc_source_strict"
+        ),
+        # Base defaults raise StorageCapabilityError — these three are the ones a
+        # deployment can genuinely lack.
+        "strict_active_count": _overrides_base(doc_status, "count_docs_by_statuses"),
+        "source_conflict_listing": _overrides_base(
+            doc_status, "list_source_conflicts_page"
+        ),
+        "source_conflict_repair": _overrides_base(doc_status, "repair_source_conflict"),
+        # Class-level opt-in: gates the STALE_STUB deletion during a scan.
+        "strict_point_reads": bool(
+            getattr(type(doc_status), "supports_strict_point_reads", False)
+        ),
+    }
+
+
 async def count_active_documents(doc_status: DocStatusStorage) -> int:
     """Strictly count the documents that occupy admission capacity.
 

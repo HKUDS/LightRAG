@@ -1997,6 +1997,7 @@ class _PipelineMixin:
                                 "busy": False,
                                 "busy_owner": None,
                                 "manual_freeze_requested": False,
+                                "manual_freeze_started_at": None,
                                 "manual_resetting": False,
                                 "manual_phase": MANUAL_PHASE_IDLE,
                                 "manual_owner": None,
@@ -2866,6 +2867,7 @@ class _PipelineMixin:
             status.update(
                 {
                     "manual_freeze_requested": True,
+                    "manual_freeze_started_at": time.time(),
                     "manual_resetting": False,
                     "manual_phase": MANUAL_PHASE_DRAIN_TO_IDLE,
                     "manual_owner": owner,
@@ -2901,6 +2903,7 @@ class _PipelineMixin:
             status.update(
                 {
                     "manual_freeze_requested": False,
+                    "manual_freeze_started_at": None,
                     "manual_resetting": False,
                     "manual_phase": MANUAL_PHASE_IDLE,
                     "manual_owner": None,
@@ -3281,6 +3284,7 @@ class _PipelineMixin:
                                 "busy": False,
                                 "busy_owner": None,
                                 "manual_freeze_requested": False,
+                                "manual_freeze_started_at": None,
                                 "manual_resetting": False,
                                 "manual_phase": MANUAL_PHASE_IDLE,
                                 "manual_owner": None,
