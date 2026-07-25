@@ -1896,6 +1896,8 @@ async def pipeline_enqueue_file(
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning guard there.
+            Also selects the file's ``st_mtime`` as the row's ``created_at``
+            (see below).
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1906,11 +1908,21 @@ async def pipeline_enqueue_file(
 
     try:
         file_size = 0
+        source_created_at: str | None = None
 
-        # Get file size for error reporting
+        # One stat, two consumers: file size for error reporting, and — for
+        # scan-discovered files only — the mtime that becomes the row's
+        # immutable ``created_at`` scheduling key, so a bulk scan of an
+        # existing corpus drains oldest-file-first instead of in whatever
+        # order the directory happened to be iterated (LR2 §8.3.A/§8.5).
+        # Upload/text keep ``now()``: their arrival time *is* their age.
         try:
             stat = await asyncio.to_thread(file_path.stat)
             file_size = stat.st_size
+            if from_scan:
+                source_created_at = datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat()
         except Exception:
             file_size = 0
 
@@ -1990,6 +2002,10 @@ async def pipeline_enqueue_file(
             }
             if hint_chunk_options is not None:
                 enqueue_kwargs["chunk_options"] = hint_chunk_options
+            if source_created_at is not None:
+                # Absent (stat failed) the enqueue falls back to now(): a
+                # missing mtime must not cost us the row.
+                enqueue_kwargs["created_at"] = source_created_at
             enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
             if enqueue_result is None:
                 try:

@@ -287,6 +287,35 @@ def _call_source_file_resolver(
     return resolver(source_file or file_path)
 
 
+def _normalize_scheduling_timestamp(value: Any) -> str:
+    """Validate a caller-supplied ``doc_status.created_at`` and return it in UTC.
+
+    ``created_at`` is the leading component of the immutable scheduling sort
+    key ``(created_at, id)``, and the file-backed / Redis backends compare it
+    as a plain string.  Two rows written with different UTC offsets would
+    therefore sort by their offset rather than by their instant, so every
+    value is converted to a ``+00:00`` representation here — the one place a
+    caller can supply it (LR2 §8.5).
+
+    A naive timestamp is rejected instead of being assumed to be UTC: guessing
+    would silently shift a row by the local offset relative to every
+    ``datetime.now(timezone.utc)`` row already in the table.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"created_at must be a non-empty ISO-8601 string, got {value!r}"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError as e:
+        raise ValueError(f"Malformed created_at timestamp {value!r}: {e}") from e
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"created_at must carry a UTC offset, got naive timestamp {value!r}"
+        )
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 # Backward-compatible source-file reader.  Implementation lives in
 # utils_pipeline so reset/normalisation helpers there can reuse it without a
 # reverse import into this module; kept as a module-level alias for the
@@ -416,6 +445,7 @@ class _PipelineMixin:
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
+        created_at: str | list[str] | None = None,
         from_scan: bool = False,
     ) -> str:
         """
@@ -462,6 +492,19 @@ class _PipelineMixin:
                 result here; this function is intentionally chunker-
                 config agnostic.  See
                 ``docs/FileProcessingConfiguration-zh.md`` for the schema.
+            created_at: optional timezone-aware ISO-8601 timestamp used as the
+                new row's ``doc_status.created_at``, accepted as a single
+                string broadcast to every input or as a list aligned with
+                ``input``.  ``created_at`` is the primary key of the
+                scheduling sort order ``(created_at, id)`` and is immutable
+                once written, so this is the ONLY place it can be set.
+                ``/scan`` passes each discovered file's ``st_mtime`` here so
+                a bulk-scanned directory is processed oldest-file-first
+                instead of in directory-iteration order (LR2 §8.3.A/§8.5);
+                upload/text leave it ``None`` and get ``now()``.  Values are
+                normalised to UTC because the sort key is compared as a
+                string on some backends — a naive timestamp is rejected
+                rather than silently assumed to be UTC.
             from_scan: when True, the caller is the scan-owned background task
                 that already holds ``pipeline_status["scanning"]``.  Scan
                 does additional doc_status reads during its classification
@@ -562,6 +605,11 @@ class _PipelineMixin:
             process_options = [process_options] * len(input)
         if isinstance(chunk_options, dict):
             chunk_options = [chunk_options] * len(input)
+        # Broadcast any scalar (not just a str) so a wrong-typed value reaches
+        # the validator below and gets a precise error instead of a bare
+        # "object of type int has no len()".
+        if created_at is not None and not isinstance(created_at, (list, tuple)):
+            created_at = [created_at] * len(input)
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -598,6 +646,18 @@ class _PipelineMixin:
             raise ValueError(
                 "Number of chunk_options dicts must match the number of documents"
             )
+        if created_at is not None and len(created_at) != len(input):
+            raise ValueError(
+                "Number of created_at timestamps must match the number of documents"
+            )
+        # Validate/normalise the caller-supplied scheduling timestamps up front:
+        # created_at is immutable and orders the whole sweep, so a bad value
+        # must fail the enqueue rather than land a permanently mis-sorted row.
+        created_at_utc: list[str] | None = None
+        if created_at is not None:
+            created_at_utc = [
+                _normalize_scheduling_timestamp(value) for value in created_at
+            ]
 
         def _parse_engine_at(index: int, doc_format: str) -> str | None:
             if parse_engine is None:
@@ -688,6 +748,10 @@ class _PipelineMixin:
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
         duplicate_attempts: list[dict[str, Any]] = []
+        # doc_id → caller-supplied scheduling timestamp.  Kept out of
+        # ``contents`` on purpose: that dict is the full_docs staging payload,
+        # and created_at belongs to doc_status alone.
+        doc_created_at: dict[str, str] = {}
 
         def _add_content(
             index: int,
@@ -770,6 +834,8 @@ class _PipelineMixin:
             # (default) is used.
             content_data["chunk_options"] = _chunk_options_at(index)
             contents[doc_id] = content_data
+            if created_at_utc is not None:
+                doc_created_at[doc_id] = created_at_utc[index]
 
         # ``ids`` outranks ``docs_format`` by design: explicit ids mark the
         # SDK raw direct-insert path (ainsert), which always enqueues the
@@ -796,13 +862,19 @@ class _PipelineMixin:
                 _add_content(i, cleaned_content, FULL_DOCS_FORMAT_RAW)
 
         # 2. Generate document initial status (without content)
-        def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
+        def _initial_doc_status(
+            doc_id: str, content_data: dict[str, Any]
+        ) -> dict[str, Any]:
             body_text = content_data.get("content", "")
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(body_text),
                 "content_length": len(body_text),
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                # created_at may come from the caller (scan passes the file's
+                # mtime so a bulk scan drains oldest-file-first); updated_at is
+                # always the write time.
+                "created_at": doc_created_at.get(doc_id)
+                or datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
                 "track_id": track_id,
@@ -823,7 +895,7 @@ class _PipelineMixin:
             return base
 
         new_docs: dict[str, Any] = {
-            id_: _initial_doc_status(content_data)
+            id_: _initial_doc_status(id_, content_data)
             for id_, content_data in contents.items()
         }
 
