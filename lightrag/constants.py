@@ -366,6 +366,14 @@ DEFAULT_QUEUE_SIZE_INSERT = 4
 # single-scan behaviour).
 DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE = 500
 
+# How many newly claimed files ``/documents/scan`` holds before it writes them
+# to doc_status and releases the batch (LR2 §8.2). Discovery is a single
+# streaming pass, so peak scan memory is O(batch) instead of O(files in the
+# input dir). Unlike the scheduling page size this knob has NO "disabled"
+# value: a non-positive setting is a configuration error (an unbounded scan
+# batch is exactly what the streaming rework removes), so startup fails fast.
+DEFAULT_SCAN_ENQUEUE_BATCH_SIZE = 100
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values

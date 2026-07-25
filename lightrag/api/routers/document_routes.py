@@ -17,7 +17,7 @@ import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from typing import Dict, Iterator, List, Optional, Any, Literal
 from fastapi import (
     APIRouter,
     Depends,
@@ -33,6 +33,7 @@ from lightrag import LightRAG
 from lightrag.api.utils_api import internal_server_error
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.constants import (
+    DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     PARSED_ARTIFACT_DIR_SUFFIXES,
@@ -55,7 +56,6 @@ from lightrag.parser.routing import (
     canonicalize_parser_hinted_basename,
     chunk_strategy_key,
     encode_parse_engine,
-    filename_parser_hint,
     parse_process_options,
     resolve_chunk_options,
     resolve_parser_directives,
@@ -1185,34 +1185,47 @@ class DocumentManager:
             if engine_endpoint_configured(engine)
         }
 
-    def scan_directory_for_new_files(self) -> List[Path]:
-        """Scan input directory for new, routable files.
+    def iter_new_files(self) -> Iterator[Path]:
+        """Yield new, routable input files ONE AT A TIME (LR2 §8.2).
 
-        Globs over every *available* engine suffix (capability surface, so a
-        hint-carrying file like ``img.[mineru].png`` is discoverable even
-        when bare ``.png`` is not advertised), then keeps only files whose
-        resolved engine actually supports them (``is_supported_file``).
+        A single streaming pass: one ``iterdir()`` over the input directory, no
+        whole-directory list and no whole-directory sort, so the scan's peak
+        memory is set by its enqueue batch (``SCAN_ENQUEUE_BATCH_SIZE``) rather
+        than by how many files the directory holds. An interrupted scan needs no
+        in-memory resume state — the next scan re-discovers, and the persistent
+        ``doc_status`` rows are the deduplication authority.
+
+        Files are admitted on the *available* engine suffix surface (so a
+        hint-carrying file like ``img.[mineru].png`` is discoverable even when
+        bare ``.png`` is not advertised), then narrowed to those whose resolved
+        engine actually supports them (``is_supported_file``).
+
+        Deliberately unordered (LR2 §8.5): processing order comes from the
+        ``(created_at, id)`` doc_status sweep, not from discovery, and the old
+        hint-preferring group-by-canonical-name pass was exactly the
+        O(files-in-directory) structure this replaces.
         """
         from lightrag.parser.registry import available_engine_suffixes
         from lightrag.parser.routing import FilenameParserHintError
 
-        new_files = []
-        for s in sorted(available_engine_suffixes()):
-            ext = f".{s}"
-            logger.debug(f"Scanning for {ext} files in {self.input_dir}")
-            for file_path in self.input_dir.glob(f"*{ext}"):
-                if file_path in self.indexed_files:
+        suffixes = {f".{s}" for s in available_engine_suffixes()}
+        logger.debug(f"Streaming scan of {self.input_dir} for {len(suffixes)} suffixes")
+        for file_path in self.input_dir.iterdir():
+            # Suffix comparison is case-sensitive, matching the per-suffix glob
+            # this replaced; ``__parsed__`` and any other directory is skipped.
+            if file_path.suffix not in suffixes or not file_path.is_file():
+                continue
+            if file_path in self.indexed_files:
+                continue
+            try:
+                if not self.is_supported_file(file_path.name):
                     continue
-                try:
-                    if not self.is_supported_file(file_path.name):
-                        continue
-                except FilenameParserHintError:
-                    # Malformed hint: pass the file through — the enqueue
-                    # path reports a detailed error document, instead of the
-                    # scan silently ignoring the user's file.
-                    pass
-                new_files.append(file_path)
-        return new_files
+            except FilenameParserHintError:
+                # Malformed hint: pass the file through — the enqueue path
+                # reports a detailed error document, instead of the scan
+                # silently ignoring the user's file.
+                pass
+            yield file_path
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
@@ -2042,62 +2055,56 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_files(
+async def pipeline_enqueue_scan_batch(
     rag: LightRAG,
     file_paths: List[Path],
     track_id: str = None,
-    from_scan: bool = False,
-) -> bool:
-    """Index multiple files sequentially to avoid high CPU load
+) -> int:
+    """Write ONE bounded scan batch to doc_status — no processing drive (LR2 §8.2).
+
+    The streaming scan flushes a batch the moment it fills, while it still holds
+    ``scanning_exclusive``; processing runs exactly once afterwards, when the
+    fence has dropped (§8.1). Enqueue is therefore separated from driving: a
+    per-batch drive would be refused by that very fence and only set the
+    deferred-processing flag.
+
+    ``from_scan=True`` is implied — this path exists only for the scan-owned
+    background task, whose own ``scanning`` flag would otherwise trip the guard
+    inside ``apipeline_enqueue_documents``.
 
     Args:
         rag: LightRAG instance
-        file_paths: Paths to the files to index
-        track_id: Optional tracking ID to pass to all files
-        from_scan: True only when invoked by the scan-owned background task.
-            Forwarded to ``pipeline_enqueue_file`` so the per-file enqueue
-            calls bypass the scanning guard inside
-            ``apipeline_enqueue_documents`` (whose ``scanning`` flag the
-            scan task itself owns).
+        file_paths: the batch's files (bounded by ``SCAN_ENQUEUE_BATCH_SIZE``)
+        track_id: tracking ID stamped on every document of this scan
 
     Returns:
-        ``True`` iff ``apipeline_process_enqueue_documents`` was actually
-        invoked — i.e. at least one file enqueued.  Callers use this to know
-        whether the processing run (and its start-of-run mailbox peek) really
-        happened; when every file is rejected (duplicate, empty body,
-        extraction error, ...) nothing drives the queue and this returns
-        ``False`` so a sticky manual retry is not left waiting for an unrelated
-        trigger.
+        How many files actually landed a doc_status row. A per-file rejection
+        (bad filename hint, empty body, content duplicate, ...) is reported by
+        ``pipeline_enqueue_file`` as an error document / archive and does not
+        abort the rest of the batch.
     """
     if not file_paths:
-        return False
+        return 0
+    enqueued = 0
     try:
-        enqueued = False
-
-        # Use get_pinyin_sort_key for Chinese pinyin sorting
-        sorted_file_paths = sorted(
-            file_paths, key=lambda p: get_pinyin_sort_key(str(p))
-        )
-
-        # Process files sequentially with track_id
-        for file_path in sorted_file_paths:
+        # Bounded, batch-local ordering only (pinyin for Chinese names): it makes
+        # a batch's enqueue order deterministic but promises nothing globally —
+        # processing order comes from the ``(created_at, id)`` doc_status sweep
+        # (LR2 §8.5), and discovery itself is unordered.
+        for file_path in sorted(file_paths, key=lambda p: get_pinyin_sort_key(str(p))):
             success, _ = await pipeline_enqueue_file(
                 rag,
                 file_path,
                 track_id,
-                from_scan=from_scan,
+                from_scan=True,
             )
             if success:
-                enqueued = True
-
-        # Process the queue only if at least one file was successfully enqueued
-        if enqueued:
-            await rag.apipeline_process_enqueue_documents()
+                enqueued += 1
         return enqueued
     except Exception as e:
-        logger.error(f"Error indexing files: {str(e)}")
+        logger.error(f"Error enqueuing scan batch: {str(e)}")
         logger.error(traceback.format_exc())
-        return False
+        return enqueued
 
 
 _STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
@@ -2433,6 +2440,24 @@ class _ScanJobReporter:
             return
 
 
+def _scan_enqueue_batch_size() -> int:
+    """How many claimed files one streaming scan batch holds (LR2 §8.2).
+
+    Read per scan (not captured at import) so a restart-free config reload takes
+    effect. ``initialize_config`` rejects a non-positive value at startup; the
+    clamp here only covers a rig that bypassed it — never fall back to an
+    unbounded batch, which is precisely what streaming discovery removes.
+    """
+    configured = getattr(global_args, "scan_enqueue_batch_size", None)
+    if not isinstance(configured, int) or configured <= 0:
+        logger.warning(
+            "SCAN_ENQUEUE_BATCH_SIZE is not a positive integer "
+            f"({configured!r}); falling back to {DEFAULT_SCAN_ENQUEUE_BATCH_SIZE}"
+        )
+        return DEFAULT_SCAN_ENQUEUE_BATCH_SIZE
+    return configured
+
+
 def _resolve_scan_job_store(rag: LightRAG) -> Any:
     """Resolve this workspace's scan job store, or None when unavailable.
 
@@ -2608,253 +2633,211 @@ async def run_scanning_process(
                 reporter.sample("error", abort_message)
                 return
 
-        new_files = doc_manager.scan_directory_for_new_files()
-        total_files = len(new_files)
-        logger.info(f"Found {total_files} files to index.")
-        reporter.count("discovered", total_files)
-        reporter.flush()
+        # ---- streaming discovery + classification (LR2 §8.2/§8.4) ----------
+        # One pass over the input directory with at most ``SCAN_ENQUEUE_BATCH_SIZE``
+        # claimed files (and their canonical claims) resident: peak scan memory is
+        # set by the batch, not by how many files the directory holds. Each batch is
+        # written to doc_status as soon as it fills — while this scan still holds
+        # ``scanning_exclusive`` — and processing runs ONCE at the end (§8.1).
+        batch_size = _scan_enqueue_batch_size()
+        batch: list[Path] = []
+        # canonical source key -> the physical filename that claimed it in THIS
+        # batch. A row that is not persisted yet is invisible to the doc_status
+        # lookup, so without this claim set a second variant of the same canonical
+        # name inside one batch would mint a duplicate document (§8.4). Bounded by
+        # ``batch_size``; cleared on every flush.
+        batch_claims: dict[str, str] = {}
+        discovered = 0
+        enqueued_count = 0
+        resumed_count = 0
+        processed_count = 0
 
-        if new_files:
-            # Group canonical-equivalent files so we can prefer hint-bearing
-            # variants over plain ones. Within each group sort order is
-            # preserved as a deterministic tiebreaker.
-            files_by_canonical_name: dict[str, list[Path]] = {}
-            for file_path in sorted(
-                new_files, key=lambda p: get_pinyin_sort_key(str(p))
-            ):
-                canonical_name = normalize_file_path(str(file_path))
-                files_by_canonical_name.setdefault(canonical_name, []).append(file_path)
-
-            unique_files: list[Path] = []
-            for canonical_name, group in files_by_canonical_name.items():
-                # Prefer the first file carrying a supported parser hint so
-                # the user's explicit engine choice wins over plain variants;
-                # otherwise fall back to the first sorted entry.
-                chosen = next(
-                    (f for f in group if filename_parser_hint(f.name) is not None),
-                    group[0],
-                )
-                unique_files.append(chosen)
-                for duplicate in group:
-                    if duplicate is chosen:
-                        continue
-                    warning = (
-                        "Skipping duplicate file in scan batch: "
-                        f"{duplicate.name} duplicates {chosen.name} "
-                        f"(canonical: {canonical_name})"
-                    )
-                    await record_scan_warning(rag, warning)
-                    reporter.count("alias_duplicate")
-                    reporter.sample("warning", warning)
-                    try:
-                        await move_file_to_parsed_dir(duplicate)
-                    except Exception as move_error:
-                        archive_error = (
-                            f"Failed to move duplicate scan file {duplicate.name} "
-                            f"to {PARSED_DIR_NAME}: {move_error}"
-                        )
-                        logger.error(archive_error)
-                        reporter.count("errors")
-                        reporter.sample("error", archive_error)
-
-            # Partition unique_files into:
-            #   * processed_files — already PROCESSED, archived and skipped.
-            #   * resume_files    — same canonical basename matches an existing
-            #                       non-PROCESSED doc_status row (PARSING /
-            #                       FAILED / PROCESSING / ANALYZING / PENDING).
-            #                       These must NOT go through pipeline_enqueue_file
-            #                       because apipeline_enqueue_documents would
-            #                       treat the same canonical name as a duplicate
-            #                       (returning None) and pipeline_enqueue_file
-            #                       would then archive the source as if it were
-            #                       a duplicate — corrupting pending-parse cases
-            #                       that still need the source on disk.  The
-            #                       pipeline's resume logic, triggered via
-            #                       apipeline_process_enqueue_documents, will
-            #                       advance them based on their existing
-            #                       doc_status row.
-            #   * new_files       — no existing record; standard enqueue path.
-            new_files: list[Path] = []
-            resume_files: list[Path] = []
-            processed_files: list[str] = []
-
-            for file_path in unique_files:
-                # Classifying a large tree can outlast the job lease; renewing
-                # here (time-based, a no-op most iterations) keeps the record
-                # from being reaped to ABANDONED under a live owner.
-                reporter.renew()
-                filename = file_path.name
-                # Inline the canonical-basename lookup so we keep both the
-                # doc_id and the data: the FAILED-without-full_docs sub-case
-                # below needs the doc_id to delete the stale stub.
-                basename = normalize_file_path(str(file_path))
-                existing_match = (
-                    await rag.doc_status.get_doc_by_file_basename(basename)
-                    if basename != UNKNOWN_FILE_SOURCE
-                    else None
-                )
-                existing_doc_id, existing_doc_data = (
-                    existing_match if existing_match else (None, None)
-                )
-
-                if (
-                    existing_doc_data
-                    and get_doc_status_value(existing_doc_data)
-                    == DocStatus.PROCESSED.value
-                ):
-                    # File is already PROCESSED, skip it with warning and archive it.
-                    processed_files.append(filename)
-                    warning = f"Skipping already processed file: {filename}"
-                    await record_scan_warning(rag, warning)
-                    reporter.count("processed")
-                    reporter.sample("processed", filename)
-                    try:
-                        await move_file_to_parsed_dir(file_path)
-                    except Exception as move_error:
-                        archive_error = (
-                            f"Failed to move already processed file {filename} "
-                            f"to {PARSED_DIR_NAME}: {move_error}"
-                        )
-                        logger.error(archive_error)
-                        reporter.count("errors")
-                        reporter.sample("error", archive_error)
-                elif existing_doc_data:
-                    # FAILED rows recorded by apipeline_enqueue_error_documents
-                    # never write a full_docs entry — extraction blew up before
-                    # any content was stored.  _validate_and_fix_document_consistency
-                    # preserves them for manual review and removes them from the
-                    # processing list, so the resume path can never advance them.
-                    # When the user fixes the file and re-scans we want a real
-                    # retry: drop the stale stub and treat the file as new so
-                    # the standard enqueue path re-extracts content.
-                    status_value = get_doc_status_value(existing_doc_data)
-                    if status_value == DocStatus.FAILED.value:
-                        full_doc = await rag.full_docs.get_by_id(existing_doc_id)
-                        if full_doc is None:
-                            try:
-                                await rag.doc_status.delete([existing_doc_id])
-                            except Exception as delete_error:
-                                stub_error = (
-                                    "Failed to delete stale failed-extraction "
-                                    f"doc_status stub {existing_doc_id} "
-                                    f"({filename}): {delete_error}"
-                                )
-                                logger.error(stub_error)
-                                reporter.count("errors")
-                                reporter.sample("error", stub_error)
-                                # Fall through to resume — at worst the row
-                                # remains preserved (current behaviour) rather
-                                # than re-enqueued.
-                                resume_files.append(file_path)
-                                reporter.count("resume_same_physical_source")
-                                continue
-                            logger.info(
-                                "Retrying previously failed extraction; "
-                                f"removed stale doc_status stub: {filename} "
-                                f"(doc_id: {existing_doc_id})"
-                            )
-                            new_files.append(file_path)
-                            reporter.count("stale_stub")
-                            continue
-                    logger.info(
-                        "Resuming previously unfinished file from scan: "
-                        f"{filename} (Status: {status_value})"
-                    )
-                    resume_files.append(file_path)
-                    reporter.count("resume_same_physical_source")
-                else:
-                    new_files.append(file_path)
-                    reporter.count("claimed_new")
-
-            # Classification counters are complete: flush them before the
-            # exclusive fence drops, so a /scan/status query during processing
-            # already reports the full classification breakdown.
+        async def _flush_batch() -> None:
+            nonlocal enqueued_count
+            if not batch:
+                return
+            enqueued_count += await pipeline_enqueue_scan_batch(
+                rag, list(batch), track_id
+            )
+            batch.clear()
+            batch_claims.clear()
+            # Publish this batch's counters/samples (also renews the job lease).
             reporter.flush()
 
-            # Classification phase complete — release ``scanning_exclusive``
-            # so concurrent uploads/inserts can land in doc_status while
-            # the scan-driven processing finishes.  ``scanning`` stays
-            # True for the rest of the task lifecycle (releases in
-            # finally) so the /scan endpoint still refuses overlapping
-            # scans.  Any per-file enqueue or duplicate detected during
-            # the processing phase is handled by
-            # apipeline_enqueue_documents' in-batch dedup, identical to
-            # the upload-during-busy case.
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                if scanning_token is not None:
-                    await transition_scanning_reservation(
-                        pipeline_status,
-                        pipeline_status_lock,
-                        token=scanning_token,
+        async def _archive_alias(file_path: Path, warning: str) -> None:
+            """Loser of a canonical claim: archived, never deleted (LR2 §8.5)."""
+            await record_scan_warning(rag, warning)
+            reporter.count("alias_duplicate")
+            reporter.sample("warning", warning)
+            try:
+                await move_file_to_parsed_dir(file_path)
+            except Exception as move_error:
+                archive_error = (
+                    f"Failed to move duplicate scan file {file_path.name} "
+                    f"to {PARSED_DIR_NAME}: {move_error}"
+                )
+                logger.error(archive_error)
+                reporter.count("errors")
+                reporter.sample("error", archive_error)
+
+        async def _claim_new_file(
+            file_path: Path, basename: str, counter_key: str
+        ) -> None:
+            """Add a file to the current batch under its canonical claim (§8.4).
+
+            The first physical file to claim a canonical key wins and is enqueued;
+            a later variant in the SAME batch is an alias duplicate and is
+            archived. ``unknown_source`` names carry no usable identity, so they
+            are batched without claiming anything.
+            """
+            if basename != UNKNOWN_FILE_SOURCE:
+                claimer = batch_claims.get(basename)
+                if claimer is not None:
+                    await _archive_alias(
+                        file_path,
+                        "Skipping duplicate file in scan batch: "
+                        f"{file_path.name} duplicates {claimer} "
+                        f"(canonical: {basename})",
                     )
-                else:
-                    async with pipeline_status_lock:
-                        pipeline_status["scanning_exclusive"] = False
+                    return
+                batch_claims[basename] = file_path.name
+            batch.append(file_path)
+            reporter.count(counter_key)
+            if len(batch) >= batch_size:
+                await _flush_batch()
 
-            # New files take the standard enqueue + process path.  When at
-            # least one new file is successfully enqueued, pipeline_index_files
-            # internally invokes apipeline_process_enqueue_documents, which
-            # selects work by doc_status state and so will also pick up any
-            # resume_files in the same run.  Mark queue_drive_attempted only if
-            # a drive ACTUALLY ran: when every new file is rejected (duplicate,
-            # empty body, extraction error, ...) pipeline_index_files returns
-            # False, so the classification-failure fallback below still gets to
-            # drive this scan's sticky manual request instead of stranding it.
-            if new_files:
-                if await pipeline_index_files(
-                    rag,
-                    new_files,
-                    track_id,
-                    from_scan=True,
-                ):
-                    queue_drive_attempted = True
-
-            # Resume targets must always trigger the pipeline explicitly:
-            # pipeline_index_files only runs apipeline_process_enqueue_documents
-            # after at least one new file successfully enqueues, so when every
-            # new file is rejected (unsupported extension, empty body, content
-            # / filename duplicate, ...) the resume rows would otherwise stay
-            # stuck until an unrelated indexing run.  When new files DID
-            # enqueue, the inner call already drained the queue and this is a
-            # cheap no-op that returns "No documents to process".
-            if resume_files:
-                queue_drive_attempted = True
-                await rag.apipeline_process_enqueue_documents()
-
-            total_active = len(new_files) + len(resume_files)
-            if total_active or processed_files:
-                summary_parts: list[str] = []
-                if total_active:
-                    summary_parts.append(f"{total_active} files Processed")
-                if processed_files:
-                    summary_parts.append(f"{len(processed_files)} skipped")
-                summary = f"Scanning process completed: {' '.join(summary_parts)}."
-            else:
-                summary = "No files to process after filtering already processed files."
-            logger.info(summary)
-            job_status = ScanJobStatus.COMPLETED
-            job_message = summary
-        else:
-            # No new files to index — classification is trivially done;
-            # release ``scanning_exclusive`` before driving the queue so
-            # concurrent uploads can land while process_enqueue runs.
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                if scanning_token is not None:
-                    await transition_scanning_reservation(
-                        pipeline_status,
-                        pipeline_status_lock,
-                        token=scanning_token,
-                    )
-                else:
-                    async with pipeline_status_lock:
-                        pipeline_status["scanning_exclusive"] = False
-            logger.info(
-                "No upload file found, check if there are any documents in the queue..."
+        for file_path in doc_manager.iter_new_files():
+            discovered += 1
+            # Classifying a large tree can outlast the job lease; renewing here
+            # (time-based, a no-op most iterations) keeps the record from being
+            # reaped to ABANDONED under a live owner.
+            reporter.renew()
+            filename = file_path.name
+            # Inline the canonical-basename lookup so we keep both the doc_id and
+            # the data: the FAILED-without-full_docs sub-case below needs the
+            # doc_id to delete the stale stub.
+            basename = normalize_file_path(str(file_path))
+            existing_match = (
+                await rag.doc_status.get_doc_by_file_basename(basename)
+                if basename != UNKNOWN_FILE_SOURCE
+                else None
             )
-            queue_drive_attempted = True
-            await rag.apipeline_process_enqueue_documents()
-            job_status = ScanJobStatus.COMPLETED
-            job_message = "No new files found; processed the existing queue."
+            existing_doc_id, existing_doc_data = (
+                existing_match if existing_match else (None, None)
+            )
+
+            if (
+                existing_doc_data
+                and get_doc_status_value(existing_doc_data) == DocStatus.PROCESSED.value
+            ):
+                # File is already PROCESSED, skip it with warning and archive it.
+                processed_count += 1
+                warning = f"Skipping already processed file: {filename}"
+                await record_scan_warning(rag, warning)
+                reporter.count("processed")
+                reporter.sample("processed", filename)
+                try:
+                    await move_file_to_parsed_dir(file_path)
+                except Exception as move_error:
+                    archive_error = (
+                        f"Failed to move already processed file {filename} "
+                        f"to {PARSED_DIR_NAME}: {move_error}"
+                    )
+                    logger.error(archive_error)
+                    reporter.count("errors")
+                    reporter.sample("error", archive_error)
+                continue
+
+            if existing_doc_data:
+                # FAILED rows recorded by apipeline_enqueue_error_documents never
+                # write a full_docs entry — extraction blew up before any content
+                # was stored. _validate_and_fix_document_consistency preserves them
+                # for manual review and removes them from the processing list, so
+                # the resume path can never advance them. When the user fixes the
+                # file and re-scans we want a real retry: drop the stale stub and
+                # treat the file as new so the standard enqueue path re-extracts.
+                status_value = get_doc_status_value(existing_doc_data)
+                if status_value == DocStatus.FAILED.value:
+                    full_doc = await rag.full_docs.get_by_id(existing_doc_id)
+                    if full_doc is None:
+                        try:
+                            await rag.doc_status.delete([existing_doc_id])
+                        except Exception as delete_error:
+                            stub_error = (
+                                "Failed to delete stale failed-extraction "
+                                f"doc_status stub {existing_doc_id} "
+                                f"({filename}): {delete_error}"
+                            )
+                            logger.error(stub_error)
+                            reporter.count("errors")
+                            reporter.sample("error", stub_error)
+                            # Fall through to resume — at worst the row remains
+                            # preserved (current behaviour) rather than re-enqueued.
+                            resumed_count += 1
+                            reporter.count("resume_same_physical_source")
+                            continue
+                        logger.info(
+                            "Retrying previously failed extraction; "
+                            f"removed stale doc_status stub: {filename} "
+                            f"(doc_id: {existing_doc_id})"
+                        )
+                        await _claim_new_file(file_path, basename, "stale_stub")
+                        continue
+                # Resume targets must NOT go through the enqueue path:
+                # apipeline_enqueue_documents would treat the same canonical name
+                # as a duplicate (returning None) and pipeline_enqueue_file would
+                # then archive the source as if it were one — corrupting
+                # pending-parse cases that still need the source on disk. The
+                # pipeline's resume logic advances them from their existing row.
+                logger.info(
+                    "Resuming previously unfinished file from scan: "
+                    f"{filename} (Status: {status_value})"
+                )
+                resumed_count += 1
+                reporter.count("resume_same_physical_source")
+                continue
+
+            await _claim_new_file(file_path, basename, "claimed_new")
+
+        # Tail batch (fewer than ``batch_size`` files).
+        await _flush_batch()
+        reporter.count("discovered", discovered)
+        reporter.flush()
+
+        # Classification + enqueue complete — release ``scanning_exclusive`` so
+        # concurrent uploads/inserts can land in doc_status while the scan-driven
+        # processing finishes. ``scanning`` stays True for the rest of the task
+        # lifecycle (released in the finally) so the /scan endpoint still refuses
+        # overlapping scans. Any duplicate detected during the processing phase is
+        # handled by apipeline_enqueue_documents' in-batch dedup, identical to the
+        # upload-during-busy case.
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            if scanning_token is not None:
+                await transition_scanning_reservation(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    token=scanning_token,
+                )
+            else:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning_exclusive"] = False
+
+        # §8.1 final step: ONE processing run covers everything this scan
+        # produced — the enqueued batches, the resume targets, and the FAILED rows
+        # the pre-discovery reset turned into PENDING. Unconditional: a scan that
+        # enqueued nothing may still have resume targets or reset rows with no
+        # other trigger, and an empty queue makes this a cheap no-op.
+        queue_drive_attempted = True
+        await rag.apipeline_process_enqueue_documents()
+
+        summary = (
+            f"Scanning process completed: {discovered} discovered, "
+            f"{enqueued_count} enqueued, {resumed_count} resuming, "
+            f"{processed_count} already processed."
+        )
+        logger.info(summary)
+        job_status = ScanJobStatus.COMPLETED
+        job_message = summary
 
     except asyncio.CancelledError:
         # Shutdown / task cancel: skip the deferred drive below and leave

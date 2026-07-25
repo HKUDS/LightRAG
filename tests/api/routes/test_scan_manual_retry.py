@@ -176,7 +176,7 @@ def test_classification_failure_fallback_drives_sticky_request(tmp_path):
             def boom():
                 raise RuntimeError("classification boom")
 
-            doc_manager.scan_directory_for_new_files = boom
+            doc_manager.iter_new_files = boom
             await run_scanning_process(rag, doc_manager, manual_request_id=request_id)
 
             row = await rag.doc_status.get_by_id(doc_id)
@@ -215,7 +215,7 @@ def test_new_files_all_fail_to_enqueue_still_drives_sticky_request(
             # A brand-new basename (no doc_status row) → classified as new;
             # the file never has to exist on disk because enqueue is stubbed
             # to fail for every file below.
-            doc_manager.scan_directory_for_new_files = lambda: [
+            doc_manager.iter_new_files = lambda: [
                 Path(str(tmp_path / "inputs" / "brand_new.txt"))
             ]
 
@@ -259,7 +259,7 @@ def test_cancelled_scan_does_not_drive_processing_after_reset(tmp_path):
             def cancelled():
                 raise asyncio.CancelledError()
 
-            doc_manager.scan_directory_for_new_files = cancelled
+            doc_manager.iter_new_files = cancelled
             with pytest.raises(asyncio.CancelledError):
                 await run_scanning_process(
                     rag, doc_manager, manual_request_id=request_id

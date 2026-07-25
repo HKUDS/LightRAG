@@ -522,7 +522,7 @@ class _DeferRag:
 class _BoomDocManager:
     """Raises during classification so no scan branch drives the queue."""
 
-    def scan_directory_for_new_files(self):
+    def iter_new_files(self):
         raise RuntimeError("classification boom")
 
 
@@ -582,7 +582,7 @@ async def test_scan_without_deferred_flag_does_not_extra_drive():
 class _CancelDocManager:
     """Raises CancelledError to simulate a scan cancelled by server shutdown."""
 
-    def scan_directory_for_new_files(self):
+    def iter_new_files(self):
         raise asyncio.CancelledError()
 
 

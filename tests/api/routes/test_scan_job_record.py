@@ -120,7 +120,7 @@ def test_job_record_is_queryable_before_the_scan_finishes(tmp_path):
 
         done = await status(response.track_id)
         assert done.status == "completed"
-        assert "No new files" in done.message
+        assert "0 discovered" in done.message
         # Bounded schema only: counters + the three fixed sample buckets.
         assert set(done.samples) == {"processed", "warning", "error"}
 
@@ -211,7 +211,7 @@ def test_classification_failure_marks_the_job_failed_with_an_error_sample(tmp_pa
         def _boom():
             raise RuntimeError("classification boom")
 
-        doc_manager.scan_directory_for_new_files = _boom
+        doc_manager.iter_new_files = _boom
         await run_scanning_process(
             rag,
             doc_manager,
@@ -247,7 +247,7 @@ def test_cancelled_scan_marks_the_job_cancelled(tmp_path):
         def _cancelled():
             raise asyncio.CancelledError()
 
-        doc_manager.scan_directory_for_new_files = _cancelled
+        doc_manager.iter_new_files = _cancelled
         with pytest.raises(asyncio.CancelledError):
             await run_scanning_process(
                 rag,

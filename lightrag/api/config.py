@@ -35,6 +35,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
@@ -165,6 +166,34 @@ def validate_auth_configuration(args: argparse.Namespace) -> None:
     if auth_accounts and (not token_secret or token_secret == DEFAULT_TOKEN_SECRET):
         raise ValueError(
             "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
+        )
+
+
+def validate_scan_batch_configuration(args: argparse.Namespace) -> None:
+    """Reject a non-positive scan enqueue batch size (LR2 §8.2/§11).
+
+    Unlike ``PIPELINE_SCHEDULING_PAGE_SIZE`` — where ``0`` legitimately means
+    "one page holds everything" — there is no unbounded scan batch to fall back
+    to: streaming discovery holds at most this many claimed files before it
+    writes them, so ``0`` or a negative value would mean "never flush" (or flush
+    on every file, depending on how it is read). Fail at startup instead of
+    silently picking one of those readings.
+    """
+    if not hasattr(args, "scan_enqueue_batch_size"):
+        # A programmatic caller may hand ``initialize_config`` a partial
+        # namespace (the documented custom-configuration path); ``parse_args``
+        # always sets this field, so an absent one is not an operator's
+        # misconfiguration. The scan's reader falls back to the bounded default.
+        return
+    batch_size = args.scan_enqueue_batch_size
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size <= 0
+    ):
+        raise ValueError(
+            "SCAN_ENQUEUE_BATCH_SIZE must be a positive integer (it bounds how "
+            f"many discovered files one scan batch holds); got {batch_size!r}"
         )
 
 
@@ -512,6 +541,12 @@ def parse_args() -> argparse.Namespace:
         "PIPELINE_SCHEDULING_PAGE_SIZE", DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE, int
     )
 
+    # How many newly claimed files one /documents/scan batch holds before
+    # writing them to doc_status (LR2 §8.2). Always positive — validated below.
+    args.scan_enqueue_batch_size = get_env_value(
+        "SCAN_ENQUEUE_BATCH_SIZE", DEFAULT_SCAN_ENQUEUE_BATCH_SIZE, int
+    )
+
     # Get MAX_GRAPH_NODES from environment
     args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
 
@@ -817,6 +852,7 @@ def initialize_config(args=None, force=False):
     resolved_args = args if args is not None else parse_args()
     validate_auth_configuration(resolved_args)
     validate_bedrock_auth_configuration(resolved_args)
+    validate_scan_batch_configuration(resolved_args)
     _global_args = resolved_args
     _initialized = True
     return _global_args
