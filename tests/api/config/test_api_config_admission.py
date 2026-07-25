@@ -12,7 +12,10 @@ from lightrag.api.config import (
     parse_args,
     validate_admission_configuration,
 )
-from lightrag.constants import DEFAULT_MAX_PENDING_DOCUMENTS
+from lightrag.constants import (
+    DEFAULT_MAX_PENDING_DOCUMENTS,
+    DEFAULT_MAX_TEXTS_PER_REQUEST,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -104,5 +107,37 @@ def test_negative_body_limit_fails_fast(monkeypatch):
 
 def test_body_limit_absent_from_a_partial_namespace_is_fine():
     """Validated independently of the capacity: a namespace carrying only one of
-    the two knobs must still pass."""
+    the knobs must still pass."""
     validate_admission_configuration(Namespace(max_pending_documents=5))
+
+
+# --------------------------------------------------------------------------- #
+# MAX_TEXTS_PER_REQUEST (LR2 §11)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_texts_limit(monkeypatch, value: str | None):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    if value is None:
+        monkeypatch.delenv("MAX_TEXTS_PER_REQUEST", raising=False)
+    else:
+        monkeypatch.setenv("MAX_TEXTS_PER_REQUEST", value)
+    return parse_args()
+
+
+def test_texts_limit_disabled_by_default(monkeypatch):
+    args = _parse_texts_limit(monkeypatch, None)
+    assert args.max_texts_per_request == DEFAULT_MAX_TEXTS_PER_REQUEST == 0
+    validate_admission_configuration(args)
+
+
+def test_texts_limit_env_value_is_honoured(monkeypatch):
+    args = _parse_texts_limit(monkeypatch, "50")
+    assert args.max_texts_per_request == 50
+    validate_admission_configuration(args)
+
+
+def test_negative_texts_limit_fails_fast(monkeypatch):
+    args = _parse_texts_limit(monkeypatch, "-1")
+    with pytest.raises(ValueError, match="MAX_TEXTS_PER_REQUEST"):
+        validate_admission_configuration(args)

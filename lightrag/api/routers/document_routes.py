@@ -2951,6 +2951,34 @@ def _scan_enqueue_batch_size() -> int:
     return configured
 
 
+def _enforce_texts_per_request(count: int) -> None:
+    """Refuse an oversized ``/documents/texts`` batch with 413 (LR2 §11).
+
+    Read per request (not captured at import) so a config reload applies, and
+    checked BEFORE the endpoint's per-text existence reads — those are one
+    storage round-trip each, so a 100k-text batch would otherwise do 100k of them
+    on its way to being refused.
+
+    413 rather than 429: ``MAX_PENDING_DOCUMENTS`` says "the pipeline is full,
+    come back later", but a request that carries more documents than one request
+    may carry will never fit, however long the client waits. A non-positive or
+    non-integer setting disables the check — ``initialize_config`` already
+    rejects a negative one, and refusing every batch because a knob is malformed
+    would be worse than not enforcing it.
+    """
+    limit = getattr(global_args, "max_texts_per_request", None)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        return
+    if count > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Too many texts in one request: {count} (maximum {limit}). "
+                "Split the batch into smaller requests."
+            ),
+        )
+
+
 # Upper bound on one source-conflict listing page. The projection is bounded
 # per key (count + fixed sample), so this only caps the response size.
 _SOURCE_CONFLICT_PAGE_MAX = 200
@@ -4846,14 +4874,19 @@ def create_document_routes(
 
         Raises:
             HTTPException: 400 invalid file_sources, 409 same-name
-                conflict or scan/destructive job in flight, 500 other
-                errors.
+                conflict or scan/destructive job in flight, 413 more texts
+                than ``MAX_TEXTS_PER_REQUEST`` allows, 500 other errors.
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
         enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
+            # Before anything that costs a storage round-trip or a reservation:
+            # a batch over the per-request ceiling is refused on its shape alone,
+            # independent of pipeline state.
+            _enforce_texts_per_request(len(request.texts))
+
             # Reject batch text insertion while a scan is in progress AND
             # reserve a pending-enqueue slot — see /upload for the rationale.
             if not admission_adopted:

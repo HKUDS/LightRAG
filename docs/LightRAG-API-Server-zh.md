@@ -474,8 +474,9 @@ server {
    - Nginx 首先验证 `Content-Length` 头
    - LightRAG 在上传过程中执行流式验证
    - 在两层设置适当的限制可确保更好的错误消息和安全性
-6. **服务端入库限制**（两者默认关闭，见 `env.example`）：
+6. **服务端入库限制**（默认全部关闭，见 `env.example`）：
    - `MAX_REQUEST_BODY_BYTES` 限制 `/documents/upload`、`/text`、`/texts` 的**原始请求体**字节数，在 ASGI 流式接收过程中累加。与 `MAX_UPLOAD_SIZE`（multipart 解析后限制单个文件）不同，它也能拦住谎报或不报 `Content-Length` 的请求体，在整个 body 读完之前就返回 **413**。
+   - `MAX_TEXTS_PER_REQUEST` 限制单个 `/documents/texts` 请求可携带的文本数量，在任何逐条存储查询之前就返回 **413**。它限制的是单个请求的扇出，因此与下面的容量上限不同，**不是**"稍后重试"类条件：超限的批次无论等多久都不会被接受，必须拆分。
    - `MAX_PENDING_DOCUMENTS` 限制可同时处于活跃状态（`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`）或被在飞请求预留的文档数。超容量时返回 **429**,带 `Retry-After` 头,detail 里给出当前数量、本次请求数量与容量——且**在 body 传输之前**就拒绝。`/documents/scan` 与人工重试按设计突破该上限;它们产生的文档会让普通上传排队等待。
 
 ### 离线部署

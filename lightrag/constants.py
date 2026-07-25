@@ -382,6 +382,15 @@ DEFAULT_SCAN_ENQUEUE_BATCH_SIZE = 100
 # cap; the active rows they create make ordinary uploads wait.
 DEFAULT_MAX_PENDING_DOCUMENTS = 0
 
+# Ceiling on how many documents ONE ``/documents/texts`` request may carry
+# (LR2 §11). ``0`` disables it. Distinct from ``MAX_PENDING_DOCUMENTS``, which
+# bounds the pipeline's total backlog and answers 429 (retry later): this bounds
+# the fan-out of a single request, which no amount of waiting fixes, so it
+# answers 413. It has to be checked before the endpoint's per-text existence
+# reads — those are one storage round-trip each, so an oversized batch would
+# otherwise do all of them before being refused.
+DEFAULT_MAX_TEXTS_PER_REQUEST = 0
+
 # Hard ceiling on the raw request body an ingestion endpoint may receive, counted
 # as it streams through the ASGI ``receive`` channel (LR2 §9.4). ``0`` disables
 # it. Distinct from ``MAX_UPLOAD_SIZE``, which bounds one uploaded FILE after
