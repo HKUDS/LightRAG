@@ -25,13 +25,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize(
     ("env_key", "strategy", "field", "expected"),
     [
-        ("CHUNK_P_SIZE", "paragraph_semantic", "chunk_token_size", DEFAULT_CHUNK_P_SIZE),
+        (
+            "CHUNK_P_SIZE",
+            "paragraph_semantic",
+            "chunk_token_size",
+            DEFAULT_CHUNK_P_SIZE,
+        ),
         ("CHUNK_F_SIZE", "fixed_token", "chunk_token_size", None),
         ("CHUNK_R_SIZE", "recursive_character", "chunk_token_size", None),
         ("CHUNK_V_SIZE", "semantic_vector", "chunk_token_size", None),
         ("CHUNK_F_OVERLAP_SIZE", "fixed_token", "chunk_overlap_token_size", None),
-        ("CHUNK_R_OVERLAP_SIZE", "recursive_character", "chunk_overlap_token_size", None),
-        ("CHUNK_P_OVERLAP_SIZE", "paragraph_semantic", "chunk_overlap_token_size", None),
+        (
+            "CHUNK_R_OVERLAP_SIZE",
+            "recursive_character",
+            "chunk_overlap_token_size",
+            None,
+        ),
+        (
+            "CHUNK_P_OVERLAP_SIZE",
+            "paragraph_semantic",
+            "chunk_overlap_token_size",
+            None,
+        ),
     ],
 )
 def test_empty_strategy_chunk_envs_fall_back(

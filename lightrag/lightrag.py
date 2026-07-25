@@ -832,9 +832,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if self.chunk_token_size is not None:
                 chunker_cfg["chunk_token_size"] = self.chunk_token_size
             else:
-                chunker_cfg["chunk_token_size"] = get_env_value(
-                    "CHUNK_SIZE", 1200, int
-                )
+                chunker_cfg["chunk_token_size"] = get_env_value("CHUNK_SIZE", 1200, int)
 
         # Per-strategy chunk_overlap_token_size — strategy env (if set)
         # already lives in the sub-dict.  Slots still missing fall back
