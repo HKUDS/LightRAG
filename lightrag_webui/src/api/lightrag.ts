@@ -152,14 +152,6 @@ export type LightragStatus = {
   webui_description?: string
 }
 
-export type LightragDocumentsScanProgress = {
-  is_scanning: boolean
-  current_file: string
-  indexed_count: number
-  total_files: number
-  progress: number
-}
-
 /**
  * Specifies the retrieval mode:
  * - "naive": Performs a basic search without advanced techniques.
@@ -337,7 +329,6 @@ export type AuthStatusResponse = {
 }
 
 export type PipelineStatusResponse = {
-  autoscanned: boolean
   busy: boolean
   job_name: string
   job_start?: string
@@ -591,11 +582,6 @@ export const scanNewDocuments = async (): Promise<ScanResponse> => {
 
 export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
   const response = await axiosInstance.post('/documents/reprocess_failed')
-  return response.data
-}
-
-export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanProgress> => {
-  const response = await axiosInstance.get('/documents/scan-progress')
   return response.data
 }
 

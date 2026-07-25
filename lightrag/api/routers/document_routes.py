@@ -1206,7 +1206,6 @@ class PipelineStatusResponse(BaseModel):
     """Response model for pipeline status
 
     Attributes:
-        autoscanned: Whether auto-scan has started
         busy: Whether the pipeline is currently busy
         job_name: Current job name (e.g., indexing files/indexing texts)
         job_start: Job start time as ISO format string with timezone (optional)
@@ -1218,7 +1217,6 @@ class PipelineStatusResponse(BaseModel):
         update_status: Status of update flags for all namespaces
     """
 
-    autoscanned: bool = False
     busy: bool = False
     job_name: str = "Default Job"
     job_start: Optional[str] = None
@@ -5000,7 +4998,6 @@ def create_document_routes(
 
         Returns:
             PipelineStatusResponse: A response object containing:
-                - autoscanned (bool): Whether auto-scan has started
                 - busy (bool): Whether the pipeline is currently busy
                 - job_name (str): Current job name (e.g., indexing files/indexing texts)
                 - job_start (str, optional): Job start time as ISO format string

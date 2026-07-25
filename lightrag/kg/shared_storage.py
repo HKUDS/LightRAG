@@ -1623,7 +1623,6 @@ async def initialize_pipeline_status(workspace: str | None = None):
         history_messages = _manager.list() if _is_multiprocess else []
         pipeline_namespace.update(
             {
-                "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 # Destructive subset of ``busy``: clear / delete jobs that
                 # DROP storages or remove input files.  Concurrent enqueue
