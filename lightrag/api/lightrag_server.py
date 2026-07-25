@@ -35,6 +35,7 @@ from lightrag.api.utils_api import (
     check_env_file,
     internal_server_error,
 )
+from lightrag.api.admission_middleware import AdmissionMiddleware
 from .config import (
     global_args,
     update_uvicorn_mode_config,
@@ -1444,6 +1445,26 @@ def create_app(args):
     # docstring.
     if api_prefix:
         app.add_middleware(_RootPathNormalizationMiddleware)
+
+    # Pre-body admission control (LR2 §9.3). Installed only when there is a
+    # capacity to enforce; the ingestion routes keep their own reservation, so an
+    # absent middleware costs economy (the body is read before the refusal), not
+    # correctness. ``rag`` is built further down in this function, hence the lazy
+    # getter.
+    #
+    # Added BEFORE the CORS middleware on purpose: the most recently added
+    # middleware runs outermost, so CORS ends up wrapping this one and its 401 /
+    # 429 responses carry the CORS headers a browser needs to read the status
+    # (without them the WebUI would see an opaque network error instead of "at
+    # capacity"). It therefore also sees the un-normalized path, which is why it
+    # strips ``api_prefix`` itself.
+    if args.max_pending_documents > 0:
+        app.add_middleware(
+            AdmissionMiddleware,
+            rag_getter=lambda: rag,
+            api_key=api_key,
+            api_prefix=api_prefix,
+        )
 
     # Add CORS middleware
     cors_origins = get_cors_origins()

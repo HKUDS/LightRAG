@@ -88,6 +88,7 @@ from lightrag.utils import (
     move_file_to_parsed_dir,
 )
 from lightrag.utils_pipeline import count_active_documents, read_source_file_basename
+from lightrag.api.admission import adopt_admission_ticket
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -1839,6 +1840,25 @@ async def _release_destructive_busy(rag: LightRAG, token: str) -> None:
         token=token,
         action=_release_destructive_action,
     )
+
+
+def _adopt_or_new_enqueue_token(http_request: Any) -> tuple[str, bool]:
+    """Resolve this request's pending-enqueue token.
+
+    Returns ``(token, already_reserved)``. When the ASGI admission middleware ran
+    (LR2 §9.3) it already reserved a slot before the body was read, so the route
+    ADOPTS that token — reserving a second one would charge the same request
+    twice. Otherwise the route mints one and reserves it itself, which is what
+    keeps admission correct with the middleware absent (capacity disabled, a
+    non-HTTP caller, or a test rig invoking the endpoint directly).
+
+    Synchronous on purpose: callers need the token before entering the ``try``
+    whose ``finally`` releases it.
+    """
+    ticket = adopt_admission_ticket(http_request)
+    if ticket is not None:
+        return ticket.token, True
+    return uuid4().hex, False
 
 
 async def _reweight_enqueue_slot(rag: LightRAG, token: str, weight: int) -> None:
@@ -4364,6 +4384,7 @@ def create_document_routes(
     async def upload_to_input_dir(
         managed_tasks: set = Depends(get_managed_background_tasks),
         file: UploadFile = File(...),
+        http_request: Request = None,
     ):
         """
         Upload a file to the input directory and index it.
@@ -4441,7 +4462,7 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
-        enqueue_token = uuid4().hex
+        enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
             # Reject upload while a scan is in its CLASSIFICATION
@@ -4454,7 +4475,8 @@ def create_document_routes(
             # ``scanning_exclusive=False``) are permitted: the running
             # loop picks up our doc via the ingress mailbox, mid-batch
             # or at the batch boundary.
-            await _reserve_enqueue_slot(rag, enqueue_token)
+            if not admission_adopted:
+                await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
@@ -4635,6 +4657,7 @@ def create_document_routes(
     async def insert_text(
         request: InsertTextRequest,
         managed_tasks: set = Depends(get_managed_background_tasks),
+        http_request: Request = None,
     ):
         """
         Insert text into the RAG system.
@@ -4666,12 +4689,13 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
-        enqueue_token = uuid4().hex
+        enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
             # Reject text insertion while a scan is in progress AND reserve
             # a pending-enqueue slot — see /upload for the rationale.
-            await _reserve_enqueue_slot(rag, enqueue_token)
+            if not admission_adopted:
+                await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Check if file_source already exists in doc_status storage
             if not is_valid_file_source(request.file_source):
@@ -4763,6 +4787,7 @@ def create_document_routes(
     async def insert_texts(
         request: InsertTextsRequest,
         managed_tasks: set = Depends(get_managed_background_tasks),
+        http_request: Request = None,
     ):
         """
         Insert multiple texts into the RAG system.
@@ -4795,12 +4820,13 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
-        enqueue_token = uuid4().hex
+        enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
             # Reject batch text insertion while a scan is in progress AND
             # reserve a pending-enqueue slot — see /upload for the rationale.
-            await _reserve_enqueue_slot(rag, enqueue_token)
+            if not admission_adopted:
+                await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Check if any file_sources already exist in doc_status storage
             if not request.file_sources or len(request.file_sources) != len(
