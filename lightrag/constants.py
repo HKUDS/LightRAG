@@ -366,6 +366,14 @@ DEFAULT_QUEUE_SIZE_INSERT = 4
 # single-scan behaviour).
 DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE = 500
 
+# Whether a doc_status backend missing a strict capability is a startup failure
+# (LR2 §11). ``False`` (the default) logs a loud warning naming each gap and
+# reports it on ``/health``; ``True`` refuses to start. There is no knob for the
+# bounded PAGING capability on purpose: the paging and typed-source methods are
+# ``@abstractmethod`` on ``DocStatusStorage``, so a backend that lacks them
+# cannot be instantiated at all — a stronger guarantee than an opt-in check.
+DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS = False
+
 # How many newly claimed files ``/documents/scan`` holds before it writes them
 # to doc_status and releases the batch (LR2 §8.2). Discovery is a single
 # streaming pass, so peak scan memory is O(batch) instead of O(files in the

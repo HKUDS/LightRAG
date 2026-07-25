@@ -141,3 +141,24 @@ def test_negative_texts_limit_fails_fast(monkeypatch):
     args = _parse_texts_limit(monkeypatch, "-1")
     with pytest.raises(ValueError, match="MAX_TEXTS_PER_REQUEST"):
         validate_admission_configuration(args)
+
+
+# --------------------------------------------------------------------------- #
+# PIPELINE_REQUIRE_STRICT_STORAGE_READS (LR2 §11)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(None, False), ("true", True), ("false", False), ("1", True), ("0", False)],
+)
+def test_strict_reads_gate_parses_as_a_bool(monkeypatch, value, expected):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    if value is None:
+        monkeypatch.delenv("PIPELINE_REQUIRE_STRICT_STORAGE_READS", raising=False)
+    else:
+        monkeypatch.setenv("PIPELINE_REQUIRE_STRICT_STORAGE_READS", value)
+
+    args = parse_args()
+
+    assert args.pipeline_require_strict_storage_reads is expected

@@ -35,6 +35,7 @@ from lightrag.constants import (
     PARSER_ENGINE_NATIVE,
 )
 from lightrag import pipeline_metrics
+from lightrag.exceptions import StorageCapabilityError
 from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
@@ -590,6 +591,77 @@ def describe_doc_status_capabilities(doc_status: Any) -> dict[str, bool]:
             getattr(type(doc_status), "supports_strict_point_reads", False)
         ),
     }
+
+
+# What each strict capability costs when it is absent, in the terms an operator
+# experiences. Only the capabilities a deployment can genuinely lack appear here;
+# the two @abstractmethod ones cannot be missing on an instantiable backend.
+_CAPABILITY_CONSEQUENCES: dict[str, str] = {
+    "strict_active_count": (
+        "MAX_PENDING_DOCUMENTS admission cannot count active documents, so every "
+        "upload and text insert is refused with HTTP 503 while admission is enabled"
+    ),
+    "source_conflict_listing": (
+        "GET /documents/source_conflicts answers 501, so a scan that stops on a "
+        "duplicate file source cannot be diagnosed through the API"
+    ),
+    "source_conflict_repair": (
+        "POST /documents/source_conflicts/repair answers 501, so a duplicate file "
+        "source has to be resolved by deleting documents"
+    ),
+    "strict_point_reads": (
+        "a scan cannot confirm that a stale FAILED stub is really gone, so it keeps "
+        "the stub and re-examines that file on every scan"
+    ),
+}
+
+
+def enforce_strict_storage_capabilities(
+    doc_status: Any, *, require: bool = False
+) -> dict[str, bool]:
+    """Report (and optionally refuse to start on) missing strict capabilities.
+
+    The scheduling contract fails closed on every one of these, which from the
+    outside looks like a broken database rather than a backend that was never
+    able to do the thing. ``/health`` publishes the same probe, but a status page
+    only helps someone who already suspects a problem — the startup log is where
+    an operator finds out before the first 503 (LR2 §11, Phase 1 acceptance).
+
+    Never raises for its own reasons: a probe failure is logged and treated as
+    "nothing to report", because refusing to start over a broken *diagnostic*
+    would be worse than the degradation it was looking for. ``require=True``
+    raises :class:`StorageCapabilityError` only for genuinely missing
+    capabilities.
+    """
+    try:
+        capabilities = describe_doc_status_capabilities(doc_status)
+    except Exception as probe_error:  # pragma: no cover - defensive
+        logger.warning(f"Could not probe doc_status capabilities: {probe_error}")
+        return {}
+
+    missing = [
+        name
+        for name, consequence in _CAPABILITY_CONSEQUENCES.items()
+        if not capabilities.get(name, False)
+    ]
+    if not missing:
+        return capabilities
+
+    backend = type(doc_status).__name__
+    details = "; ".join(
+        f"{name} — {_CAPABILITY_CONSEQUENCES[name]}" for name in missing
+    )
+    if require:
+        raise StorageCapabilityError(
+            f"{backend} is missing strict capabilities required by "
+            f"PIPELINE_REQUIRE_STRICT_STORAGE_READS=true: {details}"
+        )
+    logger.warning(
+        f"{backend} is missing strict doc_status capabilities: {details}. "
+        "Set PIPELINE_REQUIRE_STRICT_STORAGE_READS=true to refuse to start "
+        "instead; /health reports the same gaps under 'capabilities'."
+    )
+    return capabilities
 
 
 async def count_active_documents(doc_status: DocStatusStorage) -> int:
