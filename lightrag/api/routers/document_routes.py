@@ -42,6 +42,14 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_RECURSIVE,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
+from lightrag.kg.scan_job_store import (
+    SAMPLE_BUCKETS,
+    SCAN_JOB_LEASE_SECONDS,
+    SCAN_JOB_SAMPLE_LIMIT,
+    ScanJobCreateOutcome,
+    ScanJobStatus,
+    ScanJobUpdateConflict,
+)
 from lightrag.parser.routing import (
     FilenameParserHintError,
     canonicalize_parser_hinted_basename,
@@ -190,6 +198,53 @@ class ScanResponse(BaseModel):
                 "track_id": "scan_20250729_170612_abc123",
             }
         }
+    )
+
+
+class ScanJobSampleBucket(BaseModel):
+    """One bounded sample bucket of a scan job record (LR2 §8.6).
+
+    ``items`` is capped in COUNT (per-bucket limit) and in SIZE (UTF-8 bytes per
+    sample); ``truncated`` marks that at least one retained sample was clipped
+    and ``dropped`` counts samples the store did not retain. There is no
+    unbounded per-file list anywhere in this schema."""
+
+    items: List[str] = Field(
+        default_factory=list, description="Retained sample strings (bounded)"
+    )
+    truncated: bool = Field(
+        default=False, description="At least one retained sample was byte-truncated"
+    )
+    dropped: int = Field(
+        default=0, description="Samples not retained (count or record byte cap)"
+    )
+
+
+class ScanJobStatusResponse(BaseModel):
+    """Bounded status of one scan job (``GET /documents/scan/status/{track_id}``).
+
+    Aggregate counters plus the three fixed sample buckets — never the full file
+    list. ``status`` is ``running`` until the owning task finalises it
+    (``completed`` / ``failed`` / ``cancelled``), or ``abandoned`` when the
+    record's lease expired because its owner died."""
+
+    track_id: str = Field(description="Tracking ID of the scan job")
+    status: Literal["running", "completed", "failed", "cancelled", "abandoned"] = Field(
+        description="Lifecycle status of the scan job"
+    )
+    counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Aggregate classification/progress counters (bounded key set)",
+    )
+    samples: Dict[str, ScanJobSampleBucket] = Field(
+        default_factory=dict,
+        description="Bounded processed / warning / error sample buckets",
+    )
+    created_at: float = Field(description="Job creation time (epoch seconds)")
+    updated_at: float = Field(description="Last update time (epoch seconds)")
+    version: int = Field(description="CAS version of the record")
+    message: str = Field(
+        default="", description="Terminal or latest status message (byte-capped)"
     )
 
 
@@ -2210,12 +2265,218 @@ async def pipeline_index_texts(
     await rag.apipeline_process_enqueue_documents()
 
 
+# How long a scan may go without touching its job record before the reporter
+# renews the lease on its own. A RUNNING job whose lease expires is reaped to
+# ABANDONED (its owner presumed dead), so the renewal interval must stay a
+# fraction of the lease — a directory walk over a large tree is easily longer
+# than one lease period.
+_SCAN_JOB_RENEW_SECONDS = SCAN_JOB_LEASE_SECONDS / 3
+
+
+class _ScanJobReporter:
+    """Client half of the bounded scan-job update protocol (LR2 §8.6).
+
+    Submits ONLY ``count deltas + at most one bounded sample + the expected
+    owner token/version`` — never a full record — and every bound is re-validated
+    inside the store, so a bug here cannot write an O(total_files) object into
+    the (possibly Manager-hosted) job map.
+
+    Cost control: counts are accumulated locally and flushed in ONE call per
+    phase (or lease renewal), and each bucket sends at most
+    ``SCAN_JOB_SAMPLE_LIMIT`` samples — everything beyond that is counted into
+    ``<bucket>_samples_suppressed`` instead of costing another RPC. A
+    million-file scan therefore costs a bounded number of store calls.
+
+    Every store call is SYNCHRONOUS (the store is ``threading.Lock``-guarded with
+    no blocking waits), so the finally/cancellation path can still mark a job
+    terminal without awaiting. A reporter with no store or token, or one whose
+    record it no longer owns (job gone / superseded owner / already terminal —
+    e.g. reaped to ABANDONED after a lease expiry), disables itself: progress
+    reporting must never fail the scan.
+    """
+
+    def __init__(self, store: Any, track_id: str | None, owner_token: str | None):
+        self._store = store if (store and track_id and owner_token) else None
+        self._track_id = track_id
+        self._owner_token = owner_token
+        self._version = 1
+        self._counts: Dict[str, int] = {}
+        self._pending_samples: List[tuple[str, str]] = []
+        self._samples_budget = {
+            bucket: SCAN_JOB_SAMPLE_LIMIT for bucket in SAMPLE_BUCKETS
+        }
+        self._last_call = time.monotonic()
+
+    @property
+    def enabled(self) -> bool:
+        return self._store is not None
+
+    def count(self, key: str, delta: int = 1) -> None:
+        """Buffer a counter delta (flushed later)."""
+        if self._store is None:
+            return
+        self._counts[key] = self._counts.get(key, 0) + delta
+
+    def sample(self, bucket: str, text: str) -> None:
+        """Buffer one bounded sample, or count it as suppressed once the bucket's
+        send budget is spent (the store caps retained samples anyway)."""
+        if self._store is None:
+            return
+        if self._samples_budget.get(bucket, 0) <= 0:
+            self.count(f"{bucket}_samples_suppressed")
+            return
+        self._samples_budget[bucket] -= 1
+        self._pending_samples.append((bucket, text))
+
+    def flush(self) -> None:
+        """Send the buffered deltas (one call) and any buffered samples (one call
+        each). Renews the lease as a side effect of every accepted update."""
+        if self._store is None:
+            return
+        counts, samples = self._counts, self._pending_samples
+        self._counts, self._pending_samples = {}, []
+        if not counts and not samples:
+            self._submit(None, None)
+            return
+        first_sample = samples[0] if samples else None
+        self._submit(counts or None, first_sample)
+        for sample in samples[1:]:
+            if self._store is None:  # a submit above disabled us mid-flush
+                return
+            self._submit(None, sample)
+
+    def renew(self) -> None:
+        """Flush if the lease is due for renewal; a cheap no-op otherwise."""
+        if self._store is None:
+            return
+        if time.monotonic() - self._last_call < _SCAN_JOB_RENEW_SECONDS:
+            return
+        self.flush()
+
+    def finish(self, status: ScanJobStatus, message: str = "") -> None:
+        """Flush, then transition the job to a terminal status (owner-checked,
+        CAS'd). A late transition that lost the record (reaped/superseded) is
+        logged and dropped — it must not overwrite a newer state."""
+        if self._store is None:
+            return
+        self.flush()
+        if self._store is None:  # the flush disabled us
+            return
+        for attempt in range(2):
+            try:
+                result = self._store.set_status(
+                    self._track_id,
+                    self._owner_token,
+                    status,
+                    expected_version=self._version,
+                    message=message,
+                )
+            except Exception as store_error:
+                logger.warning(
+                    f"Scan job {self._track_id} terminal transition failed: {store_error}"
+                )
+                break
+            if result.ok:
+                break
+            if (
+                attempt == 0
+                and result.conflict is ScanJobUpdateConflict.VERSION
+                and result.record
+            ):
+                self._version = result.record.get("version", self._version)
+                continue
+            logger.warning(
+                f"Scan job {self._track_id} terminal transition refused "
+                f"({getattr(result.conflict, 'value', result.conflict)})"
+            )
+            break
+        self._store = None
+
+    def _submit(
+        self, counts: Optional[Dict[str, int]], sample: Optional[tuple[str, str]]
+    ) -> None:
+        """One CAS'd update, with a single re-sync retry on a version conflict."""
+        for attempt in range(2):
+            try:
+                result = self._store.update(
+                    self._track_id,
+                    self._owner_token,
+                    count_deltas=counts,
+                    sample=sample,
+                    expected_version=self._version,
+                )
+            except Exception as store_error:
+                logger.warning(
+                    f"Scan job {self._track_id} progress update failed "
+                    f"(reporting disabled): {store_error}"
+                )
+                self._store = None
+                return
+            if result.ok:
+                self._version = (result.record or {}).get("version", self._version + 1)
+                self._last_call = time.monotonic()
+                return
+            if (
+                attempt == 0
+                and result.conflict is ScanJobUpdateConflict.VERSION
+                and result.record
+            ):
+                self._version = result.record.get("version", self._version)
+                continue
+            # NOT_FOUND / OWNER / TERMINAL: this reporter is stale for good.
+            logger.warning(
+                f"Scan job {self._track_id} no longer accepts updates "
+                f"({getattr(result.conflict, 'value', result.conflict)}); "
+                "progress reporting disabled"
+            )
+            self._store = None
+            return
+
+
+def _resolve_scan_job_store(rag: LightRAG) -> Any:
+    """Resolve this workspace's scan job store, or None when unavailable.
+
+    Mocked rigs (and any path running before shared storage is initialised) have
+    no store; the scan must still run, just without a job record."""
+    try:
+        from lightrag.kg.shared_storage import get_scan_job_store
+
+        return get_scan_job_store(getattr(rag, "workspace", ""))
+    except Exception as store_error:
+        logger.debug(f"Scan job store unavailable: {store_error}")
+        return None
+
+
+def _cancel_scan_job(
+    rag: LightRAG, track_id: str | None, owner_token: str | None
+) -> None:
+    """Owner-checked cancel of a job this endpoint created but never handed off.
+
+    Part of the §8.6 reverse compensation chain: a job whose child never took
+    over has nobody to finalise it. Owner-checked, so a late compensation can
+    never cancel a SUCCESSOR's job; idempotent for a missing/terminal record."""
+    if not track_id or not owner_token:
+        return
+    store = _resolve_scan_job_store(rag)
+    if store is None:
+        return
+    try:
+        store.cancel(
+            track_id,
+            owner_token,
+            message="scan startup aborted before the background task took over",
+        )
+    except Exception as cancel_error:
+        logger.warning(f"Scan job {track_id} startup cancel failed: {cancel_error}")
+
+
 async def run_scanning_process(
     rag: LightRAG,
     doc_manager: DocumentManager,
     track_id: str = None,
     scanning_token: str | None = None,
     manual_request_id: str | None = None,
+    job_owner_token: str | None = None,
 ):
     """Background task to scan and index documents
 
@@ -2236,6 +2497,12 @@ async def run_scanning_process(
             is skipped and whatever was reset simply stays PENDING for the next
             trigger (a shutdown must not start a full processing run, and a
             cancellation's origin cannot be told apart here).
+        job_owner_token: Owner token of the bounded scan job record the endpoint
+            created before handing this task the reservation (None on
+            legacy/mocked paths). This task owns that record from takeover on:
+            it reports bounded progress into it and finalises it in the finally
+            (COMPLETED / FAILED / CANCELLED), so the endpoint's compensation
+            chain never has to (LR2 §8.6).
     """
     # The scan endpoint set ``scanning=True`` AND
     # ``scanning_exclusive=True`` synchronously before scheduling this
@@ -2270,6 +2537,18 @@ async def run_scanning_process(
     # consume the scan's sticky request (and a busy-refused drive leaves it
     # for the running loop's quiescence peek).
     queue_drive_attempted = False
+    # Bounded job-record reporting (LR2 §8.6). Disabled (no-op) when this task
+    # owns no record — legacy/mocked paths and any run before shared storage is
+    # initialised. The terminal transition happens in the finally; the default
+    # below covers an exit path that sets nothing (it never leaves a RUNNING
+    # record behind for the lease reaper to guess about).
+    reporter = _ScanJobReporter(
+        _resolve_scan_job_store(rag) if job_owner_token else None,
+        track_id,
+        job_owner_token,
+    )
+    job_status = ScanJobStatus.FAILED
+    job_message = "scan ended without reporting an outcome"
     try:
         # Fetch INSIDE the release try: the scan endpoint already reserved
         # ``scanning``/``scanning_exclusive`` before scheduling us, so a
@@ -2318,16 +2597,22 @@ async def run_scanning_process(
                 # ordering §8.1 forbids. The finally releases the reservations and
                 # drives the queue once so the standard drain path serves the
                 # request; the next scan discovers the files.
-                logger.error(
+                abort_message = (
                     "Scan aborted before file discovery: the exclusive FAILED "
                     "reset did not complete (manual request "
                     f"{manual_request_id[:8]} stays pending)"
                 )
+                logger.error(abort_message)
+                job_status = ScanJobStatus.FAILED
+                job_message = abort_message
+                reporter.sample("error", abort_message)
                 return
 
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
         logger.info(f"Found {total_files} files to index.")
+        reporter.count("discovered", total_files)
+        reporter.flush()
 
         if new_files:
             # Group canonical-equivalent files so we can prefer hint-bearing
@@ -2359,12 +2644,18 @@ async def run_scanning_process(
                         f"(canonical: {canonical_name})"
                     )
                     await record_scan_warning(rag, warning)
+                    reporter.count("alias_duplicate")
+                    reporter.sample("warning", warning)
                     try:
                         await move_file_to_parsed_dir(duplicate)
                     except Exception as move_error:
-                        logger.error(
-                            f"Failed to move duplicate scan file {duplicate.name} to {PARSED_DIR_NAME}: {move_error}"
+                        archive_error = (
+                            f"Failed to move duplicate scan file {duplicate.name} "
+                            f"to {PARSED_DIR_NAME}: {move_error}"
                         )
+                        logger.error(archive_error)
+                        reporter.count("errors")
+                        reporter.sample("error", archive_error)
 
             # Partition unique_files into:
             #   * processed_files — already PROCESSED, archived and skipped.
@@ -2388,6 +2679,10 @@ async def run_scanning_process(
             processed_files: list[str] = []
 
             for file_path in unique_files:
+                # Classifying a large tree can outlast the job lease; renewing
+                # here (time-based, a no-op most iterations) keeps the record
+                # from being reaped to ABANDONED under a live owner.
+                reporter.renew()
                 filename = file_path.name
                 # Inline the canonical-basename lookup so we keep both the
                 # doc_id and the data: the FAILED-without-full_docs sub-case
@@ -2411,12 +2706,18 @@ async def run_scanning_process(
                     processed_files.append(filename)
                     warning = f"Skipping already processed file: {filename}"
                     await record_scan_warning(rag, warning)
+                    reporter.count("processed")
+                    reporter.sample("processed", filename)
                     try:
                         await move_file_to_parsed_dir(file_path)
                     except Exception as move_error:
-                        logger.error(
-                            f"Failed to move already processed file {filename} to {PARSED_DIR_NAME}: {move_error}"
+                        archive_error = (
+                            f"Failed to move already processed file {filename} "
+                            f"to {PARSED_DIR_NAME}: {move_error}"
                         )
+                        logger.error(archive_error)
+                        reporter.count("errors")
+                        reporter.sample("error", archive_error)
                 elif existing_doc_data:
                     # FAILED rows recorded by apipeline_enqueue_error_documents
                     # never write a full_docs entry — extraction blew up before
@@ -2433,15 +2734,19 @@ async def run_scanning_process(
                             try:
                                 await rag.doc_status.delete([existing_doc_id])
                             except Exception as delete_error:
-                                logger.error(
+                                stub_error = (
                                     "Failed to delete stale failed-extraction "
                                     f"doc_status stub {existing_doc_id} "
                                     f"({filename}): {delete_error}"
                                 )
+                                logger.error(stub_error)
+                                reporter.count("errors")
+                                reporter.sample("error", stub_error)
                                 # Fall through to resume — at worst the row
                                 # remains preserved (current behaviour) rather
                                 # than re-enqueued.
                                 resume_files.append(file_path)
+                                reporter.count("resume_same_physical_source")
                                 continue
                             logger.info(
                                 "Retrying previously failed extraction; "
@@ -2449,14 +2754,22 @@ async def run_scanning_process(
                                 f"(doc_id: {existing_doc_id})"
                             )
                             new_files.append(file_path)
+                            reporter.count("stale_stub")
                             continue
                     logger.info(
                         "Resuming previously unfinished file from scan: "
                         f"{filename} (Status: {status_value})"
                     )
                     resume_files.append(file_path)
+                    reporter.count("resume_same_physical_source")
                 else:
                     new_files.append(file_path)
+                    reporter.count("claimed_new")
+
+            # Classification counters are complete: flush them before the
+            # exclusive fence drops, so a /scan/status query during processing
+            # already reports the full classification breakdown.
+            reporter.flush()
 
             # Classification phase complete — release ``scanning_exclusive``
             # so concurrent uploads/inserts can land in doc_status while
@@ -2515,11 +2828,12 @@ async def run_scanning_process(
                     summary_parts.append(f"{total_active} files Processed")
                 if processed_files:
                     summary_parts.append(f"{len(processed_files)} skipped")
-                logger.info(f"Scanning process completed: {' '.join(summary_parts)}.")
+                summary = f"Scanning process completed: {' '.join(summary_parts)}."
             else:
-                logger.info(
-                    "No files to process after filtering already processed files."
-                )
+                summary = "No files to process after filtering already processed files."
+            logger.info(summary)
+            job_status = ScanJobStatus.COMPLETED
+            job_message = summary
         else:
             # No new files to index — classification is trivially done;
             # release ``scanning_exclusive`` before driving the queue so
@@ -2539,15 +2853,22 @@ async def run_scanning_process(
             )
             queue_drive_attempted = True
             await rag.apipeline_process_enqueue_documents()
+            job_status = ScanJobStatus.COMPLETED
+            job_message = "No new files found; processed the existing queue."
 
     except asyncio.CancelledError:
         # Shutdown / task cancel: skip the deferred drive below and leave
         # ``scan_deferred_processing`` set for the next scan / trigger.
         was_cancelled = True
+        job_status = ScanJobStatus.CANCELLED
+        job_message = "Scan cancelled (shutdown or explicit cancellation)."
         raise
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
+        job_status = ScanJobStatus.FAILED
+        job_message = f"Scan failed: {e}"
+        reporter.sample("error", f"Scan failed: {e}")
     finally:
         # Always release both scanning flags so future uploads / scans are not
         # blocked by a crashed / cancelled task.
@@ -2612,6 +2933,16 @@ async def run_scanning_process(
                     logger.error(
                         f"Deferred post-scan queue drive failed: {drive_error}"
                     )
+                    job_status = ScanJobStatus.FAILED
+                    job_message = f"Post-scan queue drive failed: {drive_error}"
+                    reporter.sample("error", job_message)
+
+        # Finalise the job record LAST, so the terminal status covers the whole
+        # task including the deferred drive above (LR2 §8.6). Synchronous — safe
+        # even on the cancellation path, which must not await. A record that was
+        # reaped or taken over meanwhile refuses this transition rather than
+        # overwriting a newer state.
+        reporter.finish(job_status, job_message)
 
 
 async def background_delete_documents(
@@ -2931,8 +3262,21 @@ def create_document_routes(
         allowing concurrent uploads to land while the scan-driven
         processing finishes.
 
+        Startup order (LR2 §8.6), each step compensating the previous
+        ones if it fails: reservation → bounded job record → sticky
+        manual intent → managed child (start barrier) → ``track_id``.
+        The record exists BEFORE the response, so an immediate
+        ``/documents/scan/status/{track_id}`` cannot 404. Once the
+        child has taken over it owns the record and finalises it; the
+        endpoint never cancels a job from that point on.
+
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
+
+        Raises:
+            HTTPException: 429 when the scan job store is at capacity
+                (all records are valid RUNNING jobs), 409 on a track-id
+                collision, 503 when the job store is unavailable.
         """
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.pipeline_ingress import PipelineIngressMessage
@@ -2958,6 +3302,11 @@ def create_document_routes(
         # pipeline. Un-ACKed (reset abandoned / crash), it stays sticky for the
         # standard drain path.
         manual_request_id = uuid4().hex
+        # Owner token of the bounded scan job record. Held by the endpoint until
+        # the child takes over, so a startup that aborts can owner-checked cancel
+        # exactly the record it created (never a successor's).
+        job_owner_token = uuid4().hex
+        job_created = False
         # Endpoint-visible mirror of the commit state: set synchronously with
         # the publish, so the finally below knows ownership transferred even
         # when the caller was cancelled right after the commit.
@@ -2970,7 +3319,13 @@ def create_document_routes(
             await run_scanning_process(rag, doc_manager, track_id, scanning_token)
 
         async def _scan_backstop():
-            # Owner-checked + idempotent; runs only if the child never took over.
+            # Reverse compensation (LR2 §8.6), owner-checked + idempotent, and
+            # only ever reached when the child did NOT take over: the job record
+            # this endpoint created has nobody left to finalise it, so cancel it
+            # before releasing the reservation. Both carry their owner token, so
+            # a late compensation can never clean up a successor's job/scan.
+            if job_created:
+                _cancel_scan_job(rag, track_id, job_owner_token)
             await _release_scanning_reservation(rag, scanning_token)
 
         try:
@@ -3081,14 +3436,54 @@ def create_document_routes(
                     track_id=track_id,
                 )
 
+            # Create the bounded job record BEFORE publishing the manual intent
+            # or starting the child (LR2 §8.6): the track_id we return must be
+            # queryable immediately, and a refusal here must leave no intent and
+            # no child behind. Store unavailable → 503; capacity exhausted (every
+            # record a valid RUNNING job) → 429; a track-id collision → 409. The
+            # finally releases the reservation for all three.
+            try:
+                job_store = _resolve_scan_job_store(rag)
+                if job_store is None:
+                    raise RuntimeError("scan job store is not initialised")
+                create_result = job_store.create(track_id, job_owner_token)
+            except Exception as job_error:
+                logger.error(f"Scan job record could not be created: {job_error}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Scan job store is unavailable; retry shortly.",
+                )
+            if create_result.outcome is ScanJobCreateOutcome.CAPACITY_EXCEEDED:
+                logger.warning(
+                    "Scan request refused: the scan job store is at capacity "
+                    "(all records are running jobs)"
+                )
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many scan jobs are in flight; retry once one finishes.",
+                )
+            if create_result.outcome is ScanJobCreateOutcome.ALREADY_EXISTS:
+                # Unreachable for a freshly minted track id; a future caller
+                # reusing one must be refused rather than silently adopting (and
+                # then finalising) somebody else's job record.
+                logger.error(
+                    f"Scan job {track_id} already exists; refusing to reuse a track id"
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="A scan job with this track id already exists.",
+                )
+            job_created = True
+
             # Hand the reservation to a managed background task via the
             # two-state committed startup: the child publishes the scan's
             # sticky manual retry intent (commit) and only then runs the scan.
             # A cancellation BEFORE the commit cancels the child and releases
-            # the reservation with zero side effects; AFTER the commit the
-            # child is never cancelled — it owns both the reservation (released
-            # in run_scanning_process's finally, owner-checked by
-            # scanning_token) and the published intent.
+            # the reservation with zero side effects (and cancels the job record
+            # via the backstop); AFTER the commit the child is never cancelled —
+            # it owns the reservation (released in run_scanning_process's
+            # finally, owner-checked by scanning_token), the published intent AND
+            # the job record (finalised in that same finally).
 
             async def _scan_commit(state):
                 # Fence already passed — this endpoint holds the scanning
@@ -3116,6 +3511,7 @@ def create_document_routes(
                     track_id,
                     scanning_token,
                     manual_request_id=manual_request_id,
+                    job_owner_token=job_owner_token,
                 )
 
             await start_committed_background_task(
@@ -3140,8 +3536,57 @@ def create_document_routes(
             # start helper's own backstop already released it). A commit that
             # already happened (takeover mirror) means the child owns the slot
             # even if the caller was cancelled before ``handed_off`` was set.
+            #
+            # The job record follows the SAME ownership rule: not handed off means
+            # nobody will finalise it, so cancel it here too (owner-checked and
+            # idempotent — the startup helper's backstop may already have done it;
+            # after the commit the child owns it and this must not fire).
             if reserved and not handed_off and not takeover["committed"]:
+                if job_created:
+                    _cancel_scan_job(rag, track_id, job_owner_token)
                 await _release_scanning_reservation(rag, scanning_token)
+
+    @router.get(
+        "/scan/status/{track_id}",
+        response_model=ScanJobStatusResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_scan_job_status(track_id: str):
+        """
+        Report the bounded status of one scan job (LR2 §8.6).
+
+        ``/documents/scan`` returns as soon as the job record exists and the
+        background task has taken over, long before the directory walk, the
+        FAILED reset and document processing finish. This endpoint reports that
+        job's progress from the SAME bounded schema the store enforces —
+        aggregate counters plus three capped sample buckets, never an
+        ``O(total_files)`` file list.
+
+        A job whose owner died stays ``running`` only until its lease expires and
+        the store reaps it to ``abandoned``. Terminal records are kept for a TTL
+        (and evicted under capacity pressure), so an old track_id eventually 404s.
+
+        Raises:
+            HTTPException: 404 when no job record exists for ``track_id``; 503
+                when the job store is unavailable.
+        """
+        store = _resolve_scan_job_store(rag)
+        if store is None:
+            raise HTTPException(
+                status_code=503, detail="Scan job store is unavailable."
+            )
+        try:
+            record = store.get(track_id)
+        except Exception as store_error:
+            logger.error(f"Scan job status lookup failed: {store_error}")
+            raise HTTPException(
+                status_code=503, detail="Scan job store is unavailable."
+            )
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail=f"No scan job found for track_id {track_id}"
+            )
+        return ScanJobStatusResponse(**record)
 
     @router.post(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
@@ -3797,6 +4242,25 @@ def create_document_routes(
                     "are compacted by the next run and a surviving manual "
                     "retry request ACKs harmlessly against the emptied "
                     f"doc_status: {ingress_clear_error}"
+                )
+
+            # Scan job records describe documents that are about to be dropped,
+            # so retire the ones nobody owns: only TERMINAL (and lease-expired →
+            # ABANDONED, which the snapshot reaps first) records are removed. A
+            # still-valid RUNNING job is never removed out from under its owner
+            # (LR2 §8.6) — a live scan cannot even coexist with this clear, since
+            # the destructive reservation refuses while ``scanning`` is held.
+            try:
+                job_store = _resolve_scan_job_store(rag)
+                if job_store is not None:
+                    for record in job_store.snapshot():
+                        if record.get("status") != ScanJobStatus.RUNNING.value:
+                            job_store.remove_terminal(record["track_id"])
+            except Exception as job_clear_error:
+                logger.warning(
+                    "/documents/clear: failed to retire finished scan job "
+                    "records; safe to continue — they expire by TTL and are "
+                    f"evicted under capacity pressure: {job_clear_error}"
                 )
 
             # Use drop method to clear all data
