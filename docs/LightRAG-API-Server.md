@@ -454,6 +454,19 @@ server {
    - Nginx validates the `Content-Length` header first
    - LightRAG performs streaming validation during upload
    - Setting appropriate limits at both layers ensures better error messages and security
+6. **Server-side ingestion limits** (both off by default, see `env.example`):
+   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of `/documents/upload`, `/text`
+     and `/texts`, counted as it streams through ASGI. Unlike `MAX_UPLOAD_SIZE`
+     (which bounds one uploaded file after multipart parsing), it also stops a
+     body that understates or omits its `Content-Length`, answering **413**
+     before the whole body is read.
+   - `MAX_PENDING_DOCUMENTS` bounds how many documents may be active
+     (`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`) or reserved by an in-flight
+     request. Over capacity the server answers **429** with a `Retry-After`
+     header and a detail naming the current count, the requested count and the
+     capacity — refused *before* the body is transferred. `/documents/scan` and
+     manual retries exceed the cap on purpose; the documents they create make
+     ordinary uploads wait.
 
 ### Offline Deployment
 

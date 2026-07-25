@@ -185,7 +185,12 @@ export default function UploadDocumentsDialog({
                 } else {
                   errorMsg = detail || errorMsg
                 }
-              } else if (status === 400) {
+              } else if (status === 400 || status === 413 || status === 429 || status === 503) {
+                // 400 invalid request, 413 body/file too large, 429 pipeline at
+                // capacity (MAX_PENDING_DOCUMENTS — the detail carries how many
+                // documents are active, how many were requested, the capacity and
+                // a retry hint), 503 document storage unavailable. Each detail is
+                // written to be shown to a user verbatim.
                 errorMsg = detail || errorMsg
               }
 
