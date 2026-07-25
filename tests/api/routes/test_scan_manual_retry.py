@@ -26,7 +26,10 @@ sys.argv = _original_argv
 
 from lightrag import LightRAG  # noqa: E402
 from lightrag.base import DocStatus  # noqa: E402
-from lightrag.kg.pipeline_ingress import PipelineIngressMessage  # noqa: E402
+from lightrag.kg.pipeline_ingress import (  # noqa: E402
+    ManualRetryPublishResult,
+    PipelineIngressMessage,
+)
 from lightrag.kg.shared_storage import (  # noqa: E402
     MANUAL_PHASE_IDLE,
     acquire_reservation,
@@ -486,6 +489,51 @@ def test_scan_endpoint_refused_while_earlier_manual_request_queued(tmp_path):
             assert [m.request_id for m in ingress.snapshot_manual_retries()] == [
                 request_id
             ]  # untouched: the earlier request keeps its place
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_scan_refuses_when_the_manual_channel_is_full(tmp_path, monkeypatch):
+    """LR2 §10.1: a scan whose retry intent cannot be published must not start —
+    its exclusive FAILED reset would never be acknowledged. Capacity is the one
+    publish refusal worth retrying unchanged (429), and the reservation plus the
+    job record are compensated because nothing was handed off."""
+
+    async def _run():
+        extract = _FlippableExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            await initialize_pipeline_status(workspace=rag.workspace)
+            ingress = await get_pipeline_ingress(rag.workspace)
+            monkeypatch.setattr(
+                ingress,
+                "request_manual_retry",
+                lambda *args, **kwargs: ManualRetryPublishResult.CAPACITY_EXCEEDED,
+            )
+
+            doc_manager = DocumentManager(str(tmp_path / "inputs"))
+            router = _document_routes.create_document_routes(rag, doc_manager)
+            scan_endpoint = [
+                route.endpoint
+                for route in router.routes
+                if getattr(route, "name", "") == "scan_for_new_documents"
+            ][-1]
+
+            with pytest.raises(_document_routes.HTTPException) as excinfo:
+                await scan_endpoint(set())
+
+            assert excinfo.value.status_code == 429
+            assert excinfo.value.headers["Retry-After"]
+
+            # Nothing owned: the scan reservation was released again.
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            assert pipeline_status["scanning"] is False
+            assert pipeline_status["scanning_exclusive"] is False
+            assert pipeline_status["busy"] is False
         finally:
             await rag.finalize_storages()
 

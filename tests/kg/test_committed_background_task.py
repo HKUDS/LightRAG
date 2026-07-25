@@ -12,7 +12,10 @@ import asyncio
 
 import pytest
 
-from lightrag.kg.pipeline_ingress import PipelineIngressMessage
+from lightrag.kg.pipeline_ingress import (
+    AsyncioPipelineIngress,
+    PipelineIngressMessage,
+)
 from lightrag.kg.shared_storage import (
     ManualIntentRefused,
     commit_manual_retry_request,
@@ -255,7 +258,10 @@ async def test_commit_manual_retry_refuses_terminal_id_without_commit(share_data
     refusal = await commit_manual_retry_request(
         _base_status(), asyncio.Lock(), ingress, "req-done", state
     )
-    assert refusal is not None and "already" in refusal
+    assert refusal is not None and "already" in refusal.message
+    # An already-finalized id is a client error, not backpressure: retrying it
+    # can never succeed, so it must NOT be flagged as a capacity refusal (429).
+    assert refusal.capacity_exceeded is False
     assert state["committed"] is False
     assert not ingress.has_work()
 
@@ -270,3 +276,27 @@ async def test_commit_manual_retry_is_idempotent_for_pending_id(share_data):
     )
     assert refusal is None
     assert len(ingress.snapshot_manual_retries()) == 1
+
+
+async def test_commit_manual_retry_reports_capacity_as_retryable():
+    """A full manual channel is the one publish refusal that means "later": it
+    must reach the API as capacity_exceeded so the endpoint answers 429 instead
+    of 503 (LR2 §10.1)."""
+    ingress = AsyncioPipelineIngress(manual_capacity=1)
+    ingress.request_manual_retry(
+        "req-first",
+        PipelineIngressMessage(
+            kind="rescan", retry_failed=True, request_id="req-first"
+        ),
+    )
+
+    state = {"committed": False}
+    refusal = await commit_manual_retry_request(
+        _base_status(), asyncio.Lock(), ingress, "req-second", state
+    )
+
+    assert refusal is not None
+    assert refusal.capacity_exceeded is True
+    assert state["committed"] is False
+    # The queued request is untouched; only the new one was refused.
+    assert [m.request_id for m in ingress.snapshot_manual_retries()] == ["req-first"]

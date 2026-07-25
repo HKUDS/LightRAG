@@ -11,7 +11,17 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from contextvars import ContextVar
-from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    TypeVar,
+    Union,
+)
 
 try:
     import psutil
@@ -31,6 +41,7 @@ from lightrag.exceptions import (
 from lightrag.kg.pipeline_ingress import (
     AsyncioPipelineIngress,
     ManagerPipelineIngress,
+    ManualRetryPublishResult,
     PipelineIngressHub,
     PipelineIngressMessage,
     _PipelineIngressHubProxy,
@@ -2992,14 +3003,32 @@ async def start_reserved_background_task(
     raise RuntimeError("reserved background task failed to start")
 
 
+class ManualIntentRefusal(NamedTuple):
+    """A refusal a ``commit`` implementation can return instead of a bare string.
+
+    ``capacity_exceeded`` is the one distinction the HTTP layer must not lose:
+    the manual channel being full is a "later" (429 + Retry-After), while every
+    other refusal — fence held, id already finalized — is a "not like this"
+    (503 / client error). See LR2 §10.1.
+    """
+
+    message: str
+    capacity_exceeded: bool = False
+
+
 class ManualIntentRefused(Exception):
     """A manual-intent commit was refused by the pipeline fence.
 
     Raised by :func:`start_committed_background_task` when ``commit`` returned
     a refusal: the fence rejected the request BEFORE the sticky message was
     published, so no side effect exists and the endpoint can surface the
-    message (e.g. as a 503) without any cleanup.
+    message (e.g. as a 503) without any cleanup. ``capacity_exceeded`` marks the
+    one refusal that is worth retrying unchanged (429).
     """
+
+    def __init__(self, message: str, *, capacity_exceeded: bool = False) -> None:
+        super().__init__(message)
+        self.capacity_exceeded = capacity_exceeded
 
 
 async def commit_manual_retry_request(
@@ -3047,14 +3076,25 @@ async def commit_manual_retry_request(
                 "it finishes."
             )
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
-        if not ingress.request_manual_retry(request_id, message):
+        publish = ingress.request_manual_retry(request_id, message)
+        if publish is ManualRetryPublishResult.ALREADY_TERMINAL:
             # The id is already terminal (ACKED / CANCELLED_BY_CLEAR): nothing
             # was published and nothing is owned. Unreachable for the current
             # callers (they mint a fresh uuid per request) but a future caller
             # reusing ids must get a refusal, not a phantom commit.
-            return (
+            return ManualIntentRefusal(
                 f"manual retry request id {request_id!r} was already "
                 "finalized; mint a new request id"
+            )
+        if publish is ManualRetryPublishResult.CAPACITY_EXCEEDED:
+            # Sticky channel full (LR2 §10.1): un-ACKed requests are waiting for
+            # exclusive resets that have not run yet. Retrying later works, so
+            # this is the one publish refusal the API answers with 429.
+            return ManualIntentRefusal(
+                "Too many manual retry requests are still waiting to be "
+                "served for this workspace. Retry once the queued requests "
+                "have been processed.",
+                capacity_exceeded=True,
             )
         state["committed"] = True
         return None
@@ -3162,7 +3202,12 @@ async def start_committed_background_task(
     if join_cancel is not None:
         raise join_cancel
     if state["refusal"] is not None:
-        raise ManualIntentRefused(state["refusal"])
+        refusal = state["refusal"]
+        if isinstance(refusal, ManualIntentRefusal):
+            raise ManualIntentRefused(
+                refusal.message, capacity_exceeded=refusal.capacity_exceeded
+            )
+        raise ManualIntentRefused(str(refusal))
     raise RuntimeError("committed background task failed to start")
 
 

@@ -3826,8 +3826,13 @@ def create_document_routes(
                 collision, 503 when the job store is unavailable.
         """
         from lightrag.exceptions import PipelineNotInitializedError
-        from lightrag.kg.pipeline_ingress import PipelineIngressMessage
+        from lightrag.kg.pipeline_ingress import (
+            ManualRetryPublishResult,
+            PipelineIngressMessage,
+        )
         from lightrag.kg.shared_storage import (
+            ManualIntentRefusal,
+            ManualIntentRefused,
             PipelineReservationConflict,
             acquire_reservation,
             get_namespace_data,
@@ -4039,7 +4044,7 @@ def create_document_routes(
                 # cancellation landing in the lock release already counts as
                 # committed on both sides.
                 async with pipeline_status_lock:
-                    ingress.request_manual_retry(
+                    publish = ingress.request_manual_retry(
                         manual_request_id,
                         PipelineIngressMessage(
                             kind="rescan",
@@ -4047,6 +4052,20 @@ def create_document_routes(
                             request_id=manual_request_id,
                         ),
                     )
+                    if publish is not ManualRetryPublishResult.ACCEPTED:
+                        # Nothing was published, so nothing is owned: refuse the
+                        # commit instead of starting a scan whose FAILED reset
+                        # would never be acknowledged (LR2 §10.1). The endpoint's
+                        # compensation chain releases the scanning reservation and
+                        # cancels the job record because ``handed_off`` stays
+                        # False.
+                        return ManualIntentRefusal(
+                            "Could not queue this scan's retry intent "
+                            f"({publish.value}); no scan was started.",
+                            capacity_exceeded=(
+                                publish is ManualRetryPublishResult.CAPACITY_EXCEEDED
+                            ),
+                        )
                     state["committed"] = True
                     takeover["committed"] = True
                 return None
@@ -4074,6 +4093,19 @@ def create_document_routes(
                 status="scanning_started",
                 message="Scanning process has been initiated in the background",
                 track_id=track_id,
+            )
+        except ManualIntentRefused as refusal:
+            # The commit refused BEFORE publishing, so nothing is owned and the
+            # finally below undoes the reservation and the job record. Capacity is
+            # the one refusal worth retrying unchanged.
+            raise HTTPException(
+                status_code=429 if refusal.capacity_exceeded else 503,
+                detail=str(refusal),
+                headers=(
+                    {"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)}
+                    if refusal.capacity_exceeded
+                    else None
+                ),
             )
         finally:
             # Release the scanning slot if we reserved it but a cancellation
@@ -6066,7 +6098,17 @@ def create_document_routes(
                 "point. Documents retain their original track_id.",
             )
         except ManualIntentRefused as refusal:
-            raise HTTPException(status_code=503, detail=str(refusal))
+            # 429 only for a full manual channel (retry later works); every other
+            # refusal — fence held, id already finalized — is 503 (LR2 §10.1).
+            raise HTTPException(
+                status_code=429 if refusal.capacity_exceeded else 503,
+                detail=str(refusal),
+                headers=(
+                    {"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)}
+                    if refusal.capacity_exceeded
+                    else None
+                ),
+            )
         except Exception as e:
             logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
             logger.error(traceback.format_exc())

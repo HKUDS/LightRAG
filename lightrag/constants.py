@@ -389,6 +389,14 @@ DEFAULT_MAX_PENDING_DOCUMENTS = 0
 # body that lies about (or omits) Content-Length is still cut off.
 DEFAULT_MAX_REQUEST_BODY_BYTES = 0
 
+# Per-workspace ceiling on manual retry requests that have been published but
+# not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an
+# exclusive reset acknowledges it — so an operator hammering /reprocess_failed
+# would otherwise grow it without bound. Over the ceiling the publish is refused
+# with CAPACITY_EXCEEDED, which is the ONLY manual-publish refusal that maps to
+# 429; an already-finalized id is a client error, not backpressure.
+DEFAULT_MAX_UNACKED_MANUAL_RETRIES = 64
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values

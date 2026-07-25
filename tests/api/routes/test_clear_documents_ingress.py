@@ -18,7 +18,10 @@ sys.argv = [sys.argv[0]]
 _document_routes = importlib.import_module("lightrag.api.routers.document_routes")
 sys.argv = _original_argv
 
-from lightrag.kg.pipeline_ingress import PipelineIngressMessage  # noqa: E402
+from lightrag.kg.pipeline_ingress import (  # noqa: E402
+    ManualRetryPublishResult,
+    PipelineIngressMessage,
+)
 from lightrag.kg.scan_job_store import ScanJobStatus  # noqa: E402
 from lightrag.kg.shared_storage import get_pipeline_ingress  # noqa: E402
 
@@ -76,7 +79,10 @@ async def test_clear_documents_clears_ingress_and_refuses_replay(tmp_path):
     manual_msg = PipelineIngressMessage(
         kind="rescan", retry_failed=True, request_id="req-cleared"
     )
-    assert ingress.request_manual_retry("req-cleared", manual_msg) is True
+    assert (
+        ingress.request_manual_retry("req-cleared", manual_msg)
+        is ManualRetryPublishResult.ACCEPTED
+    )
 
     rag = _ClearRag(workspace)
     router = create_document_routes(rag, DocumentManager(str(tmp_path)))
@@ -97,7 +103,10 @@ async def test_clear_documents_clears_ingress_and_refuses_replay(tmp_path):
 
     # CANCELLED_BY_CLEAR is terminal: a delayed replay of the same id must be
     # refused instead of re-entering the now-empty workspace.
-    assert ingress.request_manual_retry("req-cleared", manual_msg) is False
+    assert (
+        ingress.request_manual_retry("req-cleared", manual_msg)
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
     assert ingress.snapshot_manual_retries() == []
 
     pipeline_status = await shared_storage.get_namespace_data(
