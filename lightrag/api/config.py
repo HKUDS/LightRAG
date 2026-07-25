@@ -35,6 +35,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
@@ -194,6 +195,25 @@ def validate_scan_batch_configuration(args: argparse.Namespace) -> None:
         raise ValueError(
             "SCAN_ENQUEUE_BATCH_SIZE must be a positive integer (it bounds how "
             f"many discovered files one scan batch holds); got {batch_size!r}"
+        )
+
+
+def validate_admission_configuration(args: argparse.Namespace) -> None:
+    """Reject a negative admission capacity (LR2 §9.1/§11).
+
+    ``0`` legitimately disables admission control, but a negative capacity would
+    refuse every upload — never what an operator meant, and a failure mode that
+    only shows up on the first request.
+    """
+    if not hasattr(args, "max_pending_documents"):
+        # Partial namespace from a programmatic caller — see
+        # validate_scan_batch_configuration.
+        return
+    capacity = args.max_pending_documents
+    if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 0:
+        raise ValueError(
+            "MAX_PENDING_DOCUMENTS must be an integer >= 0 (0 disables "
+            f"admission control); got {capacity!r}"
         )
 
 
@@ -547,6 +567,11 @@ def parse_args() -> argparse.Namespace:
         "SCAN_ENQUEUE_BATCH_SIZE", DEFAULT_SCAN_ENQUEUE_BATCH_SIZE, int
     )
 
+    # Admission capacity for ordinary ingestion (LR2 §9.1); 0 disables it.
+    args.max_pending_documents = get_env_value(
+        "MAX_PENDING_DOCUMENTS", DEFAULT_MAX_PENDING_DOCUMENTS, int
+    )
+
     # Get MAX_GRAPH_NODES from environment
     args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
 
@@ -853,6 +878,7 @@ def initialize_config(args=None, force=False):
     validate_auth_configuration(resolved_args)
     validate_bedrock_auth_configuration(resolved_args)
     validate_scan_batch_configuration(resolved_args)
+    validate_admission_configuration(resolved_args)
     _global_args = resolved_args
     _initialized = True
     return _global_args

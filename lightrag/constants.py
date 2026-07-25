@@ -374,6 +374,14 @@ DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE = 500
 # batch is exactly what the streaming rework removes), so startup fails fast.
 DEFAULT_SCAN_ENQUEUE_BATCH_SIZE = 100
 
+# Admission capacity: how many documents may be active (PENDING / PARSING /
+# ANALYZING / PROCESSING) or reserved before new uploads / text inserts are
+# refused with 429 (LR2 §9.1). ``0`` disables admission control entirely — the
+# default, so existing deployments see no behaviour change. Manual FAILED→PENDING
+# retries and ``/documents/scan`` bulk enqueues deliberately break through the
+# cap; the active rows they create make ordinary uploads wait.
+DEFAULT_MAX_PENDING_DOCUMENTS = 0
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values

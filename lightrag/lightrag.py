@@ -81,6 +81,7 @@ from lightrag.constants import (
     DEFAULT_QUEUE_SIZE_ANALYZE,
     DEFAULT_QUEUE_SIZE_INSERT,
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
@@ -701,6 +702,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     at initialization.
     """
 
+    max_pending_documents: int = field(
+        default=get_env_value(
+            "MAX_PENDING_DOCUMENTS",
+            DEFAULT_MAX_PENDING_DOCUMENTS,
+            int,
+        )
+    )
+    """Admission capacity for ordinary ingestion (LR2 §9.1).
+
+    A new upload / text insert is refused with
+    :class:`~lightrag.exceptions.PipelineBackpressureError` (HTTP 429) when
+
+        strict active count + other in-flight reservation weights + requested
+
+    would exceed this value. Active means PENDING / PARSING / ANALYZING /
+    PROCESSING. ``0`` (the default) disables admission control; negative values
+    are rejected at initialization. Enabling it requires a doc_status backend
+    with strict counting — every first-party backend has one.
+    """
+
     max_graph_nodes: int = field(
         default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
     )
@@ -1022,6 +1043,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             raise ValueError(
                 "PIPELINE_SCHEDULING_PAGE_SIZE must be >= 0 (0 disables "
                 f"paging); got {self.pipeline_scheduling_page_size}"
+            )
+
+        # Admission capacity: 0 disables admission control; a negative capacity
+        # would refuse every request, which is never what an operator meant.
+        if self.max_pending_documents < 0:
+            raise ValueError(
+                "MAX_PENDING_DOCUMENTS must be >= 0 (0 disables admission "
+                f"control); got {self.max_pending_documents}"
             )
 
         # Handle deprecated parameters

@@ -24,7 +24,10 @@ from lightrag.constants import (
     DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
     DEFAULT_QUEUE_STATS_STALE_TTL,
 )
-from lightrag.exceptions import PipelineNotInitializedError
+from lightrag.exceptions import (
+    PipelineBackpressureError,
+    PipelineNotInitializedError,
+)
 from lightrag.kg.pipeline_ingress import (
     AsyncioPipelineIngress,
     ManagerPipelineIngress,
@@ -2414,19 +2417,59 @@ async def acquire_reservation(
     return PipelineReservationResult(acquired=True, snapshot=snapshot)
 
 
+def _reservation_weight(metadata: Any) -> int:
+    """Documents an in-flight reservation intends to write (0 when unweighted)."""
+    if not isinstance(metadata, Mapping):
+        return 0
+    weight = metadata.get("weight")
+    return weight if isinstance(weight, int) and weight > 0 else 0
+
+
 async def acquire_enqueue_reservation(
     pipeline_status: Dict[str, Any],
     pipeline_status_lock,
     *,
     token: str,
     reject_when,
+    weight: int = 0,
+    capacity: int = 0,
+    active_count: Optional[int] = None,
 ) -> PipelineReservationResult:
-    """Take one of the (concurrent) pending-enqueue reservations.
+    """Take (or re-weight) one of the concurrent pending-enqueue reservations.
 
     ``pending_enqueue_tokens`` is a ``{token: metadata}`` set; several enqueues
     may hold slots at once. Adds ``token`` and mirrors the count into
     ``pending_enqueues`` in a single atomic update.
+
+    ``weight`` records how many documents this reservation intends to write, and
+    with ``capacity > 0`` the same critical section enforces the admission rule
+    (LR2 §9.1)::
+
+        active_count + Σ(other tokens' weights) + weight <= capacity
+
+    Registering an existing token again is how a reservation is *re-weighted*
+    (e.g. ``/texts`` learning its real document count after body parse, or the
+    enqueue guard narrowing a coarse pre-body reservation down to the deduped
+    count): the token's own previous weight is excluded from the sum, so a
+    re-weight can never double-count itself.
+
+    Refusal semantics are deliberately different per cause:
+
+    * mutual exclusion (``reject_when`` flags) → a refusal *result* (→ 409),
+      evaluated BEFORE capacity, so a manual freeze refuses regardless of how
+      much room there is;
+    * no capacity → :class:`~lightrag.exceptions.PipelineBackpressureError`
+      (→ 429) carrying the numbers the client needs.
+
+    ``capacity > 0`` requires ``active_count``: the caller must have taken a
+    strict count under its serialisation lock. Passing ``None`` is a programming
+    error, not a licence to assume there is room.
     """
+    if capacity > 0 and active_count is None:
+        raise ValueError(
+            "acquire_enqueue_reservation requires active_count when capacity "
+            "is enforced; admission must never guess the active count"
+        )
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
@@ -2444,7 +2487,28 @@ async def acquire_enqueue_reservation(
                     snapshot=snapshot,
                 )
         tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
-        tokens[token] = {"pid": os.getpid(), "process_start_id": _my_start_id()}
+        if capacity > 0:
+            reserved_elsewhere = sum(
+                _reservation_weight(meta)
+                for other, meta in tokens.items()
+                if other != token
+            )
+            current = active_count + reserved_elsewhere
+            if current + weight > capacity:
+                # Commit the reconciliation writes we already computed, then
+                # refuse: the reaper's work must not be lost just because this
+                # request bounced.
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                raise PipelineBackpressureError(
+                    current=current,
+                    requested=weight,
+                    capacity=capacity,
+                )
+        tokens[token] = {
+            "pid": os.getpid(),
+            "process_start_id": _my_start_id(),
+            "weight": weight,
+        }
         updates = {
             "pending_enqueue_tokens": tokens,
             "pending_enqueues": len(tokens),

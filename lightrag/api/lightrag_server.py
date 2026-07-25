@@ -1290,6 +1290,26 @@ def create_app(args):
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
+            # Admission control needs a doc_status backend that can count
+            # strictly (LR2 §9.1). Probe once here so an unsupported backend
+            # fails at startup instead of turning every upload into a 503.
+            if getattr(rag, "max_pending_documents", 0) > 0:
+                from lightrag.utils_pipeline import count_active_documents
+
+                try:
+                    active_now = await count_active_documents(rag.doc_status)
+                except Exception as admission_probe_error:
+                    raise RuntimeError(
+                        "MAX_PENDING_DOCUMENTS is set but the configured "
+                        f"doc_status backend cannot count strictly: "
+                        f"{admission_probe_error}"
+                    ) from admission_probe_error
+                logger.info(
+                    f"Admission control enabled: capacity "
+                    f"{rag.max_pending_documents}, {active_now} document(s) "
+                    "currently active"
+                )
+
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
             yield
@@ -2148,6 +2168,7 @@ def create_app(args):
             default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             pipeline_scheduling_page_size=args.pipeline_scheduling_page_size,
+            max_pending_documents=args.max_pending_documents,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,
