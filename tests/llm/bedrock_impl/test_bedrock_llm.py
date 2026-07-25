@@ -647,8 +647,26 @@ class _FakeOllamaAPI:
         self.router = APIRouter()
 
 
-def _make_args(tmp_path) -> SimpleNamespace:
-    return SimpleNamespace(
+def _make_args(tmp_path):
+    """Server args for the ``create_app`` tests below.
+
+    Derived from the REAL parser and then overridden, NOT hand-rolled: every
+    server-consumed config knob added later (LR2 Phase 2's
+    ``pipeline_scheduling_page_size`` broke all seven ``create_app`` tests here
+    with an ``AttributeError``) exists automatically. ``sys.argv`` is pinned so
+    the parse never sees pytest's own arguments, and the auth/env-sensitive
+    fields stay pinned below so a developer ``.env`` cannot reach the app.
+    """
+    original_argv = sys.argv[:]
+    sys.argv = ["lightrag-server"]
+    try:
+        from lightrag.api.config import parse_args
+
+        args = parse_args()
+    finally:
+        sys.argv = original_argv
+
+    overrides = dict(
         host="127.0.0.1",
         port=9621,
         log_level="INFO",
@@ -729,6 +747,9 @@ def _make_args(tmp_path) -> SimpleNamespace:
         rerank_max_async=4,
         rerank_timeout=30,
     )
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
 
 
 @pytest.mark.offline
