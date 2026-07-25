@@ -50,6 +50,7 @@ from ..base import (
 from ..constants import CUSTOM_CHUNK_PATCH_METADATA_KEY, DEFAULT_QUERY_PRIORITY
 from ..exceptions import (
     DataMigrationError,
+    SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
 )
@@ -5808,11 +5809,11 @@ class PGDocStatusStorage(DocStatusStorage):
         are atomic with respect to the rows it SAW. ``FOR UPDATE`` takes no
         predicate lock, so it cannot block a new primary being INSERTED for the
         same canonical key mid-repair — see the base contract for what
-        ``committed`` does and does not claim, and for the caller-side keyed
-        lock that serializes repair against enqueue. dry-run reports the
-        current count/fingerprint without
-        mutating; commit refuses (:class:`StorageControlPlaneError`) when they
-        no longer match the operator-echoed expectation. Losing candidates get
+        ``committed`` does and does not claim, and for the caller-side locks
+        that serialize repair against enqueue. dry-run reports the current
+        count/fingerprint without mutating; commit refuses
+        (:class:`SourceConflictRepairCASError`) when they no longer match the
+        operator-echoed expectation. Losing candidates get
         ``metadata.is_duplicate=true`` + ``original_doc_id=primary_doc_id`` in
         the same transaction; content is never deleted. ``primary_doc_id`` not
         in the current candidate set raises ``ValueError``.
@@ -5854,7 +5855,7 @@ class PGDocStatusStorage(DocStatusStorage):
                     count != expected_candidate_count
                     or fingerprint != expected_candidate_fingerprint
                 ):
-                    raise StorageControlPlaneError(
+                    raise SourceConflictRepairCASError(
                         f"[{workspace}] source-conflict repair CAS failed for "
                         f"{canonical_source_key!r}: candidate set changed "
                         f"(count {count} vs {expected_candidate_count})"

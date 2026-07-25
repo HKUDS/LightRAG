@@ -40,7 +40,7 @@ import time
 from collections import OrderedDict, deque
 from typing import Callable, Optional
 
-from ..utils import logger
+from ..utils import logger, safe_log_value
 
 # Upper bound on distinct keys held in memory (see module docstring).
 DEFAULT_MAX_TRACKED_KEYS = 10_000
@@ -54,21 +54,6 @@ DEFAULT_ALERT_INTERVAL_SECONDS = 60.0
 # reservations rather than confirmed failures: those resolve in well under a
 # second (bcrypt), so the caller may retry shortly.
 _PENDING_RETRY_AFTER_SECONDS = 1.0
-
-
-def _safe_log_value(value: str, max_length: int = 200) -> str:
-    """Make an untrusted value (e.g. an attacker-supplied username embedded in a
-    rate-limit key) safe to put in a log line.
-
-    Replaces non-printable characters -- notably CR/LF, which could otherwise be
-    used to forge extra log lines (log injection) -- with '?' and truncates
-    over-long values. Only the *logged* value is sanitized; the limiter's
-    internal key is left untouched so counting is unaffected.
-    """
-    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
-    if len(sanitized) > max_length:
-        sanitized = sanitized[:max_length] + "…(truncated)"
-    return sanitized
 
 
 class _Entry:
@@ -209,7 +194,7 @@ class LoginRateLimiter:
             self._alert(
                 now,
                 "lockout",
-                f"Login rate limit tripped for '{_safe_log_value(key)}': "
+                f"Login rate limit tripped for '{safe_log_value(key)}': "
                 f"{self.max_attempts} failed attempts within "
                 f"{self.window_seconds:.0f}s; further attempts are blocked "
                 f"(HTTP 429)",

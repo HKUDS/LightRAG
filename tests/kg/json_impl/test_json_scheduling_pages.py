@@ -23,6 +23,7 @@ from lightrag.base import (
     SourceUnique,
 )
 from lightrag.exceptions import (
+    SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
 )
@@ -352,6 +353,70 @@ async def test_list_and_repair_source_conflict(tmp_path):
         row = await storage.get_by_id(loser)
         assert row["metadata"]["is_duplicate"] is True
         assert row["metadata"]["original_doc_id"] == "doc-2"
+
+
+@pytest.mark.asyncio
+async def test_repair_source_conflict_repeats_converge(tmp_path):
+    """Repeat safety (LR2 §5.5): a committed repair leaves ONE primary, so
+    replaying the same request fails CAS (its token described the old set) while
+    a fresh dry-run → commit converges to a no-op. This is also the resume path
+    after a repair dies mid-way — no repair marker is involved."""
+    storage = await _storage(
+        tmp_path,
+        {
+            "doc-1": _doc("pending", file_path="a.pdf"),
+            "doc-2": _doc("failed", file_path="a.pdf"),
+        },
+    )
+    first = await storage.repair_source_conflict(
+        "a.pdf",
+        primary_doc_id="doc-2",
+        expected_candidate_count=0,
+        expected_candidate_fingerprint="",
+    )
+    committed = await storage.repair_source_conflict(
+        "a.pdf",
+        primary_doc_id="doc-2",
+        expected_candidate_count=first.candidate_count,
+        expected_candidate_fingerprint=first.fingerprint,
+        dry_run=False,
+    )
+    assert committed.committed is True
+
+    # Replaying the very same commit: the candidate set is now {doc-2}, so the
+    # echoed token is stale and the repair refuses instead of re-demoting.
+    with pytest.raises(SourceConflictRepairCASError):
+        await storage.repair_source_conflict(
+            "a.pdf",
+            primary_doc_id="doc-2",
+            expected_candidate_count=first.candidate_count,
+            expected_candidate_fingerprint=first.fingerprint,
+            dry_run=False,
+        )
+
+    # A fresh dry-run → commit is a no-op that still succeeds (idempotent
+    # convergence): one candidate, nothing left to demote.
+    again = await storage.repair_source_conflict(
+        "a.pdf",
+        primary_doc_id="doc-2",
+        expected_candidate_count=0,
+        expected_candidate_fingerprint="",
+    )
+    assert again.candidate_count == 1
+    assert again.demoted_sample_doc_ids == ()
+    final = await storage.repair_source_conflict(
+        "a.pdf",
+        primary_doc_id="doc-2",
+        expected_candidate_count=again.candidate_count,
+        expected_candidate_fingerprint=again.fingerprint,
+        dry_run=False,
+    )
+    assert final.committed is True
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-2"
+    # The loser demoted by the first commit is untouched by the replay.
+    row = await storage.get_by_id("doc-1")
+    assert row["metadata"]["original_doc_id"] == "doc-2"
 
 
 @pytest.mark.asyncio

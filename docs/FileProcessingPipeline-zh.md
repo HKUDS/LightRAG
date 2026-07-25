@@ -777,7 +777,7 @@ __parsed__/<base>.docling_raw/
   | 出口 | 条件 | 动作 |
   | --- | --- | --- |
   | `CLAIMED_NEW` | 无同 canonical 记录（`SourceAbsent`） | 加入当前有界批入队；`created_at` 取文件 `st_mtime`；`metadata.source_file` 保存带 hint 的原始 basename |
-  | `SOURCE_CONFLICT` | 同 canonical 有多条主记录（`SourceConflict`，历史遗留） | 不入队、不删任何记录、**也不归档文件**（operator 需要现场文件）；job 记录有界的候选 doc ID 摘要，等按 doc ID 修复后再扫 |
+  | `SOURCE_CONFLICT` | 同 canonical 有多条主记录（`SourceConflict`，历史遗留） | 不入队、不删任何记录、**也不归档文件**（operator 需要现场文件）；job 记录有界的候选 doc ID 摘要，等按 doc ID 修复后再扫。修复入口：`GET /documents/source_conflicts` 列出冲突，`POST /documents/source_conflicts/repair` 指定保留的 `primary_doc_id`（默认 dry-run，拿到 `candidate_count`/`fingerprint` 后回填提交；候选集有变动则 409），或离线用 `python -m lightrag.tools.source_conflict_repair` |
   | `PROCESSED` | 唯一记录已 `PROCESSED` | 输出 warning，源文件归档到 `__parsed__`，跳过入队 |
   | `STALE_STUB` | 唯一记录为 `FAILED`，且 strict point read **确认** `full_docs` 不存在 | 视为 `apipeline_enqueue_error_documents` 写下的提取错误 stub（一致性检查会保留它供人工 review）：删掉 stub 后把当前文件按 `CLAIMED_NEW` 重新入队。这是唯一会重新提取的出口，让"修好源文件再 scan 一次"自动生效。point read 能力缺失或读取失败时**不删**，转下面的非破坏性出口 |
   | `SOURCE_IDENTITY_UNKNOWN` | 唯一记录缺 `metadata.source_file`（custom ID / legacy / 非 scan 来源的 RAW 行） | 保留文件、不入队、记录有界告警；缺失**不**等于"不同的物理文件" |

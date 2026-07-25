@@ -34,6 +34,7 @@ from lightrag.utils import (
     get_pinyin_sort_key,
 )
 from lightrag.exceptions import (
+    SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageNotInitializedError,
     StorageRecordNotFoundError,
@@ -1036,7 +1037,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 count != expected_candidate_count
                 or fingerprint != expected_candidate_fingerprint
             ):
-                raise StorageControlPlaneError(
+                raise SourceConflictRepairCASError(
                     f"[{self.workspace}] source-conflict repair CAS failed for "
                     f"{canonical_source_key!r}: candidate set changed "
                     f"(count {count} vs {expected_candidate_count})"

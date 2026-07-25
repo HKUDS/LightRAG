@@ -3,6 +3,8 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import base64
+import binascii
 import re
 import shutil
 import time
@@ -13,6 +15,7 @@ from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
     performance_timing_log,
+    safe_log_value,
     validate_workspace,
 )
 import aiofiles
@@ -25,6 +28,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -34,11 +38,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from lightrag import LightRAG
 from lightrag.api.utils_api import internal_server_error
 from lightrag.base import (
+    CURSOR_START,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
     DocStatus,
     SourceAbsent,
     SourceConflict,
     SourceUnique,
+)
+from lightrag.exceptions import (
+    SourceConflictRepairCASError,
+    StorageCapabilityError,
+    StorageControlPlaneError,
+    StorageNotInitializedError,
 )
 from lightrag.constants import (
     DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
@@ -254,6 +267,109 @@ class ScanJobStatusResponse(BaseModel):
     version: int = Field(description="CAS version of the record")
     message: str = Field(
         default="", description="Terminal or latest status message (byte-capped)"
+    )
+
+
+class SourceConflictItem(BaseModel):
+    """One canonical source key claimed by more than one primary document.
+
+    ``candidate_count`` is ``None`` when the backend only proved "at least two"
+    without a cheap exact count; ``sample_doc_ids`` is a fixed-size sample, never
+    the whole conflicting set (LR2 §5.5)."""
+
+    canonical_source_key: str = Field(
+        description="Canonical (hint-stripped) basename shared by the candidates"
+    )
+    candidate_count: Optional[int] = Field(
+        default=None, description="Exact number of primary candidates, when known"
+    )
+    sample_doc_ids: List[str] = Field(
+        default_factory=list, description="Bounded sample of candidate document IDs"
+    )
+
+
+class SourceConflictListResponse(BaseModel):
+    """One page of source conflicts (``GET /documents/source_conflicts``)."""
+
+    conflicts: List[SourceConflictItem] = Field(
+        default_factory=list, description="Conflicts in this page"
+    )
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Opaque cursor for the next page; null when the listing is exhausted"
+        ),
+    )
+
+
+class SourceConflictRepairRequest(BaseModel):
+    """Operator request to resolve one source conflict (LR2 §5.5).
+
+    The winner is never chosen automatically: the operator names
+    ``primary_doc_id``. ``dry_run`` (the default) mutates nothing and returns the
+    ``candidate_count`` / ``fingerprint`` pair that must be echoed back to
+    commit — a compare-and-set token, so a candidate set that changed in between
+    fails the commit instead of being silently overwritten."""
+
+    canonical_source_key: str = Field(
+        min_length=1, description="Canonical source key to repair"
+    )
+    primary_doc_id: str = Field(
+        min_length=1, description="Document ID to keep as the single primary"
+    )
+    expected_candidate_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="CAS token from the dry-run; required when dry_run is false",
+    )
+    expected_candidate_fingerprint: Optional[str] = Field(
+        default=None,
+        description="CAS token from the dry-run; required when dry_run is false",
+    )
+    dry_run: bool = Field(
+        default=True, description="Report only (default) instead of committing"
+    )
+
+    @model_validator(mode="after")
+    def _commit_requires_cas_tokens(self) -> "SourceConflictRepairRequest":
+        # A commit without the echoed tokens could not be CAS-checked at all;
+        # refuse it here (422) rather than let a backend compare against a
+        # placeholder. dry-run ignores them by contract.
+        if not self.dry_run and (
+            self.expected_candidate_count is None
+            or not self.expected_candidate_fingerprint
+        ):
+            raise ValueError(
+                "expected_candidate_count and expected_candidate_fingerprint are "
+                "required when dry_run is false; run a dry-run first and echo "
+                "both values back"
+            )
+        return self
+
+
+class SourceConflictRepairResponse(BaseModel):
+    """Outcome of a source-conflict repair, dry-run or committed."""
+
+    canonical_source_key: str = Field(description="Canonical source key")
+    primary_doc_id: str = Field(description="Document ID kept as the single primary")
+    candidate_count: int = Field(
+        description="Primary candidates observed under the repair lock"
+    )
+    fingerprint: str = Field(
+        description=(
+            "Deterministic digest of the candidate IDs — the CAS token to echo "
+            "back on commit"
+        )
+    )
+    demoted_sample_doc_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Bounded sample of the documents that would be / were marked "
+            "metadata.is_duplicate=true (content is never deleted)"
+        ),
+    )
+    committed: bool = Field(
+        description="False for a dry-run, true when the demotions were written"
     )
 
 
@@ -2647,6 +2763,55 @@ def _scan_enqueue_batch_size() -> int:
     return configured
 
 
+# Upper bound on one source-conflict listing page. The projection is bounded
+# per key (count + fixed sample), so this only caps the response size.
+_SOURCE_CONFLICT_PAGE_MAX = 200
+
+
+def _encode_source_conflict_cursor(position: CursorPosition) -> Optional[str]:
+    """Wrap a backend continuation token as a client-facing opaque cursor.
+
+    The backend's token is its own private format (JSON for some backends). It
+    is base64url-wrapped here for two reasons: it keeps storage internals out of
+    the query string, and it lets the endpoint reject a garbled cursor as a 400
+    instead of letting the backend raise a control-plane error that would be
+    reported as an unavailable service (503).
+    """
+    if not isinstance(position, CursorAfter):
+        return None
+    return base64.urlsafe_b64encode(position.opaque.encode("utf-8")).decode("ascii")
+
+
+def _decode_source_conflict_cursor(raw: Optional[str]) -> CursorPosition:
+    """Inverse of :func:`_encode_source_conflict_cursor`; 400 on a bad cursor.
+
+    Boundary: only the envelope is validated here. A well-formed envelope whose
+    payload the backend cannot parse (e.g. a cursor minted by a different
+    backend) still surfaces as that backend's control-plane error.
+    """
+    if raw is None or raw == "":
+        return CURSOR_START
+    try:
+        opaque = base64.b64decode(
+            raw.encode("ascii"), altchars=b"-_", validate=True
+        ).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as decode_error:
+        logger.warning(
+            f"Rejected malformed source-conflict cursor "
+            f"'{safe_log_value(raw, 64)}': {decode_error}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Malformed cursor; pass back the next_cursor value verbatim.",
+        )
+    if not opaque:
+        raise HTTPException(
+            status_code=400,
+            detail="Malformed cursor; pass back the next_cursor value verbatim.",
+        )
+    return CursorAfter(opaque)
+
+
 def _resolve_scan_job_store(rag: LightRAG) -> Any:
     """Resolve this workspace's scan job store, or None when unavailable.
 
@@ -3765,6 +3930,224 @@ def create_document_routes(
                 status_code=404, detail=f"No scan job found for track_id {track_id}"
             )
         return ScanJobStatusResponse(**record)
+
+    @router.get(
+        "/source_conflicts",
+        response_model=SourceConflictListResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def list_source_conflicts(
+        limit: int = Query(
+            50,
+            ge=1,
+            le=_SOURCE_CONFLICT_PAGE_MAX,
+            description="Maximum conflicts to return in this page",
+        ),
+        cursor: Optional[str] = Query(
+            None, description="next_cursor from a previous page (opaque)"
+        ),
+    ):
+        """
+        List canonical source keys claimed by more than one primary document.
+
+        A scan classifies such a file as ``source_conflict``: it is never
+        enqueued, no record is deleted and the file is left in place, because
+        picking a winner automatically could silently retire the wrong document
+        (LR2 §5.5). This endpoint enumerates the conflicts an operator has to
+        settle, and ``POST /documents/source_conflicts/repair`` settles them.
+
+        The projection is bounded per key — an exact candidate count when the
+        backend can produce one cheaply, plus a fixed-size sample of candidate
+        doc IDs — so a workspace with a pathological conflict never materialises
+        an unbounded ID list into the response.
+
+        Raises:
+            HTTPException: 400 for a malformed cursor; 501 when the configured
+                doc_status backend cannot enumerate conflicts (no strict source
+                resolution); 503 when the storage control plane is unavailable
+                (e.g. a derived index still rebuilding).
+        """
+        position = _decode_source_conflict_cursor(cursor)
+        try:
+            page = await rag.doc_status.list_source_conflicts_page(
+                limit=limit, position=position
+            )
+        except StorageCapabilityError as capability_error:
+            logger.warning(f"Source-conflict listing unsupported: {capability_error}")
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "The configured doc_status backend cannot enumerate source "
+                    "conflicts (no strict source resolution)."
+                ),
+            )
+        except (StorageControlPlaneError, StorageNotInitializedError) as storage_error:
+            logger.error(f"Source-conflict listing failed: {storage_error}")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Document status storage is unavailable; retry once it is ready."
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Error listing source conflicts: {e}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+        return SourceConflictListResponse(
+            conflicts=[
+                SourceConflictItem(
+                    canonical_source_key=summary.canonical_source_key,
+                    candidate_count=summary.candidate_count,
+                    sample_doc_ids=list(summary.sample_doc_ids),
+                )
+                for summary in page.conflicts
+            ],
+            next_cursor=_encode_source_conflict_cursor(page.next_position),
+        )
+
+    @router.post(
+        "/source_conflicts/repair",
+        response_model=SourceConflictRepairResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def repair_source_conflict(
+        payload: SourceConflictRepairRequest,
+        http_request: Request,
+    ):
+        """
+        Settle one source conflict by naming the document that keeps the source.
+
+        Two-step, compare-and-set protocol (LR2 §5.5):
+
+        1. ``dry_run=true`` (the default) mutates nothing and returns the
+           current ``candidate_count`` and ``fingerprint`` — a digest over the
+           candidate doc IDs in stable order.
+        2. Echo both back with ``dry_run=false`` to commit. The backend re-reads
+           the candidate set under a write lock and refuses (409) when the set
+           changed in between, so a concurrent enqueue/delete is never silently
+           overwritten.
+
+        The commit marks every candidate other than ``primary_doc_id`` with
+        ``metadata.is_duplicate=true`` and ``original_doc_id=<primary>``. Content
+        is never deleted and the demoted rows keep their own status — they only
+        lose their claim on the canonical source, which is what makes the strict
+        resolver return a single primary afterwards.
+
+        Repeat safety: a committed repair leaves exactly one primary, so
+        replaying the SAME request 409s (its token is stale) while a fresh
+        dry-run → commit converges to a no-op. A repair that dies mid-way is
+        resumed the same way — the finished rows already express ``duplicate``
+        and the unfinished ones still resolve as a conflict; there is no repair
+        marker to reconcile.
+
+        Every call is audited: dry-runs at INFO, commits and refusals at WARNING,
+        with the caller's address and the operator-supplied identifiers.
+
+        Raises:
+            HTTPException: 409 when ``primary_doc_id`` is not a current primary
+                candidate or the CAS tokens are stale; 501 when the backend
+                cannot repair conflicts; 503 when storage is unavailable; 422
+                when a commit omits the CAS tokens.
+        """
+        actor = http_request.client.host if http_request.client else "unknown"
+        audit_key = safe_log_value(payload.canonical_source_key)
+        audit_primary = safe_log_value(payload.primary_doc_id)
+        action = "dry-run" if payload.dry_run else "COMMIT"
+        try:
+            result = await rag.doc_status.repair_source_conflict(
+                payload.canonical_source_key,
+                primary_doc_id=payload.primary_doc_id,
+                expected_candidate_count=(
+                    payload.expected_candidate_count
+                    if payload.expected_candidate_count is not None
+                    else 0
+                ),
+                expected_candidate_fingerprint=(
+                    payload.expected_candidate_fingerprint or ""
+                ),
+                dry_run=payload.dry_run,
+            )
+        except ValueError as not_a_candidate:
+            # The named primary is not currently a primary candidate: either a
+            # typo or a view that went stale. Same recovery either way — list the
+            # conflict again — so it is a state conflict, not a 400.
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {not_a_candidate}"
+            )
+            # Built from the (sanitized) request values rather than the storage
+            # message: the exception text is not guaranteed to be client-safe.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Document {audit_primary} is not a current primary candidate "
+                    f"for source '{audit_key}'; list the conflict again to see the "
+                    "current candidates."
+                ),
+            )
+        except SourceConflictRepairCASError as cas_error:
+            # Subclass of StorageControlPlaneError, so it MUST be caught first:
+            # the state here is known (the candidate set moved), which is a 409,
+            # not the parent's "state unknown" 503.
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {cas_error}"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The candidate set changed since the dry-run; re-run the "
+                    "dry-run and commit with the new count/fingerprint."
+                ),
+            )
+        except StorageCapabilityError as capability_error:
+            logger.warning(f"Source-conflict repair unsupported: {capability_error}")
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "The configured doc_status backend cannot repair source "
+                    "conflicts (no strict source resolution)."
+                ),
+            )
+        except (StorageControlPlaneError, StorageNotInitializedError) as storage_error:
+            logger.error(
+                f"[source-conflict repair] {action} FAILED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {storage_error}"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Document status storage is unavailable; retry once it is ready."
+                ),
+            )
+        except Exception as e:
+            logger.error(
+                f"[source-conflict repair] {action} ERRORED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {e}"
+            )
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+        audit_line = (
+            f"[source-conflict repair] {action} by {actor}: key='{audit_key}' "
+            f"primary={audit_primary} candidates={result.candidate_count} "
+            f"fingerprint={result.fingerprint} "
+            f"demoted_sample={list(result.demoted_sample_doc_ids)}"
+        )
+        if result.committed:
+            logger.warning(audit_line)
+        else:
+            logger.info(audit_line)
+
+        return SourceConflictRepairResponse(
+            canonical_source_key=result.canonical_source_key,
+            primary_doc_id=result.primary_doc_id,
+            candidate_count=result.candidate_count,
+            fingerprint=result.fingerprint,
+            demoted_sample_doc_ids=list(result.demoted_sample_doc_ids),
+            committed=result.committed,
+        )
 
     @router.post(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
