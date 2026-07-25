@@ -34,6 +34,7 @@ from lightrag.constants import (
     DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
     DEFAULT_QUEUE_STATS_STALE_TTL,
 )
+from lightrag import pipeline_metrics
 from lightrag.exceptions import (
     PipelineBackpressureError,
     PipelineNotInitializedError,
@@ -2266,6 +2267,10 @@ def _recovery_required_result(
 
 
 def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
+    if flag_key == "manual_freeze_requested":
+        # One chokepoint for every ingress path (enqueue reservation, last-line
+        # guard, scan fence), so the count cannot drift between them.
+        pipeline_metrics.increment(pipeline_metrics.FREEZE_REJECTS)
     try:
         return {
             "busy": PipelineReservationConflict.BUSY,
@@ -2689,6 +2694,7 @@ async def acquire_processing_reservation(
             # (busy=False — this acquire would have succeeded instead).
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             pipeline_ingress.request_auto_rescan()
+            pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
             return PipelineReservationResult(
                 acquired=False,
                 conflict=PipelineReservationConflict.BUSY,

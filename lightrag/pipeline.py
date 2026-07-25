@@ -67,6 +67,7 @@ from lightrag.kg.shared_storage import (
     run_to_completion,
     with_reservation_lock,
 )
+from lightrag import pipeline_metrics
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -287,6 +288,18 @@ def _call_source_file_resolver(
             parser_engine=parser_engine,
         )
     return resolver(source_file or file_path)
+
+
+def _rearm_auto_rescan(ingress: Any) -> None:
+    """Set the auto-rescan dirty flag and count the re-arm (LR2 Phase 6 item 3).
+
+    Every re-arm costs a later strict sweep, so the rate explains sweep load that
+    no upload accounts for. Counted here rather than inside the ingress because in
+    multiprocess mode the mailbox lives in the Manager process, where a counter
+    would be invisible to the worker answering /health.
+    """
+    ingress.request_auto_rescan()
+    pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
 
 
 def _normalize_scheduling_timestamp(value: Any) -> str:
@@ -1357,7 +1370,7 @@ class _PipelineMixin:
                         # the enqueue re-raises the storage error either way.
                         if not pipeline_status.get("busy"):
                             process_after_status_error = True
-                        ingress.request_auto_rescan()
+                        _rearm_auto_rescan(ingress)
                 except Exception as wake_error:
                     logger.error(
                         "Failed to wake document processing after enqueue "
@@ -1423,7 +1436,7 @@ class _PipelineMixin:
                 )
             except Exception as publish_error:
                 try:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                     logger.warning(
                         "Ingress document notification failed after a "
                         "successful enqueue; armed the auto-rescan flag "
@@ -1966,7 +1979,7 @@ class _PipelineMixin:
                     # degrades to next-explicit-trigger recovery.
                     if uncommitted_wakeup and ingress is not None:
                         try:
-                            ingress.request_auto_rescan()
+                            _rearm_auto_rescan(ingress)
                         except Exception as restore_error:
                             logger.error(
                                 "[pipeline] failed to restore the consumed "
@@ -2355,7 +2368,7 @@ class _PipelineMixin:
                                 # Arm the recovery signal so the skip is picked up
                                 # by the supervisor's next rescan even if this
                                 # feeder never otherwise reaches a boundary.
-                                ingress.request_auto_rescan()
+                                _rearm_auto_rescan(ingress)
                     reached = len(batch)  # every message reached a decision
                 except asyncio.CancelledError:
                     deferred.extend(batch[reached:])  # unprocessed tail → finally
@@ -3095,6 +3108,14 @@ class _PipelineMixin:
         so no double reset — LR2 §7.3 "为什么不需要 generation/checkpoint")."""
 
         def _enter(status):
+            # The freeze timestamp is wall clock because the freeze may have been
+            # taken by another process; this is the DRAIN_TO_IDLE window — the one
+            # an operator feels, since uploads are refused throughout it.
+            froze_at = status.get("manual_freeze_started_at")
+            if isinstance(froze_at, (int, float)) and froze_at > 0:
+                pipeline_metrics.observe(
+                    pipeline_metrics.MANUAL_DRAIN_SECONDS, time.time() - float(froze_at)
+                )
             status.update(
                 {
                     "manual_resetting": True,
@@ -3113,6 +3134,8 @@ class _PipelineMixin:
             return False
 
         total_reset = 0
+        pages = 0
+        reset_started = time.monotonic()
         cursor: CursorPosition = CURSOR_START
         while True:
             if not await self._still_freeze_owner(
@@ -3120,12 +3143,21 @@ class _PipelineMixin:
             ):
                 return False
             docs, cursor = await self._next_failed_page(cursor)
+            pages += 1
             if docs:
                 total_reset += await self._reset_failed_page(
                     docs, token, pipeline_status, pipeline_status_lock
                 )
             if cursor is CURSOR_END:
                 break
+
+        # The reset runs with no worker, so its duration is exactly how long the
+        # pipeline was held idle on purpose (LR2 Phase 6 item 3).
+        pipeline_metrics.observe(
+            pipeline_metrics.MANUAL_RESET_SECONDS, time.monotonic() - reset_started
+        )
+        pipeline_metrics.increment(pipeline_metrics.MANUAL_RESET_PAGES, pages)
+        pipeline_metrics.increment(pipeline_metrics.MANUAL_RESET_DOCS, total_reset)
 
         reset_message = (
             f"Manual retry {request_id[:8]}: reset {total_reset} FAILED "
@@ -3333,11 +3365,18 @@ class _PipelineMixin:
             )
             return docs, CURSOR_END
 
+        page_started = time.monotonic()
         page = await self.doc_status.get_docs_by_statuses_page(
             list(statuses),
             limit=page_size,
             position=position,
             strict=True,
+        )
+        # Timed around the keyset query alone (not the hydration below): a slow
+        # page here means the backend's (created_at, id) index, and that is the
+        # one thing the bounded sweep cannot work around.
+        pipeline_metrics.observe(
+            pipeline_metrics.SCHEDULING_PAGE_SECONDS, time.monotonic() - page_started
         )
         if not page.docs:
             # A fully-filtered page is not termination — the cursor still
@@ -3524,7 +3563,7 @@ class _PipelineMixin:
                 )
             except BaseException:
                 try:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                 except BaseException as compensation_error:
                     logger.warning(
                         "[pipeline] failed to arm auto-rescan after a paged "
@@ -3584,12 +3623,12 @@ class _PipelineMixin:
             # is cleared by the run's finally), so it needs no re-arm.
             try:
                 if step is PipelineNextStep.CONTINUE_AUTO:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                 elif drained:
                     self._republish_documents(ingress, drained, source="quiescence")
                     # Backstop for re-publishes swallowed above: the strict
                     # rescan behind the flag recovers those PENDING docs.
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
             except BaseException as compensation_error:
                 logger.warning(
                     "[pipeline] failed to restore the consumed wake-up signal "

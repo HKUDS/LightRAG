@@ -78,6 +78,7 @@ from lightrag.kg.shared_storage import (
     finalize_share_data,
     get_pipeline_ingress,
 )
+from lightrag import pipeline_metrics
 from lightrag.utils_pipeline import describe_doc_status_capabilities
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -2668,6 +2669,10 @@ def create_app(args):
                         pipeline_snapshot, ingress_counts
                     ),
                     "capabilities": _build_capability_status(rag),
+                    # Per-worker counters/durations for the paths the bounded
+                    # rework introduced (LR2 Phase 6 item 3); see
+                    # lightrag/pipeline_metrics.py for the boundary.
+                    "scheduling_metrics": pipeline_metrics.snapshot(),
                     "keyed_locks": keyed_lock_info,
                     "llm_queue_status": await rag.get_llm_queue_status(
                         include_base=True

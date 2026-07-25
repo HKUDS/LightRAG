@@ -34,6 +34,7 @@ from lightrag.constants import (
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_NATIVE,
 )
+from lightrag import pipeline_metrics
 from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
@@ -603,9 +604,17 @@ async def count_active_documents(doc_status: DocStatusStorage) -> int:
     on failure, and this helper does not soften that — a caller that cannot
     learn the count must refuse the request (503), never assume there is room.
     """
-    return await doc_status.count_docs_by_statuses(
-        list(ADMISSION_ACTIVE_STATUSES), strict=True
-    )
+    started = time.monotonic()
+    try:
+        return await doc_status.count_docs_by_statuses(
+            list(ADMISSION_ACTIVE_STATUSES), strict=True
+        )
+    finally:
+        # Recorded even on failure: a count that times out is exactly the case an
+        # operator needs to see when uploads start answering 503.
+        pipeline_metrics.observe(
+            pipeline_metrics.ACTIVE_COUNT_SECONDS, time.monotonic() - started
+        )
 
 
 # Sidecar item ids embed ``doc_hash`` (= doc_id without the ``doc-`` prefix),
