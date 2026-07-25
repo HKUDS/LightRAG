@@ -32,6 +32,12 @@ from lightrag.kg.pipeline_ingress import (
     PipelineIngressMessage,
     _PipelineIngressHubProxy,
 )
+from lightrag.kg.scan_job_store import (
+    AsyncioScanJobStore,
+    ManagerScanJobStore,
+    ScanJobStoreHub,
+    _ScanJobStoreHubProxy,
+)
 
 DEBUG_LOCKS = False
 
@@ -170,6 +176,12 @@ _namespace_data_cache: Optional[Dict[str, Any]] = None
 # an explicit workspace teardown, or test cleanup may drop it.
 _pipeline_ingress_local: Optional[Dict[str, Any]] = None
 _pipeline_ingress_hub: Optional[Any] = None
+
+# Scan job store: SAME topology as the ingress (per-process cache of
+# per-workspace views + one multiprocess-only server-side hub). A scan job
+# record belongs to the workspace, not to any LightRAG instance.
+_scan_job_store_local: Optional[Dict[str, Any]] = None
+_scan_job_store_hub: Optional[Any] = None
 
 # Rate limiting for acquire-failure warnings (fail-closed path).
 _ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
@@ -808,6 +820,11 @@ _LightRAGManager.register(
     "PipelineIngressHub",
     PipelineIngressHub,
     proxytype=_PipelineIngressHubProxy,
+)
+_LightRAGManager.register(
+    "ScanJobStoreHub",
+    ScanJobStoreHub,
+    proxytype=_ScanJobStoreHubProxy,
 )
 
 
@@ -1498,7 +1515,9 @@ def initialize_share_data(
         _queue_stats_ns_cache, \
         _namespace_data_cache, \
         _pipeline_ingress_local, \
-        _pipeline_ingress_hub
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if _initialized:
@@ -1521,6 +1540,7 @@ def initialize_share_data(
     _queue_stats_ns_cache = None
     _namespace_data_cache = {}
     _pipeline_ingress_local = {}
+    _scan_job_store_local = {}
     if _global_concurrency_limits:
         direct_log(
             f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
@@ -1545,6 +1565,9 @@ def initialize_share_data(
         # proxy and bind namespaces to it — no per-workspace proxy creation,
         # no client-held creation lock.
         _pipeline_ingress_hub = _manager.PipelineIngressHub()
+        # Server-side hub owning every workspace's scan job store (same pre-fork
+        # topology): workers inherit this one proxy and bind namespaces to it.
+        _scan_job_store_hub = _manager.ScanJobStoreHub()
 
         _storage_keyed_lock = KeyedUnifiedLock()
 
@@ -1567,6 +1590,7 @@ def initialize_share_data(
         _init_flags = {}
         _update_flags = {}
         _pipeline_ingress_hub = None  # multiprocess-only server-side hub
+        _scan_job_store_hub = None  # multiprocess-only server-side hub
         _async_locks = None  # No need for async locks in single process mode
 
         _storage_keyed_lock = KeyedUnifiedLock()
@@ -1778,6 +1802,42 @@ async def finalize_pipeline_ingress(workspace: str | None = None) -> None:
         return
     final_namespace = get_final_namespace("pipeline_ingress", workspace)
     _pipeline_ingress_local.pop(final_namespace, None)
+
+
+def get_scan_job_store(workspace: str | None = None):
+    """Get (or lazily create) the scan job store view for ``workspace``.
+
+    Same topology as :func:`get_pipeline_ingress` but LOOP-AGNOSTIC (the store
+    is a plain ``threading.Lock``-guarded object with no asyncio primitives and
+    no blocking waits, so it needs no loop-migration): single-process a
+    per-process :class:`AsyncioScanJobStore`, multiprocess a
+    :class:`ManagerScanJobStore` view binding the namespace to the one
+    server-side hub. Synchronous by design (no RPC needs an event loop)."""
+    if _scan_job_store_local is None:
+        raise ValueError("Shared dictionaries not initialized")
+
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    store = _scan_job_store_local.get(final_namespace)
+    if store is None:
+        if _is_multiprocess and _scan_job_store_hub is not None:
+            created: Any = ManagerScanJobStore(_scan_job_store_hub, final_namespace)
+        else:
+            created = AsyncioScanJobStore(final_namespace)
+        store = _scan_job_store_local.setdefault(final_namespace, created)
+    return store
+
+
+def finalize_scan_job_store(workspace: str | None = None) -> None:
+    """Drop the workspace scan job store from THIS process's registry.
+
+    Teardown/tests ONLY (like :func:`finalize_pipeline_ingress`). Single-process
+    fully drops the instance; multiprocess drops only the local view — the
+    server-side store persists in the hub until :func:`finalize_share_data` or a
+    destructive workspace wipe (``store.clear()``). Idempotent."""
+    if _scan_job_store_local is None:
+        return
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    _scan_job_store_local.pop(final_namespace, None)
 
 
 def _debug_log_failure(message: str, exc: Exception) -> None:
@@ -3297,7 +3357,9 @@ def finalize_share_data():
         _queue_stats_ns_cache, \
         _namespace_data_cache, \
         _pipeline_ingress_local, \
-        _pipeline_ingress_hub
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if not _initialized:
@@ -3369,6 +3431,8 @@ def finalize_share_data():
     _namespace_data_cache = None
     _pipeline_ingress_local = None
     _pipeline_ingress_hub = None
+    _scan_job_store_local = None
+    _scan_job_store_hub = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 
