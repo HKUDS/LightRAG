@@ -216,9 +216,9 @@ async def test_null_bucket_cursor_resumes_through_null_rows():
         strict=True,
     )
     sql, params, _ = db.calls[0]
-    assert "(created_at IS NULL AND id > $3) OR created_at IS NOT NULL" in sql
+    assert "(created_at IS NULL AND id > $2) OR created_at IS NOT NULL" in sql
     assert "ORDER BY created_at ASC NULLS FIRST, id ASC" in sql
-    assert params[2] == "doc-n"
+    assert params[1] == "doc-n"
 
 
 async def test_string_cursor_excludes_consumed_null_bucket():
@@ -275,11 +275,19 @@ async def test_page_sql_keyset_shape_without_cursor():
     sql, params, multirows = db.calls[0]
     assert multirows is True
     assert "ORDER BY created_at ASC NULLS FIRST, id ASC" in sql
-    assert "status = ANY($2)" in sql
+    # ONE BRANCH PER STATUS with equality, not `status = ANY(...)`: a ScalarArrayOp
+    # cannot produce ordered output, so the single-query form made the planner
+    # Seq Scan the table and sort it on every page (see
+    # tests/kg/test_scheduling_page_plans.py, which EXPLAINs this for real).
+    assert "status = ANY(" not in sql
+    assert sql.count("status=$") == 2
+    assert " UNION ALL " in sql
     assert "(created_at, id) >" not in sql
     # The removed failure-generation cohort predicate must never reappear.
     assert "failure_generation" not in sql
-    assert params == ["ws", ["pending", "failed"], 10]
+    # $1 workspace, $2 limit (shared by every branch and the wrapper), then one
+    # parameter per status.
+    assert params == ["ws", 10, "pending", "failed"]
 
 
 async def test_page_sql_with_cursor():
@@ -293,12 +301,16 @@ async def test_page_sql_with_cursor():
         strict=True,
     )
     sql, params, _ = db.calls[0]
-    assert "(created_at, id) > ($3::timestamp, $4)" in sql
-    assert "ORDER BY created_at ASC NULLS FIRST, id ASC LIMIT $5" in sql
+    # The keyset predicate is built once and repeated verbatim in every branch,
+    # so the cursor parameters come before the per-status ones.
+    assert "(created_at, id) > ($2::timestamp, $3)" in sql
+    assert sql.count("(created_at, id) > ($2::timestamp, $3)") == 2
+    assert "ORDER BY created_at ASC NULLS FIRST, id ASC LIMIT $4" in sql
     assert "failure_generation" not in sql
-    assert params[2] == _TS  # decoded back to the naive-UTC stored form
-    assert params[3] == "doc-1"
-    assert params[4] == 10
+    assert params[1] == _TS  # decoded back to the naive-UTC stored form
+    assert params[2] == "doc-1"
+    assert params[3] == 10  # the shared limit
+    assert params[4:] == ["pending", "failed"]
 
 
 async def test_page_full_returns_cursor_after_last_returned_row():
