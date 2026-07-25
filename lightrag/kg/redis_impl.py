@@ -1230,9 +1230,18 @@ class RedisDocStatusStorage(DocStatusStorage):
     @staticmethod
     def _zset_member(row: dict[str, Any], doc_id: str) -> str:
         """``"{created_at}|{doc_id}"`` — ISO-8601 lexicographic order makes
-        member order the (created_at, id) keyset order. A missing/non-str
-        created_at sorts deterministically first as ""; '|' cannot occur in
-        ISO timestamps so the split is unambiguous."""
+        member order the (created_at, id) keyset order. ``'|'`` cannot occur in
+        ISO timestamps so the split is unambiguous.
+
+        A missing/non-str created_at degrades to ``""``, which puts the member
+        LAST, not first: ``'|'`` (0x7C) sorts after every digit an ISO year can
+        start with. That ordering is not load-bearing — such a row cannot build a
+        ``DocSchedulingRecord`` at all, so a strict page raises on it and a
+        relaxed page consumes-and-skips it (pinned for all five backends in
+        tests/kg/test_doc_status_scheduling_contract.py). Do not "fix" the
+        position by changing this encoding: the ZSET is only rebuilt when absent,
+        so a live index would end up holding both encodings and a rewrite would
+        fail to ZREM the stale member, listing the row twice."""
         created = row.get("created_at")
         return f"{created if isinstance(created, str) else ''}|{doc_id}"
 

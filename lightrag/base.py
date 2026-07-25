@@ -1283,10 +1283,16 @@ class DocStatusStorage(BaseKVStorage, ABC):
         * **Immutable sort key**: ``created_at`` is written once at record
           creation and preserved by every later transition
           (``update_doc_status_fields`` refuses it) so a record can never move
-          underneath a sweep. A missing/NULL ``created_at`` sorts FIRST (an
-          empty-string / NULL bucket) and stays reachable across page
-          boundaries via bucket-aware resume — it must never become
-          permanently unreachable behind a real-timestamp cursor.
+          underneath a sweep. Where the backend indexes a missing/NULL
+          ``created_at`` at all, that bucket must stay reachable across page
+          boundaries via bucket-aware resume rather than becoming permanently
+          unreachable behind a real-timestamp cursor. Note that such a row can
+          never be RETURNED: ``DocSchedulingRecord`` requires ``created_at``, so
+          a strict page raises on it (complete-or-raise) and a relaxed page
+          consumes-and-skips it so the cursor still advances. Only legacy rows
+          and external edits reach that state — every write path stamps the
+          field. Pinned for all five backends in
+          ``tests/kg/test_doc_status_scheduling_contract.py``.
         * **Consumed-position advance**: ``next_position`` advances past the
           last CONSUMED underlying record — records returned to the caller
           plus records read and dropped by filtering are consumed; a record
