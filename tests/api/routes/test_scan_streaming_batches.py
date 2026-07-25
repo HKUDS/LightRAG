@@ -22,6 +22,7 @@ sys.argv = [sys.argv[0]]
 _document_routes = importlib.import_module("lightrag.api.routers.document_routes")
 sys.argv = _original_argv
 
+from lightrag.base import SourceAbsent  # noqa: E402
 from lightrag.constants import PARSED_DIR_NAME  # noqa: E402
 
 DocumentManager = _document_routes.DocumentManager
@@ -39,21 +40,28 @@ def _ensure_shared_storage_initialized():
 
 
 class _NoRowsDocStatus:
-    """Every canonical basename is new (SourceAbsent-equivalent)."""
+    """Every canonical source key resolves to SourceAbsent (all files are new)."""
 
     def __init__(self):
         self.lookups = []
 
-    async def get_doc_by_file_basename(self, basename):
-        self.lookups.append(basename)
-        return None
+    async def resolve_doc_source_strict(self, canonical_source_key):
+        self.lookups.append(canonical_source_key)
+        return SourceAbsent()
+
+    async def get_full_docs_by_ids(self, doc_ids, *, strict=False):
+        return {}
 
 
 class _StreamRag:
     def __init__(self):
         self.workspace = f"scanstream-{uuid4().hex[:8]}"
         self.doc_status = _NoRowsDocStatus()
-        self.full_docs = SimpleNamespace(get_by_id=self._missing)
+        self.full_docs = SimpleNamespace(
+            get_by_id=self._missing,
+            get_by_id_strict=self._missing,
+            supports_strict_point_reads=True,
+        )
         self.process_calls = 0
 
     async def _missing(self, _doc_id):

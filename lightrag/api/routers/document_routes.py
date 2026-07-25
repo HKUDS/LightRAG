@@ -6,6 +6,8 @@ import asyncio
 import re
 import shutil
 import time
+from dataclasses import dataclass
+from enum import Enum
 from uuid import uuid4
 from lightrag.utils import (
     logger,
@@ -31,7 +33,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from lightrag import LightRAG
 from lightrag.api.utils_api import internal_server_error
-from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.base import (
+    DocProcessingStatus,
+    DocStatus,
+    SourceAbsent,
+    SourceConflict,
+    SourceUnique,
+)
 from lightrag.constants import (
     DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     FILE_EXTRACTION_SUMMARY_PREFIX,
@@ -64,6 +72,7 @@ from lightrag.utils import (
     generate_track_id,
     move_file_to_parsed_dir,
 )
+from lightrag.utils_pipeline import read_source_file_basename
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -2440,6 +2449,170 @@ class _ScanJobReporter:
             return
 
 
+class _ScanFileClass(str, Enum):
+    """The seven mutually exclusive scan classification exits (LR2 §8.3).
+
+    Values double as the scan job's counter keys, so a ``/scan/status`` reader
+    sees the taxonomy verbatim."""
+
+    CLAIMED_NEW = "claimed_new"
+    SOURCE_CONFLICT = "source_conflict"
+    PROCESSED = "processed"
+    STALE_STUB = "stale_stub"
+    SOURCE_IDENTITY_UNKNOWN = "source_identity_unknown"
+    RESUME_SAME_PHYSICAL_SOURCE = "resume_same_physical_source"
+    ALIAS_DUPLICATE = "alias_duplicate"
+
+
+@dataclass(frozen=True)
+class _ScanFileDecision:
+    """One file's classification plus what the caller needs to act on it."""
+
+    kind: _ScanFileClass
+    doc_id: str | None = None
+    detail: str = ""
+    """Operator-facing reason, recorded as a bounded job sample when set."""
+
+
+async def _confirm_full_docs_absent(rag: LightRAG, doc_id: str) -> bool | None:
+    """Is the document's ``full_docs`` content CONFIRMED absent? (LR2 §8.3.D)
+
+    Returns ``True`` (positively absent — the FAILED row is an unprocessable
+    stub), ``False`` (content exists), or ``None`` when absence cannot be
+    confirmed: the backend has no strict point read, or the read failed. Only
+    ``True`` may drive the destructive stub deletion — a best-effort miss
+    (``get_by_id`` swallowing a transport error) would delete the row of a
+    document whose content actually exists.
+    """
+    store = rag.full_docs
+    if not getattr(store, "supports_strict_point_reads", False):
+        logger.warning(
+            f"{type(store).__name__} has no strict point reads; keeping the "
+            f"FAILED row for {doc_id} instead of trusting an unconfirmed miss"
+        )
+        return None
+    try:
+        return await store.get_by_id_strict(doc_id) is None
+    except Exception as read_error:
+        logger.warning(
+            f"Strict full_docs point read failed for {doc_id}; keeping the "
+            f"FAILED row: {read_error}"
+        )
+        return None
+
+
+async def _row_source_file(rag: LightRAG, doc_id: str) -> str | None:
+    """Read ``metadata.source_file`` — the ORIGINAL physical basename (hint
+    included) that created this row — hydrating exactly one record.
+
+    ``None`` means the row carries no source identity (custom-ID / legacy /
+    non-scan-origin inserts) or vanished between resolution and hydration; per
+    §8.3.E that is NOT evidence of a different physical file. A strict
+    hydration failure propagates: identity decisions must fail closed.
+    """
+    rows = await rag.doc_status.get_full_docs_by_ids([doc_id], strict=True)
+    row = rows.get(doc_id)
+    if row is None:
+        return None
+    return read_source_file_basename(getattr(row, "metadata", None) or {})
+
+
+async def classify_scan_file(
+    rag: LightRAG, file_path: Path, canonical_source_key: str
+) -> _ScanFileDecision:
+    """Classify one physical file into the seven §8.3 exits.
+
+    Identity is resolved with ``resolve_doc_source_strict``: the doc ID is the
+    identity every later operation uses, and the canonical basename only LOCATES
+    candidates — it is not assumed unique (custom-ID inserts, legacy ids and
+    historical collisions can share one), which is why two primary candidates
+    are a conflict to repair rather than a row to overwrite.
+
+    Read-only by contract: every destructive consequence (enqueue, archive, stub
+    deletion) is performed by the caller, so a decision can be logged, counted
+    and sampled before anything on disk or in storage changes. The mutually
+    exclusive order is the document's:
+
+    1. ``SourceAbsent`` → CLAIMED_NEW
+    2. ``SourceConflict`` → SOURCE_CONFLICT (never enqueue/delete/archive)
+    3. PROCESSED → PROCESSED (archive the input file)
+    4. FAILED with CONFIRMED-absent content → STALE_STUB (delete, retry as new)
+    5. no ``metadata.source_file`` → SOURCE_IDENTITY_UNKNOWN (keep, warn)
+    6. physical basename == ``source_file`` → RESUME_SAME_PHYSICAL_SOURCE
+    7. otherwise → ALIAS_DUPLICATE (archive the alias, keep the row)
+    """
+    if canonical_source_key == UNKNOWN_FILE_SOURCE:
+        # No usable canonical identity to resolve against (nothing to collide
+        # with either); the enqueue path reports its own error document if the
+        # name turns out to be unusable.
+        return _ScanFileDecision(_ScanFileClass.CLAIMED_NEW)
+
+    resolution = await rag.doc_status.resolve_doc_source_strict(canonical_source_key)
+
+    if isinstance(resolution, SourceAbsent):
+        return _ScanFileDecision(_ScanFileClass.CLAIMED_NEW)
+
+    if isinstance(resolution, SourceConflict):
+        count = resolution.candidate_count
+        return _ScanFileDecision(
+            _ScanFileClass.SOURCE_CONFLICT,
+            detail=(
+                f"{count if count is not None else 'Multiple'} primary documents "
+                f"share canonical source '{canonical_source_key}'; repair them by "
+                "doc id before this file can be classified (sample doc ids: "
+                f"{', '.join(resolution.sample_doc_ids) or 'unavailable'})"
+            ),
+        )
+
+    if not isinstance(resolution, SourceUnique):  # pragma: no cover - typed union
+        raise TypeError(
+            f"resolve_doc_source_strict returned {type(resolution).__name__}; "
+            "expected SourceAbsent | SourceUnique | SourceConflict"
+        )
+
+    doc_id = resolution.doc_id
+    status_value = get_doc_status_value(resolution.doc)
+
+    if status_value == DocStatus.PROCESSED.value:
+        return _ScanFileDecision(_ScanFileClass.PROCESSED, doc_id=doc_id)
+
+    if status_value == DocStatus.FAILED.value:
+        # An extraction-error stub (recorded by apipeline_enqueue_error_documents)
+        # never wrote full_docs, and the consistency validator preserves it for
+        # manual review — the resume path can never advance it. A re-scan of a
+        # fixed file must therefore drop the stub and start over. Only a
+        # CONFIRMED absence may do that; an unconfirmed one falls through to the
+        # non-destructive exits below.
+        if await _confirm_full_docs_absent(rag, doc_id) is True:
+            return _ScanFileDecision(_ScanFileClass.STALE_STUB, doc_id=doc_id)
+
+    source_file = await _row_source_file(rag, doc_id)
+    if source_file is None:
+        return _ScanFileDecision(
+            _ScanFileClass.SOURCE_IDENTITY_UNKNOWN,
+            doc_id=doc_id,
+            detail=(
+                f"Document {doc_id} (status {status_value}) shares canonical "
+                f"source '{canonical_source_key}' but records no source file, so "
+                f"{file_path.name} cannot be proven to be a different physical "
+                "file; keeping it untouched"
+            ),
+        )
+    if source_file == file_path.name:
+        return _ScanFileDecision(
+            _ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE, doc_id=doc_id
+        )
+    return _ScanFileDecision(
+        _ScanFileClass.ALIAS_DUPLICATE,
+        doc_id=doc_id,
+        detail=(
+            f"Archiving alias {file_path.name}: canonical source "
+            f"'{canonical_source_key}' already belongs to document {doc_id} "
+            f"(source file '{source_file}', status {status_value})"
+        ),
+    )
+
+
 def _scan_enqueue_batch_size() -> int:
     """How many claimed files one streaming scan batch holds (LR2 §8.2).
 
@@ -2664,16 +2837,16 @@ async def run_scanning_process(
             # Publish this batch's counters/samples (also renews the job lease).
             reporter.flush()
 
-        async def _archive_alias(file_path: Path, warning: str) -> None:
-            """Loser of a canonical claim: archived, never deleted (LR2 §8.5)."""
+        async def _archive(file_path: Path, warning: str, counter_key: str) -> None:
+            """Archive an input file (never delete it) and record the reason."""
             await record_scan_warning(rag, warning)
-            reporter.count("alias_duplicate")
+            reporter.count(counter_key)
             reporter.sample("warning", warning)
             try:
                 await move_file_to_parsed_dir(file_path)
             except Exception as move_error:
                 archive_error = (
-                    f"Failed to move duplicate scan file {file_path.name} "
+                    f"Failed to move scan file {file_path.name} "
                     f"to {PARSED_DIR_NAME}: {move_error}"
                 )
                 logger.error(archive_error)
@@ -2681,26 +2854,28 @@ async def run_scanning_process(
                 reporter.sample("error", archive_error)
 
         async def _claim_new_file(
-            file_path: Path, basename: str, counter_key: str
+            file_path: Path, canonical_key: str, counter_key: str
         ) -> None:
             """Add a file to the current batch under its canonical claim (§8.4).
 
             The first physical file to claim a canonical key wins and is enqueued;
             a later variant in the SAME batch is an alias duplicate and is
-            archived. ``unknown_source`` names carry no usable identity, so they
-            are batched without claiming anything.
+            archived — the resolver cannot see a row that has not been written
+            yet. ``unknown_source`` names carry no usable identity, so they are
+            batched without claiming anything.
             """
-            if basename != UNKNOWN_FILE_SOURCE:
-                claimer = batch_claims.get(basename)
+            if canonical_key != UNKNOWN_FILE_SOURCE:
+                claimer = batch_claims.get(canonical_key)
                 if claimer is not None:
-                    await _archive_alias(
+                    await _archive(
                         file_path,
                         "Skipping duplicate file in scan batch: "
                         f"{file_path.name} duplicates {claimer} "
-                        f"(canonical: {basename})",
+                        f"(canonical: {canonical_key})",
+                        _ScanFileClass.ALIAS_DUPLICATE.value,
                     )
                     return
-                batch_claims[basename] = file_path.name
+                batch_claims[canonical_key] = file_path.name
             batch.append(file_path)
             reporter.count(counter_key)
             if len(batch) >= batch_size:
@@ -2713,91 +2888,95 @@ async def run_scanning_process(
             # reaped to ABANDONED under a live owner.
             reporter.renew()
             filename = file_path.name
-            # Inline the canonical-basename lookup so we keep both the doc_id and
-            # the data: the FAILED-without-full_docs sub-case below needs the
-            # doc_id to delete the stale stub.
-            basename = normalize_file_path(str(file_path))
-            existing_match = (
-                await rag.doc_status.get_doc_by_file_basename(basename)
-                if basename != UNKNOWN_FILE_SOURCE
-                else None
-            )
-            existing_doc_id, existing_doc_data = (
-                existing_match if existing_match else (None, None)
-            )
+            canonical_key = normalize_file_path(str(file_path))
+            decision = await classify_scan_file(rag, file_path, canonical_key)
 
-            if (
-                existing_doc_data
-                and get_doc_status_value(existing_doc_data) == DocStatus.PROCESSED.value
-            ):
-                # File is already PROCESSED, skip it with warning and archive it.
-                processed_count += 1
-                warning = f"Skipping already processed file: {filename}"
-                await record_scan_warning(rag, warning)
-                reporter.count("processed")
-                reporter.sample("processed", filename)
-                try:
-                    await move_file_to_parsed_dir(file_path)
-                except Exception as move_error:
-                    archive_error = (
-                        f"Failed to move already processed file {filename} "
-                        f"to {PARSED_DIR_NAME}: {move_error}"
-                    )
-                    logger.error(archive_error)
-                    reporter.count("errors")
-                    reporter.sample("error", archive_error)
-                continue
-
-            if existing_doc_data:
-                # FAILED rows recorded by apipeline_enqueue_error_documents never
-                # write a full_docs entry — extraction blew up before any content
-                # was stored. _validate_and_fix_document_consistency preserves them
-                # for manual review and removes them from the processing list, so
-                # the resume path can never advance them. When the user fixes the
-                # file and re-scans we want a real retry: drop the stale stub and
-                # treat the file as new so the standard enqueue path re-extracts.
-                status_value = get_doc_status_value(existing_doc_data)
-                if status_value == DocStatus.FAILED.value:
-                    full_doc = await rag.full_docs.get_by_id(existing_doc_id)
-                    if full_doc is None:
-                        try:
-                            await rag.doc_status.delete([existing_doc_id])
-                        except Exception as delete_error:
-                            stub_error = (
-                                "Failed to delete stale failed-extraction "
-                                f"doc_status stub {existing_doc_id} "
-                                f"({filename}): {delete_error}"
-                            )
-                            logger.error(stub_error)
-                            reporter.count("errors")
-                            reporter.sample("error", stub_error)
-                            # Fall through to resume — at worst the row remains
-                            # preserved (current behaviour) rather than re-enqueued.
-                            resumed_count += 1
-                            reporter.count("resume_same_physical_source")
-                            continue
-                        logger.info(
-                            "Retrying previously failed extraction; "
-                            f"removed stale doc_status stub: {filename} "
-                            f"(doc_id: {existing_doc_id})"
-                        )
-                        await _claim_new_file(file_path, basename, "stale_stub")
-                        continue
-                # Resume targets must NOT go through the enqueue path:
-                # apipeline_enqueue_documents would treat the same canonical name
-                # as a duplicate (returning None) and pipeline_enqueue_file would
-                # then archive the source as if it were one — corrupting
-                # pending-parse cases that still need the source on disk. The
-                # pipeline's resume logic advances them from their existing row.
-                logger.info(
-                    "Resuming previously unfinished file from scan: "
-                    f"{filename} (Status: {status_value})"
+            if decision.kind is _ScanFileClass.CLAIMED_NEW:
+                await _claim_new_file(
+                    file_path, canonical_key, _ScanFileClass.CLAIMED_NEW.value
                 )
-                resumed_count += 1
-                reporter.count("resume_same_physical_source")
                 continue
 
-            await _claim_new_file(file_path, basename, "claimed_new")
+            if decision.kind is _ScanFileClass.SOURCE_CONFLICT:
+                # §8.3.B: no enqueue, no doc_status delete, NO archive — the file
+                # stays put and an operator repairs the historical collision by
+                # doc id (the /documents/scan status report carries the bounded
+                # candidate sample).
+                await record_scan_warning(rag, decision.detail)
+                reporter.count(_ScanFileClass.SOURCE_CONFLICT.value)
+                reporter.sample("warning", decision.detail)
+                continue
+
+            if decision.kind is _ScanFileClass.PROCESSED:
+                processed_count += 1
+                await _archive(
+                    file_path,
+                    f"Skipping already processed file: {filename}",
+                    _ScanFileClass.PROCESSED.value,
+                )
+                reporter.sample("processed", filename)
+                continue
+
+            if decision.kind is _ScanFileClass.STALE_STUB:
+                # §8.3.D: content confirmed absent, so this FAILED row can never
+                # be resumed — drop it and retry the (presumably fixed) file as
+                # new. A failed delete keeps the row: preserved-for-review is the
+                # safe side of that error.
+                try:
+                    await rag.doc_status.delete([decision.doc_id])
+                except Exception as delete_error:
+                    stub_error = (
+                        "Failed to delete stale failed-extraction doc_status stub "
+                        f"{decision.doc_id} ({filename}): {delete_error}"
+                    )
+                    logger.error(stub_error)
+                    reporter.count("errors")
+                    reporter.sample("error", stub_error)
+                    resumed_count += 1
+                    reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+                    continue
+                logger.info(
+                    "Retrying previously failed extraction; removed stale "
+                    f"doc_status stub: {filename} (doc_id: {decision.doc_id})"
+                )
+                await _claim_new_file(
+                    file_path, canonical_key, _ScanFileClass.STALE_STUB.value
+                )
+                continue
+
+            if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:
+                # §8.3.E: a missing ``source_file`` is NOT evidence of a different
+                # physical file, so neither enqueue nor archive — keep both the
+                # file and the row, and surface a bounded warning.
+                await record_scan_warning(rag, decision.detail)
+                reporter.count(_ScanFileClass.SOURCE_IDENTITY_UNKNOWN.value)
+                reporter.sample("warning", decision.detail)
+                continue
+
+            if decision.kind is _ScanFileClass.ALIAS_DUPLICATE:
+                # §8.3.G: same canonical key, DIFFERENT physical file. Archiving
+                # it (rather than enqueuing) is what keeps the alias from minting
+                # a ``dup-*`` FAILED row.
+                await _archive(
+                    file_path,
+                    decision.detail,
+                    _ScanFileClass.ALIAS_DUPLICATE.value,
+                )
+                continue
+
+            # §8.3.F RESUME_SAME_PHYSICAL_SOURCE: the same physical file behind an
+            # unfinished row. It must NOT go through the enqueue path —
+            # apipeline_enqueue_documents would treat the canonical name as a
+            # duplicate (returning None) and pipeline_enqueue_file would archive
+            # the source as if it were one, corrupting pending-parse cases that
+            # still need it on disk. The pipeline's resume logic advances it from
+            # its existing row instead.
+            logger.info(
+                f"Resuming previously unfinished file from scan: {filename} "
+                f"(doc_id: {decision.doc_id})"
+            )
+            resumed_count += 1
+            reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
 
         # Tail batch (fewer than ``batch_size`` files).
         await _flush_batch()

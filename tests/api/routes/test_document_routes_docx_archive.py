@@ -22,6 +22,11 @@ sys.argv = _original_argv
 
 DocStatus = _base.DocStatus
 DeletionResult = _base.DeletionResult
+DocProcessingStatus = _base.DocProcessingStatus
+DocSchedulingRecord = _base.DocSchedulingRecord
+SourceAbsent = _base.SourceAbsent
+SourceConflict = _base.SourceConflict
+SourceUnique = _base.SourceUnique
 FULL_DOCS_FORMAT_LIGHTRAG = _constants.FULL_DOCS_FORMAT_LIGHTRAG
 FULL_DOCS_FORMAT_PENDING_PARSE = _constants.FULL_DOCS_FORMAT_PENDING_PARSE
 PARSED_DIR_NAME = _constants.PARSED_DIR_NAME
@@ -160,6 +165,15 @@ class _DuplicateEnqueueRag(_FakeRag):
 
 
 class _ScanDocStatus:
+    """doc_status double implementing the typed source-resolution contract.
+
+    Rows are keyed by the string that doubles as their doc id; a canonical source
+    key matches a row when it equals that key's basename. Unless a fixture pins
+    ``metadata`` explicitly, a row is treated as scan/upload-origin — those always
+    record the physical basename that created them in ``metadata.source_file``,
+    which is what tells a resumed file apart from an alias (LR2 §8.3.E/F/G).
+    """
+
     def __init__(self, docs_by_path):
         self.docs_by_path = docs_by_path
         self.deleted_ids: list[str] = []
@@ -168,12 +182,68 @@ class _ScanDocStatus:
         return self.docs_by_path.get(file_path)
 
     async def get_doc_by_file_basename(self, basename):
-        from pathlib import Path as _Path
-
+        # Still the upload path's duplicate check (the SCAN moved to the typed
+        # resolver below); a single primary row per basename is all it models.
         for stored_path, doc in self.docs_by_path.items():
-            if _Path(stored_path).name == basename:
+            if Path(stored_path).name == basename:
                 return stored_path, doc
         return None
+
+    def _metadata(self, doc_id, row):
+        metadata = row.get("metadata")
+        if metadata is None:
+            return {"source_file": Path(doc_id).name}
+        return metadata
+
+    def _status(self, row):
+        status = row.get("status")
+        return status if isinstance(status, DocStatus) else DocStatus(status)
+
+    async def resolve_doc_source_strict(self, canonical_source_key):
+        candidates = [
+            (doc_id, row)
+            for doc_id, row in self.docs_by_path.items()
+            if Path(doc_id).name == canonical_source_key
+            and not (self._metadata(doc_id, row) or {}).get("is_duplicate")
+        ]
+        if not candidates:
+            return SourceAbsent()
+        if len(candidates) > 1:
+            return SourceConflict(
+                candidate_count=len(candidates),
+                sample_doc_ids=tuple(doc_id for doc_id, _ in candidates[:2]),
+            )
+        doc_id, row = candidates[0]
+        return SourceUnique(
+            doc_id=doc_id,
+            doc=DocSchedulingRecord(
+                id=doc_id,
+                status=self._status(row),
+                created_at=row.get("created_at", ""),
+                updated_at=row.get("updated_at", ""),
+                file_path=row.get("file_path") or Path(doc_id).name,
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=False,
+            ),
+        )
+
+    async def get_full_docs_by_ids(self, doc_ids, *, strict=False):
+        hydrated = {}
+        for doc_id in doc_ids:
+            row = self.docs_by_path.get(doc_id)
+            if row is None:
+                continue
+            hydrated[doc_id] = DocProcessingStatus(
+                content_summary=row.get("content_summary", ""),
+                content_length=row.get("content_length", 0),
+                file_path=row.get("file_path") or Path(doc_id).name,
+                status=self._status(row),
+                created_at=row.get("created_at", ""),
+                updated_at=row.get("updated_at", ""),
+                track_id=row.get("track_id"),
+                metadata=self._metadata(doc_id, row),
+            )
+        return hydrated
 
     async def delete(self, ids):
         for doc_id in ids:
@@ -184,16 +254,22 @@ class _ScanDocStatus:
 class _ScanFullDocs:
     """Minimal full_docs double for run_scanning_process.
 
-    The scan now consults ``full_docs.get_by_id`` to distinguish a
-    resumable FAILED row (content was stored, only a downstream step
-    failed) from an extraction-error stub recorded by
-    ``apipeline_enqueue_error_documents`` (no full_docs entry exists).
+    The scan distinguishes a resumable FAILED row (content was stored, only a
+    downstream step failed) from an extraction-error stub recorded by
+    ``apipeline_enqueue_error_documents`` (no full_docs entry) — and per LR2
+    §8.3.D only a STRICT point read may drive that destructive decision, so this
+    double declares the capability.
     """
+
+    supports_strict_point_reads = True
 
     def __init__(self, docs_by_id):
         self.docs_by_id = docs_by_id
 
     async def get_by_id(self, doc_id):
+        return self.docs_by_id.get(doc_id)
+
+    async def get_by_id_strict(self, doc_id):
         return self.docs_by_id.get(doc_id)
 
 
