@@ -2342,6 +2342,8 @@ async def acquire_reservation(
     owner_kind: Optional[str] = None,
     flags: Dict[str, Any],
     reject_when,
+    pipeline_ingress: Any = None,
+    refuse_when_manual_pending: bool = False,
 ) -> PipelineReservationResult:
     """Atomically take a single-holder reservation.
 
@@ -2352,11 +2354,27 @@ async def acquire_reservation(
     token or an owner record dict; ``owner_kind`` converts a token into a process
     identity record inside this shared coordination layer.
 
+    ``refuse_when_manual_pending`` (``/scan`` only, LR2 §8.1) additionally
+    refuses while ANY un-ACKed sticky manual retry request sits in the mailbox:
+    a scan is itself a manual retry (it publishes its own intent and runs the
+    exclusive FAILED reset under ``scanning_exclusive``), so granting it while an
+    earlier request is queued would both jump the manual FIFO and deadlock that
+    request's run — the scan fence refuses every processing reservation. The peek
+    happens in the SAME critical section as the flag checks (one mailbox call, no
+    storage query, exactly like the auto-rescan arm in
+    :func:`acquire_processing_reservation`), so a request published concurrently
+    is either seen here or lands after the fence is up. ``pipeline_ingress`` MUST
+    be resolved by the caller beforehand — never lazily under the lock.
+
     The caller MUST have entered its ``try`` before calling this so a cancel at
     the lock exit still runs the ``finally`` that releases ``owner`` by token.
     """
     if owner_kind is not None:
         owner = make_owner_record(str(owner), owner_kind)
+    if refuse_when_manual_pending and pipeline_ingress is None:
+        raise ValueError(
+            "refuse_when_manual_pending requires a pre-resolved pipeline_ingress"
+        )
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
@@ -2371,6 +2389,23 @@ async def acquire_reservation(
                     acquired=False,
                     conflict=_conflict_for_status_flag(flag_key),
                     message=reason,
+                    snapshot=snapshot,
+                )
+        if refuse_when_manual_pending:
+            # Cheapest checks first: the flags above catch a manual retry that is
+            # already draining (it holds ``busy``); this catches one still queued.
+            pending_manual = pipeline_ingress.peek_next_manual_retry()
+            if pending_manual is not None:
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=PipelineReservationConflict.MANUAL_FREEZE,
+                    message=(
+                        "An earlier manual retry request "
+                        f"({pending_manual.request_id[:8]}) is still queued. A scan "
+                        "must not jump the manual retry FIFO — retry once it has "
+                        "been served."
+                    ),
                     snapshot=snapshot,
                 )
         updates = dict(flags)
@@ -2459,6 +2494,7 @@ async def acquire_processing_reservation(
     already_held: bool,
     pipeline_ingress,
     flags: Mapping[str, Any],
+    scan_reset_owner_token: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Acquire/take over the single processing slot from one proxy snapshot.
 
@@ -2470,6 +2506,16 @@ async def acquire_processing_reservation(
     signal. A handed-off run (``already_held``) is exempt from both: it already
     owns the slot. The caller may owner-check release unconditionally because
     the token is stamped atomically with ``busy``.
+
+    ``scan_reset_owner_token`` identifies the ONE caller that legitimately takes
+    ``busy`` while ``scanning_exclusive`` is held: the scan's own exclusive
+    FAILED→PENDING reset, which runs BEFORE the scan discovers any file (LR2
+    §8.1) and needs ``busy`` so it can reuse the owner-checked manual reset
+    helpers. It is exempted only when it matches the live ``scanning_owner``
+    token, and — unlike a queue drive — it does NOT clear
+    ``scan_deferred_processing``: the reset starts no worker and drains no queue,
+    so a request the scan fence turned away must stay deferred for the scan's
+    post-classification drive.
 
     ``pipeline_ingress`` MUST be resolved by the caller before this call — a
     lazy resolve while ``pipeline_status_lock`` is held would nest a Manager
@@ -2484,13 +2530,25 @@ async def acquire_processing_reservation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
+        # The scan that OWNS the exclusive fence is not fenced by it (see the
+        # docstring): match on the live owner token, never on its mere presence —
+        # a legacy/test path can set ``scanning_exclusive`` with no owner at all,
+        # and a ``None`` token must not silently match that.
+        owns_scan_fence = scan_reset_owner_token is not None and (
+            _reservation_owner_token(snapshot.get("scanning_owner"))
+            == scan_reset_owner_token
+        )
         # A scan's classification phase (``scanning_exclusive``) mutates
         # doc_status; a new processor must not read/process concurrently or it
         # races those rewrites. A handed-off run (``already_held``) took the slot
         # before scanning could start, so it is exempt. Plain ``scanning`` (the
         # scan's own post-classification queue drive) is NOT fenced here: the scan
         # releases ``scanning_exclusive`` before it drives processing.
-        if not already_held and snapshot.get("scanning_exclusive"):
+        if (
+            not already_held
+            and not owns_scan_fence
+            and snapshot.get("scanning_exclusive")
+        ):
             # Record the turned-away request so the scan drives the queue once it
             # releases scanning_exclusive (run_scanning_process finally): an SDK
             # insert's PENDING doc may have no scan-visible file and no other
@@ -2531,12 +2589,14 @@ async def acquire_processing_reservation(
             {
                 "busy": True,
                 "busy_owner": make_owner_record(token, "processing"),
-                # This run drains the queue, satisfying any request the
-                # scanning_exclusive fence deferred earlier — clear the flag so the
-                # scan's post-release drive stays a no-op.
-                "scan_deferred_processing": False,
             }
         )
+        if not owns_scan_fence:
+            # This run drains the queue, satisfying any request the
+            # scanning_exclusive fence deferred earlier — clear the flag so the
+            # scan's post-release drive stays a no-op. The scan's own exclusive
+            # reset drains nothing, so it leaves the flag for that drive.
+            updates["scan_deferred_processing"] = False
         snapshot.update(updates)
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
         # history_messages is a ListProxy and must remain the same shared object.

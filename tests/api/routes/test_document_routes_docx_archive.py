@@ -209,7 +209,12 @@ class _ScanRag:
             full_docs_by_id = {path: {"content": ""} for path in docs_by_path}
         self.full_docs = _ScanFullDocs(full_docs_by_id)
         self.process_calls = 0
-        self.workspace = "scan-test"
+        # A workspace per instance: a scan publishes a sticky manual retry
+        # request that only a REAL pipeline run ACKs, and the /scan reservation
+        # refuses while an earlier request is queued (LR2 §8.1). With a shared
+        # workspace one endpoint test would then refuse the next one.
+        self.workspace = f"scan-test-{uuid4().hex}"
+        self.reset_calls = []
         self.enqueued = []
         self.errors = []
 
@@ -241,6 +246,15 @@ class _ScanRag:
 
     async def apipeline_process_enqueue_documents(self):
         self.process_calls += 1
+
+    async def apipeline_reset_failed_for_scan(
+        self, request_id, *, scan_owner_token=None
+    ):
+        # LR2 §8.1: the real pipeline drains to idle and resets FAILED→PENDING
+        # here, BEFORE discovery. The mock records the call and reports the
+        # reset complete so classification proceeds.
+        self.reset_calls.append((request_id, scan_owner_token))
+        return True
 
 
 class _DuplicateUploadRag:

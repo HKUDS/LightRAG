@@ -2224,15 +2224,18 @@ async def run_scanning_process(
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
         manual_request_id: The sticky manual retry request the scan endpoint
-            published for this scan (None on legacy/mocked paths). The driven
-            processing run consumes it from the ingress — the only path that
-            pulls FAILED documents back in. If classification fails before
-            any drive consumed it, the finally below drives the queue once so
-            the intent does not wait for an unrelated trigger; on ANY
-            cancellation the drive is skipped and the request simply stays
-            sticky for the next trigger (a shutdown must not start a full
-            processing run, and a cancellation's origin cannot be told apart
-            here).
+            published for this scan (None on legacy/mocked paths). It is served
+            BEFORE any file is discovered, by the shared exclusive FAILED reset
+            (LR2 §8.1) — the only path that pulls FAILED documents back in — so
+            a file that fails during THIS scan cannot be absorbed by this
+            scan's own request. When the reset does not complete, discovery is
+            skipped entirely and the request stays sticky for the standard
+            drain path. Either way the finally drives the queue once if no
+            branch above did, so the reset PENDING rows / the unserved request
+            do not wait for an unrelated trigger; on ANY cancellation the drive
+            is skipped and whatever was reset simply stays PENDING for the next
+            trigger (a shutdown must not start a full processing run, and a
+            cancellation's origin cannot be told apart here).
     """
     # The scan endpoint set ``scanning=True`` AND
     # ``scanning_exclusive=True`` synchronously before scheduling this
@@ -2298,6 +2301,29 @@ async def run_scanning_process(
                 logger.error(
                     f"Scan-time custom-chunk rollback failed: {rollback_error}"
                 )
+
+        # LR2 §8.1: retry the FAILED documents that already existed BEFORE this
+        # scan discovers or enqueues anything. Running the exclusive
+        # FAILED→PENDING reset first is what keeps a file that fails DURING this
+        # scan out of this scan's own manual request (it would otherwise be
+        # retried immediately, by the very request that admitted it). The reset
+        # reuses the /reprocess_failed helper under this scan's owner token and
+        # ACKs the request itself, so the drive below no longer consumes it.
+        if manual_request_id is not None and pipeline_status is not None:
+            if not await rag.apipeline_reset_failed_for_scan(
+                manual_request_id, scan_owner_token=scanning_token
+            ):
+                # No reset, no discovery: enqueuing new files now would put them
+                # ahead of a still-sticky manual request, which is exactly the
+                # ordering §8.1 forbids. The finally releases the reservations and
+                # drives the queue once so the standard drain path serves the
+                # request; the next scan discovers the files.
+                logger.error(
+                    "Scan aborted before file discovery: the exclusive FAILED "
+                    "reset did not complete (manual request "
+                    f"{manual_request_id[:8]} stays pending)"
+                )
+                return
 
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
@@ -2568,24 +2594,17 @@ async def run_scanning_process(
                 and manual_request_id is not None
                 and not queue_drive_attempted
             ):
-                # Classification-failure fallback: if this scan's sticky
-                # manual request was never consumed (every drive branch above
-                # was skipped or failed), drive the queue once storage-only —
-                # the run's start peek picks the request up. Read-only check;
-                # racing a concurrent consumer only makes the drive a cheap
-                # no-op.
-                try:
-                    from lightrag.kg.shared_storage import get_pipeline_ingress
-
-                    ingress = await get_pipeline_ingress(rag.workspace)
-                    drive_needed = any(
-                        message.request_id == manual_request_id
-                        for message in ingress.snapshot_manual_retries()
-                    )
-                except Exception as ingress_error:
-                    logger.error(
-                        f"Post-scan manual-intent check failed: {ingress_error}"
-                    )
+                # Manual-intent fallback: every drive branch above was skipped or
+                # refused, so nothing has processed what this scan produced.
+                # Either outcome of the pre-discovery reset needs one drive:
+                #   * it completed — the FAILED rows are now PENDING with no
+                #     other trigger (classification may then have raised, or
+                #     found nothing to enqueue);
+                #   * it did not — the request is still sticky and the drive's
+                #     start peek runs the standard drain → reset → ACK path.
+                # A drive with nothing to do is a cheap no-op ("No documents to
+                # process"), so this needs no mailbox pre-check.
+                drive_needed = True
             if drive_needed:
                 try:
                     await rag.apipeline_process_enqueue_documents()
@@ -2891,13 +2910,26 @@ def create_document_routes(
           /text or /texts endpoint has reserved a slot whose bg task
           has not yet written to doc_status; starting a scan now would
           race scan's classification reads against that pending write.
+        - ``pipeline_status["manual_freeze_requested"]`` — a manual
+          retry is draining the pipeline for its exclusive reset.
+        - an earlier un-ACKed manual retry request is still queued in
+          the ingress mailbox: a scan runs its OWN exclusive FAILED
+          reset, so starting it now would jump the manual FIFO and
+          deadlock that request (the scan fence refuses its run) —
+          LR2 §8.1. Boundary: a request whose driving task died
+          (worker SIGKILL under a live Manager) stays queued until
+          SOME processing run peeks it, so scans keep refusing until
+          then; ``/documents/reprocess_failed`` both publishes and
+          drives, and a run serves the EARLIEST request first, so it
+          is the one-call recovery for that state.
 
         Both ``scanning`` and ``scanning_exclusive`` are acquired
         synchronously here so a subsequent fast-follow request hits the
         guard rather than racing against the not-yet-started task.
-        ``run_scanning_process`` clears ``scanning_exclusive`` once
-        classification is done, allowing concurrent uploads to land
-        while the scan-driven processing finishes.
+        ``run_scanning_process`` runs the exclusive FAILED reset and
+        classification under ``scanning_exclusive``, then clears it,
+        allowing concurrent uploads to land while the scan-driven
+        processing finishes.
 
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
@@ -2920,9 +2952,11 @@ def create_document_routes(
         scanning_token = uuid4().hex
         # The scan's manual retry intent: published ONLY after the scan
         # reservation is granted (a refused scan must have zero side effects),
-        # inside the committed-startup child. The driven processing run peeks
-        # it from the ingress — that is the only path pulling FAILED docs
-        # (resume/retry classification) back into the pipeline.
+        # inside the committed-startup child. The scan itself serves it — the
+        # exclusive FAILED reset runs before file discovery and ACKs the request
+        # (LR2 §8.1) — and it is the only path pulling FAILED docs back into the
+        # pipeline. Un-ACKed (reset abandoned / crash), it stays sticky for the
+        # standard drain path.
         manual_request_id = uuid4().hex
         # Endpoint-visible mirror of the commit state: set synchronously with
         # the publish, so the finally below knows ownership transferred even
@@ -2971,6 +3005,16 @@ def create_document_routes(
         #     pending-enqueue slot (see _reserve_enqueue_slot): the bg
         #     task has not yet written doc_status and we would otherwise
         #     race with its mid-flight write.
+        #   * a manual retry holds the enqueue freeze, or an earlier
+        #     un-ACKed manual request is queued in the mailbox (LR2
+        #     §8.1): this scan runs its own exclusive FAILED reset and
+        #     must not jump that FIFO.
+        #
+        # Resolved BEFORE the reservation: the manual-FIFO check is one mailbox
+        # call made inside the acquire's critical section, which must never
+        # trigger a lazy Manager lookup while the status lock is held. A
+        # resolution failure aborts with zero side effects (nothing reserved).
+        ingress = await get_pipeline_ingress(rag.workspace)
         reserved = False
         handed_off = False
         try:
@@ -3001,7 +3045,14 @@ def create_document_routes(
                         "Document upload/insert is being enqueued. Wait for in-flight "
                         "work to complete before triggering a scan.",
                     ),
+                    (
+                        "manual_freeze_requested",
+                        "A manual retry is draining the pipeline for its exclusive "
+                        "reset. Wait for it to finish before triggering a scan.",
+                    ),
                 ),
+                pipeline_ingress=ingress,
+                refuse_when_manual_pending=True,
             )
             if not result.acquired:
                 reserved = False
@@ -3022,6 +3073,8 @@ def create_document_routes(
                         f"{pending_enqueues} pending enqueue(s) reserved by "
                         "upload/insert endpoints"
                     )
+                elif result.conflict is PipelineReservationConflict.MANUAL_FREEZE:
+                    logger.warning(f"Scan request skipped: {result.message}")
                 return ScanResponse(
                     status="scanning_skipped_pipeline_busy",
                     message=result.message or "Pipeline reservation is unavailable.",
@@ -3036,7 +3089,6 @@ def create_document_routes(
             # child is never cancelled — it owns both the reservation (released
             # in run_scanning_process's finally, owner-checked by
             # scanning_token) and the published intent.
-            ingress = await get_pipeline_ingress(rag.workspace)
 
             async def _scan_commit(state):
                 # Fence already passed — this endpoint holds the scanning
