@@ -1458,12 +1458,13 @@ def create_app(args):
     # (without them the WebUI would see an opaque network error instead of "at
     # capacity"). It therefore also sees the un-normalized path, which is why it
     # strips ``api_prefix`` itself.
-    if args.max_pending_documents > 0:
+    if args.max_pending_documents > 0 or args.max_request_body_bytes > 0:
         app.add_middleware(
             AdmissionMiddleware,
             rag_getter=lambda: rag,
             api_key=api_key,
             api_prefix=api_prefix,
+            max_body_bytes=args.max_request_body_bytes,
         )
 
     # Add CORS middleware

@@ -36,6 +36,7 @@ from lightrag.constants import (
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
     DEFAULT_MAX_PENDING_DOCUMENTS,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
     DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
@@ -215,6 +216,17 @@ def validate_admission_configuration(args: argparse.Namespace) -> None:
             "MAX_PENDING_DOCUMENTS must be an integer >= 0 (0 disables "
             f"admission control); got {capacity!r}"
         )
+    if hasattr(args, "max_request_body_bytes"):
+        body_limit = args.max_request_body_bytes
+        if (
+            not isinstance(body_limit, int)
+            or isinstance(body_limit, bool)
+            or body_limit < 0
+        ):
+            raise ValueError(
+                "MAX_REQUEST_BODY_BYTES must be an integer >= 0 (0 disables the "
+                f"body limit); got {body_limit!r}"
+            )
 
 
 def _is_set(value: str | None) -> bool:
@@ -570,6 +582,11 @@ def parse_args() -> argparse.Namespace:
     # Admission capacity for ordinary ingestion (LR2 §9.1); 0 disables it.
     args.max_pending_documents = get_env_value(
         "MAX_PENDING_DOCUMENTS", DEFAULT_MAX_PENDING_DOCUMENTS, int
+    )
+
+    # Raw request-body ceiling for the ingestion endpoints (LR2 §9.4); 0 disables.
+    args.max_request_body_bytes = get_env_value(
+        "MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES, int
     )
 
     # Get MAX_GRAPH_NODES from environment

@@ -382,6 +382,13 @@ DEFAULT_SCAN_ENQUEUE_BATCH_SIZE = 100
 # cap; the active rows they create make ordinary uploads wait.
 DEFAULT_MAX_PENDING_DOCUMENTS = 0
 
+# Hard ceiling on the raw request body an ingestion endpoint may receive, counted
+# as it streams through the ASGI ``receive`` channel (LR2 §9.4). ``0`` disables
+# it. Distinct from ``MAX_UPLOAD_SIZE``, which bounds one uploaded FILE after
+# multipart parsing: this bounds the bytes the server agrees to read at all, so a
+# body that lies about (or omits) Content-Length is still cut off.
+DEFAULT_MAX_REQUEST_BODY_BYTES = 0
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values

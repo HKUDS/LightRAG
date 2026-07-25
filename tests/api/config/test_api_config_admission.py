@@ -68,3 +68,41 @@ def test_initialize_config_rejects_a_negative_capacity(monkeypatch):
     monkeypatch.setenv("MAX_PENDING_DOCUMENTS", "-1")
     with pytest.raises(ValueError, match="MAX_PENDING_DOCUMENTS"):
         initialize_config(force=True)
+
+
+# --------------------------------------------------------------------------- #
+# MAX_REQUEST_BODY_BYTES (LR2 §9.4)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_body_limit(monkeypatch, value: str | None):
+    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
+    if value is None:
+        monkeypatch.delenv("MAX_REQUEST_BODY_BYTES", raising=False)
+    else:
+        monkeypatch.setenv("MAX_REQUEST_BODY_BYTES", value)
+    return parse_args()
+
+
+def test_body_limit_disabled_by_default(monkeypatch):
+    args = _parse_body_limit(monkeypatch, None)
+    assert args.max_request_body_bytes == 0
+    validate_admission_configuration(args)
+
+
+def test_body_limit_env_value_is_honoured(monkeypatch):
+    args = _parse_body_limit(monkeypatch, "1048576")
+    assert args.max_request_body_bytes == 1048576
+    validate_admission_configuration(args)
+
+
+def test_negative_body_limit_fails_fast(monkeypatch):
+    args = _parse_body_limit(monkeypatch, "-1")
+    with pytest.raises(ValueError, match="MAX_REQUEST_BODY_BYTES"):
+        validate_admission_configuration(args)
+
+
+def test_body_limit_absent_from_a_partial_namespace_is_fine():
+    """Validated independently of the capacity: a namespace carrying only one of
+    the two knobs must still pass."""
+    validate_admission_configuration(Namespace(max_pending_documents=5))
