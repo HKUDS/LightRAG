@@ -94,6 +94,7 @@ from lightrag.kg import (
 from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     acquire_reservation,
+    append_pipeline_history,
     check_pipeline_status_mutation,
     get_namespace_data,
     get_default_workspace,
@@ -2390,7 +2391,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         logger.info(log_message)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                     except Exception as rollback_error:
                         # Journal and FAILED status remain; the next scan retries.
                         failed_count += 1
@@ -2403,7 +2404,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         logger.error(log_message)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
 
         # Scheduling-control-plane discovery, memory-bounded (LR2 Phase 2):
         # page the FAILED/PROCESSING keyset instead of materializing every such
@@ -2698,7 +2699,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         logger.warning(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            append_pipeline_history(pipeline_status, log_message)
 
         return updated_rows
 
@@ -2795,7 +2796,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
-                    pipeline_status["history_messages"].append(error_msg)
+                    append_pipeline_history(pipeline_status, error_msg)
             raise e
 
     def _index_storages(self) -> list:
@@ -2965,7 +2966,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
     async def _insert_done_with_cleanup(self) -> None:
         """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
@@ -4160,7 +4161,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
             for edge_data in affected_edges:
                 src = edge_data.get("source")
@@ -4225,7 +4226,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
             # Update entity/relation chunk-tracking with the remaining sources.
             current_time = int(time.time())
@@ -4289,7 +4290,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
             except Exception as e:
                 logger.error(
                     f"[purge] Failed to delete relationships for {doc_id}: {e}"
@@ -4352,7 +4353,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
             except Exception as e:
                 logger.error(f"[purge] Failed to delete entities for {doc_id}: {e}")
                 raise Exception(f"Failed to delete entities: {e}") from e
@@ -4415,7 +4416,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
         except Exception as e:
             logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
             raise Exception(f"Failed to delete document chunks: {e}") from e
@@ -4576,7 +4577,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 log_message = f"Starting deletion process for document {doc_id}"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
@@ -4628,7 +4629,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = warning_msg
-                    pipeline_status["history_messages"].append(warning_msg)
+                    append_pipeline_history(pipeline_status, warning_msg)
 
             # 2. Get chunk IDs from document status
             metadata = doc_status_data.get("metadata", {})
@@ -4695,7 +4696,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         logger.error(no_cache_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = no_cache_msg
-                            pipeline_status["history_messages"].append(no_cache_msg)
+                            append_pipeline_history(pipeline_status, no_cache_msg)
                         raise Exception(no_cache_msg)
                     try:
                         deletion_stage = "delete_llm_cache"
@@ -4737,7 +4738,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
                 deletion_fully_completed = True
                 return DeletionResult(
@@ -4975,7 +4976,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     log_message = f"Found {len(entities_to_rebuild)} affected entities"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
                 # Process relationships
                 for edge_data in affected_edges:
@@ -5052,7 +5053,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
                 current_time = int(time.time())
                 deletion_stage = "update_chunk_tracking"
@@ -5106,7 +5107,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to delete chunks: {e}")
@@ -5144,7 +5145,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         log_message = f"Successfully deleted {len(relationships_to_delete)} relations"
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to delete relationships: {e}")
@@ -5241,7 +5242,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to delete entities: {e}")
@@ -5292,7 +5293,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.error(log_message)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     raise Exception(log_message)
                 try:
                     deletion_stage = "delete_llm_cache"
@@ -5312,7 +5313,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.info(cache_log_message)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = cache_log_message
-                        pipeline_status["history_messages"].append(cache_log_message)
+                        append_pipeline_history(pipeline_status, cache_log_message)
                     log_message = cache_log_message
                 except Exception as cache_delete_error:
                     log_message = (
@@ -5323,7 +5324,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.error(traceback.format_exc())
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     raise Exception(log_message) from cache_delete_error
 
             # 10. Delete from full_entities and full_relations storage
@@ -5448,7 +5449,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "or enqueued document is not silently deferred: "
                             f"{probe_error}"
                         )
-                status["history_messages"].append(completion_msg)
+                append_pipeline_history(status, completion_msg)
                 logger.info(completion_msg)
                 if ingress_has_work:
                     status.update(updates)

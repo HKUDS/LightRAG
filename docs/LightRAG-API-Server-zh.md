@@ -25,6 +25,26 @@ LIGHTRAG_PARSER=*:legacy-F
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
 - 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
 
+## 升级到有界管线调度
+
+引入 `PIPELINE_SCHEDULING_PAGE_SIZE`、`MAX_PENDING_DOCUMENTS` 和 `MAX_UNACKED_MANUAL_RETRIES`（见 `env.example`）的这个版本，同时改变了各 writer 通过共享状态协调时使用的**并发协议**。这是一次性的原地升级，不写任何 marker、也不写协议版本号，因此存储层无法替你识别出残留的旧 writer。所以这是一条运维要求：
+
+> **在对同一存储、同一 workspace 启动新版本之前，必须先停掉所有旧 writer。** 滚动重启时只要还留着一个旧 worker——或者一个共用同一 Redis/PostgreSQL workspace 的旧实例——就是故障场景，而不只是升级得慢一点。
+
+旧 writer 无法遵守的三件事：
+
+- **manual retry 冻结。** `/documents/reprocess_failed` 不再就地重置 `FAILED` 行。它发布一个 intent、冻结入口、等待管线转为空闲，然后在没有任何 worker 运行的前提下分页把 `FAILED`→`PENDING` 改写回去。旧 writer 不读冻结标志，于是会继续往这个被重置逻辑视为独占的窗口里入队。
+- **调度排序键。** `created_at` 现在是不可变的 `(created_at, id)` keyset 游标，以 UTC ISO-8601 时间戳写入。旧 writer 用其它格式打上的时间戳与之排序不一致，keyset 分页因此可能跳过或重复文档。
+- **派生索引。** 在 Redis 上，status 集合与 source multimap 与文档主记录在同一个事务中维护。旧 writer 只更新主记录，会把索引留成陈旧状态——此后 strict 分页与 strict 活跃计数会静默漏掉这个文档。
+
+推荐顺序：
+
+1. 停止接收新文档，等待管线跑完。在已鉴权的 `/health` 上，没有任何在途工作时 `scheduling.drain_waiting_on_workers` 为 `false`、`scheduling.drain_pending_enqueues` 为 `0`。
+2. 停掉共用该存储与 workspace 的**全部** worker 和实例。
+3. 启动新版本。
+
+不需要做数据迁移。启动后的第一轮 sweep 是一次 strict 全量 sweep，因此旧 writer 留在半途的文档——例如卡在 `PARSING`/`ANALYZING`/`PROCESSING` 但背后已没有 worker 的行——会被自动捡起并重新处理。如果确实无法排空（必须放弃一次运行），基于同样的原因，中途停止也是安全的；不安全的是事后又把旧版本启动回来。
+
 ## 入门指南
 
 ### 安装

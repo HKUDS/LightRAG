@@ -397,6 +397,23 @@ DEFAULT_MAX_REQUEST_BODY_BYTES = 0
 # 429; an already-finalized id is a client error, not backpressure.
 DEFAULT_MAX_UNACKED_MANUAL_RETRIES = 64
 
+# Fixed capacity of the human-facing pipeline status history (LR2 §10.3). Every
+# write funnels through ``append_pipeline_history``, which drops the oldest lines
+# past this many, making the log a ring instead of an append-only list whose only
+# bound used to be "the extraction loop happens to trim it" — a deletion job, a
+# scan or a manual reset logs plenty without ever reaching that trim.
+# Deliberately not an env knob: §11 does not list one, the API response already
+# caps what it shows at the newest 1000 lines, and a status log is not a place a
+# deployment should have to size.
+PIPELINE_HISTORY_MAX_MESSAGES = 5000
+
+# Per-message UTF-8 byte ceiling for the same log. Capacity alone does not bound
+# memory: one call site appends a whole ``traceback.format_exc()``, and any
+# message interpolating a file list or an exception string is unbounded, so
+# N messages × unbounded size is still unbounded. Counted in BYTES rather than
+# characters because that is what is being bounded (CJK is 3 bytes/char).
+PIPELINE_HISTORY_MESSAGE_MAX_BYTES = 4096
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values

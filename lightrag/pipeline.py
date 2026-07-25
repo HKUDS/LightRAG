@@ -58,6 +58,7 @@ from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     _reservation_owner_token,
     acquire_processing_reservation,
+    append_pipeline_history,
     check_pipeline_status_mutation,
     get_namespace_data,
     get_namespace_lock,
@@ -1783,7 +1784,7 @@ class _PipelineMixin:
                                 "latest_message": log_message,
                             }
                         )
-                        status_snapshot["history_messages"].append(log_message)
+                        append_pipeline_history(status_snapshot, log_message)
 
                         # A signal consumed by the immediately-preceding
                         # decision (or the entry absorb) that no batch took
@@ -1800,7 +1801,7 @@ class _PipelineMixin:
                     log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
                     decision = await self._decide_pipeline_next_step(
                         pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
@@ -1850,7 +1851,7 @@ class _PipelineMixin:
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
                     decision = await self._decide_pipeline_next_step(
                         pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
@@ -1890,7 +1891,7 @@ class _PipelineMixin:
                         "latest_message": log_message,
                     }
                 )
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
                 await self._run_pipeline_batch(
                     to_process_docs,
@@ -1929,7 +1930,7 @@ class _PipelineMixin:
                 log_message = "Processing additional documents due to pending request"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
                 # Fetch the next batch: the next page of the current sweep
                 # (CONTINUE_SWEEP_PAGE), a manual reset/drain (CONTINUE_MANUAL /
@@ -2061,9 +2062,9 @@ class _PipelineMixin:
                         }
                     )
                     status.update(updates)
-                    status_snapshot["history_messages"].append(stopped_message)
+                    append_pipeline_history(status_snapshot, stopped_message)
                     if internal_halt is not None:
-                        status_snapshot["history_messages"].append(internal_halt)
+                        append_pipeline_history(status_snapshot, internal_halt)
 
             await run_to_completion(_finalize)
 
@@ -2695,7 +2696,7 @@ class _PipelineMixin:
                 )
                 logger.info(skip_message)
                 pipeline_status["latest_message"] = skip_message
-                pipeline_status["history_messages"].append(skip_message)
+                append_pipeline_history(pipeline_status, skip_message)
 
         inconsistent_docs = []
         failed_docs_to_preserve = []
@@ -2721,7 +2722,7 @@ class _PipelineMixin:
                 preserve_message = f"Preserving {len(failed_docs_to_preserve)} failed document entries for manual review"
                 logger.info(preserve_message)
                 pipeline_status["latest_message"] = preserve_message
-                pipeline_status["history_messages"].append(preserve_message)
+                append_pipeline_history(pipeline_status, preserve_message)
 
             # Remove failed documents from processing list but keep them in doc_status
             for doc_id in failed_docs_to_preserve:
@@ -2735,7 +2736,7 @@ class _PipelineMixin:
                 )
                 logger.info(summary_message)
                 pipeline_status["latest_message"] = summary_message
-                pipeline_status["history_messages"].append(summary_message)
+                append_pipeline_history(pipeline_status, summary_message)
 
             successful_deletions = 0
             for doc_id in inconsistent_docs:
@@ -2754,7 +2755,7 @@ class _PipelineMixin:
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                     # Remove from processing list
                     to_process_docs.pop(doc_id, None)
@@ -2765,7 +2766,7 @@ class _PipelineMixin:
                         error_message = f"Failed to delete entry: {doc_id} - {str(e)}"
                         logger.error(error_message)
                         pipeline_status["latest_message"] = error_message
-                        pipeline_status["history_messages"].append(error_message)
+                        append_pipeline_history(pipeline_status, error_message)
 
         # Final summary log
         # async with pipeline_status_lock:
@@ -2849,7 +2850,7 @@ class _PipelineMixin:
                 )
                 logger.info(reset_message)
                 pipeline_status["latest_message"] = reset_message
-                pipeline_status["history_messages"].append(reset_message)
+                append_pipeline_history(pipeline_status, reset_message)
 
         return to_process_docs
 
@@ -3166,7 +3167,7 @@ class _PipelineMixin:
         logger.info(reset_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = reset_message
-            pipeline_status["history_messages"].append(reset_message)
+            append_pipeline_history(pipeline_status, reset_message)
         return True
 
     async def _confirm_scan_drain_idle(
@@ -3793,7 +3794,7 @@ class _PipelineMixin:
                     log_message = f"Parsing ({engine}): {doc_id_w}"
                     logger.info(log_message)
                     ctx.pipeline_status["latest_message"] = log_message
-                    ctx.pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(ctx.pipeline_status, log_message)
                 # Resolve the actual parser per-doc from the batch snapshot
                 # (snapshot-consistent: a mid-batch register_parser cannot be
                 # picked up here). ``engine`` is only the queue-group/pool id.
@@ -4331,18 +4332,14 @@ class _PipelineMixin:
                             "latest_message": processing_message,
                         }
                     )
-                    ctx.pipeline_status["history_messages"].append(extraction_message)
-                    ctx.pipeline_status["history_messages"].append(processing_message)
-
-                    # Prevent memory growth: keep only latest 5000 messages
-                    # when exceeding 10000.  Trim in place so Manager.list-
-                    # backed shared state remains appendable and visible
-                    # across processes.
-                    if len(ctx.pipeline_status["history_messages"]) > 10000:
-                        logger.info(
-                            f"Trimming pipeline history from {len(ctx.pipeline_status['history_messages'])} to 5000 messages"
-                        )
-                        del ctx.pipeline_status["history_messages"][:-5000]
+                    # One call: the pair belongs together in the log, and the
+                    # ring capacity that used to be enforced right here now
+                    # lives in the funnel — this loop was never the only writer
+                    # (deletes, scans and manual resets log plenty without ever
+                    # reaching it), so trimming here bounded nothing.
+                    append_pipeline_history(
+                        ctx.pipeline_status, extraction_message, processing_message
+                    )
 
                 # The parsed body is no longer carried through q_analyze /
                 # q_process (it would pin large documents in memory). Re-read it
@@ -4871,7 +4868,7 @@ class _PipelineMixin:
                         )
                         logger.info(log_message)
                         ctx.pipeline_status["latest_message"] = log_message
-                        ctx.pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(ctx.pipeline_status, log_message)
 
                 except Exception as e:
                     # A storage flush failure (raised by _insert_done) is not
@@ -4968,7 +4965,7 @@ class _PipelineMixin:
             logger.warning(log_message)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
         # Order-preserving dedup; keep a list so it satisfies the storage delete
         # contract (``delete(ids: list[str])``) when passed down to purge.
@@ -4992,7 +4989,7 @@ class _PipelineMixin:
         logger.info(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            append_pipeline_history(pipeline_status, log_message)
         await self._purge_doc_chunks_and_kg(
             doc_id,
             stored_chunk_ids,
@@ -5165,7 +5162,7 @@ class _PipelineMixin:
         logger.warning(error_msg)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = error_msg
-            pipeline_status["history_messages"].append(error_msg)
+            append_pipeline_history(pipeline_status, error_msg)
         await self._persist_llm_response_cache_best_effort(
             stage_label=f"{stage_label} cancellation",
             doc_id=doc_id,
@@ -5232,7 +5229,7 @@ class _PipelineMixin:
             logger.warning(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, error_msg)
         else:
             doc_error_msg = str(error)
             logger.error(traceback.format_exc())
@@ -5249,8 +5246,8 @@ class _PipelineMixin:
             logger.error(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(traceback.format_exc())
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, traceback.format_exc())
+                append_pipeline_history(pipeline_status, error_msg)
 
         for task in pending_tasks:
             if task and not task.done():
@@ -5433,7 +5430,7 @@ class _PipelineMixin:
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = warning
-                pipeline_status["history_messages"].append(warning)
+                append_pipeline_history(pipeline_status, warning)
         return True
 
     def _resolve_source_file_for_parser(
@@ -6344,7 +6341,7 @@ class _PipelineMixin:
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                     raise
                 result_obj = result[0] if isinstance(result, tuple) else {}
                 is_success = (
@@ -6357,7 +6354,7 @@ class _PipelineMixin:
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                 else:
                     logger.debug(f"Analyzing  {kind}/{item_id}: skipped")
                 return result
@@ -6409,7 +6406,7 @@ class _PipelineMixin:
                         log_message = f"Analyzing multimodal: {doc_id}"
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     start_logged = True
 
                 # Pre-schedule cancellation check: if the user cancelled
