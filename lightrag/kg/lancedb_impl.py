@@ -1623,21 +1623,25 @@ class LanceDBDocStatusStorage(DocStatusStorage):
         return data
 
     def _build_doc_status(
-        self, doc_id: str, payload: str | None
+        self, doc_id: str, payload: str | None, strict: bool = False
     ) -> DocProcessingStatus | None:
         try:
             data = self._prepare_doc_status_data(_json_loads(payload))
             return DocProcessingStatus(**data)
         except (KeyError, TypeError) as e:
             logger.error(f"[{self.workspace}] Invalid doc status record {doc_id}: {e}")
+            if strict:
+                raise
             return None
 
     def _rows_to_statuses(
-        self, rows: list[dict[str, Any]]
+        self, rows: list[dict[str, Any]], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
         result: dict[str, DocProcessingStatus] = {}
         for row in rows:
-            status = self._build_doc_status(row["id"], row.get("payload"))
+            status = self._build_doc_status(
+                row["id"], row.get("payload"), strict=strict
+            )
             if status is not None:
                 result[row["id"]] = status
         return result
@@ -1662,13 +1666,20 @@ class LanceDBDocStatusStorage(DocStatusStorage):
         return await self.get_docs_by_statuses([status])
 
     async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
+        self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
+        """Get all documents matching any of the given statuses.
+
+        The scan is a single ``to_list()``, so a transport failure always
+        propagates (there is no partial-page path to swallow); ``strict=True``
+        additionally raises on any record that cannot be converted
+        (complete-or-raise scheduling contract, see base class).
+        """
         if not statuses:
             return {}
         where = _sql_in("status", [_status_value(status) for status in statuses])
         rows = await _fetch_rows(self._table(), where=where, columns=["id", "payload"])
-        return self._rows_to_statuses(rows)
+        return self._rows_to_statuses(rows, strict=strict)
 
     async def get_docs_by_track_id(
         self, track_id: str

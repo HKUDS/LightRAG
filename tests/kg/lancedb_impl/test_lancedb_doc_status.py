@@ -244,3 +244,27 @@ async def test_drop(storage):
     assert await storage.is_empty()
     await storage.upsert({"doc-2": _doc()})
     assert await storage.get_by_id("doc-2") is not None
+
+
+async def test_get_docs_by_statuses_strict_raises_on_bad_record(storage):
+    """Strict scheduling contract: a record that cannot be converted raises;
+    the relaxed default keeps the historical skip-and-log behavior."""
+    await storage.upsert(
+        {
+            "doc-good": _doc(status=DocStatus.FAILED),
+            # Missing required fields → DocProcessingStatus(**data) raises.
+            "doc-bad": {"status": DocStatus.FAILED},
+        }
+    )
+
+    relaxed = await storage.get_docs_by_statuses([DocStatus.FAILED])
+    assert set(relaxed) == {"doc-good"}
+
+    with pytest.raises(TypeError):
+        await storage.get_docs_by_statuses([DocStatus.FAILED], strict=True)
+
+
+async def test_get_docs_by_statuses_strict_empty_is_complete(storage):
+    """A legitimately empty result is COMPLETE, not an error, under strict."""
+    await storage.upsert({"doc-1": _doc(status=DocStatus.PROCESSED)})
+    assert await storage.get_docs_by_statuses([DocStatus.FAILED], strict=True) == {}
