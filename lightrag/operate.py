@@ -18,7 +18,6 @@ from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
-    is_float_regex,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
@@ -728,11 +727,8 @@ def _handle_single_relationship_extraction(
             return None
 
         edge_source_id = chunk_key
-        weight = (
-            float(record_attributes[-1].strip('"').strip("'"))
-            if is_float_regex(record_attributes[-1].strip('"').strip("'"))
-            else 1.0
-        )
+        # Prompt text rows are 5 fields with no weight; keep default 1.0.
+        weight = 1.0
 
         return dict(
             src_id=source,
