@@ -152,6 +152,25 @@ class SourceConflictRepairCASError(StorageControlPlaneError):
     """
 
 
+class SourceConflictPrimaryUnusableError(ValueError):
+    """The document an operator chose to keep cannot own the canonical source.
+
+    Today the one reason is a CONFIRMED absence of ``full_docs`` content: such a
+    row is an unprocessable stub, so the source key would end up owned by a
+    document that can never exist, and scan classification deletes exactly those
+    rows (``STALE_STUB``) — which would remove the primary and leave the demoted
+    documents pointing at an id that no longer exists, with no way back because a
+    repair only demotes.
+
+    Distinct from the plain ``ValueError`` that ``repair_source_conflict`` raises
+    for "not a current primary candidate": both are 409s with the same recovery
+    shape (pick a different primary), but conflating them makes the API report
+    "not a candidate" for a row that IS one, which sends the operator to re-list
+    a conflict that has not changed. It subclasses ``ValueError`` so a caller
+    that only handles the coarse "bad primary" case still refuses safely.
+    """
+
+
 class StorageRecordNotFoundError(KeyError):
     """A targeted doc_status field update referenced a non-existent record.
 

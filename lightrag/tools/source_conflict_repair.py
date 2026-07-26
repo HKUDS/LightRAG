@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -61,15 +62,108 @@ from lightrag.constants import (
     SOURCE_CONFLICT_LOCK_NAMESPACE,
 )
 from lightrag.exceptions import (
+    SourceConflictPrimaryUnusableError,
     SourceConflictRepairCASError,
     StorageCapabilityError,
     StorageControlPlaneError,
 )
+from lightrag.utils import logger
 
 # Pages are bounded on both sides: the backend projects a bounded sample per
 # key, and --all stops after this many pages so a pathological workspace cannot
 # turn a listing into an unbounded walk.
 _MAX_PAGES = 1000
+
+
+# Pipeline states that must not overlap a source-conflict COMMIT, evaluated when
+# the repair registers its pending-enqueue reservation. Each one owns a writer
+# that can change the candidate set the repair just re-read, and none of them can
+# be excluded by the enqueue-serialize lock:
+#
+# * ``destructive_busy`` — a clear/delete can DELETE the primary the operator
+#   chose to keep, leaving the key with no primary and the demoted rows pointing
+#   at an id that no longer exists (and the repair only demotes, so there is no
+#   supported way back);
+# * ``scanning_exclusive`` — scan classification deletes stale FAILED stubs, one
+#   of which could be that primary;
+# * ``manual_freeze_requested`` — the exclusive FAILED reset rewrites
+#   ``file_path`` from ``resolve_doc_file_path``, so a row whose doc_status path
+#   is a placeholder can ENTER this candidate set without ever passing the
+#   enqueue critical section.
+#
+# Symmetry is what makes this cheap: the scan and destructive acquires already
+# list ``pending_enqueues`` in their own reject_when, so holding a reservation
+# for the repair's duration buys the other direction for free — no new lock, no
+# new lock-order edge.
+_REPAIR_INGRESS_FENCES: tuple[tuple[str, str], ...] = (
+    (
+        "destructive_busy",
+        "A clear/delete job is in flight; it may remove one of these documents. "
+        "Wait for it to finish, then repair.",
+    ),
+    (
+        "scanning_exclusive",
+        "A scan is classifying files and may delete stale failed stubs. Wait for "
+        "the classification phase to finish, then repair.",
+    ),
+    (
+        "manual_freeze_requested",
+        "A manual retry is draining the pipeline for its exclusive reset, which "
+        "can change which documents claim this source. Wait for it to finish, "
+        "then repair.",
+    ),
+)
+
+
+@asynccontextmanager
+async def _repair_ingress_reservation(workspace: str):
+    """Register the repair as in-flight ingress work for its whole duration.
+
+    A weighted-0 entry in ``pending_enqueue_tokens``: it charges nothing against
+    the admission capacity but makes ``pending_enqueues`` non-zero, which is what
+    the scan and destructive acquires already refuse on. The fences above are
+    evaluated in the same atomic step, so the exclusion holds in both directions.
+
+    No pipeline_status (offline CLI against a stopped server) means there is no
+    server-side writer to exclude, so the repair proceeds — that is the correct
+    answer here, not a concession.
+    """
+    from lightrag.exceptions import PipelineNotInitializedError
+    from lightrag.kg.shared_storage import (
+        acquire_enqueue_reservation,
+        get_namespace_data,
+        get_namespace_lock,
+        release_token_set_reservation,
+    )
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=workspace
+        )
+    except PipelineNotInitializedError:
+        yield
+        return
+
+    pipeline_status_lock = get_namespace_lock("pipeline_status", workspace=workspace)
+    token = f"source-repair-{uuid.uuid4().hex}"
+    result = await acquire_enqueue_reservation(
+        pipeline_status,
+        pipeline_status_lock,
+        token=token,
+        reject_when=_REPAIR_INGRESS_FENCES,
+        weight=0,
+        capacity=0,
+    )
+    if not result.acquired:
+        raise StorageControlPlaneError(result.message)
+    try:
+        yield
+    finally:
+        await release_token_set_reservation(
+            workspace,
+            tokens_key="pending_enqueue_tokens",
+            token=token,
+        )
 
 
 @asynccontextmanager
@@ -90,10 +184,24 @@ async def source_conflict_repair_lock(workspace: str, canonical_source_key: str)
       phantom, because it is the same lock the enqueue critical section
       (``filter_keys`` → dedup → ``doc_status.upsert``) holds.
 
-    Lock order is keyed → namespace, and the enqueue path never takes the keyed
-    lock, so no cycle exists. Scope is one deployment (its worker processes
-    included), not several deployments sharing a database — a repair run against
-    a database that another deployment is writing to keeps the phantom window.
+    Innermost is a pending-enqueue reservation (see
+    :func:`_repair_ingress_reservation`), which is what excludes the writers the
+    enqueue-serialize lock cannot: clear/delete, scan classification, and the
+    manual exclusive reset.
+
+    Lock order is keyed → namespace → reservation, and the enqueue path never
+    takes the keyed lock, so no cycle exists **today**. That "today" is load
+    bearing: this order is INVERTED relative to the enqueue path, which takes
+    enqueue_serialize and would naturally take the keyed source lock inside it.
+    Anyone extending the keyed ``DocSource`` lock to the enqueue path (or to the
+    delete / duplicate-marking / stale-stub paths, which also hold no keyed lock
+    now) MUST first flip this order to ``enqueue_serialize → DocSource`` and
+    document the total order — otherwise the two directions deadlock, only when a
+    manual repair runs concurrently with an upload, which CI will not catch.
+
+    Scope is one deployment (its worker processes included), not several
+    deployments sharing a database — a repair run against a database that another
+    deployment is writing to keeps the phantom window.
     """
     # Imported lazily: the CLI initializes shared storage in main(), and
     # importing at module scope would bind before that happens.
@@ -113,7 +221,8 @@ async def source_conflict_repair_lock(workspace: str, canonical_source_key: str)
         async with get_namespace_lock(
             ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=workspace
         ):
-            yield
+            async with _repair_ingress_reservation(workspace):
+                yield
 
 
 async def collect_source_conflicts(
@@ -147,6 +256,7 @@ async def repair_one_conflict(
     primary_doc_id: str,
     *,
     workspace: str = "",
+    full_docs: Any = None,
     apply: bool = False,
 ) -> Any:
     """Dry-run one repair and, with ``apply``, commit it with that fresh token.
@@ -166,6 +276,11 @@ async def repair_one_conflict(
     ``workspace`` must be the LightRAG instance's workspace (``rag.workspace``),
     NOT ``doc_status.workspace``: a backend may override its own workspace from
     the environment, and a lock keyed on the wrong one excludes nothing.
+
+    ``full_docs`` enables the contentless-primary refusal (see
+    :func:`refuse_a_contentless_primary`); omitted, the repair proceeds without
+    that check. It cannot live in the backend: a doc_status storage has no handle
+    on full_docs.
     """
     if not apply:
         return await doc_status.repair_source_conflict(
@@ -180,6 +295,9 @@ async def repair_one_conflict(
     # CAS must still be able to refuse. A candidate set that moved before the
     # lock was taken SHOULD 409 rather than be silently accepted.
     async with source_conflict_repair_lock(workspace, canonical_source_key):
+        # Inside the lock: the row could have lost its content between the
+        # operator reading the listing and this commit.
+        await refuse_a_contentless_primary(full_docs, primary_doc_id)
         dry = await doc_status.repair_source_conflict(
             canonical_source_key,
             primary_doc_id=primary_doc_id,
@@ -208,6 +326,55 @@ async def repair_one_conflict(
             doc_status, canonical_source_key, primary_doc_id, result
         )
         return result
+
+
+async def refuse_a_contentless_primary(full_docs: Any, primary_doc_id: str) -> None:
+    """Refuse to hand a canonical source to a row with no ``full_docs`` content.
+
+    Such a row is an unprocessable stub, and keeping it is self-defeating twice
+    over. It can never be processed, so the source key ends up owned by a
+    document that will never exist; and it is exactly what scan classification
+    deletes on sight (``_ScanFileClass.STALE_STUB`` fires only when
+    ``_confirm_full_docs_absent`` is True), so the next scan would delete the
+    primary and leave the demoted rows pointing at a missing id — with no way
+    back, since a repair only demotes and refuses a ``primary_doc_id`` that is
+    not a current candidate.
+
+    Checking here is what removes that interaction at the root, and it is
+    strictly better than locking the scan's delete path against the repair: it
+    costs one strict read on an operator-invoked path instead of a lock on scan
+    classification, and it also catches the plain operator mistake of choosing a
+    stub when no scan is running at all.
+
+    Only a CONFIRMED absence refuses. A backend without strict point reads, or a
+    read that fails, warns and proceeds: the alternative would let a storage blip
+    deny the operator their only repair tool, and an unconfirmed miss is not
+    evidence.
+    """
+    if full_docs is None:
+        return
+    if not getattr(full_docs, "supports_strict_point_reads", False):
+        logger.warning(
+            f"{type(full_docs).__name__} has no strict point reads; keeping "
+            f"{primary_doc_id} as the primary without confirming it has content"
+        )
+        return
+    try:
+        content = await full_docs.get_by_id_strict(primary_doc_id)
+    except Exception as read_error:
+        logger.warning(
+            f"Could not confirm whether {primary_doc_id} has content "
+            f"({read_error}); proceeding with the repair"
+        )
+        return
+    if content:
+        return
+    raise SourceConflictPrimaryUnusableError(
+        f"Document {primary_doc_id} has no full_docs content: it is an "
+        f"unprocessable stub, so it cannot own a canonical source. Pick a "
+        f"primary that has content — a scan would delete this row and leave the "
+        f"demoted documents pointing at an id that no longer exists."
+    )
 
 
 async def verify_repair_outcome(
@@ -322,10 +489,23 @@ async def _async_main(args: argparse.Namespace) -> bool:
             func=_noop_embed,
         ),
     )
-    # Only doc_status is initialized: this tool must not require a reachable
-    # vector/graph store to fix a doc_status bookkeeping problem.
+    # doc_status plus full_docs: still no vector/graph store, no LLM and no
+    # embedding model — full_docs is a plain KV, and reading it is what lets the
+    # repair refuse a primary that has no content (see
+    # refuse_a_contentless_primary). A full_docs backend that cannot be reached
+    # must not block a doc_status bookkeeping fix, so its failure downgrades the
+    # check instead of the command.
     doc_status = rag.doc_status
     await doc_status.initialize()
+    full_docs = rag.full_docs
+    try:
+        await full_docs.initialize()
+    except Exception as full_docs_error:
+        print(
+            f"Warning: full_docs is unavailable ({full_docs_error}); the repair "
+            "cannot confirm the chosen primary has content."
+        )
+        full_docs = None
     try:
         if args.command == "list":
             _print_conflicts(
@@ -341,6 +521,7 @@ async def _async_main(args: argparse.Namespace) -> bool:
             # rag.workspace, not doc_status.workspace: a backend may override
             # its own from the environment, and the enqueue path locks on this one.
             workspace=rag.workspace,
+            full_docs=full_docs,
             apply=args.apply,
         )
         _print_repair(result)
@@ -360,6 +541,8 @@ async def _async_main(args: argparse.Namespace) -> bool:
         print(f"Storage control plane unavailable: {storage_error}")
         return False
     finally:
+        if full_docs is not None:
+            await full_docs.finalize()
         await doc_status.finalize()
 
 

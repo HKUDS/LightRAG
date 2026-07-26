@@ -168,16 +168,48 @@ class _ConflictDocStatus:
         )
 
 
-def _client(doc_status: _ConflictDocStatus) -> TestClient:
+class _FullDocs:
+    """full_docs double for the contentless-primary refusal.
+
+    ``strict`` mirrors ``supports_strict_point_reads``: only a backend that HAS
+    strict point reads may have an absence trusted, so the doubles cover both.
+    """
+
+    def __init__(self, contents: dict[str, dict] | None = None, *, strict: bool = True):
+        self.contents = contents if contents is not None else {}
+        self.supports_strict_point_reads = strict
+        self.reads: list[str] = []
+
+    async def get_by_id_strict(self, doc_id: str):
+        self.reads.append(doc_id)
+        return self.contents.get(doc_id)
+
+
+def _client(
+    doc_status: _ConflictDocStatus, full_docs: _FullDocs | None = None
+) -> TestClient:
     app = FastAPI()
     app.include_router(
         create_document_routes(
-            SimpleNamespace(doc_status=doc_status, workspace="conflict-test"),
+            SimpleNamespace(
+                doc_status=doc_status,
+                full_docs=full_docs if full_docs is not None else _ContentEverywhere(),
+                workspace="conflict-test",
+            ),
             SimpleNamespace(),
             api_key="test-key",
         )
     )
     return TestClient(app)
+
+
+class _ContentEverywhere:
+    """Default for tests not about the content check: every document has content."""
+
+    supports_strict_point_reads = True
+
+    async def get_by_id_strict(self, doc_id: str):
+        return {"content": f"body of {doc_id}"}
 
 
 # --------------------------------------------------------------------------- #
@@ -521,3 +553,97 @@ def test_a_commit_that_leaves_the_key_unsettled_is_not_reported_as_success(
         headers=_HEADERS,
     )
     assert commit.status_code != 200
+
+
+def test_a_primary_with_no_content_is_refused():
+    """A row with no ``full_docs`` content is an unprocessable stub: it can never
+    own the source, and scan classification deletes exactly such rows on sight
+    (STALE_STUB fires only when the content is CONFIRMED absent), which would
+    delete the primary and leave the demoted rows pointing at a missing id — with
+    no way back, since a repair only demotes.
+
+    Fix-proof: the repair used to accept it and report success. Refusing here is
+    what removes the interaction at its root, instead of locking scan
+    classification against the repair.
+    """
+    doc_status = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    full_docs = _FullDocs({"doc-1": {"content": "real body"}})  # doc-2 is a stub
+    client = _client(doc_status, full_docs)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+
+    assert commit.status_code == 409
+    assert "no full_docs content" in commit.json()["detail"]
+    # Nothing demoted: both rows still claim the source.
+    assert doc_status.groups["a.pdf"] == ["doc-1", "doc-2"]
+    assert full_docs.reads == ["doc-2"]  # only the chosen primary is read
+
+
+def test_a_primary_with_content_is_accepted():
+    """The complement — the check must not get in the way of a real repair."""
+    doc_status = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    full_docs = _FullDocs({"doc-1": {"content": "x"}, "doc-2": {"content": "y"}})
+    client = _client(doc_status, full_docs)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+    assert commit.status_code == 200
+    assert doc_status.groups["a.pdf"] == ["doc-2"]
+
+
+def test_an_unconfirmable_absence_does_not_block_the_repair():
+    """Only a CONFIRMED absence refuses. A backend with no strict point reads
+    cannot tell a transport failure from a missing row, and denying the operator
+    their only repair tool over an unconfirmed miss is the worse failure."""
+    doc_status = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    full_docs = _FullDocs({}, strict=False)  # nothing known, nothing provable
+    client = _client(doc_status, full_docs)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+    assert commit.status_code == 200
+    assert full_docs.reads == []  # never even attempted

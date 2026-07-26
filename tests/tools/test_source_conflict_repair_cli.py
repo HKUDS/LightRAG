@@ -216,3 +216,166 @@ async def test_commit_holds_the_enqueue_serialize_lock(tmp_path):
     assert observed_during_repair == [[]]
     resolved = await storage.resolve_doc_source_strict("a.pdf")
     assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-2"
+
+
+@pytest.mark.asyncio
+async def test_the_commit_registers_itself_as_in_flight_ingress(tmp_path):
+    """The repair holds a weight-0 pending-enqueue reservation for its duration.
+
+    That single fact is what excludes the writers the enqueue-serialize lock
+    cannot: ``_acquire_destructive_busy`` and the scan reservation both already
+    list ``pending_enqueues`` in their own reject_when, so a clear/delete or a
+    scan cannot start while a repair is mid-commit — no new lock and no new
+    lock-order edge. Weight 0 so the repair never consumes admission capacity.
+    """
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        initialize_pipeline_status,
+    )
+
+    workspace = "reservation-ws"
+    await initialize_pipeline_status(workspace=workspace)
+    pipeline_status = await get_namespace_data("pipeline_status", workspace=workspace)
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    seen: list[dict] = []
+    original = storage.repair_source_conflict
+
+    async def _observing(key, **kwargs):
+        # Sampled inside the backend call: the span a concurrent delete would
+        # otherwise be free to interleave with.
+        seen.append(
+            {
+                "pending": pipeline_status.get("pending_enqueues", 0),
+                "weights": [
+                    meta.get("weight")
+                    for meta in dict(
+                        pipeline_status.get("pending_enqueue_tokens", {})
+                    ).values()
+                ],
+            }
+        )
+        return await original(key, **kwargs)
+
+    storage.repair_source_conflict = _observing
+    result = await repair_one_conflict(
+        storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+    )
+    assert result.committed is True
+
+    assert seen and all(sample["pending"] == 1 for sample in seen), seen
+    assert all(sample["weights"] == [0] for sample in seen), seen
+    # Released afterwards, so it cannot wedge later uploads / scans / deletes.
+    assert pipeline_status.get("pending_enqueues", 0) == 0
+    assert dict(pipeline_status.get("pending_enqueue_tokens", {})) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_destructive_job_in_flight_refuses_the_commit(tmp_path):
+    """The other direction of the same fence: a clear/delete already running can
+    DELETE the primary the operator is about to keep, so the repair refuses
+    rather than committing demotions around it."""
+    from lightrag.exceptions import StorageControlPlaneError
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        initialize_pipeline_status,
+    )
+
+    workspace = "destructive-ws"
+    await initialize_pipeline_status(workspace=workspace)
+    pipeline_status = await get_namespace_data("pipeline_status", workspace=workspace)
+    lock = get_namespace_lock("pipeline_status", workspace=workspace)
+    async with lock:
+        pipeline_status["destructive_busy"] = True
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    with pytest.raises(StorageControlPlaneError, match="clear/delete"):
+        await repair_one_conflict(
+            storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+        )
+    # Nothing demoted.
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_scan_classification_and_a_manual_freeze_also_refuse(tmp_path):
+    """``scanning_exclusive`` deletes stale FAILED stubs and the manual exclusive
+    reset rewrites ``file_path`` (so a placeholder row can ENTER this candidate
+    set without passing the enqueue critical section). Both are refused for the
+    repair's duration."""
+    from lightrag.exceptions import StorageControlPlaneError
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        initialize_pipeline_status,
+    )
+
+    for flag, expected in (
+        ("scanning_exclusive", "scan is classifying"),
+        ("manual_freeze_requested", "manual retry"),
+    ):
+        workspace = f"fence-{flag}"
+        await initialize_pipeline_status(workspace=workspace)
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=workspace
+        )
+        async with get_namespace_lock("pipeline_status", workspace=workspace):
+            pipeline_status[flag] = True
+
+        storage = await _storage(
+            tmp_path / flag, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+        )
+        with pytest.raises(StorageControlPlaneError, match=expected):
+            await repair_one_conflict(
+                storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+            )
+
+
+@pytest.mark.asyncio
+async def test_an_offline_repair_needs_no_pipeline_status(tmp_path):
+    """The CLI runs against a stopped server, where pipeline_status was never
+    initialised. There is no server-side writer to exclude, so the repair
+    proceeds — the correct answer, not a concession."""
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    result = await repair_one_conflict(
+        storage, "a.pdf", "doc-1", workspace="never-initialised-ws", apply=True
+    )
+    assert result.committed is True
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-1"
+
+
+@pytest.mark.asyncio
+async def test_a_contentless_primary_is_refused_offline_too(tmp_path):
+    """Same refusal on the CLI path, when it is given full_docs to check with."""
+    from lightrag.exceptions import SourceConflictPrimaryUnusableError
+
+    class _FullDocs:
+        supports_strict_point_reads = True
+
+        def __init__(self, contents):
+            self.contents = contents
+
+        async def get_by_id_strict(self, doc_id):
+            return self.contents.get(doc_id)
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    with pytest.raises(SourceConflictPrimaryUnusableError, match="doc-2"):
+        await repair_one_conflict(
+            storage,
+            "a.pdf",
+            "doc-2",
+            workspace="content-ws",
+            full_docs=_FullDocs({"doc-1": {"content": "x"}}),
+            apply=True,
+        )
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)

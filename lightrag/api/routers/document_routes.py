@@ -49,6 +49,7 @@ from lightrag.base import (
 )
 from lightrag.exceptions import (
     PipelineBackpressureError,
+    SourceConflictPrimaryUnusableError,
     SourceConflictRepairCASError,
     StorageCapabilityError,
     StorageControlPlaneError,
@@ -66,8 +67,9 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_VECTOR,
 )
 from lightrag.tools.source_conflict_repair import (
-    verify_repair_outcome,
+    refuse_a_contentless_primary,
     source_conflict_repair_lock,
+    verify_repair_outcome,
 )
 from lightrag.kg.scan_job_store import (
     SAMPLE_BUCKETS,
@@ -1802,8 +1804,8 @@ async def _acquire_destructive_busy(
             ),
             (
                 "pending_enqueues",
-                "Document upload/insert is being enqueued. Wait for in-flight "
-                "work to complete before clearing or deleting.",
+                "An upload/insert or a source-conflict repair is in flight. "
+                "Wait for it to complete before clearing or deleting.",
             ),
         ),
     )
@@ -3979,8 +3981,8 @@ def create_document_routes(
                     ),
                     (
                         "pending_enqueues",
-                        "Document upload/insert is being enqueued. Wait for in-flight "
-                        "work to complete before triggering a scan.",
+                        "An upload/insert or a source-conflict repair is in "
+                        "flight. Wait for it to complete before triggering a scan.",
                     ),
                     (
                         "manual_freeze_requested",
@@ -4357,6 +4359,12 @@ def create_document_routes(
                 async with source_conflict_repair_lock(
                     rag.workspace, payload.canonical_source_key
                 ):
+                    # A stub with no content can never own the source, and a scan
+                    # would delete it out from under the demotions — refuse
+                    # inside the lock, where the answer cannot go stale.
+                    await refuse_a_contentless_primary(
+                        rag.full_docs, payload.primary_doc_id
+                    )
                     result = await rag.doc_status.repair_source_conflict(
                         payload.canonical_source_key,
                         primary_doc_id=payload.primary_doc_id,
@@ -4381,6 +4389,24 @@ def create_document_routes(
                         payload.primary_doc_id,
                         result,
                     )
+        except SourceConflictPrimaryUnusableError as unusable_primary:
+            # A DIFFERENT 409 from the one below: this primary IS a candidate, it
+            # just cannot own the source (no content). Reporting it as "not a
+            # candidate" would send the operator to re-list a conflict that has
+            # not changed. The message names the state and the fix; it is built
+            # here from sanitized request values, like its sibling.
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {unusable_primary}"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Document {audit_primary} has no full_docs content, so it "
+                    f"cannot own source '{audit_key}'. Choose a primary that has "
+                    "content."
+                ),
+            )
         except ValueError as not_a_candidate:
             # The named primary is not currently a primary candidate: either a
             # typo or a view that went stale. Same recovery either way — list the
