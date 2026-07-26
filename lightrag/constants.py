@@ -279,6 +279,19 @@ PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued_
 # include its staged chunk IDs. Lives here (not utils_pipeline) so that
 # base.py can derive the scheduling projection without an import cycle.
 CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
+# doc_status.metadata keys that record a DEMOTION: this row is not the primary
+# claimant of its canonical source. ``is_duplicate`` is what every backend's
+# primary-candidate predicate keys off (``_basename_of`` returns None for it),
+# so these are load-bearing state, not display fields — every metadata rebuild
+# (status transitions AND the manual FAILED→PENDING reset) must carry them
+# across or the demotion silently reverts and the source key returns to
+# conflict. Written by enqueue's duplicate records, by the post-parse
+# content-hash duplicate marking, and by the operator's source-conflict repair.
+DUPLICATE_DEMOTION_METADATA_KEYS: tuple[str, ...] = (
+    "is_duplicate",
+    "duplicate_kind",
+    "original_doc_id",
+)
 # Prefix marking a doc_status content_summary as GENERATED from a file
 # extraction error (enqueue-time error documents and parse-stage FAILED
 # upserts). Doubles as the match sentinel that lets a later failure replace

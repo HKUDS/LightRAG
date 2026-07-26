@@ -388,6 +388,14 @@ def test_carry_over_keys_grouped_by_stage():
         # operation; must survive every status transition until commit or
         # rollback.
         "custom_chunk_patch",
+        # Duplicate demotion — NOT stage fields, so they sit after the stage
+        # groups and do not disturb the dialog's timeline. ``is_duplicate`` is
+        # the predicate every backend uses to exclude a row from its canonical
+        # source's primary candidates, so a transition that dropped it silently
+        # re-promoted a demoted row and put the source key back in conflict.
+        "is_duplicate",
+        "duplicate_kind",
+        "original_doc_id",
     )
 
 

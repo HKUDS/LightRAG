@@ -27,6 +27,7 @@ from lightrag.base import (
 )
 from lightrag.constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
     LIGHTRAG_DOC_CONTENT_PREFIX,
@@ -300,6 +301,14 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     # in-flight/failed ainsert_custom_chunks operation. Must survive every
     # status transition until the operation commits or is rolled back.
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    # Duplicate demotion. ``metadata.is_duplicate`` is not a display field: it is
+    # the ONLY thing that makes a row ineligible as a primary candidate for its
+    # canonical source (``_basename_of`` returns None for it), so an operator's
+    # source-conflict repair lives or dies with it. Dropping it on a transition
+    # silently re-promoted the demoted row and put the key back in conflict —
+    # and since a repair deliberately keeps the row's content and status, that
+    # row is a normal document the pipeline will happily transition.
+    *DUPLICATE_DEMOTION_METADATA_KEYS,
 )
 
 
@@ -398,6 +407,12 @@ _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     # journal must survive — stripping it would orphan the operation's staged
     # data with no recovery anchor (issue #3400).
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    # A demotion is an operator decision, not a per-attempt result: the manual
+    # FAILED→PENDING retry must not undo it. A demoted row keeps its content and
+    # its FAILED status, so it is reset like any other failed document — and
+    # without these keys that reset handed the canonical source back to it,
+    # putting the key straight back into conflict.
+    *DUPLICATE_DEMOTION_METADATA_KEYS,
 )
 
 
