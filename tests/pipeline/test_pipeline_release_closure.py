@@ -1709,12 +1709,15 @@ def test_concurrent_enqueue_dedupes_same_content_different_filenames(tmp_path):
         try:
             original = pipeline_module.get_existing_doc_by_content_hash
 
-            async def yielding_get_by_content_hash(doc_status, content_hash):
+            async def yielding_get_by_content_hash(doc_status, content_hash, **kwargs):
                 # Yield to the event loop so the SECOND enqueue gets a
                 # chance to run its dedup read before we proceed.  This
                 # is the exact interleaving the lock must defeat.
                 await asyncio.sleep(0)
-                return await original(doc_status, content_hash)
+                # Pass the caller's kwargs through: this double stands in for the
+                # real lookup, so it must not quietly drop what the enqueue path
+                # sends it (``candidate_doc_id`` gates the pointer-row guard).
+                return await original(doc_status, content_hash, **kwargs)
 
             import unittest.mock
 

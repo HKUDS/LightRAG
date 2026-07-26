@@ -802,13 +802,81 @@ async def resolve_existing_doc_source(
     return await doc_status.resolve_doc_source_strict(basename)
 
 
-async def get_existing_doc_by_content_hash(
-    doc_status: DocStatusStorage, content_hash: str
+def _recorded_original_doc_id(row: Any) -> str:
+    """The ``original_doc_id`` a row marked ``metadata.is_duplicate`` points at.
+
+    Empty string for a PRIMARY row (``is_duplicate`` unset/false) and for a
+    duplicate that recorded no usable original — the same ``metadata.is_duplicate``
+    reading every backend's primary-candidate query uses.
+    """
+    metadata = doc_status_field(row, "metadata", {})
+    if not isinstance(metadata, dict) or not metadata.get("is_duplicate"):
+        return ""
+    original = metadata.get("original_doc_id")
+    return original if isinstance(original, str) else ""
+
+
+def _drop_a_duplicate_pointing_back(
+    match: tuple[str, Any] | None, doc_id: str
 ) -> tuple[str, Any] | None:
-    """Find an existing doc_status record by content hash."""
+    """Discard a content-hash match that names ``doc_id`` as ITS original.
+
+    A row marked ``metadata.is_duplicate`` is not a content holder in its own
+    right — it is a pointer to the row that is. When that pointer names the very
+    document being checked, the two rows state the same relationship from
+    opposite ends, and answering "yes, a duplicate — of that row" closes a cycle:
+    both rows end up ``is_duplicate=true`` naming each other, the canonical
+    source key they share is left with NO primary at all, and neither the repair
+    endpoint (it only accepts a *current primary candidate*) nor a re-upload of
+    the same bytes (it re-derives the same content-addressed doc id and dedups
+    against the same pointer row) can give it one back.
+
+    This needs no race to happen. The documented source-conflict repair demotes
+    every losing candidate with ``original_doc_id=<the primary the operator
+    kept>``; when that kept primary had not been parsed yet — a PENDING upload is
+    a perfectly ordinary conflict candidate — its post-parse duplicate check then
+    meets the demoted row still carrying the same content hash, and marks the
+    operator's chosen primary FAILED-duplicate *of the row the operator just
+    demoted*, deleting its ``full_docs`` body on the way out. The demotion is
+    exactly the row this guard drops.
+
+    Narrow on purpose: a duplicate row pointing at a THIRD document is still
+    returned. The content really does exist elsewhere in that case, and refusing
+    every duplicate-marked match would fail open — it would re-admit genuine
+    content duplicates whose original is alive and well.
+    """
+    if match is None or not doc_id:
+        return match
+    matched_doc_id, row = match
+    if _recorded_original_doc_id(row) != doc_id:
+        return match
+    logger.info(
+        f"Ignoring content-hash match {matched_doc_id} for {doc_id}: that row is "
+        f"marked duplicate OF {doc_id}, so {doc_id} is the original (marking it a "
+        "duplicate would leave their shared source with no primary)"
+    )
+    return None
+
+
+async def get_existing_doc_by_content_hash(
+    doc_status: DocStatusStorage,
+    content_hash: str,
+    *,
+    candidate_doc_id: str = "",
+) -> tuple[str, Any] | None:
+    """Find an existing doc_status record by content hash.
+
+    ``candidate_doc_id`` is the id the caller is about to create (the enqueue
+    dedup check runs before the row exists). Passing it lets the lookup discard a
+    match that is itself a duplicate row naming that id as its original — see
+    :func:`_drop_a_duplicate_pointing_back`; without it, a document whose primary
+    row was deleted can never be re-ingested, because the pointer row left behind
+    keeps answering for it.
+    """
     if not content_hash:
         return None
-    return await doc_status.get_doc_by_content_hash(content_hash)
+    match = await doc_status.get_doc_by_content_hash(content_hash)
+    return _drop_a_duplicate_pointing_back(match, candidate_doc_id)
 
 
 async def get_duplicate_doc_by_content_hash(
@@ -824,12 +892,16 @@ async def get_duplicate_doc_by_content_hash(
     the previous ``get_docs_by_statuses(list(DocStatus))`` full-store scan
     fallback, which materialized the entire doc_status store (every status,
     including the whole PROCESSED corpus with chunks_list) once per document.
+
+    A returned row is never one that points back at ``current_doc_id`` as its own
+    original (see :func:`_drop_a_duplicate_pointing_back`).
     """
     if not content_hash:
         return None
-    return await doc_status.get_doc_by_content_hash(
+    match = await doc_status.get_doc_by_content_hash(
         content_hash, exclude_doc_id=current_doc_id
     )
+    return _drop_a_duplicate_pointing_back(match, current_doc_id)
 
 
 def make_lightrag_doc_content(merged_text: str) -> str:

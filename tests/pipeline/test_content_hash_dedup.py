@@ -1,4 +1,4 @@
-"""content-hash duplicate detection is bounded (LR2 Phase 2.5).
+"""content-hash duplicate detection is bounded (LR2 Phase 2.5) and never cyclic.
 
 ``get_duplicate_doc_by_content_hash`` used to fall back to a full
 ``get_docs_by_statuses(list(DocStatus))`` scan whenever the indexed lookup
@@ -7,18 +7,31 @@ own content_hash is already persisted). Phase 2.5 pushes the self-exclusion
 INTO the query via ``get_doc_by_content_hash(..., exclude_doc_id=...)`` and
 deletes the fallback, so the check is a single bounded lookup — verified here
 against the JSON backend end-to-end, including that the fallback is gone.
+
+Also pinned here: a row that is itself marked ``metadata.is_duplicate`` is a
+POINTER at a content holder, not a holder, so it must never be reported as the
+original of the very document it points at. Answering "yes, a duplicate — of that
+row" closes an is_duplicate cycle whose shared canonical source ends up with no
+primary at all, which the repair endpoint cannot settle.
 """
 
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
+import numpy as np
 import pytest
 
+from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
-from lightrag.utils_pipeline import get_duplicate_doc_by_content_hash
+from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
+from lightrag.utils_pipeline import (
+    get_duplicate_doc_by_content_hash,
+    get_existing_doc_by_content_hash,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -28,6 +41,49 @@ class _DummyEmbeddingFunc:
 
     async def __call__(self, texts):
         return [[0.0] * 8 for _ in texts]
+
+
+class _SimpleTokenizerImpl:
+    def encode(self, content: str) -> list[int]:
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
+
+
+async def _dummy_embedding(texts: list[str]) -> np.ndarray:
+    return np.ones((len(texts), 8), dtype=float)
+
+
+async def _dummy_llm(*args, **kwargs) -> str:
+    return "ok"
+
+
+def _chunking(
+    tokenizer,
+    content,
+    split_by_character,
+    split_by_character_only,
+    chunk_overlap_token_size,
+    chunk_token_size,
+) -> list[dict]:
+    return [{"tokens": 1, "content": content, "chunk_order_index": 0}]
+
+
+async def _build_rag(tmp_path) -> LightRAG:
+    rag = LightRAG(
+        working_dir=str(tmp_path / "wd"),
+        workspace=f"chd-{uuid4().hex[:8]}",
+        llm_model_func=_dummy_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8, max_token_size=8192, func=_dummy_embedding
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
+        chunking_func=_chunking,
+        max_parallel_insert=1,
+    )
+    await rag.initialize_storages()
+    return rag
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +106,7 @@ async def _storage(tmp_path, rows: dict) -> JsonDocStatusStorage:
     return storage
 
 
-def _row(content_hash: str, created_at: str) -> dict:
+def _row(content_hash: str, created_at: str, metadata: dict | None = None) -> dict:
     return {
         "content_summary": "s",
         "content_length": 3,
@@ -58,11 +114,21 @@ def _row(content_hash: str, created_at: str) -> dict:
         "status": DocStatus.PROCESSED,
         "created_at": created_at,
         "updated_at": created_at,
-        "metadata": {},
+        "metadata": metadata if metadata is not None else {},
         "error_msg": None,
         "chunks_list": [],
         "content_hash": content_hash,
     }
+
+
+def _demoted_row(content_hash: str, created_at: str, original_doc_id: str) -> dict:
+    """A row a source-conflict repair demoted: content and status kept, its claim
+    on the canonical source replaced by a pointer at the primary that won."""
+    return _row(
+        content_hash,
+        created_at,
+        {"is_duplicate": True, "original_doc_id": original_doc_id},
+    )
 
 
 def test_get_doc_by_content_hash_excludes_self(tmp_path):
@@ -111,6 +177,129 @@ def test_duplicate_check_finds_other_and_ignores_self(tmp_path):
             await get_duplicate_doc_by_content_hash(storage, "uniq", "doc-unique")
             is None
         )
+
+    asyncio.run(_run())
+
+
+def test_a_row_demoted_in_favour_of_this_doc_is_not_its_duplicate(tmp_path):
+    """Fix-proof: the post-parse check returned the demoted row, so the primary an
+    operator explicitly kept was marked FAILED-duplicate OF the row they demoted —
+    both rows ``is_duplicate=true`` naming each other and their shared canonical
+    source left with no primary at all, which no repair can settle (the endpoint
+    only accepts a current primary candidate).
+
+    No race needed: a PENDING upload is an ordinary conflict candidate, so the
+    repair commits while the kept primary still has to be parsed, and the demoted
+    row keeps the content hash that the parse then matches.
+    """
+
+    async def _run():
+        storage = await _storage(
+            tmp_path,
+            {
+                # The repair kept doc-primary and demoted doc-demoted.
+                "doc-demoted": _demoted_row(
+                    "dup", "2026-01-01T00:00:00", "doc-primary"
+                ),
+                "doc-primary": _row("dup", "2026-02-01T00:00:00"),
+            },
+        )
+        # The backend still reports the row — the pointer is bookkeeping, not a
+        # content-hash property — so the guard has to live above it.
+        raw = await storage.get_doc_by_content_hash("dup", exclude_doc_id="doc-primary")
+        assert raw is not None and raw[0] == "doc-demoted"
+
+        assert (
+            await get_duplicate_doc_by_content_hash(storage, "dup", "doc-primary")
+            is None
+        )
+
+    asyncio.run(_run())
+
+
+def test_a_pointer_row_does_not_block_re_ingesting_its_missing_original(tmp_path):
+    """Enqueue side of the same rule: a duplicate row naming a doc id that no
+    longer exists must not answer for it, or content whose primary row was deleted
+    could never be re-uploaded — a doc id is derived deterministically from the
+    file name, so the re-upload asks about the very id the pointer names."""
+
+    async def _run():
+        storage = await _storage(
+            tmp_path,
+            {"doc-pointer": _demoted_row("dup", "2026-01-01T00:00:00", "doc-gone")},
+        )
+        # Without the candidate id, the lookup is unchanged: SOME row holds the hash.
+        match = await get_existing_doc_by_content_hash(storage, "dup")
+        assert match is not None and match[0] == "doc-pointer"
+        # Re-uploading the same bytes derives doc-gone again → admitted.
+        assert (
+            await get_existing_doc_by_content_hash(
+                storage, "dup", candidate_doc_id="doc-gone"
+            )
+            is None
+        )
+        # A different new document IS a genuine duplicate of that content.
+        assert (
+            await get_existing_doc_by_content_hash(
+                storage, "dup", candidate_doc_id="doc-other"
+            )
+            is not None
+        )
+
+    asyncio.run(_run())
+
+
+def test_a_duplicate_pointing_at_a_third_document_is_still_a_duplicate(tmp_path):
+    """The guard is narrow on purpose. When the matched row points somewhere ELSE,
+    the content really does exist under another document, and dropping the match
+    would fail open — re-admitting a genuine content duplicate."""
+
+    async def _run():
+        storage = await _storage(
+            tmp_path,
+            {
+                "doc-pointer": _demoted_row("dup", "2026-01-01T00:00:00", "doc-orig"),
+                "doc-orig": _row("dup", "2026-01-02T00:00:00"),
+            },
+        )
+        match = await get_duplicate_doc_by_content_hash(storage, "dup", "doc-new")
+        assert match is not None and match[0] == "doc-pointer"
+
+    asyncio.run(_run())
+
+
+def test_enqueue_re_admits_a_document_whose_pointer_row_outlived_it(tmp_path):
+    """The enqueue leg, end to end through ``apipeline_enqueue_documents``.
+
+    Fix-proof: with only a pointer row left (``a.txt`` demoted in favour of
+    ``b.txt``, then ``b.txt`` deleted), re-uploading ``b.txt`` was rejected as a
+    content-hash duplicate OF THE POINTER — so the file could never be ingested
+    again, and each attempt only added another FAILED duplicate record naming a
+    document that does not exist.
+    """
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            body = "the shared body"
+            await rag.apipeline_enqueue_documents(input=body, file_paths="a.txt")
+            demoted_id = compute_mdhash_id("a.txt", prefix="doc-")
+            revived_id = compute_mdhash_id("b.txt", prefix="doc-")
+
+            # A source-conflict repair kept b.txt and demoted a.txt; b.txt was
+            # then deleted, leaving only the pointer.
+            row = dict(await rag.doc_status.get_by_id(demoted_id))
+            row["metadata"] = {"is_duplicate": True, "original_doc_id": revived_id}
+            await rag.doc_status.upsert({demoted_id: row})
+
+            await rag.apipeline_enqueue_documents(input=body, file_paths="b.txt")
+
+            revived = await rag.doc_status.get_by_id(revived_id)
+            assert revived is not None, "b.txt was not enqueued at all"
+            assert revived["status"] == DocStatus.PENDING.value
+            assert not (revived.get("metadata") or {}).get("is_duplicate")
+        finally:
+            await rag.finalize_storages()
 
     asyncio.run(_run())
 

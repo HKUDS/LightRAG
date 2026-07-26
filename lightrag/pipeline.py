@@ -1128,7 +1128,13 @@ class _PipelineMixin:
                 if not content_hash:
                     continue
                 hash_match = await get_existing_doc_by_content_hash(
-                    self.doc_status, content_hash
+                    self.doc_status,
+                    content_hash,
+                    # This id does not exist yet (filter_keys removed the ones
+                    # that do); passing it lets the lookup ignore a pointer row
+                    # that names it as ITS original, which is what makes content
+                    # whose primary row was deleted re-ingestible.
+                    candidate_doc_id=doc_id,
                 )
                 if hash_match:
                     existing_doc_id, existing_doc = hash_match
