@@ -39,6 +39,7 @@ from lightrag.base import (
     SourceUnique,
 )
 from lightrag.constants import (
+    ENQUEUE_SERIALIZE_LOCK_NAMESPACE,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
@@ -917,7 +918,7 @@ class _PipelineMixin:
         # ingress publish inside is fine; no caller holds
         # pipeline_status_lock first then needs enqueue_serialize).
         enqueue_serialize_lock = get_namespace_lock(
-            "enqueue_serialize", workspace=self.workspace
+            ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=self.workspace
         )
         status_upsert_error: Exception | None = None
         process_after_status_error = False

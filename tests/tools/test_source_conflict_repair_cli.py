@@ -153,3 +153,66 @@ async def test_unknown_primary_is_refused_before_any_write(tmp_path):
         await repair_one_conflict(storage, "a.pdf", "doc-typo", apply=True)
 
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_commit_holds_the_enqueue_serialize_lock(tmp_path):
+    """Fix-proof for the contract gap: no backend can block a NEW primary being
+    inserted between the repair's re-read and its demotions, so the commit must
+    hold the SAME workspace lock the enqueue critical section holds. Without it,
+    an enqueue could interleave and the repair would still report committed=True
+    on a key that is still in conflict.
+    """
+    import asyncio
+
+    from lightrag.constants import ENQUEUE_SERIALIZE_LOCK_NAMESPACE
+    from lightrag.kg.shared_storage import get_namespace_lock
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    workspace = "enqueue-ws"
+    enqueue_ran: list[str] = []
+
+    # Stand in for the enqueue critical section (filter_keys → dedup → upsert).
+    async def _enqueue_critical_section():
+        async with get_namespace_lock(
+            ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=workspace
+        ):
+            enqueue_ran.append("enqueue")
+
+    original = storage.repair_source_conflict
+    observed_during_repair: list[list[str]] = []
+
+    async def _observing(key, **kwargs):
+        # Sampled inside the backend call — precisely the re-read → demote span
+        # the CAS cannot protect.
+        if not kwargs.get("dry_run", True):
+            await asyncio.sleep(0)
+            observed_during_repair.append(list(enqueue_ran))
+        return await original(key, **kwargs)
+
+    storage.repair_source_conflict = _observing
+
+    async with get_namespace_lock(
+        ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=workspace
+    ):
+        # The enqueue lock is held, so a correctly-locked commit cannot start.
+        commit = asyncio.create_task(
+            repair_one_conflict(
+                storage, "a.pdf", "doc-2", workspace=workspace, apply=True
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not commit.done(), (
+            "the commit ran while the enqueue-serialize lock was held — the "
+            "phantom-insert window is still open"
+        )
+
+    result = await commit
+    assert result.committed is True
+    # And an enqueue cannot slip inside the backend's re-read → demote span.
+    await _enqueue_critical_section()
+    assert observed_during_repair == [[]]
+    resolved = await storage.resolve_doc_source_strict("a.pdf")
+    assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-2"

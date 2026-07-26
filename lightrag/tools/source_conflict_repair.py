@@ -19,10 +19,11 @@ on the canonical source.
 Safety model:
 
 - listing and ``repair`` without ``--apply`` mutate nothing;
-- ``--apply`` re-reads the candidate set under the backend's repair lock and
-  commits only when it still matches the dry-run it just performed
-  (compare-and-set), so a concurrent enqueue/delete fails the repair instead of
-  being overwritten;
+- ``--apply`` re-reads the candidate set and commits only when it still matches
+  the dry-run it just performed (compare-and-set), so a concurrent enqueue/delete
+  fails the repair instead of being overwritten; the commit runs under the
+  canonical-key + enqueue-serialize locks, which is what keeps a NEW primary from
+  being inserted between that re-read and the demotions;
 - a repair interrupted half-way needs no reconciliation: the finished rows
   already express ``duplicate`` and the rest still resolve as a conflict, so
   simply run it again.
@@ -51,9 +52,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 from lightrag.base import CURSOR_END, CURSOR_START, SourceConflictSummary
+from lightrag.constants import (
+    ENQUEUE_SERIALIZE_LOCK_NAMESPACE,
+    SOURCE_CONFLICT_LOCK_NAMESPACE,
+)
 from lightrag.exceptions import (
     SourceConflictRepairCASError,
     StorageCapabilityError,
@@ -64,6 +70,50 @@ from lightrag.exceptions import (
 # key, and --all stops after this many pages so a pathological workspace cannot
 # turn a listing into an unbounded walk.
 _MAX_PAGES = 1000
+
+
+@asynccontextmanager
+async def source_conflict_repair_lock(workspace: str, canonical_source_key: str):
+    """Hold the caller-side locks a source-conflict COMMIT requires.
+
+    ``repair_source_conflict`` re-reads the candidate set and demotes the losers;
+    no backend can stop a new primary being INSERTED in between (``FOR UPDATE``
+    locks only the rows it saw, a snapshot transaction never sees a phantom, and
+    Redis/OpenSearch have no transaction at all), so excluding that insert is the
+    caller's job — see ``DocStatusStorage.repair_source_conflict``.
+
+    Two locks, always in this order:
+
+    * a keyed lock on the canonical source key — serializes concurrent repairs of
+      the SAME key without blocking repairs of other keys;
+    * the workspace's enqueue-serialize lock — the one that actually excludes the
+      phantom, because it is the same lock the enqueue critical section
+      (``filter_keys`` → dedup → ``doc_status.upsert``) holds.
+
+    Lock order is keyed → namespace, and the enqueue path never takes the keyed
+    lock, so no cycle exists. Scope is one deployment (its worker processes
+    included), not several deployments sharing a database — a repair run against
+    a database that another deployment is writing to keeps the phantom window.
+    """
+    # Imported lazily: the CLI initializes shared storage in main(), and
+    # importing at module scope would bind before that happens.
+    from lightrag.kg.shared_storage import (
+        get_namespace_lock,
+        get_storage_keyed_lock,
+    )
+
+    keyed_namespace = (
+        f"{workspace}:{SOURCE_CONFLICT_LOCK_NAMESPACE}"
+        if workspace
+        else SOURCE_CONFLICT_LOCK_NAMESPACE
+    )
+    async with get_storage_keyed_lock(
+        [canonical_source_key], namespace=keyed_namespace, enable_logging=False
+    ):
+        async with get_namespace_lock(
+            ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=workspace
+        ):
+            yield
 
 
 async def collect_source_conflicts(
@@ -96,6 +146,7 @@ async def repair_one_conflict(
     canonical_source_key: str,
     primary_doc_id: str,
     *,
+    workspace: str = "",
     apply: bool = False,
 ) -> Any:
     """Dry-run one repair and, with ``apply``, commit it with that fresh token.
@@ -103,24 +154,46 @@ async def repair_one_conflict(
     The commit echoes the count/fingerprint the dry-run just returned, so the
     backend still fails closed if the candidate set changes in between — the CAS
     is not bypassed by automating the two steps, only the copy-paste is.
+
+    The commit additionally runs under the caller-side locks the storage contract
+    requires: a keyed lock on the canonical source key (serializing concurrent
+    repairs of the same key) plus the workspace's enqueue-serialize lock, which
+    is what actually excludes a new primary being INSERTED between the backend's
+    re-read and its demotions — no backend can block that phantom on its own. A
+    phantom that lands BEFORE the commit is already caught by the CAS (a new
+    primary changes both the count and the fingerprint); the locks close the one
+    window the CAS cannot see, inside the backend call itself.
+    ``workspace`` must be the LightRAG instance's workspace (``rag.workspace``),
+    NOT ``doc_status.workspace``: a backend may override its own workspace from
+    the environment, and a lock keyed on the wrong one excludes nothing.
     """
-    dry = await doc_status.repair_source_conflict(
-        canonical_source_key,
-        primary_doc_id=primary_doc_id,
-        # Ignored in dry-run mode by contract; the tokens below come from it.
-        expected_candidate_count=0,
-        expected_candidate_fingerprint="",
-        dry_run=True,
-    )
     if not apply:
-        return dry
-    return await doc_status.repair_source_conflict(
-        canonical_source_key,
-        primary_doc_id=primary_doc_id,
-        expected_candidate_count=dry.candidate_count,
-        expected_candidate_fingerprint=dry.fingerprint,
-        dry_run=False,
-    )
+        return await doc_status.repair_source_conflict(
+            canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            # Ignored in dry-run mode by contract.
+            expected_candidate_count=0,
+            expected_candidate_fingerprint="",
+            dry_run=True,
+        )
+    # The dry-run stays INSIDE the lock, but its token is never refreshed: the
+    # CAS must still be able to refuse. A candidate set that moved before the
+    # lock was taken SHOULD 409 rather than be silently accepted.
+    async with source_conflict_repair_lock(workspace, canonical_source_key):
+        dry = await doc_status.repair_source_conflict(
+            canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            expected_candidate_count=0,
+            expected_candidate_fingerprint="",
+            dry_run=True,
+        )
+        return await doc_status.repair_source_conflict(
+            canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            expected_candidate_count=dry.candidate_count,
+            expected_candidate_fingerprint=dry.fingerprint,
+            dry_run=False,
+        )
 
 
 def _print_conflicts(conflicts: list[SourceConflictSummary]) -> None:
@@ -203,7 +276,13 @@ async def _async_main(args: argparse.Namespace) -> bool:
             )
             return True
         result = await repair_one_conflict(
-            doc_status, args.source, args.primary, apply=args.apply
+            doc_status,
+            args.source,
+            args.primary,
+            # rag.workspace, not doc_status.workspace: a backend may override
+            # its own from the environment, and the enqueue path locks on this one.
+            workspace=rag.workspace,
+            apply=args.apply,
         )
         _print_repair(result)
         return True
@@ -212,7 +291,7 @@ async def _async_main(args: argparse.Namespace) -> bool:
         print("Run 'list' again — the candidate set may have changed.")
         return False
     except SourceConflictRepairCASError as cas_error:
-        print(f"Refused (candidate set changed under the repair lock): {cas_error}")
+        print(f"Refused (candidate set changed under the repair CAS): {cas_error}")
         print("Nothing was modified. Run the command again.")
         return False
     except StorageCapabilityError as capability_error:

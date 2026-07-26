@@ -485,3 +485,19 @@ DEFAULT_OLLAMA_DIGEST = "sha256:lightrag"
 # journaled document just to describe what it did — counts are exact, the id
 # lists are a bounded sample (see arollback_failed_custom_chunk_patches).
 ROLLBACK_REPORT_SAMPLE_CAP = 32
+
+# ---------------------------------------------------------------------------
+# Lock namespaces shared across modules (kept here so the string literals
+# cannot drift apart — two locks that disagree by a typo silently stop
+# excluding each other).
+# ---------------------------------------------------------------------------
+
+# Workspace-scoped namespace lock serializing the enqueue critical section
+# (filter_keys → basename/content dedup → doc_status.upsert). Source-conflict
+# repair takes the SAME lock so a new primary cannot be inserted between the
+# repair's re-read and its demotions (see DocStatusStorage.repair_source_conflict).
+ENQUEUE_SERIALIZE_LOCK_NAMESPACE = "enqueue_serialize"
+
+# Keyed-lock namespace for per-canonical-source-key serialization, mirroring the
+# "<workspace>:DocPatch" idiom. Keys are canonical source keys.
+SOURCE_CONFLICT_LOCK_NAMESPACE = "DocSource"

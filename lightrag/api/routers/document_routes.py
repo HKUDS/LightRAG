@@ -64,6 +64,7 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_RECURSIVE,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
+from lightrag.tools.source_conflict_repair import source_conflict_repair_lock
 from lightrag.kg.scan_job_store import (
     SAMPLE_BUCKETS,
     SCAN_JOB_LEASE_SECONDS,
@@ -4022,9 +4023,12 @@ def create_document_routes(
            current ``candidate_count`` and ``fingerprint`` — a digest over the
            candidate doc IDs in stable order.
         2. Echo both back with ``dry_run=false`` to commit. The backend re-reads
-           the candidate set under a write lock and refuses (409) when the set
-           changed in between, so a concurrent enqueue/delete is never silently
-           overwritten.
+           the candidate set and refuses (409) when it changed in between, so a
+           concurrent enqueue/delete is never silently overwritten. The commit
+           runs under the canonical-key + enqueue-serialize locks, which is what
+           keeps a NEW primary from being inserted between that re-read and the
+           demotions (no backend can block that phantom on its own — see
+           ``DocStatusStorage.repair_source_conflict``).
 
         The commit marks every candidate other than ``primary_doc_id`` with
         ``metadata.is_duplicate=true`` and ``original_doc_id=<primary>``. Content
@@ -4053,19 +4057,41 @@ def create_document_routes(
         audit_primary = safe_log_value(payload.primary_doc_id)
         action = "dry-run" if payload.dry_run else "COMMIT"
         try:
-            result = await rag.doc_status.repair_source_conflict(
-                payload.canonical_source_key,
-                primary_doc_id=payload.primary_doc_id,
-                expected_candidate_count=(
-                    payload.expected_candidate_count
-                    if payload.expected_candidate_count is not None
-                    else 0
-                ),
-                expected_candidate_fingerprint=(
-                    payload.expected_candidate_fingerprint or ""
-                ),
-                dry_run=payload.dry_run,
-            )
+            if payload.dry_run:
+                result = await rag.doc_status.repair_source_conflict(
+                    payload.canonical_source_key,
+                    primary_doc_id=payload.primary_doc_id,
+                    expected_candidate_count=(
+                        payload.expected_candidate_count
+                        if payload.expected_candidate_count is not None
+                        else 0
+                    ),
+                    expected_candidate_fingerprint=(
+                        payload.expected_candidate_fingerprint or ""
+                    ),
+                    dry_run=True,
+                )
+            else:
+                # Only the COMMIT needs the locks: the operator's two requests
+                # are bridged by the CAS token, so what must be serialized is
+                # the backend's internal re-read → demote span, not the gap
+                # between the two HTTP calls.
+                async with source_conflict_repair_lock(
+                    rag.workspace, payload.canonical_source_key
+                ):
+                    result = await rag.doc_status.repair_source_conflict(
+                        payload.canonical_source_key,
+                        primary_doc_id=payload.primary_doc_id,
+                        expected_candidate_count=(
+                            payload.expected_candidate_count
+                            if payload.expected_candidate_count is not None
+                            else 0
+                        ),
+                        expected_candidate_fingerprint=(
+                            payload.expected_candidate_fingerprint or ""
+                        ),
+                        dry_run=False,
+                    )
         except ValueError as not_a_candidate:
             # The named primary is not currently a primary candidate: either a
             # typo or a view that went stale. Same recovery either way — list the
