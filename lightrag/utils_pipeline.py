@@ -14,6 +14,7 @@ import json
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
@@ -800,6 +801,54 @@ async def resolve_existing_doc_source(
     if basename == "unknown_source":
         return SourceAbsent()
     return await doc_status.resolve_doc_source_strict(basename)
+
+
+@asynccontextmanager
+async def source_candidate_set_lock(workspace: str, canonical_source_key: str):
+    """Serialize writers that change WHICH documents claim one canonical source.
+
+    LR2 §5.5 requires a source-conflict commit to be mutually exclusive with
+    every writer that can change that key's candidate set — enqueue, delete,
+    manual reset, scan stale-stub deletion AND the processing stage's duplicate
+    marking. This is the keyed lock both sides take, defined once so the two
+    cannot compute a different namespace or key and silently stop excluding each
+    other (they are in different modules and only the string makes them the same
+    lock).
+
+    Lock ORDER, when a caller needs more than this one: the workspace's
+    enqueue-serialize lock OUTSIDE, this keyed lock inside, any
+    ``pipeline_status`` lock innermost. That is the order the enqueue path would
+    naturally take (it already holds enqueue-serialize and would reach for a
+    keyed source lock inside it), so every holder of both agrees and no cycle
+    exists. ``source_conflict_repair_lock`` acquires them in exactly that order.
+
+    Process-LOCAL machinery, so the scope is one deployment (its worker
+    processes included — they share the Manager the master created). A standalone
+    CLI or a second deployment writing the same database is outside it; the CAS
+    and the post-commit re-resolve are what keep those honest.
+
+    A document with no usable source identity (``unknown_source`` and friends) is
+    never a primary candidate for any key — every backend's candidate query
+    excludes it — so there is nothing to serialize and no lock is taken. That is
+    not a shortcut: locking on the sentinel would funnel EVERY unsourced document
+    in the workspace through one keyed lock.
+    """
+    from lightrag.constants import SOURCE_CONFLICT_LOCK_NAMESPACE
+    from lightrag.kg.shared_storage import get_storage_keyed_lock
+
+    canonical = normalize_document_file_path(canonical_source_key)
+    if not canonical or canonical in PLACEHOLDER_DOCUMENT_SOURCES:
+        yield
+        return
+    namespace = (
+        f"{workspace}:{SOURCE_CONFLICT_LOCK_NAMESPACE}"
+        if workspace
+        else SOURCE_CONFLICT_LOCK_NAMESPACE
+    )
+    async with get_storage_keyed_lock(
+        [canonical], namespace=namespace, enable_logging=False
+    ):
+        yield
 
 
 async def get_existing_doc_by_content_hash(

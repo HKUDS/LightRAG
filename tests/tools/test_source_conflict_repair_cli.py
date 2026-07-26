@@ -617,3 +617,73 @@ async def test_a_primary_that_duplicates_another_source_is_refused_offline_too(
             apply=True,
         )
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_a_document_already_marked_duplicate_is_refused_before_any_demotion(
+    tmp_path,
+):
+    """The other linearization the source-key lock establishes (stability test —
+    this direction was already refused; what is new is that the lock guarantees
+    the two operations cannot overlap, so this is the ONLY thing the repair can
+    see once the marking has won).
+
+    Marking wins → the primary is no longer a candidate → the commit refuses
+    before demoting anything, instead of writing irreversible demotions and then
+    reporting a 503 about storage that was fine.
+    """
+    rows = {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    # doc-2 lost its claim the way _mark_duplicate_after_parse takes it away.
+    rows["doc-2"]["metadata"] = {
+        "is_duplicate": True,
+        "duplicate_kind": "content_hash",
+        "original_doc_id": "doc-elsewhere",
+    }
+    storage = await _storage(tmp_path, rows)
+
+    with pytest.raises(ValueError, match="not a current primary candidate"):
+        await repair_one_conflict(
+            storage,
+            "a.pdf",
+            "doc-2",
+            workspace="linearized-ws",
+            full_docs=_AnyContent(),
+            apply=True,
+        )
+    # doc-1 keeps its claim: nothing was demoted on the way to the refusal.
+    assert (await storage.get_by_id("doc-1")).get("metadata") in (None, {})
+
+
+@pytest.mark.asyncio
+async def test_the_absent_recovery_hint_matches_what_actually_happened(tmp_path):
+    """Fix-proof: the hint said "delete the leftover row and re-upload to claim the
+    source again", which does not work while the content's new holder still exists
+    — a doc id is derived from the file name, so the re-upload is deduplicated
+    against that holder and the key stays Absent. The hint now reads the row and
+    names the real condition."""
+    from lightrag.exceptions import StorageControlPlaneError
+    from lightrag.tools.source_conflict_repair import verify_repair_outcome
+
+    rows = {"doc-keep": _row("a.pdf", "failed")}
+    rows["doc-keep"]["metadata"] = {
+        "is_duplicate": True,
+        "duplicate_kind": "content_hash",
+        "original_doc_id": "doc-holder",
+    }
+    storage = await _storage(tmp_path, rows)
+    result = SimpleNamespace(demoted_sample_doc_ids=("doc-lose",))
+
+    with pytest.raises(StorageControlPlaneError) as raised:
+        await verify_repair_outcome(storage, "a.pdf", "doc-keep", result)
+
+    message = str(raised.value)
+    assert "doc-holder" in message
+    assert "NOT enough" in message  # deleting the leftover row does not suffice
+    assert "cannot be re-run" in message
+
+    # The complement: a primary that simply vanished IS recoverable by re-ingest.
+    async with storage._storage_lock:
+        del storage._data["doc-keep"]
+    with pytest.raises(StorageControlPlaneError) as gone:
+        await verify_repair_outcome(storage, "a.pdf", "doc-keep", result)
+    assert "re-ingest the file" in str(gone.value)

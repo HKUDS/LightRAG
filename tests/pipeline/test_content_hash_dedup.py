@@ -366,3 +366,111 @@ def test_duplicate_check_never_full_scans_all_statuses(tmp_path):
         )
 
     asyncio.run(_run())
+
+
+def test_the_repair_and_duplicate_marking_are_linearized_by_the_source_lock(tmp_path):
+    """LR2 §5.5: a source-conflict commit must be mutually exclusive with every
+    writer that changes the key's candidate set — the processing stage's duplicate
+    marking included.
+
+    Fix-proof: the marking held no source-key lock, so it could land between the
+    repair's demotions and its post-commit verification. The repair then reported
+    "storage unavailable, retry" (503) for storage that was perfectly available,
+    with irreversible demotions already written — a half-applied operation
+    reported as a transient failure.
+
+    What the lock buys is ORDER, not a permanent Unique: the marking here is
+    blocked for the whole commit, the repair verifies Unique and returns, and only
+    then does the marking run — leaving the key Absent as an ordinary content-dedup
+    transition AFTER a completed operation. (Marking first is the other
+    linearization: the repair then refuses before demoting anything, covered by
+    tests/tools/test_source_conflict_repair_cli.py.)
+    """
+
+    async def _run():
+        from lightrag.base import DocProcessingStatus
+        from lightrag.tools.source_conflict_repair import repair_one_conflict
+
+        rag = await _build_rag(tmp_path)
+        try:
+            # a.pdf is claimed by two primaries; doc-third legitimately holds the
+            # same content under its own source, so the marking has a real target.
+            async with rag.doc_status._storage_lock:
+                rag.doc_status._data.update(
+                    {
+                        "doc-keep": _row("dup", "2026-01-01T00:00:00"),
+                        "doc-lose": _row("dup", "2026-01-02T00:00:00"),
+                        "doc-third": _row("dup", "2026-01-03T00:00:00"),
+                    }
+                )
+                rag.doc_status._data["doc-keep"]["file_path"] = "a.pdf"
+                # Unparsed: no content_hash yet, which is why the commit's
+                # pre-check cannot see the collision the parse is about to find —
+                # the documented residual that makes the lock the only guard here.
+                rag.doc_status._data["doc-keep"]["content_hash"] = ""
+                rag.doc_status._data["doc-lose"]["file_path"] = "a.pdf"
+                rag.doc_status._data["doc-lose"]["content_hash"] = "other"
+                rag.doc_status._data["doc-third"]["file_path"] = "c.pdf"
+            # The kept primary must have content, or the commit refuses it for
+            # that reason instead (its own test covers that).
+            await rag.full_docs.upsert({"doc-keep": {"content": "body"}})
+
+            status_doc = DocProcessingStatus(
+                content_summary="s",
+                content_length=3,
+                file_path="a.pdf",
+                status=DocStatus.PARSING,
+                created_at="2026-01-01T00:00:00",
+                updated_at="2026-01-01T00:00:00",
+                content_hash="dup",
+            )
+
+            async def _mark():
+                return await rag._mark_duplicate_after_parse(
+                    doc_id="doc-keep",
+                    status_doc=status_doc,
+                    file_path="a.pdf",
+                    content_hash="dup",
+                    content_length=3,
+                )
+
+            marking: list[asyncio.Task] = []
+            original = rag.doc_status.repair_source_conflict
+
+            async def _commit_then_let_the_marking_try(key, **kwargs):
+                result = await original(key, **kwargs)
+                if not kwargs.get("dry_run", True):
+                    # Inside the repair's lock, after the demotions: give the
+                    # marking every chance to interleave before verification.
+                    task = asyncio.create_task(_mark())
+                    marking.append(task)
+                    for _ in range(50):
+                        await asyncio.sleep(0)
+                    assert not task.done(), (
+                        "the duplicate marking interleaved between the demotions "
+                        "and the verification"
+                    )
+                return result
+
+            rag.doc_status.repair_source_conflict = _commit_then_let_the_marking_try
+
+            # No exception: the commit's own verification saw the key settled.
+            result = await repair_one_conflict(
+                rag.doc_status,
+                "a.pdf",
+                "doc-keep",
+                workspace=rag.workspace,
+                full_docs=rag.full_docs,
+                apply=True,
+            )
+            assert result.committed is True
+
+            assert await marking[0] is True  # runs once the lock is released
+            demoted = await rag.doc_status.get_by_id("doc-lose")
+            assert demoted["metadata"]["original_doc_id"] == "doc-keep"
+            marked = await rag.doc_status.get_by_id("doc-keep")
+            assert marked["metadata"]["original_doc_id"] == "doc-third"
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())

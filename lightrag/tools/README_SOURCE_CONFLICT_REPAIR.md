@@ -84,6 +84,15 @@ guard.
 ## Safety
 
 - Listing and a repair without `--apply` mutate nothing.
+- A commit is mutually exclusive with every in-deployment writer that can change
+  which documents claim the key: enqueue (the enqueue-serialize lock), the
+  processing stage's duplicate marking (a keyed lock on the canonical source key,
+  which the marking takes too), and clear/delete + scan classification + manual
+  reset (a pending-enqueue reservation). So the two operations are ordered rather
+  than interleaved: if the marking goes first the commit refuses before demoting
+  anything; if the commit goes first it verifies the key is settled and returns,
+  and a later marking is an ordinary state transition. Only the standalone CLI and
+  a second deployment writing the same database fall outside this.
 - A commit re-reads the candidate set under the backend's repair lock and
   proceeds only when the count and fingerprint still match the dry-run
   (compare-and-set), so a concurrent enqueue / delete / repair fails the commit

@@ -56,9 +56,12 @@ Safety model:
 - ``verify_repair_outcome`` re-resolves the key after the commit and raises
   unless it is now unique on the chosen primary — the backstop that turns any
   interleaving the caller-side locks did not cover into a reported failure;
-- the caller-side locks (per the table above) additionally keep a NEW primary
-  from being INSERTED between the backend's re-read and its demotions — for
-  in-server callers only;
+- the caller-side locks (per the table above) additionally exclude every
+  in-deployment writer of this candidate set for the whole commit — a NEW primary
+  being INSERTED (enqueue-serialize lock), clear/delete + scan classification +
+  manual reset (the reservation), and the processing stage's duplicate marking
+  (the keyed source lock, which ``_mark_duplicate_after_parse`` takes too, LR2
+  §5.5) — for in-server callers only;
 - a repair interrupted half-way needs no reconciliation: the finished rows
   already express ``duplicate`` and the rest still resolve as a conflict, so
   simply run it again.
@@ -77,7 +80,12 @@ Usage (library — for a deployment that builds its own LightRAG)::
 
     conflicts = await collect_source_conflicts(rag.doc_status, limit=50)
     result = await repair_one_conflict(
-        rag.doc_status, "report.docx", "doc-abc123", apply=True
+        rag.doc_status,
+        "report.docx",
+        "doc-abc123",
+        workspace=rag.workspace,
+        full_docs=rag.full_docs,  # required for a commit
+        apply=True,
     )
 """
 
@@ -91,10 +99,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from lightrag.base import CURSOR_END, CURSOR_START, SourceConflictSummary
-from lightrag.constants import (
-    ENQUEUE_SERIALIZE_LOCK_NAMESPACE,
-    SOURCE_CONFLICT_LOCK_NAMESPACE,
-)
+from lightrag.constants import ENQUEUE_SERIALIZE_LOCK_NAMESPACE
 from lightrag.exceptions import (
     SourceConflictPrimaryUnusableError,
     SourceConflictRepairCASError,
@@ -105,6 +110,7 @@ from lightrag.utils import logger
 from lightrag.utils_pipeline import (
     doc_status_field,
     get_duplicate_doc_by_content_hash,
+    source_candidate_set_lock,
 )
 
 # Pages are bounded on both sides: the backend projects a bounded sample per
@@ -229,30 +235,32 @@ async def source_conflict_repair_lock(workspace: str, canonical_source_key: str)
     Redis/OpenSearch have no transaction at all), so excluding that insert is the
     caller's job — see ``DocStatusStorage.repair_source_conflict``.
 
-    Two locks, always in this order:
+    Three things, in this TOTAL order — outermost first:
 
-    * a keyed lock on the canonical source key — serializes concurrent repairs of
-      the SAME key without blocking repairs of other keys;
-    * the workspace's enqueue-serialize lock — the one that actually excludes the
-      phantom, because it is the same lock the enqueue critical section
-      (``filter_keys`` → dedup → ``doc_status.upsert``) holds.
+    1. the workspace's enqueue-serialize lock — the one that excludes the
+       phantom, because it is the same lock the enqueue critical section
+       (``filter_keys`` → dedup → ``doc_status.upsert``) holds;
+    2. a keyed lock on the canonical source key (:func:`source_candidate_set_lock`)
+       — serializes concurrent repairs of the SAME key without blocking other
+       keys, and, since LR2 §5.5 requires exclusion against every writer that can
+       change this key's candidate set, it is the SAME lock the processing stage's
+       duplicate marking now takes (``_mark_duplicate_after_parse``);
+    3. a pending-enqueue reservation (see :func:`_repair_ingress_reservation`),
+       which excludes the writers the enqueue-serialize lock cannot: clear/delete,
+       scan classification, and the manual exclusive reset.
 
-    Innermost is a pending-enqueue reservation (see
-    :func:`_repair_ingress_reservation`), which is what excludes the writers the
-    enqueue-serialize lock cannot: clear/delete, scan classification, and the
-    manual exclusive reset.
+    This order used to be keyed → enqueue_serialize, with a note that anyone
+    extending the keyed ``DocSource`` lock to another writer MUST flip it first,
+    because it was INVERTED relative to the enqueue path (which holds
+    enqueue_serialize and would naturally reach for a keyed source lock inside
+    it). Extending it to the duplicate-marking path is exactly that change, so
+    the flip happened with it: ``enqueue_serialize → DocSource → pipeline_status``
+    is now the total order every holder of more than one agrees on, and it is the
+    order the enqueue path could adopt without a cycle. The marking path takes
+    only (2) and, inside it, ``pipeline_status`` for its owner check — same
+    direction, no cycle.
 
-    Lock order is keyed → namespace → reservation, and the enqueue path never
-    takes the keyed lock, so no cycle exists **today**. That "today" is load
-    bearing: this order is INVERTED relative to the enqueue path, which takes
-    enqueue_serialize and would naturally take the keyed source lock inside it.
-    Anyone extending the keyed ``DocSource`` lock to the enqueue path (or to the
-    delete / duplicate-marking / stale-stub paths, which also hold no keyed lock
-    now) MUST first flip this order to ``enqueue_serialize → DocSource`` and
-    document the total order — otherwise the two directions deadlock, only when a
-    manual repair runs concurrently with an upload, which CI will not catch.
-
-    Every one of these three is PROCESS-LOCAL machinery, so the scope is one
+    Every one of these is PROCESS-LOCAL machinery, so the scope is one
     deployment — its worker processes included, because they share the Manager
     the master created — and nothing beyond it. Two consequences, the second of
     which is easy to miss:
@@ -269,22 +277,12 @@ async def source_conflict_repair_lock(workspace: str, canonical_source_key: str)
     """
     # Imported lazily: the CLI initializes shared storage in main(), and
     # importing at module scope would bind before that happens.
-    from lightrag.kg.shared_storage import (
-        get_namespace_lock,
-        get_storage_keyed_lock,
-    )
+    from lightrag.kg.shared_storage import get_namespace_lock
 
-    keyed_namespace = (
-        f"{workspace}:{SOURCE_CONFLICT_LOCK_NAMESPACE}"
-        if workspace
-        else SOURCE_CONFLICT_LOCK_NAMESPACE
-    )
-    async with get_storage_keyed_lock(
-        [canonical_source_key], namespace=keyed_namespace, enable_logging=False
+    async with get_namespace_lock(
+        ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=workspace
     ):
-        async with get_namespace_lock(
-            ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=workspace
-        ):
+        async with source_candidate_set_lock(workspace, canonical_source_key):
             async with _repair_ingress_reservation(workspace):
                 yield
 
@@ -383,20 +381,18 @@ async def repair_one_conflict(
         )
         # Verify the OUTCOME, still inside the locks, instead of inferring it
         # from "the demotions were committed". ``committed=True`` only claims
-        # that the demotions named in the result landed; it cannot claim the key
-        # is now unique. The locks exclude a concurrent ENQUEUE and the
-        # reservation excludes clear/delete, scan classification and the manual
-        # reset — but the PROCESSING stage is fenced by none of them, so a
-        # post-parse duplicate marking of the kept primary against a THIRD
-        # document with the same content still mutates this candidate set (see
-        # DocStatusStorage.repair_source_conflict), and for the standalone CLI
-        # none of the caller-side exclusion is live at all. So the honest move is
-        # to re-resolve and report what is actually true. What is no longer
-        # possible is the variant that needed no race whatsoever: the kept primary
-        # being marked a duplicate OF A ROW THIS REPAIR JUST DEMOTED — the demoted
-        # row names the primary as its original, and the content-hash lookup drops
-        # a match that points back at the document asking (see
-        # utils_pipeline._drop_a_duplicate_pointing_back).
+        # that the demotions named in the result landed; the key being unique is a
+        # separate claim, so it is checked rather than assumed.
+        #
+        # Every in-deployment writer of this candidate set is now excluded for the
+        # whole span: enqueue by the enqueue-serialize lock, clear/delete + scan
+        # classification + manual reset by the reservation, and the processing
+        # stage's duplicate marking by the keyed source lock it now takes too
+        # (LR2 §5.5). So this verification is a backstop, not the primary guard —
+        # which is what it must be, because two things remain outside every lock
+        # here: the standalone CLI (its locks are process-local and it has no
+        # pipeline_status at all) and any second deployment writing the same
+        # database.
         await verify_repair_outcome(
             doc_status, canonical_source_key, primary_doc_id, result
         )
@@ -469,7 +465,8 @@ async def refuse_a_contentless_primary(full_docs: Any, primary_doc_id: str) -> N
         f"Document {primary_doc_id} has no full_docs content: it is an "
         f"unprocessable stub, so it cannot own a canonical source. Pick a "
         f"primary that has content — a scan would delete this row and leave the "
-        f"demoted documents pointing at an id that no longer exists."
+        f"demoted documents pointing at an id that no longer exists.",
+        reason=SourceConflictPrimaryUnusableError.REASON_NO_CONTENT,
     )
 
 
@@ -537,7 +534,9 @@ async def refuse_a_primary_whose_content_lives_elsewhere(
         f"FAILED and deletes its content, so {primary_doc_id} cannot keep "
         f"'{canonical_source_key}' — the key would end up with no primary at all, "
         f"and no repair can settle that. Pick another primary, or settle "
-        f"{holder_doc_id} first."
+        f"{holder_doc_id} first.",
+        reason=SourceConflictPrimaryUnusableError.REASON_CONTENT_ELSEWHERE,
+        holder_doc_id=holder_doc_id,
     )
 
 
@@ -558,6 +557,66 @@ async def refuse_an_unusable_primary(
     await refuse_a_contentless_primary(full_docs, primary_doc_id)
     await refuse_a_primary_whose_content_lives_elsewhere(
         doc_status, canonical_source_key, primary_doc_id
+    )
+
+
+async def _absent_key_recovery_hint(doc_status: Any, primary_doc_id: str) -> str:
+    """What can actually be done about a key left with no primary.
+
+    Reads the kept primary's row so the advice matches its state, because the two
+    states have DIFFERENT recoveries and the wrong one wastes the operator's time:
+
+    * marked a content duplicate — deleting this row is not enough. Its content
+      belongs to the named document, and a doc id is derived from the file name,
+      so re-uploading the same bytes is deduplicated against that document again
+      and the key stays Absent. The source can only be reclaimed once that holder
+      is deleted (or the file's content actually changes) — and if the holder is
+      the right home for the content, the honest end state is that this file has
+      no separate document at all;
+    * gone — a concurrent delete removed it, so re-ingesting the file recreates a
+      primary and the key resolves again.
+
+    Best-effort by design: this runs on a path that is already raising, so a read
+    failure must not replace the reported outcome with a read error. It degrades
+    to naming both possibilities.
+    """
+    try:
+        rows = await doc_status.get_full_docs_by_ids([primary_doc_id], strict=True)
+    except Exception as read_error:  # already failing; never mask the outcome
+        logger.warning(
+            f"Could not read {primary_doc_id} to explain the unsettled repair: "
+            f"{read_error}"
+        )
+        rows = {}
+    row = rows.get(primary_doc_id)
+    preamble = (
+        "The repair cannot be re-run: with no candidate left there is no conflict "
+        "to settle and the endpoint refuses any primary as 'not a current "
+        "candidate'."
+    )
+    if row is None:
+        return (
+            f"{preamble} {primary_doc_id} is gone (a concurrent delete, or a read "
+            f"that could not confirm it): re-ingest the file to recreate a primary "
+            f"for this source, or re-list the conflicts to see the current state."
+        )
+    metadata = doc_status_field(row, "metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("is_duplicate"):
+        holder = metadata.get("original_doc_id") or "another document"
+        return (
+            f"{preamble} {primary_doc_id} is now marked a duplicate of {holder}, so "
+            f"its content lives there. Deleting {primary_doc_id} is NOT enough to "
+            f"reclaim the source: a doc id is derived from the file name, so "
+            f"re-uploading the same bytes is deduplicated against {holder} again. "
+            f"Reclaiming it needs {holder} deleted or this file's content actually "
+            f"changed — and if {holder} is the right home for that content, this "
+            f"source having no document of its own is the correct end state."
+        )
+    return (
+        f"{preamble} {primary_doc_id} still exists and is not marked a duplicate, "
+        f"so it lost the source some other way (a rewritten file_path, an external "
+        f"writer): re-list the conflicts and inspect that row before acting."
     )
 
 
@@ -611,14 +670,7 @@ async def verify_repair_outcome(
             f"the key now resolves to NO primary at all — {primary_doc_id} was "
             "deleted or marked a duplicate by a concurrent writer"
         )
-        recovery = (
-            f"The repair cannot be re-run: with no candidate left there is no "
-            f"conflict to settle and the endpoint refuses any primary as 'not a "
-            f"current candidate'. Inspect {primary_doc_id} instead — a "
-            f"FAILED [DUPLICATE:content_hash] row names the document its content "
-            f"now lives under, and deleting that leftover row lets a re-upload of "
-            f"the file claim the source again."
-        )
+        recovery = await _absent_key_recovery_hint(doc_status, primary_doc_id)
     raise StorageControlPlaneError(
         f"Source conflict repair for '{canonical_source_key}' committed its "
         f"demotions ({list(result.demoted_sample_doc_ids) or 'none'}) but the key "
