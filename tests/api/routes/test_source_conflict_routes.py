@@ -175,13 +175,22 @@ class _FullDocs:
     strict point reads may have an absence trusted, so the doubles cover both.
     """
 
-    def __init__(self, contents: dict[str, dict] | None = None, *, strict: bool = True):
+    def __init__(
+        self,
+        contents: dict[str, dict] | None = None,
+        *,
+        strict: bool = True,
+        read_error: Exception | None = None,
+    ):
         self.contents = contents if contents is not None else {}
         self.supports_strict_point_reads = strict
+        self.read_error = read_error
         self.reads: list[str] = []
 
     async def get_by_id_strict(self, doc_id: str):
         self.reads.append(doc_id)
+        if self.read_error is not None:
+            raise self.read_error
         return self.contents.get(doc_id)
 
 
@@ -619,6 +628,39 @@ def test_a_primary_with_content_is_accepted():
     )
     assert commit.status_code == 200
     assert doc_status.groups["a.pdf"] == ["doc-2"]
+
+
+def test_a_failed_content_read_is_a_503_not_a_committed_demotion():
+    """Fix-proof: a strict read that RAISED used to warn and commit anyway. That
+    spends the one guarantee the check exists for — the demotions cannot be undone
+    (a repair only demotes, and a key left with no candidate cannot be repaired
+    again), so committing on an unverified primary trades an irreversible loss for
+    a retry the operator can simply make later. 503, and nothing demoted."""
+    doc_status = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    full_docs = _FullDocs(read_error=RuntimeError("connection reset"))
+    client = _client(doc_status, full_docs)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+
+    assert commit.status_code == 503
+    assert doc_status.groups["a.pdf"] == ["doc-1", "doc-2"]  # nothing demoted
+    # Only the operator's own dry-run ran; the commit never reached the backend.
+    assert [call["dry_run"] for call in doc_status.repair_calls] == [True]
 
 
 def test_an_unconfirmable_absence_does_not_block_the_repair():

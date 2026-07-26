@@ -8,6 +8,8 @@ than from a fabricated placeholder.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from lightrag.base import SourceConflict, SourceUnique
@@ -424,4 +426,87 @@ async def test_a_contentless_primary_is_refused_offline_too(tmp_path):
             full_docs=_FullDocs({"doc-1": {"content": "x"}}),
             apply=True,
         )
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_an_unverifiable_primary_refuses_instead_of_committing(tmp_path):
+    """Fix-proof: a strict read that RAISED warned and committed the demotions
+    anyway. The demotions are irreversible — a repair only demotes, and a key with
+    no candidate left cannot be repaired at all — so an unverified primary must
+    fail closed as a storage-control-plane error (503 on the endpoint) and leave
+    the conflict exactly as it was, for the operator to retry."""
+    from lightrag.exceptions import StorageControlPlaneError
+
+    class _UnreachableFullDocs:
+        supports_strict_point_reads = True
+
+        async def get_by_id_strict(self, doc_id):
+            raise ConnectionError("full_docs is down")
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    with pytest.raises(StorageControlPlaneError, match="doc-2"):
+        await repair_one_conflict(
+            storage,
+            "a.pdf",
+            "doc-2",
+            workspace="unverifiable-ws",
+            full_docs=_UnreachableFullDocs(),
+            apply=True,
+        )
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_the_cli_refuses_to_apply_when_full_docs_cannot_be_opened(
+    tmp_path, monkeypatch, capsys
+):
+    """The CLI's own fail-open: ``full_docs.initialize()`` failing used to print a
+    warning and run the commit with the contentless-primary check disabled — the
+    same irreversible demotion on an unverified primary, one layer up. Listing and
+    dry-runs still work, since they modify nothing."""
+    import lightrag
+    from lightrag.tools import source_conflict_repair as tool
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    committed: list[bool] = []
+    real_repair = storage.repair_source_conflict
+
+    async def _recording_repair(*args, **kwargs):
+        committed.append(not kwargs.get("dry_run", True))
+        return await real_repair(*args, **kwargs)
+
+    storage.repair_source_conflict = _recording_repair
+
+    class _BrokenFullDocs:
+        async def initialize(self):
+            raise ConnectionError("full_docs socket refused")
+
+    class _FakeRAG:
+        def __init__(self, **kwargs):
+            self.workspace = kwargs.get("workspace") or "cli-refuse-ws"
+            self.doc_status = storage
+            self.full_docs = _BrokenFullDocs()
+
+    async def _keep_the_storage_open():
+        """The tool finalizes doc_status on its way out; this test still has to
+        read the conflict afterwards to prove nothing was demoted."""
+
+    monkeypatch.setattr(lightrag, "LightRAG", _FakeRAG)
+    monkeypatch.setattr(storage, "finalize", _keep_the_storage_open, raising=False)
+
+    args = SimpleNamespace(
+        command="repair",
+        workspace="cli-refuse-ws",
+        source="a.pdf",
+        primary="doc-2",
+        apply=True,
+    )
+    assert await tool._async_main(args) is False
+    assert committed == []  # nothing reached the backend, not even a dry-run
+    assert "Refused" in capsys.readouterr().out
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)

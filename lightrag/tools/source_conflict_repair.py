@@ -375,13 +375,19 @@ async def repair_one_conflict(
         # Verify the OUTCOME, still inside the locks, instead of inferring it
         # from "the demotions were committed". ``committed=True`` only claims
         # that the demotions named in the result landed; it cannot claim the key
-        # is now unique, because the locks here exclude a concurrent ENQUEUE and
-        # nothing else — a concurrent delete of the kept primary, a
-        # processing-stage duplicate marking, or a scan stale-stub deletion all
-        # mutate this candidate set without taking them (see
-        # DocStatusStorage.repair_source_conflict). Those paths are single-doc
-        # and cannot be excluded from here, so the honest move is to re-resolve
-        # and report what is actually true.
+        # is now unique. The locks exclude a concurrent ENQUEUE and the
+        # reservation excludes clear/delete, scan classification and the manual
+        # reset — but the PROCESSING stage is fenced by none of them, so a
+        # post-parse duplicate marking of the kept primary against a THIRD
+        # document with the same content still mutates this candidate set (see
+        # DocStatusStorage.repair_source_conflict), and for the standalone CLI
+        # none of the caller-side exclusion is live at all. So the honest move is
+        # to re-resolve and report what is actually true. What is no longer
+        # possible is the variant that needed no race whatsoever: the kept primary
+        # being marked a duplicate OF A ROW THIS REPAIR JUST DEMOTED — the demoted
+        # row names the primary as its original, and the content-hash lookup drops
+        # a match that points back at the document asking (see
+        # utils_pipeline._drop_a_duplicate_pointing_back).
         await verify_repair_outcome(
             doc_status, canonical_source_key, primary_doc_id, result
         )
@@ -406,27 +412,41 @@ async def refuse_a_contentless_primary(full_docs: Any, primary_doc_id: str) -> N
     classification, and it also catches the plain operator mistake of choosing a
     stub when no scan is running at all.
 
-    Only a CONFIRMED absence refuses. A backend without strict point reads, or a
-    read that fails, warns and proceeds: the alternative would let a storage blip
-    deny the operator their only repair tool, and an unconfirmed miss is not
-    evidence.
+    A CONFIRMED absence refuses with
+    :class:`SourceConflictPrimaryUnusableError` (409 — pick another primary); a
+    read that FAILS refuses with :class:`StorageControlPlaneError` (503 — retry
+    once storage is back). Fail-closed on the failure, because "proceed anyway"
+    spends the one guarantee this check exists to provide: the demotions are
+    irreversible (a repair only demotes, and a key with no candidate left cannot
+    be repaired again), while a 503 costs the operator a retry of an operation
+    that has no deadline — the conflict has been sitting there since before they
+    looked at it.
+
+    A backend WITHOUT strict point reads is the one case that still proceeds, and
+    not as a compromise: scan classification cannot delete the stub either on such
+    a backend (``_confirm_full_docs_absent`` returns ``None`` for exactly the same
+    reason and the STALE_STUB exit never fires), so the interaction this check
+    guards against does not exist there. Every in-tree KV backend declares
+    ``supports_strict_point_reads = True``; this branch is for a third-party one.
     """
     if full_docs is None:
         return
     if not getattr(full_docs, "supports_strict_point_reads", False):
         logger.warning(
             f"{type(full_docs).__name__} has no strict point reads; keeping "
-            f"{primary_doc_id} as the primary without confirming it has content"
+            f"{primary_doc_id} as the primary without confirming it has content "
+            "(a scan cannot delete a stale stub on this backend either, so the "
+            "interaction this check guards against cannot arise)"
         )
         return
     try:
         content = await full_docs.get_by_id_strict(primary_doc_id)
     except Exception as read_error:
-        logger.warning(
-            f"Could not confirm whether {primary_doc_id} has content "
-            f"({read_error}); proceeding with the repair"
-        )
-        return
+        raise StorageControlPlaneError(
+            f"Could not confirm whether {primary_doc_id} has full_docs content "
+            f"({read_error}); refusing to commit irreversible demotions on an "
+            f"unverified primary. Retry once full_docs is reachable."
+        ) from read_error
     if content:
         return
     raise SourceConflictPrimaryUnusableError(
@@ -453,32 +473,52 @@ async def verify_repair_outcome(
     if it were fixed. The demotions themselves have already been committed and
     are not rolled back — they are individually correct; what failed is the
     end state, so the message says which.
+
+    The recovery is per-outcome, and only two of the three are "run it again":
+    with a primary left (wrong one, or several) the key still has candidates, so
+    a fresh dry-run → commit settles it. With NO primary left there is nothing to
+    repair — this function is the one place that knows that, so it is the one
+    place that must not send the operator back to an endpoint that will answer
+    "not a current primary candidate".
     """
     from lightrag.base import SourceConflict, SourceUnique
 
     resolution = await doc_status.resolve_doc_source_strict(canonical_source_key)
     if isinstance(resolution, SourceUnique) and resolution.doc_id == primary_doc_id:
         return
+    rerun = (
+        "Re-run the repair (fresh dry-run, then commit) once concurrent writers "
+        "to these documents have stopped."
+    )
     if isinstance(resolution, SourceUnique):
         detail = (
             f"the surviving primary is {resolution.doc_id}, not the requested "
             f"{primary_doc_id}"
         )
+        recovery = rerun
     elif isinstance(resolution, SourceConflict):
         detail = (
             "the key is STILL in conflict "
             f"(sample: {', '.join(resolution.sample_doc_ids) or 'unavailable'})"
         )
+        recovery = rerun
     else:
         detail = (
             f"the key now resolves to NO primary at all — {primary_doc_id} was "
-            "removed by a concurrent delete or duplicate marking"
+            "deleted or marked a duplicate by a concurrent writer"
+        )
+        recovery = (
+            f"The repair cannot be re-run: with no candidate left there is no "
+            f"conflict to settle and the endpoint refuses any primary as 'not a "
+            f"current candidate'. Inspect {primary_doc_id} instead — a "
+            f"FAILED [DUPLICATE:content_hash] row names the document its content "
+            f"now lives under, and deleting that leftover row lets a re-upload of "
+            f"the file claim the source again."
         )
     raise StorageControlPlaneError(
         f"Source conflict repair for '{canonical_source_key}' committed its "
         f"demotions ({list(result.demoted_sample_doc_ids) or 'none'}) but the key "
-        f"is not settled: {detail}. Re-run the repair once concurrent writers to "
-        f"these documents have stopped."
+        f"is not settled: {detail}. {recovery}"
     )
 
 
@@ -552,20 +592,34 @@ async def _async_main(args: argparse.Namespace) -> bool:
     # doc_status plus full_docs: still no vector/graph store, no LLM and no
     # embedding model — full_docs is a plain KV, and reading it is what lets the
     # repair refuse a primary that has no content (see
-    # refuse_a_contentless_primary). A full_docs backend that cannot be reached
-    # must not block a doc_status bookkeeping fix, so its failure downgrades the
-    # check instead of the command.
+    # refuse_a_contentless_primary).
     doc_status = rag.doc_status
     await doc_status.initialize()
     full_docs = rag.full_docs
+    full_docs_error: Exception | None = None
     try:
         await full_docs.initialize()
-    except Exception as full_docs_error:
-        print(
-            f"Warning: full_docs is unavailable ({full_docs_error}); the repair "
-            "cannot confirm the chosen primary has content."
-        )
+    except Exception as init_error:
+        full_docs_error = init_error
         full_docs = None
+    if full_docs_error is not None:
+        # Listing and dry-runs mutate nothing, so they still run — but a COMMIT
+        # without this check is the fail-open the check exists to remove: an
+        # unverified primary that turns out to be a contentless stub gets the
+        # source key, a later scan deletes it, and the demotions this command
+        # already wrote cannot be undone. Refuse the command instead.
+        if args.command == "repair" and args.apply:
+            print(
+                f"Refused: full_docs is unavailable ({full_docs_error}), so the "
+                "repair cannot confirm the chosen primary has content. Retry once "
+                "it is reachable (listing and dry-runs still work)."
+            )
+            await doc_status.finalize()
+            return False
+        print(
+            f"Warning: full_docs is unavailable ({full_docs_error}); a commit "
+            "would be refused, but this command modifies nothing."
+        )
     try:
         if args.command == "list":
             _print_conflicts(
