@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 import signal
+from types import SimpleNamespace
 
 import pytest
+from uvicorn.workers import UvicornWorker
 
 from lightrag.api.gunicorn_worker import LightRAGUvicornWorker
 
@@ -38,6 +40,21 @@ def _worker(ppid: int) -> LightRAGUvicornWorker:
     worker.ppid = ppid
     worker.log = _Log()
     return worker
+
+
+def test_gunicorn_graceful_timeout_is_forwarded_to_uvicorn(monkeypatch):
+    """Without this mapping uvicorn waits forever for active ASGI requests after
+    the orphan-triggered SIGTERM because its shutdown timeout defaults to None."""
+
+    def fake_init(worker, *args, **kwargs):
+        worker.cfg = SimpleNamespace(graceful_timeout=47)
+        worker.config = SimpleNamespace(timeout_graceful_shutdown=None)
+
+    monkeypatch.setattr(UvicornWorker, "__init__", fake_init)
+
+    worker = LightRAGUvicornWorker()
+
+    assert worker.config.timeout_graceful_shutdown == 47
 
 
 def test_an_orphaned_worker_requests_a_graceful_shutdown(monkeypatch):

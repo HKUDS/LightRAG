@@ -22,18 +22,29 @@ instance (``UvicornWorker._serve`` keeps it local), and uvicorn installs its own
 SIGTERM handler for the whole of ``serve()`` (``capture_signals`` →
 ``handle_exit`` → ``should_exit``), which is the documented graceful path — it
 stops accepting, drains in-flight requests, then exits.
+
+``UvicornWorker`` does not forward gunicorn's ``graceful_timeout`` to
+uvicorn, whose graceful-shutdown timeout otherwise defaults to unlimited.
+Forwarding it here bounds the drain of active ASGI requests after SIGTERM.
+LightRAG's application-managed background work keeps using the lifespan
+cancellation-and-join cleanup path.
 """
 
 from __future__ import annotations
 
 import os
 import signal
+from typing import Any
 
 from uvicorn.workers import UvicornWorker
 
 
 class LightRAGUvicornWorker(UvicornWorker):
     """Uvicorn worker that stops serving once its gunicorn master is gone."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.config.timeout_graceful_shutdown = self.cfg.graceful_timeout
 
     async def callback_notify(self) -> None:
         await super().callback_notify()
