@@ -5759,7 +5759,12 @@ class PGDocStatusStorage(DocStatusStorage):
 
         The candidate set is re-read ``FOR UPDATE`` inside ONE transaction, so
         the count/fingerprint recomputation, the CAS check and the demotions
-        are atomic. dry-run reports the current count/fingerprint without
+        are atomic with respect to the rows it SAW. ``FOR UPDATE`` takes no
+        predicate lock, so it cannot block a new primary being INSERTED for the
+        same canonical key mid-repair — see the base contract for what
+        ``committed`` does and does not claim, and for the caller-side keyed
+        lock that serializes repair against enqueue. dry-run reports the
+        current count/fingerprint without
         mutating; commit refuses (:class:`StorageControlPlaneError`) when they
         no longer match the operator-echoed expectation. Losing candidates get
         ``metadata.is_duplicate=true`` + ``original_doc_id=primary_doc_id`` in

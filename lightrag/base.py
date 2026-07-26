@@ -1403,16 +1403,32 @@ class DocStatusStorage(BaseKVStorage, ABC):
         ``primary_doc_id`` to keep. Contract for capable backends:
 
         * ``dry_run=True`` (default) makes no mutation and returns the bounded
-          summary plus the deterministic ``fingerprint`` / ``candidate_count``
-          computed under a workspace + canonical-source-key write lock.
-        * On commit, the current candidate set is re-read strictly under that
-          lock; a mismatch with ``expected_candidate_count`` /
+          summary plus the deterministic ``fingerprint`` / ``candidate_count``.
+        * On commit, the current candidate set is re-read strictly and a
+          mismatch with ``expected_candidate_count`` /
           ``expected_candidate_fingerprint`` fails as a CAS conflict rather
           than overwriting a concurrent change.
         * The other candidates are marked ``metadata.is_duplicate=true`` with
-          ``original_doc_id=primary_doc_id`` in bounded pages; content is never
-          deleted. After a successful commit the strict resolver returns
-          ``SourceUnique(primary_doc_id)``.
+          ``original_doc_id=primary_doc_id``; content is never deleted.
+
+        **What this method does NOT serialize.** The storage layer holds no
+        canonical-source-key lock, and no backend here can take one that also
+        excludes an INSERT: a re-read plus CAS detects changes to the candidate
+        rows it saw, but a brand-new primary for the same key is a phantom that
+        neither a ``SELECT … FOR UPDATE`` (PostgreSQL), a snapshot transaction
+        (MongoDB) nor a non-transactional re-scan (Redis, OpenSearch) can block.
+        Serializing repair against enqueue is therefore the CALLER's job, via a
+        ``get_storage_keyed_lock`` on the canonical source key held across both
+        the resolve→enqueue decision and the dry-run→commit pair. That lock
+        spans one deployment (its worker processes included), not several
+        deployments sharing a database.
+
+        ``committed=True`` accordingly means "the demotions named in this result
+        were committed" — NOT "this source key is now conflict-free". A primary
+        inserted mid-repair simply leaves the resolver in
+        :class:`SourceConflict`, which is fail-closed (scan refuses to classify,
+        nothing destructive follows) and which a fresh dry-run + commit
+        resolves; repair is idempotent, so re-running is always safe.
 
         The base default raises
         :class:`~lightrag.exceptions.StorageCapabilityError`.

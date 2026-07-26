@@ -1443,6 +1443,29 @@ class MongoDocStatusStorage(DocStatusStorage):
         rows = await cursor.to_list(length=None)
         return sorted(str(r.get("_id")) for r in rows)
 
+    async def _primary_candidate_sample(
+        self, canonical_source_key: str
+    ) -> tuple[str, ...]:
+        """The lexicographically first ``_CONFLICT_SAMPLE_CAP`` primary ids.
+
+        Server-side bounded: ``sort(_id) + limit(cap)`` projecting only ``_id``,
+        so a key with a pathological number of primaries still ships a fixed
+        sample (unlike an aggregation ``$push`` of every id).
+        """
+        cursor = (
+            self._data.find(
+                {
+                    "file_path": canonical_source_key,
+                    "metadata.is_duplicate": {"$ne": True},
+                },
+                {"_id": 1},
+            )
+            .sort([("_id", 1)])
+            .limit(self._CONFLICT_SAMPLE_CAP)
+        )
+        rows = await cursor.to_list(length=self._CONFLICT_SAMPLE_CAP)
+        return tuple(str(r.get("_id")) for r in rows)
+
     async def list_source_conflicts_page(
         self,
         *,
@@ -1454,9 +1477,18 @@ class MongoDocStatusStorage(DocStatusStorage):
         A server-side aggregation groups PRIMARY (``metadata.is_duplicate !=
         true``) rows by ``file_path``, keeps groups with candidate count ≥ 2,
         resumes strictly after the cursor's canonical key (``$gt``) and sorts
-        by canonical key so the keyset is stable. ``candidate_count`` is the
-        exact group size; the surfaced sample is bounded to
-        ``_CONFLICT_SAMPLE_CAP``.
+        by canonical key so the keyset is stable.
+
+        The accumulator is COUNT-ONLY: ``$push``-ing the ids would build one
+        array per distinct ``file_path`` in the workspace — every group, not
+        just the conflicting ones, since ``candidate_count >= 2`` can only be
+        applied AFTER ``$group`` — so peak aggregation memory would scale with
+        the document count instead of the number of source keys. Samples are
+        instead fetched per SURFACED key (at most ``limit`` bounded queries),
+        so nothing unbounded crosses the wire either. Detecting "keys with more
+        than one primary" inherently groups the whole collection, so the group
+        set itself still scales with the number of distinct source keys (as it
+        does on PostgreSQL) — ``allowDiskUse`` covers that.
         """
         if limit <= 0:
             raise ValueError(f"page limit must be positive, got {limit}")
@@ -1475,13 +1507,7 @@ class MongoDocStatusStorage(DocStatusStorage):
 
         pipeline = [
             {"$match": match},
-            {
-                "$group": {
-                    "_id": "$file_path",
-                    "candidate_count": {"$sum": 1},
-                    "sample_doc_ids": {"$push": "$_id"},
-                }
-            },
+            {"$group": {"_id": "$file_path", "candidate_count": {"$sum": 1}}},
             {"$match": {"candidate_count": {"$gte": 2}}},
             {"$sort": {"_id": 1}},
             {"$limit": limit},
@@ -1489,18 +1515,17 @@ class MongoDocStatusStorage(DocStatusStorage):
         cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
         groups = await cursor.to_list(length=limit)
 
-        conflicts = tuple(
-            SourceConflictSummary(
-                canonical_source_key=str(g["_id"]),
-                candidate_count=int(g["candidate_count"]),
-                sample_doc_ids=tuple(
-                    sorted(str(d) for d in g["sample_doc_ids"])[
-                        : self._CONFLICT_SAMPLE_CAP
-                    ]
-                ),
+        summaries: list[SourceConflictSummary] = []
+        for group in groups:
+            canonical = str(group["_id"])
+            summaries.append(
+                SourceConflictSummary(
+                    canonical_source_key=canonical,
+                    candidate_count=int(group["candidate_count"]),
+                    sample_doc_ids=await self._primary_candidate_sample(canonical),
+                )
             )
-            for g in groups
-        )
+        conflicts = tuple(summaries)
         if len(groups) < limit:
             next_position: CursorPosition = CURSOR_END
         else:
@@ -1530,6 +1555,12 @@ class MongoDocStatusStorage(DocStatusStorage):
         ``original_doc_id=primary_doc_id`` in the same transaction (content is
         never deleted). ``primary_doc_id`` absent from the current candidate
         set raises ``ValueError``.
+
+        The transaction gives snapshot isolation, not predicate locking: a new
+        primary INSERTed for the same canonical key mid-repair is a phantom the
+        snapshot never sees and no write conflict reports. See the base contract
+        for what ``committed`` does and does not claim, and for the caller-side
+        keyed lock that serializes repair against enqueue.
         """
         if dry_run:
             candidates = await self._primary_candidates(canonical_source_key)

@@ -132,7 +132,10 @@ class _FakeCollection:
 
     def find(self, query, projection=None, session=None):
         self.find_queries.append(query)
-        cursor = _FakeFindCursor(self._find_docs, error=self._find_error)
+        # find_docs may be a callable so a test can route per query (the
+        # conflict listing fetches a bounded sample per surfaced source key).
+        docs = self._find_docs(query) if callable(self._find_docs) else self._find_docs
+        cursor = _FakeFindCursor(docs, error=self._find_error)
         self.find_cursors.append(cursor)
         return cursor
 
@@ -553,15 +556,17 @@ async def test_legacy_basename_swallows_transport_error():
 
 
 async def test_list_conflicts_maps_groups_and_terminates():
+    # The aggregation is COUNT-ONLY: $push-ing every id would allocate an array
+    # per distinct file_path in the collection, conflicting or not.
     groups = [
-        {
-            "_id": "a.txt",
-            "candidate_count": 3,
-            "sample_doc_ids": ["doc-3", "doc-1", "doc-2"],
-        },
-        {"_id": "b.txt", "candidate_count": 2, "sample_doc_ids": ["doc-9", "doc-8"]},
+        {"_id": "a.txt", "candidate_count": 3},
+        {"_id": "b.txt", "candidate_count": 2},
     ]
-    data = _FakeCollection(agg_docs=groups)
+    samples = {
+        "a.txt": [{"_id": "doc-1"}, {"_id": "doc-2"}, {"_id": "doc-3"}],
+        "b.txt": [{"_id": "doc-8"}, {"_id": "doc-9"}],
+    }
+    data = _FakeCollection(agg_docs=groups, find_docs=lambda q: samples[q["file_path"]])
     storage = _storage(data=data)
 
     page = await storage.list_source_conflicts_page(limit=5)
@@ -576,7 +581,10 @@ async def test_list_conflicts_maps_groups_and_terminates():
             "metadata.is_duplicate": {"$ne": True},
         }
     }
-    assert pipeline[1]["$group"]["_id"] == "$file_path"
+    assert pipeline[1]["$group"] == {
+        "_id": "$file_path",
+        "candidate_count": {"$sum": 1},
+    }
     assert pipeline[2] == {"$match": {"candidate_count": {"$gte": 2}}}
     assert pipeline[3] == {"$sort": {"_id": 1}}
     assert pipeline[4] == {"$limit": 5}
@@ -585,14 +593,21 @@ async def test_list_conflicts_maps_groups_and_terminates():
     assert page.conflicts[0].candidate_count == 3
     assert page.conflicts[0].sample_doc_ids == ("doc-1", "doc-2", "doc-3")  # sorted
     assert page.conflicts[1].sample_doc_ids == ("doc-8", "doc-9")
+    # One bounded sample query per SURFACED key — server-side sorted + capped,
+    # so a key with a pathological primary count still ships a fixed sample.
+    assert [q["file_path"] for q in data.find_queries] == ["a.txt", "b.txt"]
+    for cursor in data.find_cursors:
+        assert cursor.sort_spec == [("_id", 1)]
+        assert cursor.limit_value == storage._CONFLICT_SAMPLE_CAP
+        assert cursor.to_list_length == storage._CONFLICT_SAMPLE_CAP
     # returned (2) < limit (5) proves exhaustion.
     assert page.next_position is CURSOR_END
 
 
 async def test_list_conflicts_full_page_advances_cursor():
     groups = [
-        {"_id": "a.txt", "candidate_count": 2, "sample_doc_ids": ["doc-1", "doc-2"]},
-        {"_id": "b.txt", "candidate_count": 2, "sample_doc_ids": ["doc-3", "doc-4"]},
+        {"_id": "a.txt", "candidate_count": 2},
+        {"_id": "b.txt", "candidate_count": 2},
     ]
     data = _FakeCollection(agg_docs=groups)
     storage = _storage(data=data)
