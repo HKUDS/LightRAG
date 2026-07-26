@@ -337,19 +337,65 @@ async def test_scan_classification_and_a_manual_freeze_also_refuse(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_an_offline_repair_needs_no_pipeline_status(tmp_path):
-    """The CLI runs against a stopped server, where pipeline_status was never
-    initialised. There is no server-side writer to exclude, so the repair
-    proceeds — the correct answer, not a concession."""
+async def test_an_offline_repair_proceeds_but_says_it_is_unguarded(tmp_path, caplog):
+    """The CLI runs with no pipeline_status of its own, so the caller-side
+    exclusion is inert. Refusing would break the stopped-server case — the CLI's
+    whole purpose — so it proceeds, but it must SAY so.
+
+    An uninitialised pipeline_status proves only that THIS process has none; a
+    server may be running in another process whose shared state this one cannot
+    see. Inferring "no server" from a local miss is the same mistake as inferring
+    "no duplicate" from a swallowed read.
+    """
+    import logging
+
+    from lightrag.utils import logger
+
     storage = await _storage(
         tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
     )
-    result = await repair_one_conflict(
-        storage, "a.pdf", "doc-1", workspace="never-initialised-ws", apply=True
-    )
+    logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            result = await repair_one_conflict(
+                storage, "a.pdf", "doc-1", workspace="never-initialised-ws", apply=True
+            )
+    finally:
+        logger.propagate = False
+
     assert result.committed is True
     resolved = await storage.resolve_doc_source_strict("a.pdf")
     assert isinstance(resolved, SourceUnique) and resolved.doc_id == "doc-1"
+
+    assert "without pipeline exclusion" in caplog.text
+    assert "ANOTHER process" in caplog.text  # the boundary, not just "no server"
+    assert "source_conflicts/repair" in caplog.text  # names the guarded route
+
+
+@pytest.mark.asyncio
+async def test_a_guarded_repair_does_not_warn(tmp_path, caplog):
+    """The complement: with a real pipeline_status the exclusion is live, so the
+    caveat must not fire — a warning on every in-server repair would train
+    operators to ignore it."""
+    import logging
+
+    from lightrag.kg.shared_storage import initialize_pipeline_status
+    from lightrag.utils import logger
+
+    workspace = "guarded-ws"
+    await initialize_pipeline_status(workspace=workspace)
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+    logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            await repair_one_conflict(
+                storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+            )
+    finally:
+        logger.propagate = False
+    assert "without pipeline exclusion" not in caplog.text
 
 
 @pytest.mark.asyncio

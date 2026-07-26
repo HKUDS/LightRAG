@@ -16,21 +16,55 @@ every other candidate is marked ``metadata.is_duplicate=true`` with
 rows keep their status and their ``full_docs`` entry, they only lose their claim
 on the canonical source.
 
+"Offline" means OUT OF BAND — not through the HTTP API — and NOT "the server must
+be stopped". Which matters, because the protection you get depends on where the
+call runs, and only one of the two callers gets all of it:
+
+===========================  =============================================
+caller                       caller-side exclusion
+===========================  =============================================
+``POST …/repair`` (online)   real: the endpoint runs inside a server worker,
+  or a library call from       so the keyed lock, the enqueue-serialize lock
+  inside the server            and the pending-enqueue reservation all live
+                               in the shared state every worker sees
+standalone CLI               NONE of it: ``initialize_share_data(workers=1)``
+                               builds process-LOCAL asyncio locks and a local
+                               ``_shared_dicts``, and this process never
+                               initialises ``pipeline_status``, so the locks
+                               exclude only this process and the reservation
+                               is a no-op
+===========================  =============================================
+
+Cross-process exclusion is not reachable from here: it would need the server's
+Manager (its address and authkey are private to the server) or a persisted
+liveness marker, which is the storage-verifiable fencing token the design
+excludes. So:
+
+**Run ``--apply`` while the server is stopped or quiesced, or use the HTTP
+endpoint instead.** A CLI commit against a live server is not silently unsafe —
+it is guarded by the CAS and by the post-commit re-resolve, so a concurrent
+change makes the repair FAIL LOUDLY rather than corrupt the key — but "fails
+loudly" is the guarantee, not "cannot interleave".
+
 Safety model:
 
 - listing and ``repair`` without ``--apply`` mutate nothing;
 - ``--apply`` re-reads the candidate set and commits only when it still matches
-  the dry-run it just performed (compare-and-set), so a concurrent enqueue/delete
-  fails the repair instead of being overwritten; the commit runs under the
-  canonical-key + enqueue-serialize locks, which is what keeps a NEW primary from
-  being inserted between that re-read and the demotions;
+  the dry-run it just performed (compare-and-set), so a concurrent
+  enqueue/delete fails the repair instead of being overwritten. This is the one
+  guarantee that holds for BOTH callers, because it lives in the storage;
+- ``verify_repair_outcome`` re-resolves the key after the commit and raises
+  unless it is now unique on the chosen primary — the backstop that turns any
+  interleaving the caller-side locks did not cover into a reported failure;
+- the caller-side locks (per the table above) additionally keep a NEW primary
+  from being INSERTED between the backend's re-read and its demotions — for
+  in-server callers only;
 - a repair interrupted half-way needs no reconciliation: the finished rows
   already express ``duplicate`` and the rest still resolve as a conflict, so
   simply run it again.
 
-Only ``doc_status`` is opened — no vector store, graph store, LLM or embedding
-model is touched, so this is safe to run against a live deployment's database
-while the server is stopped or running.
+``doc_status`` and ``full_docs`` are opened — no vector store, graph store, LLM
+or embedding model is touched.
 
 Usage (CLI — honors WORKING_DIR / WORKSPACE and the LIGHTRAG_* storage env vars
 from ``.env``, same as the server)::
@@ -124,9 +158,14 @@ async def _repair_ingress_reservation(workspace: str):
     the scan and destructive acquires already refuse on. The fences above are
     evaluated in the same atomic step, so the exclusion holds in both directions.
 
-    No pipeline_status (offline CLI against a stopped server) means there is no
-    server-side writer to exclude, so the repair proceeds — that is the correct
-    answer here, not a concession.
+    An uninitialised ``pipeline_status`` does NOT prove there is no server: it
+    proves only that THIS process has none, and a standalone CLI never
+    initialises one even when a server is running elsewhere (its shared state is
+    a different process's). So the repair proceeds — refusing would break the
+    stopped-server case, which is the CLI's whole purpose — but it says so, at
+    the moment it actually applies, rather than leaving the operator to infer it
+    from the module docstring. The CAS and the post-commit re-resolve are what
+    keep that case honest.
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
@@ -141,6 +180,16 @@ async def _repair_ingress_reservation(workspace: str):
             "pipeline_status", workspace=workspace
         )
     except PipelineNotInitializedError:
+        logger.warning(
+            "Source-conflict repair is committing without pipeline exclusion: "
+            "this process has no pipeline_status, which means either no server "
+            "is running OR one is running in ANOTHER process whose shared state "
+            "this one cannot see. Concurrent clear/delete, scan classification "
+            "or a manual retry are therefore NOT excluded — the compare-and-set "
+            "and the post-commit re-resolve will fail the repair loudly if one "
+            "interleaves. Prefer POST /documents/source_conflicts/repair while a "
+            "server is running."
+        )
         yield
         return
 
@@ -199,9 +248,20 @@ async def source_conflict_repair_lock(workspace: str, canonical_source_key: str)
     document the total order — otherwise the two directions deadlock, only when a
     manual repair runs concurrently with an upload, which CI will not catch.
 
-    Scope is one deployment (its worker processes included), not several
-    deployments sharing a database — a repair run against a database that another
-    deployment is writing to keeps the phantom window.
+    Every one of these three is PROCESS-LOCAL machinery, so the scope is one
+    deployment — its worker processes included, because they share the Manager
+    the master created — and nothing beyond it. Two consequences, the second of
+    which is easy to miss:
+
+    * a repair run against a database another deployment is writing to keeps the
+      phantom window;
+    * **the standalone CLI is such an "other deployment"**. It calls
+      ``initialize_share_data(workers=1)``, so these locks are asyncio objects in
+      its own process and the reservation finds no ``pipeline_status`` at all.
+      Everything here holds for the HTTP endpoint and for a library call inside a
+      server worker; for the CLI it is inert, and the CAS plus
+      :func:`verify_repair_outcome` are the whole guarantee (see the module
+      docstring).
     """
     # Imported lazily: the CLI initializes shared storage in main(), and
     # importing at module scope would bind before that happens.
