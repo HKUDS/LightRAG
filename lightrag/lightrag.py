@@ -51,6 +51,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
+    ROLLBACK_REPORT_SAMPLE_CAP,
     DEFAULT_SUMMARY_PRIORITY,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
@@ -2275,7 +2276,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         *,
         pipeline_status: dict | None = None,
         pipeline_status_lock: Any | None = None,
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, Any]:
         """Roll back every failed/stale custom-chunk operation (issue #3400 P4).
 
         The administrative escape hatch invoked at the start of
@@ -2306,7 +2307,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         scan retries it. Absent objects are idempotent no-ops, but success is
         never reported merely because something was already missing.
 
-        Returns ``{"rolled_back": [...], "failed": [...]}`` doc-id lists.
+        Returns ``{"rolled_back_count": int, "failed_count": int,
+        "rolled_back_sample": [...], "failed_sample": [...]}``. Counts are
+        exact; the id lists are bounded to ``ROLLBACK_REPORT_SAMPLE_CAP``,
+        because a report that grows one entry per journaled document would
+        reintroduce the O(N) accumulation this sweep exists to remove.
         """
         if pipeline_status is None or pipeline_status_lock is None:
             pipeline_status = await get_namespace_data(
@@ -2316,17 +2321,83 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "pipeline_status", workspace=self.workspace
             )
 
+        rolled_back_count = 0
+        failed_count = 0
+        rolled_back_sample: list[str] = []
+        failed_sample: list[str] = []
+        doc_lock_namespace = (
+            f"{self.workspace}:DocPatch" if self.workspace else "DocPatch"
+        )
+
+        async def _roll_back_batch(doc_ids: list[str]) -> None:
+            """Roll back one page's journaled docs, accumulating only counts."""
+            nonlocal rolled_back_count, failed_count
+            for doc_id in doc_ids:
+                async with get_storage_keyed_lock(
+                    [doc_id], namespace=doc_lock_namespace, enable_logging=False
+                ):
+                    # Re-read under the lock: the SDK may have resumed (and
+                    # committed) the operation between discovery and here.
+                    row = await self.doc_status.get_by_id(doc_id)
+                    journal = doc_status_custom_chunk_patch(row)
+                    if journal is None:
+                        continue
+                    try:
+                        await self._rollback_one_custom_chunk_patch(
+                            doc_id,
+                            row,
+                            journal,
+                            pipeline_status=pipeline_status,
+                            pipeline_status_lock=pipeline_status_lock,
+                        )
+                        rolled_back_count += 1
+                        if len(rolled_back_sample) < ROLLBACK_REPORT_SAMPLE_CAP:
+                            rolled_back_sample.append(doc_id)
+                        log_message = (
+                            f"[rollback] Rolled back custom-chunk operation "
+                            f"{journal.get('operation_id')} on {doc_id} "
+                            f"(mode: {journal.get('mode', 'patch')})"
+                        )
+                        logger.info(log_message)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+                    except Exception as rollback_error:
+                        # Journal and FAILED status remain; the next scan retries.
+                        failed_count += 1
+                        if len(failed_sample) < ROLLBACK_REPORT_SAMPLE_CAP:
+                            failed_sample.append(doc_id)
+                        log_message = (
+                            f"[rollback] Failed to roll back custom-chunk "
+                            f"operation on {doc_id}: {rollback_error}"
+                        )
+                        logger.error(log_message)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+
         # Scheduling-control-plane discovery, memory-bounded (LR2 Phase 2):
         # page the FAILED/PROCESSING keyset instead of materializing every such
-        # row, collecting journaled ids straight from the lightweight page's
-        # has_custom_chunk_journal flag (no per-row hydration — journaled docs
-        # are rare, so only the small id list accumulates). strict so a
-        # mid-pagination or per-record backend failure raises instead of
-        # returning a partial candidate set (which would roll back some
-        # journaled docs, silently miss the rest, and report the scan done);
-        # the scan-time caller catches the raise and keeps the journal/FAILED
-        # rows for the next scan — abort-and-retry beats partial recovery.
-        journaled_ids: list[str] = []
+        # row, taking journaled ids straight from the lightweight page's
+        # has_custom_chunk_journal flag (no per-row hydration).
+        #
+        # Each page is rolled back BEFORE the next is fetched, so nothing
+        # proportional to the journaled-document count is ever held — collecting
+        # every id first would have kept the sweep O(N) on the assumption that
+        # journaled docs are rare, which is a workload guess, not a bound.
+        # Interleaving is safe against the live-view keyset: the sort key
+        # ``(created_at, id)`` is immutable (``update_doc_status_fields``
+        # refuses ``created_at``), and a rollback only ever leaves the
+        # FAILED/PROCESSING set — it flips a row to PROCESSED or deletes it, and
+        # never creates one — so it can only touch rows the sweep has already
+        # consumed and passed.
+        #
+        # strict so a mid-pagination or per-record backend failure raises rather
+        # than silently ending the sweep early and reporting the scan done. Docs
+        # rolled back before that raise stay rolled back: each one is an
+        # independent, idempotent unit committed under its own lock, and its
+        # journal is gone, so the next scan simply skips it and picks up the
+        # rest.
         page_size = getattr(self, "pipeline_scheduling_page_size", 0)
         if page_size > 0:
             position: CursorPosition = CURSOR_START
@@ -2337,10 +2408,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     position=position,
                     strict=True,
                 )
-                journaled_ids.extend(
-                    doc_id
-                    for doc_id, record in page.docs.items()
-                    if record.has_custom_chunk_journal
+                await _roll_back_batch(
+                    [
+                        doc_id
+                        for doc_id, record in page.docs.items()
+                        if record.has_custom_chunk_journal
+                    ]
                 )
                 if page.next_position is CURSOR_END:
                     break
@@ -2350,61 +2423,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             candidates = await self.doc_status.get_docs_by_statuses(
                 [DocStatus.FAILED, DocStatus.PROCESSING], strict=True
             )
-            journaled_ids = [
-                doc_id
-                for doc_id, status_doc in candidates.items()
-                if doc_status_custom_chunk_patch(status_doc) is not None
-            ]
+            await _roll_back_batch(
+                [
+                    doc_id
+                    for doc_id, status_doc in candidates.items()
+                    if doc_status_custom_chunk_patch(status_doc) is not None
+                ]
+            )
 
-        rolled_back: list[str] = []
-        failed: list[str] = []
-        if not journaled_ids:
-            return {"rolled_back": rolled_back, "failed": failed}
-
-        doc_lock_namespace = (
-            f"{self.workspace}:DocPatch" if self.workspace else "DocPatch"
-        )
-        for doc_id in journaled_ids:
-            async with get_storage_keyed_lock(
-                [doc_id], namespace=doc_lock_namespace, enable_logging=False
-            ):
-                # Re-read under the lock: the SDK may have resumed (and
-                # committed) the operation between discovery and here.
-                row = await self.doc_status.get_by_id(doc_id)
-                journal = doc_status_custom_chunk_patch(row)
-                if journal is None:
-                    continue
-                try:
-                    await self._rollback_one_custom_chunk_patch(
-                        doc_id,
-                        row,
-                        journal,
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
-                    )
-                    rolled_back.append(doc_id)
-                    log_message = (
-                        f"[rollback] Rolled back custom-chunk operation "
-                        f"{journal.get('operation_id')} on {doc_id} "
-                        f"(mode: {journal.get('mode', 'patch')})"
-                    )
-                    logger.info(log_message)
-                    async with pipeline_status_lock:
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-                except Exception as rollback_error:
-                    # Journal and FAILED status remain; the next scan retries.
-                    failed.append(doc_id)
-                    log_message = (
-                        f"[rollback] Failed to roll back custom-chunk "
-                        f"operation on {doc_id}: {rollback_error}"
-                    )
-                    logger.error(log_message)
-                    async with pipeline_status_lock:
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-
-        return {"rolled_back": rolled_back, "failed": failed}
+        return {
+            "rolled_back_count": rolled_back_count,
+            "failed_count": failed_count,
+            "rolled_back_sample": rolled_back_sample,
+            "failed_sample": failed_sample,
+        }
 
     async def _rollback_one_custom_chunk_patch(
         self,

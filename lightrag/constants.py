@@ -471,3 +471,9 @@ DEFAULT_OLLAMA_MODEL_TAG = "latest"
 DEFAULT_OLLAMA_MODEL_SIZE = 7365960935
 DEFAULT_OLLAMA_CREATED_AT = "2024-01-15T00:00:00Z"
 DEFAULT_OLLAMA_DIGEST = "sha256:lightrag"
+
+# Upper bound on the doc-id samples surfaced by the custom-chunk rollback
+# report. The rollback sweep is paged, so it must not accumulate one entry per
+# journaled document just to describe what it did — counts are exact, the id
+# lists are a bounded sample (see arollback_failed_custom_chunk_patches).
+ROLLBACK_REPORT_SAMPLE_CAP = 32
