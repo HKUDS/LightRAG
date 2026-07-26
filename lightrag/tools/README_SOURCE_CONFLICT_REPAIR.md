@@ -19,9 +19,10 @@ conflict explicitly.
   keep their status and their `full_docs` entry; they only lose their claim on
   the canonical source, which is what makes the resolver return a single
   primary afterwards.
-- Only `doc_status` is opened. No vector store, graph store, LLM or embedding
-  model is touched, so a doc_status bookkeeping problem never requires a
-  reachable Milvus/Neo4j/LLM endpoint to fix.
+- Only `doc_status` and `full_docs` are opened. No vector store, graph store,
+  LLM or embedding model is touched, so a doc_status bookkeeping problem never
+  requires a reachable Milvus/Neo4j/LLM endpoint to fix. `full_docs` is read (not
+  written) to verify the primary you named — see *Safety*.
 
 ## Usage
 
@@ -54,7 +55,14 @@ from lightrag.tools.source_conflict_repair import (
 
 conflicts = await collect_source_conflicts(rag.doc_status, limit=50)
 result = await repair_one_conflict(
-    rag.doc_status, "report.docx", "doc-abc123", apply=True
+    rag.doc_status,
+    "report.docx",
+    "doc-abc123",
+    workspace=rag.workspace,
+    # Required for a COMMIT: it is what verifies the primary you named can
+    # actually keep the source. A dry-run needs none.
+    full_docs=rag.full_docs,
+    apply=True,
 )
 ```
 
@@ -86,3 +94,18 @@ guard.
 - Repeating a completed repair is safe: the same request is refused (its token
   described the old candidate set) and a fresh run is a no-op with one
   candidate and nothing to demote.
+- A commit refuses a primary that cannot keep the source, because the demotions
+  are irreversible — a repair only demotes, and a key left with no candidate has
+  no conflict left to settle:
+  - no `full_docs` content (an unprocessable stub a scan would delete) → 409;
+  - content that already exists under a **different** source, which the
+    processing stage will mark `FAILED [DUPLICATE:content_hash]` → 409;
+  - the content could not be *verified* at all — read failure, a backend without
+    strict point reads, or no `full_docs` handle → 503, retry later. Unverified
+    is not verified.
+- Not covered, by construction: a primary that has not been parsed yet has no
+  content hash, so nothing can predict whether its content will turn out to
+  duplicate another document. If it does, the outcome is the ordinary
+  content-dedup steady state (the content lives under that document and this key
+  ends up with no primary), the commit reports it instead of claiming success,
+  and no content is lost.

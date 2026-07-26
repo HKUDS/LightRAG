@@ -102,6 +102,10 @@ from lightrag.exceptions import (
     StorageControlPlaneError,
 )
 from lightrag.utils import logger
+from lightrag.utils_pipeline import (
+    doc_status_field,
+    get_duplicate_doc_by_content_hash,
+)
 
 # Pages are bounded on both sides: the backend projects a bounded sample per
 # key, and --all stops after this many pages so a pathological workspace cannot
@@ -337,10 +341,12 @@ async def repair_one_conflict(
     NOT ``doc_status.workspace``: a backend may override its own workspace from
     the environment, and a lock keyed on the wrong one excludes nothing.
 
-    ``full_docs`` enables the contentless-primary refusal (see
-    :func:`refuse_a_contentless_primary`); omitted, the repair proceeds without
-    that check. It cannot live in the backend: a doc_status storage has no handle
-    on full_docs.
+    ``full_docs`` is REQUIRED for a commit (``apply=True``): it is what the
+    contentless-primary refusal reads, and an unverified primary is refused with
+    :class:`StorageControlPlaneError` rather than granted the source — see
+    :func:`refuse_a_contentless_primary` for why the asymmetry is not close. It
+    cannot live in the backend: a doc_status storage has no handle on full_docs.
+    Dry-runs (and ``collect_source_conflicts``) mutate nothing and need none.
     """
     if not apply:
         return await doc_status.repair_source_conflict(
@@ -355,9 +361,12 @@ async def repair_one_conflict(
     # CAS must still be able to refuse. A candidate set that moved before the
     # lock was taken SHOULD 409 rather than be silently accepted.
     async with source_conflict_repair_lock(workspace, canonical_source_key):
-        # Inside the lock: the row could have lost its content between the
-        # operator reading the listing and this commit.
-        await refuse_a_contentless_primary(full_docs, primary_doc_id)
+        # Inside the lock: the row could have lost its content — or gained a
+        # content-hash twin — between the operator reading the listing and this
+        # commit.
+        await refuse_an_unusable_primary(
+            doc_status, full_docs, canonical_source_key, primary_doc_id
+        )
         dry = await doc_status.repair_source_conflict(
             canonical_source_key,
             primary_doc_id=primary_doc_id,
@@ -413,32 +422,39 @@ async def refuse_a_contentless_primary(full_docs: Any, primary_doc_id: str) -> N
     stub when no scan is running at all.
 
     A CONFIRMED absence refuses with
-    :class:`SourceConflictPrimaryUnusableError` (409 — pick another primary); a
-    read that FAILS refuses with :class:`StorageControlPlaneError` (503 — retry
-    once storage is back). Fail-closed on the failure, because "proceed anyway"
-    spends the one guarantee this check exists to provide: the demotions are
-    irreversible (a repair only demotes, and a key with no candidate left cannot
-    be repaired again), while a 503 costs the operator a retry of an operation
-    that has no deadline — the conflict has been sitting there since before they
-    looked at it.
+    :class:`SourceConflictPrimaryUnusableError` (409 — pick another primary).
+    EVERY other answer than "it has content" refuses with
+    :class:`StorageControlPlaneError` (503 — retry once storage is back): a read
+    that failed, a backend with no strict point reads, and no ``full_docs`` handle
+    at all. Unverified is not the same as verified, and the asymmetry is not
+    close: the demotions are irreversible (a repair only demotes, and a key with
+    no candidate left cannot be repaired again), while a 503 costs the operator a
+    retry of an operation that has no deadline — the conflict has been sitting
+    there since before they looked at it.
 
-    A backend WITHOUT strict point reads is the one case that still proceeds, and
-    not as a compromise: scan classification cannot delete the stub either on such
-    a backend (``_confirm_full_docs_absent`` returns ``None`` for exactly the same
-    reason and the STALE_STUB exit never fires), so the interaction this check
-    guards against does not exist there. Every in-tree KV backend declares
-    ``supports_strict_point_reads = True``; this branch is for a third-party one.
+    The no-strict-reads branch used to warn and proceed, reasoning that scan
+    classification cannot delete the stub on such a backend either
+    (``_confirm_full_docs_absent`` returns ``None`` for the same reason, so the
+    STALE_STUB exit never fires). That covers only ONE of the two harms: a stub
+    can never be processed, so handing it the canonical source leaves the key
+    owned by a document that will never exist, whatever the scan does. Every
+    in-tree KV backend declares ``supports_strict_point_reads = True``, so this
+    only refuses a third-party backend that cannot answer the question.
     """
     if full_docs is None:
-        return
-    if not getattr(full_docs, "supports_strict_point_reads", False):
-        logger.warning(
-            f"{type(full_docs).__name__} has no strict point reads; keeping "
-            f"{primary_doc_id} as the primary without confirming it has content "
-            "(a scan cannot delete a stale stub on this backend either, so the "
-            "interaction this check guards against cannot arise)"
+        raise StorageControlPlaneError(
+            f"Cannot confirm whether {primary_doc_id} has full_docs content: no "
+            f"full_docs handle was provided. A source-conflict COMMIT requires "
+            f"one — its demotions are irreversible, so an unverified primary is "
+            f"refused rather than granted the source."
         )
-        return
+    if not getattr(full_docs, "supports_strict_point_reads", False):
+        raise StorageControlPlaneError(
+            f"{type(full_docs).__name__} has no strict point reads, so it cannot "
+            f"confirm whether {primary_doc_id} has content; refusing to commit "
+            f"irreversible demotions on an unverified primary. A contentless stub "
+            f"can never be processed, so it would own the source forever."
+        )
     try:
         content = await full_docs.get_by_id_strict(primary_doc_id)
     except Exception as read_error:
@@ -454,6 +470,94 @@ async def refuse_a_contentless_primary(full_docs: Any, primary_doc_id: str) -> N
         f"unprocessable stub, so it cannot own a canonical source. Pick a "
         f"primary that has content — a scan would delete this row and leave the "
         f"demoted documents pointing at an id that no longer exists."
+    )
+
+
+async def refuse_a_primary_whose_content_lives_elsewhere(
+    doc_status: Any, canonical_source_key: str, primary_doc_id: str
+) -> None:
+    """Refuse a primary the PROCESSING stage is already destined to demote.
+
+    The repair's caller-side exclusion cannot reach the processing stage (see
+    :func:`repair_one_conflict`), and it never will: ``_mark_duplicate_after_parse``
+    is a per-document write with no source-key lock, and even a lock would not
+    help — the marking may simply land the moment the repair releases it. So the
+    only place to remove this interaction is where the contentless-stub refusal
+    already removes its own: BEFORE the irreversible demotions, by refusing a
+    primary that cannot keep the source.
+
+    A primary whose content hash is already held by a document under a DIFFERENT
+    canonical source is exactly that: when it is parsed, the post-parse duplicate
+    check will mark it FAILED-duplicate of that holder and delete its
+    ``full_docs`` body, and the key it was just given ends with no primary — the
+    state the repair endpoint cannot settle, since it only accepts a current
+    primary candidate.
+
+    Bounded on purpose, and partial by construction:
+
+    * a primary with no ``content_hash`` yet (an unparsed PENDING candidate — an
+      ordinary conflict candidate) cannot be checked at all: nobody knows what
+      its content will be. If it later turns out to duplicate another document,
+      the outcome is the ordinary content-dedup steady state (the content lives
+      under the other document, and this key has no primary because the file's
+      content is not its own), and no content is lost. That residual is
+      irreducible without parsing the document inside the repair;
+    * a match that claims THIS canonical source is not a reason to refuse — it is
+      one of the candidates this repair is about to demote (or one an earlier
+      repair already demoted). The lookup returns only the earliest holder, so a
+      same-key holder that sorts first also hides any further one: the check
+      abstains rather than guess, which is the same partiality with the same
+      residual as the case above.
+
+    The lookup is fail-closed by contract (``get_doc_by_content_hash`` raises
+    rather than reporting a transport failure as "no holder"), and the strict
+    hydration of the primary's own row propagates too, so an unreadable state
+    refuses the commit instead of skipping the check.
+    """
+    rows = await doc_status.get_full_docs_by_ids([primary_doc_id], strict=True)
+    primary_row = rows.get(primary_doc_id)
+    if primary_row is None:
+        # Not a candidate any more; the backend's own check reports that, with
+        # the message that sends the operator to re-list the conflict.
+        return
+    content_hash = doc_status_field(primary_row, "content_hash", "") or ""
+    if not content_hash:
+        return
+    match = await get_duplicate_doc_by_content_hash(
+        doc_status, content_hash, primary_doc_id
+    )
+    if match is None:
+        return
+    holder_doc_id, holder_row = match
+    if doc_status_field(holder_row, "file_path", "") == canonical_source_key:
+        return
+    raise SourceConflictPrimaryUnusableError(
+        f"Document {primary_doc_id} holds the same content as {holder_doc_id}, "
+        f"which claims a different source. Processing marks a content duplicate "
+        f"FAILED and deletes its content, so {primary_doc_id} cannot keep "
+        f"'{canonical_source_key}' — the key would end up with no primary at all, "
+        f"and no repair can settle that. Pick another primary, or settle "
+        f"{holder_doc_id} first."
+    )
+
+
+async def refuse_an_unusable_primary(
+    doc_status: Any,
+    full_docs: Any,
+    canonical_source_key: str,
+    primary_doc_id: str,
+) -> None:
+    """Every pre-commit refusal, in one call the commit paths cannot half-apply.
+
+    Both checks exist for the same reason — a repair only demotes, so a primary
+    that cannot keep the source leaves a key no repair can settle — and both must
+    run on BOTH commit paths (the endpoint and the library/CLI helper). Bundling
+    them here is what keeps one path from silently growing a check the other
+    lacks.
+    """
+    await refuse_a_contentless_primary(full_docs, primary_doc_id)
+    await refuse_a_primary_whose_content_lives_elsewhere(
+        doc_status, canonical_source_key, primary_doc_id
     )
 
 

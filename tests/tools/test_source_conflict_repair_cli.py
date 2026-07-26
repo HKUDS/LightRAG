@@ -38,6 +38,27 @@ def _shared():
     finalize_share_data()
 
 
+class _AnyContent:
+    """full_docs double that confirms content for every id.
+
+    A COMMIT requires one: an unverified primary is refused (the demotions are
+    irreversible), so every ``apply=True`` call below passes a full_docs handle.
+    The refusals themselves have their own tests.
+    """
+
+    supports_strict_point_reads = True
+
+    def __init__(self, contents=None):
+        self.contents = contents
+        self.reads: list[str] = []
+
+    async def get_by_id_strict(self, doc_id):
+        self.reads.append(doc_id)
+        if self.contents is None:
+            return {"content": "body"}
+        return self.contents.get(doc_id)
+
+
 def _row(file_path: str, status: str = "pending") -> dict:
     return {
         "status": status,
@@ -128,7 +149,9 @@ async def test_apply_commits_with_the_token_from_its_own_dry_run(tmp_path):
 
     storage.repair_source_conflict = _recording
 
-    result = await repair_one_conflict(storage, "a.pdf", "doc-2", apply=True)
+    result = await repair_one_conflict(
+        storage, "a.pdf", "doc-2", full_docs=_AnyContent(), apply=True
+    )
 
     assert result.committed is True
     assert [call["dry_run"] for call in seen] == [True, False]
@@ -152,7 +175,9 @@ async def test_unknown_primary_is_refused_before_any_write(tmp_path):
         tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
     )
     with pytest.raises(ValueError, match="not a current primary candidate"):
-        await repair_one_conflict(storage, "a.pdf", "doc-typo", apply=True)
+        await repair_one_conflict(
+            storage, "a.pdf", "doc-typo", full_docs=_AnyContent(), apply=True
+        )
 
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
 
@@ -202,7 +227,12 @@ async def test_commit_holds_the_enqueue_serialize_lock(tmp_path):
         # The enqueue lock is held, so a correctly-locked commit cannot start.
         commit = asyncio.create_task(
             repair_one_conflict(
-                storage, "a.pdf", "doc-2", workspace=workspace, apply=True
+                storage,
+                "a.pdf",
+                "doc-2",
+                workspace=workspace,
+                full_docs=_AnyContent(),
+                apply=True,
             )
         )
         await asyncio.sleep(0.05)
@@ -263,7 +293,12 @@ async def test_the_commit_registers_itself_as_in_flight_ingress(tmp_path):
 
     storage.repair_source_conflict = _observing
     result = await repair_one_conflict(
-        storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+        storage,
+        "a.pdf",
+        "doc-1",
+        workspace=workspace,
+        full_docs=_AnyContent(),
+        apply=True,
     )
     assert result.committed is True
 
@@ -298,7 +333,12 @@ async def test_a_destructive_job_in_flight_refuses_the_commit(tmp_path):
     )
     with pytest.raises(StorageControlPlaneError, match="clear/delete"):
         await repair_one_conflict(
-            storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+            storage,
+            "a.pdf",
+            "doc-1",
+            workspace=workspace,
+            full_docs=_AnyContent(),
+            apply=True,
         )
     # Nothing demoted.
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
@@ -334,7 +374,12 @@ async def test_scan_classification_and_a_manual_freeze_also_refuse(tmp_path):
         )
         with pytest.raises(StorageControlPlaneError, match=expected):
             await repair_one_conflict(
-                storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+                storage,
+                "a.pdf",
+                "doc-1",
+                workspace=workspace,
+                full_docs=_AnyContent(),
+                apply=True,
             )
 
 
@@ -360,7 +405,12 @@ async def test_an_offline_repair_proceeds_but_says_it_is_unguarded(tmp_path, cap
     try:
         with caplog.at_level(logging.WARNING, logger=logger.name):
             result = await repair_one_conflict(
-                storage, "a.pdf", "doc-1", workspace="never-initialised-ws", apply=True
+                storage,
+                "a.pdf",
+                "doc-1",
+                workspace="never-initialised-ws",
+                full_docs=_AnyContent(),
+                apply=True,
             )
     finally:
         logger.propagate = False
@@ -393,7 +443,12 @@ async def test_a_guarded_repair_does_not_warn(tmp_path, caplog):
     try:
         with caplog.at_level(logging.WARNING, logger=logger.name):
             await repair_one_conflict(
-                storage, "a.pdf", "doc-1", workspace=workspace, apply=True
+                storage,
+                "a.pdf",
+                "doc-1",
+                workspace=workspace,
+                full_docs=_AnyContent(),
+                apply=True,
             )
     finally:
         logger.propagate = False
@@ -509,4 +564,56 @@ async def test_the_cli_refuses_to_apply_when_full_docs_cannot_be_opened(
     assert await tool._async_main(args) is False
     assert committed == []  # nothing reached the backend, not even a dry-run
     assert "Refused" in capsys.readouterr().out
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_a_commit_without_full_docs_is_refused(tmp_path):
+    """Fix-proof: omitting ``full_docs`` used to skip the contentless-primary
+    check and commit anyway, so a library caller (and the CLI when full_docs
+    could not be opened) could hand a canonical source to an unprocessable stub
+    irreversibly. A commit now requires the handle; dry-runs still do not."""
+    from lightrag.exceptions import StorageControlPlaneError
+
+    storage = await _storage(
+        tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
+    )
+
+    # Dry-run: mutates nothing, so it needs no verification.
+    assert (await repair_one_conflict(storage, "a.pdf", "doc-2")).committed is False
+
+    with pytest.raises(StorageControlPlaneError, match="no full_docs handle"):
+        await repair_one_conflict(
+            storage, "a.pdf", "doc-2", workspace="no-full-docs-ws", apply=True
+        )
+    assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)
+
+
+@pytest.mark.asyncio
+async def test_a_primary_that_duplicates_another_source_is_refused_offline_too(
+    tmp_path,
+):
+    """The processing stage holds no source-key lock, so a primary whose content
+    already lives under a different source is refused BEFORE the irreversible
+    demotions — the same shape as the contentless-stub refusal, on the CLI path."""
+    from lightrag.exceptions import SourceConflictPrimaryUnusableError
+
+    rows = {
+        "doc-1": _row("a.pdf"),
+        "doc-2": _row("a.pdf", "failed"),
+        "doc-elsewhere": _row("other.pdf", "processed"),
+    }
+    rows["doc-2"]["content_hash"] = "hash-x"
+    rows["doc-elsewhere"]["content_hash"] = "hash-x"
+    storage = await _storage(tmp_path, rows)
+
+    with pytest.raises(SourceConflictPrimaryUnusableError, match="doc-elsewhere"):
+        await repair_one_conflict(
+            storage,
+            "a.pdf",
+            "doc-2",
+            workspace="twin-ws",
+            full_docs=_AnyContent(),
+            apply=True,
+        )
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceConflict)

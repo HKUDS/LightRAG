@@ -67,7 +67,7 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_VECTOR,
 )
 from lightrag.tools.source_conflict_repair import (
-    refuse_a_contentless_primary,
+    refuse_an_unusable_primary,
     source_conflict_repair_lock,
     verify_repair_outcome,
 )
@@ -4359,11 +4359,16 @@ def create_document_routes(
                 async with source_conflict_repair_lock(
                     rag.workspace, payload.canonical_source_key
                 ):
-                    # A stub with no content can never own the source, and a scan
-                    # would delete it out from under the demotions — refuse
-                    # inside the lock, where the answer cannot go stale.
-                    await refuse_a_contentless_primary(
-                        rag.full_docs, payload.primary_doc_id
+                    # Two primaries can never keep the source: a stub with no
+                    # content (a scan would delete it out from under the
+                    # demotions) and one whose content already lives under
+                    # another document (processing will mark it a duplicate).
+                    # Refuse inside the lock, where the answers cannot go stale.
+                    await refuse_an_unusable_primary(
+                        rag.doc_status,
+                        rag.full_docs,
+                        payload.canonical_source_key,
+                        payload.primary_doc_id,
                     )
                     result = await rag.doc_status.repair_source_conflict(
                         payload.canonical_source_key,

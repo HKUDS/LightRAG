@@ -77,12 +77,52 @@ class _ConflictDocStatus:
 
     _SAMPLE_CAP = 2
 
-    def __init__(self, groups: dict[str, list[str]] | None = None):
+    def __init__(
+        self,
+        groups: dict[str, list[str]] | None = None,
+        *,
+        content_hashes: dict[str, str] | None = None,
+        source_of: dict[str, str] | None = None,
+    ):
         self.groups = groups or {}
+        # doc_id → content_hash, and doc_id → the canonical source it claims.
+        # The commit refuses a primary whose content already lives under ANOTHER
+        # source, so both are needed to exercise (and to stay out of) that check.
+        self.content_hashes = content_hashes or {}
+        self.source_of = source_of or {}
         self.list_calls: list[tuple[int, object]] = []
         self.repair_calls: list[dict] = []
         self.list_error: Exception | None = None
         self.repair_error: Exception | None = None
+
+    def _row(self, doc_id: str) -> SimpleNamespace:
+        source = self.source_of.get(doc_id) or next(
+            (key for key, ids in self.groups.items() if doc_id in ids), ""
+        )
+        return SimpleNamespace(
+            content_hash=self.content_hashes.get(doc_id, ""),
+            file_path=source,
+            metadata={},
+        )
+
+    async def get_full_docs_by_ids(self, doc_ids, *, strict=False):
+        known = set(self.content_hashes) | set(self.source_of)
+        for ids in self.groups.values():
+            known.update(ids)
+        return {doc_id: self._row(doc_id) for doc_id in doc_ids if doc_id in known}
+
+    async def get_doc_by_content_hash(self, content_hash, *, exclude_doc_id=None):
+        """Earliest (by id, deterministically) OTHER holder of the hash — the
+        exclusions the base contract requires, on a double small enough to reason
+        about."""
+        holders = sorted(
+            doc_id
+            for doc_id, value in self.content_hashes.items()
+            if value == content_hash and doc_id != exclude_doc_id
+        )
+        if not holders:
+            return None
+        return holders[0], self._row(holders[0])
 
     async def list_source_conflicts_page(self, *, limit, position=CURSOR_START):
         self.list_calls.append((limit, position))
@@ -663,10 +703,12 @@ def test_a_failed_content_read_is_a_503_not_a_committed_demotion():
     assert [call["dry_run"] for call in doc_status.repair_calls] == [True]
 
 
-def test_an_unconfirmable_absence_does_not_block_the_repair():
-    """Only a CONFIRMED absence refuses. A backend with no strict point reads
-    cannot tell a transport failure from a missing row, and denying the operator
-    their only repair tool over an unconfirmed miss is the worse failure."""
+def test_a_backend_that_cannot_prove_content_is_a_503_not_a_commit():
+    """Fix-proof: a backend with no strict point reads used to warn and commit.
+    The old reasoning — such a backend's scan cannot delete the stub either, so
+    the interaction cannot arise — covers only one of the two harms: a stub can
+    never be processed, so it would own the canonical source forever, whatever the
+    scan does. Unverified is not verified, and the demotions are irreversible."""
     doc_status = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
     full_docs = _FullDocs({}, strict=False)  # nothing known, nothing provable
     client = _client(doc_status, full_docs)
@@ -687,5 +729,77 @@ def test_an_unconfirmable_absence_does_not_block_the_repair():
             "dry_run": False,
         },
     )
+    assert commit.status_code == 503
+    assert full_docs.reads == []  # the capability is missing; no read to attempt
+    assert doc_status.groups["a.pdf"] == ["doc-1", "doc-2"]  # nothing demoted
+
+
+def test_a_primary_whose_content_lives_under_another_source_is_refused():
+    """The processing stage marks a content duplicate FAILED and deletes its
+    content, and it holds no source-key lock — so a primary that ALREADY shares
+    its content hash with a document under a different source cannot keep this
+    one: the key would end up with no primary, which no repair can settle (the
+    endpoint only accepts a current primary candidate).
+
+    Refusing here is the same move the contentless-stub check makes, for the same
+    reason: it removes the interaction before the irreversible demotions, where a
+    lock could not (the marking may land the moment the lock is released).
+    """
+    doc_status = _ConflictDocStatus(
+        {"a.pdf": ["doc-1", "doc-2"]},
+        content_hashes={"doc-2": "hash-x", "doc-elsewhere": "hash-x"},
+        source_of={"doc-elsewhere": "other.pdf"},
+    )
+    client = _client(doc_status, _FullDocs({"doc-2": {"content": "body"}}))
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+
+    assert commit.status_code == 409
+    assert doc_status.groups["a.pdf"] == ["doc-1", "doc-2"]  # nothing demoted
+
+
+def test_a_content_twin_among_the_candidates_is_not_a_reason_to_refuse():
+    """The complement, and the check's documented boundary: two candidates for the
+    SAME key holding identical content is the ordinary conflict to settle (a
+    custom-ID insert over a scanned file), not a reason to refuse. Only a holder
+    under a DIFFERENT source dooms the primary."""
+    doc_status = _ConflictDocStatus(
+        {"a.pdf": ["doc-1", "doc-2"]},
+        content_hashes={"doc-1": "hash-x", "doc-2": "hash-x"},
+    )
+    client = _client(doc_status, _FullDocs({"doc-2": {"content": "body"}}))
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+
     assert commit.status_code == 200
-    assert full_docs.reads == []  # never even attempted
+    assert doc_status.groups["a.pdf"] == ["doc-2"]
