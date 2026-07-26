@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import socket
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -59,6 +60,34 @@ def _unique_workspace() -> str:
     return f"lr2ct{uuid.uuid4().hex[:10]}"
 
 
+@contextmanager
+def _workspace_env_isolated(*env_names: str):
+    """Neutralise the per-backend ``*_WORKSPACE`` overrides while a storage
+    resolves its workspace, then restore them.
+
+    Those env vars take PRIORITY over the constructor's ``workspace=`` argument
+    (``"Using REDIS_WORKSPACE environment variable … overriding …"``). So on the
+    one kind of machine these tests actually run on — an integration box with a
+    configured ``.env`` — ``_unique_workspace()`` was silently discarded and
+    every case landed in the SAME workspace: the derived-index and
+    source-multimap cases would then report each other's rows as Conflicts, and
+    one case's ``drop()`` would wipe another's data.
+
+    The window only has to cover construction and ``initialize()``: both
+    ``__post_init__`` (workspace) and the client setup (URI) read the
+    environment there and keep the resolved values.
+    """
+    saved = {name: os.environ.pop(name, None) for name in env_names}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def _ensure_shared_data() -> None:
     """Every backend reaches shared_storage — JSON for its cross-process data
     proxy, the others for the keyed write locks their index maintenance takes."""
@@ -87,14 +116,15 @@ async def _build_redis(_tmp_path) -> Any:
 
     _ensure_shared_data()
 
-    os.environ.setdefault("REDIS_URI", "redis://localhost:6379")
-    storage = RedisDocStatusStorage(
-        namespace="doc_status",
-        global_config={},
-        embedding_func=_DummyEmbeddingFunc(),
-        workspace=_unique_workspace(),
-    )
-    await storage.initialize()
+    with _workspace_env_isolated("REDIS_WORKSPACE"):
+        os.environ.setdefault("REDIS_URI", "redis://localhost:6379")
+        storage = RedisDocStatusStorage(
+            namespace="doc_status",
+            global_config={},
+            embedding_func=_DummyEmbeddingFunc(),
+            workspace=_unique_workspace(),
+        )
+        await storage.initialize()
     return storage
 
 
@@ -116,13 +146,16 @@ async def _build_postgres(_tmp_path) -> Any:
         ClientManager._instances["db"] = None
         ClientManager._instances["vector_signature"] = None
 
-    storage = PGDocStatusStorage(
-        namespace="doc_status",
-        global_config={"embedding_batch_num": 8},
-        embedding_func=_DummyEmbeddingFunc(),
-        workspace=_unique_workspace(),
-    )
-    await storage.initialize()
+    # POSTGRES_WORKSPACE feeds the pool config too, so the isolation has to span
+    # the client setup inside initialize(), not just __post_init__.
+    with _workspace_env_isolated("POSTGRES_WORKSPACE"):
+        storage = PGDocStatusStorage(
+            namespace="doc_status",
+            global_config={"embedding_batch_num": 8},
+            embedding_func=_DummyEmbeddingFunc(),
+            workspace=_unique_workspace(),
+        )
+        await storage.initialize()
     return storage
 
 
@@ -131,13 +164,14 @@ async def _build_mongo(_tmp_path) -> Any:
 
     _ensure_shared_data()
 
-    storage = MongoDocStatusStorage(
-        namespace="doc_status",
-        global_config={},
-        embedding_func=_DummyEmbeddingFunc(),
-        workspace=_unique_workspace(),
-    )
-    await storage.initialize()
+    with _workspace_env_isolated("MONGODB_WORKSPACE"):
+        storage = MongoDocStatusStorage(
+            namespace="doc_status",
+            global_config={},
+            embedding_func=_DummyEmbeddingFunc(),
+            workspace=_unique_workspace(),
+        )
+        await storage.initialize()
     return storage
 
 
@@ -146,13 +180,14 @@ async def _build_opensearch(_tmp_path) -> Any:
 
     _ensure_shared_data()
 
-    storage = OpenSearchDocStatusStorage(
-        namespace="doc_status",
-        global_config={},
-        embedding_func=_DummyEmbeddingFunc(),
-        workspace=_unique_workspace(),
-    )
-    await storage.initialize()
+    with _workspace_env_isolated("OPENSEARCH_WORKSPACE"):
+        storage = OpenSearchDocStatusStorage(
+            namespace="doc_status",
+            global_config={},
+            embedding_func=_DummyEmbeddingFunc(),
+            workspace=_unique_workspace(),
+        )
+        await storage.initialize()
     return storage
 
 

@@ -46,6 +46,9 @@ _STATUS_CYCLE = (
     DocStatus.FAILED,
     DocStatus.PROCESSING,
 )
+# The keyset order every backend's page sorts by — and, for Mongo, the order the
+# explain below is judged against.
+_PAGE_SORT = [("created_at", 1), ("_id", 1)]
 
 
 def _spec(name: str):
@@ -214,22 +217,49 @@ async def test_opensearch_pages_with_search_after_not_deep_from_size(tmp_path):
             await storage.finalize()
 
 
+class _CaptureFind:
+    """Collection proxy that records the filter its ``find`` is called with.
+
+    Wrapping the storage's ``_data`` attribute rather than patching a method on
+    the driver's collection object keeps this independent of whatever motor lets
+    us assign to."""
+
+    def __init__(self, collection, captured: dict):
+        self._collection = collection
+        self._captured = captured
+
+    def find(self, query, *args, **kwargs):
+        self._captured.setdefault("query", query)
+        return self._collection.find(query, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._collection, name)
+
+
 async def _mongo_page_explain(storage, statuses, position):
-    """Explain the same find+sort+limit shape the page issues, from a mid-sweep
-    cursor."""
+    """Explain the filter the page really issues from ``position``.
+
+    Captured, not restated, for the same reason ``_capture_page_sql`` captures
+    the SQL: the previous version hand-rolled a flat ``$or`` and started from
+    ``find_one``'s FIRST matching row, so it explained page one of a query shape
+    the implementation does not use (it builds ``$and``, with a separate
+    missing/null-bucket branch) — and it silently ignored the mid-sweep cursor
+    the caller paid ten real pages to reach, which is exactly where a
+    scan-based plan hurts and page one does not.
+
+    ``_PAGE_SORT``/``_PAGE`` are the implementation's own literals; the sort is
+    the property under test, so stating it here is deliberate.
+    """
     collection = storage._data
-    status_values = [s.value for s in statuses]
-    marker = await collection.find_one(
-        {"status": {"$in": status_values}}, sort=[("created_at", 1), ("_id", 1)]
-    )
-    assert marker is not None
-    created, doc_id = marker["created_at"], marker["_id"]
-    query = {
-        "status": {"$in": status_values},
-        "$or": [
-            {"created_at": {"$gt": created}},
-            {"created_at": created, "_id": {"$gt": doc_id}},
-        ],
-    }
-    cursor = collection.find(query).sort([("created_at", 1), ("_id", 1)]).limit(_PAGE)
+    captured: dict = {}
+    storage._data = _CaptureFind(collection, captured)
+    try:
+        await storage.get_docs_by_statuses_page(
+            statuses, limit=_PAGE, position=position, strict=True
+        )
+    finally:
+        storage._data = collection
+
+    assert "query" in captured, "the page issued no find"
+    cursor = collection.find(captured["query"]).sort(_PAGE_SORT).limit(_PAGE)
     return await cursor.explain()

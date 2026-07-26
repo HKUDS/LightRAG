@@ -1601,41 +1601,75 @@ class PostgreSQLDB:
         existing definition forever. A doc_status index is derived state, so
         rebuilding it is inside the documented upgrade envelope.
 
+        Order matters: create, VERIFY from ``pg_indexes``, and only then retire
+        the superseded index. Dropping first and swallowing a failed create left
+        the table with NO scheduling index — strictly worse than before the
+        upgrade, and silently: the service starts, pages stay correct and
+        memory-bounded (the top-N sort keeps only ``limit`` rows), and only the
+        I/O degrades to a full scan plus a sort per page. Verification reads the
+        catalog rather than inferring success from the absence of an exception.
+
+        A missing index is NOT fatal — index DDL can fail transiently (lock
+        timeout, concurrent DDL, a role without CREATE) and every startup retries
+        — but it is reported at WARNING with the consequence and the DDL to run
+        by hand, because nothing else about a degraded plan is observable.
+
         Guarded and idempotent — retried on every startup until present.
         """
-        # Drop the pre-NULLS-FIRST index; keeping it would cost writes without
-        # ever serving the page query.
+        index_name = "idx_lightrag_doc_status_ws_status_created_nf_id"
+        create_sql = (
+            f"CREATE INDEX IF NOT EXISTS {index_name} "
+            "ON LIGHTRAG_DOC_STATUS "
+            "(workspace, status, created_at NULLS FIRST, id)"
+        )
+        superseded_name = "idx_lightrag_doc_status_ws_status_created_id"
+
         try:
-            await self.execute(
-                "DROP INDEX IF EXISTS idx_lightrag_doc_status_ws_status_created_id"
+            if not await self._doc_status_index_exists(index_name):
+                logger.info(f"Creating index {index_name} on LIGHTRAG_DOC_STATUS")
+                await self.execute(create_sql)
+        except Exception as e:
+            logger.error(
+                f"Failed to create index {index_name} on LIGHTRAG_DOC_STATUS: {e}"
             )
+
+        try:
+            created = await self._doc_status_index_exists(index_name)
+        except Exception as verify_error:
+            logger.error(
+                f"Could not verify scheduling index {index_name}: {verify_error}"
+            )
+            created = False
+
+        if not created:
+            logger.warning(
+                f"Scheduling index {index_name} is MISSING on LIGHTRAG_DOC_STATUS: "
+                "every scheduling page falls back to a full scan plus a per-page "
+                "sort (O(rows) I/O per page, O(rows²/page_size) per sweep). "
+                f"Keeping the superseded index {superseded_name} so paging is no "
+                "worse than before this upgrade; startup retries the creation. "
+                f"To create it by hand: {create_sql}"
+            )
+            return
+
+        # Only now is the old index dead weight: it costs writes without ever
+        # serving the page query (PG's ASC default is NULLS LAST).
+        try:
+            await self.execute(f"DROP INDEX IF EXISTS {superseded_name}")
         except Exception as drop_error:  # pragma: no cover - best effort
             logger.warning(f"Could not drop superseded scheduling index: {drop_error}")
 
-        indexes = [
-            (
-                "idx_lightrag_doc_status_ws_status_created_nf_id",
-                "CREATE INDEX IF NOT EXISTS "
-                "idx_lightrag_doc_status_ws_status_created_nf_id "
-                "ON LIGHTRAG_DOC_STATUS "
-                "(workspace, status, created_at NULLS FIRST, id)",
-            ),
-        ]
-        for index_name, create_sql in indexes:
-            try:
-                check_index_sql = """
-                SELECT indexname FROM pg_indexes
-                WHERE tablename = 'lightrag_doc_status'
-                  AND indexname = $1
-                """
-                index_info = await self.query(check_index_sql, [index_name])
-                if not index_info:
-                    logger.info(f"Creating index {index_name} on LIGHTRAG_DOC_STATUS")
-                    await self.execute(create_sql)
-            except Exception as e:
-                logger.error(
-                    f"Failed to create index {index_name} on LIGHTRAG_DOC_STATUS: {e}"
-                )
+    async def _doc_status_index_exists(self, index_name: str) -> bool:
+        """Is ``index_name`` present on LIGHTRAG_DOC_STATUS, per the catalog?"""
+        rows = await self.query(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+              AND indexname = $1
+            """,
+            [index_name],
+        )
+        return bool(rows)
 
     async def _migrate_text_chunks_add_heading_sidecar(self):
         """Add heading and sidecar JSONB columns to LIGHTRAG_DOC_CHUNKS if missing."""
