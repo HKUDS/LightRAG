@@ -602,3 +602,94 @@ async def test_drop_clears_rows_and_sidecar(storage):
     await storage.drop()
     assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 0
     assert isinstance(await storage.resolve_doc_source_strict("a.pdf"), SourceAbsent)
+
+
+@pytest.mark.asyncio
+async def test_the_rebuild_switch_is_bounded_not_one_transaction_per_workspace(
+    storage, monkeypatch
+):
+    """Fix-proof: the switch listed EVERY official and temp key into Python lists
+    and queued one DELETE/RENAME per key into a single MULTI, so both the client
+    allocation and the server-side transaction buffer were O(total_docs) — during
+    the very initialization this phase exists to bound. It must now cost
+    O(_PUBLISH_BATCH)."""
+    fake = storage._redis
+    total = 5 * storage._PUBLISH_BATCH
+    for index in range(total):
+        fake.store[f"{storage.final_namespace}:doc-{index:05d}"] = json.dumps(
+            _doc("pending", file_path=f"f{index}.pdf")
+        )
+
+    # Widest single round trip the SWITCH issues. Counted by RENAME because only
+    # the switch renames — the snapshot build's own batches are bounded by its
+    # SCAN count and are not what regressed.
+    widest = {"renames": 0}
+    real_pipeline = fake.pipeline
+
+    def counting_pipeline(transaction: bool = True):
+        pipe = real_pipeline(transaction=transaction)
+        real_execute = pipe.execute
+
+        async def _execute():
+            renames = sum(1 for op in pipe._ops if op[0] == "rename")
+            widest["renames"] = max(widest["renames"], renames)
+            return await real_execute()
+
+        pipe.execute = _execute
+        return pipe
+
+    monkeypatch.setattr(fake, "pipeline", counting_pipeline)
+
+    await storage._rebuild_scheduling_sidecar()
+
+    assert 0 < widest["renames"] <= storage._PUBLISH_BATCH, (
+        f"a single round trip queued {widest['renames']} renames for {total} "
+        "docs; the switch is not bounded"
+    )
+    # ...and it really did publish everything.
+    members = fake.zsets[f"{storage._sched_prefix}:status:pending"]
+    assert len(members) == total
+    assert len(fake.sets) == total  # one basename set per document
+    assert not [k for k in fake.zsets if "_rebuild:" in k]
+    assert not [k for k in fake.sets if "_rebuild:" in k]
+
+
+@pytest.mark.asyncio
+async def test_a_half_published_index_is_rebuilt_not_trusted(storage):
+    """The cost of a non-atomic switch: a rebuilder that died mid-publish leaves
+    some official keys switched and the rest absent, which "any status key exists"
+    reads as healthy. The leftover temp keyspace is what distinguishes it, so a
+    later startup must rebuild instead of serving the half-published index."""
+    fake = storage._redis
+    for index in range(3):
+        fake.store[f"{storage.final_namespace}:doc-{index}"] = json.dumps(
+            _doc("pending", file_path=f"f{index}.pdf")
+        )
+    # One document's entry published, the other two still in the temp keyspace,
+    # no rebuild lock held — exactly the state a killed rebuilder leaves.
+    fake.zsets[f"{storage._sched_prefix}:status:pending"] = {"x|doc-0"}
+    fake.zsets[f"{storage._sched_prefix}_rebuild:status:pending"] = {"x|doc-1"}
+
+    await storage._rebuild_scheduling_sidecar()
+
+    # Rebuilt from the rows: all three documents are schedulable again.
+    members = fake.zsets[f"{storage._sched_prefix}:status:pending"]
+    assert len(members) == 3
+    assert not [k for k in fake.zsets if "_rebuild:" in k]
+
+
+@pytest.mark.asyncio
+async def test_a_live_rebuild_is_not_mistaken_for_an_interrupted_one(storage):
+    """A temp keyspace WITH the rebuild lock held is a rebuild in progress, not a
+    crash: this worker must wait for it, never restart it underneath the owner."""
+    fake = storage._redis
+    fake.store[f"{storage.final_namespace}:doc-0"] = json.dumps(_doc("pending"))
+    fake.zsets[f"{storage._sched_prefix}_rebuild:status:pending"] = {"x|doc-0"}
+    fake.store[f"{storage._sched_prefix}:rebuild_lock"] = "1"
+
+    assert (
+        await storage._interrupted_publish(
+            fake, f"{storage._sched_prefix}:rebuild_lock"
+        )
+        is False
+    )

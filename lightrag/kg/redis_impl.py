@@ -785,6 +785,11 @@ class RedisDocStatusStorage(DocStatusStorage):
     # on a single doc key is not expected (per-doc writes are serialized by
     # the pipeline); the cap turns a pathological livelock into an error.
     _WATCH_RETRY_LIMIT: ClassVar[int] = 50
+    # Key names per batch when the rebuilt sidecar is switched into place. This
+    # is the ONLY thing bounding that switch: it caps both the Python list of key
+    # names and the commands queued in one round trip, so a rebuild costs
+    # O(batch) instead of O(total_docs) (see _publish_rebuilt_index).
+    _PUBLISH_BATCH: ClassVar[int] = 512
 
     def __post_init__(self):
         validate_workspace(self.workspace)
@@ -2324,21 +2329,44 @@ class RedisDocStatusStorage(DocStatusStorage):
         instead: ``_ensure_no_eviction_policy`` refuses at startup to run on a
         Redis configured to evict TTL-less keys. An operator who suspects a
         damaged index deletes the ``…__sched:*`` keys and restarts, which takes
-        the branch below."""
+        the branch below.
+
+        One exception to "any status key means built": a LEFTOVER temp keyspace
+        with no rebuild lock held. The publish is streamed in bounded batches
+        instead of switched in one transaction (see
+        :meth:`_publish_rebuilt_index`), so a rebuilder that died mid-publish
+        leaves some official keys switched and the rest absent — which the
+        structural check alone would read as healthy. The temp keyspace is what
+        distinguishes that: a completed rebuild leaves none, and only a live
+        rebuilder (lock held) legitimately has one."""
         status_pattern = f"{self._sched_prefix}:status:*"
         primary_pattern = f"{self.final_namespace}:*"
         lock_key = f"{self._sched_prefix}:rebuild_lock"
         async with self._get_redis_connection() as redis:
-            if await self._any_key(redis, status_pattern):
+            interrupted = await self._interrupted_publish(redis, lock_key)
+            if interrupted:
+                logger.warning(
+                    f"[{self.workspace}] a previous scheduling sidecar rebuild for "
+                    f"{self.namespace} left its temp keyspace behind with no rebuild "
+                    f"in progress; the index may be half-published, so it is "
+                    f"rebuilt instead of trusted"
+                )
+            if not interrupted and await self._any_key(redis, status_pattern):
                 return  # already built + maintained live
             if not await self._any_key(redis, primary_pattern):
                 return  # nothing to build (empty / freshly dropped workspace)
             got_lock = await redis.set(lock_key, "1", nx=True, ex=300)
             if not got_lock:
                 # Another worker is rebuilding: wait (bounded) for the switch.
+                # Completion is "status keys present AND no temp keyspace left":
+                # with a streamed publish the FIRST rename already makes a status
+                # key appear, so status keys alone would release us onto a
+                # half-published index.
                 for _ in range(60):
                     await asyncio.sleep(1)
-                    if await self._any_key(redis, status_pattern):
+                    if await self._any_key(
+                        redis, status_pattern
+                    ) and not await self._temp_keyspace_present(redis):
                         return
                     if not await self._any_key(redis, primary_pattern):
                         return  # workspace emptied while we waited
@@ -2348,32 +2376,74 @@ class RedisDocStatusStorage(DocStatusStorage):
                 )
             try:
                 # Re-check under the lock: another worker may have finished
-                # between our probe and acquiring the lock.
-                if await self._any_key(redis, status_pattern):
+                # between our probe and acquiring the lock. An interrupted
+                # publish is NOT waved through by this check.
+                if not interrupted and await self._any_key(redis, status_pattern):
                     return
-                await self._do_rebuild(redis)
+                await self._do_rebuild(redis, recover_stale_official=interrupted)
             finally:
                 await redis.delete(lock_key)
 
-    async def _do_rebuild(self, redis) -> None:
-        """Stream the primary rows into a temporary keyspace, then atomically
-        switch it into place.
+    async def _temp_keyspace_present(self, redis) -> bool:
+        """Does the rebuild temp keyspace hold any key? (bounded probe)"""
+        temp_prefix = f"{self._sched_prefix}_rebuild"
+        for pattern in (f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"):
+            if await self._any_key(redis, pattern):
+                return True
+        return False
+
+    async def _interrupted_publish(self, redis, lock_key: str) -> bool:
+        """True when a temp keyspace survives with NO rebuilder holding the lock.
+
+        Probe order is temp-keyspace then lock, deliberately: a rebuilder that
+        finishes in between reads as "temp present, lock present" — a live
+        rebuild — so the worst case is one extra wait cycle rather than a
+        spurious O(total_docs) rebuild.
+        """
+        if not await self._temp_keyspace_present(redis):
+            return False
+        return await redis.get(lock_key) is None
+
+    async def _do_rebuild(self, redis, *, recover_stale_official: bool = False) -> None:
+        """Stream the primary rows into a temporary keyspace, then switch it in.
 
         The temp keyspace (``…__sched_rebuild:*``) is disjoint from both the
         official ``…__sched:*`` patterns and the primary ``{ns}:*`` pattern, so
         neither the SCAN of primary rows nor the official index touches it. The
-        switch — DELETE of every stale official key followed by RENAME of every
-        temp key into its official name — runs inside one ``MULTI/EXEC`` so a
-        reader never observes a partial switch; a crash before the switch
-        leaves the old official index untouched and the temp keyspace safe to
-        discard on the next attempt. See ``_publish_rebuilt_index`` for why the
-        switch also has to guard against concurrent WRITERS, not just readers.
+        switch RENAMEs each temp key over its official name in bounded batches
+        (:meth:`_publish_rebuilt_index`); a crash before the switch leaves the
+        temp keyspace safe to discard on the next attempt, and a crash DURING it
+        is detected by that same leftover keyspace (see
+        :meth:`_rebuild_scheduling_sidecar`).
+
+        Stale official ``basename:*`` keys are deleted UP FRONT rather than
+        during the switch. Two reasons: it needs no O(total_docs) record of which
+        names the switch recreated, and the window in which a basename key is
+        missing is exactly the window in which the status keys are missing too —
+        the state that forces a rebuild on the next startup. Deleting them
+        between the renames could instead drop a name the switch had already
+        published, and a missing source-multimap entry does NOT self-heal: it
+        reads as "no primary for this source" and lets an enqueue admit a
+        duplicate.
+
+        ``recover_stale_official`` additionally clears the official STATUS keys:
+        set only when the caller detected a half-published index, where those
+        keys are this rebuild's own leftovers rather than a live writer's work.
+        Clearing them here (instead of teaching the publish to tolerate them)
+        keeps the publish probe's meaning intact — a status key present at
+        publish time still means a concurrent writer, and still refuses.
         """
         temp_prefix = f"{self._sched_prefix}_rebuild"
-        # Clear any leftover temp keyspace from a crashed prior attempt.
-        await self._delete_by_patterns(
-            redis, [f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"]
-        )
+        stale_patterns = [
+            f"{temp_prefix}:status:*",
+            f"{temp_prefix}:basename:*",
+            f"{self._sched_prefix}:basename:*",
+        ]
+        if recover_stale_official:
+            stale_patterns.append(f"{self._sched_prefix}:status:*")
+        # Clear the leftover temp keyspace from a crashed prior attempt, plus the
+        # stale official keys this rebuild is about to republish.
+        await self._delete_by_patterns(redis, stale_patterns)
 
         rebuilt = 0
         statuses_seen: set[str] = set()
@@ -2426,67 +2496,86 @@ class RedisDocStatusStorage(DocStatusStorage):
     async def _publish_rebuilt_index(
         self, redis, temp_prefix: str, statuses_seen: set[str]
     ) -> None:
-        """Switch the temp keyspace into place, refusing to clobber live writes.
+        """RENAME the temp keyspace into place in BOUNDED batches.
 
-        The switch DELETEs the official keys and RENAMEs the temp ones over
-        them, so it must not run while another worker is writing: a write that
-        lands after its row was scanned has already maintained the OFFICIAL
-        index correctly (``_queue_index_ops`` commits row + sidecar in one
-        transaction), and publishing our older snapshot on top would silently
-        revert it — the doc would sit in the wrong status ZSET, so the sweep
-        either re-runs it or never sees it.
+        Cost is O(batch), not O(total_docs). This previously listed every
+        official and every temp key into Python lists and queued one
+        DELETE/RENAME per key into a single ``MULTI``, so a million-document
+        workspace paid an O(N) client allocation AND an O(N) server-side
+        transaction buffer — during the very initialization this phase exists to
+        bound. Nothing here holds more than ``_PUBLISH_BATCH`` key names.
 
-        The rebuild only starts when NO official status key exists (probed, then
-        re-checked under the election lock), so any status key present now was
-        created by a concurrent writer. That is detected two ways: a WATCH on
-        every status-ZSET key name — the enum values plus whatever the scan
-        actually saw, and a write always touches one of them — makes ``EXEC``
-        fail if a write lands in the commit window, and a re-probe under that
-        WATCH catches one that landed earlier during the scan. Either way we
-        refuse: publishing would lose writes, and publishing a snapshot we know
-        is stale is worse than failing loudly. Basename leftovers may legitimately
-        survive a partial eviction, so they are deleted as before.
+        The switch is consequently **not atomic**, which is a scoped trade rather
+        than an oversight. LightRAG runs a single service, so the only writers
+        that could interleave are that service's own workers, and:
+
+        * a write that landed BEFORE the switch is caught by the probe below —
+          the rebuild only starts when no official status key exists, so one
+          present now was created by a concurrent writer, and publishing our
+          older snapshot over it would silently revert a correctly-maintained
+          index (``_queue_index_ops`` commits row + sidecar in one transaction),
+          leaving the doc in the wrong status ZSET so the sweep either re-runs it
+          or never sees it. We refuse instead;
+        * a write that lands DURING the switch is no longer excluded — the
+          ``WATCH``/``MULTI`` made that impossible, and giving it up is what buys
+          the bound. It needs an ordinary doc_status write to a workspace whose
+          sidecar is simultaneously being built from scratch by an elected
+          rebuilder, which single-service initialization does not produce.
+
+        Renames go through ``transaction=False``: the batch needs no
+        all-or-nothing semantics now, and ``RENAME`` already replaces its
+        destination atomically per key — the granularity that actually matters,
+        since no reader ever sees a half-written status ZSET.
         """
         status_pattern = f"{self._sched_prefix}:status:*"
-        watch_keys = sorted(
-            {self._zset_key(s) for s in statuses_seen}
-            | {self._zset_key(s.value) for s in DocStatus}
-        )
-        for _ in range(self._WATCH_RETRY_LIMIT):
-            async with redis.pipeline(transaction=True) as pipe:
-                try:
-                    await pipe.watch(*watch_keys)
-                    if await self._any_key(pipe, status_pattern):
-                        await pipe.unwatch()
-                        raise StorageControlPlaneError(
-                            f"[{self.workspace}] another writer maintained the "
-                            f"scheduling sidecar for {self.namespace} while it was "
-                            f"being rebuilt; refusing to publish a stale snapshot "
-                            f"over live writes. Retry with writers quiesced."
-                        )
-                    official_keys = await self._scan_keys(pipe, [status_pattern])
-                    official_keys += await self._scan_keys(
-                        pipe, [f"{self._sched_prefix}:basename:*"]
+        if await self._any_key(redis, status_pattern):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] another writer maintained the scheduling "
+                f"sidecar for {self.namespace} while it was being rebuilt; "
+                f"refusing to publish a stale snapshot over live writes. Retry "
+                f"with writers quiesced."
+            )
+
+        published = 0
+        for pattern in (f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"):
+            # Each rename REMOVES a key from the pattern being scanned, and no
+            # SCAN cursor survives that intact — a positional cursor skips the
+            # entries that shifted under it, and a real hash cursor is only
+            # promised not to miss keys that stay present for the whole
+            # iteration. So sweep in passes: every pass is cursor-based (no
+            # keyspace re-walk per batch) and whatever one pass skipped the next
+            # one picks up. This terminates because a pass that renames nothing
+            # ends it, and any other pass strictly shrinks the pattern.
+            while True:
+                renamed_in_pass = 0
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(
+                        cursor, match=pattern, count=self._PUBLISH_BATCH
                     )
-                    temp_keys = await self._scan_keys(
-                        pipe,
-                        [f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"],
-                    )
-                    pipe.multi()
-                    for key in official_keys:
-                        pipe.delete(key)
-                    for temp_key in temp_keys:
-                        official = self._sched_prefix + temp_key[len(temp_prefix) :]
-                        pipe.rename(temp_key, official)
-                    await pipe.execute()
-                    return
-                except WatchError:
-                    continue
-        raise StorageControlPlaneError(
-            f"[{self.workspace}] scheduling sidecar publish for {self.namespace} "
-            f"exceeded the WATCH retry budget ({self._WATCH_RETRY_LIMIT}); a "
-            f"concurrent writer keeps racing the switch"
-        )
+                    if keys:
+                        pipe = redis.pipeline(transaction=False)
+                        for temp_key in keys:
+                            official = self._sched_prefix + temp_key[len(temp_prefix) :]
+                            pipe.rename(temp_key, official)
+                        await pipe.execute()
+                        renamed_in_pass += len(keys)
+                    if cursor == 0:
+                        break
+                published += renamed_in_pass
+                if not renamed_in_pass:
+                    break
+
+        # Post-condition, not decoration: a leftover temp keyspace is exactly what
+        # ``_rebuild_scheduling_sidecar`` reads as "half-published", so returning
+        # success while leaving one behind would arm a rebuild on every startup.
+        if await self._temp_keyspace_present(redis):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] scheduling sidecar publish for "
+                f"{self.namespace} left temp keys behind after renaming "
+                f"{published}; the index is half-published and will be rebuilt "
+                f"on the next startup"
+            )
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources.
