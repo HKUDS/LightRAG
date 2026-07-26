@@ -65,7 +65,10 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_RECURSIVE,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
-from lightrag.tools.source_conflict_repair import source_conflict_repair_lock
+from lightrag.tools.source_conflict_repair import (
+    verify_repair_outcome,
+    source_conflict_repair_lock,
+)
 from lightrag.kg.scan_job_store import (
     SAMPLE_BUCKETS,
     SCAN_JOB_LEASE_SECONDS,
@@ -4041,6 +4044,17 @@ def create_document_routes(
                     status_code=429,
                     detail="Too many scan jobs are in flight; retry once one finishes.",
                 )
+            if create_result.outcome is ScanJobCreateOutcome.INVALID_IDENTIFIER:
+                # Unreachable from here (both identifiers are generated), but the
+                # store validates server-side on principle, so map its refusal
+                # instead of treating it as success.
+                logger.error(
+                    f"Scan job record refused: {create_result.message or 'invalid identifier'}"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="internal_server_error",
+                )
             if create_result.outcome is ScanJobCreateOutcome.ALREADY_EXISTS:
                 # Unreachable for a freshly minted track id; a future caller
                 # reusing one must be refused rather than silently adopting (and
@@ -4355,6 +4369,17 @@ def create_document_routes(
                             payload.expected_candidate_fingerprint or ""
                         ),
                         dry_run=False,
+                    )
+                    # Verify the end state inside the locks rather than reporting
+                    # a settled key on the strength of "the demotions landed".
+                    # The locks exclude a concurrent enqueue and nothing else, so
+                    # a concurrent delete / duplicate marking can leave the key
+                    # Absent or still conflicting; raises when it did.
+                    await verify_repair_outcome(
+                        rag.doc_status,
+                        payload.canonical_source_key,
+                        payload.primary_doc_id,
+                        result,
                     )
         except ValueError as not_a_candidate:
             # The named primary is not currently a primary candidate: either a

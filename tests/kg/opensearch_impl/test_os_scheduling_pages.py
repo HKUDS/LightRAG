@@ -368,13 +368,29 @@ def _missing_mirrored_id_query() -> dict:
     return {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}}
 
 
-async def test_startup_skips_audit_on_an_already_migrated_index(global_config):
-    """An index that already maps __mirrored_id was written by code that mirrors
-    the id on every write, so it needs neither the audit nor its _count."""
+async def test_startup_audits_coverage_even_when_the_mapping_is_present(global_config):
+    """Fix-proof: the audit used to be gated on "we just added the mapping", but
+    the mapping present does not imply the VALUES are present — a snapshot
+    restore, an external writer, or this very migration crashing between its
+    put_mapping and its backfill all produce that state, and the gate then
+    skipped the audit for good. A healthy index still costs only one _count and
+    no backfill."""
     client = _make_client()
     await _make_doc_status(global_config, client)
+    client.count.assert_awaited_once()
+    assert client.count.call_args.kwargs["body"]["query"] == (
+        _missing_mirrored_id_query()
+    )
     client.update_by_query.assert_not_awaited()
-    client.count.assert_not_awaited()
+
+
+async def test_startup_backfills_a_mapped_index_whose_values_are_missing(global_config):
+    """The state the old gate declared impossible: mapping present, values
+    absent. It must be repaired, not trusted."""
+    client = _make_client()
+    client.count = AsyncMock(side_effect=[{"count": 4}, {"count": 0}])
+    await _make_doc_status(global_config, client)
+    client.update_by_query.assert_awaited_once()
 
 
 async def test_startup_skips_backfill_when_coverage_is_complete(global_config):
@@ -793,6 +809,9 @@ async def test_resolve_source_absent_on_zero_hits(global_config):
 async def test_resolve_source_unique(global_config):
     client = _make_client()
     storage = await _make_doc_status(global_config, client)
+    # Startup's tiebreaker coverage audit spends one _count; this test is about
+    # the resolver's own follow-up count, so measure from zero.
+    client.count.reset_mock()
     source = _status_source("doc-1", status="processed", file_path="report.pdf")
     client.search = AsyncMock(return_value=_page([_hit("doc-1", source)]))
 

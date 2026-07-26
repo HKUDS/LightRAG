@@ -53,6 +53,20 @@ def _fingerprint(doc_ids: list[str]) -> str:
     return hashlib.sha256("\x00".join(sorted(doc_ids)).encode("utf-8")).hexdigest()[:32]
 
 
+@pytest.fixture(autouse=True)
+def _shared_storage():
+    """The repair COMMIT takes the canonical-key + enqueue-serialize locks, which
+    live in shared storage. Without this the file only passed when a sibling test
+    module happened to initialise it first — running it alone raised
+    "Shared-Data is not initialized" from inside the endpoint and showed up as a
+    500."""
+    from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
+
+    initialize_share_data()
+    yield
+    finalize_share_data()
+
+
 class _ConflictDocStatus:
     """doc_status double whose conflict surface mirrors the real backends.
 
@@ -90,6 +104,21 @@ class _ConflictDocStatus:
             CursorAfter(page_keys[-1]) if len(page_keys) == limit else CURSOR_END
         )
         return SourceConflictPage(conflicts=conflicts, next_position=next_position)
+
+    async def resolve_doc_source_strict(self, canonical_source_key):
+        """The same typed resolution the real backends serve, so the post-commit
+        verification runs against a real answer rather than being stubbed out."""
+        from lightrag.base import SourceAbsent, SourceConflict, SourceUnique
+
+        candidates = sorted(self.groups.get(canonical_source_key, []))
+        if not candidates:
+            return SourceAbsent()
+        if len(candidates) == 1:
+            return SourceUnique(doc_id=candidates[0], doc=None)
+        return SourceConflict(
+            candidate_count=len(candidates),
+            sample_doc_ids=tuple(candidates[: self._SAMPLE_CAP]),
+        )
 
     async def repair_source_conflict(
         self,
@@ -445,3 +474,50 @@ def test_endpoints_require_authentication():
     assert listing.status_code in (401, 403), listing.status_code
     assert repair.status_code in (401, 403), repair.status_code
     assert storage.repair_calls == []
+
+
+def test_a_commit_that_leaves_the_key_unsettled_is_not_reported_as_success(
+    monkeypatch,
+):
+    """``committed=True`` only claims the named demotions landed. The repair locks
+    exclude a concurrent ENQUEUE and nothing else — a concurrent delete of the
+    kept primary, a processing-stage duplicate marking, or a scan stale-stub
+    deletion all mutate the candidate set without them — so the end state is
+    verified and reported, never inferred.
+
+    Fix-proof: the endpoint used to return 200 "committed" for exactly this.
+    """
+    doc_status = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    client = _client(doc_status)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+        headers=_HEADERS,
+    )
+    assert dry.status_code == 200
+
+    original_repair = doc_status.repair_source_conflict
+
+    async def _repair_then_lose_the_primary(*args, **kwargs):
+        result = await original_repair(*args, **kwargs)
+        if not kwargs.get("dry_run", True):
+            # A concurrent delete removes the primary we just kept.
+            doc_status.groups["a.pdf"] = []
+        return result
+
+    doc_status.repair_source_conflict = _repair_then_lose_the_primary
+
+    body = dry.json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": body["candidate_count"],
+            "expected_candidate_fingerprint": body["fingerprint"],
+            "dry_run": False,
+        },
+        headers=_HEADERS,
+    )
+    assert commit.status_code != 200

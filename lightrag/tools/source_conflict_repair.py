@@ -187,13 +187,72 @@ async def repair_one_conflict(
             expected_candidate_fingerprint="",
             dry_run=True,
         )
-        return await doc_status.repair_source_conflict(
+        result = await doc_status.repair_source_conflict(
             canonical_source_key,
             primary_doc_id=primary_doc_id,
             expected_candidate_count=dry.candidate_count,
             expected_candidate_fingerprint=dry.fingerprint,
             dry_run=False,
         )
+        # Verify the OUTCOME, still inside the locks, instead of inferring it
+        # from "the demotions were committed". ``committed=True`` only claims
+        # that the demotions named in the result landed; it cannot claim the key
+        # is now unique, because the locks here exclude a concurrent ENQUEUE and
+        # nothing else — a concurrent delete of the kept primary, a
+        # processing-stage duplicate marking, or a scan stale-stub deletion all
+        # mutate this candidate set without taking them (see
+        # DocStatusStorage.repair_source_conflict). Those paths are single-doc
+        # and cannot be excluded from here, so the honest move is to re-resolve
+        # and report what is actually true.
+        await verify_repair_outcome(
+            doc_status, canonical_source_key, primary_doc_id, result
+        )
+        return result
+
+
+async def verify_repair_outcome(
+    doc_status: Any,
+    canonical_source_key: str,
+    primary_doc_id: str,
+    result: Any,
+) -> None:
+    """Re-resolve the key after a commit and raise unless it is now UNIQUE on
+    ``primary_doc_id``.
+
+    Raising rather than warning: an operator repairing a conflict needs to know
+    the key is settled, and a repair that "succeeded" while leaving the key
+    Absent (the kept primary was deleted meanwhile) or still Conflicting (a
+    candidate re-appeared) is exactly the outcome they would otherwise act on as
+    if it were fixed. The demotions themselves have already been committed and
+    are not rolled back — they are individually correct; what failed is the
+    end state, so the message says which.
+    """
+    from lightrag.base import SourceConflict, SourceUnique
+
+    resolution = await doc_status.resolve_doc_source_strict(canonical_source_key)
+    if isinstance(resolution, SourceUnique) and resolution.doc_id == primary_doc_id:
+        return
+    if isinstance(resolution, SourceUnique):
+        detail = (
+            f"the surviving primary is {resolution.doc_id}, not the requested "
+            f"{primary_doc_id}"
+        )
+    elif isinstance(resolution, SourceConflict):
+        detail = (
+            "the key is STILL in conflict "
+            f"(sample: {', '.join(resolution.sample_doc_ids) or 'unavailable'})"
+        )
+    else:
+        detail = (
+            f"the key now resolves to NO primary at all — {primary_doc_id} was "
+            "removed by a concurrent delete or duplicate marking"
+        )
+    raise StorageControlPlaneError(
+        f"Source conflict repair for '{canonical_source_key}' committed its "
+        f"demotions ({list(result.demoted_sample_doc_ids) or 'none'}) but the key "
+        f"is not settled: {detail}. Re-run the repair once concurrent writers to "
+        f"these documents have stopped."
+    )
 
 
 def _print_conflicts(conflicts: list[SourceConflictSummary]) -> None:

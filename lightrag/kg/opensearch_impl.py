@@ -1527,16 +1527,19 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 )
             else:
                 await self._ensure_content_hash_mapping()
-                added = await self._ensure_scheduling_fields_mapping()
-                if "__mirrored_id" in added:
-                    # Supersedes the version-gated mapping-only check used by
-                    # the KV store: this index needs __mirrored_id VALUES on
-                    # every cluster version (its scheduling page has no PIT),
-                    # and a mapping present with values missing is exactly the
-                    # silent skip we must prevent. Only a pre-existing index
-                    # that LACKED the mapping can hold such docs, so the audit
-                    # costs nothing on an already-migrated index.
-                    await self._ensure_scheduling_tiebreaker_ready()
+                await self._ensure_scheduling_fields_mapping()
+                # Unconditional for every pre-existing index. Gating this on
+                # "we just added the mapping" was wrong: the mapping present
+                # does NOT imply the values are present. A snapshot restore, a
+                # hand-added mapping, an external writer — and, worst, THIS
+                # migration itself: put_mapping lands before the backfill, so a
+                # crash or a raise in between leaves the mapping present with
+                # values missing, and the next startup would then skip the audit
+                # forever. The audit is one `_count` on a healthy index (see
+                # _ensure_scheduling_tiebreaker_ready), which is the right price
+                # for an invariant whose violation silently drops documents from
+                # every sweep.
+                await self._ensure_scheduling_tiebreaker_ready()
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
@@ -1583,14 +1586,14 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         (new fields only — existing indexes need nothing else for new docs).
         The mapping alone is NOT sufficient: legacy docs predating the field
         still lack the VALUE, which
-        :meth:`_ensure_scheduling_tiebreaker_ready` repairs. A put failure is
-        logged rather than raised here — the readiness check that follows is
-        the one that fails startup.
+        :meth:`_ensure_scheduling_tiebreaker_ready` repairs — unconditionally,
+        because this method landing the mapping is not evidence about the values
+        (not even when it just added it: it returns before the backfill runs). A
+        put failure is logged rather than raised here — the readiness check that
+        follows is the one that fails startup.
 
-        Returns the field names that were absent, which is the precise "this
-        index predates the field" signal the value audit keys off (an index
-        that already maps ``__mirrored_id`` was written by code that mirrors
-        the id on every write, so its docs all carry a value).
+        Returns the field names that were absent, for callers that want to log
+        the migration; it is NOT a licence to skip the value audit.
         """
         try:
             mapping = await self.client.indices.get_mapping(index=self._index_name)

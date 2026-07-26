@@ -57,6 +57,17 @@ SCAN_JOB_MAX_COUNTER_KEYS = 32
 # (the longest is ``resume_same_physical_source``), so this only ever refuses a
 # client bug.
 SCAN_JOB_COUNTER_KEY_MAX_BYTES = 64
+# UTF-8 byte cap for the identifiers a record is created with (``track_id`` /
+# ``owner_token``). They are never truncated — a clipped track_id would collide
+# with another job and break ``/scan/status/{track_id}`` — so an over-cap one is
+# refused at create. In-tree values are a generated track id and a uuid4 hex.
+SCAN_JOB_IDENTIFIER_MAX_BYTES = 128
+# Ceiling on the magnitude of one counter. Python ints are arbitrary precision,
+# so without this a 1000-digit delta is ~450 bytes that ``approx_bytes`` counts
+# as 8. 2**53 is also the last integer a JSON client can read back exactly, and
+# these records are serialized to JSON — a counter past it is not representable
+# anyway, so refusing is more honest than storing it.
+SCAN_JOB_COUNTER_VALUE_MAX = 2**53
 # Lease renewed on every owner update; a RUNNING job whose lease has expired is
 # reaped to ABANDONED (owner presumed dead / stalled).
 SCAN_JOB_LEASE_SECONDS = 60.0
@@ -91,6 +102,9 @@ class ScanJobCreateOutcome(str, Enum):
     ACCEPTED = "accepted"
     ALREADY_EXISTS = "already_exists"
     CAPACITY_EXCEEDED = "capacity_exceeded"
+    # An identifier the store refuses to hold (over the per-identifier byte cap).
+    # A client bug, never a reachable state for an in-tree caller.
+    INVALID_IDENTIFIER = "invalid_identifier"
 
 
 class ScanJobUpdateConflict(str, Enum):
@@ -107,8 +121,10 @@ class ScanJobUpdateConflict(str, Enum):
 class ScanJobCreateResult:
     outcome: ScanJobCreateOutcome
     # Public (owner-token-free) snapshot: the existing job on ALREADY_EXISTS,
-    # the new job on ACCEPTED, None on CAPACITY_EXCEEDED.
+    # the new job on ACCEPTED, None on CAPACITY_EXCEEDED / INVALID_IDENTIFIER.
     record: Optional[Dict[str, Any]] = None
+    # Why the create was refused (INVALID_IDENTIFIER only).
+    message: str = ""
 
 
 @dataclass(frozen=True)
@@ -173,14 +189,28 @@ class _ScanJobRecord:
     counters_dropped: int = 0
 
     def approx_bytes(self) -> int:
-        # Cheap serialized-size estimate: counters + all sample bytes + a small
-        # fixed overhead for the scalar fields. Enough to enforce the ceiling
-        # without a real serialize on every append. Keys are measured in UTF-8
-        # BYTES, the same unit the caps are expressed in (``len()`` on a CJK key
-        # would under-count by 3x).
+        """Cheap serialized-size estimate, in the same UTF-8 bytes the caps use.
+
+        Every variable-length part is measured, not assumed: a flat allowance for
+        "the scalar fields" made the ceiling bypassable by whatever the caller
+        put in ``track_id`` / ``owner_token`` / ``message``. Counter VALUES are
+        the one thing counted at a fixed 8 bytes, which holds only because
+        :data:`SCAN_JOB_COUNTER_VALUE_MAX` keeps them inside 64 bits.
+        """
         counts_bytes = sum(_key_bytes(k) + 8 for k in self.counts)
         sample_bytes = sum(b.approx_bytes() for b in self.samples.values())
-        return counts_bytes + sample_bytes + 256
+        scalar_bytes = sum(
+            _key_bytes(value)
+            for value in (
+                self.track_id,
+                self.workspace,
+                self.owner_token,
+                self.status,
+                self.message,
+            )
+        )
+        # Timestamps, version, counters_dropped and the JSON scaffolding.
+        return counts_bytes + sample_bytes + scalar_bytes + 128
 
     def to_public(self) -> Dict[str, Any]:
         """Bounded, owner-token-free snapshot for /scan/status responses."""
@@ -220,6 +250,8 @@ class AsyncioScanJobStore:
         record_max_bytes: int = SCAN_JOB_RECORD_MAX_BYTES,
         max_counter_keys: int = SCAN_JOB_MAX_COUNTER_KEYS,
         counter_key_max_bytes: int = SCAN_JOB_COUNTER_KEY_MAX_BYTES,
+        counter_value_max: int = SCAN_JOB_COUNTER_VALUE_MAX,
+        identifier_max_bytes: int = SCAN_JOB_IDENTIFIER_MAX_BYTES,
         lease_seconds: float = SCAN_JOB_LEASE_SECONDS,
         ttl_seconds: float = SCAN_JOB_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
@@ -231,6 +263,8 @@ class AsyncioScanJobStore:
         self._record_max_bytes = max(1, record_max_bytes)
         self._max_counter_keys = max(1, max_counter_keys)
         self._counter_key_max_bytes = max(1, counter_key_max_bytes)
+        self._counter_value_max = max(1, counter_value_max)
+        self._identifier_max_bytes = max(1, identifier_max_bytes)
         self._lease_seconds = lease_seconds
         self._ttl_seconds = ttl_seconds
         self._clock = clock
@@ -286,7 +320,21 @@ class AsyncioScanJobStore:
         Capacity order: reap expired terminal/abandoned → evict oldest terminal
         → if still full (all valid RUNNING) refuse with CAPACITY_EXCEEDED. An
         existing ``track_id`` returns ALREADY_EXISTS with the existing record
-        (idempotent), so a retried create never duplicates or clobbers."""
+        (idempotent), so a retried create never duplicates or clobbers.
+
+        An identifier past :data:`SCAN_JOB_IDENTIFIER_MAX_BYTES` is refused with
+        INVALID_IDENTIFIER: it is the one part of a record that cannot be
+        truncated (a clipped ``track_id`` would answer another job's status
+        query), so the record ceiling can only hold if the store declines it
+        here."""
+        for label, value in (("track_id", track_id), ("owner_token", owner_token)):
+            if _key_bytes(value) > self._identifier_max_bytes:
+                return ScanJobCreateResult(
+                    ScanJobCreateOutcome.INVALID_IDENTIFIER,
+                    message=(
+                        f"{label} exceeds {self._identifier_max_bytes} UTF-8 bytes"
+                    ),
+                )
         with self._lock:
             now = self._clock()
             self._reap_locked(now)
@@ -352,10 +400,20 @@ class AsyncioScanJobStore:
                 )
 
             for key, delta in (count_deltas or {}).items():
-                if not isinstance(delta, int):
+                if not isinstance(delta, int) or isinstance(delta, bool):
+                    continue
+                if abs(delta) > self._counter_value_max:
+                    # Arbitrary-precision int: the payload the record ceiling
+                    # assumes is 8 bytes. Refuse (and tally) rather than store a
+                    # value no JSON client could read back anyway.
+                    rec.counters_dropped += 1
                     continue
                 if key in rec.counts:
-                    # An existing key adds no bytes: only the integer changes.
+                    # An existing key adds no bytes, but the accumulated value
+                    # must stay inside the same bound as a single delta.
+                    if abs(rec.counts[key] + delta) > self._counter_value_max:
+                        rec.counters_dropped += 1
+                        continue
                     rec.counts[key] += delta
                     continue
                 key_bytes = _key_bytes(key)

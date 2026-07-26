@@ -2433,6 +2433,16 @@ class _PipelineMixin:
             run_owner_token=token,
             inflight_doc_ids=set(to_process_docs.keys()),
         )
+        # Publish the run context on the instance for the ONE storage write that
+        # cannot receive it as an argument: ``_persist_parsed_full_docs`` is
+        # reached as ``ctx.rag._persist_parsed_full_docs`` from inside a parser
+        # (in-tree and third-party alike), so a parameter would only guard the
+        # parsers that opt in. ``busy`` is a single per-workspace slot and this
+        # instance is per-workspace, so at most one run is ever published here;
+        # the previous value is restored rather than cleared so a nested/handed
+        # off run cannot blank an outer one.
+        previous_run_ctx = getattr(self, "_active_run_ctx", None)
+        self._active_run_ctx = ctx
 
         async def _watch_pipeline_cancellation() -> None:
             """Bridge shared cancellation state into native parser threads.
@@ -2611,6 +2621,9 @@ class _PipelineMixin:
             if feeder_task is not None:
                 teardown_tasks.append(feeder_task)
             await asyncio.gather(*teardown_tasks, return_exceptions=True)
+            # Every worker (hence every parser) is stopped and joined here, so
+            # no further ``_persist_parsed_full_docs`` call belongs to this run.
+            self._active_run_ctx = previous_run_ctx
 
         # If the batch aborted on an internal storage error, the shared
         # cross-file flush buffers may still hold records from the documents
@@ -5320,6 +5333,22 @@ class _PipelineMixin:
             content_hash = compute_text_content_hash(
                 strip_lightrag_doc_prefix(record.get("content") or "", fmt)
             )
+
+        # Owner-checked like every other write a worker makes (LR2 §7.7 items
+        # 3/4/7). This one is reached from inside a parser via ``ctx.rag``, so it
+        # cannot take the batch context as an argument without leaving every
+        # third-party parser unguarded; ``_run_pipeline_batch`` publishes the
+        # context on the instance instead (see there). A parse result that comes
+        # back after this run's ownership was reclaimed must write NEITHER store:
+        # the full_docs body would overwrite content the new owner re-parsed, and
+        # the doc_status patch below would stamp a row the new owner now owns.
+        run_ctx = getattr(self, "_active_run_ctx", None)
+        if run_ctx is not None and not await self._still_run_owner(run_ctx):
+            logger.warning(
+                f"[stale-writer] Discarded parsed content for {doc_id}: this run "
+                "no longer owns the pipeline"
+            )
+            return None
 
         existing = await self.full_docs.get_by_id(doc_id)
         if isinstance(existing, dict):
