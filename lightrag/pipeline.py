@@ -466,14 +466,19 @@ class _PipelineMixin:
           that job: it takes no reservation, so it leaves the whole validate →
           dedup → write span invisible to the drain.
 
-        ``reject_when`` is therefore evaluated only when this call MINTS the
-        reservation — the reservation-less callers, SDK ``ainsert`` / direct
-        ``apipeline_enqueue_documents``. When the caller already holds one (an
+        ``reject_when`` is passed unconditionally and
+        :func:`acquire_enqueue_reservation` applies it only when the token is
+        NOT already registered — i.e. only when this call mints a reservation
+        for a reservation-less caller (SDK ``ainsert`` / direct
+        ``apipeline_enqueue_documents``). When the caller already holds one (an
         endpoint reserved it, fences and all, before parsing the request body)
-        this call only RE-WEIGHTS that token: a request admitted before a freeze
-        appeared is deliberately allowed to finish, and the drain is already
-        waiting for it. A minted token's own previous weight is excluded from
-        the capacity sum, so re-weighting never counts a request against itself.
+        this is a RE-WEIGHT, and a request admitted before a freeze appeared is
+        deliberately allowed to finish — the drain is already waiting for it.
+        Deciding that inside the reservation, from the same snapshot, is what
+        keeps the exemption from being self-attested: passing a token string is
+        not enough to skip a fence. A token's own previous weight is excluded
+        from the capacity sum, so re-weighting never counts a request against
+        itself.
 
         Returns the token this function owns and the caller must release (only
         for a minted one), or ``None`` when the reservation belongs to the
@@ -501,7 +506,7 @@ class _PipelineMixin:
             pipeline_status,
             pipeline_status_lock,
             token=token,
-            reject_when=() if admission_token else tuple(reject_when),
+            reject_when=tuple(reject_when),
             weight=requested,
             capacity=capacity,
             active_count=active_count,
@@ -691,6 +696,13 @@ class _PipelineMixin:
             pipeline_status,
             pipeline_status_lock,
             reject_when=reject_when,
+            # A caller holding a registered pending-enqueue reservation was
+            # admitted before any fence raised since, and the fence holder either
+            # could not raise it while that reservation exists or is waiting for
+            # it (LR2 §9.2). Refusing here would drop the work of a request whose
+            # client was already told it was accepted — and for /text there is no
+            # input file to rediscover, so the content would simply be lost.
+            exempt_if_reserved=admission_token,
         )
         if not mutation_result.acquired:
             raise RuntimeError(mutation_result.message)

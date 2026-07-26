@@ -212,33 +212,39 @@ def test_the_enqueue_holds_a_reservation_when_it_writes(tmp_path, capacity):
 # ---------------------------------------------------------------------------
 
 
-def test_a_caller_admitted_before_the_freeze_is_allowed_to_finish(tmp_path):
-    """An endpoint reserves — fences and all — before it reads the request body.
-    Re-fencing its re-weight would refuse a request the freeze protocol promises
-    to let finish, and the drain is already waiting for that token anyway.
+async def _hold_reservation(rag, token: str, *, capacity: int = 10) -> None:
+    """Reserve like an endpoint does before it reads the request body."""
+    pipeline_status, lock = await _status_handles(rag)
+    result = await acquire_enqueue_reservation(
+        pipeline_status,
+        lock,
+        token=token,
+        reject_when=(),
+        weight=1,
+        capacity=capacity,
+        active_count=0,
+    )
+    assert result.acquired is True
 
-    Scope note: this covers the RE-WEIGHT. The entry fence check still refuses a
-    token-holding caller when the freeze is already up before this call — a
-    separate §9.2 inconsistency, not touched here."""
+
+@pytest.mark.parametrize("capacity", [0, 10], ids=["admission-off", "admission-on"])
+def test_a_caller_admitted_before_the_freeze_is_allowed_to_finish(tmp_path, capacity):
+    """§9.2: an endpoint reserves — fences and all — before it reads the request
+    body, and the freeze protocol then WAITS for that reservation instead of
+    refusing it. Refusing it here would drop work whose client was already told
+    "accepted"; for ``/text`` there is no input file to rediscover, so the
+    content would simply be lost.
+
+    The freeze is already up before the call, so this covers both gates: the
+    entry fence check and the reservation re-weight."""
 
     async def _run():
-        rag = await _build_rag(tmp_path, capacity=10)
+        rag = await _build_rag(tmp_path, capacity=capacity)
         try:
             pipeline_status, lock = await _status_handles(rag)
-            result = await acquire_enqueue_reservation(
-                pipeline_status,
-                lock,
-                token="endpoint-token",
-                reject_when=(),
-                weight=1,
-                capacity=10,
-                active_count=0,
-            )
-            assert result.acquired is True
-
-            # The freeze appears after the entry check, in the same window the
-            # refusal tests above use — but this caller was already admitted.
-            _freeze_during_dedup(rag, pipeline_status, lock)
+            await _hold_reservation(rag, "endpoint-token", capacity=capacity)
+            async with lock:
+                pipeline_status["manual_freeze_requested"] = True
 
             await rag.apipeline_enqueue_documents(
                 "hello world",
@@ -249,6 +255,60 @@ def test_a_caller_admitted_before_the_freeze_is_allowed_to_finish(tmp_path):
             assert len(dict(rag.doc_status._data)) == 1
             # The caller's token is still the caller's to release.
             assert "endpoint-token" in pipeline_status["pending_enqueue_tokens"]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_an_unregistered_token_buys_no_exemption(tmp_path):
+    """The exemption is what makes the fence skippable, so it must never be
+    self-attested: a caller that merely passes a token string it never reserved
+    is refused exactly like a reservation-less one."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, capacity=10)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            async with lock:
+                pipeline_status["manual_freeze_requested"] = True
+
+            with pytest.raises(RuntimeError, match="manual retry"):
+                await rag.apipeline_enqueue_documents(
+                    "hello world",
+                    file_paths="report.pdf",
+                    track_id="t-1",
+                    admission_token="never-reserved",
+                )
+            assert dict(rag.doc_status._data) == {}
+            # And the bogus token was not registered on the way out.
+            assert "never-reserved" not in (
+                pipeline_status.get("pending_enqueue_tokens") or {}
+            )
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_a_freeze_raised_mid_enqueue_still_lets_a_reserved_caller_write(tmp_path):
+    """Same exemption at the other gate: the freeze appears after the entry
+    check, inside the critical section, and the re-weight must not refuse it."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, capacity=10)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            await _hold_reservation(rag, "endpoint-token")
+            _freeze_during_dedup(rag, pipeline_status, lock)
+
+            await rag.apipeline_enqueue_documents(
+                "hello world",
+                file_paths="report.pdf",
+                track_id="t-1",
+                admission_token="endpoint-token",
+            )
+            assert len(dict(rag.doc_status._data)) == 1
         finally:
             await rag.finalize_storages()
 

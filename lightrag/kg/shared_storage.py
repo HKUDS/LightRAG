@@ -2457,7 +2457,22 @@ async def acquire_enqueue_reservation(
 
     * mutual exclusion (``reject_when`` flags) → a refusal *result* (→ 409),
       evaluated BEFORE capacity, so a manual freeze refuses regardless of how
-      much room there is;
+      much room there is — but **only for a NEW reservation**. A re-weight of a
+      token that is already registered is exempt, because holding a
+      pending-enqueue reservation is itself the protection against every ingress
+      fence (LR2 §9.2 "冻结前被准入的请求跑完"):
+
+      - ``scanning``/``scanning_exclusive`` and ``destructive_busy`` cannot even
+        be raised while it is held — both of those acquires list
+        ``pending_enqueues`` in their own ``reject_when``, in the same critical
+        section as their flag write;
+      - ``manual_freeze_requested`` may be raised, and DRAIN_TO_IDLE is then
+        contractually required to WAIT for ``pending_enqueues`` to reach zero.
+
+      Refusing a re-weight would turn that "wait for it" into "drop its work".
+      The new/existing decision is read from THIS snapshot rather than taken on
+      the caller's word: a caller that merely passes a token string cannot talk
+      its way past a fence.
     * no capacity → :class:`~lightrag.exceptions.PipelineBackpressureError`
       (→ 429) carrying the numbers the client needs.
 
@@ -2477,16 +2492,21 @@ async def acquire_enqueue_reservation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
-        for flag_key, reason in reject_when:
-            if snapshot.get(flag_key):
-                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
-                return PipelineReservationResult(
-                    acquired=False,
-                    conflict=_conflict_for_status_flag(flag_key),
-                    message=reason,
-                    snapshot=snapshot,
-                )
         tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
+        # The fences gate NEW reservations only; a re-weight of a token this
+        # snapshot already knows is exempt (see the docstring).
+        if token not in tokens:
+            for flag_key, reason in reject_when:
+                if snapshot.get(flag_key):
+                    _commit_pipeline_reservation_updates(
+                        pipeline_status, recovery_updates
+                    )
+                    return PipelineReservationResult(
+                        acquired=False,
+                        conflict=_conflict_for_status_flag(flag_key),
+                        message=reason,
+                        snapshot=snapshot,
+                    )
         if capacity > 0:
             reserved_elsewhere = sum(
                 _reservation_weight(meta)
@@ -2523,11 +2543,22 @@ async def check_pipeline_status_mutation(
     pipeline_status_lock,
     *,
     reject_when=(),
+    exempt_if_reserved: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Reconcile and evaluate a mutation fence without taking a reservation.
 
     The recovery fence is mandatory. Optional status conflicts are evaluated
     from the same local snapshot, and recovery writes use at most one update.
+
+    ``exempt_if_reserved`` is a pending-enqueue token: when this snapshot shows
+    it REGISTERED in ``pending_enqueue_tokens``, the optional ``reject_when``
+    fences are skipped, for the same reason a re-weight is exempt in
+    :func:`acquire_enqueue_reservation` — the holder was admitted before the
+    fence, and every ingress fence either cannot be raised while a reservation
+    is held or must wait for it (LR2 §9.2). Refusing here instead would DROP the
+    work of a request the protocol promised to let finish, and the client has
+    usually already been told it was accepted. Registration is verified from the
+    snapshot, never taken on the caller's word.
     """
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
@@ -2536,6 +2567,10 @@ async def check_pipeline_status_mutation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
+        if exempt_if_reserved is not None and exempt_if_reserved in (
+            snapshot.get("pending_enqueue_tokens") or {}
+        ):
+            reject_when = ()
         for flag_key, reason in reject_when:
             if snapshot.get(flag_key):
                 _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
