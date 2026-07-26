@@ -5289,8 +5289,13 @@ class PGDocStatusStorage(DocStatusStorage):
         Replaces the base-class full-table scan with an indexed query on
         ``workspace + content_hash``. Empty strings are treated as a miss
         to align with the partial-index predicate. ``exclude_doc_id`` adds an
-        indexed ``AND id != $3`` so the duplicate check gets the earliest OTHER
-        holder in one bounded query (see base contract).
+        indexed ``AND id != $3`` plus a jsonb predicate dropping any row that
+        merely POINTS at that id (``is_duplicate`` naming it as
+        ``original_doc_id``), so the duplicate check gets the earliest holder
+        that is neither the row being processed nor a record of it, in one
+        bounded query (see base contract). Both are WHERE predicates on the same
+        indexed scan, so skipping a pointer row cannot truncate the search —
+        ``LIMIT 1`` still returns the earliest row that survives them.
         """
         if not content_hash:
             return None
@@ -5299,7 +5304,18 @@ class PGDocStatusStorage(DocStatusStorage):
         exclude_clause = ""
         if exclude_doc_id is not None:
             params.append(exclude_doc_id)
-            exclude_clause = f" AND id <> ${len(params)}"
+            # Same ``(metadata->>'is_duplicate')::boolean`` reading as
+            # ``_PRIMARY_PREDICATE`` — one interpretation of that flag per
+            # backend, and a non-boolean value raises (fail closed) instead of
+            # silently deciding. ``original_doc_id`` is COALESCEd because a NULL
+            # would make the whole NOT(...) NULL, and a WHERE that is NULL drops
+            # the row — filtering out a duplicate marker that recorded no
+            # original, which is not what this excludes.
+            exclude_clause = (
+                f" AND id <> ${len(params)} AND NOT ("
+                "COALESCE((metadata->>'is_duplicate')::boolean, false) "
+                f"AND COALESCE(metadata->>'original_doc_id', '') = ${len(params)})"
+            )
         sql = (
             "SELECT * FROM LIGHTRAG_DOC_STATUS "
             f"WHERE workspace=$1 AND content_hash=$2{exclude_clause} "

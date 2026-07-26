@@ -270,3 +270,43 @@ async def test_get_doc_by_content_hash_refuses_to_skip_an_undecodable_row(
 
     with pytest.raises(StorageControlPlaneError):
         await redis_doc_status.get_doc_by_content_hash("dup")
+
+
+async def test_get_doc_by_content_hash_skips_pointer_rows_and_keeps_looking(
+    redis_doc_status,
+):
+    """Second half of ``exclude_doc_id`` (base contract): a row marked
+    ``is_duplicate`` naming the excluded id as its original is a record that the
+    content belongs to the asking document, not a holder — returning it would
+    close an is_duplicate cycle whose shared source has no primary left.
+
+    And skipping it must not stop the search: the genuine third holder below is
+    created LAST, so a fix that only re-asked while excluding the pointer would
+    still miss it.
+    """
+    pointer = _doc(DocStatus.FAILED.value, "b.pdf", content_hash="dup")
+    pointer["metadata"] = {"is_duplicate": True, "original_doc_id": "doc-asking"}
+    pointer["created_at"] = "2024-01-01T00:00:00+00:00"
+    _store_raw(redis_doc_status, "doc-pointer", pointer)
+
+    asking = _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup")
+    asking["created_at"] = "2024-02-01T00:00:00+00:00"
+    _store_raw(redis_doc_status, "doc-asking", asking)
+
+    third = _doc(DocStatus.PROCESSED.value, "c.pdf", content_hash="dup")
+    third["created_at"] = "2024-03-01T00:00:00+00:00"
+    _store_raw(redis_doc_status, "doc-third", third)
+
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-asking"
+    )
+    assert result is not None and result[0] == "doc-third"
+
+    # With no other holder, the pointer alone is not one: confirmed absence.
+    await redis_doc_status.delete(["doc-third"])
+    assert (
+        await redis_doc_status.get_doc_by_content_hash(
+            "dup", exclude_doc_id="doc-asking"
+        )
+        is None
+    )

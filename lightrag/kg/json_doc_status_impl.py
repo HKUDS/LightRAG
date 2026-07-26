@@ -612,10 +612,14 @@ class JsonDocStatusStorage(DocStatusStorage):
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose content_hash field matches.
 
-        ``exclude_doc_id`` skips that row so the duplicate check can exclude
-        the doc being processed (see base contract). JSON has no content_hash
-        index, so this is a single full dict scan either way — the exclusion
-        only drops the self-row in the same pass, never adding a second scan.
+        ``exclude_doc_id`` skips that row AND any row that merely points at it
+        (``is_duplicate`` naming it as ``original_doc_id``) so the duplicate
+        check can neither be answered with the row being processed nor with a
+        record of that row (see base contract). JSON has no content_hash index,
+        so this is a single full dict scan either way — both exclusions are
+        predicates in the same pass, which is also why skipping a pointer row
+        cannot truncate the search: the scan keeps looking for the earliest
+        remaining holder.
 
         Returns the EARLIEST match by ``(created_at, id)`` rather than the
         first in dict order: insertion order is not creation order once rows
@@ -632,6 +636,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
                 if doc_id == exclude_doc_id:
+                    continue
+                if self._row_points_at_as_duplicate(doc_data, exclude_doc_id):
                     continue
                 if doc_data.get("content_hash") != content_hash:
                     continue

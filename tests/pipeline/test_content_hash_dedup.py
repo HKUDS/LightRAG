@@ -204,11 +204,12 @@ def test_a_row_demoted_in_favour_of_this_doc_is_not_its_duplicate(tmp_path):
                 "doc-primary": _row("dup", "2026-02-01T00:00:00"),
             },
         )
-        # The backend still reports the row — the pointer is bookkeeping, not a
-        # content-hash property — so the guard has to live above it.
-        raw = await storage.get_doc_by_content_hash("dup", exclude_doc_id="doc-primary")
-        assert raw is not None and raw[0] == "doc-demoted"
-
+        # The exclusion lives in the backend query, both halves of it: the row
+        # being processed AND a row that merely points at it.
+        assert (
+            await storage.get_doc_by_content_hash("dup", exclude_doc_id="doc-primary")
+            is None
+        )
         assert (
             await get_duplicate_doc_by_content_hash(storage, "dup", "doc-primary")
             is None
@@ -245,6 +246,43 @@ def test_a_pointer_row_does_not_block_re_ingesting_its_missing_original(tmp_path
             )
             is not None
         )
+
+    asyncio.run(_run())
+
+
+def test_a_pointer_row_does_not_hide_a_genuine_third_holder(tmp_path):
+    """Skipping the pointer must not STOP the search.
+
+    Fix-proof: the skip started life as a post-filter over the single row the
+    backend returned, so when the earliest holder was a pointer back at the
+    asking document the answer became None even though a real third holder
+    existed — the asking document was then ingested as an original and its
+    content was duplicated in the graph. The exclusion belongs where the rows are
+    selected, so the query keeps walking to the earliest surviving holder.
+
+    The third holder here is created AFTER the asking document, the ordering that
+    a "look once more, excluding the pointer" fix would still get wrong (that
+    lookup returns the asking row itself and reads it as "no other holder").
+    """
+
+    async def _run():
+        storage = await _storage(
+            tmp_path,
+            {
+                "doc-pointer": _demoted_row("dup", "2026-01-01T00:00:00", "doc-asking"),
+                "doc-asking": _row("dup", "2026-02-01T00:00:00"),
+                "doc-third": _row("dup", "2026-03-01T00:00:00"),
+            },
+        )
+        match = await get_duplicate_doc_by_content_hash(storage, "dup", "doc-asking")
+        assert match is not None and match[0] == "doc-third"
+
+        # Same for the enqueue leg, where the asking id does not exist yet.
+        del storage._data["doc-asking"]
+        match = await get_existing_doc_by_content_hash(
+            storage, "dup", candidate_doc_id="doc-asking"
+        )
+        assert match is not None and match[0] == "doc-third"
 
     asyncio.run(_run())
 

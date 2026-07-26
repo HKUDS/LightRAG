@@ -1744,10 +1744,14 @@ class RedisDocStatusStorage(DocStatusStorage):
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose content_hash field matches.
 
-        ``exclude_doc_id`` skips that row so the duplicate check can exclude
-        the doc being processed (see base contract). Redis has no content_hash
-        index, so this SCANs the keyspace either way — the exclusion only drops
-        the self-row in the same pass, never adding a second scan.
+        ``exclude_doc_id`` skips that row AND any row that merely points at it
+        (``is_duplicate`` naming it as ``original_doc_id``), so the duplicate
+        check can neither be answered with the row being processed nor with a
+        record of that row (see base contract). Redis has no content_hash index,
+        so this SCANs the keyspace either way — both exclusions are predicates
+        in the same pass, which is also why skipping a pointer row cannot
+        truncate the search: the scan keeps looking for the earliest remaining
+        holder.
 
         Fail-closed: transport and decode failures PROPAGATE. ``None`` means
         "confirmed no other holder", and the dedup callers act on it
@@ -1796,6 +1800,8 @@ class RedisDocStatusStorage(DocStatusStorage):
                                 f"holds the hash"
                             ) from e
                         if doc_data.get("content_hash") != content_hash:
+                            continue
+                        if self._row_points_at_as_duplicate(doc_data, exclude_doc_id):
                             continue
                         created = doc_data.get("created_at")
                         sort_key = (

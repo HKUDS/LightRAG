@@ -813,7 +813,10 @@ async def test_get_doc_by_content_hash_exclude_doc_id_adds_ne_filter():
 
     result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
     assert result is not None and result[0] == "doc-2"
-    assert data.find_queries == [{"content_hash": "h", "_id": {"$ne": "doc-1"}}]
+    # The id half of the exclusion; the pointer half is asserted in
+    # test_get_doc_by_content_hash_excludes_rows_pointing_at_the_excluded_id.
+    assert data.find_queries[0]["content_hash"] == "h"
+    assert data.find_queries[0]["_id"] == {"$ne": "doc-1"}
     assert data.find_cursors[0].sort_spec == [("created_at", 1), ("_id", 1)]
     assert data.find_cursors[0].limit_value == 1
 
@@ -829,3 +832,37 @@ async def test_get_doc_by_content_hash_propagates_query_failure():
     s = _storage(data=data)
     with pytest.raises(PyMongoError):
         await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_excludes_rows_pointing_at_the_excluded_id():
+    """Second half of ``exclude_doc_id`` (base contract): a ``$nor`` clause drops
+    rows marked ``is_duplicate`` that name the excluded id as their original —
+    such a row records that the content belongs to the asking document, so
+    returning it would close an is_duplicate cycle and leave their shared source
+    with no primary. In-query, so the sort+limit still yield the earliest
+    surviving holder rather than a post-filtered single row."""
+    data = _FakeCollection(find_docs=[{"_id": "doc-3", "content_hash": "h"}])
+    s = _storage(data=data)
+
+    result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+
+    assert result is not None and result[0] == "doc-3"
+    assert data.find_queries == [
+        {
+            "content_hash": "h",
+            "_id": {"$ne": "doc-1"},
+            "$nor": [
+                {
+                    "metadata.is_duplicate": True,
+                    "metadata.original_doc_id": "doc-1",
+                }
+            ],
+        }
+    ]
+    assert data.find_cursors[0].sort_spec == [("created_at", 1), ("_id", 1)]
+    assert data.find_cursors[0].limit_value == 1
+
+    # No exclusion → no $nor clause either.
+    await s.get_doc_by_content_hash("h")
+    assert "$nor" not in data.find_queries[-1]
