@@ -630,10 +630,10 @@ async def test_the_rebuild_switch_is_bounded_not_one_transaction_per_workspace(
         pipe = real_pipeline(transaction=transaction)
         real_execute = pipe.execute
 
-        async def _execute():
+        async def _execute(raise_on_error: bool = True):
             renames = sum(1 for op in pipe._ops if op[0] == "rename")
             widest["renames"] = max(widest["renames"], renames)
-            return await real_execute()
+            return await real_execute(raise_on_error=raise_on_error)
 
         pipe.execute = _execute
         return pipe
@@ -652,6 +652,53 @@ async def test_the_rebuild_switch_is_bounded_not_one_transaction_per_workspace(
     assert len(fake.sets) == total  # one basename set per document
     assert not [k for k in fake.zsets if "_rebuild:" in k]
     assert not [k for k in fake.sets if "_rebuild:" in k]
+
+
+@pytest.mark.asyncio
+async def test_publish_survives_a_duplicate_scan_return(storage, monkeypatch):
+    """Fix-proof: SCAN's own contract allows an element to be returned more than
+    once during one iteration, and the bounded publish hands SCAN a moving
+    target ON PURPOSE — each RENAME deletes from the very pattern being walked,
+    which is exactly the shape that provokes a repeat. A later batch in the
+    SAME pass re-handed a key an earlier batch already renamed away must not
+    crash the publish with an unhandled ResponseError("no such key")."""
+    fake = storage._redis
+    monkeypatch.setattr(storage, "_PUBLISH_BATCH", 1)
+    for index in range(3):
+        fake.store[f"{storage.final_namespace}:doc-{index}"] = json.dumps(
+            _doc("pending", file_path=f"f{index}.pdf")
+        )
+
+    real_scan = fake.scan
+    basename_pattern = f"{storage._sched_prefix}_rebuild:basename:*"
+    state = {"first_key": None, "injected": False}
+
+    async def duplicating_scan(cursor=0, match="", count=1000):
+        next_cursor, keys = await real_scan(cursor, match=match, count=count)
+        if match == basename_pattern:
+            if cursor == 0 and keys and state["first_key"] is None:
+                state["first_key"] = keys[0]
+            elif (
+                cursor != 0
+                and keys
+                and not state["injected"]
+                and state["first_key"] is not None
+            ):
+                # The documented SCAN behaviour: hand back a key a PRIOR call
+                # in this very pass already renamed away.
+                state["injected"] = True
+                keys = [state["first_key"], *keys]
+        return next_cursor, keys
+
+    monkeypatch.setattr(fake, "scan", duplicating_scan)
+
+    await storage._rebuild_scheduling_sidecar()  # must not raise
+
+    # Nothing lost, nothing left behind, the repeat was silently absorbed.
+    assert not [k for k in fake.zsets if "_rebuild:" in k]
+    assert not [k for k in fake.sets if "_rebuild:" in k]
+    assert len(fake.sets) == 3  # one basename set per document
+    assert len(fake.zsets[f"{storage._sched_prefix}:status:pending"]) == 3
 
 
 @pytest.mark.asyncio

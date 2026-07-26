@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from redis.exceptions import WatchError
+from redis.exceptions import ResponseError, WatchError
 
 
 class FakeRedis:
@@ -228,6 +228,17 @@ class FakeRedis:
             return 1 if existed else 0
         if kind == "rename":
             src, dst = op[1], op[2]
+            if not (
+                src in self.store
+                or src in self.zsets
+                or src in self.sets
+                or src in self.hashes
+            ):
+                # Mirrors real Redis: RENAME on a missing source fails with
+                # exactly this text — what a duplicate SCAN return produces
+                # when a later batch re-hands a key an earlier one already
+                # renamed away (see _publish_rebuilt_index).
+                raise ResponseError("no such key")
             if src in self.store:
                 self.store[dst] = self.store.pop(src)
             if src in self.zsets:
@@ -399,7 +410,13 @@ class FakePipeline:
     def hset(self, key: str, field: str, value):
         return self._command(("hset", key, field, value))
 
-    async def execute(self):
+    async def execute(self, raise_on_error: bool = True):
+        """Mirrors real redis-py: a per-command ``ResponseError`` is captured
+        into its slot in the result list rather than aborting the batch, and
+        only raised (the FIRST one) when ``raise_on_error`` is true — the
+        default. ``raise_on_error=False`` is what the bounded sidecar publish
+        uses to tolerate a duplicate SCAN return producing a benign "no such
+        key" RENAME (see ``_publish_rebuilt_index``)."""
         self._fake._maybe_fail("execute")
         for key, version in self._watched.items():
             if self._fake.versions[key] != version:
@@ -408,8 +425,15 @@ class FakePipeline:
                 raise WatchError(f"watched key changed: {key}")
         results = []
         for op in self._ops:
-            self._fake._maybe_fail(op[0])
-            results.append(self._fake._apply(op))
+            try:
+                self._fake._maybe_fail(op[0])
+                results.append(self._fake._apply(op))
+            except ResponseError as e:
+                results.append(e)
         self._ops.clear()
         self._watched.clear()
+        if raise_on_error:
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
         return results

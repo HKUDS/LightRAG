@@ -18,6 +18,7 @@ from redis.asyncio import Redis, ConnectionPool  # type: ignore
 from redis.exceptions import (  # type: ignore
     RedisError,
     ConnectionError,
+    ResponseError,
     TimeoutError,
     WatchError,
 )
@@ -2493,6 +2494,17 @@ class RedisDocStatusStorage(DocStatusStorage):
             f"({rebuilt} rows) for {self.namespace}"
         )
 
+    @staticmethod
+    def _is_missing_source_rename_error(exc: Exception) -> bool:
+        """True for the specific, benign ``RENAME`` failure a duplicate SCAN
+        return produces: the source key is already gone because an earlier
+        batch in the same publish pass already renamed it. Redis's own error
+        text for this case is exactly ``"no such key"`` (see ``t_string.c`` /
+        ``renameGenericCommand``) — matched narrowly so any other
+        :class:`ResponseError` (auth, readonly replica, wrong type, OOM, …)
+        still aborts the publish instead of being silently absorbed."""
+        return isinstance(exc, ResponseError) and "no such key" in str(exc).lower()
+
     async def _publish_rebuilt_index(
         self, redis, temp_prefix: str, statuses_seen: set[str]
     ) -> None:
@@ -2526,6 +2538,18 @@ class RedisDocStatusStorage(DocStatusStorage):
         all-or-nothing semantics now, and ``RENAME`` already replaces its
         destination atomically per key — the granularity that actually matters,
         since no reader ever sees a half-written status ZSET.
+
+        SCAN's OWN contract, separately from the concurrent-writer question
+        above: "a full iteration retrieves all elements present throughout,
+        but an element may be returned more than once" (Redis docs). This sweep
+        hands SCAN a moving target on purpose (each pass's renames delete from
+        the very pattern being scanned), which is exactly the shape that
+        provokes a duplicate return — a key renamed by an earlier batch in this
+        SAME pass can be handed to us again by a later one. A repeat ``RENAME``
+        on that key fails with "no such key", not a fresh state to react to
+        (the first rename already moved it where it belongs), so that specific
+        error is swallowed per-command rather than left to abort the whole
+        batch — see ``_is_missing_source_rename_error``.
         """
         status_pattern = f"{self._sched_prefix}:status:*"
         if await self._any_key(redis, status_pattern):
@@ -2558,8 +2582,17 @@ class RedisDocStatusStorage(DocStatusStorage):
                         for temp_key in keys:
                             official = self._sched_prefix + temp_key[len(temp_prefix) :]
                             pipe.rename(temp_key, official)
-                        await pipe.execute()
-                        renamed_in_pass += len(keys)
+                        # raise_on_error=False: a duplicate SCAN return makes one
+                        # of these a legitimate "no such key" (an earlier batch in
+                        # THIS pass already renamed it away), not a real failure —
+                        # see the docstring. Any other error still aborts loudly.
+                        results = await pipe.execute(raise_on_error=False)
+                        for temp_key, result in zip(keys, results):
+                            if isinstance(result, Exception):
+                                if not self._is_missing_source_rename_error(result):
+                                    raise result
+                                continue
+                            renamed_in_pass += 1
                     if cursor == 0:
                         break
                 published += renamed_in_pass
