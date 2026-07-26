@@ -306,9 +306,21 @@ def get_env_value(
             return default
 
     try:
-        return value_type(value)
+        converted = value_type(value)
     except (ValueError, TypeError):
         return default
+
+    # Reject non-finite floats so env-backed thresholds cannot become NaN/Inf.
+    if value_type is float and isinstance(converted, float) and not math.isfinite(
+        converted
+    ):
+        logger.warning(
+            "Environment variable %s=%r is not a finite float, using default",
+            env_key,
+            value,
+        )
+        return default
+    return converted
 
 
 # Use TYPE_CHECKING to avoid circular imports
