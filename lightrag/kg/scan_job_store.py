@@ -11,7 +11,9 @@ Manager-server-hosted) store:
   itself UTF-8-byte-capped, so neither the key set nor one key can grow it;
 * three fixed sample buckets (processed / warning / error), each a bounded list
   of UTF-8-byte-capped strings plus ``truncated`` / ``dropped`` markers;
-* a whole-record serialized-byte ceiling re-checked on every mutation.
+* a whole-record serialized-byte ceiling, measured when the record is created
+  and re-checked on every mutation that can grow it — counters, samples and the
+  terminal status message alike.
 
 The update protocol only accepts ``count deltas + at most one bounded sample +
 the expected owner token & version`` — never a full record — and every limit is
@@ -88,6 +90,15 @@ class ScanJobStatus(str, Enum):
     ABANDONED = "abandoned"
 
 
+# The status word is measured at its WIDEST enum value rather than its current
+# one, for the same reason counter values are measured at a fixed 8 bytes: the
+# domain is closed, and a RUNNING → ABANDONED transition (7 → 9 bytes) would
+# otherwise grow a record the growth paths had already filled right up to the
+# ceiling. Fixing the width makes every status transition size-neutral instead of
+# adding a third thing to reserve for.
+_STATUS_MAX_BYTES = max(len(status.value.encode("utf-8")) for status in ScanJobStatus)
+
+
 _TERMINAL_STATUSES = frozenset(
     {
         ScanJobStatus.COMPLETED.value,
@@ -102,8 +113,10 @@ class ScanJobCreateOutcome(str, Enum):
     ACCEPTED = "accepted"
     ALREADY_EXISTS = "already_exists"
     CAPACITY_EXCEEDED = "capacity_exceeded"
-    # An identifier the store refuses to hold (over the per-identifier byte cap).
-    # A client bug, never a reachable state for an in-tree caller.
+    # A record the store refuses to hold: an identifier over the per-identifier
+    # byte cap, or an empty record already over the whole-record ceiling (a
+    # pathological workspace name). A client/config bug, never a reachable state
+    # for an in-tree caller.
     INVALID_IDENTIFIER = "invalid_identifier"
 
 
@@ -193,19 +206,21 @@ class _ScanJobRecord:
 
         Every variable-length part is measured, not assumed: a flat allowance for
         "the scalar fields" made the ceiling bypassable by whatever the caller
-        put in ``track_id`` / ``owner_token`` / ``message``. Counter VALUES are
-        the one thing counted at a fixed 8 bytes, which holds only because
-        :data:`SCAN_JOB_COUNTER_VALUE_MAX` keeps them inside 64 bits.
+        put in ``track_id`` / ``owner_token`` / ``message``. Two fields are
+        counted at a fixed worst-case width instead, both because their domain is
+        closed: counter VALUES at 8 bytes (:data:`SCAN_JOB_COUNTER_VALUE_MAX`
+        keeps them inside 64 bits) and ``status`` at
+        :data:`_STATUS_MAX_BYTES`, which makes a status transition
+        size-neutral rather than a 2-byte way past the ceiling.
         """
         counts_bytes = sum(_key_bytes(k) + 8 for k in self.counts)
         sample_bytes = sum(b.approx_bytes() for b in self.samples.values())
-        scalar_bytes = sum(
+        scalar_bytes = _STATUS_MAX_BYTES + sum(
             _key_bytes(value)
             for value in (
                 self.track_id,
                 self.workspace,
                 self.owner_token,
-                self.status,
                 self.message,
             )
         )
@@ -273,6 +288,32 @@ class AsyncioScanJobStore:
 
     # -- internal, lock held ------------------------------------------------
 
+    def _fit_message_locked(self, rec: _ScanJobRecord, message: str) -> str:
+        """Cap a status message by its own byte cap AND the record's free budget.
+
+        The message is the last variable-length thing written to a record, and it
+        REPLACES whatever was there (so the outgoing message's bytes come back
+        into the budget first). Capping it against the remaining budget — not only
+        against ``sample_max_bytes`` — is what makes "the whole-record ceiling is
+        re-checked on every mutation" true of the status transitions too; without
+        it a record filled to the ceiling by samples/counters could still be
+        pushed one message past it.
+
+        Never squeezes a real deployment: the sample buckets can hold at most
+        ``3 × sample_limit × sample_max_bytes`` (30 KB at the defaults) plus a
+        capped counts dict, so the free budget under a 64 KB ceiling is always
+        tens of kilobytes. It only bites a store configured with a ceiling
+        smaller than one message, where truncating the diagnostic is still better
+        than breaching the bound the store advertises.
+        """
+        remaining = self._record_max_bytes - (
+            rec.approx_bytes() - _key_bytes(rec.message)
+        )
+        budget = min(self._sample_max_bytes, remaining)
+        if budget <= 0:
+            return ""
+        return _cap_sample(message, budget)[0]
+
     def _maybe_abandon_locked(self, rec: _ScanJobRecord, now: float) -> None:
         """A RUNNING job whose lease expired is atomically reaped to ABANDONED
         (owner SIGKILLed / stalled). A later owner-checked completion then loses
@@ -281,7 +322,9 @@ class AsyncioScanJobStore:
             rec.status = ScanJobStatus.ABANDONED.value
             rec.updated_at = now
             rec.version += 1
-            rec.message = "Lease expired: owner presumed dead; job abandoned."
+            rec.message = self._fit_message_locked(
+                rec, "Lease expired: owner presumed dead; job abandoned."
+            )
 
     def _reap_locked(self, now: float) -> None:
         """Reap lease-expired RUNNING jobs to ABANDONED, then evict terminal
@@ -326,7 +369,16 @@ class AsyncioScanJobStore:
         INVALID_IDENTIFIER: it is the one part of a record that cannot be
         truncated (a clipped ``track_id`` would answer another job's status
         query), so the record ceiling can only hold if the store declines it
-        here."""
+        here.
+
+        The freshly built record is then measured against ``record_max_bytes``
+        before it is stored, and refused the same way if it does not fit. The
+        per-identifier cap alone cannot carry that guarantee: ``workspace`` is a
+        scalar ``approx_bytes`` counts but no caller passes to ``create``, so a
+        pathological namespace would otherwise seat an over-ceiling record that
+        every later mutation then (correctly) refuses to grow. Measuring the built
+        record keeps the invariant on the record itself, and covers any scalar
+        added later without a second place to remember."""
         for label, value in (("track_id", track_id), ("owner_token", owner_token)):
             if _key_bytes(value) > self._identifier_max_bytes:
                 return ScanJobCreateResult(
@@ -343,11 +395,6 @@ class AsyncioScanJobStore:
                 return ScanJobCreateResult(
                     ScanJobCreateOutcome.ALREADY_EXISTS, existing.to_public()
                 )
-            if (
-                len(self._jobs) >= self._capacity
-                and not self._evict_one_terminal_locked()
-            ):
-                return ScanJobCreateResult(ScanJobCreateOutcome.CAPACITY_EXCEEDED)
             rec = _ScanJobRecord(
                 track_id=track_id,
                 workspace=self._workspace,
@@ -360,6 +407,23 @@ class AsyncioScanJobStore:
                 lease_expires_at=now + self._lease_seconds,
                 version=1,
             )
+            # Measured (and refused) BEFORE the capacity step, so a record that
+            # cannot be held never evicts a terminal one on its way out.
+            base_bytes = rec.approx_bytes()
+            if base_bytes > self._record_max_bytes:
+                return ScanJobCreateResult(
+                    ScanJobCreateOutcome.INVALID_IDENTIFIER,
+                    message=(
+                        f"an empty job record for this workspace/track_id already "
+                        f"measures {base_bytes} bytes, over the "
+                        f"{self._record_max_bytes}-byte record ceiling"
+                    ),
+                )
+            if (
+                len(self._jobs) >= self._capacity
+                and not self._evict_one_terminal_locked()
+            ):
+                return ScanJobCreateResult(ScanJobCreateOutcome.CAPACITY_EXCEEDED)
             self._jobs[track_id] = rec
             return ScanJobCreateResult(ScanJobCreateOutcome.ACCEPTED, rec.to_public())
 
@@ -489,7 +553,7 @@ class AsyncioScanJobStore:
             rec.updated_at = now
             rec.version += 1
             if message:
-                rec.message = _cap_sample(message, self._sample_max_bytes)[0]
+                rec.message = self._fit_message_locked(rec, message)
             return ScanJobUpdateResult(True, None, rec.to_public())
 
     def get(self, track_id: str) -> Optional[Dict[str, Any]]:
@@ -525,7 +589,7 @@ class AsyncioScanJobStore:
             rec.updated_at = now
             rec.version += 1
             if message:
-                rec.message = _cap_sample(message, self._sample_max_bytes)[0]
+                rec.message = self._fit_message_locked(rec, message)
             return ScanJobUpdateResult(True, None, rec.to_public())
 
     def remove_terminal(self, track_id: str) -> bool:

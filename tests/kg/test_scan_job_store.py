@@ -15,6 +15,7 @@ from lightrag.kg.scan_job_store import (
     ScanJobCreateOutcome,
     ScanJobStatus,
     ScanJobUpdateConflict,
+    _ScanJobRecord,
 )
 
 pytestmark = pytest.mark.offline
@@ -203,6 +204,97 @@ def test_the_record_ceiling_covers_the_scalars_not_just_the_payload():
     store.create("t" * 100, "o" * 100)
     record_bytes = store._jobs["t" * 100].approx_bytes()
     assert record_bytes >= 200
+
+
+def test_a_record_that_is_born_over_the_ceiling_is_never_created():
+    """Fix-proof: the per-identifier cap covers ``track_id`` / ``owner_token``, but
+    ``workspace`` is a scalar ``approx_bytes`` counts and no caller passes to
+    ``create`` — a 100 KB namespace seated a ~100 KB record in a 512-byte store,
+    and every later mutation then (correctly, and confusingly) refused to grow it.
+    The invariant belongs to the record, so the built record is what gets
+    measured."""
+    store = AsyncioScanJobStore("W" * 100_000, clock=_Clock(), record_max_bytes=512)
+    refused = store.create("t1", "owner")
+    assert refused.outcome is ScanJobCreateOutcome.INVALID_IDENTIFIER
+    assert "record ceiling" in refused.message
+    assert store.get("t1") is None and store.snapshot() == []
+
+
+def test_the_refusal_does_not_evict_a_terminal_record_on_its_way_out():
+    """Ordering: an over-ceiling create must not spend the capacity slot it was
+    never going to use."""
+    store = AsyncioScanJobStore(
+        "W" * 1000, clock=_Clock(), capacity=1, record_max_bytes=512
+    )
+    # Seat one terminal record the eviction step would happily take.
+    store._jobs["survivor"] = _ScanJobRecord(
+        track_id="survivor",
+        workspace="",
+        owner_token="o",
+        status=ScanJobStatus.COMPLETED.value,
+        counts={},
+        samples={},
+        created_at=1000.0,
+        updated_at=1000.0,
+        lease_expires_at=1000.0,
+        version=1,
+    )
+    assert (
+        store.create("t1", "owner").outcome is ScanJobCreateOutcome.INVALID_IDENTIFIER
+    )
+    assert store.get("survivor") is not None
+
+
+def test_a_terminal_message_cannot_push_the_record_past_the_ceiling():
+    """Fix-proof: ``set_status`` / ``cancel`` / the lease reaper capped the message
+    at ``sample_max_bytes`` only, with no regard for what the record had already
+    spent — so a record filled to the ceiling by samples still accepted one more
+    message's worth of bytes on top of it. Every mutation means every mutation."""
+    for terminate in (
+        lambda store, version: store.set_status(
+            "t1",
+            "owner",
+            ScanJobStatus.FAILED,
+            expected_version=version,
+            message="m" * 256,
+        ),
+        lambda store, version: store.cancel("t1", "owner", message="m" * 256),
+    ):
+        store = _store(sample_limit=100, sample_max_bytes=256, record_max_bytes=400)
+        store.create("t1", "owner")
+        record = store._jobs["t1"]
+        version = record.version
+        while record.approx_bytes() + 32 <= 400:
+            version = store.update(
+                "t1", "owner", sample=("processed", "z" * 32), expected_version=version
+            ).record["version"]
+
+        assert terminate(store, version).ok
+        assert record.approx_bytes() <= 400
+        # The message is truncated, not silently discarded whole.
+        assert record.message and record.message[0] == "m"
+
+
+def test_the_lease_reaper_message_respects_the_ceiling_too():
+    clock = _Clock(1000.0)
+    store = _store(
+        clock=clock,
+        lease_seconds=10.0,
+        sample_limit=100,
+        sample_max_bytes=256,
+        record_max_bytes=400,
+    )
+    store.create("t1", "owner")
+    record = store._jobs["t1"]
+    version = record.version
+    while record.approx_bytes() + 32 <= 400:
+        version = store.update(
+            "t1", "owner", sample=("processed", "z" * 32), expected_version=version
+        ).record["version"]
+
+    clock.t = 1011.0  # lease expired → reaped to ABANDONED with its message
+    assert store.get("t1")["status"] == ScanJobStatus.ABANDONED.value
+    assert record.approx_bytes() <= 400
 
 
 def test_an_arbitrary_precision_counter_is_refused_not_stored_as_eight_bytes():
