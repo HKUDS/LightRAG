@@ -4396,22 +4396,37 @@ def create_document_routes(
                     )
         except SourceConflictPrimaryUnusableError as unusable_primary:
             # A DIFFERENT 409 from the one below: this primary IS a candidate, it
-            # just cannot own the source (no content). Reporting it as "not a
-            # candidate" would send the operator to re-list a conflict that has
-            # not changed. The message names the state and the fix; it is built
-            # here from sanitized request values, like its sibling.
+            # just cannot own the source. Reporting it as "not a candidate" would
+            # send the operator to re-list a conflict that has not changed. The
+            # detail is built here from sanitized values rather than forwarded
+            # from the exception text — so it must branch on the exception's
+            # REASON, or it states the wrong cause with total confidence (it used
+            # to answer "has no full_docs content" for a document whose content
+            # was fine and simply belonged to another document).
             logger.warning(
                 f"[source-conflict repair] {action} REFUSED by {actor}: "
                 f"key='{audit_key}' primary={audit_primary}: {unusable_primary}"
             )
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            if (
+                unusable_primary.reason
+                == SourceConflictPrimaryUnusableError.REASON_CONTENT_ELSEWHERE
+            ):
+                holder = safe_log_value(unusable_primary.holder_doc_id)
+                detail = (
+                    f"Document {audit_primary} holds the same content as "
+                    f"{holder or 'another document'}, which claims a different "
+                    f"source, so it cannot own '{audit_key}': processing marks a "
+                    "content duplicate FAILED and deletes its content, leaving "
+                    "the source with no primary. Choose another primary, or "
+                    "settle that document first."
+                )
+            else:
+                detail = (
                     f"Document {audit_primary} has no full_docs content, so it "
                     f"cannot own source '{audit_key}'. Choose a primary that has "
                     "content."
-                ),
-            )
+                )
+            raise HTTPException(status_code=409, detail=detail)
         except ValueError as not_a_candidate:
             # The named primary is not currently a primary candidate: either a
             # typo or a view that went stale. Same recovery either way — list the

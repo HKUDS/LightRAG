@@ -639,6 +639,8 @@ def test_a_primary_with_no_content_is_refused():
 
     assert commit.status_code == 409
     assert "no full_docs content" in commit.json()["detail"]
+    # ... and only for THIS reason (the sibling refusal has its own sentence).
+    assert "same content" not in commit.json()["detail"]
     # Nothing demoted: both rows still claim the source.
     assert doc_status.groups["a.pdf"] == ["doc-1", "doc-2"]
     assert full_docs.reads == ["doc-2"]  # only the chosen primary is read
@@ -771,6 +773,13 @@ def test_a_primary_whose_content_lives_under_another_source_is_refused():
 
     assert commit.status_code == 409
     assert doc_status.groups["a.pdf"] == ["doc-1", "doc-2"]  # nothing demoted
+    # Fix-proof: the detail is built here (the exception text is not guaranteed
+    # client-safe), and both reasons rendered the SAME sentence — so a document
+    # whose content was fine was told it had none. The reason travels with the
+    # exception now.
+    detail = commit.json()["detail"]
+    assert "no full_docs content" not in detail
+    assert "doc-elsewhere" in detail and "same content" in detail
 
 
 def test_a_content_twin_among_the_candidates_is_not_a_reason_to_refuse():
