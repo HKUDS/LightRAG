@@ -3071,7 +3071,7 @@ class _PipelineMixin:
             logger.warning(warning)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = warning
-                pipeline_status["history_messages"].append(warning)
+                append_pipeline_history(pipeline_status, warning)
         if not docs_to_reset:
             return 0
         # Owner-checked page write (LR2 §7.7 item 8): confirm we still hold the
