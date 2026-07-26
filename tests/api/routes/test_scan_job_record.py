@@ -273,6 +273,83 @@ def test_status_endpoint_404s_for_an_unknown_track_id(tmp_path):
     asyncio.run(_run())
 
 
+def test_a_long_phase_does_not_lose_the_lease_under_a_live_owner(tmp_path, monkeypatch):
+    """Fix-proof: the reporter renewed the lease only when the SCAN touched the
+    record — per discovered file, per batch flush — and the final processing run
+    touches it never. A drive longer than ``SCAN_JOB_LEASE_SECONDS`` therefore
+    let the store reap a perfectly live owner's job to ABANDONED, and the scan's
+    own COMPLETED transition then lost to that state: a finished scan reported
+    as "owner presumed dead"."""
+
+    async def _run():
+        rag = _StubRag()
+        await initialize_pipeline_status(workspace=rag.workspace)
+        # Compressed timings (lease 0.3s, renewal 0.05s) keep the real-time
+        # window testable; the production ratio (renew = lease/3) is unchanged.
+        store = AsyncioScanJobStore(rag.workspace, lease_seconds=0.3)
+        monkeypatch.setattr(
+            _document_routes, "_resolve_scan_job_store", lambda _rag: store
+        )
+        monkeypatch.setattr(_document_routes, "_SCAN_JOB_RENEW_SECONDS", 0.05)
+
+        track_id, job_token = "scan-slow", uuid4().hex
+        store.create(track_id, job_token)
+        doc_manager = DocumentManager(str(tmp_path))
+
+        # Park the scan inside the processing drive — the phase with no reporter
+        # call of its own — for three lease periods.
+        rag.drive_gate = asyncio.Event()
+        scan = asyncio.create_task(
+            run_scanning_process(
+                rag,
+                doc_manager,
+                track_id,
+                manual_request_id=uuid4().hex,
+                job_owner_token=job_token,
+            )
+        )
+        await asyncio.sleep(0.9)
+        assert rag.process_calls == 1  # really parked in the drive
+        assert store.get(track_id)["status"] == "running"
+
+        rag.drive_gate.set()
+        await scan
+        assert store.get(track_id)["status"] == "completed"
+
+    asyncio.run(_run())
+
+
+def test_the_lease_heartbeat_never_outlives_its_scan(monkeypatch):
+    """A heartbeat that survived its owner would renew a DEAD scan's record for
+    ever, defeating the reaper it exists to work with. It retires on the scan
+    task's completion, so the explicit cancel in the ``finally`` is a prompt
+    exit, not the only one."""
+
+    async def _run():
+        monkeypatch.setattr(_document_routes, "_SCAN_JOB_RENEW_SECONDS", 0.02)
+        store = AsyncioScanJobStore("heartbeat-test", lease_seconds=0.2)
+        store.create("job", "owner")
+        reporter = _document_routes._ScanJobReporter(store, "job", "owner")
+
+        async def _scan_that_already_ended():
+            return None
+
+        scan_task = asyncio.create_task(_scan_that_already_ended())
+        await scan_task
+
+        # Started as if the finally never reached its cancel.
+        heartbeat = asyncio.create_task(
+            _document_routes._renew_scan_job_lease(reporter, scan_task)
+        )
+        await asyncio.wait_for(heartbeat, timeout=1.0)  # retires on its own
+
+        # And the abandoned record is reapable, not held alive.
+        await asyncio.sleep(0.25)
+        assert store.get("job")["status"] == "abandoned"
+
+    asyncio.run(_run())
+
+
 def test_reporter_bounds_sample_calls_and_resyncs_the_cas_version():
     """The reporter's own budget keeps a million-file scan from costing one store
     call per warning: only ``SCAN_JOB_SAMPLE_LIMIT`` samples per bucket are ever

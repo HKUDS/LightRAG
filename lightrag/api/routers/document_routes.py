@@ -259,6 +259,13 @@ class ScanJobStatusResponse(BaseModel):
         default_factory=dict,
         description="Aggregate classification/progress counters (bounded key set)",
     )
+    counters_dropped: int = Field(
+        default=0,
+        description=(
+            "Counter deltas the store refused (over-long key, distinct-key cap, "
+            "or the record byte ceiling) — always 0 for an in-tree client"
+        ),
+    )
     samples: Dict[str, ScanJobSampleBucket] = Field(
         default_factory=dict,
         description="Bounded processed / warning / error sample buckets",
@@ -2412,11 +2419,13 @@ async def pipeline_index_texts(
     await rag.apipeline_process_enqueue_documents()
 
 
-# How long a scan may go without touching its job record before the reporter
-# renews the lease on its own. A RUNNING job whose lease expires is reaped to
-# ABANDONED (its owner presumed dead), so the renewal interval must stay a
-# fraction of the lease — a directory walk over a large tree is easily longer
-# than one lease period.
+# How long a scan may go without touching its job record before it is renewed
+# for its own sake — by ``reporter.renew()`` inside the discovery loop, and by
+# the independent ``_renew_scan_job_lease`` heartbeat during phases that never
+# touch the record. A RUNNING job whose lease expires is reaped to ABANDONED
+# (its owner presumed dead), so this must stay a fraction of the lease — a
+# directory walk over a large tree, let alone a processing run, is easily
+# longer than one lease period.
 _SCAN_JOB_RENEW_SECONDS = SCAN_JOB_LEASE_SECONDS / 3
 
 
@@ -2578,6 +2587,42 @@ class _ScanJobReporter:
             )
             self._store = None
             return
+
+
+async def _renew_scan_job_lease(reporter: _ScanJobReporter, scan_task: Any) -> None:
+    """Renew a scan job's lease from an independent task (LR2 §8.6).
+
+    The reporter only touches the record when the SCAN touches it: once per
+    discovered file, on a batch flush, at a phase boundary. Three phases do
+    neither, and none of them has a bounded duration — the custom-chunk
+    rollback, the exclusive FAILED→PENDING reset, and the final
+    ``apipeline_process_enqueue_documents`` (parse + LLM + index over
+    everything this scan produced, plus the deferred drive in the finally).
+    Any one of them outliving ``SCAN_JOB_LEASE_SECONDS`` let the store reap a
+    perfectly healthy RUNNING job to ABANDONED; the scan's own terminal
+    transition then lost to that state, so a scan that COMPLETED was reported
+    as "owner presumed dead". Only a heartbeat that does not depend on the
+    scan's own progress can distinguish "slow" from "dead".
+
+    Sleeping half the renewal interval bounds the worst-case gap between store
+    calls at 1.5x that interval — half the lease — since ``renew()`` skips a
+    tick that a scan-driven call already covered.
+
+    Exits when ``scan_task`` completes, so a heartbeat can never outlive its
+    owner and keep a dead scan's record alive (that would defeat the very
+    reaper this protects against). The task is also cancelled explicitly before
+    the terminal transition; this check is what holds if the ``finally`` never
+    gets there. Every reporter method is synchronous, so this task can only run
+    BETWEEN them — no flush can be interleaved and no lock is needed.
+    """
+    try:
+        while not scan_task.done():
+            await asyncio.sleep(max(_SCAN_JOB_RENEW_SECONDS / 2, 0.01))
+            reporter.renew()
+    except asyncio.CancelledError:
+        raise
+    except Exception as heartbeat_error:  # never fail the scan over reporting
+        logger.warning(f"Scan job lease heartbeat stopped: {heartbeat_error}")
 
 
 class _ScanFileClass(str, Enum):
@@ -2927,6 +2972,15 @@ async def run_scanning_process(
     )
     job_status = ScanJobStatus.FAILED
     job_message = "scan ended without reporting an outcome"
+    # Lease heartbeat, independent of scan progress: the phases below (rollback,
+    # exclusive FAILED reset, processing) can each outlast the lease without
+    # touching the record. Cancelled just before the terminal transition, after
+    # the deferred drive in the finally — see _renew_scan_job_lease.
+    lease_heartbeat = (
+        asyncio.create_task(_renew_scan_job_lease(reporter, asyncio.current_task()))
+        if reporter.enabled
+        else None
+    )
     try:
         # Fetch INSIDE the release try: the scan endpoint already reserved
         # ``scanning``/``scanning_exclusive`` before scheduling us, so a
@@ -3278,6 +3332,14 @@ async def run_scanning_process(
                     job_status = ScanJobStatus.FAILED
                     job_message = f"Post-scan queue drive failed: {drive_error}"
                     reporter.sample("error", job_message)
+
+        # The heartbeat has covered every phase including the deferred drive
+        # above; stop it before the terminal transition so the record's last
+        # write is the terminal one. Not awaited: the cancellation path must not
+        # await here (one cancel is injected once), and the task's own
+        # ``scan_task.done()`` check retires it regardless.
+        if lease_heartbeat is not None:
+            lease_heartbeat.cancel()
 
         # Finalise the job record LAST, so the terminal status covers the whole
         # task including the deferred drive above (LR2 §8.6). Synchronous — safe

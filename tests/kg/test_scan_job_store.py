@@ -122,7 +122,66 @@ def test_distinct_counter_key_cap():
     for i in range(10):
         r = store.update("t1", "owner", count_deltas={f"k{i}": 1}, expected_version=v)
         v = r.record["version"]
-    assert len(store.get("t1")["counts"]) == 3  # capped
+    record = store.get("t1")
+    assert len(record["counts"]) == 3  # capped
+    assert record["counters_dropped"] == 7  # and the drops are not silent
+
+
+def test_an_over_long_counter_key_cannot_breach_the_record_ceiling():
+    """Fix-proof: the distinct-key cap bounds HOW MANY keys, not how big one is,
+    and the record ceiling was only re-checked on the sample path. A single
+    100 KB key therefore landed in a store whose whole-record ceiling was
+    1 KB."""
+    store = _store(record_max_bytes=1024, counter_key_max_bytes=64)
+    store.create("t1", "owner")
+    huge = "k" * 100_000
+    r = store.update("t1", "owner", count_deltas={huge: 1}, expected_version=1)
+    assert r.ok  # the update itself still succeeds; only the delta is refused
+    record = store.get("t1")
+    assert record["counts"] == {}
+    assert record["counters_dropped"] == 1
+
+
+def test_counter_keys_are_measured_in_utf8_bytes_and_refused_not_truncated():
+    """A CJK key is 3 bytes per character, so a char-length check would let a
+    3x-over-cap key through. And an over-long key must be REFUSED, not clipped:
+    truncating would fuse two distinct labels into one counter."""
+    store = _store(counter_key_max_bytes=12)
+    store.create("t1", "owner")
+    # 5 CJK chars = 15 UTF-8 bytes > 12, but only 5 by len().
+    r = store.update(
+        "t1", "owner", count_deltas={"文档解析失败": 1}, expected_version=1
+    )
+    assert r.ok and r.record["counts"] == {} and r.record["counters_dropped"] == 1
+
+    long_a, long_b = "same_prefix_a", "same_prefix_b"  # 13 bytes each, over cap
+    v = r.record["version"]
+    r = store.update(
+        "t1", "owner", count_deltas={long_a: 1, long_b: 1}, expected_version=v
+    )
+    # Neither was clipped to a shared 12-byte "same_prefix_" counter.
+    assert r.record["counts"] == {}
+    assert r.record["counters_dropped"] == 3
+
+
+def test_a_bounded_key_still_counts_and_repeats_add_no_bytes():
+    """The cap must not get in the way of the real taxonomy: every in-tree key is
+    a short label, and repeated deltas on an existing key are pure integer
+    updates that no byte bound can refuse."""
+    store = _store(record_max_bytes=400, counter_key_max_bytes=64)
+    store.create("t1", "owner")
+    v = 1
+    for _ in range(200):
+        r = store.update(
+            "t1",
+            "owner",
+            count_deltas={"resume_same_physical_source": 1},
+            expected_version=v,
+        )
+        v = r.record["version"]
+    record = store.get("t1")
+    assert record["counts"]["resume_same_physical_source"] == 200
+    assert record["counters_dropped"] == 0
 
 
 def test_capacity_evicts_terminal_then_rejects_all_running():

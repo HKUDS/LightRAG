@@ -7,7 +7,8 @@ job record that is **bounded by construction** so a million-file scan — or a
 buggy client — can never materialize an O(total_files) object into the (possibly
 Manager-server-hosted) store:
 
-* aggregate integer counters, a fixed allowlist-capped number of distinct keys;
+* aggregate integer counters — a capped number of distinct keys, each key
+  itself UTF-8-byte-capped, so neither the key set nor one key can grow it;
 * three fixed sample buckets (processed / warning / error), each a bounded list
   of UTF-8-byte-capped strings plus ``truncated`` / ``dropped`` markers;
 * a whole-record serialized-byte ceiling re-checked on every mutation.
@@ -49,6 +50,13 @@ SCAN_JOB_RECORD_MAX_BYTES = 65_536
 # Max distinct counter keys — bounds the counts dict independently of the
 # classification taxonomy, so a buggy client cannot grow it without limit.
 SCAN_JOB_MAX_COUNTER_KEYS = 32
+# UTF-8 byte cap for ONE counter key. Capping the number of keys alone does not
+# bound the counts dict: the record-byte ceiling is only re-checked where the
+# payload lives (the sample path), so without this a single 100 KB key would
+# sail past ``record_max_bytes``. Every in-tree key is a short taxonomy label
+# (the longest is ``resume_same_physical_source``), so this only ever refuses a
+# client bug.
+SCAN_JOB_COUNTER_KEY_MAX_BYTES = 64
 # Lease renewed on every owner update; a RUNNING job whose lease has expired is
 # reaped to ABANDONED (owner presumed dead / stalled).
 SCAN_JOB_LEASE_SECONDS = 60.0
@@ -112,6 +120,11 @@ class ScanJobUpdateResult:
     record: Optional[Dict[str, Any]] = None
 
 
+def _key_bytes(key: str) -> int:
+    """UTF-8 byte length of a counter key (the unit every counts bound uses)."""
+    return len(key.encode("utf-8", errors="replace"))
+
+
 def _cap_sample(text: str, max_bytes: int) -> Tuple[str, bool]:
     """Truncate ``text`` to at most ``max_bytes`` UTF-8 bytes on a char boundary.
 
@@ -154,12 +167,18 @@ class _ScanJobRecord:
     lease_expires_at: float
     version: int
     message: str = ""
+    # Counter deltas refused by a bound (over-long key, distinct-key cap, or the
+    # record ceiling). A fixed integer, so surfacing it cannot itself grow the
+    # record — and a dropped counter is never silent.
+    counters_dropped: int = 0
 
     def approx_bytes(self) -> int:
         # Cheap serialized-size estimate: counters + all sample bytes + a small
         # fixed overhead for the scalar fields. Enough to enforce the ceiling
-        # without a real serialize on every append.
-        counts_bytes = sum(len(k) + 8 for k in self.counts)
+        # without a real serialize on every append. Keys are measured in UTF-8
+        # BYTES, the same unit the caps are expressed in (``len()`` on a CJK key
+        # would under-count by 3x).
+        counts_bytes = sum(_key_bytes(k) + 8 for k in self.counts)
         sample_bytes = sum(b.approx_bytes() for b in self.samples.values())
         return counts_bytes + sample_bytes + 256
 
@@ -169,6 +188,7 @@ class _ScanJobRecord:
             "track_id": self.track_id,
             "status": self.status,
             "counts": dict(self.counts),
+            "counters_dropped": self.counters_dropped,
             "samples": {k: b.to_public() for k, b in self.samples.items()},
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -199,6 +219,7 @@ class AsyncioScanJobStore:
         sample_max_bytes: int = SCAN_JOB_SAMPLE_MAX_BYTES,
         record_max_bytes: int = SCAN_JOB_RECORD_MAX_BYTES,
         max_counter_keys: int = SCAN_JOB_MAX_COUNTER_KEYS,
+        counter_key_max_bytes: int = SCAN_JOB_COUNTER_KEY_MAX_BYTES,
         lease_seconds: float = SCAN_JOB_LEASE_SECONDS,
         ttl_seconds: float = SCAN_JOB_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
@@ -209,6 +230,7 @@ class AsyncioScanJobStore:
         self._sample_max_bytes = max(1, sample_max_bytes)
         self._record_max_bytes = max(1, record_max_bytes)
         self._max_counter_keys = max(1, max_counter_keys)
+        self._counter_key_max_bytes = max(1, counter_key_max_bytes)
         self._lease_seconds = lease_seconds
         self._ttl_seconds = ttl_seconds
         self._clock = clock
@@ -306,9 +328,12 @@ class AsyncioScanJobStore:
 
         ``sample`` is ``(bucket, text)`` with ``bucket in SAMPLE_BUCKETS``. Every
         bound is re-validated here (server-side): per-sample byte cap, per-bucket
-        count cap, whole-record byte ceiling, distinct-counter-key cap. Renews
-        the lease and bumps the version on success. Refuses (without mutating) on
-        owner mismatch, version mismatch, or a terminal/abandoned job."""
+        count cap, whole-record byte ceiling, distinct-counter-key cap and
+        per-counter-key byte cap. A delta whose key trips a bound is refused and
+        tallied in ``counters_dropped``; the rest of the update still applies.
+        Renews the lease and bumps the version on success. Refuses (without
+        mutating) on owner mismatch, version mismatch, or a terminal/abandoned
+        job."""
         with self._lock:
             now = self._clock()
             rec = self._jobs.get(track_id)
@@ -329,11 +354,25 @@ class AsyncioScanJobStore:
             for key, delta in (count_deltas or {}).items():
                 if not isinstance(delta, int):
                     continue
-                if key not in rec.counts and len(rec.counts) >= self._max_counter_keys:
-                    # Distinct-key cap: silently drop an over-cap new key rather
-                    # than grow unboundedly (a buggy client can't blow the size).
+                if key in rec.counts:
+                    # An existing key adds no bytes: only the integer changes.
+                    rec.counts[key] += delta
                     continue
-                rec.counts[key] = rec.counts.get(key, 0) + delta
+                key_bytes = _key_bytes(key)
+                if (
+                    # Over-long key: REFUSED, never truncated — two long keys
+                    # sharing a prefix would otherwise merge into one counter,
+                    # silently fusing distinct taxonomy labels.
+                    key_bytes > self._counter_key_max_bytes
+                    # Distinct-key cap.
+                    or len(rec.counts) >= self._max_counter_keys
+                    # Record ceiling, re-checked here too so the claim holds on
+                    # EVERY mutation and not just the sample path.
+                    or rec.approx_bytes() + key_bytes + 8 > self._record_max_bytes
+                ):
+                    rec.counters_dropped += 1
+                    continue
+                rec.counts[key] = delta
 
             if sample is not None:
                 bucket_name, text = sample
