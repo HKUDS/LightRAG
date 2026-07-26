@@ -462,3 +462,173 @@ def test_next_failed_page_single_scan_when_paging_off(tmp_path):
             await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+def test_reset_page_propagates_a_strict_full_docs_failure(tmp_path):
+    """Fix-proof: the content probe used the NON-strict ``get_by_id``, whose
+    implementations may report a transport failure (or, on OpenSearch, an index
+    that is merely not ready) as a best-effort ``None``. This loop read that as
+    "unprocessable stub" and skipped the doc, so a storage failure could skip
+    EVERY doc, still page to End, and ACK the manual retry having reset nothing.
+    The strict read must propagate instead."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            await _make_failed(rag, "a.txt", extract)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            docs, _ = await rag._next_failed_page(CURSOR_START)
+            assert docs
+
+            assert rag.full_docs.supports_strict_point_reads is True
+
+            async def _boom(doc_id):
+                raise RuntimeError("full_docs transport failure")
+
+            rag.full_docs.get_by_id_strict = _boom
+            # A non-strict read that softens the same failure to None would make
+            # this a silent skip; the strict path must surface it.
+            rag.full_docs.get_by_id = _boom
+
+            wrote = {"called": False}
+            orig_upsert = rag.doc_status.upsert
+
+            async def spy_upsert(data):
+                wrote["called"] = True
+                return await orig_upsert(data)
+
+            rag.doc_status.upsert = spy_upsert
+
+            with pytest.raises(RuntimeError, match="full_docs transport failure"):
+                await rag._reset_failed_page(docs, "tok", status, lock)
+            assert wrote["called"] is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_reset_page_counts_unconfirmed_misses_without_strict_reads(tmp_path):
+    """A backend that cannot confirm absence keeps the conservative skip, but the
+    skipped docs are surfaced so the operator does not read silence as success."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            await _make_failed(rag, "a.txt", extract)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            status["history_messages"] = []
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            docs, _ = await rag._next_failed_page(CURSOR_START)
+            assert docs
+
+            # Pretend the backend lacks strict point reads and misses the row.
+            type(rag.full_docs).supports_strict_point_reads = False
+            try:
+
+                async def _miss(doc_id):
+                    return None
+
+                rag.full_docs.get_by_id = _miss
+                reset = await rag._reset_failed_page(docs, "tok", status, lock)
+            finally:
+                type(rag.full_docs).supports_strict_point_reads = True
+
+            assert reset == 0
+            assert any(
+                "cannot confirm whether their content is really absent" in m
+                for m in status["history_messages"]
+            ), status["history_messages"]
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_worker_status_write_is_discarded_when_ownership_was_reclaimed(tmp_path):
+    """LR2 §7.7 items 3/4/7: a run whose ownership was reclaimed must DISCARD its
+    late status write, not stamp a final status over the new owner's work.
+
+    Fix-proof: the worker write path did a plain ``doc_status.upsert`` with no
+    owner check, so a late result from a run declared dead could re-FAIL a
+    document the manual exclusive reset had just moved to PENDING — ACKing the
+    retry with the document still failed.
+    """
+
+    async def _run():
+        from lightrag.pipeline import _BatchRunContext
+        from lightrag.parser.registry import parser_specs_snapshot
+
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            doc_id = await _make_failed(rag, "a.txt", extract)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            status["history_messages"] = []
+            # Ownership now belongs to owner-B; our run still holds owner-A.
+            status.update(
+                {"busy": True, "busy_owner": make_owner_record("owner-B", "processing")}
+            )
+
+            ctx = _BatchRunContext(
+                pipeline_status=status,
+                pipeline_status_lock=lock,
+                semaphore=asyncio.Semaphore(1),
+                total_files=1,
+                parse_queues={"native": asyncio.Queue()},
+                parser_specs=parser_specs_snapshot(),
+                q_analyze=asyncio.Queue(),
+                q_process=asyncio.Queue(),
+                run_owner_token="owner-A",
+            )
+
+            rows = await rag.doc_status.get_by_id(doc_id)
+            status_doc = (await rag._next_failed_page(CURSOR_START))[0][doc_id]
+            before = rows.get("status")
+
+            wrote = {"called": False}
+            orig_upsert = rag.doc_status.upsert
+
+            async def spy_upsert(data):
+                wrote["called"] = True
+                return await orig_upsert(data)
+
+            rag.doc_status.upsert = spy_upsert
+
+            await rag._upsert_doc_status_transition(
+                doc_id=doc_id,
+                status=DocStatus.PROCESSED,
+                status_doc=status_doc,
+                file_path="a.txt",
+                ctx=ctx,
+            )
+
+            # Nothing written, and the row is untouched.
+            assert wrote["called"] is False
+            after = (await rag.doc_status.get_by_id(doc_id)).get("status")
+            assert after == before
+
+            # The current owner's write still goes through.
+            ctx.run_owner_token = "owner-B"
+            await rag._upsert_doc_status_transition(
+                doc_id=doc_id,
+                status=DocStatus.PROCESSED,
+                status_doc=status_doc,
+                file_path="a.txt",
+                ctx=ctx,
+            )
+            assert wrote["called"] is True
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())

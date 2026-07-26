@@ -373,6 +373,14 @@ class _BatchRunContext:
     #    set.
     inflight_doc_ids: set = field(default_factory=set)
     routing_doc_ids: set = field(default_factory=set)
+    # Reservation token of the run that owns ``busy`` for this batch (LR2 §7.7
+    # items 3/4/7). Every worker status write verifies it is still the current
+    # ``busy_owner`` before touching doc_status, so a run whose ownership was
+    # reclaimed (dead-process reaper, Manager generation change) discards its
+    # late results instead of writing a final status over the new owner's work.
+    # ``None`` disables the check and exists only for call paths that construct
+    # a context outside a reservation (tests).
+    run_owner_token: str | None = None
 
 
 class _PipelineMixin:
@@ -1633,6 +1641,7 @@ class _PipelineMixin:
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
                     ingress=ingress,
+                    token=token,
                 )
 
                 # Atomic exit handoff: if a wake-up signal arrived during this
@@ -2126,6 +2135,7 @@ class _PipelineMixin:
         pipeline_status: dict,
         pipeline_status_lock,
         ingress,
+        token: str | None = None,
     ) -> None:
         """Run one batch of pending documents through the parse → analyze →
         process queues.
@@ -2162,6 +2172,7 @@ class _PipelineMixin:
             # Pre-register the whole initial batch as inflight BEFORE the feeder
             # starts, so a document message that echoes an initial-batch doc is
             # deduplicated the moment the feeder runs.
+            run_owner_token=token,
             inflight_doc_ids=set(to_process_docs.keys()),
         )
 
@@ -2272,6 +2283,7 @@ class _PipelineMixin:
                     content_data = await self.full_docs.get_by_id(doc_id) or {}
                 except Exception as e:
                     await self._finalize_doc_failure(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status_doc=status_doc,
                         file_path=file_path,
@@ -2661,6 +2673,26 @@ class _PipelineMixin:
             action=_apply,
         )
 
+    async def _still_run_owner(self, ctx: "_BatchRunContext") -> bool:
+        """True iff this batch run still owns ``busy`` (LR2 §7.7 items 3/4/7).
+
+        Guards every worker status write. ``run_owner_token is None`` means the
+        context was built outside a reservation (tests) and skips the check.
+
+        This is an in-memory owner check, deliberately NOT an expiring lease:
+        LR2 §7.7 keeps stale writers out by never revoking a live owner, and
+        notes that forcing takeover from a process that is alive but unreachable
+        would require a storage-verifiable fencing token, which the no-new-field
+        design does not have. So this rejects writes from a run whose ownership
+        was reclaimed after its process was CONFIRMED dead (or after a Manager
+        generation change) — it is not a partition-safe fence.
+        """
+        if ctx.run_owner_token is None:
+            return True
+        return await self._still_freeze_owner(
+            ctx.run_owner_token, ctx.pipeline_status, ctx.pipeline_status_lock
+        )
+
     async def _still_freeze_owner(
         self,
         token: str,
@@ -2737,20 +2769,49 @@ class _PipelineMixin:
           batch validator's "preserve failed for manual review");
         * otherwise → reset to PENDING preserving the immutable ``created_at``.
 
+        The ``full_docs`` probe is STRICT where the backend supports it: a plain
+        ``get_by_id`` may report a transport failure (or, on OpenSearch, an index
+        that is merely not ready) as a best-effort ``None``, which this loop
+        would read as "unprocessable stub" and skip. Every doc would then be
+        skipped, the sweep would still page to End, and the manual retry would be
+        ACKed having reset nothing — the user's "retry my failed documents"
+        silently doing nothing. A strict read raises instead, so the caller keeps
+        the request sticky and does not advance the cursor. Backends without the
+        capability keep the conservative skip but are COUNTED, so the operator
+        sees the reset was not complete instead of inferring success from silence.
+
         The page upsert is owner-checked: ownership is verified immediately
         before the write, so a reaper reclaim (dead process) aborts the reset
         instead of a stale task writing doc_status. Returns the reset count.
         Raises on a storage read/write error so the caller keeps the request
         sticky and does not advance the cursor."""
         docs_to_reset: dict[str, dict] = {}
+        unconfirmed = 0
+        strict_reads = getattr(self.full_docs, "supports_strict_point_reads", False)
         for doc_id, status_doc in docs.items():
             if doc_status_custom_chunk_patch(status_doc) is not None:
                 continue
-            content_data = await self.full_docs.get_by_id(doc_id)
+            if strict_reads:
+                content_data = await self.full_docs.get_by_id_strict(doc_id)
+            else:
+                content_data = await self.full_docs.get_by_id(doc_id)
+                if not content_data:
+                    unconfirmed += 1
             if not content_data:
                 continue
             update, _, _ = self._build_pending_reset_update(status_doc, content_data)
             docs_to_reset[doc_id] = update
+        if unconfirmed:
+            warning = (
+                f"Manual retry: {unconfirmed} FAILED document(s) left untouched — "
+                f"{type(self.full_docs).__name__} cannot confirm whether their "
+                f"content is really absent (no strict point reads), so a storage "
+                f"failure is indistinguishable from an unprocessable stub"
+            )
+            logger.warning(warning)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = warning
+                pipeline_status["history_messages"].append(warning)
         if not docs_to_reset:
             return 0
         # Owner-checked page write (LR2 §7.7 item 8): confirm we still hold the
@@ -3232,6 +3293,7 @@ class _PipelineMixin:
                     ctx.pipeline_status, ctx.pipeline_status_lock
                 ):
                     await self._mark_doc_cancelled_in_stage(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status_doc=status_doc_w,
                         file_path=file_path_w,
@@ -3271,6 +3333,7 @@ class _PipelineMixin:
                 # point), so they are not carried into this PARSING upsert.
                 status_doc_w.metadata["parse_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
                     status_doc=status_doc_w,
@@ -3375,6 +3438,7 @@ class _PipelineMixin:
                     ctx.pipeline_status, ctx.pipeline_status_lock
                 ):
                     await self._mark_doc_cancelled_in_stage(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status_doc=status_doc_w,
                         file_path=file_path_w,
@@ -3477,6 +3541,7 @@ class _PipelineMixin:
                     content_data=content_data_w,
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
+                    ctx=ctx,
                 ):
                     continue
 
@@ -3498,6 +3563,7 @@ class _PipelineMixin:
                 # ANALYZING transition via carry-over. content_hash is already
                 # refreshed and duplicates are filtered out by this point.
                 await self._upsert_doc_status_transition(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
                     status_doc=status_doc_w,
@@ -3528,6 +3594,7 @@ class _PipelineMixin:
                 # event. Parser-executor shutdown is intentionally a distinct
                 # exception and remains a generic parse failure for audit.
                 await self._mark_doc_cancelled_in_stage(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
                     file_path=getattr(status_doc_w, "file_path", "unknown_source"),
@@ -3548,6 +3615,7 @@ class _PipelineMixin:
                 )
                 try:
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
@@ -3587,6 +3655,7 @@ class _PipelineMixin:
                     ctx.pipeline_status, ctx.pipeline_status_lock
                 ):
                     await self._mark_doc_cancelled_in_stage(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status_doc=status_doc_w,
                         file_path=file_path_w,
@@ -3607,6 +3676,7 @@ class _PipelineMixin:
                     status_doc_w.metadata = {}
                 status_doc_w.metadata["analyzing_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status=DocStatus.ANALYZING,
                     status_doc=status_doc_w,
@@ -3651,6 +3721,7 @@ class _PipelineMixin:
                 # the extra upsert; PROCESSING will be their next doc_status write.
                 if analyze_outcome_recorded:
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status=DocStatus.ANALYZING,
                         status_doc=status_doc_w,
@@ -3663,6 +3734,7 @@ class _PipelineMixin:
                 # Route through the friendly message path so error_msg and
                 # history_messages match the boundary-check branch.
                 await self._mark_doc_cancelled_in_stage(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
                     file_path=getattr(status_doc_w, "file_path", "unknown_source"),
@@ -3679,6 +3751,7 @@ class _PipelineMixin:
                 logger.error(f"Analyze worker failed: {e}")
                 try:
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
@@ -4192,6 +4265,7 @@ class _PipelineMixin:
                 # Stage 1: persist doc_status PROCESSING + chunks in parallel.
                 doc_status_task = asyncio.create_task(
                     self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status=DocStatus.PROCESSING,
                         status_doc=status_doc,
@@ -4244,6 +4318,7 @@ class _PipelineMixin:
                     [entity_relation_task] if entity_relation_task else []
                 )
                 await self._finalize_doc_failure(
+                    ctx=ctx,
                     doc_id=doc_id,
                     status_doc=status_doc,
                     file_path=file_path,
@@ -4322,6 +4397,7 @@ class _PipelineMixin:
 
                     process_end_time = int(time.time())
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status=DocStatus.PROCESSED,
                         status_doc=status_doc,
@@ -4372,6 +4448,7 @@ class _PipelineMixin:
                             f"Aborting pipeline batch due to storage flush error: {e}"
                         )
                     await self._finalize_doc_failure(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status_doc=status_doc,
                         file_path=file_path,
@@ -4489,6 +4566,7 @@ class _PipelineMixin:
         status_doc: DocProcessingStatus,
         file_path: str,
         *,
+        ctx: "_BatchRunContext",
         extra_fields: dict[str, Any] | None = None,
         metadata_extra: dict[str, Any] | None = None,
     ) -> None:
@@ -4499,7 +4577,25 @@ class _PipelineMixin:
         ``chunks_count`` / ``chunks_list`` / ``error_msg``; ``metadata_extra``
         is forwarded to ``doc_status_transition_metadata`` so carry-over
         fields (e.g. ``process_options``) survive every state change.
+
+        Owner-checked (LR2 §7.7 items 3/4/7): every worker status write verifies
+        its run still owns ``busy`` immediately before writing, and a run whose
+        ownership was reclaimed DISCARDS the result with a warning instead of
+        writing. Without this, a storage/LLM response arriving late in a run that
+        was already declared dead could stamp a final status over the new owner's
+        work — including re-FAILING a document the manual exclusive reset had just
+        moved to PENDING, which would ACK the retry with the document still
+        failed. ``ctx`` is required so a new call site has to state which run the
+        write belongs to.
         """
+        if not await self._still_run_owner(ctx):
+            logger.warning(
+                f"[stale-writer] Discarded {getattr(status, 'value', status)} "
+                f"status write for {doc_id} ({file_path}): this run no longer "
+                f"owns the pipeline (ownership was reclaimed), so the result is "
+                f"late and must not overwrite the current owner's state"
+            )
+            return
         payload: dict[str, Any] = {
             "status": status,
             "content_summary": status_doc.content_summary,
@@ -4598,6 +4694,7 @@ class _PipelineMixin:
         status_doc: DocProcessingStatus,
         file_path: str,
         stage_label: str,
+        ctx: "_BatchRunContext",
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
@@ -4625,6 +4722,7 @@ class _PipelineMixin:
         )
         try:
             await self._upsert_doc_status_transition(
+                ctx=ctx,
                 doc_id=doc_id,
                 status=DocStatus.FAILED,
                 status_doc=status_doc,
@@ -4647,6 +4745,7 @@ class _PipelineMixin:
         failed_chunks_snapshot: tuple[list[str], int],
         pending_tasks: list[asyncio.Task],
         metadata_extra: dict[str, Any],
+        ctx: "_BatchRunContext",
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
@@ -4714,6 +4813,7 @@ class _PipelineMixin:
 
         failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
         await self._upsert_doc_status_transition(
+            ctx=ctx,
             doc_id=doc_id,
             status=DocStatus.FAILED,
             status_doc=status_doc,
@@ -4804,8 +4904,14 @@ class _PipelineMixin:
         content_data: dict[str, Any] | None = None,
         pipeline_status: dict | None = None,
         pipeline_status_lock: asyncio.Lock | None = None,
+        ctx: "_BatchRunContext | None" = None,
     ) -> bool:
-        """Mark post-parse content duplicates and stop further processing."""
+        """Mark post-parse content duplicates and stop further processing.
+
+        Owner-checked like every other worker status write (LR2 §7.7 items 3/4):
+        this one does not go through ``_upsert_doc_status_transition``, so it
+        verifies ownership itself before the FAILED-duplicate upsert.
+        """
         if not content_hash:
             return False
 
@@ -4813,6 +4919,13 @@ class _PipelineMixin:
             self.doc_status, content_hash, doc_id
         )
         if not match:
+            return False
+
+        if ctx is not None and not await self._still_run_owner(ctx):
+            logger.warning(
+                f"[stale-writer] Discarded duplicate marking for {doc_id} "
+                f"({file_path}): this run no longer owns the pipeline"
+            )
             return False
 
         original_doc_id, original_doc = match
