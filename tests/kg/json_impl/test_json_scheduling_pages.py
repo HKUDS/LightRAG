@@ -388,3 +388,37 @@ async def test_malformed_cursor_raises_control_plane_error(tmp_path):
             limit=1,
             position=CursorAfter(json.dumps({"not": "a-pair"})),
         )
+
+
+@pytest.mark.asyncio
+async def test_content_hash_lookup_returns_the_earliest_holder(tmp_path):
+    """Dict insertion order is not creation order once rows are reloaded or
+    rewritten, so returning the first match made the original_doc_id recorded on
+    a duplicate depend on file layout. The base contract asks for the EARLIEST by
+    (created_at, id)."""
+    storage = await _storage(
+        tmp_path,
+        {
+            # Inserted late-first AND with ids sorting opposite to created_at, so
+            # neither dict order nor id order accidentally yields the right answer.
+            "doc-a": _doc(
+                "processed",
+                file_path="late.pdf",
+                created_at="2026-05-05T00:00:00+00:00",
+                content_hash="dup",
+            ),
+            "doc-z": _doc(
+                "processed",
+                file_path="early.pdf",
+                created_at="2024-01-01T00:00:00+00:00",
+                content_hash="dup",
+            ),
+        },
+    )
+
+    result = await storage.get_doc_by_content_hash("dup")
+    assert result is not None and result[0] == "doc-z"
+
+    # Excluding the earliest falls through to the next one, still deterministically.
+    result = await storage.get_doc_by_content_hash("dup", exclude_doc_id="doc-z")
+    assert result is not None and result[0] == "doc-a"

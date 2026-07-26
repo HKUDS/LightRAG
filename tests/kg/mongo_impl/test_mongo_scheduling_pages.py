@@ -806,22 +806,26 @@ async def test_repair_primary_not_in_candidates_raises_value_error():
 @pytest.mark.asyncio
 async def test_get_doc_by_content_hash_exclude_doc_id_adds_ne_filter():
     # LR2 Phase 2.5: exclude_doc_id becomes an in-query _id $ne, still served
-    # by the partial content_hash index — never a scan.
-    from unittest.mock import AsyncMock
-
-    s = MongoDocStatusStorage.__new__(MongoDocStatusStorage)
-    s.workspace = "ws"
-    s._data = AsyncMock()
-    s._data.find_one = AsyncMock(return_value={"_id": "doc-2", "content_hash": "h"})
+    # by the partial content_hash index — never a scan. Sorted + limited so the
+    # EARLIEST other holder wins deterministically (base contract).
+    data = _FakeCollection(find_docs=[{"_id": "doc-2", "content_hash": "h"}])
+    s = _storage(data=data)
 
     result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
     assert result is not None and result[0] == "doc-2"
-    s._data.find_one.assert_awaited_once_with(
-        {"content_hash": "h", "_id": {"$ne": "doc-1"}}
-    )
+    assert data.find_queries == [{"content_hash": "h", "_id": {"$ne": "doc-1"}}]
+    assert data.find_cursors[0].sort_spec == [("created_at", 1), ("_id", 1)]
+    assert data.find_cursors[0].limit_value == 1
 
     # No exclusion → plain content_hash filter.
-    s._data.find_one.reset_mock()
-    s._data.find_one.return_value = {"_id": "doc-2", "content_hash": "h"}
     await s.get_doc_by_content_hash("h")
-    s._data.find_one.assert_awaited_once_with({"content_hash": "h"})
+    assert data.find_queries[-1] == {"content_hash": "h"}
+
+
+async def test_get_doc_by_content_hash_propagates_query_failure():
+    """Fail-proof: the error used to become None, which the dedup callers read
+    as "no duplicate" — enqueuing a duplicate row on a transport blip."""
+    data = _FakeCollection(find_docs=[], find_error=PyMongoError("boom"))
+    s = _storage(data=data)
+    with pytest.raises(PyMongoError):
+        await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
