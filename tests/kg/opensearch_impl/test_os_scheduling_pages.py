@@ -120,18 +120,34 @@ class _EmbedFunc:
         raise AssertionError("doc-status/kv scheduling paths must not embed")
 
 
+def _migrated_mapping(index: str, **_kwargs) -> dict:
+    """Mapping of an index that already carries the __mirrored_id tiebreaker, so
+    startup runs no legacy value backfill (see _ensure_scheduling_fields_mapping)."""
+    return {index: {"mappings": {"properties": {"__mirrored_id": {"type": "keyword"}}}}}
+
+
+def _make_legacy_client() -> AsyncMock:
+    """Client for an index predating __mirrored_id: no mapping, so no values."""
+    client = _make_client()
+    client.indices.get_mapping = AsyncMock(return_value={})
+    return client
+
+
 def _make_client() -> AsyncMock:
     client = AsyncMock(spec=AsyncOpenSearch)
     client.indices = AsyncMock()
     client.indices.exists = AsyncMock(return_value=True)
     client.indices.create = AsyncMock()
-    client.indices.get_mapping = AsyncMock(return_value={})
+    client.indices.get_mapping = AsyncMock(side_effect=_migrated_mapping)
     client.indices.put_mapping = AsyncMock()
     client.get = AsyncMock(return_value={})
     client.index = AsyncMock(return_value={})
     client.update = AsyncMock(return_value={})
     client.count = AsyncMock(return_value={"count": 0})
     client.search = AsyncMock(return_value={"hits": {"hits": []}})
+    # query_params wraps the client methods in a SYNC wrapper, so spec'd
+    # children default to MagicMock — async ones must be set explicitly.
+    client.update_by_query = AsyncMock(return_value={"updated": 0, "failures": []})
     return client
 
 
@@ -343,6 +359,68 @@ async def test_page_malformed_cursor_raises_before_any_rpc(global_config):
     client.search.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# __mirrored_id tiebreaker readiness (startup)
+# ---------------------------------------------------------------------------
+
+
+def _missing_mirrored_id_query() -> dict:
+    return {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}}
+
+
+async def test_startup_skips_audit_on_an_already_migrated_index(global_config):
+    """An index that already maps __mirrored_id was written by code that mirrors
+    the id on every write, so it needs neither the audit nor its _count."""
+    client = _make_client()
+    await _make_doc_status(global_config, client)
+    client.update_by_query.assert_not_awaited()
+    client.count.assert_not_awaited()
+
+
+async def test_startup_skips_backfill_when_coverage_is_complete(global_config):
+    client = _make_legacy_client()
+    client.count = AsyncMock(return_value={"count": 0})
+    await _make_doc_status(global_config, client)
+    client.update_by_query.assert_not_awaited()
+
+
+async def test_startup_backfills_legacy_docs_missing_mirrored_id(global_config):
+    """Fix-proof: a legacy index whose docs carry NO __mirrored_id value used to
+    be accepted silently on OpenSearch >= 3.3.0 (the mapping-only check is
+    skipped there), leaving the no-PIT scheduling page with no tiebreaker — so
+    docs sharing a created_at were dropped from the sweep. Startup must now
+    repair the values before serving."""
+    client = _make_legacy_client()
+    # 3 legacy docs before the backfill, full coverage after it.
+    client.count = AsyncMock(side_effect=[{"count": 3}, {"count": 0}])
+    await _make_doc_status(global_config, client)
+
+    client.update_by_query.assert_awaited_once()
+    kwargs = client.update_by_query.call_args.kwargs
+    body = kwargs["body"]
+    assert body["query"] == _missing_mirrored_id_query()
+    assert body["script"]["source"] == "ctx._source.__mirrored_id = ctx._id"
+    assert body["conflicts"] == "proceed"
+    assert kwargs["refresh"] is True
+
+
+async def test_startup_raises_when_mirrored_id_backfill_leaves_gaps(global_config):
+    """The outcome is VERIFIED, not assumed: a cluster that refuses the script
+    (or races new legacy writes in) must fail startup loudly rather than serve a
+    sweep that silently skips documents."""
+    client = _make_legacy_client()
+    client.count = AsyncMock(side_effect=[{"count": 3}, {"count": 2}])
+    with pytest.raises(RuntimeError, match="__mirrored_id"):
+        await _make_doc_status(global_config, client)
+
+
+async def test_startup_raises_on_malformed_mirrored_id_audit(global_config):
+    client = _make_legacy_client()
+    client.count = AsyncMock(return_value={"count": None})
+    with pytest.raises(RuntimeError, match="malformed"):
+        await _make_doc_status(global_config, client)
+
+
 async def test_page_strict_raises_on_transport_error(global_config):
     client = _make_client()
     storage = await _make_doc_status(global_config, client)
@@ -371,16 +449,32 @@ async def test_page_strict_raises_when_index_not_ready(global_config):
     assert page.next_position is CURSOR_END
 
 
-async def test_page_missing_index_is_legitimately_empty(global_config):
-    """Mirrors the existing get_docs_by_statuses strict decision: a live
-    index_not_found is a legitimately empty (complete) sweep."""
+async def test_page_strict_raises_when_index_vanishes_mid_sweep(global_config):
+    """A live index_not_found is a lost index, NOT a completed sweep.
+
+    Fail-proof for the fail-open bug: strict paging used to return an empty
+    terminal page here, which the sweep reads as "no work left" — stranding
+    every document. It must raise, exactly like the already-known
+    ``_index_ready=False`` case, and must not differ by which call noticed.
+    """
     client = _make_client()
     storage = await _make_doc_status(global_config, client)
     client.search = AsyncMock(side_effect=_missing_index_error())
 
-    page = await storage.get_docs_by_statuses_page(
-        [DocStatus.PENDING], limit=5, strict=True
-    )
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page(
+            [DocStatus.PENDING], limit=5, strict=True
+        )
+    assert storage._index_ready is False
+
+
+async def test_page_relaxed_missing_index_stays_best_effort(global_config):
+    """Relaxed mode keeps the best-effort empty terminal page."""
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    client.search = AsyncMock(side_effect=_missing_index_error())
+
+    page = await storage.get_docs_by_statuses_page([DocStatus.PENDING], limit=5)
     assert page.docs == {}
     assert page.next_position is CURSOR_END
     assert storage._index_ready is False
@@ -447,11 +541,15 @@ async def test_count_fails_closed(global_config):
         await storage.count_docs_by_statuses([DocStatus.PENDING])
 
 
-async def test_count_missing_index_is_zero(global_config):
+async def test_count_missing_index_raises_not_zero(global_config):
+    """Fail-proof for the fail-open bug: a live index_not_found used to return
+    0, so the FIRST admission check after an external drop reported full
+    capacity (only later ones, seeing _index_ready=False, failed closed)."""
     client = _make_client()
     storage = await _make_doc_status(global_config, client)
     client.count = AsyncMock(side_effect=_missing_index_error())
-    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 0
+    with pytest.raises(StorageControlPlaneError):
+        await storage.count_docs_by_statuses([DocStatus.PENDING])
     assert storage._index_ready is False
 
 

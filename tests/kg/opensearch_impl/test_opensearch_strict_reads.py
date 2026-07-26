@@ -95,12 +95,18 @@ class _EmbedFunc:
         raise AssertionError("doc-status/kv reads must not embed")
 
 
+def _migrated_mapping(index: str, **_kwargs) -> dict:
+    """Mapping of an index that already carries the __mirrored_id tiebreaker, so
+    startup runs no legacy value backfill (see _ensure_scheduling_fields_mapping)."""
+    return {index: {"mappings": {"properties": {"__mirrored_id": {"type": "keyword"}}}}}
+
+
 def _make_client() -> AsyncMock:
     client = AsyncMock(spec=AsyncOpenSearch)
     client.indices = AsyncMock()
     client.indices.exists = AsyncMock(return_value=True)
     client.indices.create = AsyncMock()
-    client.indices.get_mapping = AsyncMock(return_value={})
+    client.indices.get_mapping = AsyncMock(side_effect=_migrated_mapping)
     client.create_pit = AsyncMock(return_value={"pit_id": "pit-1"})
     client.delete_pit = AsyncMock()
     return client

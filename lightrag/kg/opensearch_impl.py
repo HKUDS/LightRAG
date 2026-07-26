@@ -1380,9 +1380,12 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     ``search_after`` keyset pages sorted ``(created_at ASC, __mirrored_id
     ASC)`` — ``_id`` is not sortable in OpenSearch, so ``__mirrored_id``
     (a keyword copy of the doc id that every write path mirrors) is the
-    page-sort tiebreaker. A missing/NULL ``created_at`` sorts FIRST
-    (``"missing": "_first"``) so legacy rows stay reachable across page
-    boundaries, aligning with the other backends' NULLS-FIRST keyset.
+    page-sort tiebreaker, and startup guarantees every doc carries a VALUE
+    for it on every cluster version (no PIT here means no ``_shard_doc``
+    fallback — see ``_ensure_scheduling_tiebreaker_ready``). A missing/NULL
+    ``created_at`` sorts FIRST (``"missing": "_first"``) so legacy rows stay
+    reachable across page boundaries, aligning with the other backends'
+    NULLS-FIRST keyset.
     Conflict-aware strict source resolution, strict batch reads and the
     operator source-conflict repair flow round out the contract.
     """
@@ -1406,10 +1409,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
 
     # ``__mirrored_id`` is a keyword copy of the doc id mirrored by every
     # write path: ``_id`` is not sortable, so this is the page-sort
-    # tiebreaker. Included in the ensured mapping so legacy indexes
-    # (pre-mirrored-id, only tolerated on OpenSearch >= 3.3.0) gain the
-    # keyword mapping for new writes; their OLD docs still lack the field
-    # VALUE and sort behind everything with an unresolved tie until rewritten.
+    # tiebreaker. Included in the ensured mapping so legacy indexes gain the
+    # keyword mapping for new writes; their OLD docs are backfilled from
+    # ``_id`` at startup by ``_ensure_scheduling_tiebreaker_ready`` (a missing
+    # VALUE means NO tiebreaker, which silently skips docs — see there).
     _SCHEDULING_FIELD_MAPPINGS: ClassVar[dict[str, dict[str, str]]] = {
         "__mirrored_id": {"type": "keyword"},
     }
@@ -1508,9 +1511,17 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     f"[{self.workspace}] Created doc status index: {self._index_name}"
                 )
             else:
-                await _verify_mirrored_id_mapping(self.client, self._index_name)
                 await self._ensure_content_hash_mapping()
-                await self._ensure_scheduling_fields_mapping()
+                added = await self._ensure_scheduling_fields_mapping()
+                if "__mirrored_id" in added:
+                    # Supersedes the version-gated mapping-only check used by
+                    # the KV store: this index needs __mirrored_id VALUES on
+                    # every cluster version (its scheduling page has no PIT),
+                    # and a mapping present with values missing is exactly the
+                    # silent skip we must prevent. Only a pre-existing index
+                    # that LACKED the mapping can hold such docs, so the audit
+                    # costs nothing on an already-migrated index.
+                    await self._ensure_scheduling_tiebreaker_ready()
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
@@ -1550,22 +1561,26 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 f"{self._index_name}: {e}"
             )
 
-    async def _ensure_scheduling_fields_mapping(self) -> None:
+    async def _ensure_scheduling_fields_mapping(self) -> set[str]:
         """Ensure the ``__mirrored_id`` keyword mapping on a pre-existing index.
 
         Same idempotent put_mapping pattern as ``_ensure_content_hash_mapping``
         (new fields only — existing indexes need nothing else for new docs).
-        ``__mirrored_id`` is the page-sort tiebreaker; legacy docs predating it
-        still lack the field VALUE (they sort behind everything until
-        rewritten). A put failure is logged rather than raised — ``dynamic:
-        true`` maps the field on first write with the same type, and the
-        strict page sort fails loudly (never silently misorders) if
-        ``__mirrored_id`` stays unsortable.
+        The mapping alone is NOT sufficient: legacy docs predating the field
+        still lack the VALUE, which
+        :meth:`_ensure_scheduling_tiebreaker_ready` repairs. A put failure is
+        logged rather than raised here — the readiness check that follows is
+        the one that fails startup.
+
+        Returns the field names that were absent, which is the precise "this
+        index predates the field" signal the value audit keys off (an index
+        that already maps ``__mirrored_id`` was written by code that mirrors
+        the id on every write, so its docs all carry a value).
         """
         try:
             mapping = await self.client.indices.get_mapping(index=self._index_name)
         except OpenSearchException:
-            return
+            return set()
         props = (
             mapping.get(self._index_name, {}).get("mappings", {}).get("properties", {})
         )
@@ -1575,7 +1590,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if name not in props
         }
         if not missing:
-            return
+            return set()
         try:
             await self.client.indices.put_mapping(
                 index=self._index_name,
@@ -1590,6 +1605,82 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 f"[{self.workspace}] Failed to add scheduling field mappings to "
                 f"{self._index_name}: {e}"
             )
+        return set(missing)
+
+    async def _count_docs_missing_mirrored_id(self) -> int:
+        """Count docs with no ``__mirrored_id`` VALUE (not just no mapping)."""
+        response = await self.client.count(
+            index=self._index_name,
+            body={
+                "query": {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}}
+            },
+        )
+        count = response.get("count")
+        if not isinstance(count, int):
+            raise RuntimeError(
+                f"OpenSearch _count returned a malformed response while auditing "
+                f"'__mirrored_id' coverage on '{self._index_name}': {response!r}"
+            )
+        return count
+
+    async def _ensure_scheduling_tiebreaker_ready(self) -> None:
+        """Guarantee every doc carries a ``__mirrored_id`` VALUE, or fail startup.
+
+        The scheduling page (:meth:`get_docs_by_statuses_page`) is a PLAIN
+        ``search_after`` keyset with NO point-in-time, so ``_shard_doc`` — the
+        implicit tiebreaker that makes PIT pagination safe on OpenSearch >=
+        3.3.0 — is not available to it. ``__mirrored_id`` is therefore the ONLY
+        tiebreaker, on every cluster version, and a doc missing its VALUE has no
+        tiebreaker at all: ``search_after`` excludes sort values EQUAL to the
+        cursor, so once a page boundary lands on such a doc, every other doc
+        sharing its ``created_at`` (common for bulk ingest, which stamps the
+        same millisecond) is silently SKIPPED and never scheduled.
+
+        Restore-then-serve (never serve a broken invariant): add the mapping,
+        backfill the missing values server-side with one bounded
+        ``_update_by_query``, then VERIFY coverage and raise if anything
+        remains. Verifying the outcome rather than trusting the script also
+        means a cluster that refuses ``ctx._id`` fails loudly instead of
+        leaving a silently lossy sweep. Idempotent and cheap in steady state:
+        indexes written by current code match zero docs, so this costs one
+        ``_count``.
+        """
+        missing = await self._count_docs_missing_mirrored_id()
+        if missing == 0:
+            return
+        logger.warning(
+            f"[{self.workspace}] {missing} doc(s) in '{self._index_name}' predate "
+            f"the '__mirrored_id' page-sort tiebreaker; backfilling from _id "
+            f"before serving scheduling pages"
+        )
+        await self.client.update_by_query(
+            index=self._index_name,
+            body={
+                "query": {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}},
+                "script": {
+                    "source": "ctx._source.__mirrored_id = ctx._id",
+                    "lang": "painless",
+                },
+                # Concurrent writers may bump versions mid-backfill; those docs
+                # already carry the field, so proceeding is correct and the
+                # verification below is what actually decides.
+                "conflicts": "proceed",
+            },
+            refresh=True,
+        )
+        remaining = await self._count_docs_missing_mirrored_id()
+        if remaining:
+            raise RuntimeError(
+                f"Index '{self._index_name}' still has {remaining} doc(s) without a "
+                f"'__mirrored_id' value after the backfill. Bounded scheduling "
+                f"pages cannot be served safely: documents sharing a 'created_at' "
+                f"would be silently skipped by the sweep. Reindex the data, then "
+                f"restart."
+            )
+        logger.info(
+            f"[{self.workspace}] Backfilled '__mirrored_id' for {missing} legacy "
+            f"doc(s) in '{self._index_name}'"
+        )
 
     async def finalize(self):
         """Release the OpenSearch client connection."""
@@ -2287,13 +2378,17 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         values are the natural consumed frontier (they cover hits skipped as
         unusable in relaxed mode, too).
 
-        Strict/failure semantics: ``_index_ready=False`` raises under
-        ``strict`` (the index was dropped/lost — cannot confirm the sweep is
-        complete); a live missing-index error mirrors the existing
-        ``get_docs_by_statuses`` strict decision (legitimately empty →
-        empty terminal page); transport errors raise WITHOUT returning
-        partial docs or a new cursor; ``strict`` additionally turns
-        unusable-row skips into raises.
+        Strict/failure semantics: a lost index — whether already known
+        (``_index_ready=False``) or discovered live (``index_not_found``) —
+        raises under ``strict``; both mean the same thing (the index is gone,
+        so the sweep cannot be confirmed complete) and must not differ merely
+        by which call noticed first. An empty terminal page would be read as
+        "no work left", stranding every document. A legitimate ``drop()``
+        already clears ``_index_ready``, so reaching the live branch means the
+        index vanished from under us. Relaxed mode keeps the best-effort empty
+        terminal page. Transport errors raise WITHOUT returning partial docs or
+        a new cursor; ``strict`` additionally turns unusable-row skips into
+        raises.
         """
         if limit <= 0:
             raise ValueError(f"page limit must be positive, got {limit}")
@@ -2324,6 +2419,12 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
+                if strict:
+                    raise StorageControlPlaneError(
+                        f"[{self.workspace}] doc status index "
+                        f"'{self._index_name}' vanished mid-sweep; cannot "
+                        f"serve a complete scheduling page"
+                    ) from e
                 return DocStatusPage(docs={}, next_position=CURSOR_END)
             # Complete-or-raise in BOTH modes: a partial page + advanced
             # cursor would silently strand the missed documents.
@@ -2348,11 +2449,14 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     ) -> int:
         """Fail-closed status count via the ``_count`` API (base contract).
 
-        Always accurate-or-raise regardless of ``strict`` — admission
-        control must never read an error as "capacity available".
-        ``_index_ready=False`` raises; a live missing-index error mirrors
-        the existing strict ``get_docs_by_statuses`` decision (legitimately
-        empty → 0).
+        Always accurate-or-raise regardless of ``strict`` — admission control
+        must never read an error as "capacity available". A lost index raises
+        whether it was already known (``_index_ready=False``) or discovered
+        live (``index_not_found``): returning ``0`` for the live case would
+        make the FIRST call after an external drop report full capacity and
+        only later calls fail closed. A legitimate ``drop()`` already clears
+        ``_index_ready``, so the live branch means the index vanished from
+        under us.
         """
         if not statuses:
             return 0
@@ -2367,7 +2471,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return 0
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"vanished; cannot produce an accurate status count"
+                ) from e
             logger.error(f"[{self.workspace}] Error counting doc statuses: {e}")
             raise
         count = response.get("count")
