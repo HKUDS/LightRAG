@@ -154,6 +154,52 @@ async def test_rebuild_builds_sidecar_from_primary_rows(storage):
 
 
 @pytest.mark.asyncio
+async def test_publish_refuses_to_clobber_a_concurrent_writer(storage, monkeypatch):
+    """Fix-proof: the switch used to DELETE the official keys and RENAME the
+    snapshot over them unconditionally, so a write that landed after its row was
+    scanned (it had already maintained the OFFICIAL index in the same
+    transaction) was silently reverted — leaving the doc in the wrong status ZSET
+    and out of the sweep. The publish must now refuse instead of losing it."""
+    fake = storage._redis
+    fake.store[f"{storage.final_namespace}:doc-1"] = json.dumps(
+        _doc("pending", file_path="a.pdf")
+    )
+
+    # Land the racing write through the SCAN the rebuild itself drives, so this
+    # test exercises whatever publish logic exists rather than asserting a
+    # particular helper is present. The primary keyspace is scanned twice: once
+    # by the pre-lock "are there rows to build from" probe, then by the snapshot
+    # loop — the write has to land during the second one, after the snapshot has
+    # already captured its slot.
+    primary_pattern = f"{storage.final_namespace}:*"
+    real_scan = fake.scan
+    primary_scans = {"n": 0}
+
+    async def scan_with_racing_write(
+        cursor: int = 0, match: str = "", count: int = 1000
+    ):
+        result = await real_scan(cursor, match=match, count=count)
+        if match == primary_pattern:
+            primary_scans["n"] += 1
+            if primary_scans["n"] == 2:
+                # Another worker enqueues doc-new: its write commits the row and
+                # the OFFICIAL sidecar entry in one transaction.
+                await storage.upsert({"doc-new": _doc("pending", file_path="c.pdf")})
+        return result
+
+    monkeypatch.setattr(fake, "scan", scan_with_racing_write)
+
+    # Old behaviour: no exception — the snapshot was published over the live
+    # index. New behaviour: refuse, because the write cannot be preserved.
+    with pytest.raises(StorageControlPlaneError, match="stale snapshot"):
+        await storage._rebuild_scheduling_sidecar()
+
+    # Either way, the concurrent write must still be in the official index.
+    pending_members = fake.zsets[f"{storage._sched_prefix}:status:pending"]
+    assert any("doc-new" in member for member in pending_members)
+
+
+@pytest.mark.asyncio
 async def test_sidecar_not_ready_raises_never_empty(storage):
     # Simulate a not-yet-initialized instance: strict reads must refuse rather
     # than read the empty index as confirmed absence.
@@ -357,6 +403,56 @@ async def test_get_docs_by_ids_present_and_missing(storage):
     assert set(result) == {"doc-1", "doc-2"}  # missing omitted, confirmed absent
     assert result["doc-2"].status is DocStatus.FAILED
     assert not hasattr(result["doc-1"], "chunks_list")
+
+
+@pytest.mark.asyncio
+async def test_conflict_listing_is_bounded_and_resumable(storage, monkeypatch):
+    """Fix-proof: the listing used to materialize EVERY canonical key, validate
+    every one with card>=2 across the whole workspace, build the complete
+    conflict list and only then slice to `limit` — redoing all of it per page.
+    It must now stop early and validate only what it actually surfaces."""
+    await _bootstrap(storage)
+    rows = {}
+    # 40 non-conflicting sources plus 4 conflicting ones.
+    for i in range(40):
+        rows[f"solo-{i:03d}"] = _doc("pending", file_path=f"solo-{i:03d}.pdf")
+    for i in range(4):
+        rows[f"conf-{i}-a"] = _doc("pending", file_path=f"dup-{i}.pdf")
+        rows[f"conf-{i}-b"] = _doc("failed", file_path=f"dup-{i}.pdf")
+    await storage.upsert(rows)
+
+    validated: list[str] = []
+    real_valid = storage._valid_primary_ids
+
+    async def counting_valid_primary_ids(redis, canonical):
+        validated.append(canonical)
+        return await real_valid(redis, canonical)
+
+    monkeypatch.setattr(storage, "_valid_primary_ids", counting_valid_primary_ids)
+
+    # Force a small batch so "stop once limit is reached" is reachable.
+    monkeypatch.setattr(type(storage), "_CONFLICT_SCAN_BATCH", 8)
+
+    page = await storage.list_source_conflicts_page(limit=1)
+    assert len(page.conflicts) >= 1
+    assert isinstance(page.next_position, CursorAfter)
+    # Bounded work: it stopped instead of validating all 44 source keys. Only
+    # keys surviving the SCARD>=2 prefilter are ever validated.
+    assert len(validated) <= 8
+    assert all(name.startswith("dup-") for name in validated)
+
+    # Resuming from the cursor keeps making progress and terminates.
+    seen = {c.canonical_source_key for c in page.conflicts}
+    position = page.next_position
+    for _ in range(20):
+        nxt = await storage.list_source_conflicts_page(limit=1, position=position)
+        seen.update(c.canonical_source_key for c in nxt.conflicts)
+        if nxt.next_position is CURSOR_END:
+            break
+        position = nxt.next_position
+    else:
+        raise AssertionError("conflict paging failed to terminate")
+    assert seen == {f"dup-{i}.pdf" for i in range(4)}
 
 
 @pytest.mark.asyncio

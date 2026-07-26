@@ -699,6 +699,10 @@ class RedisDocStatusStorage(DocStatusStorage):
     # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
     # source-conflict listing/repair APIs — never materialize the whole set.
     _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
+    # SCAN batch for the conflict listing: the unit of work a page never
+    # abandons half-examined, so it also caps how far a page may overshoot
+    # ``limit`` (see list_source_conflicts_page).
+    _CONFLICT_SCAN_BATCH: ClassVar[int] = 64
     # Bounded retry budget for WATCH/MULTI conflict loops. High contention
     # on a single doc key is not expected (per-doc writes are serialized by
     # the pipeline); the cap turns a pathological livelock into an error.
@@ -1918,16 +1922,24 @@ class RedisDocStatusStorage(DocStatusStorage):
         return digest.hexdigest()
 
     @staticmethod
-    def _decode_conflict_cursor(opaque: str) -> str:
+    def _decode_conflict_cursor(opaque: str) -> int:
+        """Decode the opaque conflict cursor: a raw Redis ``SCAN`` cursor.
+
+        Redis cannot enumerate the source keyspace in key order without
+        materializing (and sorting) all of it, so the conflict listing pages on
+        the SCAN cursor itself — stateless, resumable and bounded. See
+        :meth:`list_source_conflicts_page` for the duplicate-visit caveat this
+        inherits from SCAN.
+        """
         try:
-            key = json.loads(opaque)
-            if not isinstance(key, str):
-                raise ValueError("conflict cursor must be a string")
+            cursor = json.loads(opaque)
+            if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+                raise ValueError("conflict cursor must be a non-negative SCAN cursor")
         except (ValueError, TypeError) as e:
             raise StorageControlPlaneError(
                 f"Malformed source-conflict cursor for RedisDocStatusStorage: {e}"
             ) from e
-        return key
+        return cursor
 
     async def list_source_conflicts_page(
         self,
@@ -1937,54 +1949,74 @@ class RedisDocStatusStorage(DocStatusStorage):
     ) -> SourceConflictPage:
         """Page canonical source keys with >1 validated primary candidate.
 
-        SCANs the source-set keyspace, uses a cheap ``SCARD >= 2`` prefilter,
-        then validates each candidate set exactly (hydrating members, self-
-        healing stale ones) so a set inflated only by stale members is not
-        reported as a conflict. Operator tooling — bounded per output page."""
+        Streams the source-set keyspace one bounded ``SCAN`` batch at a time,
+        pipelines a cheap ``SCARD >= 2`` prefilter over the batch, then
+        validates only the surviving keys exactly (hydrating members, self-
+        healing stale ones) so a set inflated purely by stale members is not
+        reported as a conflict. Stops as soon as ``limit`` conflicts are in
+        hand.
+
+        Bounded in memory (one SCAN batch + the page, never the whole canonical
+        keyspace) and in round-trips per page (one pipelined SCARD per batch,
+        one validation per surviving key — not one per canonical key in the
+        workspace). Paging rides the raw SCAN cursor because Redis cannot
+        enumerate the keyspace in key order without materializing all of it.
+
+        Two consequences of that, both acceptable for operator tooling and
+        neither able to hide a conflict: the page is not ordered by canonical
+        key, and SCAN may revisit a key, so the same conflict can appear on two
+        pages (repair is idempotent and CAS-guarded, and each conflict needs a
+        human decision anyway). ``conflicts`` may overshoot ``limit`` by up to
+        one SCAN batch, because a batch is never abandoned half-examined —
+        doing so would advance the cursor past keys nobody looked at.
+        """
         self._require_sidecar_ready()
         if limit <= 0:
             raise ValueError(f"page limit must be positive, got {limit}")
         if position is CURSOR_END:
             return SourceConflictPage(conflicts=(), next_position=CURSOR_END)
-        last_key: str | None = None
+        cursor = 0
         if isinstance(position, CursorAfter):
-            last_key = self._decode_conflict_cursor(position.opaque)
+            cursor = self._decode_conflict_cursor(position.opaque)
         prefix = f"{self._sched_prefix}:basename:"
+        conflicts: list[SourceConflictSummary] = []
         async with self._get_redis_connection() as redis:
-            canonicals: set[str] = set()
-            cursor = 0
             while True:
-                cursor, keys = await redis.scan(cursor, match=f"{prefix}*", count=1000)
-                for key in keys:
-                    canonicals.add(key[len(prefix) :])
-                if cursor == 0:
+                cursor, keys = await redis.scan(
+                    cursor,
+                    match=f"{prefix}*",
+                    count=self._CONFLICT_SCAN_BATCH,
+                )
+                if keys:
+                    card_pipe = redis.pipeline()
+                    for key in keys:
+                        card_pipe.scard(key)
+                    cards = await card_pipe.execute()
+                    for key, card in zip(keys, cards):
+                        if not card or card < 2:
+                            continue
+                        canonical = key[len(prefix) :]
+                        ids = await self._valid_primary_ids(redis, canonical)
+                        if len(ids) >= 2:
+                            conflicts.append(
+                                SourceConflictSummary(
+                                    canonical_source_key=canonical,
+                                    candidate_count=len(ids),
+                                    sample_doc_ids=tuple(
+                                        ids[: self._CONFLICT_SAMPLE_CAP]
+                                    ),
+                                )
+                            )
+                # cursor == 0 means the iteration completed: nothing is left to
+                # resume from, so the page is terminal even if it filled up.
+                if cursor == 0 or len(conflicts) >= limit:
                     break
-            conflicts_all: list[tuple[str, list[str]]] = []
-            for canonical in sorted(canonicals):
-                card = await redis.scard(self._basename_key(canonical))
-                if card < 2:
-                    continue
-                ids = await self._valid_primary_ids(redis, canonical)
-                if len(ids) >= 2:
-                    conflicts_all.append((canonical, ids))
-        page = [
-            (canonical, ids)
-            for canonical, ids in conflicts_all
-            if last_key is None or canonical > last_key
-        ][:limit]
-        conflicts = tuple(
-            SourceConflictSummary(
-                canonical_source_key=canonical,
-                candidate_count=len(ids),
-                sample_doc_ids=tuple(ids[: self._CONFLICT_SAMPLE_CAP]),
-            )
-            for canonical, ids in page
+        next_position: CursorPosition = (
+            CURSOR_END if cursor == 0 else CursorAfter(json.dumps(cursor))
         )
-        if len(page) < limit:
-            next_position: CursorPosition = CURSOR_END
-        else:
-            next_position = CursorAfter(json.dumps(page[-1][0], ensure_ascii=False))
-        return SourceConflictPage(conflicts=conflicts, next_position=next_position)
+        return SourceConflictPage(
+            conflicts=tuple(conflicts), next_position=next_position
+        )
 
     async def repair_source_conflict(
         self,
@@ -2145,7 +2177,9 @@ class RedisDocStatusStorage(DocStatusStorage):
         temp key into its official name — runs inside one ``MULTI/EXEC`` so a
         reader never observes a partial switch; a crash before the switch
         leaves the old official index untouched and the temp keyspace safe to
-        discard on the next attempt."""
+        discard on the next attempt. See ``_publish_rebuilt_index`` for why the
+        switch also has to guard against concurrent WRITERS, not just readers.
+        """
         temp_prefix = f"{self._sched_prefix}_rebuild"
         # Clear any leftover temp keyspace from a crashed prior attempt.
         await self._delete_by_patterns(
@@ -2153,6 +2187,7 @@ class RedisDocStatusStorage(DocStatusStorage):
         )
 
         rebuilt = 0
+        statuses_seen: set[str] = set()
         cursor = 0
         while True:
             cursor, keys = await redis.scan(
@@ -2180,6 +2215,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                     doc_id = key.split(":", 1)[1]
                     status = str(row.get("status") or "")
                     if status:
+                        statuses_seen.add(status)
                         write_pipe.zadd(
                             f"{temp_prefix}:status:{status}",
                             {self._zset_member(row, doc_id): 0},
@@ -2192,25 +2228,75 @@ class RedisDocStatusStorage(DocStatusStorage):
             if cursor == 0:
                 break
 
-        # Atomic switch: drop stale official keys, rename temp keys into place.
-        official_keys = await self._scan_keys(
-            redis,
-            [f"{self._sched_prefix}:status:*", f"{self._sched_prefix}:basename:*"],
-        )
-        temp_keys = await self._scan_keys(
-            redis, [f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"]
-        )
-        async with redis.pipeline(transaction=True) as pipe:
-            pipe.multi()
-            for key in official_keys:
-                pipe.delete(key)
-            for temp_key in temp_keys:
-                official = self._sched_prefix + temp_key[len(temp_prefix) :]
-                pipe.rename(temp_key, official)
-            await pipe.execute()
+        await self._publish_rebuilt_index(redis, temp_prefix, statuses_seen)
         logger.info(
             f"[{self.workspace}] scheduling sidecar rebuilt "
             f"({rebuilt} rows) for {self.namespace}"
+        )
+
+    async def _publish_rebuilt_index(
+        self, redis, temp_prefix: str, statuses_seen: set[str]
+    ) -> None:
+        """Switch the temp keyspace into place, refusing to clobber live writes.
+
+        The switch DELETEs the official keys and RENAMEs the temp ones over
+        them, so it must not run while another worker is writing: a write that
+        lands after its row was scanned has already maintained the OFFICIAL
+        index correctly (``_queue_index_ops`` commits row + sidecar in one
+        transaction), and publishing our older snapshot on top would silently
+        revert it — the doc would sit in the wrong status ZSET, so the sweep
+        either re-runs it or never sees it.
+
+        The rebuild only starts when NO official status key exists (probed, then
+        re-checked under the election lock), so any status key present now was
+        created by a concurrent writer. That is detected two ways: a WATCH on
+        every status-ZSET key name — the enum values plus whatever the scan
+        actually saw, and a write always touches one of them — makes ``EXEC``
+        fail if a write lands in the commit window, and a re-probe under that
+        WATCH catches one that landed earlier during the scan. Either way we
+        refuse: publishing would lose writes, and publishing a snapshot we know
+        is stale is worse than failing loudly. Basename leftovers may legitimately
+        survive a partial eviction, so they are deleted as before.
+        """
+        status_pattern = f"{self._sched_prefix}:status:*"
+        watch_keys = sorted(
+            {self._zset_key(s) for s in statuses_seen}
+            | {self._zset_key(s.value) for s in DocStatus}
+        )
+        for _ in range(self._WATCH_RETRY_LIMIT):
+            async with redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(*watch_keys)
+                    if await self._any_key(pipe, status_pattern):
+                        await pipe.unwatch()
+                        raise StorageControlPlaneError(
+                            f"[{self.workspace}] another writer maintained the "
+                            f"scheduling sidecar for {self.namespace} while it was "
+                            f"being rebuilt; refusing to publish a stale snapshot "
+                            f"over live writes. Retry with writers quiesced."
+                        )
+                    official_keys = await self._scan_keys(pipe, [status_pattern])
+                    official_keys += await self._scan_keys(
+                        pipe, [f"{self._sched_prefix}:basename:*"]
+                    )
+                    temp_keys = await self._scan_keys(
+                        pipe,
+                        [f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"],
+                    )
+                    pipe.multi()
+                    for key in official_keys:
+                        pipe.delete(key)
+                    for temp_key in temp_keys:
+                        official = self._sched_prefix + temp_key[len(temp_prefix) :]
+                        pipe.rename(temp_key, official)
+                    await pipe.execute()
+                    return
+                except WatchError:
+                    continue
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] scheduling sidecar publish for {self.namespace} "
+            f"exceeded the WATCH retry budget ({self._WATCH_RETRY_LIMIT}); a "
+            f"concurrent writer keeps racing the switch"
         )
 
     async def drop(self) -> dict[str, str]:

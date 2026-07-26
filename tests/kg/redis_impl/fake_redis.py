@@ -75,13 +75,26 @@ class FakeRedis:
         return count
 
     async def scan(self, cursor: int = 0, match: str = "", count: int = 1000):
+        """Batched cursor semantics over a stable sorted snapshot.
+
+        Real SCAN iterates keys of every type (strings, zsets, sets, hashes) and
+        returns them ``count`` at a time with a resumable cursor; callers must
+        loop until the cursor comes back 0. Honouring ``count`` here (rather than
+        returning everything at once) is what makes the paged, bounded readers
+        exercisable — sorting keeps it deterministic and skip-free.
+        """
+        self._maybe_fail("scan")
         prefix = match[:-1] if match.endswith("*") else match
-        # Real SCAN iterates keys of every type (strings, zsets, sets, hashes).
         all_keys = (
             list(self.store) + list(self.zsets) + list(self.sets) + list(self.hashes)
         )
-        keys = [k for k in dict.fromkeys(all_keys) if k.startswith(prefix)]
-        return 0, keys
+        keys = sorted(k for k in dict.fromkeys(all_keys) if k.startswith(prefix))
+        start = int(cursor)
+        batch = keys[start : start + count]
+        next_cursor = start + count
+        if next_cursor >= len(keys):
+            next_cursor = 0
+        return next_cursor, batch
 
     # -- set commands ---------------------------------------------------------
     async def sadd(self, key: str, *members: str) -> int:
@@ -324,6 +337,16 @@ class FakePipeline:
             return self._fake.hgetall(key)
         self._ops.append(("hgetall", key))
         return self
+
+    def scan(self, cursor: int = 0, match: str = "", count: int = 1000):
+        """Immediate-mode only, mirroring redis-py: while WATCHing (and before
+        MULTI) commands execute right away and return real values, which is how
+        the sidecar publish re-probes the official keyspace under its WATCH."""
+        if not self._immediate:
+            raise AssertionError(
+                "FakeRedis: SCAN is only supported in immediate WATCH mode"
+            )
+        return self._fake.scan(cursor, match=match, count=count)
 
     def set(self, key: str, value: str):
         return self._command(("set", key, value))
