@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
 
-from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
+from lightrag.base import (
+    DocProcessingStatus,
+    DocStatus,
+    DocStatusStorage,
+    SourceAbsent,
+    SourceResolution,
+)
 from lightrag.constants import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     FILE_EXTRACTION_SUMMARY_PREFIX,
@@ -603,20 +609,30 @@ def configured_input_dir() -> Path:
     return Path(input_dir) if input_dir else Path.cwd() / "inputs"
 
 
-async def get_existing_doc_by_file_basename(
+async def resolve_existing_doc_source(
     doc_status: DocStatusStorage, file_path: Any
-) -> tuple[str, Any] | None:
-    """Find an existing doc_status record by canonical file basename.
+) -> SourceResolution:
+    """Resolve a file path to a typed, fail-closed source resolution.
 
     Inputs are normalized via :func:`normalize_document_file_path` so callers
     may pass either the bare canonical name (``abc.docx``) or a hint-bearing
     variant (``abc.[native-iet].docx``); both resolve to the same logical
-    document.
+    document. A name with no usable identity (``unknown_source``) collides with
+    nothing and is reported :class:`SourceAbsent` without querying.
+
+    Replaces ``get_doc_by_file_basename`` for the enqueue duplicate check. That
+    method is best-effort by contract — several backends swallow transport
+    errors and return ``None`` — and enqueue reads "no match" as "not a
+    duplicate", so a storage blip admitted a second row for a filename that
+    already existed. It also returns SOME primary on a historical basename
+    collision, hiding the collision instead of surfacing it. The strict
+    resolver raises instead of guessing, and distinguishes Absent / Unique /
+    Conflict so the caller can refuse the ambiguous case explicitly.
     """
     basename = normalize_document_file_path(file_path)
     if basename == "unknown_source":
-        return None
-    return await doc_status.get_doc_by_file_basename(basename)
+        return SourceAbsent()
+    return await doc_status.resolve_doc_source_strict(basename)
 
 
 async def get_existing_doc_by_content_hash(

@@ -35,6 +35,8 @@ from lightrag.base import (
     CursorPosition,
     DocProcessingStatus,
     DocStatus,
+    SourceConflict,
+    SourceUnique,
 )
 from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -109,13 +111,13 @@ from lightrag.utils_pipeline import (
     doc_status_transition_metadata,
     get_duplicate_doc_by_content_hash,
     get_existing_doc_by_content_hash,
-    get_existing_doc_by_file_basename,
     has_known_document_source,
     input_dir_path,
     normalize_document_file_path,
     doc_status_metadata_has_attempt_fields,
     doc_status_reset_metadata,
     read_source_file_basename,
+    resolve_existing_doc_source,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
     strip_lightrag_doc_prefix,
@@ -812,26 +814,50 @@ class _PipelineMixin:
             for doc_id in list(unique_new_doc_ids):
                 content_data = contents[doc_id]
 
-                # 3a. Filename-based dedup: same basename always treated as duplicate.
-                match = await get_existing_doc_by_file_basename(
+                # 3a. Filename-based dedup: same basename always treated as
+                # duplicate. Resolved STRICTLY — a storage failure raises rather
+                # than reporting "no match", which this branch would read as
+                # "not a duplicate" and admit a second row for a filename that
+                # already exists.
+                resolution = await resolve_existing_doc_source(
                     self.doc_status, content_data["file_path"]
                 )
-                if match:
-                    existing_doc_id, existing_doc = match
+                if isinstance(resolution, SourceConflict):
+                    # Several primaries already share this basename (a historical
+                    # collision). Refuse rather than attach the new document to an
+                    # arbitrary one of them: which row is "the original" is
+                    # exactly what an operator has to decide, via the
+                    # source-conflict repair flow. The record is trackable so the
+                    # submitter sees why nothing was processed.
                     unique_new_doc_ids.discard(doc_id)
                     duplicate_attempts.append(
                         {
                             "doc_id": doc_id,
-                            "original_doc_id": existing_doc_id,
+                            "file_path": content_data["file_path"],
+                            "content_length": new_docs.get(doc_id, {}).get(
+                                "content_length", 0
+                            ),
+                            "conflict_sample_doc_ids": resolution.sample_doc_ids,
+                            "conflict_candidate_count": resolution.candidate_count,
+                            "duplicate_kind": "filename_conflict",
+                        }
+                    )
+                    continue
+                if isinstance(resolution, SourceUnique):
+                    unique_new_doc_ids.discard(doc_id)
+                    duplicate_attempts.append(
+                        {
+                            "doc_id": doc_id,
+                            "original_doc_id": resolution.doc_id,
                             "file_path": content_data["file_path"],
                             "content_length": new_docs.get(doc_id, {}).get(
                                 "content_length", 0
                             ),
                             "existing_status": doc_status_field(
-                                existing_doc, "status", "unknown"
+                                resolution.doc, "status", "unknown"
                             ),
                             "existing_track_id": doc_status_field(
-                                existing_doc, "track_id", ""
+                                resolution.doc, "track_id", ""
                             ),
                             "duplicate_kind": "filename",
                         }
@@ -911,18 +937,42 @@ class _PipelineMixin:
                     dup_record_id = compute_mdhash_id(
                         f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
                     )
-                    if duplicate_kind == "content_hash":
-                        error_prefix = (
-                            "Identical content already exists under another filename."
+                    if duplicate_kind == "filename_conflict":
+                        # No original is named: several primaries already share
+                        # this basename and choosing between them is the
+                        # operator's decision (source-conflict repair), so the
+                        # message carries the bounded candidate sample instead of
+                        # asserting one of them is "the" original.
+                        count = attempt.get("conflict_candidate_count")
+                        sample = attempt.get("conflict_sample_doc_ids") or ()
+                        error_msg = (
+                            f"{count if count is not None else 'Multiple'} existing "
+                            f"documents already share this file name, so this "
+                            f"upload cannot be attributed to one of them. Repair "
+                            f"the conflict by doc id first (sample doc ids: "
+                            f"{', '.join(sample) or 'unavailable'})."
+                        )
+                        summary = (
+                            f"[DUPLICATE:{duplicate_kind}] Unresolved file-name "
+                            f"conflict; repair required"
                         )
                     else:
-                        error_prefix = "File name already exists."
-                    duplicate_docs[dup_record_id] = {
-                        "status": DocStatus.FAILED,
-                        "content_summary": (
+                        if duplicate_kind == "content_hash":
+                            error_prefix = "Identical content already exists under another filename."
+                        else:
+                            error_prefix = "File name already exists."
+                        error_msg = (
+                            f"{error_prefix} "
+                            f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
+                            f"Status: {attempt.get('existing_status', 'unknown')}"
+                        )
+                        summary = (
                             f"[DUPLICATE:{duplicate_kind}] Original document: "
                             f"{attempt.get('original_doc_id', doc_id)}"
-                        ),
+                        )
+                    duplicate_docs[dup_record_id] = {
+                        "status": DocStatus.FAILED,
+                        "content_summary": summary,
                         "content_length": attempt.get("content_length", 0),
                         "chunks_count": 0,
                         "chunks_list": [],
@@ -930,11 +980,7 @@ class _PipelineMixin:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                         "file_path": file_path,
                         "track_id": track_id,  # Use current track_id for tracking
-                        "error_msg": (
-                            f"{error_prefix} "
-                            f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
-                            f"Status: {attempt.get('existing_status', 'unknown')}"
-                        ),
+                        "error_msg": error_msg,
                         "metadata": {
                             "is_duplicate": True,
                             "duplicate_kind": duplicate_kind,

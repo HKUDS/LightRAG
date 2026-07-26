@@ -858,7 +858,7 @@ These "read–decide–write" combinations cannot interleave with other writers;
 After upload passes the reservation but before saving the file, a two-pass check is required:
 
 1. **INPUT directory scan**: canonicalize the basename to be saved via `canonicalize_parser_hinted_basename`, traverse the INPUT directory for any existing same-canonical variant (with hint / without hint); 409 on hit.
-2. **doc_status check**: call `get_existing_doc_by_file_basename` with the canonicalized basename; 409 on hit.
+2. **doc_status check**: call `get_existing_doc_by_file_path_candidates` with the canonicalized basename; 409 on hit.
 
 Both pass → save the file → schedule the bg task → bg task calls `apipeline_enqueue_documents` to write the store + calls `apipeline_process_enqueue_documents` to trigger processing.
 
