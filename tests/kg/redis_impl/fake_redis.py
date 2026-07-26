@@ -27,6 +27,11 @@ class FakeRedis:
         self.versions: dict[str, int] = defaultdict(int)
         # Test hook: raise this exception on the next matching command.
         self.fail_next: dict[str, Exception] = {}
+        # CONFIG GET response; the default is an eviction-safe server.
+        self.config_values: dict[str, str] = {
+            "maxmemory": "0",
+            "maxmemory-policy": "noeviction",
+        }
 
     # -- version bookkeeping (WATCH support) --------------------------------
     def _bump(self, key: str) -> None:
@@ -40,6 +45,16 @@ class FakeRedis:
     # -- immediate commands ---------------------------------------------------
     async def ping(self):
         return True
+
+    async def config_get(self, pattern: str = "*"):
+        """Default to a NON-evicting server so initialize() proceeds.
+
+        Tests that need the eviction guard to fire override ``config_values``
+        (or set ``fail_next["config_get"]`` to simulate a server that blocks
+        CONFIG, as managed Redis often does).
+        """
+        self._maybe_fail("config_get")
+        return dict(self.config_values)
 
     async def get(self, key: str):
         self._maybe_fail("get")

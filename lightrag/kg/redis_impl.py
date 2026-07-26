@@ -85,6 +85,80 @@ redis_retry = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
+# One eviction-policy check per Redis URL per process: the answer is a server
+# property, not a per-storage one, and both storage classes share the pool.
+_eviction_checked: set[str] = set()
+
+
+async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> None:
+    """Refuse to use an evicting Redis as a system of record.
+
+    ``doc_status`` rows, ``full_docs`` entries and the derived scheduling sidecar
+    (status ZSETs + basename SETs) are all plain keys with NO TTL. Under an
+    ``allkeys-*`` maxmemory policy Redis may evict any of them, and that loss is
+    silent AND undetectable: an evicted status ZSET drops every document in that
+    status out of the sweep, an evicted primary row loses the document outright,
+    and the sidecar's structural probe only asks whether ANY status key exists —
+    so a partially evicted index looks perfectly healthy and gets no rebuild.
+    There is no cheap invariant that would catch it either (verifying the sidecar
+    against the rows is an O(total_docs) scan), which is exactly why this is a
+    startup precondition rather than a runtime repair.
+
+    Safe configurations, allowed silently:
+
+    * ``maxmemory=0`` — no limit, so nothing is ever evicted;
+    * ``volatile-*`` / ``noeviction`` — only keys carrying a TTL can be evicted
+      and none of ours do (just the short-lived rebuild lease), so a full
+      instance fails writes LOUDLY instead of quietly dropping data.
+
+    Managed Redis frequently blocks ``CONFIG GET``. An unreadable config warns
+    rather than fails: refusing to start over a policy we cannot even observe
+    would break working deployments. ``REDIS_ALLOW_EVICTION_POLICY=true`` is the
+    explicit override for an operator who accepts the data loss.
+    """
+    if redis_url in _eviction_checked:
+        return
+    try:
+        settings = await redis.config_get("maxmemory*")
+    except Exception as config_error:
+        # Unknown command, NOPERM, or a proxy that does not implement CONFIG.
+        _eviction_checked.add(redis_url)
+        logger.warning(
+            f"[{workspace}] Could not read the Redis maxmemory policy "
+            f"({config_error}); cannot verify that this instance will not EVICT "
+            f"doc_status/full_docs keys. Ensure maxmemory-policy is 'noeviction' "
+            f"or a 'volatile-*' policy — an 'allkeys-*' policy silently drops "
+            f"documents and scheduling state."
+        )
+        return
+    _eviction_checked.add(redis_url)
+    policy = str((settings or {}).get("maxmemory-policy") or "").strip().lower()
+    raw_maxmemory = str((settings or {}).get("maxmemory") or "0").strip()
+    try:
+        maxmemory = int(raw_maxmemory)
+    except ValueError:
+        maxmemory = 0
+    if maxmemory <= 0 or not policy.startswith("allkeys"):
+        return
+    if os.getenv("REDIS_ALLOW_EVICTION_POLICY", "false").strip().lower() == "true":
+        logger.warning(
+            f"[{workspace}] Redis is configured to EVICT (maxmemory-policy="
+            f"'{policy}', maxmemory={maxmemory}) and REDIS_ALLOW_EVICTION_POLICY "
+            f"is set: doc_status rows, full_docs entries and the scheduling "
+            f"sidecar may be dropped silently, losing documents."
+        )
+        return
+    raise StorageControlPlaneError(
+        f"[{workspace}] Redis at {redis_url} is configured as an evicting cache "
+        f"(maxmemory-policy='{policy}', maxmemory={maxmemory}), but LightRAG "
+        f"stores doc_status, full_docs and the derived scheduling index there as "
+        f"a system of record — none of those keys carry a TTL, so an "
+        f"'allkeys-*' policy can drop documents and scheduling state with no "
+        f"error and no way to detect it. Set maxmemory-policy to 'noeviction' "
+        f"(or a 'volatile-*' policy), give LightRAG its own Redis instance/db, "
+        f"or set REDIS_ALLOW_EVICTION_POLICY=true to accept the data loss."
+    )
+
 
 class RedisConnectionManager:
     """Shared Redis connection pool manager to avoid creating multiple pools for the same Redis URI"""
@@ -287,6 +361,9 @@ class RedisKVStorage(BaseKVStorage):
             try:
                 async with self._get_redis_connection() as redis:
                     await redis.ping()
+                    await _ensure_no_eviction_policy(
+                        redis, self._redis_url, self.workspace
+                    )
                     logger.info(
                         f"[{self.workspace}] Connected to Redis for namespace {self.namespace}"
                     )
@@ -776,6 +853,9 @@ class RedisDocStatusStorage(DocStatusStorage):
             try:
                 async with self._get_redis_connection() as redis:
                     await redis.ping()
+                    await _ensure_no_eviction_policy(
+                        redis, self._redis_url, self.workspace
+                    )
                     logger.info(
                         f"[{self.workspace}] Connected to Redis for doc status namespace {self.namespace}"
                     )
@@ -2135,7 +2215,18 @@ class RedisDocStatusStorage(DocStatusStorage):
         write, so leave it untouched (never clobber a live index); if none
         exists but primary rows do, it is a fresh pre-existing deployment or a
         recovery and must be rebuilt. A short-lease backend lock elects one
-        rebuilding worker; losers wait (bounded) for the index to appear."""
+        rebuilding worker; losers wait (bounded) for the index to appear.
+
+        Deliberate limitation: "any status key exists" cannot detect a PARTIAL
+        index (some status keys or members gone), so a partial loss is NOT
+        repaired here — it looks healthy. Verifying the index against the rows
+        would be an O(total_docs) scan on every startup, and a persisted
+        counter would be the second source of truth this design exists to
+        avoid. Partial loss is therefore prevented at its only real cause
+        instead: ``_ensure_no_eviction_policy`` refuses at startup to run on a
+        Redis configured to evict TTL-less keys. An operator who suspects a
+        damaged index deletes the ``…__sched:*`` keys and restarts, which takes
+        the branch below."""
         status_pattern = f"{self._sched_prefix}:status:*"
         primary_pattern = f"{self.final_namespace}:*"
         lock_key = f"{self._sched_prefix}:rebuild_lock"
