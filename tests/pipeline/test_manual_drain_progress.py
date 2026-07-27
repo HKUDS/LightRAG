@@ -22,17 +22,30 @@ Three things are pinned here, and the middle one is the trap:
    but never change state (``manual_drain_stalled``) and rows the drain can never
    advance at all (``manual_drain_blocked``).
 
-(3) went through a rejected design worth recording, because the tests that
-"proved" it were the reason it looked fine. Reporting the blocker WITHOUT fencing
-seemed better — a fence refuses every mutation, including the ``/documents/scan``
-that resolves a journal — but a sticky un-ACKed manual request ALREADY makes
-``/scan`` refuse its reservation (``refuse_when_manual_pending``, so a scan cannot
-jump the manual FIFO), and the blocker leaves exactly that request queued. The
-unfenced path therefore had no reachable remedy either; the "it self-heals" test
-missed it by simulating the rollback with a direct ``doc_status.delete()``,
-bypassing the one call that was blocked. So the recovery path is now asserted
-through the REAL scan reservation, and the ``force_reset`` that clears the fence
-also cancels the queued intents that block the scan.
+(3) went through two rejected designs, and in both cases the tests that "proved"
+them were the reason they looked fine. Recorded here because the same shortcut
+would hide the same class of defect again.
+
+**Reporting the blocker WITHOUT fencing** seemed better — a fence refuses every
+mutation, including the ``/documents/scan`` that resolves a journal — but a sticky
+un-ACKed manual request ALREADY makes ``/scan`` refuse its reservation
+(``refuse_when_manual_pending``, so a scan cannot jump the manual FIFO), and the
+blocker leaves exactly that request queued. The unfenced path therefore had no
+reachable remedy either. The "it self-heals" test missed it by simulating the
+rollback with a direct ``doc_status.delete()`` — bypassing the one call that was
+blocked.
+
+**Then clearing the fence and cancelling the intents as two steps**: the
+cancellation could fail and still report ``reset`` (silent dead end again), and
+between the two a new run could acquire ``busy``, claim the still-sticky request
+and run ``FAILED → PENDING`` for a request the operator had just cancelled. That
+test cleared the fence and cancelled by hand, bypassing the endpoint whose
+ordering WAS the defect.
+
+So every step is now taken rather than simulated: the recovery path runs through
+the real ``force_reset`` endpoint and the real scan reservation, and the endpoint's
+fail-closed ordering has its own tests (both of which fail against the two-step
+version).
 """
 
 from __future__ import annotations
@@ -279,32 +292,42 @@ def test_journaled_active_row_fences_instead_of_resetting(tmp_path):
     asyncio.run(_run())
 
 
-def test_force_reset_unblocks_the_documented_recovery_order(tmp_path):
-    """The recovery path is exercised through the REAL scan reservation.
+def test_force_reset_endpoint_unblocks_the_documented_recovery_order(tmp_path):
+    """The whole recovery path, through the REAL endpoint and the REAL scan
+    reservation.
 
-    The previous version of this test simulated the rollback with a direct
-    ``doc_status.delete()``, which bypassed the one call that was actually
-    blocked — ``acquire_reservation(..., refuse_when_manual_pending=True)`` — and
-    so "it self-heals" was never true. Here the scan reservation itself is the
-    assertion:
+    Two earlier versions of this test were wrong in the same way — they simulated
+    a step instead of taking it, and so could not see the step being broken. The
+    first simulated the rollback with ``doc_status.delete()``, bypassing
+    ``refuse_when_manual_pending``; the second cleared the fence and cancelled the
+    intents by hand, bypassing the endpoint whose ordering was the defect. Here
+    both are real:
 
-    1. fenced, a scan is refused (the fence);
-    2. `force_reset` clears the fence AND cancels the queued retry — without the
-       cancellation the scan would still be refused for jumping the manual FIFO,
-       which is what made the unfenced design a dead end;
-    3. the scan reservation is then granted, so the rollback can run.
+    1. fenced → the scan that fixes this is refused;
+    2. ``POST /documents/recovery/force_reset`` — one call, clearing the fence AND
+       cancelling the queued intent;
+    3. the scan reservation is granted, so the rollback can run.
     """
+    import importlib
+    import sys as _sys
+
     from lightrag.kg.shared_storage import (
         PipelineReservationConflict,
         acquire_reservation,
         get_namespace_lock,
     )
 
+    # document_routes parses CLI args at import time.
+    _argv = _sys.argv[:]
+    _sys.argv = [_sys.argv[0]]
+    dr = importlib.import_module("lightrag.api.routers.document_routes")
+    _sys.argv = _argv
+
     async def _run():
         rag = await _build_rag(tmp_path)
         try:
             await _seed_journaled_row(rag, "journaled.txt", DocStatus.PROCESSING)
-            await _seed_failed_with_content(rag, "retry-me.txt")
+            failed = await _seed_failed_with_content(rag, "retry-me.txt")
 
             await request_failed_retry(rag)
             with pytest.raises(PipelineRecoveryRequiredError):
@@ -342,16 +365,171 @@ def test_force_reset_unblocks_the_documented_recovery_order(tmp_path):
             assert refused.acquired is False
             assert refused.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
 
-            # (2) force_reset: fence cleared AND the queued intent cancelled.
-            async with lock:
-                status["recovery_required"] = None
-            cancelled = ingress.cancel_manual_retries()
-            assert cancelled == 1
+            # (2) The real endpoint, one call.
+            router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+            force_reset = [
+                r.endpoint
+                for r in router.routes
+                if getattr(r, "name", "") == "force_reset_recovery"
+            ][-1]
+            resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+            assert resp.status == "reset"
+            assert resp.cancelled_manual_retries == 1
+            assert status.get("recovery_required") is None
             assert ingress.snapshot_manual_retries() == []
 
             # (3) The scan is now allowed — the recovery path is reachable.
             granted = await _try_scan_reservation()
             assert granted.acquired is True, granted.message
+
+            # And the failed document is untouched: still owed a retry.
+            assert await _status_of(rag, failed) == DocStatus.FAILED.value
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_force_reset_fails_closed_when_the_cancellation_fails(tmp_path):
+    """A force-reset that cannot cancel the queued intents must NOT drop the fence.
+
+    Clearing the fence alone leaves the sticky request in place, so
+    ``/documents/scan`` stays refused and the API has reported a recovery that did
+    not happen — the silent dead end again. Keeping the fence is safely
+    retryable."""
+    import importlib
+    import sys as _sys
+
+    _argv = _sys.argv[:]
+    _sys.argv = [_sys.argv[0]]
+    dr = importlib.import_module("lightrag.api.routers.document_routes")
+    _sys.argv = _argv
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            await _seed_journaled_row(rag, "journaled.txt", DocStatus.PROCESSING)
+            await request_failed_retry(rag)
+            with pytest.raises(PipelineRecoveryRequiredError):
+                await asyncio.wait_for(
+                    rag.apipeline_process_enqueue_documents(),
+                    timeout=_SPIN_TIMEOUT_SECONDS,
+                )
+
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            ingress = await get_pipeline_ingress(rag.workspace)
+            fence_before = dict(status.get("recovery_required"))
+
+            def _boom():
+                raise ConnectionError("manager mailbox RPC failed")
+
+            ingress.cancel_manual_retries = _boom
+
+            router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+            force_reset = [
+                r.endpoint
+                for r in router.routes
+                if getattr(r, "name", "") == "force_reset_recovery"
+            ][-1]
+            with pytest.raises(dr.HTTPException) as excinfo:
+                await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+
+            assert excinfo.value.status_code == 503
+            # Fence intact, request intact — a retry can complete the recovery.
+            assert dict(status.get("recovery_required")) == fence_before
+            assert len(ingress.snapshot_manual_retries()) == 1
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_force_reset_cancels_before_it_drops_the_fence(tmp_path):
+    """The cancellation and the fence drop are ONE indivisible step, cancel first.
+
+    Dropping the fence and cancelling afterwards left a window in which a new
+    processing run could acquire ``busy``, peek the still-sticky request and claim
+    it in ``_begin_manual_drain`` — going on to run FAILED → PENDING for a request
+    the operator had just cancelled.
+
+    Asserted two ways, neither depending on lock internals:
+
+    * ordering — at the moment the cancellation runs, the fence is still set;
+    * indivisibility — a concurrent observer sampling as fast as the event loop
+      allows never sees the bad combination "fence cleared, request still queued".
+      That holds because both mutations happen under one ``pipeline_status_lock``
+      hold with no ``await`` between them, so nothing can be scheduled in between.
+    """
+    import importlib
+    import sys as _sys
+
+    _argv = _sys.argv[:]
+    _sys.argv = [_sys.argv[0]]
+    dr = importlib.import_module("lightrag.api.routers.document_routes")
+    _sys.argv = _argv
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            await _seed_journaled_row(rag, "journaled.txt", DocStatus.PROCESSING)
+            await request_failed_retry(rag)
+            with pytest.raises(PipelineRecoveryRequiredError):
+                await asyncio.wait_for(
+                    rag.apipeline_process_enqueue_documents(),
+                    timeout=_SPIN_TIMEOUT_SECONDS,
+                )
+
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            ingress = await get_pipeline_ingress(rag.workspace)
+
+            observed: dict = {}
+            real_cancel = ingress.cancel_manual_retries
+
+            def _spy():
+                observed["fence_still_set"] = (
+                    status.get("recovery_required") is not None
+                )
+                return real_cancel()
+
+            ingress.cancel_manual_retries = _spy
+
+            # Sample the pair as fast as the loop allows for the whole call.
+            bad_samples: list[tuple] = []
+            stop = asyncio.Event()
+
+            async def _observer():
+                while not stop.is_set():
+                    fenced = status.get("recovery_required") is not None
+                    queued = len(ingress.snapshot_manual_retries())
+                    if not fenced and queued:
+                        bad_samples.append((fenced, queued))
+                    await asyncio.sleep(0)
+
+            watcher = asyncio.create_task(_observer())
+
+            router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+            force_reset = [
+                r.endpoint
+                for r in router.routes
+                if getattr(r, "name", "") == "force_reset_recovery"
+            ][-1]
+            resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+
+            stop.set()
+            await watcher
+
+            assert resp.status == "reset"
+            # Cancel ran BEFORE the fence dropped.
+            assert observed["fence_still_set"] is True
+            # And no observer could see the unsafe intermediate state.
+            assert bad_samples == []
+            # Both effects landed.
+            assert status.get("recovery_required") is None
+            assert ingress.snapshot_manual_retries() == []
         finally:
             await rag.finalize_storages()
 

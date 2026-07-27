@@ -902,6 +902,8 @@ POST /documents/recovery/force_reset
 
 这是**不安全的人工覆盖**——它不修复任何东西。除栅栏之外，它还会**取消该 workspace 排队中的 manual retry 请求**，这一点是必需的而非附带：只要存在排队请求，`/documents/scan` 就会拒绝自己的 reservation（scan 自己要跑独占 `FAILED` 重置，不能跳 manual FIFO，见 §6.4），所以只清栅栏会让恢复路径照样被堵。响应里返回 `cancelled_manual_retries`。不会丢文档——失败文档仍是 `FAILED`，由下一次请求或 scan 自己的重置处理。
 
+由于两半都是必需的，这个调用是**全有或全无**的：如果排队请求无法取消，接口返回 **503** 且栅栏保持不变——这样可以重试来完成恢复，而不是让 API 报告一次并未发生的恢复。
+
 恢复顺序：
 
 | 原因 | 操作 |

@@ -6287,6 +6287,15 @@ def create_document_routes(
         reset covers them, or ``/documents/reprocess_failed`` can be re-issued —
         and the cancelled ids are retired as terminal, so a delayed replay of one
         cannot silently re-queue.
+
+        Because both halves are required, this endpoint is **fail-closed and
+        atomic**: the ingress is resolved first and a failure there returns 503
+        with the fence untouched, then the cancellation and the fence drop happen
+        in ONE ``pipeline_status_lock`` critical section with the cancellation
+        first. A cancellation failure also returns 503 and keeps the fence. The
+        only partial state this admits is "intents cancelled, fence still up",
+        which a retry completes; the opposite order would admit "fence down,
+        intents still queued", where ``/scan`` stays refused and nothing says so.
         """
         from lightrag.exceptions import PipelineNotInitializedError
         from lightrag.kg.shared_storage import (
@@ -6317,24 +6326,75 @@ def create_document_routes(
         pipeline_status_lock = get_namespace_lock(
             "pipeline_status", workspace=rag.workspace
         )
-        # Resolved BEFORE the critical section: a Manager RPC handle must never
-        # be looked up lazily while pipeline_status_lock is held.
-        ingress = None
+        # Resolved BEFORE the critical section (a Manager RPC handle must never be
+        # looked up lazily while pipeline_status_lock is held) and FAIL CLOSED if
+        # it cannot be reached. Cancelling the queued intents is one HALF of this
+        # recovery, so a force-reset that cannot do it must not drop the fence and
+        # report success: that leaves the sticky request in place, keeps
+        # /documents/scan refused, and recreates the silent dead end this endpoint
+        # exists to close. Keeping the fence is safely retryable; a false "reset"
+        # is not.
         try:
             ingress = await get_pipeline_ingress(rag.workspace)
-        except Exception as ingress_error:  # pragma: no cover - defensive
-            logger.warning(
-                "Force-reset cannot reach the ingress mailbox "
-                f"({ingress_error}); the fence will still be cleared, but a "
-                "queued manual retry may keep /documents/scan refused."
+        except Exception as ingress_error:
+            logger.error(
+                "Force-reset refused: cannot reach the ingress mailbox to cancel "
+                f"the queued manual retries ({ingress_error}); the fence is kept "
+                "so the recovery can be retried rather than reported as done."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Cannot reach the ingress mailbox to cancel queued manual "
+                    "retries; the recovery fence is unchanged. Retry shortly."
+                ),
             )
 
+        cancelled = 0
         async with pipeline_status_lock:
             if not pipeline_status.get("recovery_required"):
                 return ForceResetRecoveryResponse(
                     status="no_recovery_required",
                     message="No recovery_required fence is set.",
                 )
+
+            # Cancel the queued intents FIRST, and inside the SAME critical
+            # section that drops the fence. Two reasons, and the order is the
+            # whole point:
+            #
+            # * failure atomicity — if the cancellation succeeds but the status
+            #   update below fails, the workspace is left "intents cancelled,
+            #   fence still up", which is safely retryable. The reverse order
+            #   leaves "fence down, intents still queued": /scan stays refused
+            #   and nothing says so.
+            # * no window — dropping the fence and then cancelling outside the
+            #   lock let a new processing run acquire ``busy`` in between, peek
+            #   the still-sticky request and claim it in ``_begin_manual_drain``.
+            #   That run holds the request id, so it could go on to run
+            #   FAILED → PENDING for a request the operator had just cancelled.
+            #   Both mutations under one lock hold close it: when the lock is
+            #   released the fence is gone AND the mailbox is empty.
+            #
+            # The mailbox call is a single already-resolved RPC under the lock —
+            # the same shape as the scan endpoint's publish and the reservation
+            # helpers' manual-pending peek.
+            try:
+                cancelled = int(ingress.cancel_manual_retries() or 0)
+            except Exception as cancel_error:
+                logger.error(
+                    "Force-reset refused: the recovery fence is kept because the "
+                    "queued manual retries could not be cancelled "
+                    f"({cancel_error}); clearing the fence alone would leave "
+                    "/documents/scan refused."
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Could not cancel the queued manual retries; the recovery "
+                        "fence is unchanged. Retry shortly."
+                    ),
+                )
+
             # Drop the fence and any lingering reservation state in one atomic
             # update. This is deliberately owner-agnostic — it is a manual
             # override, not a normal owner-checked release. The manual freeze goes
@@ -6357,19 +6417,6 @@ def create_document_routes(
                     "manual_owner": None,
                 }
             )
-
-        # Outside the lock (one mailbox RPC). Cancelling the queued intents is
-        # what actually unblocks the documented recovery path — see the docstring.
-        cancelled = 0
-        if ingress is not None:
-            try:
-                cancelled = int(ingress.cancel_manual_retries() or 0)
-            except Exception as cancel_error:  # pragma: no cover - defensive
-                logger.warning(
-                    "Force-reset cleared the fence but could not cancel the "
-                    f"queued manual retries ({cancel_error}); /documents/scan may "
-                    "still be refused until the service restarts."
-                )
 
         logger.warning(
             "recovery_required fence force-reset (unsafe manual override) for "

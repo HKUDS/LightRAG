@@ -902,6 +902,8 @@ POST /documents/recovery/force_reset
 
 This is an **unsafe manual override** — it does not repair anything. Besides the fence it also **cancels the workspace's queued manual retry requests**, and that is required rather than incidental: a queued request makes `/documents/scan` refuse its reservation (a scan runs its own exclusive `FAILED` reset and may not jump the manual FIFO, §6.4), so clearing only the fence would leave the recovery path just as blocked. The response reports `cancelled_manual_retries`. No document is lost — failed documents stay `FAILED` and are retried by the next request or by the scan's own reset.
 
+Because both halves are required, the call is **all-or-nothing**: if the queued retries cannot be cancelled it returns **503** with the fence untouched, so a retry can complete the recovery instead of the API reporting one that did not happen.
+
 Recovery order:
 
 | Cause | Do this |
