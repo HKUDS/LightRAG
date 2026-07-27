@@ -2158,10 +2158,17 @@ class _ScanCandidate(NamedTuple):
     Carrying the size forward keeps the enqueue phase from re-``stat``-ing a
     file the spool just stat'ed — INPUT_DIR is frequently a network mount, where
     that second metadata round-trip is the expensive part.
+
+    ``size`` is never ``None``: a candidate whose stat failed carries ``0``, the
+    same "size unknown" value ``pipeline_enqueue_file`` has always reported for
+    an unreadable file.  Keeping it an ``int`` is what makes "one metadata read
+    per candidate" true unconditionally — ``None`` would mean "caller supplied
+    nothing" and send the enqueue path back to the filesystem for exactly the
+    vanished files where the second read is most likely to be slow.
     """
 
     path: Path
-    size: int | None
+    size: int
 
 
 async def pipeline_enqueue_file(
@@ -2997,27 +3004,42 @@ _SCAN_SPOOL_PREFIX = "lightrag-scan-sort-"
 def _scan_spool_base_dir(rag: LightRAG) -> Path | None:
     """Where this scan creates its disposable candidate spool.
 
-    Resolution order: ``SCAN_SPOOL_DIR`` → ``WORKING_DIR/scan_spool`` → ``None``
-    (the OS temporary directory).  The spool holds O(files-in-INPUT_DIR)
-    ordering rows, so it must land on real, writable, local disk: ``/tmp`` is a
-    RAM-backed tmpfs on many Linux hosts, which would put the very state this
-    design moves OUT of Python memory straight back into memory.  WORKING_DIR is
-    already LightRAG's own writable local state volume, which makes it the right
-    default.
+    Resolution order: ``SCAN_SPOOL_DIR`` → ``WORKING_DIR/scan_spool``, each
+    narrowed to a per-workspace subdirectory.  The spool holds
+    O(files-in-INPUT_DIR) ordering rows, so it must land on real, writable,
+    local disk: ``/tmp`` is a RAM-backed tmpfs on many Linux hosts, which would
+    put the very state this design moves OUT of Python memory straight back into
+    memory.  WORKING_DIR is already LightRAG's own writable local state volume,
+    which makes it the right default.
 
     INPUT_DIR is deliberately NOT a candidate.  It is frequently a network mount
     (the slowest possible home for the one bulk-insert phase in the pipeline),
     it is legitimately mounted read-only in "scan but never write" deployments,
     and it is co-managed by sync tools that would copy or delete the spool
     mid-scan.
+
+    The workspace subdirectory is what lets the spool have a FIXED name inside
+    it (see :class:`_ScanCandidateSpool`): two workspaces sharing one
+    WORKING_DIR must never reuse or delete each other's file.
+
+    Returns ``None`` only when no working directory can be determined at all —
+    a test rig, never a real ``LightRAG``, whose ``working_dir`` always defaults
+    to ``./rag_storage``.  There is no operator-chosen placement to honour in
+    that case, so the caller falls back to the OS temp dir.
     """
     configured = getattr(global_args, "scan_spool_dir", None)
     if isinstance(configured, str) and configured.strip():
-        return Path(configured.strip())
-    working_dir = getattr(rag, "working_dir", None)
-    if isinstance(working_dir, str) and working_dir.strip():
-        return Path(working_dir.strip()) / "scan_spool"
-    return None
+        base = Path(configured.strip())
+    else:
+        working_dir = getattr(rag, "working_dir", None)
+        if not isinstance(working_dir, str) or not working_dir.strip():
+            return None
+        base = Path(working_dir.strip()) / "scan_spool"
+
+    workspace = getattr(rag, "workspace", "") or ""
+    # Reuses the storage layer's rule rather than sanitizing: a workspace that
+    # could escape its directory is a configuration error everywhere else too.
+    return base / (validate_workspace(workspace) if workspace else "_default")
 
 
 class _ScanCandidateSpool:
@@ -3039,15 +3061,32 @@ class _ScanCandidateSpool:
 
     A missing mtime does not lose the candidate. It sorts after every readable
     timestamp and the enqueue path reports a vanished/unreadable file normally.
-    The database is rebuildable coordination state under
-    :func:`_scan_spool_base_dir`, never persistent LightRAG storage: it is
-    deleted when the scan ends, and a process death simply leaves the source
-    files for the next scan to rediscover.
+
+    **Lifetime.** The database is rebuildable coordination state, never
+    persistent LightRAG storage. It is deleted when the scan ends, and a process
+    death simply leaves the source files for the next scan to rediscover. But it
+    lives on a PERSISTENT volume, where nothing reclaims what ``kill -9`` leaves
+    behind — so its name inside the per-workspace directory is FIXED rather than
+    randomized, and the next scan deletes any leftover before opening its own.
+    Residue is therefore capped at one spool, not one per crash. Reusing a fixed
+    name is safe because ``scanning_exclusive`` already admits a single scan per
+    workspace, which is the same guarantee that keeps two scans from fighting
+    over INPUT_DIR.
+
+    **Placement is fail-closed.** If the operator's directory cannot be used,
+    the scan fails instead of quietly relocating to the OS temp dir. That
+    fallback is not a degraded-but-correct mode: on a host where ``/tmp`` is
+    tmpfs it silently restores the O(number of files) RAM cost this whole design
+    exists to remove, and the symptom is an OOM kill halfway through a large
+    scan rather than an error naming the misconfiguration.
     """
 
+    _DB_NAME = "candidates.sqlite3"
+
     def __init__(self, commit_interval: int, base_dir: Path | None = None):
-        self._temp_dir = self._make_temp_dir(base_dir)
-        self._db_path = Path(self._temp_dir.name) / "candidates.sqlite3"
+        self._spool_dir, self._temp_dir = self._prepare_dir(base_dir)
+        self._db_path = self._spool_dir / self._DB_NAME
+        self._discard_database_files()
         self._connection = sqlite3.connect(self._db_path)
         # Bound SQLite's page cache and force any query scratch space to disk.
         # The database is disposable, so fsync durability buys nothing: a
@@ -3061,7 +3100,7 @@ class _ScanCandidateSpool:
                 sequence INTEGER PRIMARY KEY,
                 canonical_key TEXT,
                 file_path TEXT NOT NULL,
-                file_size INTEGER,
+                file_size INTEGER NOT NULL,
                 mtime_missing INTEGER NOT NULL,
                 mtime_ns INTEGER NOT NULL,
                 path_sort_key TEXT NOT NULL
@@ -3081,28 +3120,41 @@ class _ScanCandidateSpool:
         self._pending_writes = 0
 
     @staticmethod
-    def _make_temp_dir(base_dir: Path | None) -> tempfile.TemporaryDirectory:
-        """Create the spool directory, degrading to the OS temp dir on failure.
+    def _prepare_dir(
+        base_dir: Path | None,
+    ) -> tuple[Path, tempfile.TemporaryDirectory | None]:
+        """Resolve the spool directory, or raise (see "Placement is fail-closed").
 
-        A spool that cannot be placed where the operator asked must not fail the
-        whole scan — the fallback is slower or RAM-backed, never wrong — but it
-        is warned about, because a silent tmpfs fallback is exactly the case
-        where the bounded-memory guarantee quietly stops holding.
+        ``base_dir is None`` means no placement was determinable at all (a test
+        rig without a ``working_dir``); there is nothing to honour, so a
+        self-cleaning OS temp dir is used and returned for disposal.
         """
-        if base_dir is not None:
+        if base_dir is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix=_SCAN_SPOOL_PREFIX)
+            return Path(temp_dir.name), temp_dir
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as spool_error:
+            raise RuntimeError(
+                f"Scan candidate spool directory {base_dir} is unusable "
+                f"({spool_error}). Point SCAN_SPOOL_DIR at a writable local "
+                "disk; the scan is refused rather than relocated, because the "
+                "OS temp dir is a RAM-backed tmpfs on many hosts and would "
+                "silently restore the memory cost the spool exists to avoid."
+            ) from spool_error
+        return base_dir, None
+
+    def _discard_database_files(self) -> None:
+        """Delete this workspace's spool database and any SQLite side files.
+
+        Called before opening (reclaiming a crashed scan's residue) and after
+        closing (ordinary disposal).
+        """
+        for path in self._spool_dir.glob(f"{self._DB_NAME}*"):
             try:
-                base_dir.mkdir(parents=True, exist_ok=True)
-                return tempfile.TemporaryDirectory(
-                    prefix=_SCAN_SPOOL_PREFIX, dir=base_dir
-                )
-            except OSError as spool_error:
-                logger.warning(
-                    f"Scan candidate spool cannot use {base_dir} ({spool_error}); "
-                    "falling back to the OS temporary directory. Point "
-                    "SCAN_SPOOL_DIR at a writable local disk — a tmpfs /tmp puts "
-                    "the scan's ordering state back into RAM."
-                )
-        return tempfile.TemporaryDirectory(prefix=_SCAN_SPOOL_PREFIX)
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
     async def claim(
         self,
@@ -3129,7 +3181,11 @@ class _ScanCandidateSpool:
         except Exception:
             mtime_missing = 1
             mtime_ns = 0
-            file_size = None
+            # 0, not NULL: the candidate's size is always "already read", so the
+            # enqueue path never re-stats. 0 is exactly how pipeline_enqueue_file
+            # has always reported a size it could not read, and the field feeds
+            # error reports only.
+            file_size = 0
 
         # SQLite UNIQUE permits multiple NULLs, matching unknown_source's
         # "identity cannot be claimed" semantics: every such candidate is
@@ -3202,18 +3258,23 @@ class _ScanCandidateSpool:
             """
         )
         while rows := cursor.fetchmany(batch_size):
-            yield [
-                _ScanCandidate(
-                    Path(str(row[0])), None if row[1] is None else int(row[1])
-                )
-                for row in rows
-            ]
+            yield [_ScanCandidate(Path(str(row[0])), int(row[1])) for row in rows]
 
     def close(self) -> None:
         try:
             self._connection.close()
         finally:
-            self._temp_dir.cleanup()
+            try:
+                self._discard_database_files()
+            except OSError as cleanup_error:
+                # The scan itself is done; leftover bytes are reclaimed by the
+                # next scan's pre-open discard, so this must not fail the run.
+                logger.warning(
+                    f"Could not delete scan spool {self._db_path} "
+                    f"({cleanup_error}); the next scan will reclaim it."
+                )
+            if self._temp_dir is not None:
+                self._temp_dir.cleanup()
 
     def __enter__(self) -> "_ScanCandidateSpool":
         return self

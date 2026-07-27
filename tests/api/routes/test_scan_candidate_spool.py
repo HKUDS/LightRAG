@@ -4,8 +4,11 @@ The spool is where ``/documents/scan`` keeps the O(files-in-INPUT_DIR) state
 that exact oldest-file-first ordering requires, so that Python memory stays
 O(SCAN_ENQUEUE_BATCH_SIZE). Pinned here:
 
-* it lands on real disk under the operator's chosen directory, and degrades to
-  the OS temp dir with a warning rather than failing the scan;
+* it lands on real disk under the operator's chosen, per-workspace directory,
+  and an unusable directory fails the scan rather than relocating to a possibly
+  RAM-backed OS temp dir;
+* its fixed name caps what ``kill -9`` can leave on a persistent volume at one
+  spool, reclaimed by the next scan;
 * a UNIQUE canonical key gives scan-wide first-physical-claim-wins, and names
   the winner by FULL PATH (two subdirectories can hold the same basename);
 * ``unknown_source`` carries no identity, so such candidates never claim each
@@ -55,13 +58,23 @@ def _drain(spool: _ScanCandidateSpool, batch_size: int) -> list[list[str]]:
 # --------------------------------------------------------------------------
 
 
+def _rag(working_dir: str | None = None, workspace: str = ""):
+    attrs = {"workspace": workspace}
+    if working_dir is not None:
+        attrs["working_dir"] = working_dir
+    return type("_Rag", (), attrs)()
+
+
 def test_base_dir_prefers_scan_spool_dir_then_working_dir(tmp_path, monkeypatch):
-    rag = type("_Rag", (), {"working_dir": str(tmp_path / "rag_storage")})()
+    rag = _rag(str(tmp_path / "rag_storage"))
 
     monkeypatch.setattr(
         _document_routes.global_args, "scan_spool_dir", "", raising=False
     )
-    assert _scan_spool_base_dir(rag) == tmp_path / "rag_storage" / "scan_spool"
+    assert (
+        _scan_spool_base_dir(rag)
+        == tmp_path / "rag_storage" / "scan_spool" / "_default"
+    )
 
     monkeypatch.setattr(
         _document_routes.global_args,
@@ -69,55 +82,89 @@ def test_base_dir_prefers_scan_spool_dir_then_working_dir(tmp_path, monkeypatch)
         str(tmp_path / "fast-disk"),
         raising=False,
     )
-    assert _scan_spool_base_dir(rag) == tmp_path / "fast-disk"
+    assert _scan_spool_base_dir(rag) == tmp_path / "fast-disk" / "_default"
 
 
-def test_base_dir_falls_back_to_the_os_temp_dir_without_a_working_dir(monkeypatch):
-    """``None`` means "let tempfile decide" — the last resort, not an error."""
+def test_each_workspace_gets_its_own_spool_directory(tmp_path, monkeypatch):
+    """Two workspaces may share one WORKING_DIR, and the spool file name inside
+    the directory is fixed — so the directory itself must separate them."""
     monkeypatch.setattr(
         _document_routes.global_args, "scan_spool_dir", "", raising=False
     )
-    assert _scan_spool_base_dir(type("_Rag", (), {})()) is None
+    base = tmp_path / "rag_storage" / "scan_spool"
+
+    assert _scan_spool_base_dir(_rag(str(tmp_path / "rag_storage"), "alpha")) == (
+        base / "alpha"
+    )
+    assert _scan_spool_base_dir(_rag(str(tmp_path / "rag_storage"), "beta")) == (
+        base / "beta"
+    )
+
+
+def test_a_traversing_workspace_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        _document_routes.global_args, "scan_spool_dir", "", raising=False
+    )
+    with pytest.raises(ValueError):
+        _scan_spool_base_dir(_rag(str(tmp_path / "rag_storage"), "../escape"))
+
+
+def test_base_dir_is_none_only_without_any_working_dir(monkeypatch):
+    """A real LightRAG always has working_dir; ``None`` is the test-rig path."""
+    monkeypatch.setattr(
+        _document_routes.global_args, "scan_spool_dir", "", raising=False
+    )
+    assert _scan_spool_base_dir(_rag(None)) is None
 
 
 def test_spool_is_created_under_the_requested_dir_and_removed_on_close(tmp_path):
-    base = tmp_path / "rag_storage" / "scan_spool"
+    base = tmp_path / "rag_storage" / "scan_spool" / "_default"
     spool = _ScanCandidateSpool(4, base)
     try:
-        assert base.exists()
-        created = list(base.iterdir())
-        assert len(created) == 1
-        assert (created[0] / "candidates.sqlite3").exists()
+        assert (base / "candidates.sqlite3").exists()
     finally:
         spool.close()
 
     # Disposable: the scan's ordering state does not outlive the scan.
-    assert list(base.iterdir()) == []
+    assert list(base.glob("candidates.sqlite3*")) == []
 
 
-def test_an_unusable_base_dir_warns_and_still_produces_a_working_spool(
-    tmp_path, caplog
-):
-    """A misconfigured SCAN_SPOOL_DIR must not fail the whole scan."""
+def test_an_unusable_base_dir_fails_the_scan_instead_of_relocating(tmp_path):
+    """Fail-closed placement.
+
+    Relocating to the OS temp dir is not a degraded-but-correct mode: where
+    /tmp is tmpfs it silently restores the O(number of files) RAM cost the
+    spool exists to remove, and the operator learns about it as an OOM kill
+    partway through a large scan instead of an error naming the directory.
+    """
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("regular file", encoding="utf-8")
 
-    lightrag_logger = importlib.import_module("lightrag.utils").logger
-    previous = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
-        with caplog.at_level("WARNING", logger=lightrag_logger.name):
-            spool = _ScanCandidateSpool(4, blocker / "spool")
-    finally:
-        lightrag_logger.propagate = previous
+    with pytest.raises(RuntimeError, match="SCAN_SPOOL_DIR"):
+        _ScanCandidateSpool(4, blocker / "spool")
 
-    try:
-        assert "SCAN_SPOOL_DIR" in caplog.text
-        claimer = asyncio.run(spool.claim(tmp_path / "a.txt", "a.txt", 1))
-        assert claimer is None
+
+def test_a_crashed_scans_leftover_spool_is_reclaimed_not_accumulated(tmp_path):
+    """``kill -9`` skips close(); nothing else reclaims a persistent volume.
+
+    A fixed name per workspace caps the residue at one spool: the next scan
+    deletes what it finds before opening its own, rather than adding to it.
+    """
+    base = tmp_path / "scan_spool" / "_default"
+    base.mkdir(parents=True)
+    leftover = base / "candidates.sqlite3"
+    leftover.write_bytes(b"corpse of a killed scan")
+    (base / "candidates.sqlite3-journal").write_bytes(b"stale journal")
+
+    with _ScanCandidateSpool(4, base) as spool:
+        # One spool, not two: the stale journal is gone and the database file
+        # was reopened in place rather than a second directory being minted.
+        assert list(base.glob("candidates.sqlite3*")) == [leftover]
+        # And the corpse's bytes did not survive into this scan's database.
+        assert asyncio.run(spool.claim(tmp_path / "a.txt", "a.txt", 1)) is None
         assert _drain(spool, 4) == [["a.txt"]]
-    finally:
-        spool.close()
+
+    assert list(base.glob("candidates.sqlite3*")) == []
 
 
 # --------------------------------------------------------------------------
@@ -218,9 +265,11 @@ def test_the_candidate_carries_the_size_discovery_stated(tmp_path):
 
         batches = list(spool.ordered_batches(8))
 
+        # 0, never None: "already read, unknown" — so the enqueue path does
+        # not go back to the filesystem for a file that just failed to stat.
         assert [(c.path.name, c.size) for c in batches[0]] == [
             ("sized.txt", 10),
-            ("vanished.txt", None),
+            ("vanished.txt", 0),
         ]
 
 

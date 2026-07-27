@@ -658,7 +658,7 @@ async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(
 
     await pipeline_enqueue_scan_batch(
         rag,
-        [_ScanCandidate(second, None), _ScanCandidate(first, None)],
+        [_ScanCandidate(second, 0), _ScanCandidate(first, 0)],
         "track-scan",
     )
 
@@ -701,7 +701,7 @@ async def test_pipeline_enqueue_scan_batch_preserves_the_spool_order(
     # Spool order (by mtime) deliberately opposes alphabetical/pinyin order.
     enqueued = await pipeline_enqueue_scan_batch(
         rag,
-        [_ScanCandidate(older, None), _ScanCandidate(newer, None)],
+        [_ScanCandidate(older, 0), _ScanCandidate(newer, 0)],
         "track-scan",
     )
 

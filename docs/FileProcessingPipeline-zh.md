@@ -786,7 +786,11 @@ __parsed__/<base>.docling_raw/
 
   发现阶段仍是单遍无序流，但精确的全局 mtime 顺序必然需要在某处保存 O(文件数) 的排序状态。因此新候选写入可丢弃的 SQLite spool：UNIQUE canonical-key 索引在任何新行进入 doc_status 前维持整次扫描的 first-physical-claim-wins；`(mtime, path, discovery sequence)` 索引再通过 `fetchmany(SCAN_ENQUEUE_BATCH_SIZE)` 分批读取，使 Python 内存保持 O(K)。每个候选还携带发现阶段已经 stat 到的文件大小，入队阶段因此不再重复读一次元数据。
 
-  **spool 的落点**：依次取 `SCAN_SPOOL_DIR`、`WORKING_DIR/scan_spool`、操作系统临时目录。它必须落在真实、可写的本地磁盘上：spool 的全部意义就是把 O(文件数) 的状态挪出内存，而很多 Linux 主机上 `/tmp` 是 RAM 支撑的 tmpfs，落在那里等于把内存又还回去。`WORKING_DIR` 本身是网络卷时应显式设置 `SCAN_SPOOL_DIR`。INPUT_DIR 被有意排除：它经常是网络挂载（全流程唯一一处批量写入落在最慢的卷上）、存在合法的只读挂载方式、且被同步工具共管，可能在扫描中途把 spool 复制走或删掉。落点不可用时降级到系统临时目录并输出 warning，不会因此让整次扫描失败。
+  **spool 的落点**：依次取 `SCAN_SPOOL_DIR`、`WORKING_DIR/scan_spool`，两者都再按 workspace 分子目录。它必须落在真实、可写的本地磁盘上：spool 的全部意义就是把 O(文件数) 的状态挪出内存，而很多 Linux 主机上 `/tmp` 是 RAM 支撑的 tmpfs，落在那里等于把内存又还回去。`WORKING_DIR` 本身是网络卷时应显式设置 `SCAN_SPOOL_DIR`。INPUT_DIR 被有意排除：它经常是网络挂载（全流程唯一一处批量写入落在最慢的卷上）、存在合法的只读挂载方式、且被同步工具共管，可能在扫描中途把 spool 复制走或删掉。
+
+  **落点失败是 fail-closed**：目录不可用时扫描直接失败，错误信息点名 `SCAN_SPOOL_DIR`，且一条都不入队；输入文件原封不动，改完配置重扫不丢任何东西。它**不会**改落到系统临时目录 —— 那不是"降级但仍正确"，在 tmpfs 主机上它恰好把 spool 要消除的内存开销原样还回来，而运维只会在大扫描跑到一半时以 OOM 被杀的形式发现。
+
+  **崩溃残留上限为一份**：spool 落在持久卷上，`kill -9` 留下的东西没人回收，因此它在 workspace 子目录里用**固定文件名**而非随机名：下次扫描在打开自己的之前先删掉残留。残留因此恒为一份，而不是每崩一次多一份。固定名是安全的，因为 `scanning_exclusive` 本就只允许每个 workspace 同时跑一次扫描（也正是这个保证让两次扫描不会争抢 INPUT_DIR）；而 workspace 子目录保证共用同一个 `WORKING_DIR` 的两个 workspace 不会复用彼此的文件。
 
   **精确全局排序的代价**：发现阶段结束前没有任何行进入 doc_status，因此扫描被中断（取消、崩溃、重启）时**一条都不会入队** —— 源文件仍在 INPUT_DIR，下次扫描重新发现即可。唯一回不来的是发现阶段已删除的 `STALE_STUB` 行：文件下次会作为新文档重新入队，但那条"保留供人工 review"的 FAILED stub 已经没了。spool 本身不属于 LightRAG 持久存储，扫描结束即删除。
 - 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；上述自动恢复（`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`）仅用于目录扫描场景。

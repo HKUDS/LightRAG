@@ -214,6 +214,63 @@ def test_unreadable_mtime_sorts_after_readable_candidates(tmp_path, monkeypatch)
     asyncio.run(_run())
 
 
+def test_an_unusable_spool_directory_fails_the_scan_closed(
+    tmp_path, monkeypatch, caplog
+):
+    """Fail-closed placement, at the route level.
+
+    The scan reports the misconfiguration and enqueues nothing, rather than
+    silently relocating its O(number of files) ordering state to a possibly
+    RAM-backed /tmp and surfacing the problem as an OOM kill partway through.
+    Files stay in INPUT_DIR, so fixing the setting and re-scanning loses
+    nothing.
+    """
+
+    async def _run():
+        rag = _StreamRag()
+        doc_manager = DocumentManager(str(tmp_path))
+        blocker = tmp_path / "blocked-by-a-regular-file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(
+            _document_routes,
+            "global_args",
+            SimpleNamespace(
+                scan_enqueue_batch_size=2,
+                scan_spool_dir=str(blocker / "spool"),
+            ),
+        )
+
+        candidate = doc_manager.input_dir / "candidate.txt"
+        candidate.write_text("body", encoding="utf-8")
+
+        batches: list[object] = []
+
+        async def _capture_batch(_rag, candidates, _track_id):
+            batches.append(candidates)
+            return len(candidates)
+
+        monkeypatch.setattr(
+            _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
+        )
+
+        lightrag_logger = importlib.import_module("lightrag.utils").logger
+        previous = lightrag_logger.propagate
+        lightrag_logger.propagate = True
+        try:
+            with caplog.at_level("ERROR", logger=lightrag_logger.name):
+                await run_scanning_process(rag, doc_manager, "track-bad-spool")
+        finally:
+            lightrag_logger.propagate = previous
+
+        assert batches == []
+        assert candidate.exists()
+        assert not (doc_manager.input_dir / PARSED_DIR_NAME).exists()
+        # The failure names the knob the operator has to fix.
+        assert "SCAN_SPOOL_DIR" in caplog.text
+
+    asyncio.run(_run())
+
+
 def test_iter_new_files_is_lazy_and_skips_directories(tmp_path):
     """Discovery must be a generator (no whole-directory list) and must not hand
     a directory named like a document to the enqueue path."""
