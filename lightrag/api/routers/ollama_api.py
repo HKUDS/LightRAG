@@ -176,8 +176,10 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
     # Initialize user_prompt as None
     user_prompt = None
 
-    # First check if there's a bracket format for user prompt
-    bracket_pattern = r"^/([a-z]*)\[(.*?)\](.*)"
+    # First check if there's a bracket format for user prompt. The trailing
+    # group spans newlines so a multi-line question is not truncated at the
+    # first one; the prompt group stays single-line, as before.
+    bracket_pattern = r"^/([a-z]*)\[(.*?)\]([\s\S]*)"
     bracket_match = re.match(bracket_pattern, query)
 
     if bracket_match:

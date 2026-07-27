@@ -62,6 +62,26 @@ def test_parse_query_mode(query, expected):
     assert parse_query_mode(query) == expected
 
 
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        (
+            "/local[be brief] line one\nline two",
+            ("line one\nline two", SearchMode.local, False, "be brief"),
+        ),
+        (
+            "/[be brief] line one\nline two",
+            ("line one\nline two", SearchMode.mix, False, "be brief"),
+        ),
+    ],
+)
+def test_bracket_prompt_keeps_multiline_query(query, expected):
+    """A multi-line question must survive the bracket form, as it does without it."""
+    assert parse_query_mode(query) == expected
+    # The non-bracket path is the reference behavior.
+    assert parse_query_mode("/local line one\nline two")[0] == "line one\nline two"
+
+
 @pytest.mark.parametrize("mode_prefix", ["local", "global", "naive", "hybrid", "mix"])
 def test_bracket_prompt_without_query_keeps_mode(mode_prefix):
     """Every space-suffixed mode key survives an empty trailing query."""
