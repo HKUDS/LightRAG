@@ -1265,6 +1265,22 @@ class RedisDocStatusStorage(DocStatusStorage):
         return created, doc_id
 
     @staticmethod
+    def _status_value(value: Any) -> str:
+        """Plain status text for a sidecar ZSET key, from either a
+        persisted row (plain ``str``) or a caller-supplied ``DocStatus``.
+
+        ``DocStatus`` mixes in ``str``, so ``json.dumps`` happily encodes it
+        as its bare value ("pending") — but ``str(DocStatus.PENDING)`` goes
+        through ``Enum.__str__`` and yields ``"DocStatus.PENDING"`` instead.
+        Calling plain ``str()`` on a live enum member (as opposed to a value
+        already round-tripped through JSON) silently files the sidecar entry
+        under the wrong key, so every write after that member is added is
+        invisible to ``get_docs_by_statuses_page`` — do not inline this."""
+        if isinstance(value, DocStatus):
+            return value.value
+        return str(value) if value is not None else ""
+
+    @staticmethod
     def _is_duplicate_row(row: Any) -> bool:
         if not isinstance(row, dict):
             return False
@@ -1303,13 +1319,13 @@ class RedisDocStatusStorage(DocStatusStorage):
         makes the whole write atomic under a WATCH on the doc key alone.
         """
         if old_row is not None:
-            old_status = str(old_row.get("status") or "")
+            old_status = self._status_value(old_row.get("status"))
             if old_status:
                 pipe.zrem(
                     self._zset_key(old_status), self._zset_member(old_row, doc_id)
                 )
         if new_row is not None:
-            new_status = str(new_row.get("status") or "")
+            new_status = self._status_value(new_row.get("status"))
             if new_status:
                 pipe.zadd(
                     self._zset_key(new_status),
@@ -1433,7 +1449,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                             old_basename = self._basename_of(old_row)
                             pipe.multi()
                             pipe.delete(main_key)
-                            old_status = str(old_row.get("status") or "")
+                            old_status = self._status_value(old_row.get("status"))
                             if old_status:
                                 pipe.zrem(
                                     self._zset_key(old_status),
@@ -2457,7 +2473,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                     if not isinstance(row, dict):
                         continue
                     doc_id = key.split(":", 1)[1]
-                    status = str(row.get("status") or "")
+                    status = self._status_value(row.get("status"))
                     if status:
                         statuses_seen.add(status)
                         write_pipe.zadd(
