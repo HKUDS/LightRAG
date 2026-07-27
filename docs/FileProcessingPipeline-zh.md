@@ -784,7 +784,11 @@ __parsed__/<base>.docling_raw/
   | `RESUME_SAME_PHYSICAL_SOURCE` | 物理 basename == `source_file` | **resume 路径**：doc_status 现状保留，源文件留在 `INPUT/`，由处理循环按状态查询接走（不重新提取、不覆盖既有状态） |
   | `ALIAS_DUPLICATE` | 物理 basename != `source_file` | 同 canonical 的另一个物理文件：归档 alias 并输出 warning，不走普通入队（避免制造 `dup-*` FAILED 行） |
 
-  发现阶段仍是单遍无序流，但精确的全局 mtime 顺序必然需要在某处保存 O(文件数) 的排序状态。因此新候选写入操作系统临时目录中的可丢弃 SQLite spool：UNIQUE canonical-key 索引在任何新行进入 doc_status 前维持整次扫描的 first-physical-claim-wins；`(mtime, path, discovery sequence)` 索引再通过 `fetchmany(SCAN_ENQUEUE_BATCH_SIZE)` 分批读取，使 Python 内存保持 O(K)。spool 不属于 LightRAG 持久存储，扫描结束即删除；进程崩溃时源文件仍在，下次扫描重新发现即可。
+  发现阶段仍是单遍无序流，但精确的全局 mtime 顺序必然需要在某处保存 O(文件数) 的排序状态。因此新候选写入可丢弃的 SQLite spool：UNIQUE canonical-key 索引在任何新行进入 doc_status 前维持整次扫描的 first-physical-claim-wins；`(mtime, path, discovery sequence)` 索引再通过 `fetchmany(SCAN_ENQUEUE_BATCH_SIZE)` 分批读取，使 Python 内存保持 O(K)。每个候选还携带发现阶段已经 stat 到的文件大小，入队阶段因此不再重复读一次元数据。
+
+  **spool 的落点**：依次取 `SCAN_SPOOL_DIR`、`WORKING_DIR/scan_spool`、操作系统临时目录。它必须落在真实、可写的本地磁盘上：spool 的全部意义就是把 O(文件数) 的状态挪出内存，而很多 Linux 主机上 `/tmp` 是 RAM 支撑的 tmpfs，落在那里等于把内存又还回去。`WORKING_DIR` 本身是网络卷时应显式设置 `SCAN_SPOOL_DIR`。INPUT_DIR 被有意排除：它经常是网络挂载（全流程唯一一处批量写入落在最慢的卷上）、存在合法的只读挂载方式、且被同步工具共管，可能在扫描中途把 spool 复制走或删掉。落点不可用时降级到系统临时目录并输出 warning，不会因此让整次扫描失败。
+
+  **精确全局排序的代价**：发现阶段结束前没有任何行进入 doc_status，因此扫描被中断（取消、崩溃、重启）时**一条都不会入队** —— 源文件仍在 INPUT_DIR，下次扫描重新发现即可。唯一回不来的是发现阶段已删除的 `STALE_STUB` 行：文件下次会作为新文档重新入队，但那条"保留供人工 review"的 FAILED stub 已经没了。spool 本身不属于 LightRAG 持久存储，扫描结束即删除。
 - 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；上述自动恢复（`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`）仅用于目录扫描场景。
 - 文件系统时间只在持久化前充当扫描优先级：spool 按全局从旧到新吐出候选，随后逐条入队，并在真正首次落库时写 `doc_status.created_at=now()`。文件一旦进入 doc_status，调度只认普通的不可变 `(created_at, id)`，文件 mtime 随即丢弃。mtime 不可读的候选排在所有可读时间之后，但不会因此丢失；文件消失或不可读仍由入队路径正常报错。
 - 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时直接返回 400。

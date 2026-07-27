@@ -24,7 +24,7 @@ import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Any, Literal
+from typing import Dict, Iterator, List, NamedTuple, Optional, Any, Literal, Sequence
 from fastapi import (
     APIRouter,
     Depends,
@@ -2152,12 +2152,25 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
 # legacy engine now extracts at the worker stage (LegacyParser), not here.
 
 
+class _ScanCandidate(NamedTuple):
+    """One spooled scan candidate: its path plus the size discovery already read.
+
+    Carrying the size forward keeps the enqueue phase from re-``stat``-ing a
+    file the spool just stat'ed — INPUT_DIR is frequently a network mount, where
+    that second metadata round-trip is the expensive part.
+    """
+
+    path: Path
+    size: int | None
+
+
 async def pipeline_enqueue_file(
     rag: LightRAG,
     file_path: Path,
     track_id: str = None,
     from_scan: bool = False,
     admission_token: str | None = None,
+    known_file_size: int | None = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -2172,6 +2185,11 @@ async def pipeline_enqueue_file(
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning guard there.
+        known_file_size: the size the caller already stat'ed, reused instead of
+            issuing a second metadata read.  Scan supplies the value its
+            candidate spool recorded at discovery time; it feeds error reports
+            only, so a size that went stale between discovery and enqueue costs
+            nothing.
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -2181,16 +2199,17 @@ async def pipeline_enqueue_file(
         track_id = generate_track_id("unknown")
 
     try:
-        file_size = 0
-
         # File size is used only for error reporting. Scan-time mtime ordering
         # happens before this function, in the disk-backed candidate spool;
         # doc_status.created_at always remains the actual first-persist time.
-        try:
-            stat = await asyncio.to_thread(file_path.stat)
-            file_size = stat.st_size
-        except Exception:
-            file_size = 0
+        if known_file_size is not None:
+            file_size = known_file_size
+        else:
+            try:
+                stat = await asyncio.to_thread(file_path.stat)
+                file_size = stat.st_size
+            except Exception:
+                file_size = 0
 
         try:
             directives = resolve_parser_directives(file_path)
@@ -2358,7 +2377,7 @@ async def pipeline_index_file(
 
 async def pipeline_enqueue_scan_batch(
     rag: LightRAG,
-    file_paths: List[Path],
+    candidates: Sequence[_ScanCandidate],
     track_id: str = None,
 ) -> int:
     """Write ONE mtime-ordered, bounded scan batch — no processing drive (§8.2).
@@ -2376,7 +2395,8 @@ async def pipeline_enqueue_scan_batch(
 
     Args:
         rag: LightRAG instance
-        file_paths: the batch's files (bounded by ``SCAN_ENQUEUE_BATCH_SIZE``)
+        candidates: the batch's spooled candidates IN ENQUEUE ORDER, bounded by
+            ``SCAN_ENQUEUE_BATCH_SIZE``
         track_id: tracking ID stamped on every document of this scan
 
     Returns:
@@ -2385,19 +2405,21 @@ async def pipeline_enqueue_scan_batch(
         ``pipeline_enqueue_file`` as an error document / archive and does not
         abort the rest of the batch.
     """
-    if not file_paths:
+    if not candidates:
         return 0
     enqueued = 0
     try:
-        # Preserve the disk spool's global ``(mtime, path)`` order. Re-sorting a
-        # batch here would destroy that order before created_at=now() records it
-        # in doc_status.
-        for file_path in file_paths:
+        # Iterate in the order given. The disk spool emits candidates in global
+        # ``(mtime, path)`` order and created_at=now() records that order into
+        # doc_status one row at a time, so ANY re-sort here (the batch-local
+        # pinyin sort this replaced included) silently breaks oldest-file-first.
+        for candidate in candidates:
             success, _ = await pipeline_enqueue_file(
                 rag,
-                file_path,
+                candidate.path,
                 track_id,
                 from_scan=True,
+                known_file_size=candidate.size,
             )
             if success:
                 enqueued += 1
@@ -2969,6 +2991,35 @@ def _scan_enqueue_batch_size() -> int:
     return configured
 
 
+_SCAN_SPOOL_PREFIX = "lightrag-scan-sort-"
+
+
+def _scan_spool_base_dir(rag: LightRAG) -> Path | None:
+    """Where this scan creates its disposable candidate spool.
+
+    Resolution order: ``SCAN_SPOOL_DIR`` → ``WORKING_DIR/scan_spool`` → ``None``
+    (the OS temporary directory).  The spool holds O(files-in-INPUT_DIR)
+    ordering rows, so it must land on real, writable, local disk: ``/tmp`` is a
+    RAM-backed tmpfs on many Linux hosts, which would put the very state this
+    design moves OUT of Python memory straight back into memory.  WORKING_DIR is
+    already LightRAG's own writable local state volume, which makes it the right
+    default.
+
+    INPUT_DIR is deliberately NOT a candidate.  It is frequently a network mount
+    (the slowest possible home for the one bulk-insert phase in the pipeline),
+    it is legitimately mounted read-only in "scan but never write" deployments,
+    and it is co-managed by sync tools that would copy or delete the spool
+    mid-scan.
+    """
+    configured = getattr(global_args, "scan_spool_dir", None)
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured.strip())
+    working_dir = getattr(rag, "working_dir", None)
+    if isinstance(working_dir, str) and working_dir.strip():
+        return Path(working_dir.strip()) / "scan_spool"
+    return None
+
+
 class _ScanCandidateSpool:
     """Disk-backed, globally mtime-ordered scan candidates.
 
@@ -2982,18 +3033,20 @@ class _ScanCandidateSpool:
     * a UNIQUE canonical key preserves first-physical-claim-wins before any
       candidate has reached doc_status;
     * an on-disk ``(mtime, path, sequence)`` index provides the global order;
-    * :meth:`ordered_batches` fetches at most K paths into Python memory;
+    * :meth:`ordered_batches` fetches at most K candidates into Python memory;
     * once a path is enqueued, doc_status stamps its real creation time and the
       filesystem timestamp has no further role.
 
     A missing mtime does not lose the candidate. It sorts after every readable
     timestamp and the enqueue path reports a vanished/unreadable file normally.
-    The database is rebuildable coordination state in the OS temporary
-    directory, never persistent LightRAG storage.
+    The database is rebuildable coordination state under
+    :func:`_scan_spool_base_dir`, never persistent LightRAG storage: it is
+    deleted when the scan ends, and a process death simply leaves the source
+    files for the next scan to rediscover.
     """
 
-    def __init__(self, commit_interval: int):
-        self._temp_dir = tempfile.TemporaryDirectory(prefix="lightrag-scan-sort-")
+    def __init__(self, commit_interval: int, base_dir: Path | None = None):
+        self._temp_dir = self._make_temp_dir(base_dir)
         self._db_path = Path(self._temp_dir.name) / "candidates.sqlite3"
         self._connection = sqlite3.connect(self._db_path)
         # Bound SQLite's page cache and force any query scratch space to disk.
@@ -3007,8 +3060,8 @@ class _ScanCandidateSpool:
             CREATE TABLE candidates (
                 sequence INTEGER PRIMARY KEY,
                 canonical_key TEXT,
-                physical_name TEXT NOT NULL,
                 file_path TEXT NOT NULL,
+                file_size INTEGER,
                 mtime_missing INTEGER NOT NULL,
                 mtime_ns INTEGER NOT NULL,
                 path_sort_key TEXT NOT NULL
@@ -3027,28 +3080,60 @@ class _ScanCandidateSpool:
         self._commit_interval = max(1, int(commit_interval))
         self._pending_writes = 0
 
+    @staticmethod
+    def _make_temp_dir(base_dir: Path | None) -> tempfile.TemporaryDirectory:
+        """Create the spool directory, degrading to the OS temp dir on failure.
+
+        A spool that cannot be placed where the operator asked must not fail the
+        whole scan — the fallback is slower or RAM-backed, never wrong — but it
+        is warned about, because a silent tmpfs fallback is exactly the case
+        where the bounded-memory guarantee quietly stops holding.
+        """
+        if base_dir is not None:
+            try:
+                base_dir.mkdir(parents=True, exist_ok=True)
+                return tempfile.TemporaryDirectory(
+                    prefix=_SCAN_SPOOL_PREFIX, dir=base_dir
+                )
+            except OSError as spool_error:
+                logger.warning(
+                    f"Scan candidate spool cannot use {base_dir} ({spool_error}); "
+                    "falling back to the OS temporary directory. Point "
+                    "SCAN_SPOOL_DIR at a writable local disk — a tmpfs /tmp puts "
+                    "the scan's ordering state back into RAM."
+                )
+        return tempfile.TemporaryDirectory(prefix=_SCAN_SPOOL_PREFIX)
+
     async def claim(
         self,
         file_path: Path,
         canonical_key: str,
         sequence: int,
     ) -> str | None:
-        """Stage one candidate; return the earlier physical claimer on conflict."""
+        """Stage one candidate; return the earlier claimer's path on conflict."""
 
         try:
             # INPUT_DIR may be a network mount. Keep its metadata read off the
             # event loop so scan-job heartbeats and cancellation remain live.
+            # This is the ONLY stat of the file: the size travels with the
+            # candidate so the enqueue phase does not repeat the round-trip.
             stat = await asyncio.to_thread(file_path.stat)
             mtime_missing = 0
-            mtime_ns = int(
-                getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
-            )
+            # NOT ``getattr(stat, "st_mtime_ns", <fallback>)``: Python evaluates
+            # a getattr default eagerly, so the fallback would read st_mtime on
+            # every call and an object exposing only st_mtime_ns would raise.
+            mtime_ns = getattr(stat, "st_mtime_ns", None)
+            if mtime_ns is None:
+                mtime_ns = int(stat.st_mtime * 1_000_000_000)
+            file_size = stat.st_size
         except Exception:
             mtime_missing = 1
             mtime_ns = 0
+            file_size = None
 
         # SQLite UNIQUE permits multiple NULLs, matching unknown_source's
-        # "identity cannot be claimed" semantics.
+        # "identity cannot be claimed" semantics: every such candidate is
+        # staged, none of them claims the others' slot.
         stored_canonical = (
             None if canonical_key == UNKNOWN_FILE_SOURCE else canonical_key
         )
@@ -3057,8 +3142,8 @@ class _ScanCandidateSpool:
             INSERT OR IGNORE INTO candidates(
                 sequence,
                 canonical_key,
-                physical_name,
                 file_path,
+                file_size,
                 mtime_missing,
                 mtime_ns,
                 path_sort_key
@@ -3067,21 +3152,30 @@ class _ScanCandidateSpool:
             (
                 sequence,
                 stored_canonical,
-                file_path.name,
                 str(file_path),
+                file_size,
                 mtime_missing,
-                mtime_ns,
+                int(mtime_ns),
                 get_pinyin_sort_key(str(file_path)),
             ),
         )
-        if cursor.rowcount == 0 and stored_canonical is not None:
-            row = self._connection.execute(
-                "SELECT physical_name FROM candidates WHERE canonical_key = ?",
-                (stored_canonical,),
-            ).fetchone()
-            if row is None:  # pragma: no cover - SQLite constraint invariant
+        if cursor.rowcount == 0:
+            # OR IGNORE swallows EVERY constraint violation, so a row that did
+            # not land is only a duplicate canonical claim when we can name the
+            # claimer. Anything else (a reused sequence, a NOT NULL breach)
+            # would silently drop a discovered file — raise instead.
+            row = (
+                self._connection.execute(
+                    "SELECT file_path FROM candidates WHERE canonical_key = ?",
+                    (stored_canonical,),
+                ).fetchone()
+                if stored_canonical is not None
+                else None
+            )
+            if row is None:
                 raise RuntimeError(
-                    f"canonical scan claim disappeared: {stored_canonical}"
+                    f"scan candidate {file_path} (sequence {sequence}) was "
+                    "rejected by the spool without a canonical claim to blame"
                 )
             return str(row[0])
 
@@ -3091,14 +3185,14 @@ class _ScanCandidateSpool:
             self._pending_writes = 0
         return None
 
-    def ordered_batches(self, batch_size: int) -> Iterator[list[Path]]:
-        """Yield globally oldest-first path batches, each bounded by ``batch_size``."""
+    def ordered_batches(self, batch_size: int) -> Iterator[list[_ScanCandidate]]:
+        """Yield globally oldest-first batches, each bounded by ``batch_size``."""
 
         self._connection.commit()
         self._pending_writes = 0
         cursor = self._connection.execute(
             """
-            SELECT file_path
+            SELECT file_path, file_size
             FROM candidates
             ORDER BY
                 mtime_missing ASC,
@@ -3108,7 +3202,12 @@ class _ScanCandidateSpool:
             """
         )
         while rows := cursor.fetchmany(batch_size):
-            yield [Path(str(row[0])) for row in rows]
+            yield [
+                _ScanCandidate(
+                    Path(str(row[0])), None if row[1] is None else int(row[1])
+                )
+                for row in rows
+            ]
 
     def close(self) -> None:
         try:
@@ -3391,6 +3490,13 @@ async def run_scanning_process(
         # yields at most ``SCAN_ENQUEUE_BATCH_SIZE`` paths at a time after
         # discovery. Only then are rows written to doc_status, in oldest-file-
         # first order, with created_at stamped at the actual write time.
+        #
+        # The cost of global ordering: nothing is persisted until discovery
+        # finishes, so an interrupted scan enqueues NOTHING (the source files
+        # stay in INPUT_DIR for the next scan to rediscover). The one thing that
+        # does not come back is a STALE_STUB row deleted below — the file is
+        # re-enqueued as new next time, but its preserved-for-review FAILED stub
+        # is gone.
         batch_size = _scan_enqueue_batch_size()
         discovered = 0
         enqueued_count = 0
@@ -3424,17 +3530,22 @@ async def run_scanning_process(
 
             claimer = await spool.claim(file_path, canonical_key, sequence)
             if claimer is not None:
+                # Full paths, not basenames: two same-named files in different
+                # subdirectories share a canonical key, and "a.docx duplicates
+                # a.docx" tells an operator nothing about which one won.
                 await _archive(
                     file_path,
                     "Skipping duplicate file in scan: "
-                    f"{file_path.name} duplicates {claimer} "
+                    f"{file_path} duplicates {claimer} "
                     f"(canonical: {canonical_key})",
                     _ScanFileClass.ALIAS_DUPLICATE.value,
                 )
                 return
             reporter.count(counter_key)
 
-        with _ScanCandidateSpool(batch_size) as candidate_spool:
+        with _ScanCandidateSpool(
+            batch_size, _scan_spool_base_dir(rag)
+        ) as candidate_spool:
             for file_path in doc_manager.iter_new_files():
                 discovered += 1
                 # Classifying a large tree can outlast the job lease; renewing here

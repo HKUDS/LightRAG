@@ -302,9 +302,9 @@ def _scan_rig(tmp_path, monkeypatch, rag):
     doc_manager = DocumentManager(str(tmp_path))
     batched: list[Path] = []
 
-    async def _capture_batch(_rag, file_paths, _track_id):
-        batched.extend(file_paths)
-        return len(file_paths)
+    async def _capture_batch(_rag, candidates, _track_id):
+        batched.extend(c.path for c in candidates)
+        return len(candidates)
 
     monkeypatch.setattr(_document_routes, "pipeline_enqueue_scan_batch", _capture_batch)
     return doc_manager, batched

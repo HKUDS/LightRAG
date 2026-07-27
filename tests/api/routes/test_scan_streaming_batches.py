@@ -110,9 +110,9 @@ def test_candidates_are_spooled_then_written_in_global_mtime_order(
 
         doc_manager.iter_new_files = _iter_new_files
 
-        async def _capture_batch(_rag, file_paths, _track_id):
-            events.append(("flush", [path.name for path in file_paths]))
-            return len(file_paths)
+        async def _capture_batch(_rag, candidates, _track_id):
+            events.append(("flush", [c.path.name for c in candidates]))
+            return len(candidates)
 
         monkeypatch.setattr(
             _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
@@ -157,9 +157,9 @@ def test_first_scan_wide_claim_wins_and_the_alias_is_archived(tmp_path, monkeypa
 
         batched: list[Path] = []
 
-        async def _capture_batch(_rag, file_paths, _track_id):
-            batched.extend(file_paths)
-            return len(file_paths)
+        async def _capture_batch(_rag, candidates, _track_id):
+            batched.extend(c.path for c in candidates)
+            return len(candidates)
 
         monkeypatch.setattr(
             _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
@@ -199,9 +199,9 @@ def test_unreadable_mtime_sorts_after_readable_candidates(tmp_path, monkeypatch)
 
         ordered: list[str] = []
 
-        async def _capture_batch(_rag, file_paths, _track_id):
-            ordered.extend(path.name for path in file_paths)
-            return len(file_paths)
+        async def _capture_batch(_rag, candidates, _track_id):
+            ordered.extend(c.path.name for c in candidates)
+            return len(candidates)
 
         monkeypatch.setattr(
             _document_routes, "pipeline_enqueue_scan_batch", _capture_batch

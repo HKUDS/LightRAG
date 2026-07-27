@@ -50,6 +50,7 @@ async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
 
 pipeline_index_file = _document_routes.pipeline_index_file
 pipeline_enqueue_scan_batch = _document_routes.pipeline_enqueue_scan_batch
+_ScanCandidate = _document_routes._ScanCandidate
 pipeline_index_texts = _document_routes.pipeline_index_texts
 pipeline_enqueue_file = _document_routes.pipeline_enqueue_file
 run_scanning_process = _document_routes.run_scanning_process
@@ -655,7 +656,16 @@ async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(
     second.write_bytes(b"second docx bytes")
     rag = _FakeRag()
 
-    await pipeline_enqueue_scan_batch(rag, [second, first], "track-scan")
+    await pipeline_enqueue_scan_batch(
+        rag,
+        [_ScanCandidate(second, None), _ScanCandidate(first, None)],
+        "track-scan",
+    )
+
+    # ``second.[mineru].docx`` needs MINERU_LOCAL_ENDPOINT, so only first.docx
+    # actually enqueues here. Assert that explicitly: an empty ``rag.enqueued``
+    # would satisfy every ``all(...)`` below and the test would prove nothing.
+    assert [item["file_path"] for item in rag.enqueued] == [str(first)]
 
     assert first.exists()
     assert second.exists()
@@ -668,6 +678,90 @@ async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(
     assert all(
         item["process_options"] == PROCESS_OPTION_CHUNK_FIXED for item in rag.enqueued
     )
+
+
+async def test_pipeline_enqueue_scan_batch_preserves_the_spool_order(
+    tmp_path, monkeypatch
+):
+    """Fix-proof: the batch is enqueued in the order the spool handed it over.
+
+    Global oldest-file-first ordering is recorded into doc_status one
+    ``created_at=now()`` row at a time, so this helper is the last place it can
+    be silently destroyed. It used to re-sort each batch with
+    ``sorted(..., key=get_pinyin_sort_key)``; with these two names that sort
+    reverses the batch, so re-introducing it fails here.
+    """
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    older = tmp_path / "zebra.docx"
+    newer = tmp_path / "alpha.docx"
+    older.write_bytes(b"older docx bytes")
+    newer.write_bytes(b"newer docx bytes")
+    rag = _FakeRag()
+
+    # Spool order (by mtime) deliberately opposes alphabetical/pinyin order.
+    enqueued = await pipeline_enqueue_scan_batch(
+        rag,
+        [_ScanCandidate(older, None), _ScanCandidate(newer, None)],
+        "track-scan",
+    )
+
+    assert enqueued == 2
+    assert [item["file_path"] for item in rag.enqueued] == [str(older), str(newer)]
+
+
+async def test_pipeline_enqueue_scan_batch_reuses_the_spooled_file_size(
+    tmp_path, monkeypatch
+):
+    """The size discovery stat'ed travels with the candidate — no second stat.
+
+    INPUT_DIR is frequently a network mount, so the enqueue phase must not pay
+    another metadata round-trip per file just to fill in an error-report field.
+    """
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    doc = tmp_path / "sized.docx"
+    doc.write_bytes(b"docx bytes")
+    rag = _FakeRag()
+
+    stats: list[Path] = []
+    real_stat = Path.stat
+
+    def _counting_stat(self, *args, **kwargs):
+        stats.append(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _counting_stat)
+
+    await pipeline_enqueue_scan_batch(rag, [_ScanCandidate(doc, 4096)], "track-scan")
+
+    assert len(rag.enqueued) == 1
+    assert doc not in stats
+
+
+async def test_pipeline_enqueue_file_stats_when_no_size_is_supplied(
+    tmp_path, monkeypatch
+):
+    """The non-scan ingress paths still get their size the ordinary way.
+
+    Counterpart to the test above: the stat is SKIPPED only because the caller
+    supplied the size, not because it was dropped for everyone.
+    """
+    doc = tmp_path / "unsized.docx"
+    doc.write_bytes(b"docx bytes")
+    rag = _FakeRag()
+
+    stats: list[Path] = []
+    real_stat = Path.stat
+
+    def _counting_stat(self, *args, **kwargs):
+        stats.append(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _counting_stat)
+
+    success, _track = await pipeline_enqueue_file(rag, doc, "track-upload")
+
+    assert success is True
+    assert doc in stats
 
 
 async def test_pipeline_index_texts_sets_api_default_process_options():
@@ -765,16 +859,16 @@ async def test_scan_archives_scan_wide_canonical_duplicates(tmp_path, monkeypatc
     rag = _ScanRag({})
     calls = []
 
-    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+    async def capture_pipeline(rag_arg, candidates, track_id, **kwargs):
         calls.append(
             {
                 "rag": rag_arg,
-                "file_paths": file_paths,
+                "file_paths": [candidate.path for candidate in candidates],
                 "track_id": track_id,
                 "kwargs": kwargs,
             }
         )
-        return len(file_paths)
+        return len(candidates)
 
     monkeypatch.setattr(
         _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
@@ -843,16 +937,16 @@ async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatc
     )
     calls = []
 
-    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+    async def capture_pipeline(rag_arg, candidates, track_id, **kwargs):
         calls.append(
             {
                 "rag": rag_arg,
-                "file_paths": file_paths,
+                "file_paths": [candidate.path for candidate in candidates],
                 "track_id": track_id,
                 "kwargs": kwargs,
             }
         )
-        return len(file_paths)
+        return len(candidates)
 
     monkeypatch.setattr(
         _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
@@ -901,16 +995,16 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
     )
     calls = []
 
-    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+    async def capture_pipeline(rag_arg, candidates, track_id, **kwargs):
         calls.append(
             {
                 "rag": rag_arg,
-                "file_paths": file_paths,
+                "file_paths": [candidate.path for candidate in candidates],
                 "track_id": track_id,
                 "kwargs": kwargs,
             }
         )
-        return len(file_paths)
+        return len(candidates)
 
     monkeypatch.setattr(
         _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
@@ -960,16 +1054,16 @@ async def test_scan_failed_extraction_record_without_full_docs_is_retried(
     )
     calls = []
 
-    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
+    async def capture_pipeline(rag_arg, candidates, track_id, **kwargs):
         calls.append(
             {
                 "rag": rag_arg,
-                "file_paths": file_paths,
+                "file_paths": [candidate.path for candidate in candidates],
                 "track_id": track_id,
                 "kwargs": kwargs,
             }
         )
-        return len(file_paths)
+        return len(candidates)
 
     monkeypatch.setattr(
         _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
@@ -1011,8 +1105,8 @@ async def test_scan_failed_with_full_docs_resumes_normally(tmp_path, monkeypatch
     )
     calls = []
 
-    async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
-        calls.append(file_paths)
+    async def capture_pipeline(rag_arg, candidates, track_id, **kwargs):
+        calls.append([candidate.path for candidate in candidates])
 
     monkeypatch.setattr(
         _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
@@ -1055,7 +1149,7 @@ async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(
         }
     )
 
-    async def index_files_all_rejected(rag_arg, file_paths, track_id, **kwargs):
+    async def index_files_all_rejected(rag_arg, candidates, track_id, **kwargs):
         # Mirror the real helper when every per-file enqueue is rejected: the
         # batch lands nothing (0), and enqueue never drives processing anyway.
         return 0
