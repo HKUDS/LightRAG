@@ -5620,6 +5620,28 @@ def create_document_routes(
                     f"Successfully dropped all {storage_success_count} storage components",
                 )
 
+            # Some backends (OpenSearch) drop the doc_status index as a whole
+            # physical container rather than just its rows, and gate every
+            # subsequent STRICT read behind a readiness flag that only a
+            # write path clears back to healthy. /documents/scan's very first
+            # doc_status touch is a strict READ (the custom-chunk rollback,
+            # then the exclusive FAILED->PENDING reset) — neither is a write,
+            # so nothing would ever re-create the dropped index before the
+            # first scan tries to read it, permanently wedging every scan on
+            # this workspace until the process restarts. re-run the public,
+            # idempotent initialize() right away so the backend is exactly as
+            # ready as it was right after server startup; a backend without
+            # this gap (Postgres/Mongo/Redis/JSON row-level drop) just no-ops.
+            if rag.doc_status is not None:
+                try:
+                    await rag.doc_status.initialize()
+                except Exception as reinit_error:
+                    logger.error(
+                        f"/documents/clear: failed to re-initialize doc_status "
+                        f"after drop; the next /documents/scan may fail until "
+                        f"a write recreates it: {reinit_error}"
+                    )
+
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
