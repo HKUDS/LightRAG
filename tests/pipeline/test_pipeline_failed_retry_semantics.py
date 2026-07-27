@@ -260,6 +260,7 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
             PipelineNextDecision,
             PipelineNextStep,
             _AUTO_RESUME_DOC_STATUSES,
+            _ManualDrainProgress,
         )
 
         from lightrag.kg.shared_storage import (
@@ -301,6 +302,7 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
                     token=token,
                     pipeline_status=status,
                     pipeline_status_lock=lock,
+                    drain_progress=_ManualDrainProgress(),
                 )
             assert ingress.consume_auto_rescan() is True  # re-armed
 
@@ -318,6 +320,7 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
                     token=token,
                     pipeline_status=status,
                     pipeline_status_lock=lock,
+                    drain_progress=_ManualDrainProgress(),
                 )
             assert ingress.consume_auto_rescan() is False
             # The freeze was set by begin-drain and must be visible.

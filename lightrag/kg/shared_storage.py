@@ -585,6 +585,38 @@ def _my_start_id() -> Optional[str]:
     return _MY_START_ID_CACHE
 
 
+def _owner_identity_unprobeable(rec: Optional[Mapping[str, Any]]) -> bool:
+    """Can this owner record NEVER be resolved to alive-or-dead?
+
+    Only ONE condition qualifies: no recorded PID, so there is nothing to probe
+    however often the reclaim runs. LR2 §6.1 wants exactly that state to fence
+    the workspace with ``recovery_required`` (upload/manual/scan → 503) instead
+    of leaving a freeze held forever by an owner nobody can adjudicate and no
+    documented way out but restarting the service.
+
+    Two neighbouring states are deliberately NOT undecidable, because treating
+    them as such would fence live or reclaimable workspaces:
+
+    * **a missing ``process_start_id``** — death is still provable from the PID
+      alone (:func:`_pid_alive`); what is lost is only PID-*reuse* detection. A
+      dead owner here must still be reclaimed, so this predicate is evaluated
+      AFTER the confirmed-dead check.
+    * **an unreadable ``/proc`` entry for a PID that was just alive** — the
+      process exited between the two probes. :func:`_process_alive` answers ALIVE
+      and the next pass confirms the death; fencing on that benign race would
+      turn every ordinary worker exit into an operator ticket.
+
+    Reachability note: :func:`make_owner_record` always stamps ``os.getpid()``,
+    and the reclaim layer is gated to Linux multi-worker where ``/proc`` answers,
+    so in a healthy deployment this predicate is false. It exists so a
+    hand-written, truncated or foreign-writer record fences rather than pinning a
+    freeze that nothing can ever clear.
+    """
+    if not isinstance(rec, Mapping):
+        return False
+    return rec.get("pid") is None
+
+
 def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
     """Dead-only liveness for lock / reservation owners.
 
@@ -2163,11 +2195,23 @@ def _reservation_recovery_enabled() -> bool:
 
 def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
     """Human-readable refusal for a mutation attempted while ``recovery_required``
-    is set (a worker died mid custom_chunks/delete/clear, which may have
-    half-committed). Returns a generic message if the pipeline is not fenced."""
+    is set. Returns a generic message if the pipeline is not fenced.
+
+    The fence has more than one cause, and rendering them all as "a worker died"
+    would send an operator looking for a crash that never happened. A record
+    carrying an explicit ``message`` (a stalled manual drain, an owner whose
+    liveness can never be adjudicated) supplies its own wording; the original
+    dead-owner cause keeps the derived one.
+    """
     rec = pipeline_status.get("recovery_required")
     if not isinstance(rec, dict):
         return "Pipeline is not fenced for recovery."
+    explicit = rec.get("message")
+    if isinstance(explicit, str) and explicit:
+        return (
+            f"Pipeline is fenced pending recovery: {explicit} All mutations are "
+            "refused until the workspace is recovered or force-reset."
+        )
     op = rec.get("operation_record") or {}
     target = op.get("doc_id") or op.get("scope") or ""
     target = f" (target: {target})" if target else ""
@@ -2272,6 +2316,14 @@ def _dead_pipeline_reservation_updates(
     field reads stay local so a reconciliation decision costs one proxy ``copy``
     at its caller instead of one RPC per ``get``. Only confirmed-dead owners are
     reclaimed; a live-but-slow owner is never preempted.
+
+    An owner whose liveness can NEVER be adjudicated (no PID / no
+    ``process_start_id`` — see :func:`_owner_identity_undecidable`) is neither
+    reclaimed nor ignored: LR2 §6.1 requires it to fence the workspace with
+    ``recovery_required`` while leaving every flag it holds in place, so the
+    freeze is never risked on a guess and the operator gets a 503 plus the
+    documented ``/documents/recovery/force_reset`` exit instead of a 409 that
+    can only be cleared by restarting the service.
     """
     if not _reservation_recovery_enabled():
         return {}
@@ -2290,6 +2342,27 @@ def _dead_pipeline_reservation_updates(
         if not any(snapshot.get(flag) for flag in flags):
             continue
         if _process_alive(rec.get("pid"), rec.get("process_start_id")):
+            # Alive, or not confirmed dead. Distinguish the transient uncertainty
+            # (re-probed and settled on a later pass) from a record that can
+            # NEVER be adjudicated: the latter would otherwise hold its flags —
+            # a manual freeze included — until the service is restarted, with no
+            # 503 and no documented exit. Checked AFTER the dead branch so a
+            # provable death is always a reclaim, never a fence.
+            if _owner_identity_unprobeable(rec) and not snapshot.get(
+                "recovery_required"
+            ):
+                fence = {
+                    "kind": rec.get("kind") or owner_key,
+                    "owner_key": owner_key,
+                    "operation_record": snapshot.get("operation_record"),
+                    "message": (
+                        f"the '{owner_key}' holder records no process identity, so "
+                        "it can never be confirmed alive or dead; its reservation "
+                        "is left untouched rather than reclaimed on a guess."
+                    ),
+                }
+                snapshot["recovery_required"] = fence
+                updates["recovery_required"] = fence
             continue
         owner_updates = _dead_reservation_updates(snapshot, owner_key, flags, rec)
         snapshot.update(owner_updates)
@@ -2359,6 +2432,42 @@ async def reap_dead_reservations_locked(
         reconcile_dead_pipeline_reservations(pipeline_status)
 
 
+async def fence_workspace_for_recovery(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    kind: str,
+    message: str,
+    operation_record: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Set ``recovery_required`` so every later mutation is refused with 503.
+
+    The self-fencing counterpart of the dead-owner reclaim: a running owner that
+    discovers it cannot make progress fences the workspace itself rather than
+    spinning (LR2 §7.2). Deliberately NOT owner-checked and deliberately
+    idempotent-by-first-writer: the fence outlives whichever reservation observed
+    the problem — the caller's own ``finally`` releases that reservation straight
+    afterwards — and an existing fence (e.g. a dead-owner one) is more specific
+    than a later generic one, so the first cause is the one kept.
+
+    Runs to completion under cancellation: a fence that a cancel could skip would
+    hand the next run the same spin.
+    """
+
+    async def _run() -> None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("recovery_required"):
+                return
+            pipeline_status["recovery_required"] = {
+                "kind": kind,
+                "owner_key": "busy_owner",
+                "operation_record": operation_record,
+                "message": message,
+            }
+
+    await run_to_completion(_run)
+
+
 class PipelineReservationConflict(str, Enum):
     """Structured reason why a pipeline reservation was refused."""
 
@@ -2382,6 +2491,14 @@ class PipelineReservationResult:
     conflict: Optional[PipelineReservationConflict] = None
     message: Optional[str] = None
     snapshot: Optional[Dict[str, Any]] = None
+    fence: Optional[str] = None
+    """The ``pipeline_status`` flag that refused, when one specific flag did.
+
+    Finer-grained than ``conflict``, which folds ``scanning`` and
+    ``scanning_exclusive`` into one member: a caller telling an operator WHICH
+    fence to wait on needs the flag, and a caller choosing an HTTP status needs
+    the member. Both are carried so neither has to be reconstructed from the
+    message."""
 
 
 def _recovery_required_result(
@@ -2540,6 +2657,7 @@ async def acquire_reservation(
                     conflict=_conflict_for_status_flag(flag_key),
                     message=reason,
                     snapshot=snapshot,
+                    fence=flag_key,
                 )
         if refuse_when_manual_pending:
             # Cheapest checks first: the flags above catch a manual retry that is
@@ -2654,6 +2772,7 @@ async def acquire_enqueue_reservation(
                         conflict=_conflict_for_status_flag(flag_key),
                         message=reason,
                         snapshot=snapshot,
+                        fence=flag_key,
                     )
         if capacity > 0:
             reserved_elsewhere = sum(
@@ -2727,6 +2846,7 @@ async def check_pipeline_status_mutation(
                     conflict=_conflict_for_status_flag(flag_key),
                     message=reason,
                     snapshot=snapshot,
+                    fence=flag_key,
                 )
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
         return PipelineReservationResult(acquired=True, snapshot=snapshot)
