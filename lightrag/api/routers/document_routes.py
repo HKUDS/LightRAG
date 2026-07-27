@@ -7,6 +7,8 @@ import base64
 import binascii
 import re
 import shutil
+import sqlite3
+import tempfile
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -1368,10 +1370,11 @@ class DocumentManager:
         bare ``.png`` is not advertised), then narrowed to those whose resolved
         engine actually supports them (``is_supported_file``).
 
-        Deliberately unordered (LR2 §8.5): processing order comes from the
-        ``(created_at, id)`` doc_status sweep, not from discovery, and the old
-        hint-preferring group-by-canonical-name pass was exactly the
-        O(files-in-directory) structure this replaces.
+        Deliberately unordered (LR2 §8.5): candidates are written one at a time
+        to the disk-backed scan spool, whose mtime index supplies global order
+        without a whole-directory Python list. The old hint-preferring
+        group-by-canonical-name pass was exactly the O(files-in-directory)
+        memory structure this replaces.
         """
         from lightrag.parser.registry import available_engine_suffixes
         from lightrag.parser.routing import FilenameParserHintError
@@ -2169,8 +2172,6 @@ async def pipeline_enqueue_file(
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning guard there.
-            Also selects the file's ``st_mtime`` as the row's ``created_at``
-            (see below).
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -2181,21 +2182,13 @@ async def pipeline_enqueue_file(
 
     try:
         file_size = 0
-        source_created_at: str | None = None
 
-        # One stat, two consumers: file size for error reporting, and — for
-        # scan-discovered files only — the mtime that becomes the row's
-        # immutable ``created_at`` scheduling key, so a bulk scan of an
-        # existing corpus drains oldest-file-first instead of in whatever
-        # order the directory happened to be iterated (LR2 §8.3.A/§8.5).
-        # Upload/text keep ``now()``: their arrival time *is* their age.
+        # File size is used only for error reporting. Scan-time mtime ordering
+        # happens before this function, in the disk-backed candidate spool;
+        # doc_status.created_at always remains the actual first-persist time.
         try:
             stat = await asyncio.to_thread(file_path.stat)
             file_size = stat.st_size
-            if from_scan:
-                source_created_at = datetime.fromtimestamp(
-                    stat.st_mtime, tz=timezone.utc
-                ).isoformat()
         except Exception:
             file_size = 0
 
@@ -2279,10 +2272,6 @@ async def pipeline_enqueue_file(
                 enqueue_kwargs["admission_token"] = admission_token
             if hint_chunk_options is not None:
                 enqueue_kwargs["chunk_options"] = hint_chunk_options
-            if source_created_at is not None:
-                # Absent (stat failed) the enqueue falls back to now(): a
-                # missing mtime must not cost us the row.
-                enqueue_kwargs["created_at"] = source_created_at
             enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
             if enqueue_result is None:
                 try:
@@ -2372,10 +2361,11 @@ async def pipeline_enqueue_scan_batch(
     file_paths: List[Path],
     track_id: str = None,
 ) -> int:
-    """Write ONE bounded scan batch to doc_status — no processing drive (LR2 §8.2).
+    """Write ONE mtime-ordered, bounded scan batch — no processing drive (§8.2).
 
-    The streaming scan flushes a batch the moment it fills, while it still holds
-    ``scanning_exclusive``; processing runs exactly once afterwards, when the
+    Discovery first stages candidates in the disposable disk spool; its global
+    mtime index emits batches in order while the scan still holds
+    ``scanning_exclusive``. Processing runs exactly once afterwards, when the
     fence has dropped (§8.1). Enqueue is therefore separated from driving: a
     per-batch drive would be refused by that very fence and only set the
     deferred-processing flag.
@@ -2399,11 +2389,10 @@ async def pipeline_enqueue_scan_batch(
         return 0
     enqueued = 0
     try:
-        # Bounded, batch-local ordering only (pinyin for Chinese names): it makes
-        # a batch's enqueue order deterministic but promises nothing globally —
-        # processing order comes from the ``(created_at, id)`` doc_status sweep
-        # (LR2 §8.5), and discovery itself is unordered.
-        for file_path in sorted(file_paths, key=lambda p: get_pinyin_sort_key(str(p))):
+        # Preserve the disk spool's global ``(mtime, path)`` order. Re-sorting a
+        # batch here would destroy that order before created_at=now() records it
+        # in doc_status.
+        for file_path in file_paths:
             success, _ = await pipeline_enqueue_file(
                 rag,
                 file_path,
@@ -2980,6 +2969,160 @@ def _scan_enqueue_batch_size() -> int:
     return configured
 
 
+class _ScanCandidateSpool:
+    """Disk-backed, globally mtime-ordered scan candidates.
+
+    Exact oldest-file-first ordering over an unordered directory iterator needs
+    O(number of files) state somewhere. Keeping that state in Python memory
+    would undo LR2's bounded scan, while overloading ``doc_status.created_at``
+    with the file's mtime makes a persistence timestamp lie. This disposable
+    SQLite spool is the separation point:
+
+    * discovery/classification inserts one lightweight row at a time;
+    * a UNIQUE canonical key preserves first-physical-claim-wins before any
+      candidate has reached doc_status;
+    * an on-disk ``(mtime, path, sequence)`` index provides the global order;
+    * :meth:`ordered_batches` fetches at most K paths into Python memory;
+    * once a path is enqueued, doc_status stamps its real creation time and the
+      filesystem timestamp has no further role.
+
+    A missing mtime does not lose the candidate. It sorts after every readable
+    timestamp and the enqueue path reports a vanished/unreadable file normally.
+    The database is rebuildable coordination state in the OS temporary
+    directory, never persistent LightRAG storage.
+    """
+
+    def __init__(self, commit_interval: int):
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="lightrag-scan-sort-")
+        self._db_path = Path(self._temp_dir.name) / "candidates.sqlite3"
+        self._connection = sqlite3.connect(self._db_path)
+        # Bound SQLite's page cache and force any query scratch space to disk.
+        # The database is disposable, so fsync durability buys nothing: a
+        # process death simply makes the next /scan rediscover the source files.
+        self._connection.execute("PRAGMA cache_size = -2048")
+        self._connection.execute("PRAGMA temp_store = FILE")
+        self._connection.execute("PRAGMA synchronous = OFF")
+        self._connection.executescript(
+            """
+            CREATE TABLE candidates (
+                sequence INTEGER PRIMARY KEY,
+                canonical_key TEXT,
+                physical_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                mtime_missing INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                path_sort_key TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX candidates_canonical
+                ON candidates(canonical_key);
+            CREATE INDEX candidates_schedule
+                ON candidates(
+                    mtime_missing,
+                    mtime_ns,
+                    path_sort_key,
+                    sequence
+                );
+            """
+        )
+        self._commit_interval = max(1, int(commit_interval))
+        self._pending_writes = 0
+
+    async def claim(
+        self,
+        file_path: Path,
+        canonical_key: str,
+        sequence: int,
+    ) -> str | None:
+        """Stage one candidate; return the earlier physical claimer on conflict."""
+
+        try:
+            # INPUT_DIR may be a network mount. Keep its metadata read off the
+            # event loop so scan-job heartbeats and cancellation remain live.
+            stat = await asyncio.to_thread(file_path.stat)
+            mtime_missing = 0
+            mtime_ns = int(
+                getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+            )
+        except Exception:
+            mtime_missing = 1
+            mtime_ns = 0
+
+        # SQLite UNIQUE permits multiple NULLs, matching unknown_source's
+        # "identity cannot be claimed" semantics.
+        stored_canonical = (
+            None if canonical_key == UNKNOWN_FILE_SOURCE else canonical_key
+        )
+        cursor = self._connection.execute(
+            """
+            INSERT OR IGNORE INTO candidates(
+                sequence,
+                canonical_key,
+                physical_name,
+                file_path,
+                mtime_missing,
+                mtime_ns,
+                path_sort_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sequence,
+                stored_canonical,
+                file_path.name,
+                str(file_path),
+                mtime_missing,
+                mtime_ns,
+                get_pinyin_sort_key(str(file_path)),
+            ),
+        )
+        if cursor.rowcount == 0 and stored_canonical is not None:
+            row = self._connection.execute(
+                "SELECT physical_name FROM candidates WHERE canonical_key = ?",
+                (stored_canonical,),
+            ).fetchone()
+            if row is None:  # pragma: no cover - SQLite constraint invariant
+                raise RuntimeError(
+                    f"canonical scan claim disappeared: {stored_canonical}"
+                )
+            return str(row[0])
+
+        self._pending_writes += 1
+        if self._pending_writes >= self._commit_interval:
+            self._connection.commit()
+            self._pending_writes = 0
+        return None
+
+    def ordered_batches(self, batch_size: int) -> Iterator[list[Path]]:
+        """Yield globally oldest-first path batches, each bounded by ``batch_size``."""
+
+        self._connection.commit()
+        self._pending_writes = 0
+        cursor = self._connection.execute(
+            """
+            SELECT file_path
+            FROM candidates
+            ORDER BY
+                mtime_missing ASC,
+                mtime_ns ASC,
+                path_sort_key ASC,
+                sequence ASC
+            """
+        )
+        while rows := cursor.fetchmany(batch_size):
+            yield [Path(str(row[0])) for row in rows]
+
+    def close(self) -> None:
+        try:
+            self._connection.close()
+        finally:
+            self._temp_dir.cleanup()
+
+    def __enter__(self) -> "_ScanCandidateSpool":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback_value) -> None:
+        self.close()
+
+
 def _enforce_texts_per_request(count: int) -> None:
     """Refuse an oversized ``/documents/texts`` batch with 413 (LR2 §11).
 
@@ -3241,36 +3384,18 @@ async def run_scanning_process(
                 reporter.sample("error", abort_message)
                 return
 
-        # ---- streaming discovery + classification (LR2 §8.2/§8.4) ----------
-        # One pass over the input directory with at most ``SCAN_ENQUEUE_BATCH_SIZE``
-        # claimed files (and their canonical claims) resident: peak scan memory is
-        # set by the batch, not by how many files the directory holds. Each batch is
-        # written to doc_status as soon as it fills — while this scan still holds
-        # ``scanning_exclusive`` — and processing runs ONCE at the end (§8.1).
+        # ---- streaming discovery + disk-backed ordering (LR2 §8.2/§8.4) -----
+        # Discovery/classification stays a single pass with O(K) Python memory,
+        # but exact global mtime order needs O(number of files) ordering state
+        # somewhere. The disposable SQLite spool keeps that state on disk and
+        # yields at most ``SCAN_ENQUEUE_BATCH_SIZE`` paths at a time after
+        # discovery. Only then are rows written to doc_status, in oldest-file-
+        # first order, with created_at stamped at the actual write time.
         batch_size = _scan_enqueue_batch_size()
-        batch: list[Path] = []
-        # canonical source key -> the physical filename that claimed it in THIS
-        # batch. A row that is not persisted yet is invisible to the doc_status
-        # lookup, so without this claim set a second variant of the same canonical
-        # name inside one batch would mint a duplicate document (§8.4). Bounded by
-        # ``batch_size``; cleared on every flush.
-        batch_claims: dict[str, str] = {}
         discovered = 0
         enqueued_count = 0
         resumed_count = 0
         processed_count = 0
-
-        async def _flush_batch() -> None:
-            nonlocal enqueued_count
-            if not batch:
-                return
-            enqueued_count += await pipeline_enqueue_scan_batch(
-                rag, list(batch), track_id
-            )
-            batch.clear()
-            batch_claims.clear()
-            # Publish this batch's counters/samples (also renews the job lease).
-            reporter.flush()
 
         async def _archive(file_path: Path, warning: str, counter_key: str) -> None:
             """Archive an input file (never delete it) and record the reason."""
@@ -3289,136 +3414,128 @@ async def run_scanning_process(
                 reporter.sample("error", archive_error)
 
         async def _claim_new_file(
-            file_path: Path, canonical_key: str, counter_key: str
+            spool: _ScanCandidateSpool,
+            file_path: Path,
+            canonical_key: str,
+            counter_key: str,
+            sequence: int,
         ) -> None:
-            """Add a file to the current batch under its canonical claim (§8.4).
+            """Stage one file under the scan-wide first canonical claim (§8.4)."""
 
-            The first physical file to claim a canonical key wins and is enqueued;
-            a later variant in the SAME batch is an alias duplicate and is
-            archived — the resolver cannot see a row that has not been written
-            yet. ``unknown_source`` names carry no usable identity, so they are
-            batched without claiming anything.
-            """
-            if canonical_key != UNKNOWN_FILE_SOURCE:
-                claimer = batch_claims.get(canonical_key)
-                if claimer is not None:
-                    await _archive(
-                        file_path,
-                        "Skipping duplicate file in scan batch: "
-                        f"{file_path.name} duplicates {claimer} "
-                        f"(canonical: {canonical_key})",
-                        _ScanFileClass.ALIAS_DUPLICATE.value,
-                    )
-                    return
-                batch_claims[canonical_key] = file_path.name
-            batch.append(file_path)
-            reporter.count(counter_key)
-            if len(batch) >= batch_size:
-                await _flush_batch()
-
-        for file_path in doc_manager.iter_new_files():
-            discovered += 1
-            # Classifying a large tree can outlast the job lease; renewing here
-            # (time-based, a no-op most iterations) keeps the record from being
-            # reaped to ABANDONED under a live owner.
-            reporter.renew()
-            filename = file_path.name
-            canonical_key = normalize_file_path(str(file_path))
-            decision = await classify_scan_file(rag, file_path, canonical_key)
-
-            if decision.kind is _ScanFileClass.CLAIMED_NEW:
-                await _claim_new_file(
-                    file_path, canonical_key, _ScanFileClass.CLAIMED_NEW.value
-                )
-                continue
-
-            if decision.kind is _ScanFileClass.SOURCE_CONFLICT:
-                # §8.3.B: no enqueue, no doc_status delete, NO archive — the file
-                # stays put and an operator repairs the historical collision by
-                # doc id (the /documents/scan status report carries the bounded
-                # candidate sample).
-                await record_scan_warning(rag, decision.detail)
-                reporter.count(_ScanFileClass.SOURCE_CONFLICT.value)
-                reporter.sample("warning", decision.detail)
-                continue
-
-            if decision.kind is _ScanFileClass.PROCESSED:
-                processed_count += 1
+            claimer = await spool.claim(file_path, canonical_key, sequence)
+            if claimer is not None:
                 await _archive(
                     file_path,
-                    f"Skipping already processed file: {filename}",
-                    _ScanFileClass.PROCESSED.value,
-                )
-                reporter.sample("processed", filename)
-                continue
-
-            if decision.kind is _ScanFileClass.STALE_STUB:
-                # §8.3.D: content confirmed absent, so this FAILED row can never
-                # be resumed — drop it and retry the (presumably fixed) file as
-                # new. A failed delete keeps the row: preserved-for-review is the
-                # safe side of that error.
-                try:
-                    await rag.doc_status.delete([decision.doc_id])
-                except Exception as delete_error:
-                    stub_error = (
-                        "Failed to delete stale failed-extraction doc_status stub "
-                        f"{decision.doc_id} ({filename}): {delete_error}"
-                    )
-                    logger.error(stub_error)
-                    reporter.count("errors")
-                    reporter.sample("error", stub_error)
-                    # Counted as errors ONLY. The file keeps its contentless
-                    # FAILED row and is left on disk for the next scan, which is
-                    # not a resume: tallying it under
-                    # RESUME_SAME_PHYSICAL_SOURCE reported a document as being
-                    # advanced when nothing can advance it (the row has no
-                    # content), and inflated ``resumed`` in the run summary.
-                    continue
-                logger.info(
-                    "Retrying previously failed extraction; removed stale "
-                    f"doc_status stub: {filename} (doc_id: {decision.doc_id})"
-                )
-                await _claim_new_file(
-                    file_path, canonical_key, _ScanFileClass.STALE_STUB.value
-                )
-                continue
-
-            if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:
-                # §8.3.E: a missing ``source_file`` is NOT evidence of a different
-                # physical file, so neither enqueue nor archive — keep both the
-                # file and the row, and surface a bounded warning.
-                await record_scan_warning(rag, decision.detail)
-                reporter.count(_ScanFileClass.SOURCE_IDENTITY_UNKNOWN.value)
-                reporter.sample("warning", decision.detail)
-                continue
-
-            if decision.kind is _ScanFileClass.ALIAS_DUPLICATE:
-                # §8.3.G: same canonical key, DIFFERENT physical file. Archiving
-                # it (rather than enqueuing) is what keeps the alias from minting
-                # a ``dup-*`` FAILED row.
-                await _archive(
-                    file_path,
-                    decision.detail,
+                    "Skipping duplicate file in scan: "
+                    f"{file_path.name} duplicates {claimer} "
+                    f"(canonical: {canonical_key})",
                     _ScanFileClass.ALIAS_DUPLICATE.value,
                 )
-                continue
+                return
+            reporter.count(counter_key)
 
-            # §8.3.F RESUME_SAME_PHYSICAL_SOURCE: the same physical file behind an
-            # unfinished row. It must NOT go through the enqueue path —
-            # apipeline_enqueue_documents would treat the canonical name as a
-            # duplicate (returning None) and pipeline_enqueue_file would archive
-            # the source as if it were one, corrupting pending-parse cases that
-            # still need it on disk. The pipeline's resume logic advances it from
-            # its existing row instead.
-            logger.info(
-                f"Resuming previously unfinished file from scan: {filename} "
-                f"(doc_id: {decision.doc_id})"
-            )
-            resumed_count += 1
-            reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+        with _ScanCandidateSpool(batch_size) as candidate_spool:
+            for file_path in doc_manager.iter_new_files():
+                discovered += 1
+                # Classifying a large tree can outlast the job lease; renewing here
+                # (time-based, a no-op most iterations) keeps the record from being
+                # reaped to ABANDONED under a live owner.
+                reporter.renew()
+                filename = file_path.name
+                canonical_key = normalize_file_path(str(file_path))
+                decision = await classify_scan_file(rag, file_path, canonical_key)
 
-        # Tail batch (fewer than ``batch_size`` files).
-        await _flush_batch()
+                if decision.kind is _ScanFileClass.CLAIMED_NEW:
+                    await _claim_new_file(
+                        candidate_spool,
+                        file_path,
+                        canonical_key,
+                        _ScanFileClass.CLAIMED_NEW.value,
+                        discovered,
+                    )
+                    continue
+
+                if decision.kind is _ScanFileClass.SOURCE_CONFLICT:
+                    # §8.3.B: no enqueue, no doc_status delete, NO archive — the
+                    # file stays put and an operator repairs the historical
+                    # collision by doc id.
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.SOURCE_CONFLICT.value)
+                    reporter.sample("warning", decision.detail)
+                    continue
+
+                if decision.kind is _ScanFileClass.PROCESSED:
+                    processed_count += 1
+                    await _archive(
+                        file_path,
+                        f"Skipping already processed file: {filename}",
+                        _ScanFileClass.PROCESSED.value,
+                    )
+                    reporter.sample("processed", filename)
+                    continue
+
+                if decision.kind is _ScanFileClass.STALE_STUB:
+                    # §8.3.D: content confirmed absent, so this FAILED row can
+                    # never be resumed — drop it and retry the fixed file as new.
+                    try:
+                        await rag.doc_status.delete([decision.doc_id])
+                    except Exception as delete_error:
+                        stub_error = (
+                            "Failed to delete stale failed-extraction doc_status "
+                            f"stub {decision.doc_id} ({filename}): {delete_error}"
+                        )
+                        logger.error(stub_error)
+                        reporter.count("errors")
+                        reporter.sample("error", stub_error)
+                        continue
+                    logger.info(
+                        "Retrying previously failed extraction; removed stale "
+                        f"doc_status stub: {filename} (doc_id: {decision.doc_id})"
+                    )
+                    await _claim_new_file(
+                        candidate_spool,
+                        file_path,
+                        canonical_key,
+                        _ScanFileClass.STALE_STUB.value,
+                        discovered,
+                    )
+                    continue
+
+                if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:
+                    # §8.3.E: missing source_file is not evidence of a different
+                    # physical file; keep both file and row for review.
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.SOURCE_IDENTITY_UNKNOWN.value)
+                    reporter.sample("warning", decision.detail)
+                    continue
+
+                if decision.kind is _ScanFileClass.ALIAS_DUPLICATE:
+                    # §8.3.G: same canonical key, different physical file.
+                    await _archive(
+                        file_path,
+                        decision.detail,
+                        _ScanFileClass.ALIAS_DUPLICATE.value,
+                    )
+                    continue
+
+                # §8.3.F RESUME_SAME_PHYSICAL_SOURCE: the same physical file
+                # behind an unfinished row. Resume it from persistent state.
+                logger.info(
+                    f"Resuming previously unfinished file from scan: {filename} "
+                    f"(doc_id: {decision.doc_id})"
+                )
+                resumed_count += 1
+                reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+
+            # Discovery is complete. Iterate the on-disk mtime index in bounded
+            # pages; each successful enqueue stamps doc_status.created_at=now().
+            for ordered_batch in candidate_spool.ordered_batches(batch_size):
+                enqueued_count += await pipeline_enqueue_scan_batch(
+                    rag, ordered_batch, track_id
+                )
+                # Publish this batch's counters/samples and renew the job lease.
+                reporter.flush()
+
         reporter.count("discovered", discovered)
         reporter.flush()
 

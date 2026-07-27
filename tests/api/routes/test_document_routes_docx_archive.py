@@ -756,7 +756,7 @@ async def test_scan_processed_canonical_name_archives_hinted_file(
     assert (tmp_path / PARSED_DIR_NAME / file_path.name).read_bytes() == b"docx bytes"
 
 
-async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypatch):
+async def test_scan_archives_scan_wide_canonical_duplicates(tmp_path, monkeypatch):
     plain_file = tmp_path / "same.docx"
     hinted_file = tmp_path / "same.[native].docx"
     plain_file.write_bytes(b"plain docx bytes")
@@ -783,10 +783,10 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
     await run_scanning_process(rag, doc_manager, "track-scan")
 
     # LR2 §8.4/§8.5: the winner is whichever physical file claimed the canonical
-    # key FIRST in the batch — discovery is a single unordered streaming pass, so
-    # the previous "hinted variant always wins" preference (a whole-directory
-    # group-by pass) is gone by design. Exactly one variant is enqueued and the
-    # other is ARCHIVED, never deleted; which one wins is not promised.
+    # key FIRST in the scan-wide disk spool. Discovery is a single unordered
+    # pass, so the previous "hinted variant always wins" preference is gone by
+    # design. Exactly one variant is enqueued and the other is ARCHIVED, never
+    # deleted; which one wins is not promised.
     assert len(calls) == 1
     assert len(calls[0]["file_paths"]) == 1
     winner = calls[0]["file_paths"][0]
