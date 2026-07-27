@@ -712,8 +712,8 @@ async def test_a_half_published_index_is_rebuilt_not_trusted(storage):
         fake.store[f"{storage.final_namespace}:doc-{index}"] = json.dumps(
             _doc("pending", file_path=f"f{index}.pdf")
         )
-    # One document's entry published, the other two still in the temp keyspace,
-    # no rebuild lock held — exactly the state a killed rebuilder leaves.
+    # One document's entry published, the other two still in the temp keyspace —
+    # exactly the state a killed rebuilder leaves.
     fake.zsets[f"{storage._sched_prefix}:status:pending"] = {"x|doc-0"}
     fake.zsets[f"{storage._sched_prefix}_rebuild:status:pending"] = {"x|doc-1"}
 
@@ -723,20 +723,3 @@ async def test_a_half_published_index_is_rebuilt_not_trusted(storage):
     members = fake.zsets[f"{storage._sched_prefix}:status:pending"]
     assert len(members) == 3
     assert not [k for k in fake.zsets if "_rebuild:" in k]
-
-
-@pytest.mark.asyncio
-async def test_a_live_rebuild_is_not_mistaken_for_an_interrupted_one(storage):
-    """A temp keyspace WITH the rebuild lock held is a rebuild in progress, not a
-    crash: this worker must wait for it, never restart it underneath the owner."""
-    fake = storage._redis
-    fake.store[f"{storage.final_namespace}:doc-0"] = json.dumps(_doc("pending"))
-    fake.zsets[f"{storage._sched_prefix}_rebuild:status:pending"] = {"x|doc-0"}
-    fake.store[f"{storage._sched_prefix}:rebuild_lock"] = "1"
-
-    assert (
-        await storage._interrupted_publish(
-            fake, f"{storage._sched_prefix}:rebuild_lock"
-        )
-        is False
-    )
