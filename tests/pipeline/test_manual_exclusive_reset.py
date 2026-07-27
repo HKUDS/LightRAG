@@ -713,3 +713,86 @@ def test_parsed_content_write_is_discarded_when_ownership_was_reclaimed(tmp_path
             await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+def test_persist_parsed_patches_content_hash_without_rewriting_the_row(tmp_path):
+    """LR2 §5.6: ``_persist_parsed_full_docs`` syncs ``content_hash`` through the
+    TARGETED field update, not a read-modify-write ``upsert``.
+
+    Two scalars change. Round-tripping the whole row for them dragged this
+    document's ``chunks_list`` through memory on every parse — the exact pattern
+    the targeted-update API was added to replace. Pinned by asserting the call
+    shape AND that the untouched fields survive."""
+
+    async def _run():
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            doc_id = "doc-patch"
+            chunks = [f"chunk-{index}" for index in range(50)]
+            await rag.full_docs.upsert({doc_id: {"content": "old body"}})
+            await rag.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.PARSING,
+                        "content_summary": "old body",
+                        "content_length": 8,
+                        "chunks_count": len(chunks),
+                        "chunks_list": chunks,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                        "file_path": "patch.txt",
+                        "track_id": "t-patch",
+                        "error_msg": "",
+                        "metadata": {"keep": "me"},
+                    }
+                }
+            )
+
+            targeted: list[tuple[str, dict, bool]] = []
+            full_upserts: list[dict] = []
+            real_update = rag.doc_status.update_doc_status_fields
+            real_upsert = rag.doc_status.upsert
+
+            async def spy_update(target, fields, *, missing_ok=False):
+                targeted.append((target, dict(fields), missing_ok))
+                return await real_update(target, fields, missing_ok=missing_ok)
+
+            async def spy_upsert(data):
+                full_upserts.append(dict(data))
+                return await real_upsert(data)
+
+            rag.doc_status.update_doc_status_fields = spy_update
+            rag.doc_status.upsert = spy_upsert
+
+            content_hash = await rag._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": "freshly parsed body",
+                    "file_path": "patch.txt",
+                    "parse_format": "raw",
+                },
+            )
+
+            # One targeted write, carrying ONLY the two fields that changed.
+            assert len(targeted) == 1
+            patched_id, fields, missing_ok = targeted[0]
+            assert patched_id == doc_id
+            assert set(fields) == {"content_hash", "updated_at"}
+            assert fields["content_hash"] == content_hash
+            # A row that vanished is not an error on this path.
+            assert missing_ok is True
+            # No full-row rewrite of doc_status at all.
+            assert full_upserts == []
+
+            # And nothing else on the row moved — chunks, metadata, created_at.
+            row = await rag.doc_status.get_by_id(doc_id)
+            assert row["chunks_list"] == chunks
+            assert row["chunks_count"] == len(chunks)
+            assert row["metadata"] == {"keep": "me"}
+            assert row["created_at"] == "2026-01-01T00:00:00+00:00"
+            assert row["content_hash"] == content_hash
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())

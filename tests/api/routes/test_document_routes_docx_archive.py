@@ -379,15 +379,18 @@ class _ParseFullDocs:
 class _ParseDocStatus:
     """Minimal doc_status double for the parse_* archive tests.
 
-    ``_persist_parsed_full_docs`` reads the existing record and patches its
-    ``content_hash``; with no record present the helper short-circuits, which
-    is what these tests want — they only assert on full_docs side effects.
+    ``_persist_parsed_full_docs`` patches the row's ``content_hash`` through the
+    targeted-field update; ``missing_ok`` makes a missing row a no-op, which is
+    what these tests want — they only assert on full_docs side effects.
     """
 
     async def get_by_id(self, doc_id):
         return None
 
     async def upsert(self, data):
+        return None
+
+    async def update_doc_status_fields(self, doc_id, fields, *, missing_ok=False):
         return None
 
 

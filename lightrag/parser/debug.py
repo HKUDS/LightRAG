@@ -37,12 +37,26 @@ class DebugFullDocs:
 
 
 class DebugDocStatus:
-    """No-op ``doc_status`` shim — the parse_* methods never read/write it."""
+    """No-op ``doc_status`` shim — the parse_* methods never read/write it.
+
+    ``update_doc_status_fields`` is the targeted-field write
+    ``_persist_parsed_full_docs`` uses to sync ``content_hash``; ``missing_ok``
+    is accepted because that caller passes it (a row that is already gone is
+    not an error there)."""
 
     async def get_by_id(self, doc_id: str) -> Any:
         return None
 
     async def upsert(self, data: dict[str, Any]) -> None:
+        return None
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
         return None
 
 
@@ -67,8 +81,9 @@ def build_debug_rag(*, extract_llm_func=None):
     - **storages**:
         - ``self.full_docs.upsert(...)`` / ``.get_by_id(...)`` /
           ``.index_done_callback()`` — :class:`DebugFullDocs` covers all three.
-        - ``self.doc_status.get_by_id(...)`` / ``.upsert(...)`` —
-          :class:`DebugDocStatus` covers both.
+        - ``self.doc_status.get_by_id(...)`` / ``.upsert(...)`` /
+          ``.update_doc_status_fields(...)`` — :class:`DebugDocStatus` covers
+          all three.
     - **LLM surface** (``_build_global_config`` + ``llm_response_cache``):
         consumed by ``NativeParserBase._build_llm_submit`` when an engine
         param requests the LLM bridge (docx ``smart_heading``). Pass
