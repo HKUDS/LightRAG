@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
@@ -500,18 +499,17 @@ class ClientManager:
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 
-                ssl_context = None
-                if use_ssl and not verify_certs:
-                    ssl_context = ssl_module.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl_module.CERT_NONE
-
+                # No explicit ssl_context here: opensearch-py already builds the
+                # exact same insecure context internally from verify_certs=False
+                # (check_hostname=False, CERT_NONE — see AsyncHttpConnection) when
+                # none is supplied. Passing our own duplicate makes it emit
+                # "When using `ssl_context`, all other SSL related kwargs are
+                # ignored" at every startup for no behavioral difference.
                 client = AsyncOpenSearch(
                     hosts=hosts,
                     http_auth=(username, password) if username else None,
                     use_ssl=use_ssl,
                     verify_certs=verify_certs,
-                    ssl_context=ssl_context,
                     ssl_show_warn=False,
                     timeout=timeout,
                     max_retries=max_retries,
