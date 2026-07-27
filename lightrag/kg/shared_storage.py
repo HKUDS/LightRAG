@@ -2223,6 +2223,40 @@ def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
     )
 
 
+def describe_recovery_fence(pipeline_status: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read-only, API-safe projection of the ``recovery_required`` fence.
+
+    The raw fence record is in :data:`_INTERNAL_PIPELINE_STATUS_FIELDS` and is
+    stripped from every response, for a good reason: it embeds an
+    ``operation_record`` and is written next to owner records carrying PIDs and
+    reservation tokens, which authorize releasing a reservation. But stripping it
+    left an operator with no read-only way to see THAT the workspace is fenced,
+    why, or which documents to look at — only a 503 on every write and a log line
+    they may not have kept.
+
+    So this returns the three things they need and nothing more:
+    ``recovery_required`` (bool), ``recovery_kind`` (the coarse cause) and
+    ``recovery_message`` (the same human-readable text the refusals carry, which
+    includes the bounded blocker sample for a stalled drain). No PID, no token, no
+    raw ``operation_record``.
+    """
+    rec = pipeline_status.get("recovery_required")
+    if not isinstance(rec, dict) or not rec:
+        return {
+            "recovery_required": False,
+            "recovery_kind": None,
+            "recovery_message": None,
+        }
+    kind = rec.get("kind")
+    return {
+        "recovery_required": True,
+        "recovery_kind": str(kind) if kind is not None else None,
+        "recovery_message": pipeline_recovery_blocked_message(
+            {"recovery_required": rec}
+        ),
+    }
+
+
 def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     """Build a reservation owner record: the cancellation-safety token plus the
     process identity used to detect a dead owner (see :func:`_process_alive`) and
@@ -2509,6 +2543,11 @@ def _recovery_required_result(
         conflict=PipelineReservationConflict.RECOVERY_REQUIRED,
         message=pipeline_recovery_blocked_message(snapshot),
         snapshot=snapshot,
+        # The fence IS a pipeline_status field, so ``fence`` is populated here for
+        # the same reason as on every flag refusal: the structured contract says
+        # it names the field that refused, and leaving it None here would make
+        # exactly one refusal shape lie about itself.
+        fence="recovery_required",
     )
 
 

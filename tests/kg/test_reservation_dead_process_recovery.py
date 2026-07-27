@@ -437,7 +437,15 @@ async def test_force_reset_recovery_endpoint(tmp_path):
 @pytest.mark.offline
 async def test_pipeline_status_filters_internal_fields(tmp_path):
     """Internal reservation-ownership / recovery bookkeeping must never appear on
-    the /pipeline_status response (raw tokens, PIDs, per-token sets)."""
+    the /pipeline_status response (raw tokens, PIDs, per-token sets).
+
+    ``recovery_required`` is checked by SUBSTANCE rather than by name: the
+    response deliberately publishes a field of that name, but as a sanitized
+    projection (bool + coarse kind + operator message — see
+    ``shared_storage.describe_recovery_fence``), because an operator otherwise had
+    no read-only way to learn the workspace was fenced. So the assertion here is
+    that the RAW record never flows through — a bool, never the dict, and none of
+    the dict's contents anywhere in the response."""
     finalize_share_data()
     initialize_share_data(1)
     try:
@@ -450,7 +458,13 @@ async def test_pipeline_status_filters_internal_fields(tmp_path):
                 "scanning_owner": {"token": "s", "pid": 2, "kind": "scan"},
                 "pending_enqueue_tokens": {"e": {"pid": 3}},
                 "operation_record": {"kind": "delete", "doc_id": "d"},
-                "recovery_required": {"kind": "delete"},
+                "recovery_required": {
+                    "kind": "delete",
+                    "owner_key": "busy_owner",
+                    "operation_record": {"kind": "delete", "doc_id": "doc-target"},
+                    "owner_token": "tok-must-not-leak",
+                    "pid": 4242,
+                },
             }
         )
         router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
@@ -458,7 +472,26 @@ async def test_pipeline_status_filters_internal_fields(tmp_path):
         resp = await get_status()
         dumped = resp.model_dump()
         for field in _INTERNAL_PIPELINE_STATUS_FIELDS:
+            if field == "recovery_required":
+                continue  # published as a sanitized projection; checked below
             assert field not in dumped, f"{field} leaked to /pipeline_status"
+
+        # The fence is visible, but only through the projection.
+        assert dumped["recovery_required"] is True
+        assert dumped["recovery_kind"] == "delete"
+        assert "a worker died mid 'delete'" in dumped["recovery_message"]
+        # The affected document IS named — that is the actionable part, and doc
+        # ids are already public all over this API.
+        assert "doc-target" in dumped["recovery_message"]
+
+        # What must not ride along: the credentials and process identity. A
+        # reservation token authorizes RELEASING a reservation, so publishing one
+        # would turn a status page into a control surface.
+        rendered = repr(dumped)
+        assert "tok-must-not-leak" not in rendered
+        assert "4242" not in rendered
+        assert "secret" not in rendered
+        assert "owner_key" not in rendered
     finally:
         finalize_share_data()
 

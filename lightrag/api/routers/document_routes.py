@@ -1236,6 +1236,11 @@ class PipelineStatusResponse(BaseModel):
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
         update_status: Status of update flags for all namespaces
+        recovery_required: Whether the workspace is fenced pending recovery
+            (every mutation is refused with 503 until it is cleared)
+        recovery_kind: Coarse cause of the fence, when one is set
+        recovery_message: Operator-facing explanation of the fence, including the
+            bounded blocker sample where the cause provides one
     """
 
     busy: bool = False
@@ -1247,6 +1252,13 @@ class PipelineStatusResponse(BaseModel):
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
     update_status: Optional[dict] = None
+    # Sanitized fence projection (see shared_storage.describe_recovery_fence).
+    # The raw ``recovery_required`` record stays internal — it sits alongside
+    # owner records carrying PIDs and reservation tokens — but an operator still
+    # needs a read-only way to see that the workspace is fenced and why.
+    recovery_required: bool = False
+    recovery_kind: Optional[str] = None
+    recovery_message: Optional[str] = None
 
     @field_validator("job_start", mode="before")
     @classmethod
@@ -5436,14 +5448,26 @@ def create_document_routes(
                 # values individually through the mapping protocol.
                 status_dict = pipeline_status.copy()
 
+            # Sanitized fence projection BEFORE the internal fields are dropped
+            # (``recovery_required`` is one of them): an operator needs a
+            # read-only way to see that the workspace is fenced, its coarse cause
+            # and the bounded blocker sample, without the PIDs / tokens / raw
+            # operation_record the internal record carries.
+            from lightrag.kg.shared_storage import (
+                _INTERNAL_PIPELINE_STATUS_FIELDS,
+                describe_recovery_fence,
+            )
+
+            fence_view = describe_recovery_fence(status_dict)
+
             # Drop internal reservation-ownership / dead-process-recovery
             # bookkeeping: these carry raw owner tokens, PIDs and per-token sets
             # that must never be exposed on the API (PipelineStatusResponse is
             # extra="allow", so unknown keys would otherwise pass through).
-            from lightrag.kg.shared_storage import _INTERNAL_PIPELINE_STATUS_FIELDS
-
             for _internal_field in _INTERNAL_PIPELINE_STATUS_FIELDS:
                 status_dict.pop(_internal_field, None)
+
+            status_dict.update(fence_view)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status

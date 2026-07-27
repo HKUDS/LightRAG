@@ -808,7 +808,7 @@ The storage backend provides basename direct lookup via `get_doc_by_file_basenam
 
 > Within an enqueue batch (the same `apipeline_enqueue_documents` call), basename and content_hash dedup are also performed; on hit, subsequent entries are written as `FAILED` directly and marked with `existing_status=batch_duplicate`. Basename dedup only applies to valid filenames; `unknown_source`, `no-file-path`, and empty sources only participate in content-hash dedup.
 >
-> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§6.8 enqueue serialization lock (preventing concurrent dedup leakage)](#68-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
+> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§6.9 enqueue serialization lock (preventing concurrent dedup leakage)](#69-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
 
 ## 6. Pipeline Concurrency and Reentry Constraints
 
@@ -890,15 +890,30 @@ Some failures leave the workspace in a state where continuing would be a guess. 
 2. **A manual retry's drain cannot make progress.** `/documents/reprocess_failed` and `/documents/scan` first drain the pipeline to idle before their exclusive `FAILED → PENDING` reset. If the same active documents block that drain for several consecutive rounds without changing state, re-checking can only spin, so the run stops and fences. The log line and the fence message carry a bounded sample of the blocking document ids — start there.
 3. **A reservation holder cannot be adjudicated.** Reclaiming a reservation requires proving its owning process is dead. A holder record with no process identity can never be proven either way, so its reservation is left untouched (never reclaimed on a guess) and the fence provides the way out.
 
-Inspect the fence on `GET /documents/pipeline_status`, and clear it with:
+`GET /documents/pipeline_status` reports a sanitized projection — `recovery_required` (bool), `recovery_kind` (the coarse cause) and `recovery_message` (the same text the 503 carries, including the bounded blocker sample where the cause provides one). The raw fence record is never exposed: it sits alongside owner records carrying PIDs and reservation tokens, and a token authorizes releasing a reservation.
+
+Clear the fence with:
 
 ```
 POST /documents/recovery/force_reset
 ```
 
-This is an **unsafe manual override** — it only clears the fence, it does not repair anything. For cause 1, confirm the storages are consistent first; for cause 2, resolve or remove the blocking documents first (`/documents/scan` rolls back an unfinished custom-chunk operation, which is the most common cause). Restarting the whole service also clears the fence, since it is runtime coordination state and is not persisted.
+This is an **unsafe manual override** — it only clears the fence, it does not repair anything. For cause 1, confirm the storages are consistent first. For cause 2, look at the blocking documents named in `recovery_message` first; note that the fence refuses `/documents/scan` too, so if the fix needs a scan you must force-reset before you can run it. Restarting the whole service also clears the fence, since it is runtime coordination state and is not persisted.
 
-### 6.8 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
+### 6.8 A manual retry that cannot start (no fence)
+
+One drain blocker is deliberately **not** a fence, because fencing would refuse its own remedy. When active documents hold an **unfinished custom-chunk operation** (a crash-interrupted `ainsert_custom_chunks` leaves the row in an active status with its recovery journal), the pipeline is not idle and the exclusive `FAILED → PENDING` reset must not begin — but only `/documents/scan`'s rollback can resolve those rows, and a fence would refuse that call.
+
+So the run reports the blocking document ids, refuses the reset, releases the freeze and exits. Nothing is fenced and no other operation is affected. The manual retry request **stays queued** and is served automatically once the blocker is gone:
+
+```
+POST /documents/scan              # rolls back the unfinished operation
+POST /documents/reprocess_failed  # (only if you did not already have one queued)
+```
+
+The failed documents are never consumed by an attempt that could not run: the request is left un-acknowledged, so its one retry per document is still owed.
+
+### 6.9 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
 
 Inside `apipeline_enqueue_documents`, "read doc_status to dedupe → write `full_docs` / `doc_status`" runs serially under the workspace-level `enqueue_serialize` lock. Reason: now that concurrent enqueue is allowed during the busy/scan-processing phases, two enqueues with identical content but different filenames (typical scenario: a scan-processing-phase enqueue and an upload arriving together) would, without the lock, race as follows —
 
@@ -918,7 +933,7 @@ With the serialization lock, the second enqueue's dedup read is guaranteed to se
 
 The lock does **not** cover the ingress document publish (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
 
-### 6.9 Pipeline Concurrency Parameters
+### 6.10 Pipeline Concurrency Parameters
 
 The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
 

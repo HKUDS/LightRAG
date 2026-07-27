@@ -420,6 +420,10 @@ def test_sdk_recovery_fence_refusal_is_distinguishable(tmp_path):
             error = excinfo.value
             assert error.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
             assert error.recovery_required is True
+            # ``fence`` names the pipeline_status field that refused, on EVERY
+            # refusal shape — the recovery fence included. Leaving it None here
+            # made exactly one shape lie about the structured contract.
+            assert error.fence == "recovery_required"
             assert dict(rag.doc_status._data) == {}
         finally:
             await rag.finalize_storages()

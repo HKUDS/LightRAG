@@ -49,6 +49,7 @@ from lightrag.constants import (
 from lightrag.exceptions import (
     MultimodalAnalysisError,
     PipelineCancelledException,
+    PipelineDrainBlockedError,
     PipelineRecoveryRequiredError,
     PipelineReservationConflictError,
     IndexFlushError,
@@ -198,6 +199,11 @@ _MANUAL_DRAIN_STALL_ROUNDS = 3
 # Upper bound on the blocking doc ids reported with the stall fence. The point is
 # to name the offending rows, not to serialise a backlog into an error message.
 _MANUAL_DRAIN_STALL_SAMPLE = 8
+
+# Same bound for the drain's blocker report (active rows the drain cannot advance
+# at all — see ``_confirm_auto_drained``). Kept separate from the stall sample so
+# either report can be widened without silently widening the other.
+_MANUAL_DRAIN_BLOCKER_SAMPLE = 8
 
 
 class _ManualDrainProgress:
@@ -3520,58 +3526,154 @@ class _PipelineMixin:
                 if doc_status_custom_chunk_patch(doc) is None
             }, CURSOR_END
 
-        page_started = time.monotonic()
-        page = await self.doc_status.get_docs_by_statuses_page(
-            list(statuses),
-            limit=page_size,
-            position=position,
-            strict=True,
+        routable_ids, _journaled_ids, next_position = await self._fetch_scheduling_page(
+            statuses, position, limit=page_size
         )
-        # Timed around the keyset query alone (not the hydration below): a slow
-        # page here means the backend's (created_at, id) index, and that is the
-        # one thing the bounded sweep cannot work around.
-        pipeline_metrics.observe(
-            pipeline_metrics.SCHEDULING_PAGE_SECONDS, time.monotonic() - page_started
-        )
-        # Rows carrying an unfinished custom-chunk journal are NOT routable work:
-        # they belong to an in-flight (or crash-interrupted) ``ainsert_custom_chunks``
-        # operation, and only the SDK caller or ``/documents/scan``'s rollback may
-        # advance them (see ``DocSchedulingRecord.has_custom_chunk_journal``, and
-        # the identical drop in ``_route_one``). Dropping them HERE — from the
-        # lightweight page, before hydration — rather than letting the batch
-        # validator pop them later is what keeps the sweep's result an accurate
-        # answer to "is there routable work left".
-        #
-        # The batch validator popped them instead, which left the row in an AUTO
-        # status while reporting an empty batch: harmless at IDLE (the run simply
-        # releases), but a manual DRAIN_TO_IDLE reads a non-empty confirmation
-        # sweep as "not drained yet", re-sweeps from Start, and gets the same row
-        # forever — an unbounded spin that never runs the retry. The cursor still
-        # advances past them (they were consumed by the page), so a journaled row
-        # can never stall the sweep either.
-        routable_ids = [
-            doc_id
-            for doc_id, record in page.docs.items()
-            if not record.has_custom_chunk_journal
-        ]
         if not routable_ids:
             # A fully-filtered page is not termination — the cursor still
             # advances (or is CURSOR_END); return the empty map and let the
             # caller loop on next_position.
-            return {}, page.next_position
+            return {}, next_position
 
-        hydrated = await self.doc_status.get_full_docs_by_ids(routable_ids, strict=True)
+        return await self._hydrate_scheduling_page(
+            routable_ids, statuses
+        ), next_position
+
+    async def _fetch_scheduling_page(
+        self,
+        statuses,
+        position: CursorPosition,
+        *,
+        limit: int,
+    ) -> tuple[list[str], list[str], CursorPosition]:
+        """One strict keyset page, split into routable and journaled doc ids.
+
+        Rows carrying an unfinished custom-chunk journal are NOT routable work:
+        they belong to an in-flight (or crash-interrupted) ``ainsert_custom_chunks``
+        operation, and only the SDK caller or ``/documents/scan``'s rollback may
+        advance them (see ``DocSchedulingRecord.has_custom_chunk_journal``, and the
+        identical drop in ``_route_one``). Splitting them out HERE — from the
+        lightweight page, before hydration — keeps a routing sweep from carrying a
+        row it must never route, while still REPORTING them, which is what the
+        manual drain's idle proof needs (see :meth:`_confirm_auto_drained`): the
+        two callers ask different questions of the same page and a filter that
+        only dropped rows could answer just one of them.
+        """
+        page_started = time.monotonic()
+        page = await self.doc_status.get_docs_by_statuses_page(
+            list(statuses),
+            limit=limit,
+            position=position,
+            strict=True,
+        )
+        # Timed around the keyset query alone (not the hydration): a slow page
+        # here means the backend's (created_at, id) index, and that is the one
+        # thing the bounded sweep cannot work around.
+        pipeline_metrics.observe(
+            pipeline_metrics.SCHEDULING_PAGE_SECONDS, time.monotonic() - page_started
+        )
+        routable_ids: list[str] = []
+        journaled_ids: list[str] = []
+        for doc_id, record in page.docs.items():
+            if record.has_custom_chunk_journal:
+                journaled_ids.append(doc_id)
+            else:
+                routable_ids.append(doc_id)
+        return routable_ids, journaled_ids, page.next_position
+
+    async def _hydrate_scheduling_page(
+        self,
+        doc_ids: list[str],
+        statuses,
+    ) -> dict[str, DocProcessingStatus]:
+        """Hydrate one page's routable ids to full rows, still in ``statuses``."""
+        hydrated = await self.doc_status.get_full_docs_by_ids(doc_ids, strict=True)
         # Keep only rows still in the requested statuses (matches the legacy
         # get_docs_by_statuses view): a row raced out of the set between the
         # page and its hydration is no longer routable. str-enum equality lets
         # a raw string or a DocStatus member both match.
         status_values = {s.value for s in statuses}
-        to_process_docs = {
+        return {
             doc_id: doc
             for doc_id, doc in hydrated.items()
             if getattr(doc, "status", None) in status_values
         }
-        return to_process_docs, page.next_position
+
+    async def _confirm_auto_drained(
+        self,
+    ) -> tuple[dict[str, DocProcessingStatus], CursorPosition, tuple[str, ...]]:
+        """Is the PERSISTENT AUTO set drained? (LR2 §4.2 / §7.2)
+
+        The manual drain's idle proof, and deliberately NOT
+        :meth:`_next_scheduling_page`, which answers a different question — "what
+        may this run route?" — and drops rows it must never route. Reusing that
+        filtered answer as the idle proof is fail-open in a way the spin it
+        replaced was not: the exclusive ``FAILED → PENDING`` reset would start,
+        and ACK, while the persistent AUTO set is NOT empty. §4.2 requires a
+        strict confirmation that the AUTO set is empty, and §7.2 requires an
+        active row that cannot be advanced to be REPORTED as a blocker rather
+        than silently ignored so the manual retry can start.
+
+        It also pages past fully-filtered pages instead of reading one as
+        termination. An empty ``docs`` with a live cursor means "call again" (the
+        page contract is explicit that ``CURSOR_END`` is the only termination
+        signal), so stopping at the first empty page could start the reset with
+        routable AUTO rows still ahead of the cursor — reachable whenever page one
+        happens to be all journaled rows, and before that whenever a page was
+        fully consumed by the status re-filter.
+
+        Returns ``(routable, cursor, blocking_ids)``:
+
+        * ``routable`` non-empty → work remains; the caller keeps draining, and
+          ``cursor`` is that page's continuation.
+        * ``routable`` empty and ``blocking_ids`` non-empty → the AUTO set is not
+          empty, but nothing left in it can be routed by this run: a drain
+          blocker. ``blocking_ids`` is a BOUNDED sample.
+        * both empty → genuinely drained; the reset may start.
+        """
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size <= 0:
+            # Legacy single scan (paging disabled).
+            docs = await self.doc_status.get_docs_by_statuses(
+                list(_AUTO_RESUME_DOC_STATUSES), strict=True
+            )
+            routable = {
+                doc_id: doc
+                for doc_id, doc in docs.items()
+                if doc_status_custom_chunk_patch(doc) is None
+            }
+            if routable:
+                return routable, CURSOR_END, ()
+            blocked = sorted(doc_id for doc_id in docs if doc_id not in routable)
+            return {}, CURSOR_END, tuple(blocked[:_MANUAL_DRAIN_BLOCKER_SAMPLE])
+
+        blocking: list[str] = []
+        position: CursorPosition = CURSOR_START
+        while True:
+            (
+                routable_ids,
+                journaled_ids,
+                position,
+            ) = await self._fetch_scheduling_page(
+                _AUTO_RESUME_DOC_STATUSES, position, limit=page_size
+            )
+            if routable_ids:
+                hydrated = await self._hydrate_scheduling_page(
+                    routable_ids, _AUTO_RESUME_DOC_STATUSES
+                )
+                if hydrated:
+                    # Routable work found: return immediately so the drain keeps
+                    # its current latency and O(page) memory. Rows behind this
+                    # page are simply not reached yet.
+                    return hydrated, position, ()
+                # Every routable id raced out of the AUTO set between the page and
+                # its hydration — not a blocker, just a page that emptied itself.
+            for doc_id in journaled_ids:
+                if len(blocking) < _MANUAL_DRAIN_BLOCKER_SAMPLE:
+                    blocking.append(doc_id)
+            if position is CURSOR_END:
+                # Only CURSOR_END proves the sweep saw the whole AUTO set.
+                return {}, CURSOR_END, tuple(blocking)
 
     async def _decide_pipeline_next_step(
         self,
@@ -3837,19 +3939,30 @@ class _PipelineMixin:
 
         This confirmation is also the drain's forward-progress checkpoint: it is
         the single place that decides "not drained yet, sweep again", so it is
-        where a drain that CANNOT advance has to be caught (LR2 §7.2). Rows that
-        keep coming back unchanged fence the workspace rather than being swept
-        forever — see :meth:`_fence_stalled_manual_drain`."""
-        # (1) Final strict confirmation that AUTO is drained.
-        docs, next_cursor = await self._next_scheduling_page(
-            _AUTO_RESUME_DOC_STATUSES, CURSOR_START
-        )
+        where a drain that CANNOT advance has to be caught (LR2 §7.2). Two
+        distinct failures are caught here:
+
+        * an active row the drain can never advance at all (an unfinished
+          custom-chunk journal) makes the AUTO set non-empty forever, so the
+          reset must NOT start — :meth:`_refuse_blocked_manual_drain`;
+        * rows that look routable yet keep coming back unchanged fence the
+          workspace rather than being swept forever —
+          :meth:`_fence_stalled_manual_drain`."""
+        # (1) Final strict confirmation that the PERSISTENT AUTO set is drained.
+        # Unfiltered and paged to CURSOR_END (see _confirm_auto_drained): the
+        # routing sweep's filtered view is not an idle proof, and one empty page
+        # is not termination.
+        docs, next_cursor, blocking_ids = await self._confirm_auto_drained()
         if docs:
             if not drain_progress.observe(docs.keys()):
                 await self._fence_stalled_manual_drain(
                     docs, pipeline_status, pipeline_status_lock
                 )
             return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
+        if blocking_ids:
+            await self._refuse_blocked_manual_drain(
+                blocking_ids, pipeline_status, pipeline_status_lock
+            )
 
         # (2) Read the request id off the freeze owner, then run the reset. A
         # missing owner means a concurrent reaper cleared the freeze (dead
@@ -3875,6 +3988,50 @@ class _PipelineMixin:
             _AUTO_RESUME_DOC_STATUSES, CURSOR_START
         )
         return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
+
+    async def _refuse_blocked_manual_drain(
+        self,
+        blocking_ids: tuple[str, ...],
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Refuse to start the exclusive reset: the AUTO set cannot be drained.
+
+        Active rows remain that this run can never advance — rows holding an
+        unfinished custom-chunk journal, which only ``/documents/scan``'s rollback
+        (or the owning SDK call) may resolve. LR2 §4.2 requires the AUTO set to be
+        confirmed empty before ``EXCLUSIVE_RESET``, and §7.2 forbids silently
+        ignoring an active row to let the manual retry start, so the reset does
+        not run and the request is NOT ACKed: no FAILED document is consumed by an
+        attempt that could not happen.
+
+        Raises :class:`PipelineDrainBlockedError`, which unwinds the run through
+        its ``finally`` — freeze and ``busy`` released (owner-checked), the manual
+        request left sticky in the mailbox. The next trigger re-attempts, and the
+        attempt succeeds as soon as the blocker is gone.
+
+        **Deliberately does NOT fence the workspace**, unlike
+        :meth:`_fence_stalled_manual_drain`. §7.2 says to set ``recovery_required``
+        for an unadvanceable active row, and for a blocker with no known remedy
+        that is right — but ``recovery_required`` refuses EVERY mutation, and the
+        remedy for this one is ``/documents/scan``, which is itself a mutation. A
+        fence here would make the operator force-reset the fence before they were
+        allowed to run the fix. Reporting loudly and refusing the reset achieves
+        the same protection (the reset never runs on a non-idle pipeline) without
+        blocking its own repair path, and it cannot spin: the run exits.
+        """
+        detail = (
+            f"Manual retry cannot start: {len(blocking_ids)} or more active "
+            "document(s) hold an unfinished custom-chunk operation, so the "
+            "pipeline is not idle and the exclusive FAILED reset must not begin. "
+            "Run POST /documents/scan to roll the operation back, then retry "
+            f"(blocked doc id sample: {', '.join(blocking_ids) or 'unavailable'})."
+        )
+        logger.error(detail)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = detail
+            append_pipeline_history(pipeline_status, detail)
+        raise PipelineDrainBlockedError(detail, blocked_doc_ids=tuple(blocking_ids))
 
     async def _fence_stalled_manual_drain(
         self,

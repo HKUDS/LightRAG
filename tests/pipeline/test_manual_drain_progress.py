@@ -8,17 +8,23 @@ because the re-sweep is a plain storage call with no sleep, the run spins as fas
 as the backend will answer — pegging a core, hammering doc_status, and never
 running the retry the operator asked for.
 
-Two independent defences, one test group each:
+Three things are pinned here, and the middle one is the trap:
 
-1. the sweep does not carry rows that are not routable in the first place —
-   specifically rows holding an unfinished custom-chunk journal, which only the
-   SDK caller or ``/documents/scan``'s rollback may advance;
-2. whatever else ever reaches that state, the drain detects the lack of progress,
-   fences the workspace with ``recovery_required`` plus a BOUNDED sample of the
-   blocking doc ids, and stops.
+1. a routing sweep does not carry rows it must never route — rows holding an
+   unfinished custom-chunk journal, which only the SDK caller or
+   ``/documents/scan``'s rollback may advance;
+2. the drain's idle proof is NOT that filtered view, and does not stop at one
+   empty page. Reusing the filter is fail-open — the exclusive reset starts and
+   ACKs while the persistent AUTO set is not empty (LR2 §4.2) — and one empty
+   page with a live cursor means "call again", not "drained". A row the drain
+   cannot advance is reported as a blocker and the reset is refused;
+3. whatever else ever reaches a no-progress state, the drain detects it, fences
+   the workspace with ``recovery_required`` plus a BOUNDED sample of the blocking
+   doc ids, and stops.
 
-The first is the specific bug; the second is the rule the design states, and the
-reason a future variant of the same shape cannot come back as an unbounded spin.
+(2) and (3) differ in one deliberate way: a blocker with a documented remedy
+(``/documents/scan``) must NOT fence, because ``recovery_required`` refuses every
+mutation including that scan; a blocker with no known remedy fences.
 """
 
 from __future__ import annotations
@@ -31,9 +37,12 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG
-from lightrag.base import CURSOR_START, DocStatus
+from lightrag.base import CURSOR_END, CURSOR_START, DocStatus
 from lightrag.constants import CUSTOM_CHUNK_PATCH_METADATA_KEY
-from lightrag.exceptions import PipelineRecoveryRequiredError
+from lightrag.exceptions import (
+    PipelineDrainBlockedError,
+    PipelineRecoveryRequiredError,
+)
 from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_ingress
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
@@ -155,7 +164,7 @@ async def _seed_failed_with_content(rag: LightRAG, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Defence 1: the sweep never carries a journaled row
+# Group 1/2: a routing sweep skips journaled rows; the drain's idle proof does not
 # ---------------------------------------------------------------------------
 
 
@@ -197,14 +206,24 @@ def test_scheduling_sweep_skips_journaled_rows(tmp_path, page_size):
     asyncio.run(_run())
 
 
-def test_journaled_active_row_does_not_stall_manual_retry(tmp_path):
-    """A journaled ACTIVE row must not stop a manual retry from running.
+def test_journaled_active_row_blocks_the_reset_without_fencing(tmp_path):
+    """A journaled ACTIVE row means the pipeline is NOT idle, so the exclusive
+    reset must not begin — and it must not spin either.
 
-    Regression: the row was swept, dropped by the batch validator and left in
-    PROCESSING, so the drain's confirmation sweep found it again every round and
-    the run spun (~3.4k rounds/second, no sleep, retry never served). The retry
-    must now complete: the FAILED doc is reset and processed, the request is
-    ACKed, and the journaled row is left exactly as it was for scan rollback."""
+    Two failure modes bracket the correct behaviour:
+
+    * the original bug swept the row, dropped it in the batch validator and left
+      it PROCESSING, so the drain's confirmation found it again every round and
+      spun (~3.4k rounds/second, no sleep, retry never served);
+    * filtering it out of the confirmation sweep instead is fail-OPEN: the reset
+      starts and ACKs while the persistent AUTO set is not empty, which is exactly
+      what LR2 §4.2 forbids.
+
+    So the drain reports the blocker, refuses the reset and exits. The retry stays
+    OWED — the request is un-ACKed and the FAILED document is untouched — and the
+    workspace is NOT fenced, because the remedy (`/documents/scan`'s rollback) is
+    itself a mutation a fence would refuse.
+    """
 
     async def _run():
         rag = await _build_rag(tmp_path)
@@ -216,29 +235,179 @@ def test_journaled_active_row_does_not_stall_manual_retry(tmp_path):
             journaled_row_before = await rag.doc_status.get_by_id(journaled)
 
             await request_failed_retry(rag)
-            await asyncio.wait_for(
-                rag.apipeline_process_enqueue_documents(),
-                timeout=_SPIN_TIMEOUT_SECONDS,
-            )
+            with pytest.raises(PipelineDrainBlockedError) as excinfo:
+                await asyncio.wait_for(
+                    rag.apipeline_process_enqueue_documents(),
+                    timeout=_SPIN_TIMEOUT_SECONDS,
+                )
 
-            # The retry ran to completion.
-            assert await _status_of(rag, failed) == DocStatus.PROCESSED.value
+            # The blocker is named, boundedly, and points at the remedy.
+            assert excinfo.value.blocked_doc_ids == (journaled,)
+            assert "/documents/scan" in str(excinfo.value)
+
+            # The reset never ran: the FAILED doc is untouched and the request is
+            # still queued, so its one retry per document is still owed.
+            assert await _status_of(rag, failed) == DocStatus.FAILED.value
             ingress = await get_pipeline_ingress(rag.workspace)
-            assert ingress.snapshot_manual_retries() == []  # ACKed
+            assert len(ingress.snapshot_manual_retries()) == 1
 
             # The journaled row is untouched — not reset, not deleted, journal
             # intact — so /documents/scan can still roll it back.
             after = await rag.doc_status.get_by_id(journaled)
             assert after == journaled_row_before
-            assert after["metadata"][CUSTOM_CHUNK_PATCH_METADATA_KEY]["phase"] == (
-                "prepared"
-            )
 
-            # And the workspace is NOT fenced: this is ordinary operation.
+            # NOT fenced: uploads and — crucially — the scan that fixes this are
+            # still allowed.
             status = await get_namespace_data(
                 "pipeline_status", workspace=rag.workspace
             )
             assert not status.get("recovery_required")
+            # And the freeze/busy were released, so nothing is wedged.
+            assert status.get("busy") is False
+            assert status.get("manual_freeze_requested") is False
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_the_queued_retry_is_served_once_the_blocker_is_gone(tmp_path):
+    """The blocked request self-heals: it stays queued, and the next trigger
+    serves it as soon as the journal is gone (what a scan rollback leaves behind).
+
+    This is the pay-off for refusing rather than fencing — no operator has to
+    re-issue the retry, and no force-reset stands between them and the fix."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            journaled = await _seed_journaled_row(
+                rag, "journaled.txt", DocStatus.PROCESSING
+            )
+            failed = await _seed_failed_with_content(rag, "retry-me.txt")
+
+            await request_failed_retry(rag)
+            with pytest.raises(PipelineDrainBlockedError):
+                await asyncio.wait_for(
+                    rag.apipeline_process_enqueue_documents(),
+                    timeout=_SPIN_TIMEOUT_SECONDS,
+                )
+
+            # What a /documents/scan rollback leaves: journal gone, row resolved.
+            await rag.doc_status.delete([journaled])
+
+            # Same still-queued request, no new one published.
+            await asyncio.wait_for(
+                rag.apipeline_process_enqueue_documents(),
+                timeout=_SPIN_TIMEOUT_SECONDS,
+            )
+
+            assert await _status_of(rag, failed) == DocStatus.PROCESSED.value
+            ingress = await get_pipeline_ingress(rag.workspace)
+            assert ingress.snapshot_manual_retries() == []  # ACKed
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_drain_confirmation_pages_past_a_fully_filtered_page(tmp_path):
+    """The final confirmation must page to CURSOR_END, not stop at one empty page.
+
+    An empty ``docs`` with a live cursor means "call again" — ``CURSOR_END`` is the
+    only termination signal. Checking just ``if docs`` reset the moment page one
+    came back empty, so with a page size of 1 and a journaled row sorting first,
+    the reset started while a routable PENDING row sat on page two. Here the
+    routable row must be found and processed, and the retry must NOT be ACKed on
+    that first pass."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            rag.pipeline_scheduling_page_size = 1  # one row per page
+
+            # created_at orders the keyset: the journaled row sorts FIRST, so it
+            # owns page one and the routable row is only reachable on page two.
+            journaled = compute_mdhash_id("aaa-journaled.txt", prefix="doc-")
+            await rag.full_docs.upsert({journaled: {"content": "body"}})
+            await rag.doc_status.upsert(
+                {
+                    journaled: {
+                        "status": DocStatus.PROCESSING,
+                        "content_summary": "body",
+                        "content_length": 4,
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                        "file_path": "aaa-journaled.txt",
+                        "track_id": "t",
+                        "error_msg": "",
+                        "metadata": {
+                            CUSTOM_CHUNK_PATCH_METADATA_KEY: {
+                                "schema_version": 1,
+                                "operation_id": "op-1",
+                                "mode": "patch",
+                                "chunk_ids": [],
+                                "phase": "prepared",
+                            }
+                        },
+                    }
+                }
+            )
+            routable = compute_mdhash_id("zzz-pending.txt", prefix="doc-")
+            await rag.full_docs.upsert({routable: {"content": "body"}})
+            await rag.doc_status.upsert(
+                {
+                    routable: {
+                        "status": DocStatus.PENDING,
+                        "content_summary": "body",
+                        "content_length": 4,
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": "2026-01-02T00:00:00+00:00",
+                        "updated_at": "2026-01-02T00:00:00+00:00",
+                        "file_path": "zzz-pending.txt",
+                        "track_id": "t",
+                        "error_msg": "",
+                        "metadata": {},
+                    }
+                }
+            )
+
+            # The confirmation must reach page two and report the routable row —
+            # not conclude "drained" from the empty first page.
+            docs, _cursor, blocking = await rag._confirm_auto_drained()
+            assert set(docs) == {routable}
+            assert blocking == ()
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_drain_confirmation_reports_a_blocker_only_after_cursor_end(tmp_path):
+    """The blocker verdict also requires reaching CURSOR_END: a journaled row on
+    page one must not be reported as a blocker while later pages are unread."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            rag.pipeline_scheduling_page_size = 1
+            journaled_a = await _seed_journaled_row(
+                rag, "a-journaled.txt", DocStatus.PROCESSING
+            )
+            journaled_b = await _seed_journaled_row(
+                rag, "b-journaled.txt", DocStatus.PARSING
+            )
+
+            docs, cursor, blocking = await rag._confirm_auto_drained()
+
+            # Nothing routable anywhere, so BOTH journaled rows are blockers and
+            # the sweep only says so after it has seen the whole keyset.
+            assert docs == {}
+            assert cursor is CURSOR_END
+            assert set(blocking) == {journaled_a, journaled_b}
         finally:
             await rag.finalize_storages()
 
@@ -246,7 +415,7 @@ def test_journaled_active_row_does_not_stall_manual_retry(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Defence 2: a drain that cannot advance fences instead of spinning
+# Group 3: a drain that cannot advance fences instead of spinning
 # ---------------------------------------------------------------------------
 
 

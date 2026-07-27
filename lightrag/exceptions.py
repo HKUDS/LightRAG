@@ -170,6 +170,27 @@ class PipelineReservationConflictError(RuntimeError):
         return getattr(self.conflict, "value", self.conflict) == "recovery_required"
 
 
+class PipelineDrainBlockedError(RuntimeError):
+    """A manual retry's drain cannot reach idle, so its reset did not start.
+
+    Active ``doc_status`` rows remain that the drain can never advance — rows
+    holding an unfinished custom-chunk operation, which only
+    ``/documents/scan``'s rollback resolves. LR2 §4.2 requires the AUTO set to be
+    confirmed empty before ``EXCLUSIVE_RESET``, so the reset is refused rather
+    than run on a pipeline that is not idle (and the request is left un-ACKed, so
+    no FAILED document is consumed by an attempt that never happened).
+
+    Distinct from :class:`PipelineRecoveryRequiredError`: this blocker has a
+    documented, self-service remedy, so the workspace is NOT fenced — fencing
+    would refuse the very ``/documents/scan`` call that fixes it.
+    ``blocked_doc_ids`` is a BOUNDED sample.
+    """
+
+    def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:
+        self.blocked_doc_ids = blocked_doc_ids
+        super().__init__(message)
+
+
 class PipelineRecoveryRequiredError(RuntimeError):
     """The pipeline fenced its own workspace with ``recovery_required``.
 
