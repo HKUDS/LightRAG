@@ -475,13 +475,15 @@ async def refuse_a_primary_whose_content_lives_elsewhere(
 ) -> None:
     """Refuse a primary the PROCESSING stage is already destined to demote.
 
-    The repair's caller-side exclusion cannot reach the processing stage (see
-    :func:`repair_one_conflict`), and it never will: ``_mark_duplicate_after_parse``
-    is a per-document write with no source-key lock, and even a lock would not
-    help — the marking may simply land the moment the repair releases it. So the
-    only place to remove this interaction is where the contentless-stub refusal
-    already removes its own: BEFORE the irreversible demotions, by refusing a
-    primary that cannot keep the source.
+    The commit DOES exclude the processing stage for its whole span — the keyed
+    source lock it holds is the same one ``_mark_duplicate_after_parse`` takes
+    (LR2 §5.5) — but exclusion only ORDERS the two operations; it cannot keep a
+    primary usable after it releases. A marking that was already destined to
+    demote this row simply lands the moment the lock is free, and the key the
+    operator was just told is settled has no primary again. So the lock and this
+    refusal answer different questions, and this one belongs where the
+    contentless-stub refusal already sits: BEFORE the irreversible demotions, by
+    refusing a primary that cannot keep the source.
 
     A primary whose content hash is already held by a document under a DIFFERENT
     canonical source is exactly that: when it is parsed, the post-parse duplicate

@@ -569,5 +569,9 @@ ROLLBACK_REPORT_SAMPLE_CAP = 32
 ENQUEUE_SERIALIZE_LOCK_NAMESPACE = "enqueue_serialize"
 
 # Keyed-lock namespace for per-canonical-source-key serialization, mirroring the
-# "<workspace>:DocPatch" idiom. Keys are canonical source keys.
+# "<workspace>:DocPatch" idiom. Keys are canonical source keys. Held by BOTH
+# writers that can change a key's candidate set outside enqueue: the operator's
+# source-conflict repair and the post-parse duplicate marking (LR2 §5.5) — take
+# it via utils_pipeline.source_candidate_set_lock, which is the single place the
+# namespace/key spelling is built (a mismatched spelling excludes nothing).
 SOURCE_CONFLICT_LOCK_NAMESPACE = "DocSource"

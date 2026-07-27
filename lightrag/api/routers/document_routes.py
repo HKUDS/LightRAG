@@ -4308,7 +4308,9 @@ def create_document_routes(
            runs under the canonical-key + enqueue-serialize locks, which is what
            keeps a NEW primary from being inserted between that re-read and the
            demotions (no backend can block that phantom on its own — see
-           ``DocStatusStorage.repair_source_conflict``).
+           ``DocStatusStorage.repair_source_conflict``), and what orders the
+           commit against the processing stage's duplicate marking, which takes
+           the same canonical-key lock.
 
         The commit marks every candidate other than ``primary_doc_id`` with
         ``metadata.is_duplicate=true`` and ``original_doc_id=<primary>``. Content
@@ -4385,9 +4387,13 @@ def create_document_routes(
                     )
                     # Verify the end state inside the locks rather than reporting
                     # a settled key on the strength of "the demotions landed".
-                    # The locks exclude a concurrent enqueue and nothing else, so
-                    # a concurrent delete / duplicate marking can leave the key
-                    # Absent or still conflicting; raises when it did.
+                    # The locks exclude every in-deployment writer of this
+                    # candidate set — enqueue, clear/delete + scan classification
+                    # + manual reset (the reservation), and the processing
+                    # stage's duplicate marking (the keyed source lock it takes
+                    # too) — so this is a backstop for what stays outside them: a
+                    # second deployment writing the same database. It raises when
+                    # the key came out Absent or still conflicting.
                     await verify_repair_outcome(
                         rag.doc_status,
                         payload.canonical_source_key,

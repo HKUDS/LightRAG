@@ -1538,7 +1538,9 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Serializing repair against enqueue is therefore the CALLER's job:
         ``lightrag.tools.source_conflict_repair.source_conflict_repair_lock``
         holds a ``get_storage_keyed_lock`` on the canonical source key (so
-        concurrent repairs of one key serialize) plus the workspace's
+        concurrent repairs of one key serialize, and so does the processing
+        stage's duplicate marking, which takes that same lock) plus the
+        workspace's
         ``ENQUEUE_SERIALIZE_LOCK_NAMESPACE`` namespace lock, which is the one
         that actually excludes the phantom because the enqueue critical section
         (``filter_keys`` → dedup → ``upsert``) already holds it. Those locks span

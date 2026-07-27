@@ -114,7 +114,9 @@ guard.
     is not verified.
 - Not covered, by construction: a primary that has not been parsed yet has no
   content hash, so nothing can predict whether its content will turn out to
-  duplicate another document. If it does, the outcome is the ordinary
-  content-dedup steady state (the content lives under that document and this key
-  ends up with no primary), the commit reports it instead of claiming success,
+  duplicate another document. The commit itself still succeeds, and the key
+  really is unique when it returns — no marking can interleave with it. A
+  marking that lands afterwards is an ordinary state transition, not a
+  half-applied repair: the outcome is the ordinary content-dedup steady state
+  (the content lives under that document and this key ends up with no primary),
   and no content is lost.
