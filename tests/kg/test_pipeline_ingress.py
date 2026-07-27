@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import lightrag.kg.shared_storage as shared_storage
+import lightrag.kg.pipeline_ingress as pipeline_ingress
 from lightrag.kg.pipeline_ingress import (
     ManualRetryPublishResult,
     MANUAL_RETRY_ACKED,
@@ -673,3 +674,32 @@ def test_counts_expose_the_manual_capacity():
     counts = mailbox.counts()
     assert counts["manual_retries"] == 0
     assert counts["manual_retries_capacity"] == 7
+
+
+def test_manual_capacity_is_read_per_mailbox_not_at_import(monkeypatch):
+    """LR2 §11: ``MAX_UNACKED_MANUAL_RETRIES`` is resolved when a mailbox is
+    built, not captured in a module constant at first import.
+
+    As an import-time constant the value depended on whether the env had been
+    loaded before this module was first imported, and a restart-free config
+    reload could never take effect. Both mailbox flavours must honour the
+    configured value at construction time."""
+    monkeypatch.setenv("MAX_UNACKED_MANUAL_RETRIES", "3")
+    assert pipeline_ingress.manual_channel_capacity() == 3
+    assert PipelineIngressMailbox().counts()["manual_retries_capacity"] == 3
+
+    monkeypatch.setenv("MAX_UNACKED_MANUAL_RETRIES", "11")
+    assert PipelineIngressMailbox().counts()["manual_retries_capacity"] == 11
+
+    # An explicit argument still wins over the environment.
+    assert (
+        PipelineIngressMailbox(manual_capacity=2).counts()["manual_retries_capacity"]
+        == 2
+    )
+
+
+async def test_asyncio_ingress_manual_capacity_is_read_per_instance(monkeypatch):
+    """Same contract for the single-process ingress."""
+    monkeypatch.setenv("MAX_UNACKED_MANUAL_RETRIES", "4")
+    ingress = AsyncioPipelineIngress()
+    assert ingress.counts()["manual_retries_capacity"] == 4

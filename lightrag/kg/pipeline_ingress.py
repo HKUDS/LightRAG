@@ -81,13 +81,24 @@ TERMINAL_MANUAL_REQUEST_IDS_CAPACITY = 4096
 # resource from one stalled workspace's feeder.
 DOCUMENT_CHANNEL_CAPACITY = 4096
 
-# Bound of the sticky manual-retry channel per workspace (LR2 §10.1). Unlike the
-# document channel, overflow here CANNOT be dropped and recovered later: a manual
-# retry is an explicit human intent with an ACK contract, so the publish is
-# refused instead and the caller is told to retry.
-MANUAL_CHANNEL_CAPACITY = get_env_value(
-    "MAX_UNACKED_MANUAL_RETRIES", DEFAULT_MAX_UNACKED_MANUAL_RETRIES, int
-)
+
+def manual_channel_capacity() -> int:
+    """Bound of the sticky manual-retry channel per workspace (LR2 §10.1).
+
+    Unlike the document channel, overflow here CANNOT be dropped and recovered
+    later: a manual retry is an explicit human intent with an ACK contract, so
+    the publish is refused instead and the caller is told to retry.
+
+    Resolved per mailbox construction rather than captured at import, matching
+    how ``SCAN_ENQUEUE_BATCH_SIZE`` is read per scan: a module-level constant
+    baked the value in at the first import of this module, so it depended on
+    whether the env had been loaded yet and a restart-free config reload could
+    never take effect.
+    """
+    return get_env_value(
+        "MAX_UNACKED_MANUAL_RETRIES", DEFAULT_MAX_UNACKED_MANUAL_RETRIES, int
+    )
+
 
 # Hard ceiling for one mailbox wait RPC.  A Manager server runs each client
 # connection on its own thread; a client SIGKILLed while a wait_for_* call is
@@ -261,11 +272,19 @@ class PipelineIngressMailbox:
     def __init__(
         self,
         document_capacity: int = DOCUMENT_CHANNEL_CAPACITY,
-        manual_capacity: int = MANUAL_CHANNEL_CAPACITY,
+        manual_capacity: int | None = None,
     ) -> None:
         self._cond = threading.Condition()
         self._document_capacity = max(1, int(document_capacity))
-        self._manual_capacity = max(1, int(manual_capacity))
+        # ``None`` = read the configured bound now (see manual_channel_capacity).
+        self._manual_capacity = max(
+            1,
+            int(
+                manual_channel_capacity()
+                if manual_capacity is None
+                else manual_capacity
+            ),
+        )
         self._documents: deque[PipelineIngressMessage] = deque()
         self._document_overflows = 0
         self._auto_rescan_pending = False
@@ -716,11 +735,19 @@ class AsyncioPipelineIngress:
     def __init__(
         self,
         document_capacity: int = DOCUMENT_CHANNEL_CAPACITY,
-        manual_capacity: int = MANUAL_CHANNEL_CAPACITY,
+        manual_capacity: int | None = None,
     ) -> None:
         self.owning_loop = asyncio.get_running_loop()
         self._document_capacity = max(1, int(document_capacity))
-        self._manual_capacity = max(1, int(manual_capacity))
+        # ``None`` = read the configured bound now (see manual_channel_capacity).
+        self._manual_capacity = max(
+            1,
+            int(
+                manual_channel_capacity()
+                if manual_capacity is None
+                else manual_capacity
+            ),
+        )
         self.document_messages: asyncio.Queue[PipelineIngressMessage] = asyncio.Queue()
         self._document_overflows = 0
         self._auto_rescan_pending = False

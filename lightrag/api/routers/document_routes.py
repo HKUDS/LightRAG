@@ -3343,8 +3343,12 @@ async def run_scanning_process(
                     logger.error(stub_error)
                     reporter.count("errors")
                     reporter.sample("error", stub_error)
-                    resumed_count += 1
-                    reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+                    # Counted as errors ONLY. The file keeps its contentless
+                    # FAILED row and is left on disk for the next scan, which is
+                    # not a resume: tallying it under
+                    # RESUME_SAME_PHYSICAL_SOURCE reported a document as being
+                    # advanced when nothing can advance it (the row has no
+                    # content), and inflated ``resumed`` in the run summary.
                     continue
                 logger.info(
                     "Retrying previously failed extraction; removed stale "
