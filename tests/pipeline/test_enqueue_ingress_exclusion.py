@@ -26,7 +26,9 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG
+from lightrag.exceptions import PipelineReservationConflictError
 from lightrag.kg.shared_storage import (
+    PipelineReservationConflict,
     acquire_enqueue_reservation,
     finalize_share_data,
     get_namespace_data,
@@ -338,6 +340,87 @@ def test_scan_enqueues_are_exempt_from_the_fence_and_the_reservation(tmp_path):
             # Two docs written past a capacity of 1, and no reservation taken.
             assert len(dict(rag.doc_status._data)) == 2
             assert seen["pending_enqueues"] == 0
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# The refusal reason survives as data, not as a message string (LR2 §9.1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fence,expected_conflict,expected_recovery",
+    [
+        ("manual_freeze_requested", PipelineReservationConflict.MANUAL_FREEZE, False),
+        ("scanning_exclusive", PipelineReservationConflict.SCANNING, False),
+        ("destructive_busy", PipelineReservationConflict.DESTRUCTIVE, False),
+    ],
+)
+def test_sdk_fence_refusal_is_structured(
+    tmp_path, fence, expected_conflict, expected_recovery
+):
+    """An SDK / direct enqueue refused by a fence raises the STRUCTURED conflict.
+
+    §9.1 requires the distinction to survive for a non-HTTP caller: a manual
+    freeze / scan / destructive window is a bounded condition worth retrying
+    (409), a fenced workspace is not (503). It used to be a bare
+    ``RuntimeError(message)``, so an SDK caller could only string-match. Still a
+    ``RuntimeError`` subclass, so callers written against the old contract keep
+    working — asserted here too."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, capacity=0)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            async with lock:
+                pipeline_status[fence] = True
+
+            with pytest.raises(PipelineReservationConflictError) as excinfo:
+                await rag.apipeline_enqueue_documents(
+                    "hello world", file_paths="report.pdf", track_id="t-1"
+                )
+
+            error = excinfo.value
+            assert isinstance(error, RuntimeError)  # backward compatible
+            assert error.conflict is expected_conflict
+            assert error.fence == fence
+            assert error.recovery_required is expected_recovery
+            assert str(error)  # a human-readable reason is still carried
+            assert dict(rag.doc_status._data) == {}
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_sdk_recovery_fence_refusal_is_distinguishable(tmp_path):
+    """The 503 case: a workspace fenced with ``recovery_required`` is reported as
+    such, so an SDK caller does not retry it as a bounded window."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, capacity=0)
+        try:
+            pipeline_status, lock = await _status_handles(rag)
+            async with lock:
+                pipeline_status["recovery_required"] = {
+                    "kind": "manual_drain_stalled",
+                    "owner_key": "busy_owner",
+                    "operation_record": None,
+                    "message": "a drain could not advance.",
+                }
+
+            with pytest.raises(PipelineReservationConflictError) as excinfo:
+                await rag.apipeline_enqueue_documents(
+                    "hello world", file_paths="report.pdf", track_id="t-1"
+                )
+
+            error = excinfo.value
+            assert error.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
+            assert error.recovery_required is True
+            assert dict(rag.doc_status._data) == {}
         finally:
             await rag.finalize_storages()
 
