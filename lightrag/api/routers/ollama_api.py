@@ -169,8 +169,9 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
 
     Examples:
     - "/local[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.local, False, "use mermaid format for diagrams")
-    - "/[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.hybrid, False, "use mermaid format for diagrams")
+    - "/[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.mix, False, "use mermaid format for diagrams")
     - "/local  query string" -> (cleaned_query, SearchMode.local, False, None)
+    - "/local[use mermaid format for diagrams]" -> ("", SearchMode.local, False, "use mermaid format for diagrams")
     """
     # Initialize user_prompt as None
     user_prompt = None
@@ -184,8 +185,9 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
         user_prompt = bracket_match.group(2)
         remaining_query = bracket_match.group(3).lstrip()
 
-        # Reconstruct query, removing the bracket part
-        query = f"/{mode_prefix} {remaining_query}".strip()
+        # Reconstruct query, removing the bracket part. Keep the separator the
+        # space-suffixed mode keys match on, and emit no bare "/" without a mode.
+        query = f"/{mode_prefix} {remaining_query}" if mode_prefix else remaining_query
 
     # Unified handling of mode and only_need_context determination
     mode_map = {
