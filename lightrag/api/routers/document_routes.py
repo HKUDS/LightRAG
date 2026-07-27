@@ -3020,7 +3020,14 @@ def _scan_spool_base_dir(rag: LightRAG) -> Path | None:
 
     The workspace subdirectory is what lets the spool have a FIXED name inside
     it (see :class:`_ScanCandidateSpool`): two workspaces sharing one
-    WORKING_DIR must never reuse or delete each other's file.
+    WORKING_DIR must never reuse or delete each other's file.  That makes the
+    workspace → directory mapping load-bearing, so it is INJECTIVE by
+    construction — ``unnamed/`` for the empty workspace, ``named/<workspace>/``
+    for every other.  A bare sentinel would not be: ``validate_workspace``
+    accepts any single path component, so a workspace literally called
+    ``_default`` would collide with the unnamed one.  The two hold different
+    per-workspace scan locks and can therefore run concurrently, and the loser
+    of that race has its live database deleted out from under it.
 
     Returns ``None`` only when no working directory can be determined at all —
     a test rig, never a real ``LightRAG``, whose ``working_dir`` always defaults
@@ -3037,9 +3044,11 @@ def _scan_spool_base_dir(rag: LightRAG) -> Path | None:
         base = Path(working_dir.strip()) / "scan_spool"
 
     workspace = getattr(rag, "workspace", "") or ""
+    if not workspace:
+        return base / "unnamed"
     # Reuses the storage layer's rule rather than sanitizing: a workspace that
     # could escape its directory is a configuration error everywhere else too.
-    return base / (validate_workspace(workspace) if workspace else "_default")
+    return base / "named" / validate_workspace(workspace)
 
 
 class _ScanCandidateSpool:
@@ -3086,7 +3095,15 @@ class _ScanCandidateSpool:
     def __init__(self, commit_interval: int, base_dir: Path | None = None):
         self._spool_dir, self._temp_dir = self._prepare_dir(base_dir)
         self._db_path = self._spool_dir / self._DB_NAME
-        self._discard_database_files()
+        try:
+            self._discard_database_files()
+        except OSError as residue_error:
+            # Opening on top of residue we could not remove would mean reading
+            # another scan's rows, so this is fail-closed like placement itself.
+            raise RuntimeError(
+                f"Scan candidate spool {self._db_path} could not be reclaimed "
+                f"({residue_error}); refusing to reuse another scan's database."
+            ) from residue_error
         self._connection = sqlite3.connect(self._db_path)
         # Bound SQLite's page cache and force any query scratch space to disk.
         # The database is disposable, so fsync durability buys nothing: a

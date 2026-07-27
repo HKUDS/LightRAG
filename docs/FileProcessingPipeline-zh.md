@@ -792,6 +792,15 @@ __parsed__/<base>.docling_raw/
 
   **崩溃残留上限为一份**：spool 落在持久卷上，`kill -9` 留下的东西没人回收，因此它在 workspace 子目录里用**固定文件名**而非随机名：下次扫描在打开自己的之前先删掉残留。残留因此恒为一份，而不是每崩一次多一份。固定名是安全的，因为 `scanning_exclusive` 本就只允许每个 workspace 同时跑一次扫描（也正是这个保证让两次扫描不会争抢 INPUT_DIR）；而 workspace 子目录保证共用同一个 `WORKING_DIR` 的两个 workspace 不会复用彼此的文件。
 
+  正因为固定名让这个子目录成为承重结构，workspace → 目录的映射在构造上就是**单射**的：
+
+  ```text
+  <base>/unnamed/candidates.sqlite3           # 未设置 WORKSPACE
+  <base>/named/<workspace>/candidates.sqlite3 # 每个具名 workspace
+  ```
+
+  用一个裸哨兵名做不到单射 —— workspace 名只被校验、不被限制，所以一个真的叫 `_default` 的 workspace 会和未命名的落到同一个目录。这两者持有**不同**的 per-workspace 扫描锁、可以并发扫描，后启动的那个会删掉前者正在使用的数据库。
+
   **精确全局排序的代价**：发现阶段结束前没有任何行进入 doc_status，因此扫描被中断（取消、崩溃、重启）时**一条都不会入队** —— 源文件仍在 INPUT_DIR，下次扫描重新发现即可。唯一回不来的是发现阶段已删除的 `STALE_STUB` 行：文件下次会作为新文档重新入队，但那条"保留供人工 review"的 FAILED stub 已经没了。spool 本身不属于 LightRAG 持久存储，扫描结束即删除。
 - 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；上述自动恢复（`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`）仅用于目录扫描场景。
 - 文件系统时间只在持久化前充当扫描优先级：spool 按全局从旧到新吐出候选，随后逐条入队，并在真正首次落库时写 `doc_status.created_at=now()`。文件一旦进入 doc_status，调度只认普通的不可变 `(created_at, id)`，文件 mtime 随即丢弃。mtime 不可读的候选排在所有可读时间之后，但不会因此丢失；文件消失或不可读仍由入队路径正常报错。

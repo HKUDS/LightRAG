@@ -792,6 +792,15 @@ File upload, file-parse enqueue, and the text APIs check duplicates against two 
 
   **Crash residue is capped at one spool.** The spool sits on a persistent volume, where nothing reclaims what `kill -9` leaves behind, so its filename inside the per-workspace directory is fixed rather than randomized: the next scan deletes any leftover before opening its own. Residue is therefore one spool, never one per crash. The fixed name is safe because `scanning_exclusive` already admits a single scan per workspace — the same guarantee that keeps two scans from fighting over INPUT_DIR — and the per-workspace subdirectory is what keeps two workspaces sharing a `WORKING_DIR` from reusing each other's file.
 
+  Because the fixed name makes that subdirectory load-bearing, the workspace → directory mapping is injective by construction:
+
+  ```text
+  <base>/unnamed/candidates.sqlite3           # WORKSPACE unset
+  <base>/named/<workspace>/candidates.sqlite3 # every named workspace
+  ```
+
+  A bare sentinel would not be injective — workspace names are validated, not restricted, so a workspace literally called `_default` would land in the same directory as the unnamed one. Those two hold *different* per-workspace scan locks and can therefore scan concurrently, and the second one to start would delete the first one's live database.
+
   **The cost of exact global ordering.** Nothing reaches doc_status until discovery finishes, so an interrupted scan (cancel, crash, restart) enqueues *nothing*: the source files stay in INPUT_DIR and the next scan rediscovers them. The one thing that does not come back is a `STALE_STUB` row deleted during discovery — the file is re-enqueued as new next time, but its preserved-for-review FAILED stub is gone. The spool itself is not LightRAG storage and is discarded when the scan ends.
 - For ordinary upload and core enqueue APIs, a file with the same name — even if its content has changed — must have its old document record deleted before re-upload or re-enqueue; the automatic recoveries above (`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`) only apply to the directory-scan path.
 - Filesystem time is only a pre-persistence scan priority. The spool emits candidates globally oldest first; each sequential enqueue then stamps `doc_status.created_at=now()` at the actual first write. Once a file has entered doc_status, only the ordinary immutable `(created_at, id)` scheduling key matters and its filesystem mtime is discarded. An unreadable mtime sorts after every readable timestamp but does not lose the candidate; the enqueue path handles a vanished/unreadable file normally.

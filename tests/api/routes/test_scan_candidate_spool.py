@@ -72,8 +72,7 @@ def test_base_dir_prefers_scan_spool_dir_then_working_dir(tmp_path, monkeypatch)
         _document_routes.global_args, "scan_spool_dir", "", raising=False
     )
     assert (
-        _scan_spool_base_dir(rag)
-        == tmp_path / "rag_storage" / "scan_spool" / "_default"
+        _scan_spool_base_dir(rag) == tmp_path / "rag_storage" / "scan_spool" / "unnamed"
     )
 
     monkeypatch.setattr(
@@ -82,7 +81,7 @@ def test_base_dir_prefers_scan_spool_dir_then_working_dir(tmp_path, monkeypatch)
         str(tmp_path / "fast-disk"),
         raising=False,
     )
-    assert _scan_spool_base_dir(rag) == tmp_path / "fast-disk" / "_default"
+    assert _scan_spool_base_dir(rag) == tmp_path / "fast-disk" / "unnamed"
 
 
 def test_each_workspace_gets_its_own_spool_directory(tmp_path, monkeypatch):
@@ -94,11 +93,70 @@ def test_each_workspace_gets_its_own_spool_directory(tmp_path, monkeypatch):
     base = tmp_path / "rag_storage" / "scan_spool"
 
     assert _scan_spool_base_dir(_rag(str(tmp_path / "rag_storage"), "alpha")) == (
-        base / "alpha"
+        base / "named" / "alpha"
     )
     assert _scan_spool_base_dir(_rag(str(tmp_path / "rag_storage"), "beta")) == (
-        base / "beta"
+        base / "named" / "beta"
     )
+
+
+def test_no_named_workspace_can_collide_with_the_unnamed_one(tmp_path, monkeypatch):
+    """The workspace → directory mapping must be injective.
+
+    ``validate_workspace`` accepts any single path component, so a bare
+    sentinel is reachable as a real workspace name: with ``_default`` as the
+    stand-in for "", a workspace literally called ``_default`` mapped to the
+    same directory. They hold different per-workspace scan locks and can run
+    concurrently, so the second one's pre-open discard would delete the first
+    one's live database. The type tag (``unnamed`` vs ``named/<ws>``) makes the
+    collision unrepresentable.
+    """
+    monkeypatch.setattr(
+        _document_routes.global_args, "scan_spool_dir", "", raising=False
+    )
+    working_dir = str(tmp_path / "rag_storage")
+
+    unnamed = _scan_spool_base_dir(_rag(working_dir, ""))
+    for lookalike in ("_default", "unnamed", "named", "default"):
+        assert _scan_spool_base_dir(_rag(working_dir, lookalike)) != unnamed
+
+
+def test_the_unnamed_and_a_lookalike_workspace_hold_spools_concurrently(
+    tmp_path, monkeypatch
+):
+    """End-to-end regression for the collision: two workspaces that can run
+    concurrently must not delete each other's live database.
+
+    The directories come from ``_scan_spool_base_dir`` on purpose — resolving
+    them by hand would test the spool in isolation and pass even while the
+    mapping collided, which is where the defect actually lived.
+
+    Asserted on the inode rather than on the drained rows: POSIX keeps an
+    unlinked-but-open file readable, so the victim would still return its own
+    candidates while its file had in fact been replaced on disk.
+    """
+    monkeypatch.setattr(
+        _document_routes.global_args, "scan_spool_dir", "", raising=False
+    )
+    working_dir = str(tmp_path / "rag_storage")
+    unnamed_dir = _scan_spool_base_dir(_rag(working_dir, ""))
+    named_dir = _scan_spool_base_dir(_rag(working_dir, "_default"))
+
+    with _ScanCandidateSpool(4, unnamed_dir) as unnamed:
+        asyncio.run(unnamed.claim(tmp_path / "a.txt", "a.txt", 1))
+        unnamed_db = unnamed_dir / "candidates.sqlite3"
+        inode_before = unnamed_db.stat().st_ino
+
+        # Opening the second spool must not touch the first one's file.
+        with _ScanCandidateSpool(4, named_dir) as named:
+            asyncio.run(named.claim(tmp_path / "b.txt", "b.txt", 1))
+
+            assert unnamed_db.stat().st_ino == inode_before
+            assert _drain(unnamed, 4) == [["a.txt"]]
+            assert _drain(named, 4) == [["b.txt"]]
+
+        # And closing one does not reclaim the other's still-live database.
+        assert unnamed_db.exists()
 
 
 def test_a_traversing_workspace_is_rejected(tmp_path, monkeypatch):
@@ -118,7 +176,7 @@ def test_base_dir_is_none_only_without_any_working_dir(monkeypatch):
 
 
 def test_spool_is_created_under_the_requested_dir_and_removed_on_close(tmp_path):
-    base = tmp_path / "rag_storage" / "scan_spool" / "_default"
+    base = tmp_path / "rag_storage" / "scan_spool" / "unnamed"
     spool = _ScanCandidateSpool(4, base)
     try:
         assert (base / "candidates.sqlite3").exists()
@@ -150,7 +208,7 @@ def test_a_crashed_scans_leftover_spool_is_reclaimed_not_accumulated(tmp_path):
     A fixed name per workspace caps the residue at one spool: the next scan
     deletes what it finds before opening its own, rather than adding to it.
     """
-    base = tmp_path / "scan_spool" / "_default"
+    base = tmp_path / "scan_spool" / "unnamed"
     base.mkdir(parents=True)
     leftover = base / "candidates.sqlite3"
     leftover.write_bytes(b"corpse of a killed scan")
