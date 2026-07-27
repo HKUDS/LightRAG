@@ -4496,6 +4496,7 @@ async def _get_vector_context(
     chunks_vdb: BaseVectorStorage,
     query_param: QueryParam,
     query_embedding: list[float] = None,
+    suppress_errors: bool = True,
 ) -> list[dict]:
     """
     Retrieve text chunks from the vector database without reranking or truncation.
@@ -4508,6 +4509,10 @@ async def _get_vector_context(
         chunks_vdb: Vector database containing document chunks
         query_param: Query parameters including chunk_top_k and ids
         query_embedding: Optional pre-computed query embedding to avoid redundant embedding calls
+        suppress_errors: If True (default), a backend failure is logged and treated
+            like a zero-match result. Callers that need to tell a genuine empty
+            result apart from an infra failure should pass False and handle the
+            exception themselves.
 
     Returns:
         List of text chunks with metadata
@@ -4545,6 +4550,8 @@ async def _get_vector_context(
 
     except Exception as e:
         logger.error(f"Error in _get_vector_context: {e}")
+        if not suppress_errors:
+            raise
         return []
 
 
@@ -6036,7 +6043,9 @@ async def naive_query(
 
     if progress_callback:
         await progress_callback(QueryProgress.RETRIEVING_CHUNKS)
-    chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
+    chunks = await _get_vector_context(
+        query, chunks_vdb, query_param, None, suppress_errors=False
+    )
 
     if chunks is None or len(chunks) == 0:
         logger.info(
