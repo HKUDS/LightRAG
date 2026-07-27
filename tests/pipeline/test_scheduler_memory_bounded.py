@@ -27,10 +27,14 @@ pipeline owns are driven here through their real methods —
 `_reset_failed_page` (the manual EXCLUSIVE_RESET) — so page hydration, status
 re-filtering and the reset's own bookkeeping are all inside the measurement.
 
-Still NOT covered, and deliberately named rather than implied: a full
-`apipeline_process_enqueue_documents` run with live workers and the feeder, and
-`/scan` over a huge input directory. Those need real LLM/parse stubs and a
-filesystem fixture; §18's RSS acceptance for them is outstanding.
+The second, process-level acceptance layer lives in
+`test_scheduler_memory_bounded_e2e.py`: it drives a full
+`apipeline_process_enqueue_documents` run with the production supervisor,
+feeder and all three worker queues, plus a production `run_scanning_process`
+over a real large directory, in isolated child processes while sampling RSS.
+Keep the two layers separate: this file pinpoints Python allocation regressions
+inside the page/reset helpers; the companion catches composition, native
+allocation and filesystem-lifecycle regressions.
 """
 
 from __future__ import annotations
