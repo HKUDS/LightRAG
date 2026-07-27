@@ -420,16 +420,98 @@ async def test_force_reset_recovery_endpoint(tmp_path):
         assert excinfo.value.status_code == 400
         assert ps.get("recovery_required") is not None
 
-        # confirm=True → fence + lingering reservation state cleared.
+        # confirm=True → fence + lingering reservation state cleared, manual
+        # freeze included (it is held BY the run this reset abandons).
         resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
         assert resp.status == "reset"
         assert ps.get("recovery_required") is None
         assert ps.get("busy") is False
         assert ps.get("busy_owner") is None
+        assert ps.get("manual_freeze_requested") is False
+        assert ps.get("manual_owner") is None
 
         # No fence left → idempotent no-op.
         resp2 = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
         assert resp2.status == "no_recovery_required"
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_force_reset_cancels_the_queued_manual_retries(tmp_path):
+    """force_reset also cancels the workspace's queued manual retry requests, and
+    that is load-bearing rather than tidy-up.
+
+    A sticky un-ACKed request makes ``/documents/scan`` refuse its reservation (it
+    may not jump the manual FIFO), and ``/scan`` is the remedy for a
+    ``manual_drain_blocked`` fence. Clearing only the fence would therefore leave
+    the documented recovery path blocked — the defect that made the earlier
+    "report but do not fence" design a dead end."""
+    from lightrag.kg.pipeline_ingress import (
+        ManualRetryPublishResult,
+        PipelineIngressMessage,
+    )
+    from lightrag.kg.shared_storage import get_pipeline_ingress
+
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = _Rag()
+        ps = await _seed_recovery_required(rag)
+        ingress = await get_pipeline_ingress(rag.workspace)
+        for request_id in ("r1", "r2"):
+            assert (
+                ingress.request_manual_retry(
+                    request_id,
+                    PipelineIngressMessage(
+                        kind="rescan", retry_failed=True, request_id=request_id
+                    ),
+                )
+                is ManualRetryPublishResult.ACCEPTED
+            )
+        # A document notification must SURVIVE — it is real pending work.
+        ingress.put_document(PipelineIngressMessage(kind="document", doc_id="doc-a"))
+
+        router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+        force_reset = _endpoint(router, "force_reset_recovery")
+        resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+
+        assert resp.status == "reset"
+        assert resp.cancelled_manual_retries == 2
+        assert "2 queued manual retry request(s) cancelled" in resp.message
+        assert ps.get("recovery_required") is None
+        assert ingress.snapshot_manual_retries() == []
+        assert ingress.counts()["documents"] == 1
+
+        # Cancelled ids are terminal: a replay cannot silently re-queue one.
+        assert (
+            ingress.request_manual_retry(
+                "r1",
+                PipelineIngressMessage(
+                    kind="rescan", retry_failed=True, request_id="r1"
+                ),
+            )
+            is ManualRetryPublishResult.ALREADY_TERMINAL
+        )
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_force_reset_reports_zero_when_nothing_was_queued(tmp_path):
+    """No queued intents → the count is 0 and the message does not mention them."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = _Rag()
+        await _seed_recovery_required(rag)
+        router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+        force_reset = _endpoint(router, "force_reset_recovery")
+        resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+
+        assert resp.status == "reset"
+        assert resp.cancelled_manual_retries == 0
+        assert "cancelled" not in resp.message
     finally:
         finalize_share_data()
 

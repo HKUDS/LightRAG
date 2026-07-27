@@ -676,6 +676,52 @@ def test_counts_expose_the_manual_capacity():
     assert counts["manual_retries_capacity"] == 7
 
 
+def test_cancel_manual_retries_touches_only_the_manual_channel():
+    """``cancel_manual_retries`` retires the queued requests and NOTHING else.
+
+    It exists for the ``recovery_required`` force-reset, where a sticky un-ACKed
+    request is what keeps ``/documents/scan`` refused. ``clear()`` would also wipe
+    the document notifications and the auto-rescan flag, which are legitimate
+    pending work — losing them would strand PENDING documents until an unrelated
+    trigger."""
+    mailbox = PipelineIngressMailbox()
+    mailbox.request_manual_retry("r1", _manual("r1"))
+    mailbox.request_manual_retry("r2", _manual("r2"))
+    mailbox.put_document(PipelineIngressMessage(kind="document", doc_id="doc-a"))
+    mailbox.request_auto_rescan()
+
+    assert mailbox.cancel_manual_retries() == 2
+    assert mailbox.snapshot_manual_retries() == []
+
+    # The other two channels survive.
+    counts = mailbox.counts()
+    assert counts["documents"] == 1
+    assert counts["auto_rescan_pending"] is True
+
+    # Cancelled ids are terminal: a delayed replay is refused, not re-queued.
+    assert (
+        mailbox.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
+    # Idempotent on an empty channel.
+    assert mailbox.cancel_manual_retries() == 0
+
+
+async def test_asyncio_cancel_manual_retries_matches_the_mailbox():
+    """Same contract for the single-process ingress (including the work event)."""
+    ingress = AsyncioPipelineIngress()
+    ingress.request_manual_retry("r1", _manual("r1"))
+    ingress.put_document(PipelineIngressMessage(kind="document", doc_id="doc-a"))
+
+    assert ingress.cancel_manual_retries() == 1
+    assert ingress.snapshot_manual_retries() == []
+    assert ingress.counts()["documents"] == 1
+    assert (
+        ingress.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
+
+
 def test_manual_capacity_is_read_per_mailbox_not_at_import(monkeypatch):
     """LR2 §11: ``MAX_UNACKED_MANUAL_RETRIES`` is resolved when a mailbox is
     built, not captured in a module constant at first import.

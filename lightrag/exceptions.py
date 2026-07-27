@@ -170,27 +170,6 @@ class PipelineReservationConflictError(RuntimeError):
         return getattr(self.conflict, "value", self.conflict) == "recovery_required"
 
 
-class PipelineDrainBlockedError(RuntimeError):
-    """A manual retry's drain cannot reach idle, so its reset did not start.
-
-    Active ``doc_status`` rows remain that the drain can never advance — rows
-    holding an unfinished custom-chunk operation, which only
-    ``/documents/scan``'s rollback resolves. LR2 §4.2 requires the AUTO set to be
-    confirmed empty before ``EXCLUSIVE_RESET``, so the reset is refused rather
-    than run on a pipeline that is not idle (and the request is left un-ACKed, so
-    no FAILED document is consumed by an attempt that never happened).
-
-    Distinct from :class:`PipelineRecoveryRequiredError`: this blocker has a
-    documented, self-service remedy, so the workspace is NOT fenced — fencing
-    would refuse the very ``/documents/scan`` call that fixes it.
-    ``blocked_doc_ids`` is a BOUNDED sample.
-    """
-
-    def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:
-        self.blocked_doc_ids = blocked_doc_ids
-        super().__init__(message)
-
-
 class PipelineRecoveryRequiredError(RuntimeError):
     """The pipeline fenced its own workspace with ``recovery_required``.
 
@@ -201,6 +180,15 @@ class PipelineRecoveryRequiredError(RuntimeError):
     is fenced instead, every mutation is refused with 503, and
     ``blocked_doc_ids`` carries the BOUNDED sample an operator needs to find the
     offending rows — never the whole set.
+
+    Two causes reach this, distinguished by the fence record's ``kind``:
+    ``manual_drain_stalled`` (rows that look routable but never change state) and
+    ``manual_drain_blocked`` (rows the drain can never advance at all — an
+    unfinished custom-chunk operation). Both are cleared the same way:
+    ``POST /documents/recovery/force_reset``, which also cancels the queued manual
+    intents, since a sticky request is itself what makes ``/documents/scan``
+    refuse (``refuse_when_manual_pending``) and ``/scan`` is the remedy for the
+    blocked case.
     """
 
     def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:

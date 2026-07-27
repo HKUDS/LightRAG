@@ -808,7 +808,7 @@ __parsed__/<base>.docling_raw/
 
 > 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
 >
-> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [§6.9 enqueue 串行锁（防并发去重穿透）](#69-enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
+> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [§6.8 enqueue 串行锁（防并发去重穿透）](#68-enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
 
 ## 六、流水线并发与重入约束
 
@@ -887,7 +887,9 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 有些故障会让 workspace 处于"继续下去只能靠猜"的状态。管线不做这种猜测，而是设置 `recovery_required` 栅栏：此后**所有**写操作（upload / text / scan / manual retry / delete / clear）一律返回 **HTTP 503**，直到运维显式解除。三种情况会设置它：
 
 1. **worker 在 `custom_chunks` / `delete` / `clear` 执行途中死亡。** 这些操作可能已经半提交，因此不能简单重跑。（`processing` / `scan` 的 owner 死亡是可重跑的，会被静默回收，不设栅栏。）
-2. **manual retry 的排空无法推进。** `/documents/reprocess_failed` 和 `/documents/scan` 都要先把管线排空到空闲，再执行独占的 `FAILED → PENDING` 重置。如果同一批 active 文档连续多轮阻塞排空且状态毫无变化，再重扫只会自旋，因此本次运行停止并设置栅栏。日志和栅栏消息里带有阻塞文档 ID 的**有界样本**，从这些 ID 开始排查。
+2. **manual retry 的排空无法到达空闲。** `/documents/reprocess_failed` 会先把管线排空到空闲，再执行独占的 `FAILED → PENDING` 重置；有两种情况会卡住排空：同一批 active 文档反复回来且状态毫无变化（再重扫只会自旋），以及排空**根本无法推进**的 active 文档——持有**未完成 custom-chunk 操作**的行，只有 `/documents/scan` 的回滚能处理它们。两种情况下重置都不执行，重试请求保持未 ACK（那一次机会仍然欠着），栅栏消息带阻塞文档 ID 的**有界样本**。`recovery_kind` 区分二者：`manual_drain_stalled` 和 `manual_drain_blocked`。
+
+   （`/documents/scan` 不做这个排空——见 §6.4：它只在管线空闲时才获得 reservation，分类阶段持有 `scanning_exclusive`，且其重置不启动任何 worker，所以残留的 `PENDING` 行是惰性的，不是生产者。）
 3. **reservation 持有者的生死无法判定。** 回收一个 reservation 必须先证明其所属进程已死亡。不带进程身份的持有者记录永远无法证明，因此它的 reservation 保持原样（绝不靠猜回收），由栅栏提供出口。
 
 `GET /documents/pipeline_status` 返回净化后的投影——`recovery_required`（布尔）、`recovery_kind`（粗粒度原因）和 `recovery_message`（与 503 相同的文案，某些原因还带有界的阻塞样本）。原始栅栏记录永不外露：它与携带 PID 和 reservation token 的 owner 记录并存，而 token 可以用来释放 reservation。
@@ -898,22 +900,19 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 POST /documents/recovery/force_reset
 ```
 
-这是**不安全的人工覆盖**——它只清除栅栏，不修复任何东西。对情况 1，先确认各存储一致。对情况 2，先查看 `recovery_message` 里列出的阻塞文档；注意栅栏同样会拒绝 `/documents/scan`，所以如果修复需要 scan，必须先 force-reset 才能执行。整体重启服务同样会清除栅栏，因为它是运行时协调状态，不做持久化。
+这是**不安全的人工覆盖**——它不修复任何东西。除栅栏之外，它还会**取消该 workspace 排队中的 manual retry 请求**，这一点是必需的而非附带：只要存在排队请求，`/documents/scan` 就会拒绝自己的 reservation（scan 自己要跑独占 `FAILED` 重置，不能跳 manual FIFO，见 §6.4），所以只清栅栏会让恢复路径照样被堵。响应里返回 `cancelled_manual_retries`。不会丢文档——失败文档仍是 `FAILED`，由下一次请求或 scan 自己的重置处理。
 
-### 6.8 无法启动的 manual retry（不设栅栏）
+恢复顺序：
 
-有一类排空阻塞**刻意不设栅栏**，因为设了就会拒绝它自己的修复手段。当 active 文档持有**未完成的 custom-chunk 操作**时（`ainsert_custom_chunks` 被中途打断，行停留在 active 状态并保留恢复 journal），管线并未空闲，独占的 `FAILED → PENDING` 重置绝不能开始——但只有 `/documents/scan` 的回滚能处理这些行，而栅栏会拒绝这个调用。
+| 原因 | 操作 |
+|---|---|
+| `manual_drain_blocked` | `POST /documents/recovery/force_reset`，然后 `POST /documents/scan` —— scan 会回滚未完成的操作**并且**自己执行 `FAILED` 重置，无需再单独调重试。 |
+| `manual_drain_stalled` | `POST /documents/recovery/force_reset`，然后排查 `recovery_message` 中列出的文档——它们卡住的原因这个栅栏无法给出。处理完后重新调 `POST /documents/reprocess_failed`。 |
+| worker 死于 `custom_chunks` / `delete` / `clear` 途中 | 先确认受影响的存储一致，再 `POST /documents/recovery/force_reset`。 |
 
-因此本次运行只报告阻塞文档 ID、拒绝重置、释放 freeze 并退出。不设任何栅栏，其他操作一律不受影响。manual retry 请求**保持排队**，阻塞消除后自动被服务：
+整体重启服务同样会清除栅栏和排队请求，二者都是运行时协调状态，都不做持久化。
 
-```
-POST /documents/scan              # 回滚未完成的操作
-POST /documents/reprocess_failed  # 仅当此前没有排队的请求时才需要
-```
-
-失败文档绝不会被一次没能执行的尝试消耗掉：请求保持未 ACK，它欠下的"每文档一次重试"依然有效。
-
-### 6.9 enqueue 串行锁（防并发去重穿透）
+### 6.8 enqueue 串行锁（防并发去重穿透）
 
 `apipeline_enqueue_documents` 内部"读 doc_status 做去重 → 写 `full_docs` / `doc_status`"这一段在 workspace 级 `enqueue_serialize` 锁内串行执行。原因：放开 busy/scan-processing 阶段允许并发 enqueue 之后，两次相同内容、不同文件名的入队（典型场景：scan 处理阶段的 enqueue 与 upload 同时进来）若在没有锁的情况下并发执行——
 
@@ -933,7 +932,7 @@ POST /documents/reprocess_failed  # 仅当此前没有排队的请求时才需�
 
 锁**不**覆盖 ingress document 发布（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
 
-### 6.10 流水线并发参数
+### 6.9 流水线并发参数
 
 `pipeline_status` 相关的锁解决的是"谁能写"的正确性问题，本节这一组参数解决的是"同时跑几个 worker"的吞吐量问题。流水线分为 3 个阶段，每个阶段的 worker 池数量独立可调：
 

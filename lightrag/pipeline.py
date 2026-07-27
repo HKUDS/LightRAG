@@ -49,7 +49,6 @@ from lightrag.constants import (
 from lightrag.exceptions import (
     MultimodalAnalysisError,
     PipelineCancelledException,
-    PipelineDrainBlockedError,
     PipelineRecoveryRequiredError,
     PipelineReservationConflictError,
     IndexFlushError,
@@ -3944,7 +3943,7 @@ class _PipelineMixin:
 
         * an active row the drain can never advance at all (an unfinished
           custom-chunk journal) makes the AUTO set non-empty forever, so the
-          reset must NOT start — :meth:`_refuse_blocked_manual_drain`;
+          reset must NOT start — :meth:`_fence_blocked_manual_drain`;
         * rows that look routable yet keep coming back unchanged fence the
           workspace rather than being swept forever —
           :meth:`_fence_stalled_manual_drain`."""
@@ -3960,7 +3959,7 @@ class _PipelineMixin:
                 )
             return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
         if blocking_ids:
-            await self._refuse_blocked_manual_drain(
+            await self._fence_blocked_manual_drain(
                 blocking_ids, pipeline_status, pipeline_status_lock
             )
 
@@ -3989,49 +3988,63 @@ class _PipelineMixin:
         )
         return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
 
-    async def _refuse_blocked_manual_drain(
+    async def _fence_blocked_manual_drain(
         self,
         blocking_ids: tuple[str, ...],
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
-        """Refuse to start the exclusive reset: the AUTO set cannot be drained.
+        """Fence the workspace: the AUTO set holds rows the drain cannot advance.
 
-        Active rows remain that this run can never advance — rows holding an
-        unfinished custom-chunk journal, which only ``/documents/scan``'s rollback
-        (or the owning SDK call) may resolve. LR2 §4.2 requires the AUTO set to be
-        confirmed empty before ``EXCLUSIVE_RESET``, and §7.2 forbids silently
-        ignoring an active row to let the manual retry start, so the reset does
-        not run and the request is NOT ACKed: no FAILED document is consumed by an
-        attempt that could not happen.
+        Rows with an unfinished custom-chunk journal — only ``/documents/scan``'s
+        rollback (or the owning SDK call) resolves those. LR2 §4.2 requires the
+        AUTO set to be confirmed empty before ``EXCLUSIVE_RESET`` and §7.2 forbids
+        silently ignoring an active row to let the manual retry start, so the reset
+        does not run and the request is NOT ACKed: no FAILED document is consumed
+        by an attempt that could not happen.
 
-        Raises :class:`PipelineDrainBlockedError`, which unwinds the run through
-        its ``finally`` — freeze and ``busy`` released (owner-checked), the manual
-        request left sticky in the mailbox. The next trigger re-attempts, and the
-        attempt succeeds as soon as the blocker is gone.
+        This sets ``recovery_required`` — §7.2's literal remedy — after an attempt
+        to avoid it did not survive review. Reporting the blocker WITHOUT fencing
+        looked better (a fence refuses every mutation, including the very
+        ``/documents/scan`` that fixes this) but the reasoning was wrong: a sticky
+        un-ACKed manual request already makes ``/scan`` refuse its reservation
+        (``refuse_when_manual_pending``, LR2 §8.1, so a scan cannot jump the manual
+        FIFO), and the blocker leaves exactly that request queued. So the
+        "unfenced" path had no reachable remedy either — it was a silent dead end
+        instead of a loud one, which is strictly worse.
 
-        **Deliberately does NOT fence the workspace**, unlike
-        :meth:`_fence_stalled_manual_drain`. §7.2 says to set ``recovery_required``
-        for an unadvanceable active row, and for a blocker with no known remedy
-        that is right — but ``recovery_required`` refuses EVERY mutation, and the
-        remedy for this one is ``/documents/scan``, which is itself a mutation. A
-        fence here would make the operator force-reset the fence before they were
-        allowed to run the fix. Reporting loudly and refusing the reset achieves
-        the same protection (the reset never runs on a non-idle pipeline) without
-        blocking its own repair path, and it cannot spin: the run exits.
+        The way out is therefore the same for both halves of the deadlock and is
+        documented on the fence: ``POST /documents/recovery/force_reset`` clears the
+        fence AND cancels the queued manual intents that were blocking ``/scan``,
+        after which ``POST /documents/scan`` rolls the journal back and runs the
+        FAILED reset itself.
+
+        Raises :class:`PipelineRecoveryRequiredError`, which unwinds the run
+        through its ``finally``: freeze and ``busy`` are released (owner-checked) so
+        a live-but-exiting owner never wedges the pipeline, while the fence
+        survives to refuse mutations with 503.
         """
         detail = (
-            f"Manual retry cannot start: {len(blocking_ids)} or more active "
+            f"manual retry cannot start: {len(blocking_ids)} or more active "
             "document(s) hold an unfinished custom-chunk operation, so the "
             "pipeline is not idle and the exclusive FAILED reset must not begin. "
-            "Run POST /documents/scan to roll the operation back, then retry "
-            f"(blocked doc id sample: {', '.join(blocking_ids) or 'unavailable'})."
+            "Clear this with POST /documents/recovery/force_reset (which also "
+            "cancels the queued retry that is blocking /documents/scan), then POST "
+            "/documents/scan to roll the operation back — the scan runs the FAILED "
+            f"reset itself (blocked doc id sample: {', '.join(blocking_ids) or 'unavailable'})."
         )
         logger.error(detail)
+        await fence_workspace_for_recovery(
+            pipeline_status,
+            pipeline_status_lock,
+            kind="manual_drain_blocked",
+            message=detail,
+            operation_record={"scope": ", ".join(blocking_ids)},
+        )
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = detail
             append_pipeline_history(pipeline_status, detail)
-        raise PipelineDrainBlockedError(detail, blocked_doc_ids=tuple(blocking_ids))
+        raise PipelineRecoveryRequiredError(detail, blocked_doc_ids=tuple(blocking_ids))
 
     async def _fence_stalled_manual_drain(
         self,

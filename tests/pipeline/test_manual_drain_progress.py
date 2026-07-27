@@ -16,15 +16,23 @@ Three things are pinned here, and the middle one is the trap:
 2. the drain's idle proof is NOT that filtered view, and does not stop at one
    empty page. Reusing the filter is fail-open — the exclusive reset starts and
    ACKs while the persistent AUTO set is not empty (LR2 §4.2) — and one empty
-   page with a live cursor means "call again", not "drained". A row the drain
-   cannot advance is reported as a blocker and the reset is refused;
-3. whatever else ever reaches a no-progress state, the drain detects it, fences
-   the workspace with ``recovery_required`` plus a BOUNDED sample of the blocking
-   doc ids, and stops.
+   page with a live cursor means "call again", not "drained";
+3. every way the drain can fail to reach idle ends in a ``recovery_required``
+   fence with a BOUNDED sample of the blocking doc ids: rows that look routable
+   but never change state (``manual_drain_stalled``) and rows the drain can never
+   advance at all (``manual_drain_blocked``).
 
-(2) and (3) differ in one deliberate way: a blocker with a documented remedy
-(``/documents/scan``) must NOT fence, because ``recovery_required`` refuses every
-mutation including that scan; a blocker with no known remedy fences.
+(3) went through a rejected design worth recording, because the tests that
+"proved" it were the reason it looked fine. Reporting the blocker WITHOUT fencing
+seemed better — a fence refuses every mutation, including the ``/documents/scan``
+that resolves a journal — but a sticky un-ACKed manual request ALREADY makes
+``/scan`` refuse its reservation (``refuse_when_manual_pending``, so a scan cannot
+jump the manual FIFO), and the blocker leaves exactly that request queued. The
+unfenced path therefore had no reachable remedy either; the "it self-heals" test
+missed it by simulating the rollback with a direct ``doc_status.delete()``,
+bypassing the one call that was blocked. So the recovery path is now asserted
+through the REAL scan reservation, and the ``force_reset`` that clears the fence
+also cancels the queued intents that block the scan.
 """
 
 from __future__ import annotations
@@ -39,10 +47,7 @@ import pytest
 from lightrag import LightRAG
 from lightrag.base import CURSOR_END, CURSOR_START, DocStatus
 from lightrag.constants import CUSTOM_CHUNK_PATCH_METADATA_KEY
-from lightrag.exceptions import (
-    PipelineDrainBlockedError,
-    PipelineRecoveryRequiredError,
-)
+from lightrag.exceptions import PipelineRecoveryRequiredError
 from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_ingress
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
@@ -206,23 +211,24 @@ def test_scheduling_sweep_skips_journaled_rows(tmp_path, page_size):
     asyncio.run(_run())
 
 
-def test_journaled_active_row_blocks_the_reset_without_fencing(tmp_path):
+def test_journaled_active_row_fences_instead_of_resetting(tmp_path):
     """A journaled ACTIVE row means the pipeline is NOT idle, so the exclusive
     reset must not begin — and it must not spin either.
 
-    Two failure modes bracket the correct behaviour:
+    Three behaviours bracket the correct one:
 
     * the original bug swept the row, dropped it in the batch validator and left
       it PROCESSING, so the drain's confirmation found it again every round and
       spun (~3.4k rounds/second, no sleep, retry never served);
-    * filtering it out of the confirmation sweep instead is fail-OPEN: the reset
-      starts and ACKs while the persistent AUTO set is not empty, which is exactly
-      what LR2 §4.2 forbids.
+    * filtering it out of the confirmation instead is fail-OPEN: the reset starts
+      and ACKs while the persistent AUTO set is not empty (LR2 §4.2);
+    * reporting it but NOT fencing looked better — a fence refuses every mutation
+      including the `/documents/scan` that fixes this — but had no reachable
+      remedy either, because a sticky un-ACKed request ALREADY makes `/scan`
+      refuse its reservation (`refuse_when_manual_pending`). That was a silent
+      dead end rather than a loud one.
 
-    So the drain reports the blocker, refuses the reset and exits. The retry stays
-    OWED — the request is un-ACKed and the FAILED document is untouched — and the
-    workspace is NOT fenced, because the remedy (`/documents/scan`'s rollback) is
-    itself a mutation a fence would refuse.
+    So it fences, per §7.2, and the fence names the order that actually works.
     """
 
     async def _run():
@@ -235,34 +241,36 @@ def test_journaled_active_row_blocks_the_reset_without_fencing(tmp_path):
             journaled_row_before = await rag.doc_status.get_by_id(journaled)
 
             await request_failed_retry(rag)
-            with pytest.raises(PipelineDrainBlockedError) as excinfo:
+            with pytest.raises(PipelineRecoveryRequiredError) as excinfo:
                 await asyncio.wait_for(
                     rag.apipeline_process_enqueue_documents(),
                     timeout=_SPIN_TIMEOUT_SECONDS,
                 )
 
-            # The blocker is named, boundedly, and points at the remedy.
+            # The blocker is named, boundedly, and the message names BOTH steps —
+            # force_reset first, because the fence refuses the scan.
             assert excinfo.value.blocked_doc_ids == (journaled,)
-            assert "/documents/scan" in str(excinfo.value)
+            detail = str(excinfo.value)
+            assert "/documents/recovery/force_reset" in detail
+            assert "/documents/scan" in detail
 
-            # The reset never ran: the FAILED doc is untouched and the request is
+            # The reset never ran: the FAILED doc is untouched, and the request is
             # still queued, so its one retry per document is still owed.
             assert await _status_of(rag, failed) == DocStatus.FAILED.value
             ingress = await get_pipeline_ingress(rag.workspace)
             assert len(ingress.snapshot_manual_retries()) == 1
 
             # The journaled row is untouched — not reset, not deleted, journal
-            # intact — so /documents/scan can still roll it back.
-            after = await rag.doc_status.get_by_id(journaled)
-            assert after == journaled_row_before
+            # intact — so a scan rollback can still resolve it.
+            assert await rag.doc_status.get_by_id(journaled) == journaled_row_before
 
-            # NOT fenced: uploads and — crucially — the scan that fixes this are
-            # still allowed.
             status = await get_namespace_data(
                 "pipeline_status", workspace=rag.workspace
             )
-            assert not status.get("recovery_required")
-            # And the freeze/busy were released, so nothing is wedged.
+            fence = status.get("recovery_required")
+            assert isinstance(fence, dict)
+            assert fence["kind"] == "manual_drain_blocked"
+            # Freeze and busy released, so nothing is wedged on a gone owner.
             assert status.get("busy") is False
             assert status.get("manual_freeze_requested") is False
         finally:
@@ -271,40 +279,133 @@ def test_journaled_active_row_blocks_the_reset_without_fencing(tmp_path):
     asyncio.run(_run())
 
 
-def test_the_queued_retry_is_served_once_the_blocker_is_gone(tmp_path):
-    """The blocked request self-heals: it stays queued, and the next trigger
-    serves it as soon as the journal is gone (what a scan rollback leaves behind).
+def test_force_reset_unblocks_the_documented_recovery_order(tmp_path):
+    """The recovery path is exercised through the REAL scan reservation.
 
-    This is the pay-off for refusing rather than fencing — no operator has to
-    re-issue the retry, and no force-reset stands between them and the fix."""
+    The previous version of this test simulated the rollback with a direct
+    ``doc_status.delete()``, which bypassed the one call that was actually
+    blocked — ``acquire_reservation(..., refuse_when_manual_pending=True)`` — and
+    so "it self-heals" was never true. Here the scan reservation itself is the
+    assertion:
+
+    1. fenced, a scan is refused (the fence);
+    2. `force_reset` clears the fence AND cancels the queued retry — without the
+       cancellation the scan would still be refused for jumping the manual FIFO,
+       which is what made the unfenced design a dead end;
+    3. the scan reservation is then granted, so the rollback can run.
+    """
+    from lightrag.kg.shared_storage import (
+        PipelineReservationConflict,
+        acquire_reservation,
+        get_namespace_lock,
+    )
 
     async def _run():
         rag = await _build_rag(tmp_path)
         try:
-            journaled = await _seed_journaled_row(
-                rag, "journaled.txt", DocStatus.PROCESSING
-            )
-            failed = await _seed_failed_with_content(rag, "retry-me.txt")
+            await _seed_journaled_row(rag, "journaled.txt", DocStatus.PROCESSING)
+            await _seed_failed_with_content(rag, "retry-me.txt")
 
             await request_failed_retry(rag)
-            with pytest.raises(PipelineDrainBlockedError):
+            with pytest.raises(PipelineRecoveryRequiredError):
                 await asyncio.wait_for(
                     rag.apipeline_process_enqueue_documents(),
                     timeout=_SPIN_TIMEOUT_SECONDS,
                 )
 
-            # What a /documents/scan rollback leaves: journal gone, row resolved.
-            await rag.doc_status.delete([journaled])
-
-            # Same still-queued request, no new one published.
-            await asyncio.wait_for(
-                rag.apipeline_process_enqueue_documents(),
-                timeout=_SPIN_TIMEOUT_SECONDS,
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
             )
-
-            assert await _status_of(rag, failed) == DocStatus.PROCESSED.value
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
             ingress = await get_pipeline_ingress(rag.workspace)
-            assert ingress.snapshot_manual_retries() == []  # ACKed
+
+            async def _try_scan_reservation():
+                return await acquire_reservation(
+                    status,
+                    lock,
+                    owner_key="scanning_owner",
+                    owner=uuid4().hex,
+                    owner_kind="scan",
+                    flags={"scanning": True, "scanning_exclusive": True},
+                    reject_when=(
+                        ("busy", "busy"),
+                        ("scanning", "scanning"),
+                        ("pending_enqueues", "pending"),
+                        ("manual_freeze_requested", "freeze"),
+                    ),
+                    pipeline_ingress=ingress,
+                    refuse_when_manual_pending=True,
+                )
+
+            # (1) Fenced → the scan that would fix this is refused.
+            refused = await _try_scan_reservation()
+            assert refused.acquired is False
+            assert refused.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
+
+            # (2) force_reset: fence cleared AND the queued intent cancelled.
+            async with lock:
+                status["recovery_required"] = None
+            cancelled = ingress.cancel_manual_retries()
+            assert cancelled == 1
+            assert ingress.snapshot_manual_retries() == []
+
+            # (3) The scan is now allowed — the recovery path is reachable.
+            granted = await _try_scan_reservation()
+            assert granted.acquired is True, granted.message
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_clearing_only_the_fence_still_blocks_the_scan(tmp_path):
+    """Fix-proof for the finding itself: dropping the fence WITHOUT cancelling the
+    queued retry leaves ``/documents/scan`` refused for jumping the manual FIFO.
+
+    This is the trap that made "report but do not fence" unworkable, and it is
+    also why ``force_reset`` cancels the intents rather than only the fence — if
+    someone removes that cancellation, this test fails."""
+    from lightrag.kg.shared_storage import (
+        PipelineReservationConflict,
+        acquire_reservation,
+        get_namespace_lock,
+    )
+
+    async def _run():
+        rag = await _build_rag(tmp_path)
+        try:
+            await _seed_journaled_row(rag, "journaled.txt", DocStatus.PROCESSING)
+            await request_failed_retry(rag)
+            with pytest.raises(PipelineRecoveryRequiredError):
+                await asyncio.wait_for(
+                    rag.apipeline_process_enqueue_documents(),
+                    timeout=_SPIN_TIMEOUT_SECONDS,
+                )
+
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            ingress = await get_pipeline_ingress(rag.workspace)
+
+            # Fence gone, request left queued — the state the rejected design left.
+            async with lock:
+                status["recovery_required"] = None
+
+            result = await acquire_reservation(
+                status,
+                lock,
+                owner_key="scanning_owner",
+                owner=uuid4().hex,
+                owner_kind="scan",
+                flags={"scanning": True, "scanning_exclusive": True},
+                reject_when=(),
+                pipeline_ingress=ingress,
+                refuse_when_manual_pending=True,
+            )
+            assert result.acquired is False
+            assert result.conflict is PipelineReservationConflict.MANUAL_FREEZE
+            assert "manual retry" in (result.message or "").lower()
         finally:
             await rag.finalize_storages()
 

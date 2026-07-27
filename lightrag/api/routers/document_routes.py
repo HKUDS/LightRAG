@@ -784,6 +784,18 @@ class ForceResetRecoveryResponse(BaseModel):
         description="reset = fence cleared; no_recovery_required = nothing to clear"
     )
     message: str = Field(description="Human-readable result")
+    cancelled_manual_retries: int = Field(
+        default=0,
+        description=(
+            "Queued manual retry requests cancelled along with the fence. A "
+            "sticky request makes /documents/scan refuse its reservation (it may "
+            "not jump the manual FIFO), so clearing the fence without clearing "
+            "these would leave the documented recovery path — force_reset then "
+            "/documents/scan — still blocked. The failed documents are untouched; "
+            "re-issue /documents/reprocess_failed, or let the scan's own FAILED "
+            "reset cover them."
+        ),
+    )
 
 
 class ClearCacheRequest(BaseModel):
@@ -6258,14 +6270,31 @@ def create_document_routes(
 
         The fence is raised when a worker is killed mid custom_chunks / delete /
         clear (Linux multi-worker), which may have left storage partially
-        committed — so every mutation is refused until the workspace is recovered.
-        This endpoint does NOT repair anything; it only drops the fence (and any
-        lingering reservation flags), re-opening a possibly-inconsistent
-        workspace. Requires ``confirm=true``. A true idempotent replay of the
-        interrupted operation is a separate concern (core atomicity / #3400).
+        committed, or when a manual retry's drain cannot reach idle — so every
+        mutation is refused until the workspace is recovered. This endpoint does
+        NOT repair anything; it only drops the fence (and any lingering
+        reservation flags), re-opening a possibly-inconsistent workspace. Requires
+        ``confirm=true``. A true idempotent replay of the interrupted operation is
+        a separate concern (core atomicity / #3400).
+
+        It ALSO cancels the workspace's queued manual retry requests, and that is
+        load-bearing rather than housekeeping: a sticky un-ACKed request makes
+        ``/documents/scan`` refuse its reservation (a scan runs its own exclusive
+        FAILED reset and may not jump the manual FIFO — LR2 §8.1). For the
+        blocked-drain fence, ``/documents/scan`` is the remedy, so clearing the
+        fence alone would leave the recovery path just as blocked as before. The
+        failed documents are untouched by the cancellation — the scan's own FAILED
+        reset covers them, or ``/documents/reprocess_failed`` can be re-issued —
+        and the cancelled ids are retired as terminal, so a delayed replay of one
+        cannot silently re-queue.
         """
         from lightrag.exceptions import PipelineNotInitializedError
-        from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+        from lightrag.kg.shared_storage import (
+            MANUAL_PHASE_IDLE,
+            get_namespace_data,
+            get_namespace_lock,
+            get_pipeline_ingress,
+        )
 
         if not request.confirm:
             raise HTTPException(
@@ -6288,6 +6317,18 @@ def create_document_routes(
         pipeline_status_lock = get_namespace_lock(
             "pipeline_status", workspace=rag.workspace
         )
+        # Resolved BEFORE the critical section: a Manager RPC handle must never
+        # be looked up lazily while pipeline_status_lock is held.
+        ingress = None
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+        except Exception as ingress_error:  # pragma: no cover - defensive
+            logger.warning(
+                "Force-reset cannot reach the ingress mailbox "
+                f"({ingress_error}); the fence will still be cleared, but a "
+                "queued manual retry may keep /documents/scan refused."
+            )
+
         async with pipeline_status_lock:
             if not pipeline_status.get("recovery_required"):
                 return ForceResetRecoveryResponse(
@@ -6296,7 +6337,9 @@ def create_document_routes(
                 )
             # Drop the fence and any lingering reservation state in one atomic
             # update. This is deliberately owner-agnostic — it is a manual
-            # override, not a normal owner-checked release.
+            # override, not a normal owner-checked release. The manual freeze goes
+            # with it: it is held BY a run that this reset is abandoning, so
+            # leaving it would wedge every upload behind an owner that is gone.
             pipeline_status.update(
                 {
                     "recovery_required": None,
@@ -6307,16 +6350,43 @@ def create_document_routes(
                     "scanning": False,
                     "scanning_exclusive": False,
                     "scanning_owner": None,
+                    "manual_freeze_requested": False,
+                    "manual_freeze_started_at": None,
+                    "manual_resetting": False,
+                    "manual_phase": MANUAL_PHASE_IDLE,
+                    "manual_owner": None,
                 }
             )
+
+        # Outside the lock (one mailbox RPC). Cancelling the queued intents is
+        # what actually unblocks the documented recovery path — see the docstring.
+        cancelled = 0
+        if ingress is not None:
+            try:
+                cancelled = int(ingress.cancel_manual_retries() or 0)
+            except Exception as cancel_error:  # pragma: no cover - defensive
+                logger.warning(
+                    "Force-reset cleared the fence but could not cancel the "
+                    f"queued manual retries ({cancel_error}); /documents/scan may "
+                    "still be refused until the service restarts."
+                )
+
         logger.warning(
             "recovery_required fence force-reset (unsafe manual override) for "
-            f"workspace {rag.workspace}"
+            f"workspace {rag.workspace}; cancelled {cancelled} queued manual "
+            "retry request(s)"
         )
         return ForceResetRecoveryResponse(
             status="reset",
+            cancelled_manual_retries=cancelled,
             message=(
-                "recovery_required fence cleared. The workspace may still be "
+                "recovery_required fence cleared"
+                + (
+                    f" and {cancelled} queued manual retry request(s) cancelled"
+                    if cancelled
+                    else ""
+                )
+                + ". The workspace may still be "
                 "partially committed — reprocess/verify affected documents."
             ),
         )
