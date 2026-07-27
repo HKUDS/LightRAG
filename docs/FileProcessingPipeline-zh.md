@@ -808,7 +808,7 @@ __parsed__/<base>.docling_raw/
 
 > 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
 >
-> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [§6.7 enqueue 串行锁（防并发去重穿透）](#67-enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
+> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [§6.8 enqueue 串行锁（防并发去重穿透）](#68-enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
 
 ## 六、流水线并发与重入约束
 
@@ -882,7 +882,23 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 
 任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份文档——批内准入按 routing/inflight 登记去重，auto-rescan 标志每个静默决策恰好消费一次。
 
-### 6.7 enqueue 串行锁（防并发去重穿透）
+### 6.7 `recovery_required` 栅栏
+
+有些故障会让 workspace 处于"继续下去只能靠猜"的状态。管线不做这种猜测，而是设置 `recovery_required` 栅栏：此后**所有**写操作（upload / text / scan / manual retry / delete / clear）一律返回 **HTTP 503**，直到运维显式解除。三种情况会设置它：
+
+1. **worker 在 `custom_chunks` / `delete` / `clear` 执行途中死亡。** 这些操作可能已经半提交，因此不能简单重跑。（`processing` / `scan` 的 owner 死亡是可重跑的，会被静默回收，不设栅栏。）
+2. **manual retry 的排空无法推进。** `/documents/reprocess_failed` 和 `/documents/scan` 都要先把管线排空到空闲，再执行独占的 `FAILED → PENDING` 重置。如果同一批 active 文档连续多轮阻塞排空且状态毫无变化，再重扫只会自旋，因此本次运行停止并设置栅栏。日志和栅栏消息里带有阻塞文档 ID 的**有界样本**，从这些 ID 开始排查。
+3. **reservation 持有者的生死无法判定。** 回收一个 reservation 必须先证明其所属进程已死亡。不带进程身份的持有者记录永远无法证明，因此它的 reservation 保持原样（绝不靠猜回收），由栅栏提供出口。
+
+通过 `GET /documents/pipeline_status` 查看栅栏状态，用下面的接口解除：
+
+```
+POST /documents/recovery/force_reset
+```
+
+这是**不安全的人工覆盖**——它只清除栅栏，不修复任何东西。对情况 1，先确认各存储一致；对情况 2，先处理掉阻塞文档（最常见的原因是未完成的 custom-chunk 操作，用 `/documents/scan` 回滚它）。整体重启服务同样会清除栅栏，因为它是运行时协调状态，不做持久化。
+
+### 6.8 enqueue 串行锁（防并发去重穿透）
 
 `apipeline_enqueue_documents` 内部"读 doc_status 做去重 → 写 `full_docs` / `doc_status`"这一段在 workspace 级 `enqueue_serialize` 锁内串行执行。原因：放开 busy/scan-processing 阶段允许并发 enqueue 之后，两次相同内容、不同文件名的入队（典型场景：scan 处理阶段的 enqueue 与 upload 同时进来）若在没有锁的情况下并发执行——
 
@@ -902,7 +918,7 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 
 锁**不**覆盖 ingress document 发布（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
 
-### 6.8 流水线并发参数
+### 6.9 流水线并发参数
 
 `pipeline_status` 相关的锁解决的是"谁能写"的正确性问题，本节这一组参数解决的是"同时跑几个 worker"的吞吐量问题。流水线分为 3 个阶段，每个阶段的 worker 池数量独立可调：
 
