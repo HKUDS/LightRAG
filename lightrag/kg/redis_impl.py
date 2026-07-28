@@ -1724,48 +1724,77 @@ class RedisDocStatusStorage(DocStatusStorage):
         )
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose content_hash field matches."""
+        """Find an existing record whose content_hash field matches.
+
+        ``exclude_doc_id`` skips that row so the duplicate check can exclude
+        the doc being processed (see base contract). Redis has no content_hash
+        index, so this SCANs the keyspace either way — the exclusion only drops
+        the self-row in the same pass, never adding a second scan.
+
+        Fail-closed: transport and decode failures PROPAGATE. ``None`` means
+        "confirmed no other holder", and the dedup callers act on it
+        destructively (enqueue the document, ingest its content), so reporting
+        a failure as "no duplicate" would mint duplicate rows and duplicate
+        graph contributions. A row that cannot be decoded is not skipped
+        either: it might be the holder, so its content_hash is unknown, not
+        absent.
+
+        Returns the EARLIEST match by ``(created_at, id)`` rather than the
+        first one SCAN happens to reach — SCAN order is arbitrary, so returning
+        on first hit would make the ``original_doc_id`` recorded on a duplicate
+        vary between runs over the same data (base contract). That costs the
+        lucky early exit, not an extra pass: the scan was already unindexed and
+        whole-keyspace in the miss case, and only one candidate is ever held.
+        """
         if not content_hash:
             return None
 
+        best: tuple[tuple[str, str], str, dict[str, Any]] | None = None
         async with self._get_redis_connection() as redis:
-            try:
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(
-                        cursor, match=f"{self.final_namespace}:*", count=1000
-                    )
-                    if keys:
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.get(key)
-                        values = await pipe.execute()
-
-                        for key, value in zip(keys, values):
-                            if not value:
-                                continue
-                            try:
-                                doc_data = json.loads(value)
-                            except json.JSONDecodeError as e:
-                                logger.error(
-                                    f"[{self.workspace}] JSON decode error in get_doc_by_content_hash: {e}"
-                                )
-                                continue
-                            if doc_data.get("content_hash") == content_hash:
-                                doc_id = key.split(":", 1)[1]
-                                return doc_id, doc_data
-
-                    if cursor == 0:
-                        break
-
-                return None
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error in get_doc_by_content_hash: {e}"
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(
+                    cursor, match=f"{self.final_namespace}:*", count=1000
                 )
-                return None
+                if keys:
+                    pipe = redis.pipeline()
+                    for key in keys:
+                        pipe.get(key)
+                    values = await pipe.execute()
+
+                    for key, value in zip(keys, values):
+                        if not value:
+                            continue
+                        doc_id = key.split(":", 1)[1]
+                        if doc_id == exclude_doc_id:
+                            continue
+                        try:
+                            doc_data = json.loads(value)
+                        except json.JSONDecodeError as e:
+                            raise StorageControlPlaneError(
+                                f"[{self.workspace}] undecodable doc_status row "
+                                f"{key} while checking content_hash "
+                                f"'{content_hash}': cannot confirm whether it "
+                                f"holds the hash"
+                            ) from e
+                        if doc_data.get("content_hash") != content_hash:
+                            continue
+                        created = doc_data.get("created_at")
+                        sort_key = (
+                            created if isinstance(created, str) else "",
+                            doc_id,
+                        )
+                        if best is None or sort_key < best[0]:
+                            best = (sort_key, doc_id, doc_data)
+
+                if cursor == 0:
+                    break
+
+        if best is None:
+            return None
+        return best[1], best[2]
 
     # ------------------------------------------------------------------
     # Memory-bounding scheduling API (Phase 1)

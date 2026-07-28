@@ -5227,23 +5227,30 @@ class PGDocStatusStorage(DocStatusStorage):
         return str(row["id"]), doc
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> tuple[str, dict[str, Any]] | None:
         """PG-native override of content-hash document lookup.
 
         Replaces the base-class full-table scan with an indexed query on
         ``workspace + content_hash``. Empty strings are treated as a miss
-        to align with the partial-index predicate.
+        to align with the partial-index predicate. ``exclude_doc_id`` adds an
+        indexed ``AND id != $3`` so the duplicate check gets the earliest OTHER
+        holder in one bounded query (see base contract).
         """
         if not content_hash:
             return None
 
+        params: list[Any] = [self.workspace, content_hash]
+        exclude_clause = ""
+        if exclude_doc_id is not None:
+            params.append(exclude_doc_id)
+            exclude_clause = f" AND id <> ${len(params)}"
         sql = (
             "SELECT * FROM LIGHTRAG_DOC_STATUS "
-            "WHERE workspace=$1 AND content_hash=$2 "
+            f"WHERE workspace=$1 AND content_hash=$2{exclude_clause} "
             "ORDER BY created_at ASC, id ASC LIMIT 1"
         )
-        result = await self.db.query(sql, [self.workspace, content_hash], True)
+        result = await self.db.query(sql, params, True)
         if not result:
             return None
         row = result[0]

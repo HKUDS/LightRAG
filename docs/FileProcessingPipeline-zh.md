@@ -858,7 +858,7 @@ scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每�
 upload 通过 reservation 后、保存文件前必须双道检查：
 
 1. **INPUT 目录扫描**：把要保存的 basename 经 `canonicalize_parser_hinted_basename` 规范化，遍历 INPUT 目录里现有任何同 canonical 变体（含 hint / 不含 hint），命中即 409。
-2. **doc_status 查重**：用规范化 basename 调 `get_existing_doc_by_file_basename`，命中即 409。
+2. **doc_status 查重**：用规范化 basename 调 `get_existing_doc_by_file_path_candidates`，命中即 409。
 
 两道都过 → 保存文件 → schedule bg task → bg task 调 `apipeline_enqueue_documents` 写库 + 调 `apipeline_process_enqueue_documents` 触发处理。
 

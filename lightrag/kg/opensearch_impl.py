@@ -2276,21 +2276,56 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         )
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose content_hash field matches.
 
         Uses the content_hash keyword mapping created by
         ``_create_index_if_not_exists`` / ``_ensure_content_hash_mapping``.
         Empty values short-circuit so legacy rows without the field cannot
-        accidentally match via type coercion.
+        accidentally match via type coercion. ``exclude_doc_id`` adds a
+        ``must_not`` ids clause so the duplicate check excludes the doc being
+        processed in-query (see base contract), still served by the keyword
+        term.
+
+        Fail-closed, three-state (the distinction the dedup callers need):
+        a match → the row; a completed query with no hits → ``None`` (CONFIRMED
+        no other holder); an index that is not ready or has vanished, or any
+        transport error → raise. ``None`` drives destructive action — the
+        callers enqueue the document and ingest its content — so a swallowed
+        failure would mint duplicate rows and duplicate graph contributions.
+
+        Sorted ``(created_at ASC, __mirrored_id ASC)`` so "earliest other
+        holder" in the base contract is real rather than whatever order the
+        shards happen to return; every row carries a ``__mirrored_id`` value
+        (guaranteed at startup, see ``_ensure_scheduling_tiebreaker_ready``).
         """
         if not content_hash:
             return None
         if not self._index_ready:
-            return None
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm whether content_hash "
+                f"'{content_hash}' has another holder"
+            )
         try:
-            body = {"query": {"term": {"content_hash": content_hash}}, "size": 1}
+            if exclude_doc_id is not None:
+                query: dict[str, Any] = {
+                    "bool": {
+                        "must": [{"term": {"content_hash": content_hash}}],
+                        "must_not": [{"ids": {"values": [exclude_doc_id]}}],
+                    }
+                }
+            else:
+                query = {"term": {"content_hash": content_hash}}
+            body = {
+                "query": query,
+                "sort": [
+                    {"created_at": {"order": "asc", "missing": "_first"}},
+                    {"__mirrored_id": {"order": "asc"}},
+                ],
+                "size": 1,
+            }
             response = await self.client.search(index=self._index_name, body=body)
             hits = response["hits"]["hits"]
             if not hits:
@@ -2301,9 +2336,13 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return None
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"vanished; cannot confirm whether content_hash "
+                    f"'{content_hash}' has another holder"
+                ) from e
             logger.error(f"[{self.workspace}] Error getting doc by content_hash: {e}")
-            return None
+            raise
 
     # ------------------------------------------------------------------
     # Memory-bounding scheduling API (Phase 1)

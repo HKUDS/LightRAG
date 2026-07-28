@@ -607,19 +607,39 @@ class JsonDocStatusStorage(DocStatusStorage):
         return row.copy() if isinstance(row, dict) else row
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose content_hash field matches."""
+        """Find an existing record whose content_hash field matches.
+
+        ``exclude_doc_id`` skips that row so the duplicate check can exclude
+        the doc being processed (see base contract). JSON has no content_hash
+        index, so this is a single full dict scan either way — the exclusion
+        only drops the self-row in the same pass, never adding a second scan.
+
+        Returns the EARLIEST match by ``(created_at, id)`` rather than the
+        first in dict order: insertion order is not creation order once rows
+        are reloaded or rewritten, and the base contract's "earliest other
+        holder" is what keeps the ``original_doc_id`` recorded on a duplicate
+        stable across runs.
+        """
         if not content_hash:
             return None
         if self._storage_lock is None:
             raise StorageNotInitializedError("JsonDocStatusStorage")
 
+        best: tuple[tuple[str, str], str, dict[str, Any]] | None = None
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
-                if doc_data.get("content_hash") == content_hash:
-                    return doc_id, doc_data
-        return None
+                if doc_id == exclude_doc_id:
+                    continue
+                if doc_data.get("content_hash") != content_hash:
+                    continue
+                sort_key = self._row_sort_key(doc_id, doc_data)
+                if best is None or sort_key < best[0]:
+                    best = (sort_key, doc_id, doc_data)
+        if best is None:
+            return None
+        return best[1], best[2]
 
     # ------------------------------------------------------------------
     # Memory-bounding scheduling API (Phase 1)

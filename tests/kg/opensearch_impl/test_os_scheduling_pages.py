@@ -1153,3 +1153,97 @@ async def test_legacy_basename_swallows_errors(global_config):
     storage = await _make_doc_status(global_config, client)
     client.search = AsyncMock(side_effect=_transient_error())
     assert await storage.get_doc_by_file_basename("report.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_exclude_doc_id_must_not_ids():
+    # LR2 Phase 2.5: exclude_doc_id becomes a bool must_not ids clause, still
+    # served by the content_hash keyword term — never a scan.
+    s = OpenSearchDocStatusStorage.__new__(OpenSearchDocStatusStorage)
+    s.workspace = "ws"
+    s._index_name = "idx"
+    s._index_ready = True
+    s.client = AsyncMock()
+    s.client.search = AsyncMock(
+        return_value={
+            "hits": {"hits": [{"_id": "doc-2", "_source": {"content_hash": "h"}}]}
+        }
+    )
+
+    result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+    assert result is not None and result[0] == "doc-2"
+    body = s.client.search.call_args.kwargs["body"]
+    assert body["query"]["bool"]["must"] == [{"term": {"content_hash": "h"}}]
+    assert body["query"]["bool"]["must_not"] == [{"ids": {"values": ["doc-1"]}}]
+
+    # No exclusion → plain term query.
+    s.client.search.reset_mock()
+    s.client.search.return_value = {"hits": {"hits": []}}
+    await s.get_doc_by_content_hash("h")
+    body = s.client.search.call_args.kwargs["body"]
+    assert body["query"] == {"term": {"content_hash": "h"}}
+
+
+def _content_hash_storage() -> OpenSearchDocStatusStorage:
+    s = OpenSearchDocStatusStorage.__new__(OpenSearchDocStatusStorage)
+    s.workspace = "ws"
+    s._index_name = "idx"
+    s._index_ready = True
+    s.client = AsyncMock()
+    return s
+
+
+@pytest.mark.asyncio
+async def test_content_hash_lookup_sorts_for_the_earliest_holder():
+    """The base contract promises the EARLIEST other holder: that id is
+    persisted as a duplicate's original_doc_id, so an unsorted size=1 query
+    would make the attribution vary between runs over identical data."""
+    s = _content_hash_storage()
+    s.client.search = AsyncMock(
+        return_value={
+            "hits": {"hits": [{"_id": "doc-2", "_source": {"content_hash": "h"}}]}
+        }
+    )
+
+    await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+
+    body = s.client.search.call_args.kwargs["body"]
+    assert body["sort"] == [
+        {"created_at": {"order": "asc", "missing": "_first"}},
+        {"__mirrored_id": {"order": "asc"}},
+    ]
+    assert body["size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_content_hash_lookup_is_fail_closed():
+    """Fix-proof: a not-ready index, a vanished index and a transport error all
+    used to return None, which the dedup callers read as "no duplicate" — so a
+    storage failure enqueued a duplicate row and re-ingested its content. All
+    three must raise; only a completed query with no hits is None.
+    """
+    # Not ready: absence cannot be confirmed.
+    s = _content_hash_storage()
+    s._index_ready = False
+    s.client.search = AsyncMock()
+    with pytest.raises(StorageControlPlaneError):
+        await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+    s.client.search.assert_not_awaited()
+
+    # Vanished mid-query.
+    s = _content_hash_storage()
+    s.client.search = AsyncMock(side_effect=_missing_index_error())
+    with pytest.raises(StorageControlPlaneError):
+        await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+    assert s._index_ready is False
+
+    # Any other transport error propagates unchanged.
+    s = _content_hash_storage()
+    s.client.search = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+
+    # A completed query with no hits IS a confirmed absence.
+    s = _content_hash_storage()
+    s.client.search = AsyncMock(return_value={"hits": {"hits": []}})
+    assert await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1") is None

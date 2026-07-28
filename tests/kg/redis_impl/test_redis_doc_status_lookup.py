@@ -182,3 +182,91 @@ async def test_get_doc_by_content_hash_ignores_legacy_rows(redis_doc_status):
     assert result is not None
     doc_id, _ = result
     assert doc_id == "doc-new"
+
+
+async def test_get_doc_by_content_hash_exclude_doc_id_skips_self(redis_doc_status):
+    # LR2 Phase 2.5: exclude_doc_id skips that row in the SCAN pass so the
+    # duplicate check returns the OTHER holder, not the doc being processed.
+    _store_raw(
+        redis_doc_status,
+        "doc-a",
+        _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup"),
+    )
+    _store_raw(
+        redis_doc_status,
+        "doc-b",
+        _doc(DocStatus.PROCESSED.value, "b.pdf", content_hash="dup"),
+    )
+    _store_raw(
+        redis_doc_status,
+        "doc-solo",
+        _doc(DocStatus.PROCESSED.value, "s.pdf", content_hash="uniq"),
+    )
+    # Two docs hold "dup": excluding either deterministically yields the other.
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-a"
+    )
+    assert result is not None and result[0] == "doc-b"
+    result = await redis_doc_status.get_doc_by_content_hash(
+        "dup", exclude_doc_id="doc-b"
+    )
+    assert result is not None and result[0] == "doc-a"
+    # Excluding the sole holder of a hash yields None (no other match).
+    assert (
+        await redis_doc_status.get_doc_by_content_hash(
+            "uniq", exclude_doc_id="doc-solo"
+        )
+        is None
+    )
+
+
+async def test_get_doc_by_content_hash_returns_the_earliest_holder(redis_doc_status):
+    """SCAN order is arbitrary, so returning the first hit made the
+    original_doc_id recorded on a duplicate vary between runs over identical
+    data. The base contract asks for the EARLIEST by (created_at, id)."""
+    late = _doc(DocStatus.PROCESSED.value, "late.pdf", content_hash="dup")
+    late["created_at"] = "2026-05-05T00:00:00+00:00"
+    early = _doc(DocStatus.PROCESSED.value, "early.pdf", content_hash="dup")
+    early["created_at"] = "2024-01-01T00:00:00+00:00"
+    # The doc ids deliberately sort OPPOSITE to created_at, so any
+    # "return the first row the scan reaches" implementation picks doc-a and the
+    # assertion actually discriminates.
+    _store_raw(redis_doc_status, "doc-a", late)
+    _store_raw(redis_doc_status, "doc-z", early)
+
+    result = await redis_doc_status.get_doc_by_content_hash("dup")
+
+    assert result is not None
+    assert result[0] == "doc-z"
+
+
+async def test_get_doc_by_content_hash_propagates_transport_failure(redis_doc_status):
+    """Fix-proof: the SCAN error used to be swallowed into None, which the dedup
+    callers read as "no duplicate" — so a transport blip enqueued a duplicate
+    row and re-ingested its content."""
+    from redis.exceptions import RedisError
+
+    _store_raw(
+        redis_doc_status,
+        "doc-1",
+        _doc(DocStatus.PROCESSED.value, "a.pdf", content_hash="dup"),
+    )
+    redis_doc_status._redis.fail_next["scan"] = RedisError("boom")
+
+    with pytest.raises(RedisError):
+        await redis_doc_status.get_doc_by_content_hash("dup")
+
+
+async def test_get_doc_by_content_hash_refuses_to_skip_an_undecodable_row(
+    redis_doc_status,
+):
+    """An undecodable row might BE the holder, so its hash is unknown, not
+    absent — skipping it would report a confirmed miss on corrupt data."""
+    from lightrag.exceptions import StorageControlPlaneError
+
+    redis_doc_status._redis.store[f"{redis_doc_status.final_namespace}:doc-bad"] = (
+        "not-json{"
+    )
+
+    with pytest.raises(StorageControlPlaneError):
+        await redis_doc_status.get_doc_by_content_hash("dup")

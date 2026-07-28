@@ -1182,14 +1182,45 @@ class DocStatusStorage(BaseKVStorage, ABC):
 
     @abstractmethod
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> tuple[str, dict[str, Any]] | None:
-        """Get document by content_hash field.
+        """Get a document by its content_hash field.
 
         Used for content-hash deduplication of full documents.
 
+        **Fail-closed (MUST).** ``None`` means "CONFIRMED no such row". Query,
+        transport and decode failures, and a backend that cannot answer (an
+        index not ready or vanished), MUST raise — never return ``None``. The
+        callers act on ``None`` destructively: enqueue treats it as "not a
+        duplicate" and admits the document, and the post-parse check lets a full
+        ingestion proceed, so a swallowed failure mints duplicate rows and
+        duplicate graph contributions.
+
+        **Deterministic (MUST).** With several matching rows, return the
+        EARLIEST by ``(created_at, id)``. The winner is persisted as
+        ``original_doc_id`` on the duplicate's row, so an arbitrary "first row
+        the index/scan reached" would make that attribution vary between runs
+        over identical data. Backends without a content_hash index scan
+        regardless and must track the minimum rather than return on first hit.
+
         Args:
             content_hash: The content hash value to search for.
+            exclude_doc_id: When set, a row with this id is NOT a match — the
+                lookup returns the earliest OTHER doc sharing the hash (or
+                None). This lets the duplicate check exclude the very row being
+                processed (whose own content_hash is already persisted) in a
+                single bounded/indexed query, instead of a full-store scan
+                fallback. Every backend MUST honour it in-query so the
+                exclusion never widens the scan.
+
+                This keyword was added to an already-abstract method, so a
+                subclass carrying the older ``(self, content_hash)`` signature
+                raises ``TypeError`` when the dedup path passes it. That is
+                subsumed by the scheduling API (``get_docs_by_statuses_page`` /
+                ``get_docs_by_ids`` / ``resolve_doc_source_strict``) being
+                abstract with no fallback in the same release: such a subclass
+                cannot be instantiated at all, and fails at construction naming
+                the methods it is missing.
 
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.

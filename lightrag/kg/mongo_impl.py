@@ -1175,25 +1175,39 @@ class MongoDocStatusStorage(DocStatusStorage):
         )
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Mongo-native override of content-hash document lookup.
 
         Uses the partial ``content_hash`` index. Empty strings are treated as a
         miss to align with the partial-index predicate; legacy rows missing the
-        field cannot match a non-empty query because ``find_one`` requires an
-        exact value.
+        field cannot match a non-empty query because the query requires an
+        exact value. ``exclude_doc_id`` adds ``_id: {$ne: ...}`` so the
+        duplicate check excludes the doc being processed in-query (see base
+        contract), still served by the content_hash index.
+
+        Fail-closed: a query error PROPAGATES. ``None`` means "confirmed no
+        other holder", which the dedup callers act on destructively — they
+        enqueue the document and ingest its content — so reporting a transport
+        failure as "no duplicate" would mint duplicate rows and duplicate
+        graph contributions.
+
+        ``sort`` makes the "earliest other holder" of the base contract real:
+        ``find_one`` alone returns whatever the index/natural order yields, so
+        the ``original_doc_id`` written into a duplicate's row would vary
+        between runs over the same data.
         """
         if not content_hash:
             return None
 
-        try:
-            doc = await self._data.find_one({"content_hash": content_hash})
-        except PyMongoError as e:
-            logger.error(f"[{self.workspace}] Error in get_doc_by_content_hash: {e}")
+        query: dict[str, Any] = {"content_hash": content_hash}
+        if exclude_doc_id is not None:
+            query["_id"] = {"$ne": exclude_doc_id}
+        cursor = self._data.find(query).sort([("created_at", 1), ("_id", 1)]).limit(1)
+        rows = await cursor.to_list(length=1)
+        if not rows:
             return None
-        if not doc:
-            return None
+        doc = rows[0]
         doc_id = doc.get("_id")
         if doc_id is None:
             return None
