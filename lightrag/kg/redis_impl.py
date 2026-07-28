@@ -1,7 +1,9 @@
 import os
 import logging
 import asyncio
-from typing import Any, final, Union
+import time
+import hashlib
+from typing import Any, ClassVar, final, Sequence, Union
 from dataclasses import dataclass
 import pipmaster as pm
 import configparser
@@ -13,7 +15,12 @@ if not pm.is_installed("redis"):
 
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis, ConnectionPool  # type: ignore
-from redis.exceptions import RedisError, ConnectionError, TimeoutError  # type: ignore
+from redis.exceptions import (  # type: ignore
+    RedisError,
+    ConnectionError,
+    TimeoutError,
+    WatchError,
+)
 from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
@@ -22,10 +29,28 @@ from lightrag.utils import (
 )
 
 from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
+    CursorAfter,
+    CursorPosition,
     BaseKVStorage,
+    DocSchedulingRecord,
+    DocStatusPage,
     DocStatusStorage,
     DocStatus,
     DocProcessingStatus,
+    SourceAbsent,
+    SourceConflict,
+    SourceConflictPage,
+    SourceConflictRepairResult,
+    SourceConflictSummary,
+    SourceResolution,
+    SourceUnique,
+)
+from lightrag.constants import CUSTOM_CHUNK_PATCH_METADATA_KEY
+from lightrag.exceptions import (
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
 )
 from ..kg.shared_storage import get_data_init_lock
 import json
@@ -59,6 +84,80 @@ redis_retry = retry(
     ),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
+
+# One eviction-policy check per Redis URL per process: the answer is a server
+# property, not a per-storage one, and both storage classes share the pool.
+_eviction_checked: set[str] = set()
+
+
+async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> None:
+    """Refuse to use an evicting Redis as a system of record.
+
+    ``doc_status`` rows, ``full_docs`` entries and the derived scheduling sidecar
+    (status ZSETs + basename SETs) are all plain keys with NO TTL. Under an
+    ``allkeys-*`` maxmemory policy Redis may evict any of them, and that loss is
+    silent AND undetectable: an evicted status ZSET drops every document in that
+    status out of the sweep, an evicted primary row loses the document outright,
+    and the sidecar's structural probe only asks whether ANY status key exists —
+    so a partially evicted index looks perfectly healthy and gets no rebuild.
+    There is no cheap invariant that would catch it either (verifying the sidecar
+    against the rows is an O(total_docs) scan), which is exactly why this is a
+    startup precondition rather than a runtime repair.
+
+    Safe configurations, allowed silently:
+
+    * ``maxmemory=0`` — no limit, so nothing is ever evicted;
+    * ``volatile-*`` / ``noeviction`` — only keys carrying a TTL can be evicted
+      and none of ours do (just the short-lived rebuild lease), so a full
+      instance fails writes LOUDLY instead of quietly dropping data.
+
+    Managed Redis frequently blocks ``CONFIG GET``. An unreadable config warns
+    rather than fails: refusing to start over a policy we cannot even observe
+    would break working deployments. ``REDIS_ALLOW_EVICTION_POLICY=true`` is the
+    explicit override for an operator who accepts the data loss.
+    """
+    if redis_url in _eviction_checked:
+        return
+    try:
+        settings = await redis.config_get("maxmemory*")
+    except Exception as config_error:
+        # Unknown command, NOPERM, or a proxy that does not implement CONFIG.
+        _eviction_checked.add(redis_url)
+        logger.warning(
+            f"[{workspace}] Could not read the Redis maxmemory policy "
+            f"({config_error}); cannot verify that this instance will not EVICT "
+            f"doc_status/full_docs keys. Ensure maxmemory-policy is 'noeviction' "
+            f"or a 'volatile-*' policy — an 'allkeys-*' policy silently drops "
+            f"documents and scheduling state."
+        )
+        return
+    _eviction_checked.add(redis_url)
+    policy = str((settings or {}).get("maxmemory-policy") or "").strip().lower()
+    raw_maxmemory = str((settings or {}).get("maxmemory") or "0").strip()
+    try:
+        maxmemory = int(raw_maxmemory)
+    except ValueError:
+        maxmemory = 0
+    if maxmemory <= 0 or not policy.startswith("allkeys"):
+        return
+    if os.getenv("REDIS_ALLOW_EVICTION_POLICY", "false").strip().lower() == "true":
+        logger.warning(
+            f"[{workspace}] Redis is configured to EVICT (maxmemory-policy="
+            f"'{policy}', maxmemory={maxmemory}) and REDIS_ALLOW_EVICTION_POLICY "
+            f"is set: doc_status rows, full_docs entries and the scheduling "
+            f"sidecar may be dropped silently, losing documents."
+        )
+        return
+    raise StorageControlPlaneError(
+        f"[{workspace}] Redis at {redis_url} is configured as an evicting cache "
+        f"(maxmemory-policy='{policy}', maxmemory={maxmemory}), but LightRAG "
+        f"stores doc_status, full_docs and the derived scheduling index there as "
+        f"a system of record — none of those keys carry a TTL, so an "
+        f"'allkeys-*' policy can drop documents and scheduling state with no "
+        f"error and no way to detect it. Set maxmemory-policy to 'noeviction' "
+        f"(or a 'volatile-*' policy), give LightRAG its own Redis instance/db, "
+        f"or set REDIS_ALLOW_EVICTION_POLICY=true to accept the data loss."
+    )
 
 
 class RedisConnectionManager:
@@ -193,6 +292,8 @@ class RedisConnectionManager:
 @final
 @dataclass
 class RedisKVStorage(BaseKVStorage):
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __post_init__(self):
         validate_workspace(self.workspace)
         # Check for REDIS_WORKSPACE environment variable first (higher priority)
@@ -260,6 +361,9 @@ class RedisKVStorage(BaseKVStorage):
             try:
                 async with self._get_redis_connection() as redis:
                     await redis.ping()
+                    await _ensure_no_eviction_policy(
+                        redis, self._redis_url, self.workspace
+                    )
                     logger.info(
                         f"[{self.workspace}] Connected to Redis for namespace {self.namespace}"
                     )
@@ -379,6 +483,12 @@ class RedisKVStorage(BaseKVStorage):
                 logger.error(f"[{self.workspace}] JSON decode error for id {id}: {e}")
                 raise
 
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read (base contract): ``get_by_id`` already
+        propagates every transport/decode failure (no swallow-and-None
+        path), so a ``None`` from a healthy GET is a confirmed absence."""
+        return await self.get_by_id(id)
+
     @redis_retry
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._get_redis_connection() as redis:
@@ -419,8 +529,6 @@ class RedisKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return
-
-        import time
 
         current_time = int(time.time())  # Get current Unix timestamp
 
@@ -619,7 +727,63 @@ class RedisKVStorage(BaseKVStorage):
 @final
 @dataclass
 class RedisDocStatusStorage(DocStatusStorage):
-    """Redis implementation of document status storage"""
+    """Redis implementation of document status storage.
+
+    Memory-bounding scheduling sidecar (Phase 1)
+    --------------------------------------------
+    Alongside the primary ``{final_namespace}:{doc_id}`` JSON records this
+    class maintains, ATOMICALLY with every write (``WATCH``→``MULTI/EXEC``
+    with conflict retry), a scheduling sidecar under the
+    ``{final_namespace}__sched:`` prefix — deliberately NOT matched by the
+    ``{final_namespace}:*`` patterns the legacy SCAN readers and ``drop``
+    use, so sidecar keys never leak into full-scan reads:
+
+    * ``…__sched:status:{status}`` — one ZSET per status, score 0,
+      member ``"{created_at}|{doc_id}"``; ISO-8601 strings make
+      lexicographic member order the ``(created_at, id)`` keyset order, so
+      ``ZRANGEBYLEX`` pages the sweep and ``ZCARD`` gives O(1) counts.
+    * ``…__sched:basename:{canonical}`` — canonical basename → SET of
+      eligible PRIMARY doc IDs (rows with ``metadata.is_duplicate != true``
+      and a real file_path). ``file_path`` is NOT assumed globally unique
+      (custom-id inserts, legacy ids and historical basename collisions can
+      all share one basename), so the index is a multimap: each write does a
+      member-level ``SADD``/``SREM`` of its OWN doc_id keyed on the (old,
+      new) eligibility of that row — never a single-value CAS. A primary
+      rewritten in place as a content-duplicate removes only itself; a
+      genuine collision leaves ≥2 members and is surfaced by the typed
+      resolver as a ``SourceConflict``.
+
+    The sidecar is a DERIVED structure, not a migration source of truth and
+    NOT gated by any persistent semantic marker. ``initialize`` rebuilds it
+    from the actual doc_status rows when it is absent (fresh bootstrap of a
+    pre-existing deployment, or recovery after the backend was replaced /
+    the derived keys were lost): a short-lease backend lock elects one
+    worker to stream the primary rows into a TEMPORARY keyspace
+    (``…__sched_rebuild:*``) and then atomically switch it into place
+    (per-key ``DELETE`` of the stale official keys + ``RENAME`` of the temp
+    keys inside a single ``MULTI/EXEC``). A crash before the switch leaves
+    the old official index untouched (still serving) and the unpublished
+    temp keyspace safe to discard on the next attempt. Once present, the
+    index is kept consistent by every write and never rebuilt, so a running
+    system's restarts do not clobber a live index. NOTE: an online rebuild
+    over a workspace under concurrent write traffic still requires a
+    maintenance freeze (deployment prerequisite) — the lock only serializes
+    rebuilding workers, it does not isolate unrelated live writers.
+    """
+
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
+    # source-conflict listing/repair APIs — never materialize the whole set.
+    _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
+    # SCAN batch for the conflict listing: the unit of work a page never
+    # abandons half-examined, so it also caps how far a page may overshoot
+    # ``limit`` (see list_source_conflicts_page).
+    _CONFLICT_SCAN_BATCH: ClassVar[int] = 64
+    # Bounded retry budget for WATCH/MULTI conflict loops. High contention
+    # on a single doc key is not expected (per-doc writes are serialized by
+    # the pipeline); the cap turns a pathological livelock into an error.
+    _WATCH_RETRY_LIMIT: ClassVar[int] = 50
 
     def __post_init__(self):
         validate_workspace(self.workspace)
@@ -689,10 +853,18 @@ class RedisDocStatusStorage(DocStatusStorage):
             try:
                 async with self._get_redis_connection() as redis:
                     await redis.ping()
+                    await _ensure_no_eviction_policy(
+                        redis, self._redis_url, self.workspace
+                    )
                     logger.info(
                         f"[{self.workspace}] Connected to Redis for doc status namespace {self.namespace}"
                     )
-                    self._initialized = True
+                # Rebuild the derived scheduling sidecar from the actual
+                # doc_status rows when it is absent (no persistent marker) —
+                # must complete before serving: the paged sweep, ZCARD counts
+                # and the basename source index all depend on it.
+                await self._rebuild_scheduling_sidecar()
+                self._initialized = True
             except Exception as e:
                 logger.error(
                     f"[{self.workspace}] Failed to connect to Redis for doc status: {e}"
@@ -1010,9 +1182,162 @@ class RedisDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error checking if storage is empty: {e}")
             return True
 
-    @redis_retry
+    # ------------------------------------------------------------------
+    # Scheduling sidecar helpers (Phase 1) — see class docstring.
+    # ------------------------------------------------------------------
+
+    @property
+    def _sched_prefix(self) -> str:
+        return f"{self.final_namespace}__sched"
+
+    def _zset_key(self, status_value: str) -> str:
+        return f"{self._sched_prefix}:status:{status_value}"
+
+    def _basename_key(self, basename: str) -> str:
+        return f"{self._sched_prefix}:basename:{basename}"
+
+    def _require_sidecar_ready(self) -> None:
+        """Guard for strict page/count/resolver reads: refuse to serve while
+        the derived index is not yet published, so a not-ready index is never
+        misread as "empty" (which scan/enqueue would treat as confirmed-new
+        and mint duplicates)."""
+        if not self._initialized:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] scheduling sidecar not ready for "
+                f"{self.namespace}; refusing to read a rebuilding / "
+                "uninitialized index as empty"
+            )
+
+    @staticmethod
+    def _zset_member(row: dict[str, Any], doc_id: str) -> str:
+        """``"{created_at}|{doc_id}"`` — ISO-8601 lexicographic order makes
+        member order the (created_at, id) keyset order. A missing/non-str
+        created_at sorts deterministically first as ""; '|' cannot occur in
+        ISO timestamps so the split is unambiguous."""
+        created = row.get("created_at")
+        return f"{created if isinstance(created, str) else ''}|{doc_id}"
+
+    @staticmethod
+    def _split_member(member: str) -> tuple[str, str]:
+        created, _, doc_id = member.partition("|")
+        return created, doc_id
+
+    @staticmethod
+    def _is_duplicate_row(row: Any) -> bool:
+        if not isinstance(row, dict):
+            return False
+        metadata = row.get("metadata")
+        return bool(isinstance(metadata, dict) and metadata.get("is_duplicate"))
+
+    @classmethod
+    def _basename_of(cls, row: Any) -> str | None:
+        """Canonical basename this row would claim in the primary index,
+        or None when the row is index-ineligible (duplicate marker /
+        placeholder file_path)."""
+        if not isinstance(row, dict) or cls._is_duplicate_row(row):
+            return None
+        file_path = row.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            return None
+        if file_path in ("unknown_source", "no-file-path"):
+            return None
+        return file_path
+
+    def _queue_index_ops(
+        self,
+        pipe,
+        doc_id: str,
+        old_row: dict[str, Any] | None,
+        new_row: dict[str, Any] | None,
+    ) -> None:
+        """Queue sidecar maintenance into an open MULTI for one doc write.
+
+        Status ZSET: remove the old member, add the new one (created_at is
+        immutable for existing rows, but removing by the OLD row's member is
+        still the correct general form). Basename source multimap: the
+        eligibility state machine on (old, new) is applied at MEMBER level —
+        this doc only ever ``SADD``s / ``SREM``s its OWN doc_id, so it never
+        touches another doc's membership and needs no single-value CAS. This
+        makes the whole write atomic under a WATCH on the doc key alone.
+        """
+        if old_row is not None:
+            old_status = str(old_row.get("status") or "")
+            if old_status:
+                pipe.zrem(
+                    self._zset_key(old_status), self._zset_member(old_row, doc_id)
+                )
+        if new_row is not None:
+            new_status = str(new_row.get("status") or "")
+            if new_status:
+                pipe.zadd(
+                    self._zset_key(new_status),
+                    {self._zset_member(new_row, doc_id): 0},
+                )
+
+        old_basename = self._basename_of(old_row)
+        new_basename = self._basename_of(new_row)
+        if old_basename == new_basename:
+            if new_basename is not None:
+                # eligible → eligible, same name: assert own membership
+                # (idempotent repair of a missing member).
+                pipe.sadd(self._basename_key(new_basename), doc_id)
+            return
+        if old_basename is not None:
+            # eligible → ineligible (e.g. a primary rewritten in place as a
+            # post-parse content duplicate) or file_path moved: drop only our
+            # own membership from the old source set.
+            pipe.srem(self._basename_key(old_basename), doc_id)
+        if new_basename is not None:
+            # ineligible → eligible, or file_path moved: join the new source set.
+            pipe.sadd(self._basename_key(new_basename), doc_id)
+
+    async def _atomic_doc_write(
+        self,
+        redis,
+        doc_id: str,
+        mutate,
+    ) -> dict[str, Any] | None:
+        """WATCH→MULTI/EXEC skeleton for one doc: read the old row under a
+        WATCH on the doc key alone, let ``mutate(old_row)`` produce the new
+        row (or ``None`` to abort without writing), then commit row + sidecar
+        in one transaction; retry on conflict.
+
+        The basename source multimap needs no WATCH: ``_queue_index_ops`` only
+        SADD/SREMs this doc's OWN membership, which commutes with concurrent
+        writes to other docs sharing the same source set.
+
+        Returns the committed new row (or None when aborted).
+        """
+        main_key = f"{self.final_namespace}:{doc_id}"
+        for _ in range(self._WATCH_RETRY_LIMIT):
+            async with redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(main_key)
+                    old_raw = await pipe.get(main_key)
+                    old_row = json.loads(old_raw) if old_raw else None
+                    new_row = mutate(old_row)
+                    if new_row is None:
+                        await pipe.unwatch()
+                        return None
+                    pipe.multi()
+                    pipe.set(main_key, json.dumps(new_row))
+                    self._queue_index_ops(pipe, doc_id, old_row, new_row)
+                    await pipe.execute()
+                    return new_row
+                except WatchError:
+                    continue
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] doc_status write for {doc_id} exceeded the "
+            f"WATCH retry budget ({self._WATCH_RETRY_LIMIT})"
+        )
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update document status data"""
+        """Insert or update document status data.
+
+        Each record commits atomically with its scheduling sidecar (status
+        ZSET member + basename primary index) via a per-doc WATCH/MULTI
+        transaction — a few extra RPCs per doc, bounded by the enqueue
+        batch cap; correctness of the sidecar is the priority."""
         if not data:
             return
 
@@ -1020,21 +1345,15 @@ class RedisDocStatusStorage(DocStatusStorage):
             f"[{self.workspace}] Inserting {len(data)} records to {self.namespace}"
         )
         async with self._get_redis_connection() as redis:
-            try:
-                # Ensure chunks_list field exists for new documents
-                for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
-                    if "chunks_list" not in doc_data:
-                        doc_data["chunks_list"] = []
-                    await _cooperative_yield(i)
+            for i, (doc_id, doc_data) in enumerate(data.items(), start=1):
+                if "chunks_list" not in doc_data:
+                    doc_data["chunks_list"] = []
 
-                pipe = redis.pipeline()
-                for i, (k, v) in enumerate(data.items(), start=1):
-                    pipe.set(f"{self.final_namespace}:{k}", json.dumps(v))
-                    await _cooperative_yield(i)
-                await pipe.execute()
-            except json.JSONDecodeError as e:
-                logger.error(f"[{self.workspace}] JSON decode error during upsert: {e}")
-                raise
+                def _replace(_old, _new=doc_data):
+                    return _new
+
+                await self._atomic_doc_write(redis, doc_id, _replace)
+                await _cooperative_yield(i)
 
     @redis_retry
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
@@ -1047,17 +1366,49 @@ class RedisDocStatusStorage(DocStatusStorage):
                 raise
 
     async def delete(self, doc_ids: list[str]) -> None:
-        """Delete specific records from storage by their IDs"""
+        """Delete records atomically with their scheduling sidecar entries.
+
+        Per-doc WATCH/MULTI on the doc key: remove the primary key, its
+        status-ZSET member and — member-level — this doc's own entry from its
+        source set (``SREM`` never strips another doc's membership, so
+        deleting a duplicate marker or a non-owning row is safe)."""
         if not doc_ids:
             return
 
+        deleted_count = 0
         async with self._get_redis_connection() as redis:
-            pipe = redis.pipeline()
             for doc_id in doc_ids:
-                pipe.delete(f"{self.final_namespace}:{doc_id}")
-
-            results = await pipe.execute()
-            deleted_count = sum(results)
+                main_key = f"{self.final_namespace}:{doc_id}"
+                for _ in range(self._WATCH_RETRY_LIMIT):
+                    async with redis.pipeline(transaction=True) as pipe:
+                        try:
+                            await pipe.watch(main_key)
+                            old_raw = await pipe.get(main_key)
+                            if not old_raw:
+                                await pipe.unwatch()
+                                break
+                            old_row = json.loads(old_raw)
+                            old_basename = self._basename_of(old_row)
+                            pipe.multi()
+                            pipe.delete(main_key)
+                            old_status = str(old_row.get("status") or "")
+                            if old_status:
+                                pipe.zrem(
+                                    self._zset_key(old_status),
+                                    self._zset_member(old_row, doc_id),
+                                )
+                            if old_basename is not None:
+                                pipe.srem(self._basename_key(old_basename), doc_id)
+                            await pipe.execute()
+                            deleted_count += 1
+                            break
+                        except WatchError:
+                            continue
+                else:
+                    raise StorageControlPlaneError(
+                        f"[{self.workspace}] doc_status delete for {doc_id} "
+                        f"exceeded the WATCH retry budget"
+                    )
             logger.info(
                 f"[{self.workspace}] Deleted {deleted_count} of {len(doc_ids)} doc status entries from {self.namespace}"
             )
@@ -1250,56 +1601,109 @@ class RedisDocStatusStorage(DocStatusStorage):
                 logger.error(f"[{self.workspace}] Error in get_doc_by_file_path: {e}")
                 return None
 
+    async def _scan_source_candidates(
+        self, redis, canonical: str, *, limit: int | None
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Incrementally SSCAN the source multimap for ``canonical`` and return
+        up to ``limit`` validated PRIMARY candidates (all when ``limit`` is
+        ``None``), each as ``(doc_id, raw_row)``.
+
+        Every member is hydrated from its primary key and re-validated as a
+        current primary (``_basename_of(row) == canonical``); a member whose
+        row is gone or no longer eligible is stale and self-healed with a
+        member-level ``SREM``. Transport / decode errors propagate — a strict
+        caller must never read a failure as absence. Reading incrementally
+        (not ``SMEMBERS``) with an early ``limit`` lets the resolver decide
+        Conflict after two valid candidates without materializing a large set.
+        """
+        set_key = self._basename_key(canonical)
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        cursor = 0
+        while True:
+            cursor, members = await redis.sscan(set_key, cursor, count=256)
+            for doc_id in members:
+                raw = await redis.get(f"{self.final_namespace}:{doc_id}")
+                if not raw:
+                    # stale member: primary row gone — self-heal.
+                    await redis.srem(set_key, doc_id)
+                    continue
+                row = json.loads(raw)
+                if self._basename_of(row) != canonical:
+                    # no longer an eligible primary for this key (demoted to
+                    # duplicate / file_path moved): self-heal.
+                    await redis.srem(set_key, doc_id)
+                    continue
+                candidates.append((doc_id, row))
+                if limit is not None and len(candidates) >= limit:
+                    return candidates
+            if cursor == 0:
+                break
+        return candidates
+
+    async def _valid_primary_ids(self, redis, canonical: str) -> list[str]:
+        """Full sorted list of validated primary doc IDs for ``canonical``,
+        self-healing stale members. Used by the operator conflict listing /
+        repair (one source key at a time, bounded by that key's cardinality)."""
+        candidates = await self._scan_source_candidates(redis, canonical, limit=None)
+        return sorted({doc_id for doc_id, _ in candidates})
+
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose canonical basename matches.
+        """Legacy best-effort primary-row lookup by canonical basename.
 
-        The caller is responsible for passing an already-canonical basename.
-        Stored ``file_path`` values are canonicalized by the business layer, so
-        this lookup intentionally performs an exact match only.
-        """
-        if not basename:
+        The caller passes an already-canonical basename; stored ``file_path``
+        values are canonicalized by the business layer, so this is an exact
+        match. Duplicate marker rows are never returned. ``file_path`` is not
+        globally unique, so on a historical collision this returns SOME primary
+        (first validated member) — identity-critical callers must use
+        :meth:`resolve_doc_source_strict` to detect the conflict instead.
+
+        Legacy error semantics preserved: failures log and return ``None``
+        (best-effort miss)."""
+        if not basename or basename == "unknown_source":
             return None
-        if basename == "unknown_source":
-            return None
-
-        async with self._get_redis_connection() as redis:
-            try:
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(
-                        cursor, match=f"{self.final_namespace}:*", count=1000
-                    )
-                    if keys:
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.get(key)
-                        values = await pipe.execute()
-
-                        for key, value in zip(keys, values):
-                            if not value:
-                                continue
-                            try:
-                                doc_data = json.loads(value)
-                            except json.JSONDecodeError as e:
-                                logger.error(
-                                    f"[{self.workspace}] JSON decode error in get_doc_by_file_basename: {e}"
-                                )
-                                continue
-                            if doc_data.get("file_path") == basename:
-                                doc_id = key.split(":", 1)[1]
-                                return doc_id, doc_data
-
-                    if cursor == 0:
-                        break
-
-                return None
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error in get_doc_by_file_basename: {e}"
+        try:
+            async with self._get_redis_connection() as redis:
+                candidates = await self._scan_source_candidates(
+                    redis, basename, limit=1
                 )
-                return None
+            return candidates[0] if candidates else None
+        except Exception as e:
+            logger.error(f"[{self.workspace}] Error in get_doc_by_file_basename: {e}")
+            return None
+
+    async def resolve_doc_source_strict(
+        self, canonical_source_key: str
+    ) -> SourceResolution:
+        """Typed, conflict-aware source resolution (see base contract).
+
+        Reads the source multimap incrementally, stopping once two valid
+        primary candidates are found: 0 → :class:`SourceAbsent`, 1 →
+        :class:`SourceUnique`, ≥2 → :class:`SourceConflict`. Transport errors,
+        broken invariants and a not-ready index all raise a control-plane
+        error rather than returning ``SourceAbsent`` (which scan/enqueue would
+        treat as confirmed-new). ``candidate_count`` is ``None`` — the resolver
+        only proves "at least two" without enumerating the whole set."""
+        self._require_sidecar_ready()
+        if not canonical_source_key or canonical_source_key == "unknown_source":
+            return SourceAbsent()
+        async with self._get_redis_connection() as redis:
+            candidates = await self._scan_source_candidates(
+                redis, canonical_source_key, limit=2
+            )
+        if not candidates:
+            return SourceAbsent()
+        if len(candidates) == 1:
+            doc_id, row = candidates[0]
+            return SourceUnique(
+                doc_id=doc_id,
+                doc=self._scheduling_record_from_row(doc_id, row, strict=True),
+            )
+        return SourceConflict(
+            candidate_count=None,
+            sample_doc_ids=tuple(sorted(doc_id for doc_id, _ in candidates)),
+        )
 
     async def get_doc_by_content_hash(
         self, content_hash: str
@@ -1345,27 +1749,679 @@ class RedisDocStatusStorage(DocStatusStorage):
                 )
                 return None
 
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: ``get_by_id`` already propagates transport and
+        decode failures, so a ``None`` is a confirmed absence."""
+        return await self.get_by_id(id)
+
+    @staticmethod
+    def _encode_cursor(positions: dict[str, str]) -> str:
+        return json.dumps(positions, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> dict[str, str]:
+        try:
+            decoded = json.loads(opaque)
+            if not isinstance(decoded, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in decoded.items()
+            ):
+                raise ValueError("cursor must map status -> last member")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for RedisDocStatusStorage: {e}"
+            ) from e
+        return decoded
+
+    def _scheduling_record_from_row(
+        self, doc_id: str, row: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        try:
+            status = DocStatus(str(row["status"]))
+            created_at = row["created_at"]
+            updated_at = row.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = row.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=row.get("file_path") or "no-file-path",
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded k-way merge over the per-status ZSETs.
+
+        Each status stream is read with ``ZRANGEBYLEX (last_member +`` —
+        lexicographic member order IS the (created_at, id) keyset order.
+        The composite cursor records each status's own last CONSUMED member:
+        a candidate merged into the page window is consumed (returned, or
+        skipped as unusable in relaxed mode) and advances its stream; a
+        prefetched head that did not fit stays unconsumed and is re-read next
+        page. A stream is exhausted when its prefetch came back short AND
+        fully consumed; the sweep ends when every stream is exhausted.
+        """
+        self._require_sidecar_ready()
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        if isinstance(position, CursorAfter):
+            positions = self._decode_cursor(position.opaque)
+        else:
+            positions = {}
+        status_values = [s.value for s in statuses]
+
+        async with self._get_redis_connection() as redis:
+            # Prefetch up to `limit` members per stream, strictly after each
+            # stream's own consumed position.
+            pipe = redis.pipeline()
+            for value in status_values:
+                last = positions.get(value)
+                lex_min = f"({last}" if last else "-"
+                pipe.zrangebylex(self._zset_key(value), lex_min, "+", 0, limit)
+            prefetched: list[list[str]] = await pipe.execute()
+
+            streams: dict[str, list[str]] = dict(zip(status_values, prefetched))
+            short_streams = {
+                value for value, members in streams.items() if len(members) < limit
+            }
+
+            # Merge candidates globally by member (== (created_at, id) key),
+            # keep the first `limit` as this page's consumption window.
+            merged: list[tuple[str, str]] = []  # (member, status_value)
+            for value, members in streams.items():
+                merged.extend((member, value) for member in members)
+            merged.sort(key=lambda t: t[0])
+            window = merged[:limit]
+
+            # Hydrate the window's primary rows in one pipeline.
+            doc_ids = [self._split_member(member)[1] for member, _ in window]
+            rows: list[str | None] = []
+            if doc_ids:
+                pipe = redis.pipeline()
+                for doc_id in doc_ids:
+                    pipe.get(f"{self.final_namespace}:{doc_id}")
+                rows = await pipe.execute()
+
+        docs: dict[str, DocSchedulingRecord] = {}
+        consumed_counts: dict[str, int] = {value: 0 for value in status_values}
+        new_positions = dict(positions)
+        for (member, value), raw in zip(window, rows):
+            _, doc_id = self._split_member(member)
+            consumed_counts[value] += 1
+            new_positions[value] = member
+            if raw is None:
+                message = (
+                    f"[{self.workspace}] status ZSET member {member!r} has no "
+                    f"primary row — sidecar invariant broken"
+                )
+                if strict:
+                    raise StorageControlPlaneError(message)
+                logger.error(message)
+                continue  # consumed; the stale member self-heals on rewrite
+            row = json.loads(raw)
+            record = self._scheduling_record_from_row(doc_id, row, strict=strict)
+            if record is None:
+                continue  # relaxed skip is still consumed
+            docs[doc_id] = record
+
+        exhausted = all(
+            value in short_streams and consumed_counts[value] == len(streams[value])
+            for value in status_values
+        )
+        if exhausted:
+            return DocStatusPage(docs=docs, next_position=CURSOR_END)
+        return DocStatusPage(
+            docs=docs,
+            next_position=CursorAfter(self._encode_cursor(new_positions)),
+        )
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """O(1) fail-closed count: sum of per-status ZCARDs (errors
+        propagate — admission control must never read a failure as zero)."""
+        self._require_sidecar_ready()
+        if not statuses:
+            return 0
+        async with self._get_redis_connection() as redis:
+            pipe = redis.pipeline()
+            for status in statuses:
+                pipe.zcard(self._zset_key(status.value))
+            cards = await pipe.execute()
+        return int(sum(cards))
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted field update, atomic with the sidecar (WATCH/MULTI)."""
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        missing = False
+
+        def _merge(old_row):
+            nonlocal missing
+            if old_row is None:
+                missing = True
+                return None
+            return {**old_row, **fields}
+
+        async with self._get_redis_connection() as redis:
+            await self._atomic_doc_write(redis, doc_id, _merge)
+        if missing and not missing_ok:
+            raise StorageRecordNotFoundError(doc_id)
+
+    # ------------------------------------------------------------------
+    # Strict batch read
+    # ------------------------------------------------------------------
+
+    async def get_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocSchedulingRecord]:
+        """Batch strict read of scheduling records by doc id (see base).
+
+        A single pipelined ``GET`` per id straight off the primary rows (the
+        source of truth, no sidecar dependency): a ``None`` is a confirmed
+        absence and is omitted. The pipeline is all-or-nothing at transport,
+        so any server/transport error fails the WHOLE call — the feeder never
+        receives a partial mapping. ``strict=True`` additionally raises on a
+        malformed row; results use the lightweight projection."""
+        if not doc_ids:
+            return {}
+        ids = list(doc_ids)
+        async with self._get_redis_connection() as redis:
+            pipe = redis.pipeline()
+            for doc_id in ids:
+                pipe.get(f"{self.final_namespace}:{doc_id}")
+            raws = await pipe.execute()
+        result: dict[str, DocSchedulingRecord] = {}
+        for doc_id, raw in zip(ids, raws):
+            if raw is None:
+                continue  # confirmed absent
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.error(
+                    f"[{self.workspace}] undecodable row for {doc_id} in "
+                    f"get_docs_by_ids"
+                )
+                if strict:
+                    raise
+                continue
+            if not isinstance(row, dict):
+                if strict:
+                    raise TypeError(f"doc_status record {doc_id} is not a mapping")
+                continue
+            record = self._scheduling_record_from_row(doc_id, row, strict=strict)
+            if record is not None:
+                result[doc_id] = record
+        return result
+
+    # ------------------------------------------------------------------
+    # Source-conflict listing and explicit CAS repair
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _conflict_fingerprint(sorted_doc_ids: list[str]) -> str:
+        """Deterministic digest over candidate doc IDs in stable sort order."""
+        digest = hashlib.sha256()
+        for doc_id in sorted_doc_ids:
+            digest.update(doc_id.encode("utf-8"))
+            digest.update(b"\x00")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _decode_conflict_cursor(opaque: str) -> int:
+        """Decode the opaque conflict cursor: a raw Redis ``SCAN`` cursor.
+
+        Redis cannot enumerate the source keyspace in key order without
+        materializing (and sorting) all of it, so the conflict listing pages on
+        the SCAN cursor itself — stateless, resumable and bounded. See
+        :meth:`list_source_conflicts_page` for the duplicate-visit caveat this
+        inherits from SCAN.
+        """
+        try:
+            cursor = json.loads(opaque)
+            if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+                raise ValueError("conflict cursor must be a non-negative SCAN cursor")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed source-conflict cursor for RedisDocStatusStorage: {e}"
+            ) from e
+        return cursor
+
+    async def list_source_conflicts_page(
+        self,
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+    ) -> SourceConflictPage:
+        """Page canonical source keys with >1 validated primary candidate.
+
+        Streams the source-set keyspace one bounded ``SCAN`` batch at a time,
+        pipelines a cheap ``SCARD >= 2`` prefilter over the batch, then
+        validates only the surviving keys exactly (hydrating members, self-
+        healing stale ones) so a set inflated purely by stale members is not
+        reported as a conflict. Stops as soon as ``limit`` conflicts are in
+        hand.
+
+        Bounded in memory (one SCAN batch + the page, never the whole canonical
+        keyspace) and in round-trips per page (one pipelined SCARD per batch,
+        one validation per surviving key — not one per canonical key in the
+        workspace). Paging rides the raw SCAN cursor because Redis cannot
+        enumerate the keyspace in key order without materializing all of it.
+
+        Two consequences of that, both acceptable for operator tooling and
+        neither able to hide a conflict: the page is not ordered by canonical
+        key, and SCAN may revisit a key, so the same conflict can appear on two
+        pages (repair is idempotent and CAS-guarded, and each conflict needs a
+        human decision anyway). ``conflicts`` may overshoot ``limit`` by up to
+        one SCAN batch, because a batch is never abandoned half-examined —
+        doing so would advance the cursor past keys nobody looked at.
+        """
+        self._require_sidecar_ready()
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if position is CURSOR_END:
+            return SourceConflictPage(conflicts=(), next_position=CURSOR_END)
+        cursor = 0
+        if isinstance(position, CursorAfter):
+            cursor = self._decode_conflict_cursor(position.opaque)
+        prefix = f"{self._sched_prefix}:basename:"
+        conflicts: list[SourceConflictSummary] = []
+        async with self._get_redis_connection() as redis:
+            while True:
+                cursor, keys = await redis.scan(
+                    cursor,
+                    match=f"{prefix}*",
+                    count=self._CONFLICT_SCAN_BATCH,
+                )
+                if keys:
+                    card_pipe = redis.pipeline()
+                    for key in keys:
+                        card_pipe.scard(key)
+                    cards = await card_pipe.execute()
+                    for key, card in zip(keys, cards):
+                        if not card or card < 2:
+                            continue
+                        canonical = key[len(prefix) :]
+                        ids = await self._valid_primary_ids(redis, canonical)
+                        if len(ids) >= 2:
+                            conflicts.append(
+                                SourceConflictSummary(
+                                    canonical_source_key=canonical,
+                                    candidate_count=len(ids),
+                                    sample_doc_ids=tuple(
+                                        ids[: self._CONFLICT_SAMPLE_CAP]
+                                    ),
+                                )
+                            )
+                # cursor == 0 means the iteration completed: nothing is left to
+                # resume from, so the page is terminal even if it filled up.
+                if cursor == 0 or len(conflicts) >= limit:
+                    break
+        next_position: CursorPosition = (
+            CURSOR_END if cursor == 0 else CursorAfter(json.dumps(cursor))
+        )
+        return SourceConflictPage(
+            conflicts=tuple(conflicts), next_position=next_position
+        )
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key: str,
+        *,
+        primary_doc_id: str,
+        expected_candidate_count: int,
+        expected_candidate_fingerprint: str,
+        dry_run: bool = True,
+    ) -> SourceConflictRepairResult:
+        """Demote all-but-one primary to duplicate, CAS-guarded (see base).
+
+        Recomputes the validated candidate set (self-healing stale members)
+        and its deterministic fingerprint; dry-run reports without mutating.
+        On commit, a mismatch with the operator-echoed ``expected_*`` fails as
+        a CAS conflict rather than overwriting a concurrent change; otherwise
+        each losing candidate is demoted via :meth:`_atomic_doc_write`, so its
+        ``metadata.is_duplicate``/``original_doc_id`` write and its source-set
+        + status-ZSET maintenance commit in one per-doc transaction. A new
+        primary racing in mid-repair simply leaves the resolver in Conflict,
+        so a re-run (fresh dry-run) continues without any repair marker."""
+        self._require_sidecar_ready()
+        async with self._get_redis_connection() as redis:
+            candidates = await self._valid_primary_ids(redis, canonical_source_key)
+            count = len(candidates)
+            fingerprint = self._conflict_fingerprint(candidates)
+            if primary_doc_id not in candidates:
+                raise ValueError(
+                    f"primary_doc_id {primary_doc_id!r} is not a current primary "
+                    f"candidate for {canonical_source_key!r}"
+                )
+            demoted = [d for d in candidates if d != primary_doc_id]
+            if dry_run:
+                return SourceConflictRepairResult(
+                    canonical_source_key=canonical_source_key,
+                    primary_doc_id=primary_doc_id,
+                    candidate_count=count,
+                    fingerprint=fingerprint,
+                    demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+                    committed=False,
+                )
+            if (
+                count != expected_candidate_count
+                or fingerprint != expected_candidate_fingerprint
+            ):
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] source-conflict repair CAS failed for "
+                    f"{canonical_source_key!r}: candidate set changed "
+                    f"(count {count} vs {expected_candidate_count})"
+                )
+
+            def _demote(old_row, _primary=primary_doc_id):
+                if old_row is None:
+                    return None
+                row = dict(old_row)
+                metadata = dict(row.get("metadata") or {})
+                metadata["is_duplicate"] = True
+                metadata["original_doc_id"] = _primary
+                row["metadata"] = metadata
+                return row
+
+            for doc_id in demoted:
+                await self._atomic_doc_write(redis, doc_id, _demote)
+        return SourceConflictRepairResult(
+            canonical_source_key=canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            candidate_count=count,
+            fingerprint=fingerprint,
+            demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+            committed=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Derived sidecar rebuild (Phase 1)
+    # ------------------------------------------------------------------
+
+    async def _scan_keys(self, redis, patterns: Sequence[str]) -> list[str]:
+        """SCAN every ``pattern`` and collect the matching keys."""
+        found: list[str] = []
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
+                found.extend(keys)
+                if cursor == 0:
+                    break
+        return found
+
+    async def _delete_by_patterns(self, redis, patterns: Sequence[str]) -> None:
+        """Delete every key matching any of ``patterns`` in bounded batches."""
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
+                if keys:
+                    await redis.delete(*keys)
+                if cursor == 0:
+                    break
+
+    async def _any_key(self, redis, pattern: str) -> bool:
+        """True if any key matches ``pattern`` (bounded SCAN)."""
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match=pattern, count=100)
+            if keys:
+                return True
+            if cursor == 0:
+                return False
+
+    async def _rebuild_scheduling_sidecar(self) -> None:
+        """Rebuild the derived scheduling index from the actual doc_status rows
+        when it is absent — no persistent semantic marker gates this.
+
+        Structural check (not a marker): if any ``…__sched:status:*`` key
+        exists the index is already built and is kept consistent by every
+        write, so leave it untouched (never clobber a live index); if none
+        exists but primary rows do, it is a fresh pre-existing deployment or a
+        recovery and must be rebuilt. A short-lease backend lock elects one
+        rebuilding worker; losers wait (bounded) for the index to appear.
+
+        Deliberate limitation: "any status key exists" cannot detect a PARTIAL
+        index (some status keys or members gone), so a partial loss is NOT
+        repaired here — it looks healthy. Verifying the index against the rows
+        would be an O(total_docs) scan on every startup, and a persisted
+        counter would be the second source of truth this design exists to
+        avoid. Partial loss is therefore prevented at its only real cause
+        instead: ``_ensure_no_eviction_policy`` refuses at startup to run on a
+        Redis configured to evict TTL-less keys. An operator who suspects a
+        damaged index deletes the ``…__sched:*`` keys and restarts, which takes
+        the branch below."""
+        status_pattern = f"{self._sched_prefix}:status:*"
+        primary_pattern = f"{self.final_namespace}:*"
+        lock_key = f"{self._sched_prefix}:rebuild_lock"
+        async with self._get_redis_connection() as redis:
+            if await self._any_key(redis, status_pattern):
+                return  # already built + maintained live
+            if not await self._any_key(redis, primary_pattern):
+                return  # nothing to build (empty / freshly dropped workspace)
+            got_lock = await redis.set(lock_key, "1", nx=True, ex=300)
+            if not got_lock:
+                # Another worker is rebuilding: wait (bounded) for the switch.
+                for _ in range(60):
+                    await asyncio.sleep(1)
+                    if await self._any_key(redis, status_pattern):
+                        return
+                    if not await self._any_key(redis, primary_pattern):
+                        return  # workspace emptied while we waited
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] scheduling sidecar rebuild by another "
+                    f"worker did not complete in time"
+                )
+            try:
+                # Re-check under the lock: another worker may have finished
+                # between our probe and acquiring the lock.
+                if await self._any_key(redis, status_pattern):
+                    return
+                await self._do_rebuild(redis)
+            finally:
+                await redis.delete(lock_key)
+
+    async def _do_rebuild(self, redis) -> None:
+        """Stream the primary rows into a temporary keyspace, then atomically
+        switch it into place.
+
+        The temp keyspace (``…__sched_rebuild:*``) is disjoint from both the
+        official ``…__sched:*`` patterns and the primary ``{ns}:*`` pattern, so
+        neither the SCAN of primary rows nor the official index touches it. The
+        switch — DELETE of every stale official key followed by RENAME of every
+        temp key into its official name — runs inside one ``MULTI/EXEC`` so a
+        reader never observes a partial switch; a crash before the switch
+        leaves the old official index untouched and the temp keyspace safe to
+        discard on the next attempt. See ``_publish_rebuilt_index`` for why the
+        switch also has to guard against concurrent WRITERS, not just readers.
+        """
+        temp_prefix = f"{self._sched_prefix}_rebuild"
+        # Clear any leftover temp keyspace from a crashed prior attempt.
+        await self._delete_by_patterns(
+            redis, [f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"]
+        )
+
+        rebuilt = 0
+        statuses_seen: set[str] = set()
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(
+                cursor, match=f"{self.final_namespace}:*", count=1000
+            )
+            if keys:
+                pipe = redis.pipeline()
+                for key in keys:
+                    pipe.get(key)
+                values = await pipe.execute()
+                write_pipe = redis.pipeline()
+                for key, raw in zip(keys, values):
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError:
+                        logger.error(
+                            f"[{self.workspace}] skipping undecodable row {key} "
+                            f"during sidecar rebuild"
+                        )
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    doc_id = key.split(":", 1)[1]
+                    status = str(row.get("status") or "")
+                    if status:
+                        statuses_seen.add(status)
+                        write_pipe.zadd(
+                            f"{temp_prefix}:status:{status}",
+                            {self._zset_member(row, doc_id): 0},
+                        )
+                    basename = self._basename_of(row)
+                    if basename is not None:
+                        write_pipe.sadd(f"{temp_prefix}:basename:{basename}", doc_id)
+                    rebuilt += 1
+                await write_pipe.execute()
+            if cursor == 0:
+                break
+
+        await self._publish_rebuilt_index(redis, temp_prefix, statuses_seen)
+        logger.info(
+            f"[{self.workspace}] scheduling sidecar rebuilt "
+            f"({rebuilt} rows) for {self.namespace}"
+        )
+
+    async def _publish_rebuilt_index(
+        self, redis, temp_prefix: str, statuses_seen: set[str]
+    ) -> None:
+        """Switch the temp keyspace into place, refusing to clobber live writes.
+
+        The switch DELETEs the official keys and RENAMEs the temp ones over
+        them, so it must not run while another worker is writing: a write that
+        lands after its row was scanned has already maintained the OFFICIAL
+        index correctly (``_queue_index_ops`` commits row + sidecar in one
+        transaction), and publishing our older snapshot on top would silently
+        revert it — the doc would sit in the wrong status ZSET, so the sweep
+        either re-runs it or never sees it.
+
+        The rebuild only starts when NO official status key exists (probed, then
+        re-checked under the election lock), so any status key present now was
+        created by a concurrent writer. That is detected two ways: a WATCH on
+        every status-ZSET key name — the enum values plus whatever the scan
+        actually saw, and a write always touches one of them — makes ``EXEC``
+        fail if a write lands in the commit window, and a re-probe under that
+        WATCH catches one that landed earlier during the scan. Either way we
+        refuse: publishing would lose writes, and publishing a snapshot we know
+        is stale is worse than failing loudly. Basename leftovers may legitimately
+        survive a partial eviction, so they are deleted as before.
+        """
+        status_pattern = f"{self._sched_prefix}:status:*"
+        watch_keys = sorted(
+            {self._zset_key(s) for s in statuses_seen}
+            | {self._zset_key(s.value) for s in DocStatus}
+        )
+        for _ in range(self._WATCH_RETRY_LIMIT):
+            async with redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(*watch_keys)
+                    if await self._any_key(pipe, status_pattern):
+                        await pipe.unwatch()
+                        raise StorageControlPlaneError(
+                            f"[{self.workspace}] another writer maintained the "
+                            f"scheduling sidecar for {self.namespace} while it was "
+                            f"being rebuilt; refusing to publish a stale snapshot "
+                            f"over live writes. Retry with writers quiesced."
+                        )
+                    official_keys = await self._scan_keys(pipe, [status_pattern])
+                    official_keys += await self._scan_keys(
+                        pipe, [f"{self._sched_prefix}:basename:*"]
+                    )
+                    temp_keys = await self._scan_keys(
+                        pipe,
+                        [f"{temp_prefix}:status:*", f"{temp_prefix}:basename:*"],
+                    )
+                    pipe.multi()
+                    for key in official_keys:
+                        pipe.delete(key)
+                    for temp_key in temp_keys:
+                        official = self._sched_prefix + temp_key[len(temp_prefix) :]
+                        pipe.rename(temp_key, official)
+                    await pipe.execute()
+                    return
+                except WatchError:
+                    continue
+        raise StorageControlPlaneError(
+            f"[{self.workspace}] scheduling sidecar publish for {self.namespace} "
+            f"exceeded the WATCH retry budget ({self._WATCH_RETRY_LIMIT}); a "
+            f"concurrent writer keeps racing the switch"
+        )
+
     async def drop(self) -> dict[str, str]:
-        """Drop all document status data from storage and clean up resources"""
+        """Drop all document status data from storage and clean up resources.
+
+        Also clears the derived scheduling sidecar — status ZSETs, source
+        multimap sets, and any leftover rebuild temp keyspace — since they
+        mirror the dropped rows. Nothing persists across the clear: the index
+        is purely derived and would be rebuilt from the (now empty) rows."""
         try:
             async with self._get_redis_connection() as redis:
-                # Use SCAN to find all keys with the namespace prefix
-                pattern = f"{self.final_namespace}:*"
-                cursor = 0
                 deleted_count = 0
+                for pattern in (
+                    f"{self.final_namespace}:*",
+                    f"{self._sched_prefix}:status:*",
+                    f"{self._sched_prefix}:basename:*",
+                    f"{self._sched_prefix}_rebuild:status:*",
+                    f"{self._sched_prefix}_rebuild:basename:*",
+                ):
+                    cursor = 0
+                    while True:
+                        cursor, keys = await redis.scan(
+                            cursor, match=pattern, count=1000
+                        )
+                        if keys:
+                            # Delete keys in batches
+                            pipe = redis.pipeline()
+                            for key in keys:
+                                pipe.delete(key)
+                            results = await pipe.execute()
+                            deleted_count += sum(results)
 
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
-                    if keys:
-                        # Delete keys in batches
-                        pipe = redis.pipeline()
-                        for key in keys:
-                            pipe.delete(key)
-                        results = await pipe.execute()
-                        deleted_count += sum(results)
-
-                    if cursor == 0:
-                        break
+                        if cursor == 0:
+                            break
 
                 logger.info(
                     f"[{self.workspace}] Dropped {deleted_count} doc status keys from {self.namespace}"

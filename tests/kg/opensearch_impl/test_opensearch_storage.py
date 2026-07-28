@@ -1809,7 +1809,14 @@ class TestDocStatusStorage:
             body = mock_client.search.call_args.kwargs.get(
                 "body"
             ) or mock_client.search.call_args[1].get("body", {})
-            assert body["query"] == {"term": {"file_path": "report.pdf"}}
+            # Primary-only lookup: duplicate markers are excluded via must_not
+            # so filename dedup never matches a dup-* row.
+            assert body["query"] == {
+                "bool": {
+                    "filter": [{"term": {"file_path": "report.pdf"}}],
+                    "must_not": [{"term": {"metadata.is_duplicate": True}}],
+                }
+            }
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_basename_empty_short_circuits(

@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Any, final
+from typing import Any, ClassVar, final
 
 from lightrag.base import (
     BaseKVStorage,
@@ -131,6 +131,8 @@ class JsonKVStorage(BaseKVStorage):
           but consumers should still respect the pipeline gate to avoid
           interleaving with batched ingest work.
     """
+
+    supports_strict_point_reads: ClassVar[bool] = True
 
     def __post_init__(self):
         # Reject path traversal before using workspace in a file path
@@ -264,6 +266,14 @@ class JsonKVStorage(BaseKVStorage):
                 # Ensure _id field contains the clean ID
                 result["_id"] = id
             return result
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read (base contract): the in-memory shared dict has
+        no transport failure surface — a miss is a confirmed absence, and an
+        uninitialized storage raises instead of returning one."""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
+        return await self.get_by_id(id)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._storage_lock:
