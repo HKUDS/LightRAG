@@ -16,7 +16,10 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.base import DocStatus
-from lightrag.kg.pipeline_ingress import PipelineIngressMessage
+from lightrag.kg.pipeline_ingress import (
+    ManualRetryPublishResult,
+    PipelineIngressMessage,
+)
 from lightrag.kg.shared_storage import get_pipeline_ingress
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
@@ -148,7 +151,7 @@ def test_manual_retry_processes_failed_and_acks(tmp_path):
                         kind="rescan", retry_failed=True, request_id=request_id
                     ),
                 )
-                is False
+                is ManualRetryPublishResult.ALREADY_TERMINAL
             )
 
             # A second, DIFFERENT request is a fresh attempt (no doc is

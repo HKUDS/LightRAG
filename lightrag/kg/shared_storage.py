@@ -11,7 +11,17 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from contextvars import ContextVar
-from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    TypeVar,
+    Union,
+)
 
 try:
     import psutil
@@ -23,7 +33,10 @@ from lightrag.constants import (
     DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE,
     DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
     DEFAULT_QUEUE_STATS_STALE_TTL,
+    PIPELINE_HISTORY_MAX_MESSAGES,
+    PIPELINE_HISTORY_MESSAGE_MAX_BYTES,
 )
+from lightrag import pipeline_metrics
 from lightrag.exceptions import (
     PipelineBackpressureError,
     PipelineNotInitializedError,
@@ -31,6 +44,7 @@ from lightrag.exceptions import (
 from lightrag.kg.pipeline_ingress import (
     AsyncioPipelineIngress,
     ManagerPipelineIngress,
+    ManualRetryPublishResult,
     PipelineIngressHub,
     PipelineIngressMessage,
     _PipelineIngressHubProxy,
@@ -1692,6 +1706,7 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 # process_start_id} — so a dead busy owner clears the manual
                 # state too (see _dead_reservation_updates).
                 "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
                 "manual_resetting": False,
                 "manual_phase": MANUAL_PHASE_IDLE,
                 "manual_owner": None,
@@ -1863,6 +1878,125 @@ _UNRESOLVED = object()
 """
 
 
+# ---------------------------------------------------------------------------
+# Bounded pipeline status history (LR2 §10.3)
+# ---------------------------------------------------------------------------
+#
+# Every history write in the repo funnels through ``append_pipeline_history``
+# (or :class:`PipelineStatusLogger`, which shares the helpers below). Two bounds
+# are enforced together because either alone is insufficient: a message count
+# without a size cap still lets one ``traceback.format_exc()`` line dominate the
+# log, and a size cap without a count is unbounded by definition.
+
+# How many appends may pass before the capacity check is taken. The check itself
+# is a ``len()`` — one Manager RPC in multiprocess mode — and the hot extraction
+# path logs thousands of lines per document, so checking every time would add
+# 50% to the per-line RPC budget that PipelineStatusLogger exists to hold at 2.
+# Amortizing it makes the real bound ``capacity + interval × concurrently
+# written histories`` (2.5% overshoot per writer), which is still a fixed bound.
+_HISTORY_TRIM_CHECK_INTERVAL = 128
+
+# Process-local, deliberately not synchronized: this is a heuristic for *when* to
+# check, never a correctness input. A racing double-check just runs the trim
+# twice, and the trim is idempotent (it always leaves the newest `capacity`).
+_history_appends_since_trim = 0
+
+
+def clamp_pipeline_history_message(message: Any) -> Any:
+    """Cut one history line to ``PIPELINE_HISTORY_MESSAGE_MAX_BYTES`` UTF-8 bytes.
+
+    Truncation keeps the HEAD plus a marker naming the original size: status
+    lines put the identifying part first (stage, counter, doc id, file path), and
+    an operator who sees "48213 bytes" knows to look in the server log for the
+    full text — which every one of these call sites has already written there.
+
+    Never raises (part of the status-write contract): an unexpected object is
+    returned untouched rather than failing the operation being logged.
+    """
+    try:
+        if not isinstance(message, str):
+            message = str(message)
+        raw = message.encode("utf-8")
+        if len(raw) <= PIPELINE_HISTORY_MESSAGE_MAX_BYTES:
+            return message
+        marker = f"…[truncated, {len(raw)} bytes]"
+        budget = max(
+            0, PIPELINE_HISTORY_MESSAGE_MAX_BYTES - len(marker.encode("utf-8"))
+        )
+        # Slice the BYTES and drop the partial trailing character (the whole
+        # point of errors="ignore" here); slicing characters instead would
+        # overshoot the byte budget by up to 3x on CJK text.
+        return raw[:budget].decode("utf-8", errors="ignore") + marker
+    except Exception as exc:
+        _debug_log_failure("history message clamp skipped", exc)
+        return message
+
+
+def _maybe_trim_pipeline_history(history, appended: int = 1) -> None:
+    """Enforce the ring capacity on an already-resolved history handle.
+
+    ``appended`` counts MESSAGES, not calls: a group write advances the counter by
+    its own length, so the overshoot stays ``interval`` regardless of how large a
+    group a call site passes.
+
+    Lock-free on purpose. The trim is a read-modify-write, but its only possible
+    race outcome is running twice, and ``del history[:overflow]`` never removes a
+    message newer than the retained window — so no reader can observe anything a
+    single-threaded trim would not also have produced. Coordination state still
+    requires ``pipeline_status_lock``; this is status log housekeeping.
+    """
+    global _history_appends_since_trim
+    _history_appends_since_trim += appended
+    if _history_appends_since_trim < _HISTORY_TRIM_CHECK_INTERVAL:
+        return
+    _history_appends_since_trim = 0
+    try:
+        overflow = len(history) - PIPELINE_HISTORY_MAX_MESSAGES
+        if overflow > 0:
+            # In place, and by slice: `history` is the shared Manager ListProxy
+            # that every worker appends to and PipelineStatusLogger caches, so
+            # rebinding it would orphan both. One `del` is one server-side RPC;
+            # popping in a loop would be `overflow` of them.
+            del history[:overflow]
+    except Exception as exc:
+        _debug_log_failure("history trim skipped", exc)
+
+
+def append_pipeline_history(pipeline_status, *messages) -> None:
+    """The single funnel for pipeline status history writes (LR2 §10.3).
+
+    Replaces the raw ``history_messages`` append at every call site — a repo-wide
+    test fails if one is re-introduced, because a single unfunnelled writer is an
+    unbounded leak that nothing else would notice.
+
+    Deliberately does NOT touch ``latest_message``: the call sites that set it do
+    so alongside other coordination fields in one ``update()``, and folding that
+    in would turn a mechanical, reviewable substitution into a behaviour change.
+
+    Same never-raise contract as :class:`PipelineStatusLogger`, for the same
+    reason — the call sites are shaped ``except ...: log(...); raise`` and a
+    raising status write would mask the real exception. A missing/None
+    ``history_messages`` is skipped rather than raising KeyError.
+    """
+    if pipeline_status is None or not messages:
+        return
+    try:
+        history = pipeline_status.get("history_messages")
+    except Exception as exc:
+        _debug_log_failure("history fetch skipped", exc)
+        return
+    if history is None:
+        return
+    try:
+        # One `extend` per group: N appends would be N RPCs, and a group written
+        # by one call site belongs together in the log.
+        history.extend([clamp_pipeline_history_message(m) for m in messages])
+    except Exception as exc:
+        _debug_log_failure("history append skipped", exc)
+        return
+    _maybe_trim_pipeline_history(history, len(messages))
+
+
 class PipelineStatusLogger:
     """Operation-scoped, lock-free pipeline status logger with a cached history list.
 
@@ -1887,13 +2021,15 @@ class PipelineStatusLogger:
       reset IN PLACE (``del h[:]`` / ``h[:] = [...]``) and never replaced with
       a new list object; a replacement would leave this logger appending to
       the orphaned list for the rest of the operation.
-    - History *trimming* is deliberately not offered here: the ``len`` check
-      plus delete is a read-modify-write and must stay inside
-      ``async with pipeline_status_lock`` (see the processing loop).
+    - Shares the LR2 §10.3 bounds with :func:`append_pipeline_history`: each
+      message is clamped by :func:`clamp_pipeline_history_message` and the ring
+      capacity is enforced by :func:`_maybe_trim_pipeline_history`. This is the
+      hot path (thousands of lines per document), which is exactly why the
+      capacity check there is amortized rather than taken per line.
 
     Why lock-free is safe: this is for pure status logging ONLY, never for
     coordination state (``busy`` / ``cancellation_*`` /
-    reservation owner tokens / ``cur_batch`` / the history trim), which stays
+    reservation owner tokens / ``cur_batch``), which stays
     in ``async with pipeline_status_lock`` read-modify-write blocks. Each of
     ``dict.__setitem__`` and ``list.extend`` is a single indivisible operation
     on the backing dict/list under the Manager server's CPython GIL (for plain
@@ -1932,6 +2068,10 @@ class PipelineStatusLogger:
         the whole group to history with one ``extend``."""
         if self._pipeline_status is None or not messages:
             return
+        # Clamp once, up front: `latest_message` is a single slot but it is read
+        # back on every status poll, so an unclamped 48 KB line would be shipped
+        # to the UI for as long as it stays the latest.
+        messages = tuple(clamp_pipeline_history_message(m) for m in messages)
         try:
             self._pipeline_status["latest_message"] = messages[-1]
         except Exception as exc:
@@ -1955,6 +2095,8 @@ class PipelineStatusLogger:
             # Do NOT retry these messages: the extend may have half-committed.
             self._history = _UNRESOLVED
             _debug_log_failure("history append skipped", exc)
+            return
+        _maybe_trim_pipeline_history(history, len(messages))
 
 
 # ============================================================================
@@ -1997,6 +2139,7 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
     # are also hidden here in Phase 3; Phase 6 adds a curated observability view.
     "manual_owner",
     "manual_freeze_requested",
+    "manual_freeze_started_at",
     "manual_resetting",
     "manual_phase",
 )
@@ -2103,6 +2246,7 @@ def _dead_reservation_updates(
         updates.update(
             {
                 "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
                 "manual_resetting": False,
                 "manual_phase": MANUAL_PHASE_IDLE,
                 "manual_owner": None,
@@ -2252,6 +2396,10 @@ def _recovery_required_result(
 
 
 def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
+    if flag_key == "manual_freeze_requested":
+        # One chokepoint for every ingress path (enqueue reservation, last-line
+        # guard, scan fence), so the count cannot drift between them.
+        pipeline_metrics.increment(pipeline_metrics.FREEZE_REJECTS)
     try:
         return {
             "busy": PipelineReservationConflict.BUSY,
@@ -2675,6 +2823,7 @@ async def acquire_processing_reservation(
             # (busy=False — this acquire would have succeeded instead).
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             pipeline_ingress.request_auto_rescan()
+            pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
             return PipelineReservationResult(
                 acquired=False,
                 conflict=PipelineReservationConflict.BUSY,
@@ -2992,14 +3141,32 @@ async def start_reserved_background_task(
     raise RuntimeError("reserved background task failed to start")
 
 
+class ManualIntentRefusal(NamedTuple):
+    """A refusal a ``commit`` implementation can return instead of a bare string.
+
+    ``capacity_exceeded`` is the one distinction the HTTP layer must not lose:
+    the manual channel being full is a "later" (429 + Retry-After), while every
+    other refusal — fence held, id already finalized — is a "not like this"
+    (503 / client error). See LR2 §10.1.
+    """
+
+    message: str
+    capacity_exceeded: bool = False
+
+
 class ManualIntentRefused(Exception):
     """A manual-intent commit was refused by the pipeline fence.
 
     Raised by :func:`start_committed_background_task` when ``commit`` returned
     a refusal: the fence rejected the request BEFORE the sticky message was
     published, so no side effect exists and the endpoint can surface the
-    message (e.g. as a 503) without any cleanup.
+    message (e.g. as a 503) without any cleanup. ``capacity_exceeded`` marks the
+    one refusal that is worth retrying unchanged (429).
     """
+
+    def __init__(self, message: str, *, capacity_exceeded: bool = False) -> None:
+        super().__init__(message)
+        self.capacity_exceeded = capacity_exceeded
 
 
 async def commit_manual_retry_request(
@@ -3047,14 +3214,25 @@ async def commit_manual_retry_request(
                 "it finishes."
             )
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
-        if not ingress.request_manual_retry(request_id, message):
+        publish = ingress.request_manual_retry(request_id, message)
+        if publish is ManualRetryPublishResult.ALREADY_TERMINAL:
             # The id is already terminal (ACKED / CANCELLED_BY_CLEAR): nothing
             # was published and nothing is owned. Unreachable for the current
             # callers (they mint a fresh uuid per request) but a future caller
             # reusing ids must get a refusal, not a phantom commit.
-            return (
+            return ManualIntentRefusal(
                 f"manual retry request id {request_id!r} was already "
                 "finalized; mint a new request id"
+            )
+        if publish is ManualRetryPublishResult.CAPACITY_EXCEEDED:
+            # Sticky channel full (LR2 §10.1): un-ACKed requests are waiting for
+            # exclusive resets that have not run yet. Retrying later works, so
+            # this is the one publish refusal the API answers with 429.
+            return ManualIntentRefusal(
+                "Too many manual retry requests are still waiting to be "
+                "served for this workspace. Retry once the queued requests "
+                "have been processed.",
+                capacity_exceeded=True,
             )
         state["committed"] = True
         return None
@@ -3162,7 +3340,12 @@ async def start_committed_background_task(
     if join_cancel is not None:
         raise join_cancel
     if state["refusal"] is not None:
-        raise ManualIntentRefused(state["refusal"])
+        refusal = state["refusal"]
+        if isinstance(refusal, ManualIntentRefusal):
+            raise ManualIntentRefused(
+                refusal.message, capacity_exceeded=refusal.capacity_exceeded
+            )
+        raise ManualIntentRefused(str(refusal))
     raise RuntimeError("committed background task failed to start")
 
 

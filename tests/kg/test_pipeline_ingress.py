@@ -22,6 +22,7 @@ import pytest
 
 import lightrag.kg.shared_storage as shared_storage
 from lightrag.kg.pipeline_ingress import (
+    ManualRetryPublishResult,
     MANUAL_RETRY_ACKED,
     MANUAL_RETRY_CANCELLED_BY_CLEAR,
     MAX_MAILBOX_WAIT_SECONDS,
@@ -136,7 +137,10 @@ def test_closed_loop_migration_preserves_all_state():
             # Control state survives.
             assert ingress.peek_next_manual_retry().request_id == "r1"
             assert ingress.consume_auto_rescan() is True
-            assert ingress.request_manual_retry("r0", _manual("r0")) is False
+            assert (
+                ingress.request_manual_retry("r0", _manual("r0"))
+                is ManualRetryPublishResult.ALREADY_TERMINAL
+            )
             # New-loop primitives are live: publish + await again.
             ingress.put_document(_doc("d2"))
             assert (await ingress.get_document()).doc_id == "d2"
@@ -276,9 +280,15 @@ async def test_manual_retry_fifo_ack_and_terminal_replay_guard(
 ):
     ingress = await get_pipeline_ingress("wsA")
     for rid in ("r1", "r2", "r3"):
-        assert ingress.request_manual_retry(rid, _manual(rid)) is True
+        assert (
+            ingress.request_manual_retry(rid, _manual(rid))
+            is ManualRetryPublishResult.ACCEPTED
+        )
     # Re-requesting a pending id is a no-op and keeps its FIFO position.
-    assert ingress.request_manual_retry("r2", _manual("r2")) is True
+    assert (
+        ingress.request_manual_retry("r2", _manual("r2"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
     assert [m.request_id for m in ingress.snapshot_manual_retries()] == [
         "r1",
         "r2",
@@ -292,7 +302,10 @@ async def test_manual_retry_fifo_ack_and_terminal_replay_guard(
     assert ingress.peek_next_manual_retry().request_id == "r2"
 
     # Terminal id refuses replay.
-    assert ingress.request_manual_retry("r1", _manual("r1")) is False
+    assert (
+        ingress.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
     assert ingress.counts()["manual_retries"] == 2
 
 
@@ -305,9 +318,15 @@ async def test_clear_tombstones_pending_manual_ids(single_process_share_data):
     ingress.clear()
     assert not ingress.has_work()
     # The un-ACKed id was tombstoned: a delayed replay must not re-enter.
-    assert ingress.request_manual_retry("r1", _manual("r1")) is False
+    assert (
+        ingress.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
     # Fresh ids keep working; the terminal set survived the clear.
-    assert ingress.request_manual_retry("r2", _manual("r2")) is True
+    assert (
+        ingress.request_manual_retry("r2", _manual("r2"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
     assert ingress.counts()["terminal_manual_request_ids"] == 1
 
 
@@ -494,7 +513,10 @@ async def test_multiprocess_cross_process_publish_and_sticky_survival(
 
     # ACK + bounded-window replay guard, across namespace views.
     assert ingress.ack_manual_retry("req-child") is True
-    assert ingress.request_manual_retry("req-child", _manual("req-child")) is False
+    assert (
+        ingress.request_manual_retry("req-child", _manual("req-child"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
 
     # Same-workspace resolution from this process reaches the same mailbox.
     again = await get_pipeline_ingress("wsM")
@@ -549,7 +571,10 @@ async def test_multiprocess_wait_isolation_and_cancelled_waiter_steals_nothing(
 
     # clear() tombstones the pending manual id server-side as well.
     ingress.clear()
-    assert ingress.request_manual_retry("r1", _manual("r1")) is False
+    assert (
+        ingress.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
     assert not ingress.has_work()
 
 
@@ -567,3 +592,84 @@ async def test_multiprocess_finalize_keeps_server_side_state(
     again = await get_pipeline_ingress("wsM")
     assert again is not ingress  # new local view ...
     assert again.peek_next_manual_retry().request_id == "r-sticky"  # ... same state
+
+
+# --------------------------------------------------------------------------- #
+# manual channel capacity (LR2 §10.1)
+# --------------------------------------------------------------------------- #
+
+
+def test_manual_channel_capacity_refuses_instead_of_dropping():
+    """The sticky channel cannot drop its oldest entry to make room: every
+    un-ACKed request is a human intent with an ACK contract. So the publish is
+    refused with CAPACITY_EXCEEDED — the one refusal that means "later", which is
+    why it is the only one the API maps to 429."""
+    mailbox = PipelineIngressMailbox(manual_capacity=2)
+
+    assert (
+        mailbox.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
+    assert (
+        mailbox.request_manual_retry("r2", _manual("r2"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
+    assert (
+        mailbox.request_manual_retry("r3", _manual("r3"))
+        is ManualRetryPublishResult.CAPACITY_EXCEEDED
+    )
+    # The two accepted requests are untouched and still in FIFO order.
+    assert [m.request_id for m in mailbox.snapshot_manual_retries()] == ["r1", "r2"]
+
+
+def test_republishing_a_pending_id_is_not_charged_against_capacity():
+    """Idempotent re-request adds nothing, so it must not be refused at a full
+    channel — otherwise a retrying client could never confirm its own request."""
+    mailbox = PipelineIngressMailbox(manual_capacity=1)
+    assert (
+        mailbox.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
+
+    assert (
+        mailbox.request_manual_retry("r1", _manual("r1"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
+    assert len(mailbox.snapshot_manual_retries()) == 1
+
+
+def test_acking_frees_manual_capacity():
+    mailbox = PipelineIngressMailbox(manual_capacity=1)
+    mailbox.request_manual_retry("r1", _manual("r1"))
+    assert (
+        mailbox.request_manual_retry("r2", _manual("r2"))
+        is ManualRetryPublishResult.CAPACITY_EXCEEDED
+    )
+
+    assert mailbox.ack_manual_retry("r1") is True
+
+    assert (
+        mailbox.request_manual_retry("r2", _manual("r2"))
+        is ManualRetryPublishResult.ACCEPTED
+    )
+
+
+def test_terminal_check_precedes_the_capacity_check():
+    """A finalized id must report ALREADY_TERMINAL even at a full channel: the
+    caller has to mint a new id, and telling it to "retry later" would be a lie."""
+    mailbox = PipelineIngressMailbox(manual_capacity=1)
+    mailbox.request_manual_retry("done", _manual("done"))
+    assert mailbox.ack_manual_retry("done") is True
+    mailbox.request_manual_retry("filler", _manual("filler"))
+
+    assert (
+        mailbox.request_manual_retry("done", _manual("done"))
+        is ManualRetryPublishResult.ALREADY_TERMINAL
+    )
+
+
+def test_counts_expose_the_manual_capacity():
+    mailbox = PipelineIngressMailbox(manual_capacity=7)
+    counts = mailbox.counts()
+    assert counts["manual_retries"] == 0
+    assert counts["manual_retries_capacity"] == 7

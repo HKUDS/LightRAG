@@ -37,6 +37,7 @@ from lightrag.constants import (
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
     DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_MAX_TEXTS_PER_REQUEST,
     DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
@@ -200,11 +201,11 @@ def validate_scan_batch_configuration(args: argparse.Namespace) -> None:
 
 
 def validate_admission_configuration(args: argparse.Namespace) -> None:
-    """Reject a negative admission capacity (LR2 §9.1/§11).
+    """Reject negative values for the three ingestion ceilings (LR2 §9.1/§11).
 
-    ``0`` legitimately disables admission control, but a negative capacity would
-    refuse every upload — never what an operator meant, and a failure mode that
-    only shows up on the first request.
+    ``0`` legitimately disables each of them, but a negative value would refuse
+    every request — never what an operator meant, and a failure mode that only
+    shows up on the first request.
     """
     if not hasattr(args, "max_pending_documents"):
         # Partial namespace from a programmatic caller — see
@@ -226,6 +227,17 @@ def validate_admission_configuration(args: argparse.Namespace) -> None:
             raise ValueError(
                 "MAX_REQUEST_BODY_BYTES must be an integer >= 0 (0 disables the "
                 f"body limit); got {body_limit!r}"
+            )
+    if hasattr(args, "max_texts_per_request"):
+        texts_limit = args.max_texts_per_request
+        if (
+            not isinstance(texts_limit, int)
+            or isinstance(texts_limit, bool)
+            or texts_limit < 0
+        ):
+            raise ValueError(
+                "MAX_TEXTS_PER_REQUEST must be an integer >= 0 (0 disables the "
+                f"per-request text limit); got {texts_limit!r}"
             )
 
 
@@ -587,6 +599,11 @@ def parse_args() -> argparse.Namespace:
     # Raw request-body ceiling for the ingestion endpoints (LR2 §9.4); 0 disables.
     args.max_request_body_bytes = get_env_value(
         "MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES, int
+    )
+
+    # Document fan-out ceiling for one /documents/texts request (LR2 §11); 0 disables.
+    args.max_texts_per_request = get_env_value(
+        "MAX_TEXTS_PER_REQUEST", DEFAULT_MAX_TEXTS_PER_REQUEST, int
     )
 
     # Get MAX_GRAPH_NODES from environment

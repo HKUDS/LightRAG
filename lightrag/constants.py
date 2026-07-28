@@ -382,12 +382,46 @@ DEFAULT_SCAN_ENQUEUE_BATCH_SIZE = 100
 # cap; the active rows they create make ordinary uploads wait.
 DEFAULT_MAX_PENDING_DOCUMENTS = 0
 
+# Ceiling on how many documents ONE ``/documents/texts`` request may carry
+# (LR2 §11). ``0`` disables it. Distinct from ``MAX_PENDING_DOCUMENTS``, which
+# bounds the pipeline's total backlog and answers 429 (retry later): this bounds
+# the fan-out of a single request, which no amount of waiting fixes, so it
+# answers 413. It has to be checked before the endpoint's per-text existence
+# reads — those are one storage round-trip each, so an oversized batch would
+# otherwise do all of them before being refused.
+DEFAULT_MAX_TEXTS_PER_REQUEST = 0
+
 # Hard ceiling on the raw request body an ingestion endpoint may receive, counted
 # as it streams through the ASGI ``receive`` channel (LR2 §9.4). ``0`` disables
 # it. Distinct from ``MAX_UPLOAD_SIZE``, which bounds one uploaded FILE after
 # multipart parsing: this bounds the bytes the server agrees to read at all, so a
 # body that lies about (or omits) Content-Length is still cut off.
 DEFAULT_MAX_REQUEST_BODY_BYTES = 0
+
+# Per-workspace ceiling on manual retry requests that have been published but
+# not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an
+# exclusive reset acknowledges it — so an operator hammering /reprocess_failed
+# would otherwise grow it without bound. Over the ceiling the publish is refused
+# with CAPACITY_EXCEEDED, which is the ONLY manual-publish refusal that maps to
+# 429; an already-finalized id is a client error, not backpressure.
+DEFAULT_MAX_UNACKED_MANUAL_RETRIES = 64
+
+# Fixed capacity of the human-facing pipeline status history (LR2 §10.3). Every
+# write funnels through ``append_pipeline_history``, which drops the oldest lines
+# past this many, making the log a ring instead of an append-only list whose only
+# bound used to be "the extraction loop happens to trim it" — a deletion job, a
+# scan or a manual reset logs plenty without ever reaching that trim.
+# Deliberately not an env knob: §11 does not list one, the API response already
+# caps what it shows at the newest 1000 lines, and a status log is not a place a
+# deployment should have to size.
+PIPELINE_HISTORY_MAX_MESSAGES = 5000
+
+# Per-message UTF-8 byte ceiling for the same log. Capacity alone does not bound
+# memory: one call site appends a whole ``traceback.format_exc()``, and any
+# message interpolating a file list or an exception string is unbounded, so
+# N messages × unbounded size is still unbounded. Counted in BYTES rather than
+# characters because that is what is being bounded (CJK is 3 bytes/char).
+PIPELINE_HISTORY_MESSAGE_MAX_BYTES = 4096
 
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a

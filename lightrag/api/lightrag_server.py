@@ -17,6 +17,7 @@ import logging
 import logging.config
 import sys
 import textwrap
+import time
 import uuid
 import uvicorn
 import pipmaster as pm
@@ -75,7 +76,10 @@ from lightrag.kg.shared_storage import (
     cleanup_keyed_lock,
     drain_reserved_background_tasks,
     finalize_share_data,
+    get_pipeline_ingress,
 )
+from lightrag import pipeline_metrics
+from lightrag.utils_pipeline import describe_doc_status_capabilities
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 from lightrag.api.login_rate_limit import LoginRateLimiter
@@ -1203,6 +1207,64 @@ def check_frontend_build():
         # If check fails, log warning but don't affect startup
         logger.warning(f"Failed to check frontend source freshness: {e}")
         return (True, False)  # Assume assets exist and up-to-date on error
+
+
+def _build_capability_status(rag) -> dict:
+    """Strict-capability report, or ``{}`` when it cannot be determined.
+
+    /health is a liveness probe first: one unavailable diagnostic must never turn
+    it into a 500.
+    """
+    doc_status = getattr(rag, "doc_status", None)
+    if doc_status is None:
+        return {}
+    try:
+        return describe_doc_status_capabilities(doc_status)
+    except Exception as capability_error:  # pragma: no cover - defensive
+        logger.debug(f"Capability probe unavailable for /health: {capability_error}")
+        return {}
+
+
+def _build_scheduling_status(pipeline_snapshot: dict, ingress_counts: dict) -> dict:
+    """Curated scheduling/observability view for /health (LR2 Phase 6 items 2/4).
+
+    Answers the questions an operator actually has during a manual retry or a
+    scan: which phase the manual channel is in, which request holds the freeze
+    and since when, what the drain is still waiting for, and how full the sticky
+    channel is. The manual owner's ``owner_token`` is omitted on purpose — it
+    authorizes releasing a reservation, so publishing it would turn a status page
+    into a control surface.
+    """
+    owner = pipeline_snapshot.get("manual_owner") or {}
+    freeze_started = pipeline_snapshot.get("manual_freeze_started_at")
+    freeze_seconds = None
+    if isinstance(freeze_started, (int, float)) and freeze_started > 0:
+        # Wall clock, because the freeze may be held by another process; a
+        # negative value (clock stepped back) is reported as 0 rather than as a
+        # nonsensical duration.
+        freeze_seconds = max(0.0, round(time.time() - float(freeze_started), 3))
+    pending_enqueues = int(pipeline_snapshot.get("pending_enqueues", 0) or 0)
+    return {
+        "manual_phase": pipeline_snapshot.get("manual_phase") or "idle",
+        "manual_freeze_requested": bool(
+            pipeline_snapshot.get("manual_freeze_requested", False)
+        ),
+        "manual_resetting": bool(pipeline_snapshot.get("manual_resetting", False)),
+        "manual_freeze_seconds": freeze_seconds,
+        "manual_owner_request_id": (
+            owner.get("request_id") if isinstance(owner, dict) else None
+        ),
+        "manual_owner_pid": owner.get("pid") if isinstance(owner, dict) else None,
+        # What a DRAIN_TO_IDLE is still waiting for: reservations whose rows are
+        # not written yet, plus whether a processing run still holds busy.
+        "drain_pending_enqueues": pending_enqueues,
+        "drain_waiting_on_workers": bool(pipeline_snapshot.get("busy", False)),
+        "manual_retries_queued": ingress_counts.get("manual_retries"),
+        "manual_retries_capacity": ingress_counts.get("manual_retries_capacity"),
+        "document_notifications_queued": ingress_counts.get("documents"),
+        "document_notification_overflows": ingress_counts.get("document_overflows"),
+        "auto_rescan_pending": ingress_counts.get("auto_rescan_pending"),
+    }
 
 
 def create_app(args):
@@ -2492,6 +2554,17 @@ def create_app(args):
                 or pipeline_pending_enqueues > 0
             )
 
+            # Ingress channel depths (bounded counters only — never the
+            # messages). Best-effort: a mailbox that is not bootstrapped yet must
+            # not turn a liveness probe into a 500.
+            ingress_counts: dict[str, Any] = {}
+            try:
+                ingress_counts = dict(
+                    (await get_pipeline_ingress(workspace)).counts() or {}
+                )
+            except Exception as ingress_error:
+                logger.debug(f"Ingress counts unavailable for /health: {ingress_error}")
+
             if not auth_configured:
                 auth_mode = "disabled"
             else:
@@ -2586,6 +2659,20 @@ def create_app(args):
                     "pipeline_scanning": pipeline_scanning,
                     "pipeline_destructive_busy": pipeline_destructive_busy,
                     "pipeline_pending_enqueues": pipeline_pending_enqueues,
+                    # Curated scheduling view (LR2 Phase 6 items 2 & 4). The raw
+                    # manual_* fields stay hidden from /pipeline_status — they are
+                    # coordination internals — but an operator watching a freeze
+                    # needs to see WHICH request holds it, for how long, and what
+                    # the drain is still waiting for. The owner token is
+                    # deliberately omitted: it is a capability, not a status.
+                    "scheduling": _build_scheduling_status(
+                        pipeline_snapshot, ingress_counts
+                    ),
+                    "capabilities": _build_capability_status(rag),
+                    # Per-worker counters/durations for the paths the bounded
+                    # rework introduced (LR2 Phase 6 item 3); see
+                    # lightrag/pipeline_metrics.py for the boundary.
+                    "scheduling_metrics": pipeline_metrics.snapshot(),
                     "keyed_locks": keyed_lock_info,
                     "llm_queue_status": await rag.get_llm_queue_status(
                         include_base=True

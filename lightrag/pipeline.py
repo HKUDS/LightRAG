@@ -58,6 +58,7 @@ from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     _reservation_owner_token,
     acquire_processing_reservation,
+    append_pipeline_history,
     check_pipeline_status_mutation,
     get_namespace_data,
     get_namespace_lock,
@@ -67,6 +68,7 @@ from lightrag.kg.shared_storage import (
     run_to_completion,
     with_reservation_lock,
 )
+from lightrag import pipeline_metrics
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -287,6 +289,18 @@ def _call_source_file_resolver(
             parser_engine=parser_engine,
         )
     return resolver(source_file or file_path)
+
+
+def _rearm_auto_rescan(ingress: Any) -> None:
+    """Set the auto-rescan dirty flag and count the re-arm (LR2 Phase 6 item 3).
+
+    Every re-arm costs a later strict sweep, so the rate explains sweep load that
+    no upload accounts for. Counted here rather than inside the ingress because in
+    multiprocess mode the mailbox lives in the Manager process, where a counter
+    would be invisible to the worker answering /health.
+    """
+    ingress.request_auto_rescan()
+    pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
 
 
 def _normalize_scheduling_timestamp(value: Any) -> str:
@@ -1357,7 +1371,7 @@ class _PipelineMixin:
                         # the enqueue re-raises the storage error either way.
                         if not pipeline_status.get("busy"):
                             process_after_status_error = True
-                        ingress.request_auto_rescan()
+                        _rearm_auto_rescan(ingress)
                 except Exception as wake_error:
                     logger.error(
                         "Failed to wake document processing after enqueue "
@@ -1423,7 +1437,7 @@ class _PipelineMixin:
                 )
             except Exception as publish_error:
                 try:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                     logger.warning(
                         "Ingress document notification failed after a "
                         "successful enqueue; armed the auto-rescan flag "
@@ -1770,7 +1784,7 @@ class _PipelineMixin:
                                 "latest_message": log_message,
                             }
                         )
-                        status_snapshot["history_messages"].append(log_message)
+                        append_pipeline_history(status_snapshot, log_message)
 
                         # A signal consumed by the immediately-preceding
                         # decision (or the entry absorb) that no batch took
@@ -1787,7 +1801,7 @@ class _PipelineMixin:
                     log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
                     decision = await self._decide_pipeline_next_step(
                         pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
@@ -1837,7 +1851,7 @@ class _PipelineMixin:
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
                     decision = await self._decide_pipeline_next_step(
                         pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
@@ -1877,7 +1891,7 @@ class _PipelineMixin:
                         "latest_message": log_message,
                     }
                 )
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
                 await self._run_pipeline_batch(
                     to_process_docs,
@@ -1916,7 +1930,7 @@ class _PipelineMixin:
                 log_message = "Processing additional documents due to pending request"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
                 # Fetch the next batch: the next page of the current sweep
                 # (CONTINUE_SWEEP_PAGE), a manual reset/drain (CONTINUE_MANUAL /
@@ -1966,7 +1980,7 @@ class _PipelineMixin:
                     # degrades to next-explicit-trigger recovery.
                     if uncommitted_wakeup and ingress is not None:
                         try:
-                            ingress.request_auto_rescan()
+                            _rearm_auto_rescan(ingress)
                         except Exception as restore_error:
                             logger.error(
                                 "[pipeline] failed to restore the consumed "
@@ -1997,6 +2011,7 @@ class _PipelineMixin:
                                 "busy": False,
                                 "busy_owner": None,
                                 "manual_freeze_requested": False,
+                                "manual_freeze_started_at": None,
                                 "manual_resetting": False,
                                 "manual_phase": MANUAL_PHASE_IDLE,
                                 "manual_owner": None,
@@ -2047,9 +2062,9 @@ class _PipelineMixin:
                         }
                     )
                     status.update(updates)
-                    status_snapshot["history_messages"].append(stopped_message)
+                    append_pipeline_history(status_snapshot, stopped_message)
                     if internal_halt is not None:
-                        status_snapshot["history_messages"].append(internal_halt)
+                        append_pipeline_history(status_snapshot, internal_halt)
 
             await run_to_completion(_finalize)
 
@@ -2354,7 +2369,7 @@ class _PipelineMixin:
                                 # Arm the recovery signal so the skip is picked up
                                 # by the supervisor's next rescan even if this
                                 # feeder never otherwise reaches a boundary.
-                                ingress.request_auto_rescan()
+                                _rearm_auto_rescan(ingress)
                     reached = len(batch)  # every message reached a decision
                 except asyncio.CancelledError:
                     deferred.extend(batch[reached:])  # unprocessed tail → finally
@@ -2681,7 +2696,7 @@ class _PipelineMixin:
                 )
                 logger.info(skip_message)
                 pipeline_status["latest_message"] = skip_message
-                pipeline_status["history_messages"].append(skip_message)
+                append_pipeline_history(pipeline_status, skip_message)
 
         inconsistent_docs = []
         failed_docs_to_preserve = []
@@ -2707,7 +2722,7 @@ class _PipelineMixin:
                 preserve_message = f"Preserving {len(failed_docs_to_preserve)} failed document entries for manual review"
                 logger.info(preserve_message)
                 pipeline_status["latest_message"] = preserve_message
-                pipeline_status["history_messages"].append(preserve_message)
+                append_pipeline_history(pipeline_status, preserve_message)
 
             # Remove failed documents from processing list but keep them in doc_status
             for doc_id in failed_docs_to_preserve:
@@ -2721,7 +2736,7 @@ class _PipelineMixin:
                 )
                 logger.info(summary_message)
                 pipeline_status["latest_message"] = summary_message
-                pipeline_status["history_messages"].append(summary_message)
+                append_pipeline_history(pipeline_status, summary_message)
 
             successful_deletions = 0
             for doc_id in inconsistent_docs:
@@ -2740,7 +2755,7 @@ class _PipelineMixin:
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                     # Remove from processing list
                     to_process_docs.pop(doc_id, None)
@@ -2751,7 +2766,7 @@ class _PipelineMixin:
                         error_message = f"Failed to delete entry: {doc_id} - {str(e)}"
                         logger.error(error_message)
                         pipeline_status["latest_message"] = error_message
-                        pipeline_status["history_messages"].append(error_message)
+                        append_pipeline_history(pipeline_status, error_message)
 
         # Final summary log
         # async with pipeline_status_lock:
@@ -2835,7 +2850,7 @@ class _PipelineMixin:
                 )
                 logger.info(reset_message)
                 pipeline_status["latest_message"] = reset_message
-                pipeline_status["history_messages"].append(reset_message)
+                append_pipeline_history(pipeline_status, reset_message)
 
         return to_process_docs
 
@@ -2866,6 +2881,7 @@ class _PipelineMixin:
             status.update(
                 {
                     "manual_freeze_requested": True,
+                    "manual_freeze_started_at": time.time(),
                     "manual_resetting": False,
                     "manual_phase": MANUAL_PHASE_DRAIN_TO_IDLE,
                     "manual_owner": owner,
@@ -2901,6 +2917,7 @@ class _PipelineMixin:
             status.update(
                 {
                     "manual_freeze_requested": False,
+                    "manual_freeze_started_at": None,
                     "manual_resetting": False,
                     "manual_phase": MANUAL_PHASE_IDLE,
                     "manual_owner": None,
@@ -3054,7 +3071,7 @@ class _PipelineMixin:
             logger.warning(warning)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = warning
-                pipeline_status["history_messages"].append(warning)
+                append_pipeline_history(pipeline_status, warning)
         if not docs_to_reset:
             return 0
         # Owner-checked page write (LR2 §7.7 item 8): confirm we still hold the
@@ -3092,6 +3109,14 @@ class _PipelineMixin:
         so no double reset — LR2 §7.3 "为什么不需要 generation/checkpoint")."""
 
         def _enter(status):
+            # The freeze timestamp is wall clock because the freeze may have been
+            # taken by another process; this is the DRAIN_TO_IDLE window — the one
+            # an operator feels, since uploads are refused throughout it.
+            froze_at = status.get("manual_freeze_started_at")
+            if isinstance(froze_at, (int, float)) and froze_at > 0:
+                pipeline_metrics.observe(
+                    pipeline_metrics.MANUAL_DRAIN_SECONDS, time.time() - float(froze_at)
+                )
             status.update(
                 {
                     "manual_resetting": True,
@@ -3110,6 +3135,8 @@ class _PipelineMixin:
             return False
 
         total_reset = 0
+        pages = 0
+        reset_started = time.monotonic()
         cursor: CursorPosition = CURSOR_START
         while True:
             if not await self._still_freeze_owner(
@@ -3117,12 +3144,21 @@ class _PipelineMixin:
             ):
                 return False
             docs, cursor = await self._next_failed_page(cursor)
+            pages += 1
             if docs:
                 total_reset += await self._reset_failed_page(
                     docs, token, pipeline_status, pipeline_status_lock
                 )
             if cursor is CURSOR_END:
                 break
+
+        # The reset runs with no worker, so its duration is exactly how long the
+        # pipeline was held idle on purpose (LR2 Phase 6 item 3).
+        pipeline_metrics.observe(
+            pipeline_metrics.MANUAL_RESET_SECONDS, time.monotonic() - reset_started
+        )
+        pipeline_metrics.increment(pipeline_metrics.MANUAL_RESET_PAGES, pages)
+        pipeline_metrics.increment(pipeline_metrics.MANUAL_RESET_DOCS, total_reset)
 
         reset_message = (
             f"Manual retry {request_id[:8]}: reset {total_reset} FAILED "
@@ -3131,7 +3167,7 @@ class _PipelineMixin:
         logger.info(reset_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = reset_message
-            pipeline_status["history_messages"].append(reset_message)
+            append_pipeline_history(pipeline_status, reset_message)
         return True
 
     async def _confirm_scan_drain_idle(
@@ -3281,6 +3317,7 @@ class _PipelineMixin:
                                 "busy": False,
                                 "busy_owner": None,
                                 "manual_freeze_requested": False,
+                                "manual_freeze_started_at": None,
                                 "manual_resetting": False,
                                 "manual_phase": MANUAL_PHASE_IDLE,
                                 "manual_owner": None,
@@ -3329,11 +3366,18 @@ class _PipelineMixin:
             )
             return docs, CURSOR_END
 
+        page_started = time.monotonic()
         page = await self.doc_status.get_docs_by_statuses_page(
             list(statuses),
             limit=page_size,
             position=position,
             strict=True,
+        )
+        # Timed around the keyset query alone (not the hydration below): a slow
+        # page here means the backend's (created_at, id) index, and that is the
+        # one thing the bounded sweep cannot work around.
+        pipeline_metrics.observe(
+            pipeline_metrics.SCHEDULING_PAGE_SECONDS, time.monotonic() - page_started
         )
         if not page.docs:
             # A fully-filtered page is not termination — the cursor still
@@ -3520,7 +3564,7 @@ class _PipelineMixin:
                 )
             except BaseException:
                 try:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                 except BaseException as compensation_error:
                     logger.warning(
                         "[pipeline] failed to arm auto-rescan after a paged "
@@ -3580,12 +3624,12 @@ class _PipelineMixin:
             # is cleared by the run's finally), so it needs no re-arm.
             try:
                 if step is PipelineNextStep.CONTINUE_AUTO:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                 elif drained:
                     self._republish_documents(ingress, drained, source="quiescence")
                     # Backstop for re-publishes swallowed above: the strict
                     # rescan behind the flag recovers those PENDING docs.
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
             except BaseException as compensation_error:
                 logger.warning(
                     "[pipeline] failed to restore the consumed wake-up signal "
@@ -3750,7 +3794,7 @@ class _PipelineMixin:
                     log_message = f"Parsing ({engine}): {doc_id_w}"
                     logger.info(log_message)
                     ctx.pipeline_status["latest_message"] = log_message
-                    ctx.pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(ctx.pipeline_status, log_message)
                 # Resolve the actual parser per-doc from the batch snapshot
                 # (snapshot-consistent: a mid-batch register_parser cannot be
                 # picked up here). ``engine`` is only the queue-group/pool id.
@@ -4288,18 +4332,14 @@ class _PipelineMixin:
                             "latest_message": processing_message,
                         }
                     )
-                    ctx.pipeline_status["history_messages"].append(extraction_message)
-                    ctx.pipeline_status["history_messages"].append(processing_message)
-
-                    # Prevent memory growth: keep only latest 5000 messages
-                    # when exceeding 10000.  Trim in place so Manager.list-
-                    # backed shared state remains appendable and visible
-                    # across processes.
-                    if len(ctx.pipeline_status["history_messages"]) > 10000:
-                        logger.info(
-                            f"Trimming pipeline history from {len(ctx.pipeline_status['history_messages'])} to 5000 messages"
-                        )
-                        del ctx.pipeline_status["history_messages"][:-5000]
+                    # One call: the pair belongs together in the log, and the
+                    # ring capacity that used to be enforced right here now
+                    # lives in the funnel — this loop was never the only writer
+                    # (deletes, scans and manual resets log plenty without ever
+                    # reaching it), so trimming here bounded nothing.
+                    append_pipeline_history(
+                        ctx.pipeline_status, extraction_message, processing_message
+                    )
 
                 # The parsed body is no longer carried through q_analyze /
                 # q_process (it would pin large documents in memory). Re-read it
@@ -4828,7 +4868,7 @@ class _PipelineMixin:
                         )
                         logger.info(log_message)
                         ctx.pipeline_status["latest_message"] = log_message
-                        ctx.pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(ctx.pipeline_status, log_message)
 
                 except Exception as e:
                     # A storage flush failure (raised by _insert_done) is not
@@ -4925,7 +4965,7 @@ class _PipelineMixin:
             logger.warning(log_message)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
         # Order-preserving dedup; keep a list so it satisfies the storage delete
         # contract (``delete(ids: list[str])``) when passed down to purge.
@@ -4949,7 +4989,7 @@ class _PipelineMixin:
         logger.info(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            append_pipeline_history(pipeline_status, log_message)
         await self._purge_doc_chunks_and_kg(
             doc_id,
             stored_chunk_ids,
@@ -5122,7 +5162,7 @@ class _PipelineMixin:
         logger.warning(error_msg)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = error_msg
-            pipeline_status["history_messages"].append(error_msg)
+            append_pipeline_history(pipeline_status, error_msg)
         await self._persist_llm_response_cache_best_effort(
             stage_label=f"{stage_label} cancellation",
             doc_id=doc_id,
@@ -5189,7 +5229,7 @@ class _PipelineMixin:
             logger.warning(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, error_msg)
         else:
             doc_error_msg = str(error)
             logger.error(traceback.format_exc())
@@ -5206,8 +5246,8 @@ class _PipelineMixin:
             logger.error(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(traceback.format_exc())
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, traceback.format_exc())
+                append_pipeline_history(pipeline_status, error_msg)
 
         for task in pending_tasks:
             if task and not task.done():
@@ -5390,7 +5430,7 @@ class _PipelineMixin:
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = warning
-                pipeline_status["history_messages"].append(warning)
+                append_pipeline_history(pipeline_status, warning)
         return True
 
     def _resolve_source_file_for_parser(
@@ -6301,7 +6341,7 @@ class _PipelineMixin:
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                     raise
                 result_obj = result[0] if isinstance(result, tuple) else {}
                 is_success = (
@@ -6314,7 +6354,7 @@ class _PipelineMixin:
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                 else:
                     logger.debug(f"Analyzing  {kind}/{item_id}: skipped")
                 return result
@@ -6366,7 +6406,7 @@ class _PipelineMixin:
                         log_message = f"Analyzing multimodal: {doc_id}"
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     start_logged = True
 
                 # Pre-schedule cancellation check: if the user cancelled

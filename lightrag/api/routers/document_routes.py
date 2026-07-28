@@ -87,6 +87,7 @@ from lightrag.utils import (
     generate_track_id,
     move_file_to_parsed_dir,
 )
+from lightrag.kg.shared_storage import append_pipeline_history
 from lightrag.utils_pipeline import count_active_documents, read_source_file_basename
 from lightrag.api.admission import adopt_admission_ticket
 from lightrag.api.utils_api import get_combined_auth_dependency
@@ -2110,7 +2111,7 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
         )
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = message
-            pipeline_status["history_messages"].append(message)
+            append_pipeline_history(pipeline_status, message)
     except Exception:
         pass
 
@@ -2950,6 +2951,34 @@ def _scan_enqueue_batch_size() -> int:
     return configured
 
 
+def _enforce_texts_per_request(count: int) -> None:
+    """Refuse an oversized ``/documents/texts`` batch with 413 (LR2 §11).
+
+    Read per request (not captured at import) so a config reload applies, and
+    checked BEFORE the endpoint's per-text existence reads — those are one
+    storage round-trip each, so a 100k-text batch would otherwise do 100k of them
+    on its way to being refused.
+
+    413 rather than 429: ``MAX_PENDING_DOCUMENTS`` says "the pipeline is full,
+    come back later", but a request that carries more documents than one request
+    may carry will never fit, however long the client waits. A non-positive or
+    non-integer setting disables the check — ``initialize_config`` already
+    rejects a negative one, and refusing every batch because a knob is malformed
+    would be worse than not enforcing it.
+    """
+    limit = getattr(global_args, "max_texts_per_request", None)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        return
+    if count > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Too many texts in one request: {count} (maximum {limit}). "
+                "Split the batch into smaller requests."
+            ),
+        )
+
+
 # Upper bound on one source-conflict listing page. The projection is bounded
 # per key (count + fixed sample), so this only caps the response size.
 _SOURCE_CONFLICT_PAGE_MAX = 200
@@ -3550,8 +3579,8 @@ async def background_delete_documents(
                 "Starting document deletion process"
             ]
             if delete_llm_cache:
-                pipeline_status["history_messages"].append(
-                    "LLM cache cleanup requested for this deletion job"
+                append_pipeline_history(
+                    pipeline_status, "LLM cache cleanup requested for this deletion job"
                 )
 
         # Loop through each document ID and delete them one by one
@@ -3562,7 +3591,7 @@ async def background_delete_documents(
                     cancel_msg = f"Deletion cancelled by user at document {i}/{total_docs}. {len(successful_deletions)} deleted, {total_docs - i + 1} remaining."
                     logger.info(cancel_msg)
                     pipeline_status["latest_message"] = cancel_msg
-                    pipeline_status["history_messages"].append(cancel_msg)
+                    append_pipeline_history(pipeline_status, cancel_msg)
                     # Add remaining documents to failed list with cancellation reason
                     failed_deletions.extend(
                         doc_ids[i - 1 :]
@@ -3572,7 +3601,7 @@ async def background_delete_documents(
                 start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
                 logger.info(start_msg)
                 pipeline_status.update({"cur_batch": i, "latest_message": start_msg})
-                pipeline_status["history_messages"].append(start_msg)
+                append_pipeline_history(pipeline_status, start_msg)
 
             file_path = "#"
             try:
@@ -3589,7 +3618,7 @@ async def background_delete_documents(
                     )
                     logger.info(success_msg)
                     async with pipeline_status_lock:
-                        pipeline_status["history_messages"].append(success_msg)
+                        append_pipeline_history(pipeline_status, success_msg)
 
                     # Handle file deletion if requested and source information is available
                     if (
@@ -3610,8 +3639,8 @@ async def background_delete_documents(
                                     pipeline_status["latest_message"] = (
                                         file_delete_error
                                     )
-                                    pipeline_status["history_messages"].append(
-                                        file_delete_error
+                                    append_pipeline_history(
+                                        pipeline_status, file_delete_error
                                     )
 
                             if deleted_files:
@@ -3622,8 +3651,8 @@ async def background_delete_documents(
                                 logger.info(file_delete_msg)
                                 async with pipeline_status_lock:
                                     pipeline_status["latest_message"] = file_delete_msg
-                                    pipeline_status["history_messages"].append(
-                                        file_delete_msg
+                                    append_pipeline_history(
+                                        pipeline_status, file_delete_msg
                                     )
                             else:
                                 file_error_msg = (
@@ -3633,8 +3662,8 @@ async def background_delete_documents(
                                 logger.warning(file_error_msg)
                                 async with pipeline_status_lock:
                                     pipeline_status["latest_message"] = file_error_msg
-                                    pipeline_status["history_messages"].append(
-                                        file_error_msg
+                                    append_pipeline_history(
+                                        pipeline_status, file_error_msg
                                     )
 
                         except Exception as file_error:
@@ -3642,9 +3671,7 @@ async def background_delete_documents(
                             logger.error(file_error_msg)
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = file_error_msg
-                                pipeline_status["history_messages"].append(
-                                    file_error_msg
-                                )
+                                append_pipeline_history(pipeline_status, file_error_msg)
                     elif delete_file:
                         no_file_msg = (
                             f"File deletion skipped, missing file path: {doc_id}"
@@ -3652,14 +3679,14 @@ async def background_delete_documents(
                         logger.warning(no_file_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = no_file_msg
-                            pipeline_status["history_messages"].append(no_file_msg)
+                            append_pipeline_history(pipeline_status, no_file_msg)
                 else:
                     failed_deletions.append(doc_id)
                     error_msg = f"Failed to delete {i}/{total_docs}: {doc_id}[{file_path}] - {result.message}"
                     logger.error(error_msg)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = error_msg
-                        pipeline_status["history_messages"].append(error_msg)
+                        append_pipeline_history(pipeline_status, error_msg)
 
             except Exception as e:
                 failed_deletions.append(doc_id)
@@ -3668,7 +3695,7 @@ async def background_delete_documents(
                 logger.error(traceback.format_exc())
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
-                    pipeline_status["history_messages"].append(error_msg)
+                    append_pipeline_history(pipeline_status, error_msg)
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"
@@ -3676,7 +3703,7 @@ async def background_delete_documents(
         logger.error(traceback.format_exc())
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, error_msg)
     finally:
         # Final summary + release the destructive slot, owner-checked +
         # cancellation-resistant so a cancel here cannot wedge the slot or
@@ -3713,7 +3740,7 @@ async def background_delete_documents(
                     "latest_message": completion_msg,
                 }
             )
-            status["history_messages"].append(completion_msg)
+            append_pipeline_history(status, completion_msg)
             # Probe the mailbox INSIDE the same critical section that releases
             # the slot: a processing request refused while we held busy armed
             # the auto-rescan flag under this very lock, so it is either seen
@@ -3826,8 +3853,13 @@ def create_document_routes(
                 collision, 503 when the job store is unavailable.
         """
         from lightrag.exceptions import PipelineNotInitializedError
-        from lightrag.kg.pipeline_ingress import PipelineIngressMessage
+        from lightrag.kg.pipeline_ingress import (
+            ManualRetryPublishResult,
+            PipelineIngressMessage,
+        )
         from lightrag.kg.shared_storage import (
+            ManualIntentRefusal,
+            ManualIntentRefused,
             PipelineReservationConflict,
             acquire_reservation,
             get_namespace_data,
@@ -4039,7 +4071,7 @@ def create_document_routes(
                 # cancellation landing in the lock release already counts as
                 # committed on both sides.
                 async with pipeline_status_lock:
-                    ingress.request_manual_retry(
+                    publish = ingress.request_manual_retry(
                         manual_request_id,
                         PipelineIngressMessage(
                             kind="rescan",
@@ -4047,6 +4079,20 @@ def create_document_routes(
                             request_id=manual_request_id,
                         ),
                     )
+                    if publish is not ManualRetryPublishResult.ACCEPTED:
+                        # Nothing was published, so nothing is owned: refuse the
+                        # commit instead of starting a scan whose FAILED reset
+                        # would never be acknowledged (LR2 §10.1). The endpoint's
+                        # compensation chain releases the scanning reservation and
+                        # cancels the job record because ``handed_off`` stays
+                        # False.
+                        return ManualIntentRefusal(
+                            "Could not queue this scan's retry intent "
+                            f"({publish.value}); no scan was started.",
+                            capacity_exceeded=(
+                                publish is ManualRetryPublishResult.CAPACITY_EXCEEDED
+                            ),
+                        )
                     state["committed"] = True
                     takeover["committed"] = True
                 return None
@@ -4074,6 +4120,19 @@ def create_document_routes(
                 status="scanning_started",
                 message="Scanning process has been initiated in the background",
                 track_id=track_id,
+            )
+        except ManualIntentRefused as refusal:
+            # The commit refused BEFORE publishing, so nothing is owned and the
+            # finally below undoes the reservation and the job record. Capacity is
+            # the one refusal worth retrying unchanged.
+            raise HTTPException(
+                status_code=429 if refusal.capacity_exceeded else 503,
+                detail=str(refusal),
+                headers=(
+                    {"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)}
+                    if refusal.capacity_exceeded
+                    else None
+                ),
             )
         finally:
             # Release the scanning slot if we reserved it but a cancellation
@@ -4815,14 +4874,19 @@ def create_document_routes(
 
         Raises:
             HTTPException: 400 invalid file_sources, 409 same-name
-                conflict or scan/destructive job in flight, 500 other
-                errors.
+                conflict or scan/destructive job in flight, 413 more texts
+                than ``MAX_TEXTS_PER_REQUEST`` allows, 500 other errors.
         """
         from lightrag.kg.shared_storage import start_reserved_background_task
 
         enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
         handed_off = False
         try:
+            # Before anything that costs a storage round-trip or a reservation:
+            # a batch over the per-request ceiling is refused on its shape alone,
+            # independent of pipeline state.
+            _enforce_texts_per_request(len(request.texts))
+
             # Reject batch text insertion while a scan is in progress AND
             # reserve a pending-enqueue slot — see /upload for the rationale.
             if not admission_adopted:
@@ -5024,8 +5088,8 @@ def create_document_routes(
                 )
                 # Cleaning history_messages without breaking it as a shared list object
                 del pipeline_status["history_messages"][:]
-                pipeline_status["history_messages"].append(
-                    "Starting document clearing process"
+                append_pipeline_history(
+                    pipeline_status, "Starting document clearing process"
                 )
 
             # We own busy+destructive: every document the mailbox refers to is
@@ -5090,10 +5154,9 @@ def create_document_routes(
             ]
 
             # Log storage drop start
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting to drop storage components"
-                )
+            append_pipeline_history(
+                pipeline_status, "Starting to drop storage components"
+            )
 
             for storage in storages:
                 if storage is not None:
@@ -5135,29 +5198,28 @@ def create_document_routes(
                     storage_success_count += 1
 
             # Log storage drop results
-            if "history_messages" in pipeline_status:
-                if storage_error_count > 0:
-                    pipeline_status["history_messages"].append(
-                        f"Dropped {storage_success_count} storage components with {storage_error_count} errors"
-                    )
-                else:
-                    pipeline_status["history_messages"].append(
-                        f"Successfully dropped all {storage_success_count} storage components"
-                    )
+            if storage_error_count > 0:
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Dropped {storage_success_count} storage components with {storage_error_count} errors",
+                )
+            else:
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Successfully dropped all {storage_success_count} storage components",
+                )
 
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
                 logger.error(error_message)
-                if "history_messages" in pipeline_status:
-                    pipeline_status["history_messages"].append(error_message)
+                append_pipeline_history(pipeline_status, error_message)
                 return ClearDocumentsResponse(status="fail", message=error_message)
 
             # Log file deletion start
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting to delete files in input directory"
-                )
+            append_pipeline_history(
+                pipeline_status, "Starting to delete files in input directory"
+            )
 
             # Delete only files in the current directory, preserve files in subdirectories
             deleted_files_count = 0
@@ -5173,16 +5235,16 @@ def create_document_routes(
                         file_errors_count += 1
 
             # Log file deletion results
-            if "history_messages" in pipeline_status:
-                if file_errors_count > 0:
-                    pipeline_status["history_messages"].append(
-                        f"Deleted {deleted_files_count} files with {file_errors_count} errors"
-                    )
-                    errors.append(f"Failed to delete {file_errors_count} files")
-                else:
-                    pipeline_status["history_messages"].append(
-                        f"Successfully deleted {deleted_files_count} files"
-                    )
+            if file_errors_count > 0:
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Deleted {deleted_files_count} files with {file_errors_count} errors",
+                )
+                errors.append(f"Failed to delete {file_errors_count} files")
+            else:
+                append_pipeline_history(
+                    pipeline_status, f"Successfully deleted {deleted_files_count} files"
+                )
 
             # Prepare final result message
             final_message = ""
@@ -5194,8 +5256,7 @@ def create_document_routes(
                 status = "success"
 
             # Log final result
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(final_message)
+            append_pipeline_history(pipeline_status, final_message)
 
             # Return response based on results
             return ClearDocumentsResponse(status=status, message=final_message)
@@ -5203,8 +5264,7 @@ def create_document_routes(
             error_msg = f"Error clearing documents: {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(error_msg)
+            append_pipeline_history(pipeline_status, error_msg)
             raise internal_server_error(e)
         finally:
             # Reset busy + destructive_busy after completion so the next
@@ -5224,8 +5284,7 @@ def create_document_routes(
                         "latest_message": completion_msg,
                     }
                 )
-                if "history_messages" in status:
-                    status["history_messages"].append(completion_msg)
+                append_pipeline_history(status, completion_msg)
 
             await with_reservation_lock(
                 pipeline_status,
@@ -6066,7 +6125,17 @@ def create_document_routes(
                 "point. Documents retain their original track_id.",
             )
         except ManualIntentRefused as refusal:
-            raise HTTPException(status_code=503, detail=str(refusal))
+            # 429 only for a full manual channel (retry later works); every other
+            # refusal — fence held, id already finalized — is 503 (LR2 §10.1).
+            raise HTTPException(
+                status_code=429 if refusal.capacity_exceeded else 503,
+                detail=str(refusal),
+                headers=(
+                    {"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)}
+                    if refusal.capacity_exceeded
+                    else None
+                ),
+            )
         except Exception as e:
             logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
             logger.error(traceback.format_exc())
@@ -6202,7 +6271,7 @@ def create_document_routes(
                         "latest_message": cancel_msg,
                     }
                 )
-                pipeline_status["history_messages"].append(cancel_msg)
+                append_pipeline_history(pipeline_status, cancel_msg)
 
             return CancelPipelineResponse(
                 status="cancellation_requested",
