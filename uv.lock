@@ -2305,6 +2305,7 @@ api = [
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "uvicorn" },
+    { name = "uvicorn-worker" },
     { name = "xlsxwriter" },
 ]
 evaluation = [
@@ -2357,6 +2358,7 @@ evaluation = [
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "uvicorn" },
+    { name = "uvicorn-worker" },
     { name = "xlsxwriter" },
 ]
 observability = [
@@ -2424,6 +2426,7 @@ offline = [
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "uvicorn" },
+    { name = "uvicorn-worker" },
     { name = "voyageai" },
     { name = "xlsxwriter" },
     { name = "zhipuai" },
@@ -2511,6 +2514,7 @@ test = [
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "uvicorn" },
+    { name = "uvicorn-worker" },
     { name = "xlsxwriter" },
 ]
 
@@ -2612,6 +2616,7 @@ requires-dist = [
     { name = "tiktoken" },
     { name = "tiktoken", marker = "extra == 'api'" },
     { name = "uvicorn", marker = "extra == 'api'" },
+    { name = "uvicorn-worker", marker = "extra == 'api'" },
     { name = "voyageai", marker = "extra == 'offline-llm'", specifier = ">=0.2.0,<1.0.0" },
     { name = "xlsxwriter", specifier = ">=3.1.0" },
     { name = "xlsxwriter", marker = "extra == 'api'", specifier = ">=3.1.0" },
@@ -5984,6 +5989,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1f/93/041fca8274050e40e6791f267d82e0e2e27dd165627bd640d3e0e378d877/uvicorn-0.46.0.tar.gz", hash = "sha256:fb9da0926999cc6cb22dc7cd71a94a632f078e6ae47ff683c5c420750fb7413d", size = 88758, upload-time = "2026-04-23T07:16:00.151Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/31/a3/5b1562db76a5a488274b2332a97199b32d0442aca0ed193697fd47786316/uvicorn-0.46.0-py3-none-any.whl", hash = "sha256:bbebbcbed972d162afca128605223022bedd345b7bc7855ce66deb31487a9048", size = 70926, upload-time = "2026-04-23T07:15:58.355Z" },
+]
+
+[[package]]
+name = "uvicorn-worker"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gunicorn" },
+    { name = "uvicorn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/59/9101b9c0680fd80e9d26c07deb822a5d18a324339fcf9cd017885ee808ad/uvicorn_worker-0.4.0.tar.gz", hash = "sha256:8ee5306070d8f38dce124adce488c3c0b50f20cf0c0222b12c66188da7214493", size = 9361, upload-time = "2025-09-20T10:47:01.218Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/90/25/09cd7a90c8bb7fb693be0d6704fccd5f9778d5513214b7a01cc4a94ff314/uvicorn_worker-0.4.0-py3-none-any.whl", hash = "sha256:e2ed952cef976f5e9e429d7269640bbcafbd36c80aa80f1003c8c77a6797abde", size = 5364, upload-time = "2025-09-20T10:46:59.776Z" },
 ]
 
 [[package]]
