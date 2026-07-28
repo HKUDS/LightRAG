@@ -388,6 +388,14 @@ def test_carry_over_keys_grouped_by_stage():
         # operation; must survive every status transition until commit or
         # rollback.
         "custom_chunk_patch",
+        # Duplicate demotion — NOT stage fields, so they sit after the stage
+        # groups and do not disturb the dialog's timeline. ``is_duplicate`` is
+        # the predicate every backend uses to exclude a row from its canonical
+        # source's primary candidates, so a transition that dropped it silently
+        # re-promoted a demoted row and put the source key back in conflict.
+        "is_duplicate",
+        "duplicate_kind",
+        "original_doc_id",
     )
 
 
@@ -1701,12 +1709,15 @@ def test_concurrent_enqueue_dedupes_same_content_different_filenames(tmp_path):
         try:
             original = pipeline_module.get_existing_doc_by_content_hash
 
-            async def yielding_get_by_content_hash(doc_status, content_hash):
+            async def yielding_get_by_content_hash(doc_status, content_hash, **kwargs):
                 # Yield to the event loop so the SECOND enqueue gets a
                 # chance to run its dedup read before we proceed.  This
                 # is the exact interleaving the lock must defeat.
                 await asyncio.sleep(0)
-                return await original(doc_status, content_hash)
+                # Pass the caller's kwargs through: this double stands in for the
+                # real lookup, so it must not quietly drop what the enqueue path
+                # sends it (``candidate_doc_id`` gates the pointer-row guard).
+                return await original(doc_status, content_hash, **kwargs)
 
             import unittest.mock
 

@@ -1929,6 +1929,10 @@ class TestDocStatusStorage:
             }
         )
         mock_client.indices.put_mapping = AsyncMock()
+        # Healthy tiebreaker coverage: startup audits it unconditionally for a
+        # pre-existing index, and this fixture's default count (5) would read as
+        # 5 docs missing the value and trigger a backfill.
+        mock_client.count = AsyncMock(return_value={"count": 0})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -1957,6 +1961,9 @@ class TestDocStatusStorage:
             }
         )
         mock_client.indices.put_mapping = AsyncMock()
+        # See the sibling test: the unconditional coverage audit needs a healthy
+        # count, or the fixture default (5) reads as 5 missing values.
+        mock_client.count = AsyncMock(return_value={"count": 0})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()

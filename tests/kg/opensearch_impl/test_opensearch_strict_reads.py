@@ -96,8 +96,7 @@ class _EmbedFunc:
 
 
 def _migrated_mapping(index: str, **_kwargs) -> dict:
-    """Mapping of an index that already carries the __mirrored_id tiebreaker, so
-    startup runs no legacy value backfill (see _ensure_scheduling_fields_mapping)."""
+    """Mapping of an index that already carries the __mirrored_id tiebreaker."""
     return {index: {"mappings": {"properties": {"__mirrored_id": {"type": "keyword"}}}}}
 
 
@@ -107,6 +106,13 @@ def _make_client() -> AsyncMock:
     client.indices.exists = AsyncMock(return_value=True)
     client.indices.create = AsyncMock()
     client.indices.get_mapping = AsyncMock(side_effect=_migrated_mapping)
+    client.indices.put_mapping = AsyncMock()
+    # A healthy index: startup's unconditional __mirrored_id coverage audit
+    # finds zero gaps. ``query_params`` wraps client methods in a SYNC wrapper,
+    # so spec'd children default to MagicMock — async ones must be set here or
+    # ``await client.count(...)`` fails with "MagicMock can't be used in await".
+    client.count = AsyncMock(return_value={"count": 0})
+    client.update_by_query = AsyncMock(return_value={"updated": 0, "failures": []})
     client.create_pit = AsyncMock(return_value={"pit_id": "pit-1"})
     client.delete_pit = AsyncMock()
     return client

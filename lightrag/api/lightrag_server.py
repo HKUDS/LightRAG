@@ -2252,6 +2252,7 @@ def create_app(args):
             default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             pipeline_scheduling_page_size=args.pipeline_scheduling_page_size,
+            pipeline_require_strict_storage_reads=args.pipeline_require_strict_storage_reads,
             max_pending_documents=args.max_pending_documents,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,

@@ -1397,6 +1397,12 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
     # source-conflict listing/repair APIs — never materialize the whole set.
     _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
 
+    # How many of the earliest content_hash holders one dedup lookup may read
+    # while skipping duplicate markers that point at the excluded document (see
+    # ``get_doc_by_content_hash``). Every hit past the first is a pointer row, so
+    # this bounds a pathological chain rather than a normal lookup.
+    _CONTENT_HASH_POINTER_WINDOW: ClassVar[int] = 8
+
     # Fields the lightweight scheduling projection needs from ``_source`` —
     # never ``chunks_list`` (see ``get_docs_by_ids``).
     _SCHEDULING_SOURCE_FIELDS: ClassVar[list[str]] = [
@@ -1527,16 +1533,19 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 )
             else:
                 await self._ensure_content_hash_mapping()
-                added = await self._ensure_scheduling_fields_mapping()
-                if "__mirrored_id" in added:
-                    # Supersedes the version-gated mapping-only check used by
-                    # the KV store: this index needs __mirrored_id VALUES on
-                    # every cluster version (its scheduling page has no PIT),
-                    # and a mapping present with values missing is exactly the
-                    # silent skip we must prevent. Only a pre-existing index
-                    # that LACKED the mapping can hold such docs, so the audit
-                    # costs nothing on an already-migrated index.
-                    await self._ensure_scheduling_tiebreaker_ready()
+                await self._ensure_scheduling_fields_mapping()
+                # Unconditional for every pre-existing index. Gating this on
+                # "we just added the mapping" was wrong: the mapping present
+                # does NOT imply the values are present. A snapshot restore, a
+                # hand-added mapping, an external writer — and, worst, THIS
+                # migration itself: put_mapping lands before the backfill, so a
+                # crash or a raise in between leaves the mapping present with
+                # values missing, and the next startup would then skip the audit
+                # forever. The audit is one `_count` on a healthy index (see
+                # _ensure_scheduling_tiebreaker_ready), which is the right price
+                # for an invariant whose violation silently drops documents from
+                # every sweep.
+                await self._ensure_scheduling_tiebreaker_ready()
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
@@ -1583,14 +1592,14 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         (new fields only — existing indexes need nothing else for new docs).
         The mapping alone is NOT sufficient: legacy docs predating the field
         still lack the VALUE, which
-        :meth:`_ensure_scheduling_tiebreaker_ready` repairs. A put failure is
-        logged rather than raised here — the readiness check that follows is
-        the one that fails startup.
+        :meth:`_ensure_scheduling_tiebreaker_ready` repairs — unconditionally,
+        because this method landing the mapping is not evidence about the values
+        (not even when it just added it: it returns before the backfill runs). A
+        put failure is logged rather than raised here — the readiness check that
+        follows is the one that fails startup.
 
-        Returns the field names that were absent, which is the precise "this
-        index predates the field" signal the value audit keys off (an index
-        that already maps ``__mirrored_id`` was written by code that mirrors
-        the id on every write, so its docs all carry a value).
+        Returns the field names that were absent, for callers that want to log
+        the migration; it is NOT a licence to skip the value audit.
         """
         try:
             mapping = await self.client.indices.get_mapping(index=self._index_name)
@@ -2289,6 +2298,20 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         processed in-query (see base contract), still served by the keyword
         term.
 
+        Its second half — dropping a row that merely POINTS at that id
+        (``is_duplicate`` naming it as ``original_doc_id``) — is applied to
+        ``_source`` over a bounded ordered window instead of as a term query.
+        ``metadata`` is under ``dynamic: true`` with no declared mapping for
+        ``original_doc_id``, so its field type is whatever dynamic mapping made
+        it (a string becomes ``text`` plus a ``.keyword`` subfield): a term
+        query on the bare path would silently match nothing, which fails OPEN
+        exactly where the pointer must be excluded. ``_source`` carries the
+        value whatever the mapping says. The window keeps the read bounded and
+        the search intact — the first surviving hit is still the earliest holder
+        — and a window filled entirely with pointers to the same document
+        RAISES rather than reporting "no holder", since ``None`` here drives
+        destructive action.
+
         Fail-closed, three-state (the distinction the dedup callers need):
         a match → the row; a completed query with no hits → ``None`` (CONFIRMED
         no other holder); an index that is not ready or has vanished, or any
@@ -2325,15 +2348,29 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     {"created_at": {"order": "asc", "missing": "_first"}},
                     {"__mirrored_id": {"order": "asc"}},
                 ],
-                "size": 1,
+                # One hit is enough unless pointer rows have to be skipped; the
+                # window is only wider when there is an id to point AT.
+                "size": (
+                    self._CONTENT_HASH_POINTER_WINDOW
+                    if exclude_doc_id is not None
+                    else 1
+                ),
             }
             response = await self.client.search(index=self._index_name, body=body)
             hits = response["hits"]["hits"]
             if not hits:
                 return None
-            hit = hits[0]
-            doc = hit["_source"]
-            return hit["_id"], doc
+            for hit in hits:
+                doc = hit["_source"]
+                if self._row_points_at_as_duplicate(doc, exclude_doc_id):
+                    continue
+                return hit["_id"], doc
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] every one of the {len(hits)} earliest "
+                f"holders of content_hash '{content_hash}' is a duplicate marker "
+                f"pointing at {exclude_doc_id}; cannot confirm whether a further "
+                f"holder exists beyond the bounded window"
+            )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()

@@ -1588,34 +1588,88 @@ class PostgreSQLDB:
         """Create the keyset-sweep index backing the memory-bounding scheduling
         page API (Phase 1).
 
-        The (workspace, status, created_at, id) index matches the page query's
-        WHERE workspace/status equality prefix and its ORDER BY created_at ASC,
-        id ASC keyset tail, so a page read is an index scan resuming at the
-        row-value comparison — never a full-table sort. Guarded and idempotent —
-        retried on every startup until present.
+        ``NULLS FIRST`` is load-bearing, not decoration. PostgreSQL's default for
+        ``ASC`` is NULLS LAST, so an index declared ``(… created_at, id)`` does
+        NOT satisfy ``ORDER BY created_at ASC NULLS FIRST, id ASC`` — the planner
+        cannot use it for ordering and falls back to a bitmap scan plus a
+        top-N sort of every row past the cursor. Measured at 60k rows: the old
+        index sorted 7583 rows per page; with this one the same page is an
+        ordered index scan touching exactly ``limit`` rows (500), 4.6ms → 0.23ms.
+
+        Superseded name: the old index is dropped, because
+        ``CREATE INDEX IF NOT EXISTS`` on the same name would keep the (wrong)
+        existing definition forever. A doc_status index is derived state, so
+        rebuilding it is inside the documented upgrade envelope.
+
+        Order matters: create, VERIFY from ``pg_indexes``, and only then retire
+        the superseded index. Dropping first and swallowing a failed create left
+        the table with NO scheduling index — strictly worse than before the
+        upgrade, and silently: the service starts, pages stay correct and
+        memory-bounded (the top-N sort keeps only ``limit`` rows), and only the
+        I/O degrades to a full scan plus a sort per page. Verification reads the
+        catalog rather than inferring success from the absence of an exception.
+
+        A missing index is NOT fatal — index DDL can fail transiently (lock
+        timeout, concurrent DDL, a role without CREATE) and every startup retries
+        — but it is reported at WARNING with the consequence and the DDL to run
+        by hand, because nothing else about a degraded plan is observable.
+
+        Guarded and idempotent — retried on every startup until present.
         """
-        indexes = [
-            (
-                "idx_lightrag_doc_status_ws_status_created_id",
-                "CREATE INDEX IF NOT EXISTS idx_lightrag_doc_status_ws_status_created_id "
-                "ON LIGHTRAG_DOC_STATUS (workspace, status, created_at, id)",
-            ),
-        ]
-        for index_name, create_sql in indexes:
-            try:
-                check_index_sql = """
-                SELECT indexname FROM pg_indexes
-                WHERE tablename = 'lightrag_doc_status'
-                  AND indexname = $1
-                """
-                index_info = await self.query(check_index_sql, [index_name])
-                if not index_info:
-                    logger.info(f"Creating index {index_name} on LIGHTRAG_DOC_STATUS")
-                    await self.execute(create_sql)
-            except Exception as e:
-                logger.error(
-                    f"Failed to create index {index_name} on LIGHTRAG_DOC_STATUS: {e}"
-                )
+        index_name = "idx_lightrag_doc_status_ws_status_created_nf_id"
+        create_sql = (
+            f"CREATE INDEX IF NOT EXISTS {index_name} "
+            "ON LIGHTRAG_DOC_STATUS "
+            "(workspace, status, created_at NULLS FIRST, id)"
+        )
+        superseded_name = "idx_lightrag_doc_status_ws_status_created_id"
+
+        try:
+            if not await self._doc_status_index_exists(index_name):
+                logger.info(f"Creating index {index_name} on LIGHTRAG_DOC_STATUS")
+                await self.execute(create_sql)
+        except Exception as e:
+            logger.error(
+                f"Failed to create index {index_name} on LIGHTRAG_DOC_STATUS: {e}"
+            )
+
+        try:
+            created = await self._doc_status_index_exists(index_name)
+        except Exception as verify_error:
+            logger.error(
+                f"Could not verify scheduling index {index_name}: {verify_error}"
+            )
+            created = False
+
+        if not created:
+            logger.warning(
+                f"Scheduling index {index_name} is MISSING on LIGHTRAG_DOC_STATUS: "
+                "every scheduling page falls back to a full scan plus a per-page "
+                "sort (O(rows) I/O per page, O(rows²/page_size) per sweep). "
+                f"Keeping the superseded index {superseded_name} so paging is no "
+                "worse than before this upgrade; startup retries the creation. "
+                f"To create it by hand: {create_sql}"
+            )
+            return
+
+        # Only now is the old index dead weight: it costs writes without ever
+        # serving the page query (PG's ASC default is NULLS LAST).
+        try:
+            await self.execute(f"DROP INDEX IF EXISTS {superseded_name}")
+        except Exception as drop_error:  # pragma: no cover - best effort
+            logger.warning(f"Could not drop superseded scheduling index: {drop_error}")
+
+    async def _doc_status_index_exists(self, index_name: str) -> bool:
+        """Is ``index_name`` present on LIGHTRAG_DOC_STATUS, per the catalog?"""
+        rows = await self.query(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+              AND indexname = $1
+            """,
+            [index_name],
+        )
+        return bool(rows)
 
     async def _migrate_text_chunks_add_heading_sidecar(self):
         """Add heading and sidecar JSONB columns to LIGHTRAG_DOC_CHUNKS if missing."""
@@ -5235,8 +5289,13 @@ class PGDocStatusStorage(DocStatusStorage):
         Replaces the base-class full-table scan with an indexed query on
         ``workspace + content_hash``. Empty strings are treated as a miss
         to align with the partial-index predicate. ``exclude_doc_id`` adds an
-        indexed ``AND id != $3`` so the duplicate check gets the earliest OTHER
-        holder in one bounded query (see base contract).
+        indexed ``AND id != $3`` plus a jsonb predicate dropping any row that
+        merely POINTS at that id (``is_duplicate`` naming it as
+        ``original_doc_id``), so the duplicate check gets the earliest holder
+        that is neither the row being processed nor a record of it, in one
+        bounded query (see base contract). Both are WHERE predicates on the same
+        indexed scan, so skipping a pointer row cannot truncate the search —
+        ``LIMIT 1`` still returns the earliest row that survives them.
         """
         if not content_hash:
             return None
@@ -5245,7 +5304,18 @@ class PGDocStatusStorage(DocStatusStorage):
         exclude_clause = ""
         if exclude_doc_id is not None:
             params.append(exclude_doc_id)
-            exclude_clause = f" AND id <> ${len(params)}"
+            # Same ``(metadata->>'is_duplicate')::boolean`` reading as
+            # ``_PRIMARY_PREDICATE`` — one interpretation of that flag per
+            # backend, and a non-boolean value raises (fail closed) instead of
+            # silently deciding. ``original_doc_id`` is COALESCEd because a NULL
+            # would make the whole NOT(...) NULL, and a WHERE that is NULL drops
+            # the row — filtering out a duplicate marker that recorded no
+            # original, which is not what this excludes.
+            exclude_clause = (
+                f" AND id <> ${len(params)} AND NOT ("
+                "COALESCE((metadata->>'is_duplicate')::boolean, false) "
+                f"AND COALESCE(metadata->>'original_doc_id', '') = ${len(params)})"
+            )
         sql = (
             "SELECT * FROM LIGHTRAG_DOC_STATUS "
             f"WHERE workspace=$1 AND content_hash=$2{exclude_clause} "
@@ -5451,16 +5521,29 @@ class PGDocStatusStorage(DocStatusStorage):
     ) -> DocStatusPage:
         """Bounded keyset page over LIGHTRAG_DOC_STATUS.
 
-        A single combined keyset across all requested statuses is correct on
-        PG: ``ORDER BY created_at ASC, id ASC`` plus the composite row-value
-        comparison ``(created_at, id) > ($cur, $id)`` yields the global
-        (created_at, id) order natively — no k-way merge needed. The
-        ``idx_lightrag_doc_status_ws_status_created_id`` (workspace, status,
-        created_at, id) index backs the scan: for a single status it is a pure
-        index range scan resuming at the row-value comparison; for multiple
-        statuses the planner combines per-status index ranges under the LIMIT
-        (top-N bounded — page memory stays O(limit), never a full-table
-        materialization).
+        **One parenthesised branch per status, UNION ALL'd**, each carrying the
+        same keyset predicate, the same ``ORDER BY created_at ASC NULLS FIRST,
+        id ASC`` and the same ``LIMIT``; the wrapper re-sorts and re-limits. That
+        shape is what lets the planner MergeAppend ordered index scans on
+        ``idx_lightrag_doc_status_ws_status_created_nf_id``.
+
+        It replaced a single ``status = ANY($2)`` query, which read as if the
+        planner would combine per-status index ranges under the LIMIT. Measured
+        instead, on 60k rows: one status was a bitmap scan plus a top-N sort of
+        7583 rows, and TWO statuses — the AUTO sweep's own shape — was a full
+        ``Seq Scan`` of the table plus a sort, every page. Page *memory* was
+        bounded (top-N heapsort keeps ``limit`` rows), so the RSS claim held, but
+        the I/O was O(table) per page, making a full sweep O(n²/page_size).
+        With the branch form the same two-status page is an ordered index scan
+        touching 501 rows, 14.8ms → 0.29ms.
+
+        The consumed-frontier rules survive the rewrite. ``next_position`` is the
+        last RETURNED row's key: an unreturned row is either one of the fetched
+        rows outside the top-``limit`` window (so above the frontier), or beyond
+        a branch that hit its own LIMIT — and that branch's last fetched row is
+        itself ≥ the frontier, since otherwise all of its rows would have fitted
+        in the window. ``returned < limit`` still proves exhaustion, because the
+        union can only be short when every branch was short.
 
         Consumed-position contract (SQL-side filtering makes it trivial):
         every predicate — workspace and status membership — is part of the DB
@@ -5494,12 +5577,10 @@ class PGDocStatusStorage(DocStatusStorage):
         if not statuses or position is CURSOR_END:
             return DocStatusPage(docs={}, next_position=CURSOR_END)
 
-        params: list[Any] = [self.workspace, [s.value for s in statuses]]
-        sql = (
-            "SELECT id, status, created_at, updated_at, file_path, track_id, "
-            "metadata "
-            "FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND status = ANY($2)"
-        )
+        params: list[Any] = [self.workspace]
+
+        # The keyset predicate is identical in every branch; build it once.
+        cursor_sql = ""
         if isinstance(position, CursorAfter):
             cur_created, cur_id = self._decode_cursor(position.opaque)
             if cur_created is None:
@@ -5507,7 +5588,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 # through the remaining NULL rows by id, then everything
                 # with a real timestamp.
                 params.append(cur_id)
-                sql += (
+                cursor_sql = (
                     f" AND ((created_at IS NULL AND id > ${len(params)}) "
                     "OR created_at IS NOT NULL)"
                 )
@@ -5515,13 +5596,31 @@ class PGDocStatusStorage(DocStatusStorage):
                 # Past the NULL bucket: only real-timestamp rows can follow.
                 params.append(cur_created)
                 params.append(cur_id)
-                sql += (
+                cursor_sql = (
                     " AND created_at IS NOT NULL AND "
                     f"(created_at, id) > (${len(params) - 1}::timestamp, "
                     f"${len(params)})"
                 )
         params.append(limit)
-        sql += f" ORDER BY created_at ASC NULLS FIRST, id ASC LIMIT ${len(params)}"
+        limit_param = len(params)
+
+        order_by = "ORDER BY created_at ASC NULLS FIRST, id ASC"
+        branches: list[str] = []
+        for status in statuses:
+            params.append(status.value)
+            branches.append(
+                "(SELECT id, status, created_at, updated_at, file_path, "
+                "track_id, metadata FROM LIGHTRAG_DOC_STATUS "
+                f"WHERE workspace=$1 AND status=${len(params)}{cursor_sql} "
+                f"{order_by} LIMIT ${limit_param})"
+            )
+        if len(branches) == 1:
+            sql = branches[0]
+        else:
+            sql = (
+                f"SELECT * FROM ({' UNION ALL '.join(branches)}) u "
+                f"{order_by} LIMIT ${limit_param}"
+            )
 
         # Any asyncpg error propagates out of db.query — strict pages never
         # commit a new cursor on failure.

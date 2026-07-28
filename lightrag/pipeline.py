@@ -130,6 +130,7 @@ from lightrag.utils_pipeline import (
     resolve_existing_doc_source,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
+    source_candidate_set_lock,
     strip_lightrag_doc_prefix,
 )
 
@@ -1128,7 +1129,13 @@ class _PipelineMixin:
                 if not content_hash:
                     continue
                 hash_match = await get_existing_doc_by_content_hash(
-                    self.doc_status, content_hash
+                    self.doc_status,
+                    content_hash,
+                    # This id does not exist yet (filter_keys removed the ones
+                    # that do); passing it lets the lookup ignore a pointer row
+                    # that names it as ITS original, which is what makes content
+                    # whose primary row was deleted re-ingestible.
+                    candidate_doc_id=doc_id,
                 )
                 if hash_match:
                     existing_doc_id, existing_doc = hash_match
@@ -2433,6 +2440,16 @@ class _PipelineMixin:
             run_owner_token=token,
             inflight_doc_ids=set(to_process_docs.keys()),
         )
+        # Publish the run context on the instance for the ONE storage write that
+        # cannot receive it as an argument: ``_persist_parsed_full_docs`` is
+        # reached as ``ctx.rag._persist_parsed_full_docs`` from inside a parser
+        # (in-tree and third-party alike), so a parameter would only guard the
+        # parsers that opt in. ``busy`` is a single per-workspace slot and this
+        # instance is per-workspace, so at most one run is ever published here;
+        # the previous value is restored rather than cleared so a nested/handed
+        # off run cannot blank an outer one.
+        previous_run_ctx = getattr(self, "_active_run_ctx", None)
+        self._active_run_ctx = ctx
 
         async def _watch_pipeline_cancellation() -> None:
             """Bridge shared cancellation state into native parser threads.
@@ -2611,6 +2628,9 @@ class _PipelineMixin:
             if feeder_task is not None:
                 teardown_tasks.append(feeder_task)
             await asyncio.gather(*teardown_tasks, return_exceptions=True)
+            # Every worker (hence every parser) is stopped and joined here, so
+            # no further ``_persist_parsed_full_docs`` call belongs to this run.
+            self._active_run_ctx = previous_run_ctx
 
         # If the batch aborted on an internal storage error, the shared
         # cross-file flush buffers may still hold records from the documents
@@ -5321,6 +5341,22 @@ class _PipelineMixin:
                 strip_lightrag_doc_prefix(record.get("content") or "", fmt)
             )
 
+        # Owner-checked like every other write a worker makes (LR2 §7.7 items
+        # 3/4/7). This one is reached from inside a parser via ``ctx.rag``, so it
+        # cannot take the batch context as an argument without leaving every
+        # third-party parser unguarded; ``_run_pipeline_batch`` publishes the
+        # context on the instance instead (see there). A parse result that comes
+        # back after this run's ownership was reclaimed must write NEITHER store:
+        # the full_docs body would overwrite content the new owner re-parsed, and
+        # the doc_status patch below would stamp a row the new owner now owns.
+        run_ctx = getattr(self, "_active_run_ctx", None)
+        if run_ctx is not None and not await self._still_run_owner(run_ctx):
+            logger.warning(
+                f"[stale-writer] Discarded parsed content for {doc_id}: this run "
+                "no longer owns the pipeline"
+            )
+            return None
+
         existing = await self.full_docs.get_by_id(doc_id)
         if isinstance(existing, dict):
             payload = {**existing, **record}
@@ -5358,6 +5394,29 @@ class _PipelineMixin:
         Owner-checked like every other worker status write (LR2 §7.7 items 3/4):
         this one does not go through ``_upsert_doc_status_transition``, so it
         verifies ownership itself before the FAILED-duplicate upsert.
+
+        Marking this document a duplicate REMOVES it from the primary candidates
+        of its canonical source, which makes this one of the writers LR2 §5.5
+        requires a source-conflict commit to be mutually exclusive with. So the
+        decision and the write happen together under
+        :func:`source_candidate_set_lock` — the same keyed lock the repair holds —
+        and the match is re-read inside it. That is what linearizes the two
+        operations instead of merely narrowing the window between them:
+
+        * marking wins the lock → the repair then finds this document is no longer
+          a candidate and refuses BEFORE demoting anything (409), rather than
+          committing demotions and reporting a 503 about storage that was fine;
+        * the repair wins → it commits, verifies the key is Unique and releases;
+          this marking then re-reads and, because the row it matched now points at
+          this document, the lookup skips it (see ``get_doc_by_content_hash``'s
+          exclusion contract) and the marking stands down. Should the content
+          genuinely belong to a THIRD document, the marking proceeds and the key
+          becomes Absent — an ordinary content-dedup state transition AFTER a
+          completed operation, not a half-applied one.
+
+        The probe outside the lock keeps the common case (not a duplicate) exactly
+        as cheap as before: no keyed lock is acquired for a document that has no
+        content twin.
         """
         if not content_hash:
             return False
@@ -5368,50 +5427,63 @@ class _PipelineMixin:
         if not match:
             return False
 
-        if ctx is not None and not await self._still_run_owner(ctx):
-            logger.warning(
-                f"[stale-writer] Discarded duplicate marking for {doc_id} "
-                f"({file_path}): this run no longer owns the pipeline"
+        async with source_candidate_set_lock(self.workspace, file_path):
+            match = await get_duplicate_doc_by_content_hash(
+                self.doc_status, content_hash, doc_id
             )
-            return False
+            if not match:
+                logger.info(
+                    f"Duplicate marking for {doc_id} ({file_path}) stood down: the "
+                    "content's other holder is gone or now points at this document "
+                    "(a source-conflict repair kept it as the primary)"
+                )
+                return False
 
-        original_doc_id, original_doc = match
-        original_track_id = doc_status_field(original_doc, "track_id", "")
-        original_status = doc_status_field(original_doc, "status", "unknown")
-        now = datetime.now(timezone.utc).isoformat()
-        message = (
-            "Identical content already exists under another filename. "
-            f"Original doc_id: {original_doc_id}, Status: {original_status}"
-        )
+            if ctx is not None and not await self._still_run_owner(ctx):
+                logger.warning(
+                    f"[stale-writer] Discarded duplicate marking for {doc_id} "
+                    f"({file_path}): this run no longer owns the pipeline"
+                )
+                return False
 
-        await self.doc_status.upsert(
-            {
-                doc_id: {
-                    "status": DocStatus.FAILED,
-                    "content_summary": (
-                        f"[DUPLICATE:content_hash] Original document: {original_doc_id}"
-                    ),
-                    "content_length": content_length,
-                    "chunks_count": 0,
-                    "chunks_list": [],
-                    "created_at": status_doc.created_at,
-                    "updated_at": now,
-                    "file_path": file_path,
-                    "track_id": status_doc.track_id,
-                    "content_hash": content_hash,
-                    "error_msg": message,
-                    "metadata": doc_status_transition_metadata(
-                        status_doc,
-                        extra={
-                            "is_duplicate": True,
-                            "duplicate_kind": "content_hash",
-                            "original_doc_id": original_doc_id,
-                            "original_track_id": original_track_id,
-                        },
-                    ),
+            original_doc_id, original_doc = match
+            original_track_id = doc_status_field(original_doc, "track_id", "")
+            original_status = doc_status_field(original_doc, "status", "unknown")
+            now = datetime.now(timezone.utc).isoformat()
+            message = (
+                "Identical content already exists under another filename. "
+                f"Original doc_id: {original_doc_id}, Status: {original_status}"
+            )
+
+            await self.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.FAILED,
+                        "content_summary": (
+                            f"[DUPLICATE:content_hash] Original document: "
+                            f"{original_doc_id}"
+                        ),
+                        "content_length": content_length,
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": status_doc.created_at,
+                        "updated_at": now,
+                        "file_path": file_path,
+                        "track_id": status_doc.track_id,
+                        "content_hash": content_hash,
+                        "error_msg": message,
+                        "metadata": doc_status_transition_metadata(
+                            status_doc,
+                            extra={
+                                "is_duplicate": True,
+                                "duplicate_kind": "content_hash",
+                                "original_doc_id": original_doc_id,
+                                "original_track_id": original_track_id,
+                            },
+                        ),
+                    }
                 }
-            }
-        )
+            )
         try:
             await self.full_docs.delete([doc_id])
             await self.full_docs.index_done_callback()

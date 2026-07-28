@@ -632,3 +632,84 @@ def test_worker_status_write_is_discarded_when_ownership_was_reclaimed(tmp_path)
             await rag.finalize_storages()
 
     asyncio.run(_run())
+
+
+def test_parsed_content_write_is_discarded_when_ownership_was_reclaimed(tmp_path):
+    """The same §7.7 guarantee at the ONE write a worker makes outside the status
+    chokepoint: ``_persist_parsed_full_docs``.
+
+    Fix-proof: it wrote ``full_docs`` and patched ``doc_status.content_hash``
+    with no owner check at all, so a parse result returning after a reaper
+    reclaim would overwrite the body the NEW owner had re-parsed and stamp a row
+    it now owns. It is reached as ``ctx.rag._persist_parsed_full_docs`` from
+    inside a parser, so the check reads the run context the batch publishes on
+    the instance — which is what makes third-party parsers guarded too.
+    """
+
+    async def _run():
+        from lightrag.pipeline import _BatchRunContext
+        from lightrag.parser.registry import parser_specs_snapshot
+
+        extract = _CountingExtract()
+        rag = await _build_rag(tmp_path, extract)
+        try:
+            doc_id = await _make_failed(rag, "a.txt", extract)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            status.update(
+                {"busy": True, "busy_owner": make_owner_record("owner-B", "processing")}
+            )
+
+            ctx = _BatchRunContext(
+                pipeline_status=status,
+                pipeline_status_lock=lock,
+                semaphore=asyncio.Semaphore(1),
+                total_files=1,
+                parse_queues={"native": asyncio.Queue()},
+                parser_specs=parser_specs_snapshot(),
+                q_analyze=asyncio.Queue(),
+                q_process=asyncio.Queue(),
+                run_owner_token="owner-A",  # reclaimed: owner-B holds busy now
+            )
+            rag._active_run_ctx = ctx
+
+            full_before = await rag.full_docs.get_by_id(doc_id)
+            status_before = await rag.doc_status.get_by_id(doc_id)
+
+            result = await rag._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": "text a stale run re-parsed",
+                    "file_path": "a.txt",
+                    "parse_format": "raw",
+                },
+            )
+
+            # Neither store touched, and no content_hash handed back.
+            assert result is None
+            assert await rag.full_docs.get_by_id(doc_id) == full_before
+            assert await rag.doc_status.get_by_id(doc_id) == status_before
+
+            # The current owner's parse result still lands.
+            ctx.run_owner_token = "owner-B"
+            content_hash = await rag._persist_parsed_full_docs(
+                doc_id,
+                {
+                    "content": "text the real owner parsed",
+                    "file_path": "a.txt",
+                    "parse_format": "raw",
+                },
+            )
+            assert content_hash
+            after = await rag.full_docs.get_by_id(doc_id)
+            assert after["content"] == "text the real owner parsed"
+            assert (await rag.doc_status.get_by_id(doc_id))[
+                "content_hash"
+            ] == content_hash
+        finally:
+            rag._active_run_ctx = None
+            await rag.finalize_storages()
+
+    asyncio.run(_run())

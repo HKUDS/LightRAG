@@ -1205,13 +1205,38 @@ class DocStatusStorage(BaseKVStorage, ABC):
 
         Args:
             content_hash: The content hash value to search for.
-            exclude_doc_id: When set, a row with this id is NOT a match — the
-                lookup returns the earliest OTHER doc sharing the hash (or
-                None). This lets the duplicate check exclude the very row being
-                processed (whose own content_hash is already persisted) in a
-                single bounded/indexed query, instead of a full-store scan
-                fallback. Every backend MUST honour it in-query so the
-                exclusion never widens the scan.
+            exclude_doc_id: When set, TWO kinds of row are not a match and the
+                lookup returns the earliest remaining holder (or None):
+
+                1. the row with this id — which lets the duplicate check
+                   exclude the very row being processed (whose own content_hash
+                   is already persisted) in a single bounded/indexed query,
+                   instead of a full-store scan fallback;
+                2. a row that merely POINTS at it: ``metadata.is_duplicate``
+                   true with ``metadata.original_doc_id == exclude_doc_id``.
+                   Such a row is not an independent holder of the content — it
+                   is a record that this content belongs to ``exclude_doc_id``
+                   — so returning it makes the asking document a duplicate of a
+                   record of ITSELF. Both rows then carry
+                   ``is_duplicate=true`` naming each other and the canonical
+                   source they share is left with no primary at all, which the
+                   repair endpoint cannot settle (it only accepts a current
+                   primary candidate) and which a re-upload cannot undo (the
+                   doc id is derived from the file name, so it asks about the
+                   very id the pointer names). Reachable with no race through
+                   a source-conflict repair: it demotes losing candidates with
+                   ``original_doc_id=<the kept primary>``, and a kept primary
+                   that was not parsed yet reaches its post-parse duplicate
+                   check afterwards with the hash the demoted row still holds.
+
+                Skipping such a row must not stop the search: the point is the
+                EARLIEST holder that is not one of these two, so an
+                implementation that filtered one result after the fact would
+                hide a genuine third holder behind a pointer row and re-admit
+                the duplicate it was asked about. Every backend MUST honour
+                both exclusions where it selects (in-query, or inside the
+                implementation over a bounded ordered window) so the exclusion
+                never widens the scan and never truncates the search.
 
                 This keyword was added to an already-abstract method, so a
                 subclass carrying the older ``(self, content_hash)`` signature
@@ -1225,6 +1250,21 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Returns:
             (doc_id, doc_data) when a matching record exists, otherwise None.
         """
+
+    @staticmethod
+    def _row_points_at_as_duplicate(row: Any, doc_id: str | None) -> bool:
+        """Is ``row`` merely a record that its content belongs to ``doc_id``?
+
+        The second half of ``get_doc_by_content_hash``'s ``exclude_doc_id``
+        predicate (see its contract), shared so the backends that filter rows in
+        Python read the same ``metadata`` the ones that filter in-query do.
+        """
+        if not doc_id or not isinstance(row, dict):
+            return False
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict) or not metadata.get("is_duplicate"):
+            return False
+        return metadata.get("original_doc_id") == doc_id
 
     # ------------------------------------------------------------------
     # Memory-bounding scheduling API (Phase 1). The paging / batch / source
@@ -1283,10 +1323,16 @@ class DocStatusStorage(BaseKVStorage, ABC):
         * **Immutable sort key**: ``created_at`` is written once at record
           creation and preserved by every later transition
           (``update_doc_status_fields`` refuses it) so a record can never move
-          underneath a sweep. A missing/NULL ``created_at`` sorts FIRST (an
-          empty-string / NULL bucket) and stays reachable across page
-          boundaries via bucket-aware resume — it must never become
-          permanently unreachable behind a real-timestamp cursor.
+          underneath a sweep. Where the backend indexes a missing/NULL
+          ``created_at`` at all, that bucket must stay reachable across page
+          boundaries via bucket-aware resume rather than becoming permanently
+          unreachable behind a real-timestamp cursor. Note that such a row can
+          never be RETURNED: ``DocSchedulingRecord`` requires ``created_at``, so
+          a strict page raises on it (complete-or-raise) and a relaxed page
+          consumes-and-skips it so the cursor still advances. Only legacy rows
+          and external edits reach that state — every write path stamps the
+          field. Pinned for all five backends in
+          ``tests/kg/test_doc_status_scheduling_contract.py``.
         * **Consumed-position advance**: ``next_position`` advances past the
           last CONSUMED underlying record — records returned to the caller
           plus records read and dropped by filtering are consumed; a record
@@ -1492,7 +1538,9 @@ class DocStatusStorage(BaseKVStorage, ABC):
         Serializing repair against enqueue is therefore the CALLER's job:
         ``lightrag.tools.source_conflict_repair.source_conflict_repair_lock``
         holds a ``get_storage_keyed_lock`` on the canonical source key (so
-        concurrent repairs of one key serialize) plus the workspace's
+        concurrent repairs of one key serialize, and so does the processing
+        stage's duplicate marking, which takes that same lock) plus the
+        workspace's
         ``ENQUEUE_SERIALIZE_LOCK_NAMESPACE`` namespace lock, which is the one
         that actually excludes the phantom because the enqueue critical section
         (``filter_keys`` → dedup → ``upsert``) already holds it. Those locks span

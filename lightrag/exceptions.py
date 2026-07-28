@@ -152,6 +152,48 @@ class SourceConflictRepairCASError(StorageControlPlaneError):
     """
 
 
+class SourceConflictPrimaryUnusableError(ValueError):
+    """The document an operator chose to keep cannot own the canonical source.
+
+    Two distinct reasons, and a caller that renders one message for both tells
+    the operator something false about their data — so the reason travels with
+    the exception as :attr:`reason` rather than only inside the message text
+    (which callers deliberately do not forward: it is not guaranteed to be
+    client-safe):
+
+    * ``REASON_NO_CONTENT`` — a CONFIRMED absence of ``full_docs`` content. Such
+      a row is an unprocessable stub, so the source key would end up owned by a
+      document that can never exist, and scan classification deletes exactly
+      those rows (``STALE_STUB``) — which would remove the primary and leave the
+      demoted documents pointing at an id that no longer exists;
+    * ``REASON_CONTENT_ELSEWHERE`` — the content already belongs to another
+      document (:attr:`holder_doc_id`), under a different canonical source. The
+      processing stage marks such a document FAILED-duplicate and deletes its
+      body, so the key it was just given would end up with no primary.
+
+    Either way a repair only demotes, so a key left with no candidate has no
+    conflict left to settle — which is why both are refused BEFORE the
+    demotions rather than reported after them.
+
+    Distinct from the plain ``ValueError`` that ``repair_source_conflict`` raises
+    for "not a current primary candidate": those are all 409s, but conflating
+    them makes the API report "not a candidate" for a row that IS one, which
+    sends the operator to re-list a conflict that has not changed. It subclasses
+    ``ValueError`` so a caller that only handles the coarse "bad primary" case
+    still refuses safely.
+    """
+
+    REASON_NO_CONTENT = "no_full_docs_content"
+    REASON_CONTENT_ELSEWHERE = "content_belongs_to_another_document"
+
+    def __init__(self, message: str, *, reason: str, holder_doc_id: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
+        # Set for REASON_CONTENT_ELSEWHERE: the document the content belongs to,
+        # which is the one thing the operator needs in order to act.
+        self.holder_doc_id = holder_doc_id
+
+
 class StorageRecordNotFoundError(KeyError):
     """A targeted doc_status field update referenced a non-existent record.
 

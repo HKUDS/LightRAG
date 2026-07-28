@@ -49,6 +49,7 @@ from lightrag.base import (
 )
 from lightrag.exceptions import (
     PipelineBackpressureError,
+    SourceConflictPrimaryUnusableError,
     SourceConflictRepairCASError,
     StorageCapabilityError,
     StorageControlPlaneError,
@@ -65,7 +66,11 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_RECURSIVE,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
-from lightrag.tools.source_conflict_repair import source_conflict_repair_lock
+from lightrag.tools.source_conflict_repair import (
+    refuse_an_unusable_primary,
+    source_conflict_repair_lock,
+    verify_repair_outcome,
+)
 from lightrag.kg.scan_job_store import (
     SAMPLE_BUCKETS,
     SCAN_JOB_LEASE_SECONDS,
@@ -1799,8 +1804,8 @@ async def _acquire_destructive_busy(
             ),
             (
                 "pending_enqueues",
-                "Document upload/insert is being enqueued. Wait for in-flight "
-                "work to complete before clearing or deleting.",
+                "An upload/insert or a source-conflict repair is in flight. "
+                "Wait for it to complete before clearing or deleting.",
             ),
         ),
     )
@@ -3976,8 +3981,8 @@ def create_document_routes(
                     ),
                     (
                         "pending_enqueues",
-                        "Document upload/insert is being enqueued. Wait for in-flight "
-                        "work to complete before triggering a scan.",
+                        "An upload/insert or a source-conflict repair is in "
+                        "flight. Wait for it to complete before triggering a scan.",
                     ),
                     (
                         "manual_freeze_requested",
@@ -4040,6 +4045,17 @@ def create_document_routes(
                 raise HTTPException(
                     status_code=429,
                     detail="Too many scan jobs are in flight; retry once one finishes.",
+                )
+            if create_result.outcome is ScanJobCreateOutcome.INVALID_IDENTIFIER:
+                # Unreachable from here (both identifiers are generated), but the
+                # store validates server-side on principle, so map its refusal
+                # instead of treating it as success.
+                logger.error(
+                    f"Scan job record refused: {create_result.message or 'invalid identifier'}"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="internal_server_error",
                 )
             if create_result.outcome is ScanJobCreateOutcome.ALREADY_EXISTS:
                 # Unreachable for a freshly minted track id; a future caller
@@ -4292,7 +4308,9 @@ def create_document_routes(
            runs under the canonical-key + enqueue-serialize locks, which is what
            keeps a NEW primary from being inserted between that re-read and the
            demotions (no backend can block that phantom on its own — see
-           ``DocStatusStorage.repair_source_conflict``).
+           ``DocStatusStorage.repair_source_conflict``), and what orders the
+           commit against the processing stage's duplicate marking, which takes
+           the same canonical-key lock.
 
         The commit marks every candidate other than ``primary_doc_id`` with
         ``metadata.is_duplicate=true`` and ``original_doc_id=<primary>``. Content
@@ -4343,6 +4361,17 @@ def create_document_routes(
                 async with source_conflict_repair_lock(
                     rag.workspace, payload.canonical_source_key
                 ):
+                    # Two primaries can never keep the source: a stub with no
+                    # content (a scan would delete it out from under the
+                    # demotions) and one whose content already lives under
+                    # another document (processing will mark it a duplicate).
+                    # Refuse inside the lock, where the answers cannot go stale.
+                    await refuse_an_unusable_primary(
+                        rag.doc_status,
+                        rag.full_docs,
+                        payload.canonical_source_key,
+                        payload.primary_doc_id,
+                    )
                     result = await rag.doc_status.repair_source_conflict(
                         payload.canonical_source_key,
                         primary_doc_id=payload.primary_doc_id,
@@ -4356,6 +4385,54 @@ def create_document_routes(
                         ),
                         dry_run=False,
                     )
+                    # Verify the end state inside the locks rather than reporting
+                    # a settled key on the strength of "the demotions landed".
+                    # The locks exclude every in-deployment writer of this
+                    # candidate set — enqueue, clear/delete + scan classification
+                    # + manual reset (the reservation), and the processing
+                    # stage's duplicate marking (the keyed source lock it takes
+                    # too) — so this is a backstop for what stays outside them: a
+                    # second deployment writing the same database. It raises when
+                    # the key came out Absent or still conflicting.
+                    await verify_repair_outcome(
+                        rag.doc_status,
+                        payload.canonical_source_key,
+                        payload.primary_doc_id,
+                        result,
+                    )
+        except SourceConflictPrimaryUnusableError as unusable_primary:
+            # A DIFFERENT 409 from the one below: this primary IS a candidate, it
+            # just cannot own the source. Reporting it as "not a candidate" would
+            # send the operator to re-list a conflict that has not changed. The
+            # detail is built here from sanitized values rather than forwarded
+            # from the exception text — so it must branch on the exception's
+            # REASON, or it states the wrong cause with total confidence (it used
+            # to answer "has no full_docs content" for a document whose content
+            # was fine and simply belonged to another document).
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {unusable_primary}"
+            )
+            if (
+                unusable_primary.reason
+                == SourceConflictPrimaryUnusableError.REASON_CONTENT_ELSEWHERE
+            ):
+                holder = safe_log_value(unusable_primary.holder_doc_id)
+                detail = (
+                    f"Document {audit_primary} holds the same content as "
+                    f"{holder or 'another document'}, which claims a different "
+                    f"source, so it cannot own '{audit_key}': processing marks a "
+                    "content duplicate FAILED and deletes its content, leaving "
+                    "the source with no primary. Choose another primary, or "
+                    "settle that document first."
+                )
+            else:
+                detail = (
+                    f"Document {audit_primary} has no full_docs content, so it "
+                    f"cannot own source '{audit_key}'. Choose a primary that has "
+                    "content."
+                )
+            raise HTTPException(status_code=409, detail=detail)
         except ValueError as not_a_candidate:
             # The named primary is not currently a primary candidate: either a
             # typo or a view that went stale. Same recovery either way — list the

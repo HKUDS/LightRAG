@@ -368,13 +368,29 @@ def _missing_mirrored_id_query() -> dict:
     return {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}}
 
 
-async def test_startup_skips_audit_on_an_already_migrated_index(global_config):
-    """An index that already maps __mirrored_id was written by code that mirrors
-    the id on every write, so it needs neither the audit nor its _count."""
+async def test_startup_audits_coverage_even_when_the_mapping_is_present(global_config):
+    """Fix-proof: the audit used to be gated on "we just added the mapping", but
+    the mapping present does not imply the VALUES are present — a snapshot
+    restore, an external writer, or this very migration crashing between its
+    put_mapping and its backfill all produce that state, and the gate then
+    skipped the audit for good. A healthy index still costs only one _count and
+    no backfill."""
     client = _make_client()
     await _make_doc_status(global_config, client)
+    client.count.assert_awaited_once()
+    assert client.count.call_args.kwargs["body"]["query"] == (
+        _missing_mirrored_id_query()
+    )
     client.update_by_query.assert_not_awaited()
-    client.count.assert_not_awaited()
+
+
+async def test_startup_backfills_a_mapped_index_whose_values_are_missing(global_config):
+    """The state the old gate declared impossible: mapping present, values
+    absent. It must be repaired, not trusted."""
+    client = _make_client()
+    client.count = AsyncMock(side_effect=[{"count": 4}, {"count": 0}])
+    await _make_doc_status(global_config, client)
+    client.update_by_query.assert_awaited_once()
 
 
 async def test_startup_skips_backfill_when_coverage_is_complete(global_config):
@@ -793,6 +809,9 @@ async def test_resolve_source_absent_on_zero_hits(global_config):
 async def test_resolve_source_unique(global_config):
     client = _make_client()
     storage = await _make_doc_status(global_config, client)
+    # Startup's tiebreaker coverage audit spends one _count; this test is about
+    # the resolver's own follow-up count, so measure from zero.
+    client.count.reset_mock()
     source = _status_source("doc-1", status="processed", file_path="report.pdf")
     client.search = AsyncMock(return_value=_page([_hit("doc-1", source)]))
 
@@ -1212,7 +1231,10 @@ async def test_content_hash_lookup_sorts_for_the_earliest_holder():
         {"created_at": {"order": "asc", "missing": "_first"}},
         {"__mirrored_id": {"order": "asc"}},
     ]
-    assert body["size"] == 1
+    # Ordered window (see test_content_hash_skips_pointer_rows_over_a_bounded_window):
+    # every hit past the first is only reached when it has to skip a pointer row,
+    # and the FIRST surviving hit is still the earliest holder.
+    assert body["size"] == s._CONTENT_HASH_POINTER_WINDOW
 
 
 @pytest.mark.asyncio
@@ -1247,3 +1269,77 @@ async def test_content_hash_lookup_is_fail_closed():
     s = _content_hash_storage()
     s.client.search = AsyncMock(return_value={"hits": {"hits": []}})
     assert await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1") is None
+
+
+@pytest.mark.asyncio
+async def test_content_hash_skips_pointer_rows_over_a_bounded_window():
+    """Second half of ``exclude_doc_id`` (base contract): a row marked
+    ``is_duplicate`` naming the excluded id as its original records that the
+    content belongs to the asking document, so returning it would close an
+    is_duplicate cycle and leave their shared source with no primary.
+
+    OpenSearch applies it to ``_source`` over a bounded ordered window rather
+    than as a term query: ``metadata`` lives under ``dynamic: true`` with no
+    declared mapping for ``original_doc_id``, so a term query on the bare path
+    depends on whatever dynamic mapping produced (a string becomes ``text`` plus
+    a ``.keyword`` subfield) and would silently match nothing — failing OPEN
+    exactly where the pointer has to be excluded. The window must not truncate
+    the search: the third holder below is returned, not swallowed.
+    """
+    s = _content_hash_storage()
+    s.client.search = AsyncMock(
+        return_value={
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "doc-pointer",
+                        "_source": {
+                            "content_hash": "h",
+                            "metadata": {
+                                "is_duplicate": True,
+                                "original_doc_id": "doc-1",
+                            },
+                        },
+                    },
+                    {"_id": "doc-3", "_source": {"content_hash": "h"}},
+                ]
+            }
+        }
+    )
+
+    result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
+
+    assert result is not None and result[0] == "doc-3"
+    body = s.client.search.call_args.kwargs["body"]
+    assert body["size"] == s._CONTENT_HASH_POINTER_WINDOW
+    assert body["sort"][0] == {"created_at": {"order": "asc", "missing": "_first"}}
+    # Without an id to point AT there is nothing to skip, so one hit still suffices.
+    s.client.search.return_value = {"hits": {"hits": []}}
+    await s.get_doc_by_content_hash("h")
+    assert s.client.search.call_args.kwargs["body"]["size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_window_of_nothing_but_pointers_raises_instead_of_reporting_absence():
+    """``None`` means CONFIRMED no other holder and the dedup callers act on it
+    destructively, so a window that cannot answer must raise, not report absence."""
+    s = _content_hash_storage()
+    pointer = {
+        "content_hash": "h",
+        "metadata": {"is_duplicate": True, "original_doc_id": "doc-1"},
+    }
+    s.client.search = AsyncMock(
+        return_value={
+            "hits": {
+                "hits": [
+                    {"_id": f"doc-p{i}", "_source": pointer}
+                    for i in range(
+                        OpenSearchDocStatusStorage._CONTENT_HASH_POINTER_WINDOW
+                    )
+                ]
+            }
+        }
+    )
+
+    with pytest.raises(StorageControlPlaneError, match="bounded window"):
+        await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")

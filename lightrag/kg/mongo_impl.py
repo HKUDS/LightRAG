@@ -1183,9 +1183,13 @@ class MongoDocStatusStorage(DocStatusStorage):
         Uses the partial ``content_hash`` index. Empty strings are treated as a
         miss to align with the partial-index predicate; legacy rows missing the
         field cannot match a non-empty query because the query requires an
-        exact value. ``exclude_doc_id`` adds ``_id: {$ne: ...}`` so the
-        duplicate check excludes the doc being processed in-query (see base
-        contract), still served by the content_hash index.
+        exact value. ``exclude_doc_id`` adds ``_id: {$ne: ...}`` plus a ``$nor``
+        clause dropping any row that merely POINTS at that id (``is_duplicate``
+        naming it as ``original_doc_id``), so the duplicate check excludes both
+        the doc being processed and a record of it in-query (see base contract),
+        still served by the content_hash index. Both are query predicates, so
+        skipping a pointer row cannot truncate the search — the sort + ``limit``
+        still yield the earliest row that survives them.
 
         Fail-closed: a query error PROPAGATES. ``None`` means "confirmed no
         other holder", which the dedup callers act on destructively — they
@@ -1204,6 +1208,12 @@ class MongoDocStatusStorage(DocStatusStorage):
         query: dict[str, Any] = {"content_hash": content_hash}
         if exclude_doc_id is not None:
             query["_id"] = {"$ne": exclude_doc_id}
+            query["$nor"] = [
+                {
+                    "metadata.is_duplicate": True,
+                    "metadata.original_doc_id": exclude_doc_id,
+                }
+            ]
         cursor = self._data.find(query).sort([("created_at", 1), ("_id", 1)]).limit(1)
         rows = await cursor.to_list(length=1)
         if not rows:

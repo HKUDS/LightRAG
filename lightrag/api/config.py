@@ -35,6 +35,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
     DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_MAX_REQUEST_BODY_BYTES,
     DEFAULT_MAX_TEXTS_PER_REQUEST,
@@ -583,6 +584,14 @@ def parse_args() -> argparse.Namespace:
     # Bounded scheduling page size (LR2 Phase 2); 0 disables paging.
     args.pipeline_scheduling_page_size = get_env_value(
         "PIPELINE_SCHEDULING_PAGE_SIZE", DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE, int
+    )
+
+    # Turn a missing strict doc_status capability into a startup failure instead
+    # of a warning + /health degradation report (LR2 §11).
+    args.pipeline_require_strict_storage_reads = get_env_value(
+        "PIPELINE_REQUIRE_STRICT_STORAGE_READS",
+        DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+        bool,
     )
 
     # How many newly claimed files one /documents/scan batch holds before

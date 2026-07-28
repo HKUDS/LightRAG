@@ -45,6 +45,8 @@ LIGHTRAG_PARSER=*:legacy-F
 
 不需要做数据迁移。启动后的第一轮 sweep 是一次 strict 全量 sweep，因此旧 writer 留在半途的文档——例如卡在 `PARSING`/`ANALYZING`/`PROCESSING` 但背后已没有 worker 的行——会被自动捡起并重新处理。如果确实无法排空（必须放弃一次运行），基于同样的原因，中途停止也是安全的；不安全的是事后又把旧版本启动回来。
 
+**启动后请检查日志里有没有 strict 能力告警。** 五个内置 `doc_status` 后端（JSON、Redis、PostgreSQL、MongoDB、OpenSearch）都具备全部能力。第三方后端可能不具备，而每一项缺失都是**失败关闭**而非静默降级：admission 返回 503、source-conflict 端点返回 501、scan 会一直重复检查陈旧的 `FAILED` stub。启动日志会逐项列出缺失的能力及其代价，已鉴权的 `/health` 在 `capabilities` 下报告同一份信息。设 `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` 可把这些缺口变成启动失败。有界分页没有对应旋钮：分页与 typed source 解析方法是抽象方法，缺失的后端根本无法构造。
+
 ## 入门指南
 
 ### 安装

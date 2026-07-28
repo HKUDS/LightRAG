@@ -81,6 +81,7 @@ from lightrag.constants import (
     DEFAULT_QUEUE_SIZE_ANALYZE,
     DEFAULT_QUEUE_SIZE_INSERT,
     DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
     DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
@@ -138,6 +139,7 @@ from lightrag.utils_pipeline import (
     KG_RECOVERY_WARNINGS_METADATA_KEY,
     compute_text_content_hash,
     doc_status_custom_chunk_patch,
+    enforce_strict_storage_capabilities,
     make_custom_chunk_id,
     make_custom_chunk_operation_id,
     normalize_document_file_path,
@@ -701,6 +703,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``0`` disables paging: one page holds the whole result set, exactly
     reproducing the legacy single-scan behaviour. Negative values are rejected
     at initialization.
+    """
+
+    pipeline_require_strict_storage_reads: bool = field(
+        default=get_env_value(
+            "PIPELINE_REQUIRE_STRICT_STORAGE_READS",
+            DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+            bool,
+        )
+    )
+    """Refuse to start when doc_status lacks a strict capability (LR2 §11).
+
+    ``False`` (the default) logs a warning naming each gap and its operator-facing
+    consequence, and ``/health`` reports the same under ``capabilities``. ``True``
+    turns those gaps into a startup failure, for a deployment that would rather
+    not run at all than serve 503s. Checked once, after storages initialize.
+
+    There is deliberately no equivalent for bounded PAGING: the paging and typed
+    source-resolution methods are ``@abstractmethod``, so a backend that lacks
+    them cannot be instantiated in the first place.
     """
 
     max_pending_documents: int = field(
@@ -1389,6 +1410,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if storage:
                     # logger.debug(f"Initializing storage: {storage}")
                     await storage.initialize()
+
+            # After initialize(), so a backend that derives capabilities during
+            # startup (Redis builds its status/source indexes there) is judged on
+            # what it can actually do. Raises only under require=True.
+            enforce_strict_storage_capabilities(
+                self.doc_status,
+                require=bool(self.pipeline_require_strict_storage_reads),
+            )
 
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")

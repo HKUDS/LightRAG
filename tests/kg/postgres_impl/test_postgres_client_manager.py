@@ -6,8 +6,17 @@ from lightrag.kg.postgres_impl import ClientManager
 
 
 @pytest.fixture(autouse=True)
-def reset_client_manager_state() -> None:
-    ClientManager._instances = {"db": None, "ref_count": 0, "vector_signature": None}
+def reset_client_manager_state():
+    """Reset the process-wide pool state BEFORE and AFTER each test.
+
+    Resetting only on entry leaks this file's MagicMock pool (with ref_count=2
+    and a pinned vector signature) into the rest of the session, where the next
+    real PostgreSQL storage is then refused for "incompatible vector settings".
+    """
+    pristine = {"db": None, "ref_count": 0, "vector_signature": None}
+    ClientManager._instances = dict(pristine)
+    yield
+    ClientManager._instances = dict(pristine)
 
 
 def test_pg_vector_storage_enables_vector() -> None:
