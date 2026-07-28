@@ -1,7 +1,6 @@
 """get_env_value must reject non-finite float env values."""
 
 import math
-import os
 
 import pytest
 
