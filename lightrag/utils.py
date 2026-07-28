@@ -4428,6 +4428,8 @@ def pick_by_weighted_polling(
     """
     if not entities_or_relations:
         return []
+    if max_related_chunks <= 0:
+        return []
 
     n = len(entities_or_relations)
     if n == 1:
