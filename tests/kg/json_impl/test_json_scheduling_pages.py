@@ -216,6 +216,48 @@ async def test_get_docs_by_ids_batch_present_and_missing(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_full_docs_by_ids_hydrates_full_status(tmp_path):
+    storage = await _storage(
+        tmp_path,
+        {
+            "doc-1": _doc(
+                "pending",
+                content_summary="hello",
+                content_length=42,
+                chunks_list=["c1", "c2"],
+                track_id="t9",
+            ),
+            "doc-2": _doc("failed"),
+        },
+    )
+    result = await storage.get_full_docs_by_ids(
+        ["doc-1", "doc-2", "ghost"], strict=True
+    )
+    assert set(result) == {"doc-1", "doc-2"}  # missing omitted, confirmed absent
+    # FULL projection (unlike get_docs_by_ids): every heavy field is present.
+    doc1 = result["doc-1"]
+    assert doc1.content_summary == "hello"
+    assert doc1.content_length == 42
+    assert doc1.chunks_list == ["c1", "c2"]
+    assert doc1.track_id == "t9"
+    # Full status mirrors get_docs_by_statuses: status stays the raw str value
+    # (a str-enum member equals its value), NOT converted to the DocStatus obj.
+    assert result["doc-2"].status == DocStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_get_full_docs_by_ids_strict_raises_on_malformed(tmp_path):
+    storage = await _storage(tmp_path, {"doc-1": _doc("pending")})
+    async with storage._storage_lock:
+        storage._data["bad"] = {"status": "pending"}  # missing required fields
+    with pytest.raises((KeyError, TypeError)):
+        await storage.get_full_docs_by_ids(["doc-1", "bad"], strict=True)
+    # relaxed: the malformed row is skipped, the good one still hydrates.
+    relaxed = await storage.get_full_docs_by_ids(["doc-1", "bad"], strict=False)
+    assert set(relaxed) == {"doc-1"}
+
+
+@pytest.mark.asyncio
 async def test_resolve_doc_source_absent_and_unique(tmp_path):
     storage = await _storage(
         tmp_path, {"doc-primary": _doc("pending", file_path="a.pdf")}

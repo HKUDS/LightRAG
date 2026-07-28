@@ -220,15 +220,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # fields below, instead of crashing every relaxed caller.
                     if v["status"] not in status_values:
                         continue
-                    data = v.copy()
-                    data.pop("content", None)
-                    if not data.get("file_path"):
-                        data["file_path"] = "no-file-path"
-                    if "metadata" not in data:
-                        data["metadata"] = {}
-                    if "error_msg" not in data:
-                        data["error_msg"] = None
-                    result[k] = DocProcessingStatus(**data)
+                    result[k] = self._doc_processing_status_from_row(v)
                 except (KeyError, TypeError) as e:
                     logger.error(
                         f"[{self.workspace}] Missing required field for document {k}: {e}"
@@ -664,7 +656,18 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Project one raw row; strict raises on unusable rows, relaxed
         returns None (the caller still counts the row as consumed)."""
         try:
-            status = DocStatus(str(row["status"]))
+            # doc_status holds ``status`` as EITHER a DocStatus member (the
+            # in-memory pipeline path) or its raw string value (JSON-reloaded).
+            # ``DocStatus(str(member))`` would break on a member (str(enum) is
+            # "DocStatus.PENDING", not "pending"), so normalise enum-tolerantly
+            # — same as get_docs_by_statuses' membership test and the base
+            # _scheduling_record_from_raw helper.
+            raw_status = row["status"]
+            status = (
+                raw_status
+                if isinstance(raw_status, DocStatus)
+                else DocStatus(raw_status)
+            )
             created_at = row["created_at"]
             updated_at = row.get("updated_at", created_at)
             if not isinstance(created_at, str) or not isinstance(updated_at, str):
@@ -685,6 +688,23 @@ class JsonDocStatusStorage(DocStatusStorage):
             if strict:
                 raise
             return None
+
+    @staticmethod
+    def _doc_processing_status_from_row(row: dict[str, Any]) -> DocProcessingStatus:
+        """Normalise a raw doc_status row into a FULL DocProcessingStatus.
+
+        Single source of the raw → status construction shared by
+        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
+        path. Raises ``KeyError``/``TypeError`` on a malformed row; the caller
+        decides strict (raise) vs relaxed (skip).
+        """
+        data = dict(row)
+        data.pop("content", None)  # deprecated inline content, never a status field
+        if not data.get("file_path"):
+            data["file_path"] = "no-file-path"
+        data.setdefault("metadata", {})
+        data.setdefault("error_msg", None)
+        return DocProcessingStatus(**data)
 
     async def get_docs_by_statuses_page(
         self,
@@ -731,7 +751,10 @@ class JsonDocStatusStorage(DocStatusStorage):
                     if strict:
                         raise TypeError(f"doc_status record {doc_id} is not a mapping")
                     continue
-                if str(row.get("status")) not in status_values:
+                # Membership (NOT str()) so a DocStatus member matches by its
+                # str-enum value — str(member) is "DocStatus.PENDING", which
+                # would wrongly exclude the in-memory pipeline's enum status.
+                if row.get("status") not in status_values:
                     continue
                 key = self._row_sort_key(doc_id, row)
                 if last_key is not None and key <= last_key:
@@ -770,7 +793,9 @@ class JsonDocStatusStorage(DocStatusStorage):
                             f"doc_status record {doc_id} has no readable status"
                         )
                     continue
-                if str(row.get("status")) in status_values:
+                # Membership (NOT str()) so an enum status member matches by
+                # its str-enum value (see get_docs_by_statuses_page).
+                if row.get("status") in status_values:
                     count += 1
         return count
 
@@ -831,6 +856,39 @@ class JsonDocStatusStorage(DocStatusStorage):
                 record = self._scheduling_record_from_row(doc_id, row, strict=strict)
                 if record is not None:
                     result[doc_id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to full DocProcessingStatus (see base contract).
+
+        In-memory dict lookup: a missing id is a confirmed absence and is
+        omitted. ``strict=True`` raises on a malformed record (mirrors
+        ``get_docs_by_statuses(strict=True)``); uninitialized storage always
+        raises.
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonDocStatusStorage")
+        result: dict[str, DocProcessingStatus] = {}
+        async with self._storage_lock:
+            for doc_id in doc_ids:
+                row = self._data.get(doc_id)
+                if row is None:
+                    continue  # confirmed absent
+                try:
+                    result[doc_id] = self._doc_processing_status_from_row(row)
+                except (KeyError, TypeError) as e:
+                    logger.error(
+                        f"[{self.workspace}] Unusable doc_status row hydrating "
+                        f"{doc_id}: {e}"
+                    )
+                    if strict:
+                        raise
+                    continue
         return result
 
     # ------------------------------------------------------------------

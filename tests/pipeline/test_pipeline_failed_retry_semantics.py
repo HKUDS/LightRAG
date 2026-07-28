@@ -247,11 +247,21 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
     re-arm it before propagating (sole-consumer compensation rule)."""
 
     async def _run():
-        from lightrag.pipeline import PipelineNextDecision, PipelineNextStep
+        from lightrag.base import CURSOR_START
+        from lightrag.pipeline import (
+            PipelineNextDecision,
+            PipelineNextStep,
+            _AUTO_RESUME_DOC_STATUSES,
+            _MANUAL_RETRY_DOC_STATUSES,
+        )
 
         extract = _CountingExtract()
         rag = await _build_rag(tmp_path, f"frs-{uuid4().hex[:8]}", extract)
         try:
+            # Force the legacy single-scan path so the failure lands on
+            # get_docs_by_statuses; the compensation code under test is shared
+            # with the paged path (both raise through _next_scheduling_page).
+            rag.pipeline_scheduling_page_size = 0
             ingress = await get_pipeline_ingress(rag.workspace)
 
             async def boom(statuses, strict=False):
@@ -260,7 +270,9 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
             rag.doc_status.get_docs_by_statuses = boom
             decision = PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
             with pytest.raises(RuntimeError, match="refetch boom"):
-                await rag._refetch_for_decision(decision, ingress)
+                await rag._refetch_for_decision(
+                    decision, _AUTO_RESUME_DOC_STATUSES, CURSOR_START, ingress
+                )
             assert ingress.consume_auto_rescan() is True  # re-armed
 
             # A manual continuation stays sticky on its own — no re-arm.
@@ -269,6 +281,8 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
                     PipelineNextDecision(
                         PipelineNextStep.CONTINUE_MANUAL, manual_request_id="r1"
                     ),
+                    _MANUAL_RETRY_DOC_STATUSES,
+                    CURSOR_START,
                     ingress,
                 )
             assert ingress.consume_auto_rescan() is False

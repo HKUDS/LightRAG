@@ -472,6 +472,87 @@ async def test_get_docs_by_ids_relaxed_skips_bad_row_strict_raises():
 
 
 # ---------------------------------------------------------------------------
+# get_full_docs_by_ids: FULL DocProcessingStatus hydration
+# ---------------------------------------------------------------------------
+
+_FULL_ROW_1 = {
+    "_id": "d1",
+    "status": "pending",
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "updated_at": "2026-01-01T00:00:00+00:00",
+    "file_path": "a.txt",
+    "content_summary": "summary of a",
+    "content_length": 123,
+    "chunks_list": ["chunk-1", "chunk-2"],
+    "metadata": {"k": "v"},
+}
+_FULL_ROW_2 = {
+    "_id": "d2",
+    "status": "failed",
+    "created_at": "2026-01-02T00:00:00+00:00",
+    "updated_at": "2026-01-02T00:00:00+00:00",
+    "file_path": "b.txt",
+    "content_summary": "summary of b",
+    "content_length": 456,
+    "chunks_list": ["chunk-3"],
+    "metadata": {},
+    "error_msg": "boom",
+}
+
+
+async def test_get_full_docs_by_ids_present_omits_missing_full_projection():
+    data = _FakeCollection(find_docs=[_FULL_ROW_1, _FULL_ROW_2])
+    storage = _storage(data=data)
+
+    result = await storage.get_full_docs_by_ids(["d1", "d2", "ghost"], strict=True)
+
+    # One indexed $in query; the missing id is positively absent (omitted).
+    assert data.find_queries == [{"_id": {"$in": ["d1", "d2", "ghost"]}}]
+    assert set(result) == {"d1", "d2"}
+    # FULL projection: fields excluded from DocSchedulingRecord are populated.
+    assert result["d1"].content_summary == "summary of a"
+    assert result["d1"].content_length == 123
+    assert result["d1"].chunks_list == ["chunk-1", "chunk-2"]
+    assert result["d1"].metadata == {"k": "v"}
+    # DocProcessingStatus keeps status as the raw str value (str-enum): ==, not is.
+    assert result["d2"].status == DocStatus.FAILED
+
+
+async def test_get_full_docs_by_ids_empty_input_issues_no_query():
+    data = _FakeCollection()
+    storage = _storage(data=data)
+
+    assert await storage.get_full_docs_by_ids([]) == {}
+    assert data.find_queries == []
+
+
+async def test_get_full_docs_by_ids_strict_raises_on_transport_error():
+    data = _FakeCollection(find_error=PyMongoError("down"))
+    storage = _storage(data=data)
+
+    with pytest.raises(PyMongoError):
+        await storage.get_full_docs_by_ids(["d1"], strict=True)
+
+
+async def test_get_full_docs_by_ids_relaxed_skips_bad_doc_strict_raises():
+    bad = {  # missing required content_summary/content_length -> unconvertible
+        "_id": "d-bad",
+        "status": "pending",
+        "created_at": "2026-01-03T00:00:00+00:00",
+        "updated_at": "2026-01-03T00:00:00+00:00",
+        "file_path": "c.txt",
+    }
+    data = _FakeCollection(find_docs=[_FULL_ROW_1, bad])
+    storage = _storage(data=data)
+
+    relaxed = await storage.get_full_docs_by_ids(["d1", "d-bad"])
+    assert set(relaxed) == {"d1"}  # bad doc dropped, present id kept
+
+    with pytest.raises(TypeError):
+        await storage.get_full_docs_by_ids(["d1", "d-bad"], strict=True)
+
+
+# ---------------------------------------------------------------------------
 # resolve_doc_source_strict: conflict-aware typed resolution
 # ---------------------------------------------------------------------------
 

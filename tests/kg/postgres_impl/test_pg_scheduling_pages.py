@@ -481,6 +481,77 @@ async def test_get_docs_by_ids_strict_raises_on_unusable_row():
 
 
 # ---------------------------------------------------------------------------
+# get_full_docs_by_ids (strict batch hydration to FULL DocProcessingStatus)
+# ---------------------------------------------------------------------------
+
+
+def _full_row(doc_id="d1", **overrides):
+    """A FULL doc_status row (superset of the scheduling projection)."""
+    row = _page_row(doc_id)
+    row.update(
+        {
+            "content_summary": f"summary of {doc_id}",
+            "content_length": 4242,
+            "chunks_count": 3,
+            "chunks_list": json.dumps([f"{doc_id}-c1", f"{doc_id}-c2"]),
+            "content_hash": "hash-of-" + doc_id,
+            "error_msg": None,
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+async def test_get_full_docs_by_ids_present_and_missing():
+    rows = [_full_row("d1"), _full_row("d2", status="failed")]
+    db = _FakeDB(results=[rows])
+    storage = _storage(db)
+    result = await storage.get_full_docs_by_ids(["d1", "d2", "ghost"], strict=True)
+    assert set(result) == {"d1", "d2"}  # ghost omitted (confirmed absent)
+    # status is the raw enum-str value, so compare by == (not is)
+    assert result["d2"].status == DocStatus.FAILED
+    # FULL projection: fields absent from the lightweight scheduling record
+    assert result["d1"].content_summary == "summary of d1"
+    assert result["d1"].content_length == 4242
+    assert result["d1"].chunks_list == ["d1-c1", "d1-c2"]
+    sql, params, multirows = db.calls[0]
+    assert "SELECT *" in sql
+    assert "id = ANY($2)" in sql
+    assert multirows is True
+    assert params == ["ws", ["d1", "d2", "ghost"]]
+
+
+async def test_get_full_docs_by_ids_empty_short_circuits():
+    storage = _storage(_ExplodingDB())
+    assert await storage.get_full_docs_by_ids([]) == {}
+
+
+async def test_get_full_docs_by_ids_strict_db_error_propagates():
+    db = _FakeDB(results=[ConnectionError("down")])
+    storage = _storage(db)
+    with pytest.raises(ConnectionError):
+        await storage.get_full_docs_by_ids(["d1"], strict=True)
+
+
+async def test_get_full_docs_by_ids_relaxed_skips_malformed_row():
+    bad = _full_row("d-bad")
+    del bad["content_summary"]  # required field -> KeyError in the row projection
+    db = _FakeDB(results=[[_full_row("d1"), bad]])
+    storage = _storage(db)
+    result = await storage.get_full_docs_by_ids(["d1", "d-bad"], strict=False)
+    assert set(result) == {"d1"}  # malformed row skipped, good one kept
+
+
+async def test_get_full_docs_by_ids_strict_raises_on_malformed_row():
+    bad = _full_row("d-bad")
+    del bad["content_summary"]
+    db = _FakeDB(results=[[bad]])
+    storage = _storage(db)
+    with pytest.raises(KeyError):
+        await storage.get_full_docs_by_ids(["d-bad"], strict=True)
+
+
+# ---------------------------------------------------------------------------
 # resolve_doc_source_strict (conflict-aware source resolution)
 # ---------------------------------------------------------------------------
 

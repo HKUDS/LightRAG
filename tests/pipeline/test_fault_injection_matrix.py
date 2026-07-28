@@ -297,7 +297,12 @@ async def test_custom_chunk_failure_then_restart_rollback_converges(
     rag2 = await _build_rag(tmp_path, workspace)
     try:
         result = await rag2.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-1"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-1"],
+            "failed_sample": [],
+        }
 
         row = await rag2.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value

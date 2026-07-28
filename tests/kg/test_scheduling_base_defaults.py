@@ -152,6 +152,11 @@ class _MinimalDocStatusStorage(DocStatusStorage):
     ) -> dict[str, DocSchedulingRecord]:  # pragma: no cover - trivial
         return {}
 
+    async def get_full_docs_by_ids(
+        self, doc_ids: Sequence[str], *, strict: bool = False
+    ) -> dict[str, DocProcessingStatus]:  # pragma: no cover - trivial
+        return {}
+
     async def resolve_doc_source_strict(
         self, canonical_source_key: str
     ) -> SourceResolution:  # pragma: no cover - trivial
@@ -185,6 +190,7 @@ def test_scheduling_methods_are_mandatory_abstractmethods():
     for name in (
         "get_docs_by_statuses_page",
         "get_docs_by_ids",
+        "get_full_docs_by_ids",
         "resolve_doc_source_strict",
     ):
         assert name in DocStatusStorage.__abstractmethods__, name

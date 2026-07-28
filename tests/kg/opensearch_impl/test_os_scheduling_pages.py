@@ -678,6 +678,97 @@ async def test_get_docs_by_ids_missing_index_raises(global_config):
 
 
 # ---------------------------------------------------------------------------
+# get_full_docs_by_ids: FULL-record batch hydration
+# ---------------------------------------------------------------------------
+
+
+async def test_get_full_docs_by_ids_present_and_missing_full_projection(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    d1_source = _status_source(
+        "d1", status="failed", chunks_list=["c1", "c2"], error="boom"
+    )
+    d2_source = _status_source("d2", status="processed", chunks_list=["c3"])
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {"_id": "d1", "found": True, "_source": d1_source},
+                {"_id": "d2", "found": True, "_source": d2_source},
+                {"_id": "ghost", "found": False},
+            ]
+        }
+    )
+
+    result = await storage.get_full_docs_by_ids(["d1", "d2", "ghost"], strict=True)
+
+    # found=False is CONFIRMED absent -> omitted.
+    assert set(result) == {"d1", "d2"}
+    # FULL DocProcessingStatus leaves status as the raw str value (== not is).
+    assert result["d1"].status == DocStatus.FAILED
+    # FULL projection: fields the lightweight scheduling record never carries.
+    assert result["d1"].content_summary == "summary-d1"
+    assert result["d1"].content_length == 10
+    assert result["d1"].chunks_list == ["c1", "c2"]
+    assert result["d1"].error_msg == "boom"  # legacy `error` -> error_msg
+    assert result["d2"].chunks_list == ["c3"]
+    # Full fetch: no _source_includes projection is applied (unlike get_docs_by_ids).
+    kwargs = client.mget.call_args.kwargs
+    assert kwargs["body"] == {"ids": ["d1", "d2", "ghost"]}
+    assert "_source_includes" not in kwargs
+
+
+async def test_get_full_docs_by_ids_empty_short_circuits(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    client.mget = AsyncMock()
+    assert await storage.get_full_docs_by_ids([]) == {}
+    client.mget.assert_not_awaited()
+
+
+async def test_get_full_docs_by_ids_strict_raises_on_transport_error(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_full_docs_by_ids(["d1"], strict=True)
+
+
+async def test_get_full_docs_by_ids_strict_raises_relaxed_skips_bad_row(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    good_source = _status_source("d1", status="processed")
+    bad_source = _status_source("d2")
+    del bad_source["created_at"]  # DocProcessingStatus(**data) -> TypeError
+
+    docs = {
+        "docs": [
+            {"_id": "d1", "found": True, "_source": good_source},
+            {"_id": "d2", "found": True, "_source": bad_source},
+        ]
+    }
+    client.mget = AsyncMock(return_value=docs)
+    # strict: the WHOLE call fails rather than return a partial map.
+    with pytest.raises((KeyError, TypeError)):
+        await storage.get_full_docs_by_ids(["d1", "d2"], strict=True)
+
+    client.mget = AsyncMock(return_value=docs)
+    # relaxed: skip the unusable row, keep the good one.
+    result = await storage.get_full_docs_by_ids(["d1", "d2"])
+    assert set(result) == {"d1"}
+    assert result["d1"].content_summary == "summary-d1"
+
+
+async def test_get_full_docs_by_ids_index_not_ready_raises(global_config):
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    storage._index_ready = False
+    client.mget = AsyncMock()
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_full_docs_by_ids(["d1"])
+    client.mget.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # resolve_doc_source_strict: conflict-aware source resolution
 # ---------------------------------------------------------------------------
 

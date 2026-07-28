@@ -2147,6 +2147,7 @@ def create_app(args):
             rerank_model_max_async=args.rerank_max_async,
             default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
+            pipeline_scheduling_page_size=args.pipeline_scheduling_page_size,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,

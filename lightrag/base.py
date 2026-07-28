@@ -1291,6 +1291,42 @@ class DocStatusStorage(BaseKVStorage, ABC):
         * Results use the lightweight projection (no chunks / full content).
         """
 
+    @abstractmethod
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration of FULL doc_status records by doc id.
+
+        The scheduling page (:meth:`get_docs_by_statuses_page`) yields the
+        lightweight :class:`DocSchedulingRecord` projection — only enough to
+        order, bound and filter a sweep. The scheduler hydrates the survivors
+        of ONE page into full :class:`DocProcessingStatus` rows through this
+        method right before routing them, so memory stays O(page_size) while
+        the consistency validator and the parse/analyze/process workers still
+        see every field they need (``content_summary`` / ``content_length`` /
+        ``chunks_list`` / ``metadata`` / ...).
+
+        Contract (every backend MUST implement it as a true batch read reusing
+        the SAME raw → :class:`DocProcessingStatus` normalisation as
+        :meth:`get_docs_by_statuses`):
+
+        * The returned mapping contains ONLY ids confirmed to exist; an id
+          the backend positively confirms absent (deleted, or its row no
+          longer decodes) may be omitted — a benign race, since a doc that
+          vanished between the page and its hydration is simply no longer
+          routable.
+        * With ``strict=True`` any transport/server/decode error fails the
+          WHOLE call — the implementation must not return a partial mapping
+          (the scheduler cannot distinguish "gone" from "unread" on a
+          partial, and a silently short page would strand the missing docs in
+          PENDING). All scheduling/control-plane callers pass ``strict=True``.
+        * Results are FULL :class:`DocProcessingStatus`, NOT the lightweight
+          projection.
+        """
+
     async def count_docs_by_statuses(
         self, statuses: list[DocStatus], *, strict: bool = True
     ) -> int:

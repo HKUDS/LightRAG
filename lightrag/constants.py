@@ -358,6 +358,14 @@ DEFAULT_QUEUE_SIZE_PARSE = 20
 DEFAULT_QUEUE_SIZE_ANALYZE = 100
 DEFAULT_QUEUE_SIZE_INSERT = 4
 
+# Memory-bounding scheduling page size (LR2 Phase 2). The scheduler pages the
+# doc_status backlog through bounded keyset pages of this many records instead
+# of materializing every PENDING/orphan row at once, so RSS grows with
+# page-size + inflight rather than with the whole backlog. ``0`` disables
+# paging (one page holds the whole result set — byte-for-byte the legacy
+# single-scan behaviour).
+DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE = 500
+
 # LLM / embedding call priority levels.  Lower values run first
 # (asyncio.PriorityQueue semantics); priority only orders calls *within* a
 # single role queue (extract / keyword / query / vlm).  These name the values
@@ -463,3 +471,9 @@ DEFAULT_OLLAMA_MODEL_TAG = "latest"
 DEFAULT_OLLAMA_MODEL_SIZE = 7365960935
 DEFAULT_OLLAMA_CREATED_AT = "2024-01-15T00:00:00Z"
 DEFAULT_OLLAMA_DIGEST = "sha256:lightrag"
+
+# Upper bound on the doc-id samples surfaced by the custom-chunk rollback
+# report. The rollback sweep is paged, so it must not accumulate one entry per
+# journaled document just to describe what it did — counts are exact, the id
+# lists are a bounded sample (see arollback_failed_custom_chunk_patches).
+ROLLBACK_REPORT_SAMPLE_CAP = 32
