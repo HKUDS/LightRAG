@@ -2664,10 +2664,6 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     return [r.strip() for r in results if r.strip()]
 
 
-def is_float_regex(value: str) -> bool:
-    return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
-
-
 def truncate_list_by_token_size(
     list_data: list[Any],
     key: Callable[[Any], str],
