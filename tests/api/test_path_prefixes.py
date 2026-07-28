@@ -642,14 +642,27 @@ class TestUvicornRootPathSemantics:
             "app-level root_path only — see TestUvicornRootPathSemantics docstring."
         )
 
-    def test_gunicorn_uses_upstream_uvicorn_worker(self):
+    def test_gunicorn_worker_does_not_inject_root_path(self):
         """Symmetric guard for the multi-worker launcher.
 
-        gunicorn_config.worker_class must remain the upstream
-        ``uvicorn.workers.UvicornWorker`` — a custom subclass injecting
-        root_path via CONFIG_KWARGS would re-introduce the same
-        path-doubling regression in worker processes.
+        The regression this protects against is a worker class that injects
+        ``root_path`` through ``CONFIG_KWARGS``, re-creating the path-doubling
+        in worker processes. Asserted as that invariant rather than as an exact
+        class name: the configured class IS a subclass now
+        (``LightRAGUvicornWorker`` adds the orphan check gunicorn's own workers
+        have and uvicorn's drops), and pinning the name would have blocked it
+        while proving nothing extra — a subclass could add root_path under any
+        name.
         """
-        from lightrag.api import gunicorn_config
+        from uvicorn.workers import UvicornWorker
 
-        assert gunicorn_config.worker_class == "uvicorn.workers.UvicornWorker"
+        from lightrag.api import gunicorn_config
+        from gunicorn.util import load_class
+
+        worker_class = load_class(gunicorn_config.worker_class)
+        assert issubclass(worker_class, UvicornWorker), worker_class
+        # Covers the subclass's own kwargs and everything it inherits.
+        assert "root_path" not in worker_class.CONFIG_KWARGS, (
+            "the gunicorn worker must not inject root_path; rely on FastAPI's "
+            "app-level root_path only — see TestUvicornRootPathSemantics docstring."
+        )

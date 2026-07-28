@@ -4,6 +4,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } f
 // Mock dependencies BEFORE importing the module under test
 // ---------------------------------------------------------------------------
 
+// Loaded BEFORE any mock.module call, because the real '@/lib/constants' pulls
+// '@/lib/utils' (via the Button type import) and the mock installed below
+// replaces that module with only `errorMessage`. See the constants mock for why
+// the real exports are needed at all.
+const realConstants = await import('@/lib/constants')
+
 const storageData = new Map<string, string>()
 const storageMock = {
   getItem: (key: string) => storageData.get(key) ?? null,
@@ -42,7 +48,17 @@ mock.module('@/lib/utils', () => ({
   errorMessage: (error: any) =>
     error instanceof Error ? error.message : `${error}`,
 }))
+// An OVERLAY on the real module, not a replacement. `mock.module` is global for
+// the whole `bun test` run and is never undone, so a factory returning only the
+// three exports this file needs also deletes every OTHER export of that module
+// for every test file that runs afterwards — `src/lib/fileTypes.test.ts` imports
+// `supportedFileTypes` from here and failed with "Export named
+// 'supportedFileTypes' not found" whenever it ran after this file (and passed on
+// its own, which is what made it look like a product bug). Spreading the real
+// module keeps the rest of the surface intact while still pinning the values
+// these tests assert on.
 mock.module('@/lib/constants', () => ({
+  ...realConstants,
   backendBaseUrl: 'http://localhost:9621',
   popularLabelsDefaultLimit: 300,
   searchLabelsDefaultLimit: 50,

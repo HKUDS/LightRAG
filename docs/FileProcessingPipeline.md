@@ -671,7 +671,7 @@ File enqueue and extraction results are written into `full_docs`:
 - Analysis result files: the LightRAG Document blocks file and sidecars are named with the canonicalized filename stem, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`; the same directory may also contain `report.tables.json`, `report.drawings.json`, `report.equations.json`, and the `report.blocks.assets/` image asset directory. **Whether a sidecar is generated is determined by the document content**: the parser only writes the corresponding file when the document actually contains tables / images / equations. This is the only signal of modality availability — the engine does not need to declare capabilities in meta. The `i`/`t`/`e` options only determine whether the next stage invokes the VLM for summarization analysis on already-existing sidecars.
 - When parsing fails, the original file is not moved, making it easy to fix the configuration and re-process.
 - When `/documents/scan` encounters a file with the same name that is already `PROCESSED`, the input file is treated as already processed and moved to `__parsed__`, not enqueued as a new document.
-- When `/documents/scan` finds multiple files that share the same canonicalized name in the same scan, it prefers the file with a supported engine hint to respect the user's engine selection; if no variant has a hint, it processes the first file in sorted order. Other variants emit warnings and are moved to `__parsed__`, avoiding files in the same batch overwriting each other. For example, if both `abc.docx` and `abc.[native].docx` exist, only `abc.[native].docx` is processed.
+- When `/documents/scan` finds multiple files that share the same canonicalized name in the same scan, **the file that claims the canonical source key first wins** (i.e. whichever the streaming directory walk reaches first). A scan-wide UNIQUE claim in the disposable disk spool archives every later variant with a warning before any candidate is persisted. For example, if both `abc.docx` and `abc.[native].docx` exist, only the one reached first is processed. A hint selects the engine and no longer grants scheduling priority.
 - When duplicate content hashes are found during scanning or parsing, the input file is likewise moved to `__parsed__`; this `doc_status` entry is kept as `FAILED duplicate` for tracking.
 - File moves only act on the current input file and do not overwrite or move existing document source files. If a file with the same name already exists at the destination, the system automatically appends `_001`, `_002`, etc., e.g., `report.pdf` is archived as `report_001.pdf`, `report_002.pdf`. If the analysis result directory name is already taken by a regular file, a number is also appended, e.g., `report.docx.parsed_001/`.
 
@@ -772,13 +772,38 @@ File upload, file-parse enqueue, and the text APIs check duplicates against two 
 - The granularity of the check is basename, excluding directory path and workspace path. For example, `/data/a.pdf`, `inputs/a.pdf`, and `a.pdf` are all considered the same filename `a.pdf`.
 - Filename deduplication uses `canonical_basename` as the index: the supported-engine processing hint at the end of the filename is stripped before comparison, so `abc.docx`, `abc.[native].docx`, and `abc.[native-iet].docx` are considered the same name. Unsupported hints are not stripped; e.g., `abc.[draft].docx` is still treated by its original filename.
 - For ordinary upload, text APIs, and core enqueue APIs, as long as a file with the same name already exists in `doc_status` — whether that record is currently `PENDING`, `PARSING`, `ANALYZING`, `PROCESSING`, `FAILED`, or `PROCESSED` — the same-name file is considered a duplicate.
-- For `/documents/scan` directory scan:
-  - If multiple files in the same scan share the same canonicalized name, the file with a supported engine hint is processed first; if no variant has a hint, the first file after sorting is processed, and the rest are archived to `__parsed__` and skipped.
-  - If the same-name record is already `PROCESSED`, the file just scanned is treated as already processed; the system emits a warning, moves the input file to the sibling `__parsed__` directory, and skips enqueueing.
-  - If the same-name record is not `PROCESSED`, the scanned file is **not** skipped simply because of the same name, but **also** does not re-extract / overwrite the existing record. The specific path depends on the form of the existing record (consistent with the classification rules listed below in the "Why is scan still the exclusive writer" section):
-    - Same name non-PROCESSED with `full_docs` present → **resume path**: doc_status is preserved as-is, the source file remains in `INPUT/`, and the processing loop picks it up by status query (no re-extract, no overwrite of existing status).
-    - Same name `FAILED` with `full_docs` missing → recognized as an extraction-error stub written by `apipeline_enqueue_error_documents`: scan deletes the stub and **enqueues the current file as a new file**. This is the only sub-branch that re-extracts; the purpose is to make "fix the source file, scan again" automatically take effect.
-- For ordinary upload and core enqueue APIs, a file with the same name — even if its content has changed — must have its old document record deleted before re-upload or re-enqueue; the two automatic recoveries above only apply to the directory-scan path.
+- For `/documents/scan` directory scan: the canonical basename only **locates** candidate records; it is not assumed to be unique (custom-ID inserts, legacy ids and historical collisions can all share one canonical). Scan computes each physical file's canonical source key, resolves it once through `resolve_doc_source_strict`, and classifies it into exactly one of seven exits in a fixed, mutually exclusive order. Classification is **read-only**: enqueue, archive and stub deletion all happen after it, so every decision can be logged, counted and sampled before anything changes.
+
+  | Exit | Condition | Action |
+  | --- | --- | --- |
+  | `CLAIMED_NEW` | no record shares the canonical source (`SourceAbsent`) | staged in the scan's disposable disk spool under the first canonical claim; later enqueued in global `st_mtime` order; `metadata.source_file` keeps the original basename including its hint |
+  | `SOURCE_CONFLICT` | several primary records share the canonical source (`SourceConflict`, historical) | not enqueued, no record deleted, and the file is **not** archived (the operator needs it in place); the job records a bounded sample of candidate doc IDs, to be repaired by doc ID before the file can be classified. Repair entry points: `GET /documents/source_conflicts` lists the conflicts and `POST /documents/source_conflicts/repair` settles one by naming the `primary_doc_id` to keep (dry-run by default; echo back the returned `candidate_count`/`fingerprint` to commit, and a changed candidate set returns 409), or offline via `python -m lightrag.tools.source_conflict_repair` |
+  | `PROCESSED` | the unique record is already `PROCESSED` | emit a warning, archive the source file to `__parsed__`, skip enqueueing |
+  | `STALE_STUB` | the unique record is `FAILED` **and** a strict point read confirms `full_docs` is absent | recognized as an extraction-error stub written by `apipeline_enqueue_error_documents` (the consistency check preserves such rows for human review): the stub is deleted and the current file is enqueued as `CLAIMED_NEW`. This is the only re-extracting exit, and it is what makes "fix the source file, scan again" take effect. If the point read is unsupported or fails, nothing is deleted and the file falls through to the non-destructive exits below |
+  | `SOURCE_IDENTITY_UNKNOWN` | the unique record has no `metadata.source_file` (custom-ID / legacy / non-scan-origin RAW rows) | keep the file, do not enqueue, record a bounded warning; a missing source file is **not** evidence of a different physical file |
+  | `RESUME_SAME_PHYSICAL_SOURCE` | physical basename == `source_file` | **resume path**: doc_status is preserved as-is, the source file remains in `INPUT/`, and the processing loop picks it up by status query (no re-extract, no overwrite of existing status) |
+  | `ALIAS_DUPLICATE` | physical basename != `source_file` | a different physical file for the same canonical source: archive the alias with a warning, and do not take the ordinary enqueue path (which would manufacture a `dup-*` FAILED row) |
+
+  Discovery is a single unordered pass, but exact global mtime order needs O(number of files) ordering state somewhere. New candidates therefore go into a disposable SQLite spool. Its UNIQUE canonical-key index preserves first-physical-claim-wins across the whole scan before any new row reaches doc_status; its `(mtime, path, discovery sequence)` index is then read with `fetchmany(SCAN_ENQUEUE_BATCH_SIZE)`, so Python memory remains O(K). Each candidate also carries the size discovery already stat'ed, so the enqueue phase issues no second metadata read.
+
+  **Where the spool lives.** `SCAN_SPOOL_DIR`, else `WORKING_DIR/scan_spool`, narrowed in both cases to a per-workspace subdirectory. It must sit on real, writable, local disk: the point of the spool is to keep O(number of files) state out of RAM, and `/tmp` is a RAM-backed tmpfs on many Linux hosts, which silently gives that back. Set `SCAN_SPOOL_DIR` when `WORKING_DIR` is a network volume. INPUT_DIR is deliberately not used — it is frequently a network mount (the slowest possible home for the only bulk-insert phase), it is legitimately mounted read-only, and it is co-managed by sync tools that would copy or delete the spool mid-scan.
+
+  **Placement is fail-closed.** If the directory cannot be used, the scan fails with an error naming `SCAN_SPOOL_DIR` and enqueues nothing; the input files are untouched, so fixing the setting and re-scanning loses nothing. It does *not* relocate to the OS temp dir — that is not a degraded-but-correct mode, because on a tmpfs host it restores the exact memory cost the spool exists to remove and the operator would meet it as an OOM kill partway through a large scan.
+
+  **Crash residue is capped at one spool.** The spool sits on a persistent volume, where nothing reclaims what `kill -9` leaves behind, so its filename inside the per-workspace directory is fixed rather than randomized: the next scan deletes any leftover before opening its own. Residue is therefore one spool, never one per crash. The fixed name is safe because `scanning_exclusive` already admits a single scan per workspace — the same guarantee that keeps two scans from fighting over INPUT_DIR — and the per-workspace subdirectory is what keeps two workspaces sharing a `WORKING_DIR` from reusing each other's file.
+
+  Because the fixed name makes that subdirectory load-bearing, the workspace → directory mapping is injective by construction:
+
+  ```text
+  <base>/unnamed/candidates.sqlite3           # WORKSPACE unset
+  <base>/named/<workspace>/candidates.sqlite3 # every named workspace
+  ```
+
+  A bare sentinel would not be injective — workspace names are validated, not restricted, so a workspace literally called `_default` would land in the same directory as the unnamed one. Those two hold *different* per-workspace scan locks and can therefore scan concurrently, and the second one to start would delete the first one's live database.
+
+  **The cost of exact global ordering.** Nothing reaches doc_status until discovery finishes, so an interrupted scan (cancel, crash, restart) enqueues *nothing*: the source files stay in INPUT_DIR and the next scan rediscovers them. The one thing that does not come back is a `STALE_STUB` row deleted during discovery — the file is re-enqueued as new next time, but its preserved-for-review FAILED stub is gone. The spool itself is not LightRAG storage and is discarded when the scan ends.
+- For ordinary upload and core enqueue APIs, a file with the same name — even if its content has changed — must have its old document record deleted before re-upload or re-enqueue; the automatic recoveries above (`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`) only apply to the directory-scan path.
+- Filesystem time is only a pre-persistence scan priority. The spool emits candidates globally oldest first; each sequential enqueue then stamps `doc_status.created_at=now()` at the actual first write. Once a file has entered doc_status, only the ordinary immutable `(created_at, id)` scheduling key matters and its filesystem mtime is discarded. An unreadable mtime sorts after every readable timestamp but does not lose the candidate; the enqueue path handles a vanished/unreadable file normally.
 - The text APIs must provide a valid `file_source`, and duplicates are checked by the basename of `file_source`; lacking a valid `file_source` returns 400 directly.
 - When the SDK path calls `insert` / `ainsert` / `apipeline_enqueue_documents` without `file_paths`, that is allowed; related behavior is detailed in §8.4. Such documents without a source have `file_path` saved as `unknown_source`.
 - Empty strings, `no-file-path`, and `unknown_source` are all considered unknown sources; they do not block new source-less text from being enqueued, nor do they deduplicate each other as same-named files.
@@ -800,7 +825,7 @@ The storage backend provides basename direct lookup via `get_doc_by_file_basenam
 
 > Within an enqueue batch (the same `apipeline_enqueue_documents` call), basename and content_hash dedup are also performed; on hit, subsequent entries are written as `FAILED` directly and marked with `existing_status=batch_duplicate`. Basename dedup only applies to valid filenames; `unknown_source`, `no-file-path`, and empty sources only participate in content-hash dedup.
 >
-> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§6.7 enqueue serialization lock (preventing concurrent dedup leakage)](#67-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
+> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§6.8 enqueue serialization lock (preventing concurrent dedup leakage)](#68-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
 
 ## 6. Pipeline Concurrency and Reentry Constraints
 
@@ -845,20 +870,16 @@ With this mechanism enabled in the new contract, **users can continue to upload 
 
 ### 6.4 Why scan is still the exclusive writer
 
-scan not only enqueues the new files it finds, but also reads `doc_status` to decide what to do with each file:
+scan not only enqueues the new files it finds, but also reads `doc_status` to decide what to do with each file (archive a `PROCESSED` one, keep a resume candidate, delete a stale stub and re-enqueue, …; the seven exits are listed in [§5.1](#51-filename-basename-deduplication)).
 
-- Same-name `PROCESSED` row → archive source file, skip enqueue.
-- Same-name non-PROCESSED with `full_docs` present → resume path; the source file **stays in `INPUT/`**, not archived (the pending-parse parser may still need it); the processing loop picks it up by status query.
-- Same-name `FAILED` with `full_docs` missing → recognized as an extraction-error stub previously written by `apipeline_enqueue_error_documents` (consistency check preserves such rows for human review); scan automatically deletes that stub and enqueues the current file as a new file, so that "fix the source file, scan again" takes effect directly.
-
-These "read–decide–write" combinations cannot interleave with other writers; otherwise classification decisions would be based on a stale view. So scan must be exclusive, and the scan endpoint will reject when any of `busy` / `scanning` / `pending_enqueues>0` is present.
+These "read–decide–write" combinations cannot interleave with other writers; otherwise classification decisions would be based on a stale view. So the classification stage must be exclusive (`scanning_exclusive`), and the scan endpoint rejects when any of `busy` / `scanning` / `pending_enqueues>0` / an exclusive-reset freeze (`manual_freeze_requested`) / an earlier unserved manual retry request holds — the last one keeps a scan from jumping ahead of a queued manual retry.
 
 ### 6.5 Strict name precheck (upload path)
 
 After upload passes the reservation but before saving the file, a two-pass check is required:
 
 1. **INPUT directory scan**: canonicalize the basename to be saved via `canonicalize_parser_hinted_basename`, traverse the INPUT directory for any existing same-canonical variant (with hint / without hint); 409 on hit.
-2. **doc_status check**: call `get_existing_doc_by_file_basename` with the canonicalized basename; 409 on hit.
+2. **doc_status check**: call `get_existing_doc_by_file_path_candidates` with the canonicalized basename; 409 on hit.
 
 Both pass → save the file → schedule the bg task → bg task calls `apipeline_enqueue_documents` to write the store + calls `apipeline_process_enqueue_documents` to trigger processing.
 
@@ -878,7 +899,39 @@ When two uploads arrive simultaneously (scan cannot acquire exclusivity at this 
 
 No bg task will be falsely rejected due to busy — because enqueue no longer checks busy; the processing loop will not process the same document twice — in-batch admission dedups against the routing/inflight registries, and the auto-rescan flag is consumed exactly once per quiescence decision.
 
-### 6.7 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
+### 6.7 The `recovery_required` Fence
+
+Some failures leave the workspace in a state where continuing would be a guess. Rather than pick one, the pipeline sets a `recovery_required` fence: **every** mutation (upload / text / scan / manual retry / delete / clear) is then refused with **HTTP 503** until an operator clears it. The fence is set in three situations:
+
+1. **A worker died mid `custom_chunks` / `delete` / `clear`.** Those operations may have half-committed, so their reservation is not simply re-run. (A dead `processing` / `scan` owner is re-runnable and is reclaimed silently instead — no fence.)
+2. **A manual retry's drain cannot reach idle.** `/documents/reprocess_failed` drains the pipeline to idle before its exclusive `FAILED → PENDING` reset, and two things stop that drain: active documents that keep coming back unchanged (re-checking could only spin), and active documents the drain can never advance at all — rows holding an **unfinished custom-chunk operation**, which only `/documents/scan`'s rollback resolves. Either way the reset does not run, the retry request is left un-acknowledged (so its one attempt per document is still owed), and the fence message carries a bounded sample of the blocking document ids. `recovery_kind` distinguishes them: `manual_drain_stalled` and `manual_drain_blocked`.
+
+   (`/documents/scan` does not perform this drain — see §6.4: it is granted its reservation only while the pipeline is idle and holds `scanning_exclusive` across classification, and its reset starts no worker, so remaining `PENDING` rows are inert rather than producers.)
+3. **A reservation holder cannot be adjudicated.** Reclaiming a reservation requires proving its owning process is dead. A holder record with no process identity can never be proven either way, so its reservation is left untouched (never reclaimed on a guess) and the fence provides the way out.
+
+`GET /documents/pipeline_status` reports a sanitized projection — `recovery_required` (bool), `recovery_kind` (the coarse cause) and `recovery_message` (the same text the 503 carries, including the bounded blocker sample where the cause provides one). The raw fence record is never exposed: it sits alongside owner records carrying PIDs and reservation tokens, and a token authorizes releasing a reservation.
+
+Clear the fence with:
+
+```
+POST /documents/recovery/force_reset
+```
+
+This is an **unsafe manual override** — it does not repair anything. Besides the fence it also **cancels the workspace's queued manual retry requests**, and that is required rather than incidental: a queued request makes `/documents/scan` refuse its reservation (a scan runs its own exclusive `FAILED` reset and may not jump the manual FIFO, §6.4), so clearing only the fence would leave the recovery path just as blocked. The response reports `cancelled_manual_retries`. No document is lost — failed documents stay `FAILED` and are retried by the next request or by the scan's own reset.
+
+Because both halves are required, the call is **all-or-nothing**: if the queued retries cannot be cancelled it returns **503** with the fence untouched, so a retry can complete the recovery instead of the API reporting one that did not happen.
+
+Recovery order:
+
+| Cause | Do this |
+|---|---|
+| `manual_drain_blocked` | `POST /documents/recovery/force_reset`, then `POST /documents/scan` — the scan rolls the unfinished operation back **and** runs the `FAILED` reset itself, so no separate retry call is needed. |
+| `manual_drain_stalled` | `POST /documents/recovery/force_reset`, then inspect the documents named in `recovery_message` — they are stuck for a reason this fence cannot name. Re-issue `POST /documents/reprocess_failed` once they are resolved. |
+| worker died mid `custom_chunks` / `delete` / `clear` | Verify the affected storages are consistent, then `POST /documents/recovery/force_reset`. |
+
+Restarting the whole service also clears the fence and the queued requests, since both are runtime coordination state and neither is persisted.
+
+### 6.8 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
 
 Inside `apipeline_enqueue_documents`, "read doc_status to dedupe → write `full_docs` / `doc_status`" runs serially under the workspace-level `enqueue_serialize` lock. Reason: now that concurrent enqueue is allowed during the busy/scan-processing phases, two enqueues with identical content but different filenames (typical scenario: a scan-processing-phase enqueue and an upload arriving together) would, without the lock, race as follows —
 
@@ -898,7 +951,7 @@ With the serialization lock, the second enqueue's dedup read is guaranteed to se
 
 The lock does **not** cover the ingress document publish (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
 
-### 6.8 Pipeline Concurrency Parameters
+### 6.9 Pipeline Concurrency Parameters
 
 The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
 

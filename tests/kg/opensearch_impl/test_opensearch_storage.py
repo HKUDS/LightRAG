@@ -1809,7 +1809,14 @@ class TestDocStatusStorage:
             body = mock_client.search.call_args.kwargs.get(
                 "body"
             ) or mock_client.search.call_args[1].get("body", {})
-            assert body["query"] == {"term": {"file_path": "report.pdf"}}
+            # Primary-only lookup: duplicate markers are excluded via must_not
+            # so filename dedup never matches a dup-* row.
+            assert body["query"] == {
+                "bool": {
+                    "filter": [{"term": {"file_path": "report.pdf"}}],
+                    "must_not": [{"term": {"metadata.is_duplicate": True}}],
+                }
+            }
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_basename_empty_short_circuits(
@@ -1922,6 +1929,10 @@ class TestDocStatusStorage:
             }
         )
         mock_client.indices.put_mapping = AsyncMock()
+        # Healthy tiebreaker coverage: startup audits it unconditionally for a
+        # pre-existing index, and this fixture's default count (5) would read as
+        # 5 docs missing the value and trigger a backfill.
+        mock_client.count = AsyncMock(return_value={"count": 0})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -1950,6 +1961,9 @@ class TestDocStatusStorage:
             }
         )
         mock_client.indices.put_mapping = AsyncMock()
+        # See the sibling test: the unconditional coverage audit needs a healthy
+        # count, or the fixture default (5) reads as 5 missing values.
+        mock_client.count = AsyncMock(return_value={"count": 0})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()

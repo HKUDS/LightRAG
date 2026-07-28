@@ -83,6 +83,27 @@ def test_reconcile_reclaims_dead_processing_owner(recovery_enabled):
     assert "recovery_required" not in status  # re-runnable, not fenced
 
 
+def test_reconcile_clears_manual_state_with_dead_busy_owner(recovery_enabled):
+    # LR2 Phase 3 §6.1: the manual-retry freeze is driven BY the busy processing
+    # run, so a dead busy owner must clear the whole manual state in the same
+    # atomic reclaim — never a True freeze flag with no live owner. The sticky
+    # request survives in the mailbox and is re-run by the next owner.
+    status = {
+        "busy": True,
+        "busy_owner": _dead_owner("processing"),
+        "manual_freeze_requested": True,
+        "manual_resetting": True,
+        "manual_phase": shared_storage.MANUAL_PHASE_EXCLUSIVE_RESET,
+        "manual_owner": {"request_id": "r1", "token": "t", "pid": 999999},
+    }
+    reconcile_dead_pipeline_reservations(status)
+    assert status["busy"] is False and status["busy_owner"] is None
+    assert status["manual_freeze_requested"] is False
+    assert status["manual_resetting"] is False
+    assert status["manual_phase"] == shared_storage.MANUAL_PHASE_IDLE
+    assert status["manual_owner"] is None
+
+
 def test_reconcile_reclaims_dead_scan_owner(recovery_enabled):
     status = {
         "scanning": True,
@@ -156,6 +177,23 @@ def test_reconcile_is_noop_when_disabled():
     assert status["busy_owner"] is not None
 
 
+async def test_reap_dead_reservations_locked_drops_dead_token(recovery_enabled):
+    # LR2 Phase 3 liveness: the manual DRAIN_TO_IDLE wait reaps a dead
+    # enqueue token itself (the freeze blocks the uploads that would otherwise
+    # reap it), so the drain can reach the exclusive reset instead of polling
+    # forever on a phantom pending_enqueues count.
+    status = {
+        "pending_enqueues": 2,
+        "pending_enqueue_tokens": {
+            "live": {"pid": os.getpid(), "process_start_id": None},
+            "dead": {"pid": _dead_pid(), "process_start_id": "gone"},
+        },
+    }
+    await shared_storage.reap_dead_reservations_locked(status, asyncio.Lock())
+    assert set(status["pending_enqueue_tokens"]) == {"live"}
+    assert status["pending_enqueues"] == 1
+
+
 def test_pipeline_recovery_blocked_message():
     status = {
         "recovery_required": {
@@ -178,8 +216,30 @@ def test_internal_fields_constant_covers_recovery_state():
         "pending_enqueue_tokens",
         "operation_record",
         "recovery_required",
+        # Phase 3 manual coordination — hidden from the public /pipeline_status
+        # response (manual_owner carries pid/token identity).
+        "manual_owner",
+        "manual_freeze_requested",
+        "manual_resetting",
+        "manual_phase",
     ):
         assert field in _INTERNAL_PIPELINE_STATUS_FIELDS
+
+
+async def test_initialize_pipeline_status_seeds_manual_state_at_idle(tmp_path):
+    # Phase 3: the manual-retry runtime state exists at init, defaulted to a
+    # clean idle (no freeze, no owner) so a fresh workspace never appears frozen.
+    ws = "manual-init-ws"
+    initialize_share_data()
+    try:
+        await initialize_pipeline_status(workspace=ws)
+        ps = await get_namespace_data("pipeline_status", workspace=ws)
+        assert ps["manual_freeze_requested"] is False
+        assert ps["manual_resetting"] is False
+        assert ps["manual_phase"] == shared_storage.MANUAL_PHASE_IDLE
+        assert ps["manual_owner"] is None
+    finally:
+        finalize_share_data()
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +420,15 @@ async def test_force_reset_recovery_endpoint(tmp_path):
         assert excinfo.value.status_code == 400
         assert ps.get("recovery_required") is not None
 
-        # confirm=True → fence + lingering reservation state cleared.
+        # confirm=True → fence + lingering reservation state cleared, manual
+        # freeze included (it is held BY the run this reset abandons).
         resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
         assert resp.status == "reset"
         assert ps.get("recovery_required") is None
         assert ps.get("busy") is False
         assert ps.get("busy_owner") is None
+        assert ps.get("manual_freeze_requested") is False
+        assert ps.get("manual_owner") is None
 
         # No fence left → idempotent no-op.
         resp2 = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
@@ -375,9 +438,96 @@ async def test_force_reset_recovery_endpoint(tmp_path):
 
 
 @pytest.mark.offline
+async def test_force_reset_cancels_the_queued_manual_retries(tmp_path):
+    """force_reset also cancels the workspace's queued manual retry requests, and
+    that is load-bearing rather than tidy-up.
+
+    A sticky un-ACKed request makes ``/documents/scan`` refuse its reservation (it
+    may not jump the manual FIFO), and ``/scan`` is the remedy for a
+    ``manual_drain_blocked`` fence. Clearing only the fence would therefore leave
+    the documented recovery path blocked — the defect that made the earlier
+    "report but do not fence" design a dead end."""
+    from lightrag.kg.pipeline_ingress import (
+        ManualRetryPublishResult,
+        PipelineIngressMessage,
+    )
+    from lightrag.kg.shared_storage import get_pipeline_ingress
+
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = _Rag()
+        ps = await _seed_recovery_required(rag)
+        ingress = await get_pipeline_ingress(rag.workspace)
+        for request_id in ("r1", "r2"):
+            assert (
+                ingress.request_manual_retry(
+                    request_id,
+                    PipelineIngressMessage(
+                        kind="rescan", retry_failed=True, request_id=request_id
+                    ),
+                )
+                is ManualRetryPublishResult.ACCEPTED
+            )
+        # A document notification must SURVIVE — it is real pending work.
+        ingress.put_document(PipelineIngressMessage(kind="document", doc_id="doc-a"))
+
+        router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+        force_reset = _endpoint(router, "force_reset_recovery")
+        resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+
+        assert resp.status == "reset"
+        assert resp.cancelled_manual_retries == 2
+        assert "2 queued manual retry request(s) cancelled" in resp.message
+        assert ps.get("recovery_required") is None
+        assert ingress.snapshot_manual_retries() == []
+        assert ingress.counts()["documents"] == 1
+
+        # Cancelled ids are terminal: a replay cannot silently re-queue one.
+        assert (
+            ingress.request_manual_retry(
+                "r1",
+                PipelineIngressMessage(
+                    kind="rescan", retry_failed=True, request_id="r1"
+                ),
+            )
+            is ManualRetryPublishResult.ALREADY_TERMINAL
+        )
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
+async def test_force_reset_reports_zero_when_nothing_was_queued(tmp_path):
+    """No queued intents → the count is 0 and the message does not mention them."""
+    finalize_share_data()
+    initialize_share_data(1)
+    try:
+        rag = _Rag()
+        await _seed_recovery_required(rag)
+        router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
+        force_reset = _endpoint(router, "force_reset_recovery")
+        resp = await force_reset(dr.ForceResetRecoveryRequest(confirm=True))
+
+        assert resp.status == "reset"
+        assert resp.cancelled_manual_retries == 0
+        assert "cancelled" not in resp.message
+    finally:
+        finalize_share_data()
+
+
+@pytest.mark.offline
 async def test_pipeline_status_filters_internal_fields(tmp_path):
     """Internal reservation-ownership / recovery bookkeeping must never appear on
-    the /pipeline_status response (raw tokens, PIDs, per-token sets)."""
+    the /pipeline_status response (raw tokens, PIDs, per-token sets).
+
+    ``recovery_required`` is checked by SUBSTANCE rather than by name: the
+    response deliberately publishes a field of that name, but as a sanitized
+    projection (bool + coarse kind + operator message — see
+    ``shared_storage.describe_recovery_fence``), because an operator otherwise had
+    no read-only way to learn the workspace was fenced. So the assertion here is
+    that the RAW record never flows through — a bool, never the dict, and none of
+    the dict's contents anywhere in the response."""
     finalize_share_data()
     initialize_share_data(1)
     try:
@@ -390,7 +540,13 @@ async def test_pipeline_status_filters_internal_fields(tmp_path):
                 "scanning_owner": {"token": "s", "pid": 2, "kind": "scan"},
                 "pending_enqueue_tokens": {"e": {"pid": 3}},
                 "operation_record": {"kind": "delete", "doc_id": "d"},
-                "recovery_required": {"kind": "delete"},
+                "recovery_required": {
+                    "kind": "delete",
+                    "owner_key": "busy_owner",
+                    "operation_record": {"kind": "delete", "doc_id": "doc-target"},
+                    "owner_token": "tok-must-not-leak",
+                    "pid": 4242,
+                },
             }
         )
         router = dr.create_document_routes(rag, dr.DocumentManager(str(tmp_path)))
@@ -398,7 +554,26 @@ async def test_pipeline_status_filters_internal_fields(tmp_path):
         resp = await get_status()
         dumped = resp.model_dump()
         for field in _INTERNAL_PIPELINE_STATUS_FIELDS:
+            if field == "recovery_required":
+                continue  # published as a sanitized projection; checked below
             assert field not in dumped, f"{field} leaked to /pipeline_status"
+
+        # The fence is visible, but only through the projection.
+        assert dumped["recovery_required"] is True
+        assert dumped["recovery_kind"] == "delete"
+        assert "a worker died mid 'delete'" in dumped["recovery_message"]
+        # The affected document IS named — that is the actionable part, and doc
+        # ids are already public all over this API.
+        assert "doc-target" in dumped["recovery_message"]
+
+        # What must not ride along: the credentials and process identity. A
+        # reservation token authorizes RELEASING a reservation, so publishing one
+        # would turn a status page into a control surface.
+        rendered = repr(dumped)
+        assert "tok-must-not-leak" not in rendered
+        assert "4242" not in rendered
+        assert "secret" not in rendered
+        assert "owner_key" not in rendered
     finally:
         finalize_share_data()
 
@@ -462,7 +637,7 @@ class _DeferRag:
 class _BoomDocManager:
     """Raises during classification so no scan branch drives the queue."""
 
-    def scan_directory_for_new_files(self):
+    def iter_new_files(self):
         raise RuntimeError("classification boom")
 
 
@@ -522,7 +697,7 @@ async def test_scan_without_deferred_flag_does_not_extra_drive():
 class _CancelDocManager:
     """Raises CancelledError to simulate a scan cancelled by server shutdown."""
 
-    def scan_directory_for_new_files(self):
+    def iter_new_files(self):
         raise asyncio.CancelledError()
 
 

@@ -87,7 +87,11 @@ from lightrag.constants import (
     DEFAULT_ENTITY_NAME_MAX_LENGTH,
     DEFAULT_ENTITY_NAME_MAX_BYTES,
 )
-from lightrag.kg.shared_storage import PipelineStatusLogger, get_storage_keyed_lock
+from lightrag.kg.shared_storage import (
+    PipelineStatusLogger,
+    append_pipeline_history,
+    get_storage_keyed_lock,
+)
 import time
 from dotenv import load_dotenv
 
@@ -1051,7 +1055,7 @@ async def rebuild_knowledge_from_chunks(
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
+            append_pipeline_history(pipeline_status, status_message)
 
     # Get cached extraction results for these chunks using storage
     # cached_results： chunk_id -> [list of (extraction_result, create_time) from LLM cache sorted by create_time of the first extraction_result]
@@ -1073,7 +1077,7 @@ async def rebuild_knowledge_from_chunks(
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+                append_pipeline_history(pipeline_status, status_message)
 
     if not cached_results:
         status_message = "No cached extraction results found"
@@ -1081,7 +1085,7 @@ async def rebuild_knowledge_from_chunks(
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+                append_pipeline_history(pipeline_status, status_message)
         if rebuild_policy == "best_effort":
             return report
 
@@ -1266,7 +1270,7 @@ async def rebuild_knowledge_from_chunks(
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
+            append_pipeline_history(pipeline_status, status_message)
 
     # Execute all tasks in parallel with semaphore control; on any failure
     # every sibling is cancelled and drained before the first exception
@@ -1282,7 +1286,7 @@ async def rebuild_knowledge_from_chunks(
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
+            append_pipeline_history(pipeline_status, status_message)
 
     if report.has_warnings:
         logger.warning(
@@ -3296,7 +3300,7 @@ async def merge_nodes_and_edges(
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        append_pipeline_history(pipeline_status, log_message)
 
     # ===== Phase 0: write-ahead recovery indexes (issue #3400) =====
     # Persist the candidate superset BEFORE any graph/vector/tracking
@@ -3316,7 +3320,7 @@ async def merge_nodes_and_edges(
         logger.info(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            append_pipeline_history(pipeline_status, log_message)
 
         await full_entities_storage.upsert(
             {
@@ -3357,7 +3361,7 @@ async def merge_nodes_and_edges(
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        append_pipeline_history(pipeline_status, log_message)
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
@@ -3403,7 +3407,7 @@ async def merge_nodes_and_edges(
                         ):
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
-                                pipeline_status["history_messages"].append(error_msg)
+                                append_pipeline_history(pipeline_status, error_msg)
                     except Exception as status_error:
                         logger.error(
                             f"Failed to update pipeline status: {status_error}"
@@ -3437,7 +3441,7 @@ async def merge_nodes_and_edges(
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        append_pipeline_history(pipeline_status, log_message)
 
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
@@ -3496,7 +3500,7 @@ async def merge_nodes_and_edges(
                         ):
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
-                                pipeline_status["history_messages"].append(error_msg)
+                                append_pipeline_history(pipeline_status, error_msg)
                     except Exception as status_error:
                         logger.error(
                             f"Failed to update pipeline status: {status_error}"
@@ -3549,7 +3553,7 @@ async def merge_nodes_and_edges(
     logger.info(log_message)
     async with pipeline_status_lock:
         pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        append_pipeline_history(pipeline_status, log_message)
 
 
 async def extract_entities(
@@ -4508,40 +4512,40 @@ async def _get_vector_context(
     Returns:
         List of text chunks with metadata
     """
-    try:
-        # Use chunk_top_k if specified, otherwise fall back to top_k
-        search_top_k = query_param.chunk_top_k or query_param.top_k
-        cosine_threshold = chunks_vdb.cosine_better_than_threshold
+    # No broad try/except here -- mirrors _get_node_data/_get_edge_data, whose
+    # entities_vdb/relationships_vdb queries are also left to propagate. A
+    # backend query failure is not "zero relevant chunks": swallowing it here
+    # let a transient vector-store error surface as a confident "no results"
+    # answer instead of a retrieval failure (and, in mix mode, silently
+    # dropped the vector-search branch while KG results kept flowing).
+    search_top_k = query_param.chunk_top_k or query_param.top_k
+    cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
-        results = await chunks_vdb.query(
-            query, top_k=search_top_k, query_embedding=query_embedding
-        )
-        if not results:
-            logger.info(
-                f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
-            )
-            return []
-
-        valid_chunks = []
-        for result in results:
-            if "content" in result:
-                chunk_with_metadata = {
-                    "content": result["content"],
-                    "created_at": result.get("created_at", None),
-                    "file_path": result.get("file_path", "unknown_source"),
-                    "source_type": "vector",  # Mark the source type
-                    "chunk_id": result.get("id"),  # Add chunk_id for deduplication
-                }
-                valid_chunks.append(chunk_with_metadata)
-
+    results = await chunks_vdb.query(
+        query, top_k=search_top_k, query_embedding=query_embedding
+    )
+    if not results:
         logger.info(
-            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
+            f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
         )
-        return valid_chunks
-
-    except Exception as e:
-        logger.error(f"Error in _get_vector_context: {e}")
         return []
+
+    valid_chunks = []
+    for result in results:
+        if "content" in result:
+            chunk_with_metadata = {
+                "content": result["content"],
+                "created_at": result.get("created_at", None),
+                "file_path": result.get("file_path", "unknown_source"),
+                "source_type": "vector",  # Mark the source type
+                "chunk_id": result.get("id"),  # Add chunk_id for deduplication
+            }
+            valid_chunks.append(chunk_with_metadata)
+
+    logger.info(
+        f"Naive query: {len(valid_chunks)} chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
+    )
+    return valid_chunks
 
 
 async def _perform_kg_search(

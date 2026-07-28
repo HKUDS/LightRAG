@@ -25,6 +25,28 @@ LIGHTRAG_PARSER=*:legacy-F
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
 - 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
 
+## 升级到有界管线调度
+
+引入 `PIPELINE_SCHEDULING_PAGE_SIZE`、`MAX_PENDING_DOCUMENTS` 和 `MAX_UNACKED_MANUAL_RETRIES`（见 `env.example`）的这个版本，同时改变了各 writer 通过共享状态协调时使用的**并发协议**。这是一次性的原地升级，不写任何 marker、也不写协议版本号，因此存储层无法替你识别出残留的旧 writer。所以这是一条运维要求：
+
+> **在对同一存储、同一 workspace 启动新版本之前，必须先停掉所有旧 writer。** 滚动重启时只要还留着一个旧 worker——或者一个共用同一 Redis/PostgreSQL workspace 的旧实例——就是故障场景，而不只是升级得慢一点。
+
+旧 writer 无法遵守的三件事：
+
+- **manual retry 冻结。** `/documents/reprocess_failed` 不再就地重置 `FAILED` 行。它发布一个 intent、冻结入口、等待管线转为空闲，然后在没有任何 worker 运行的前提下分页把 `FAILED`→`PENDING` 改写回去。旧 writer 不读冻结标志，于是会继续往这个被重置逻辑视为独占的窗口里入队。
+- **调度排序键。** `created_at` 现在是不可变的 `(created_at, id)` keyset 游标，以 UTC ISO-8601 时间戳写入。旧 writer 用其它格式打上的时间戳与之排序不一致，keyset 分页因此可能跳过或重复文档。
+- **派生索引。** 在 Redis 上，status 集合与 source multimap 与文档主记录在同一个事务中维护。旧 writer 只更新主记录，会把索引留成陈旧状态——此后 strict 分页与 strict 活跃计数会静默漏掉这个文档。
+
+推荐顺序：
+
+1. 停止接收新文档，等待管线跑完。在已鉴权的 `/health` 上，没有任何在途工作时 `scheduling.drain_waiting_on_workers` 为 `false`、`scheduling.drain_pending_enqueues` 为 `0`。
+2. 停掉共用该存储与 workspace 的**全部** worker 和实例。
+3. 启动新版本。
+
+不需要做数据迁移。启动后的第一轮 sweep 是一次 strict 全量 sweep，因此旧 writer 留在半途的文档——例如卡在 `PARSING`/`ANALYZING`/`PROCESSING` 但背后已没有 worker 的行——会被自动捡起并重新处理。如果确实无法排空（必须放弃一次运行），基于同样的原因，中途停止也是安全的；不安全的是事后又把旧版本启动回来。
+
+**启动后请检查日志里有没有 strict 能力告警。** 五个内置 `doc_status` 后端（JSON、Redis、PostgreSQL、MongoDB、OpenSearch）都具备全部能力。第三方后端可能不具备，而每一项缺失都是**失败关闭**而非静默降级：admission 返回 503、source-conflict 端点返回 501、scan 会一直重复检查陈旧的 `FAILED` stub。启动日志会逐项列出缺失的能力及其代价，已鉴权的 `/health` 在 `capabilities` 下报告同一份信息。设 `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` 可把这些缺口变成启动失败。有界分页没有对应旋钮：分页与 typed source 解析方法是抽象方法，缺失的后端根本无法构造。
+
 ## 入门指南
 
 ### 安装
@@ -454,6 +476,10 @@ server {
    - Nginx 首先验证 `Content-Length` 头
    - LightRAG 在上传过程中执行流式验证
    - 在两层设置适当的限制可确保更好的错误消息和安全性
+6. **服务端入库限制**（默认全部关闭，见 `env.example`）：
+   - `MAX_REQUEST_BODY_BYTES` 限制 `/documents/upload`、`/text`、`/texts` 的**原始请求体**字节数，在 ASGI 流式接收过程中累加。与 `MAX_UPLOAD_SIZE`（multipart 解析后限制单个文件）不同，它也能拦住谎报或不报 `Content-Length` 的请求体，在整个 body 读完之前就返回 **413**。
+   - `MAX_TEXTS_PER_REQUEST` 限制单个 `/documents/texts` 请求可携带的文本数量，在任何逐条存储查询之前就返回 **413**。它限制的是单个请求的扇出，因此与下面的容量上限不同，**不是**"稍后重试"类条件：超限的批次无论等多久都不会被接受，必须拆分。
+   - `MAX_PENDING_DOCUMENTS` 限制可同时处于活跃状态（`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`）或被在飞请求预留的文档数。超容量时返回 **429**,带 `Retry-After` 头,detail 里给出当前数量、本次请求数量与容量——且**在 body 传输之前**就拒绝。`/documents/scan` 与人工重试按设计突破该上限;它们产生的文档会让普通上传排队等待。
 
 ### 离线部署
 

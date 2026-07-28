@@ -164,3 +164,65 @@ async def test_get_doc_by_content_hash_no_match_returns_none():
     storage = _make_storage()
     storage.db.query.return_value = []
     assert await storage.get_doc_by_content_hash("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_exclude_doc_id_is_pushed_into_query():
+    # LR2 Phase 2.5: the self-exclusion is an indexed AND id <> $3, NOT a scan.
+    storage = _make_storage()
+    storage.db.query.return_value = [_row(id="doc-2", content_hash="hash-abc")]
+
+    result = await storage.get_doc_by_content_hash("hash-abc", exclude_doc_id="doc-1")
+
+    assert result is not None and result[0] == "doc-2"
+    call = storage.db.query.call_args
+    sql, params = call.args[0], call.args[1]
+    assert "content_hash=$2" in sql
+    assert "id <> $3" in sql  # exclusion in-query, indexed
+    assert "ORDER BY created_at ASC, id ASC" in sql and "LIMIT 1" in sql
+    assert params == ["test_ws", "hash-abc", "doc-1"]
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_no_exclude_omits_clause():
+    storage = _make_storage()
+    storage.db.query.return_value = [_row(content_hash="hash-abc")]
+    await storage.get_doc_by_content_hash("hash-abc")
+    sql, params = storage.db.query.call_args.args[0], storage.db.query.call_args.args[1]
+    assert "id <>" not in sql  # no exclusion clause when exclude_doc_id is None
+    assert params == ["test_ws", "hash-abc"]
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_content_hash_also_excludes_rows_pointing_at_the_excluded_id():
+    """The second half of ``exclude_doc_id`` (base contract): a row marked
+    ``is_duplicate`` with ``original_doc_id == exclude_doc_id`` is a record that
+    the content belongs to the excluded document, not an independent holder, so
+    returning it would make the asking document a duplicate of a record of
+    itself — an is_duplicate cycle whose shared source has no primary left.
+
+    It is a WHERE predicate, not a post-filter on the single returned row, so
+    ``LIMIT 1`` still yields the earliest holder that survives it.
+    """
+    storage = _make_storage()
+    storage.db.query.return_value = [_row(id="doc-3", content_hash="hash-abc")]
+
+    result = await storage.get_doc_by_content_hash("hash-abc", exclude_doc_id="doc-1")
+
+    assert result is not None and result[0] == "doc-3"
+    sql, params = storage.db.query.call_args.args[0], storage.db.query.call_args.args[1]
+    assert "id <> $3" in sql
+    # Same flag reading as _PRIMARY_PREDICATE (a non-boolean raises, fail
+    # closed); original_doc_id COALESCEd so a NULL cannot make NOT(...) NULL and
+    # drop the row.
+    assert "COALESCE((metadata->>'is_duplicate')::boolean, false)" in sql
+    assert "COALESCE(metadata->>'original_doc_id', '') = $3" in sql
+    # One parameter for both halves: the SQL reuses $3 rather than binding twice.
+    assert params == ["test_ws", "hash-abc", "doc-1"]
+    assert "ORDER BY created_at ASC, id ASC" in sql and "LIMIT 1" in sql
+
+    # No exclusion → neither half is present.
+    storage.db.query.reset_mock()
+    storage.db.query.return_value = [_row(content_hash="hash-abc")]
+    await storage.get_doc_by_content_hash("hash-abc")
+    assert "original_doc_id" not in storage.db.query.call_args.args[0]

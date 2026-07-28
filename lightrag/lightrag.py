@@ -51,6 +51,7 @@ from lightrag.constants import (
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
+    ROLLBACK_REPORT_SAMPLE_CAP,
     DEFAULT_SUMMARY_PRIORITY,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
@@ -79,6 +80,9 @@ from lightrag.constants import (
     DEFAULT_QUEUE_SIZE_PARSE,
     DEFAULT_QUEUE_SIZE_ANALYZE,
     DEFAULT_QUEUE_SIZE_INSERT,
+    DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+    DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
@@ -91,6 +95,7 @@ from lightrag.kg import (
 from lightrag.kg.shared_storage import (
     PipelineReservationConflict,
     acquire_reservation,
+    append_pipeline_history,
     check_pipeline_status_mutation,
     get_namespace_data,
     get_default_workspace,
@@ -102,9 +107,12 @@ from lightrag.kg.shared_storage import (
 )
 
 from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorPosition,
     DocProcessingStatus,
     DocStatus,
     DocStatusStorage,
@@ -131,6 +139,7 @@ from lightrag.utils_pipeline import (
     KG_RECOVERY_WARNINGS_METADATA_KEY,
     compute_text_content_hash,
     doc_status_custom_chunk_patch,
+    enforce_strict_storage_capabilities,
     make_custom_chunk_id,
     make_custom_chunk_operation_id,
     normalize_document_file_path,
@@ -680,6 +689,61 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         default=get_env_value("QUEUE_SIZE_INSERT", DEFAULT_QUEUE_SIZE_INSERT, int)
     )
 
+    pipeline_scheduling_page_size: int = field(
+        default=get_env_value(
+            "PIPELINE_SCHEDULING_PAGE_SIZE",
+            DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+            int,
+        )
+    )
+    """Bounded scheduling page size (LR2 Phase 2).
+
+    The scheduler sweeps the doc_status backlog through keyset pages of this
+    many records so memory stays O(page_size + inflight) instead of O(backlog).
+    ``0`` disables paging: one page holds the whole result set, exactly
+    reproducing the legacy single-scan behaviour. Negative values are rejected
+    at initialization.
+    """
+
+    pipeline_require_strict_storage_reads: bool = field(
+        default=get_env_value(
+            "PIPELINE_REQUIRE_STRICT_STORAGE_READS",
+            DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+            bool,
+        )
+    )
+    """Refuse to start when doc_status lacks a strict capability (LR2 §11).
+
+    ``False`` (the default) logs a warning naming each gap and its operator-facing
+    consequence, and ``/health`` reports the same under ``capabilities``. ``True``
+    turns those gaps into a startup failure, for a deployment that would rather
+    not run at all than serve 503s. Checked once, after storages initialize.
+
+    There is deliberately no equivalent for bounded PAGING: the paging and typed
+    source-resolution methods are ``@abstractmethod``, so a backend that lacks
+    them cannot be instantiated in the first place.
+    """
+
+    max_pending_documents: int = field(
+        default=get_env_value(
+            "MAX_PENDING_DOCUMENTS",
+            DEFAULT_MAX_PENDING_DOCUMENTS,
+            int,
+        )
+    )
+    """Admission capacity for ordinary ingestion (LR2 §9.1).
+
+    A new upload / text insert is refused with
+    :class:`~lightrag.exceptions.PipelineBackpressureError` (HTTP 429) when
+
+        strict active count + other in-flight reservation weights + requested
+
+    would exceed this value. Active means PENDING / PARSING / ANALYZING /
+    PROCESSING. ``0`` (the default) disables admission control; negative values
+    are rejected at initialization. Enabling it requires a doc_status backend
+    with strict counting — every first-party backend has one.
+    """
+
     max_graph_nodes: int = field(
         default=get_env_value("MAX_GRAPH_NODES", DEFAULT_MAX_GRAPH_NODES, int)
     )
@@ -994,6 +1058,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self._replace_addon_params(addon_params, mark_dirty=False)
         self._apply_chunk_size_overlay()
         self._refresh_addon_params_cache()
+
+        # Bounded scheduling page size: 0 disables paging (single-scan legacy
+        # behaviour); a negative value is a misconfiguration, fail fast.
+        if self.pipeline_scheduling_page_size < 0:
+            raise ValueError(
+                "PIPELINE_SCHEDULING_PAGE_SIZE must be >= 0 (0 disables "
+                f"paging); got {self.pipeline_scheduling_page_size}"
+            )
+
+        # Admission capacity: 0 disables admission control; a negative capacity
+        # would refuse every request, which is never what an operator meant.
+        if self.max_pending_documents < 0:
+            raise ValueError(
+                "MAX_PENDING_DOCUMENTS must be >= 0 (0 disables admission "
+                f"control); got {self.max_pending_documents}"
+            )
 
         # Handle deprecated parameters
         if self.log_level is not None:
@@ -1330,6 +1410,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 if storage:
                     # logger.debug(f"Initializing storage: {storage}")
                     await storage.initialize()
+
+            # After initialize(), so a backend that derives capabilities during
+            # startup (Redis builds its status/source indexes there) is judged on
+            # what it can actually do. Raises only under require=True.
+            enforce_strict_storage_capabilities(
+                self.doc_status,
+                require=bool(self.pipeline_require_strict_storage_reads),
+            )
 
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
@@ -2247,7 +2335,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         *,
         pipeline_status: dict | None = None,
         pipeline_status_lock: Any | None = None,
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, Any]:
         """Roll back every failed/stale custom-chunk operation (issue #3400 P4).
 
         The administrative escape hatch invoked at the start of
@@ -2278,7 +2366,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         scan retries it. Absent objects are idempotent no-ops, but success is
         never reported merely because something was already missing.
 
-        Returns ``{"rolled_back": [...], "failed": [...]}`` doc-id lists.
+        Returns ``{"rolled_back_count": int, "failed_count": int,
+        "rolled_back_sample": [...], "failed_sample": [...]}``. Counts are
+        exact; the id lists are bounded to ``ROLLBACK_REPORT_SAMPLE_CAP``,
+        because a report that grows one entry per journaled document would
+        reintroduce the O(N) accumulation this sweep exists to remove.
         """
         if pipeline_status is None or pipeline_status_lock is None:
             pipeline_status = await get_namespace_data(
@@ -2288,70 +2380,122 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 "pipeline_status", workspace=self.workspace
             )
 
-        # Scheduling-control-plane discovery: strict so a mid-pagination or
-        # per-record backend failure raises instead of returning a partial
-        # candidate set (which would roll back some journaled docs, silently
-        # miss the rest, and report the scan done). The scan-time caller
-        # catches the raise and keeps the journal/FAILED rows for the next
-        # scan — abort-and-retry beats partial administrative recovery.
-        candidates = await self.doc_status.get_docs_by_statuses(
-            [DocStatus.FAILED, DocStatus.PROCESSING], strict=True
-        )
-        journaled_ids = [
-            doc_id
-            for doc_id, status_doc in candidates.items()
-            if doc_status_custom_chunk_patch(status_doc) is not None
-        ]
-
-        rolled_back: list[str] = []
-        failed: list[str] = []
-        if not journaled_ids:
-            return {"rolled_back": rolled_back, "failed": failed}
-
+        rolled_back_count = 0
+        failed_count = 0
+        rolled_back_sample: list[str] = []
+        failed_sample: list[str] = []
         doc_lock_namespace = (
             f"{self.workspace}:DocPatch" if self.workspace else "DocPatch"
         )
-        for doc_id in journaled_ids:
-            async with get_storage_keyed_lock(
-                [doc_id], namespace=doc_lock_namespace, enable_logging=False
-            ):
-                # Re-read under the lock: the SDK may have resumed (and
-                # committed) the operation between discovery and here.
-                row = await self.doc_status.get_by_id(doc_id)
-                journal = doc_status_custom_chunk_patch(row)
-                if journal is None:
-                    continue
-                try:
-                    await self._rollback_one_custom_chunk_patch(
-                        doc_id,
-                        row,
-                        journal,
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
-                    )
-                    rolled_back.append(doc_id)
-                    log_message = (
-                        f"[rollback] Rolled back custom-chunk operation "
-                        f"{journal.get('operation_id')} on {doc_id} "
-                        f"(mode: {journal.get('mode', 'patch')})"
-                    )
-                    logger.info(log_message)
-                    async with pipeline_status_lock:
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-                except Exception as rollback_error:
-                    # Journal and FAILED status remain; the next scan retries.
-                    failed.append(doc_id)
-                    log_message = (
-                        f"[rollback] Failed to roll back custom-chunk "
-                        f"operation on {doc_id}: {rollback_error}"
-                    )
-                    logger.error(log_message)
-                    async with pipeline_status_lock:
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
 
-        return {"rolled_back": rolled_back, "failed": failed}
+        async def _roll_back_batch(doc_ids: list[str]) -> None:
+            """Roll back one page's journaled docs, accumulating only counts."""
+            nonlocal rolled_back_count, failed_count
+            for doc_id in doc_ids:
+                async with get_storage_keyed_lock(
+                    [doc_id], namespace=doc_lock_namespace, enable_logging=False
+                ):
+                    # Re-read under the lock: the SDK may have resumed (and
+                    # committed) the operation between discovery and here.
+                    row = await self.doc_status.get_by_id(doc_id)
+                    journal = doc_status_custom_chunk_patch(row)
+                    if journal is None:
+                        continue
+                    try:
+                        await self._rollback_one_custom_chunk_patch(
+                            doc_id,
+                            row,
+                            journal,
+                            pipeline_status=pipeline_status,
+                            pipeline_status_lock=pipeline_status_lock,
+                        )
+                        rolled_back_count += 1
+                        if len(rolled_back_sample) < ROLLBACK_REPORT_SAMPLE_CAP:
+                            rolled_back_sample.append(doc_id)
+                        log_message = (
+                            f"[rollback] Rolled back custom-chunk operation "
+                            f"{journal.get('operation_id')} on {doc_id} "
+                            f"(mode: {journal.get('mode', 'patch')})"
+                        )
+                        logger.info(log_message)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = log_message
+                            append_pipeline_history(pipeline_status, log_message)
+                    except Exception as rollback_error:
+                        # Journal and FAILED status remain; the next scan retries.
+                        failed_count += 1
+                        if len(failed_sample) < ROLLBACK_REPORT_SAMPLE_CAP:
+                            failed_sample.append(doc_id)
+                        log_message = (
+                            f"[rollback] Failed to roll back custom-chunk "
+                            f"operation on {doc_id}: {rollback_error}"
+                        )
+                        logger.error(log_message)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = log_message
+                            append_pipeline_history(pipeline_status, log_message)
+
+        # Scheduling-control-plane discovery, memory-bounded (LR2 Phase 2):
+        # page the FAILED/PROCESSING keyset instead of materializing every such
+        # row, taking journaled ids straight from the lightweight page's
+        # has_custom_chunk_journal flag (no per-row hydration).
+        #
+        # Each page is rolled back BEFORE the next is fetched, so nothing
+        # proportional to the journaled-document count is ever held — collecting
+        # every id first would have kept the sweep O(N) on the assumption that
+        # journaled docs are rare, which is a workload guess, not a bound.
+        # Interleaving is safe against the live-view keyset: the sort key
+        # ``(created_at, id)`` is immutable (``update_doc_status_fields``
+        # refuses ``created_at``), and a rollback only ever leaves the
+        # FAILED/PROCESSING set — it flips a row to PROCESSED or deletes it, and
+        # never creates one — so it can only touch rows the sweep has already
+        # consumed and passed.
+        #
+        # strict so a mid-pagination or per-record backend failure raises rather
+        # than silently ending the sweep early and reporting the scan done. Docs
+        # rolled back before that raise stay rolled back: each one is an
+        # independent, idempotent unit committed under its own lock, and its
+        # journal is gone, so the next scan simply skips it and picks up the
+        # rest.
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size > 0:
+            position: CursorPosition = CURSOR_START
+            while True:
+                page = await self.doc_status.get_docs_by_statuses_page(
+                    [DocStatus.FAILED, DocStatus.PROCESSING],
+                    limit=page_size,
+                    position=position,
+                    strict=True,
+                )
+                await _roll_back_batch(
+                    [
+                        doc_id
+                        for doc_id, record in page.docs.items()
+                        if record.has_custom_chunk_journal
+                    ]
+                )
+                if page.next_position is CURSOR_END:
+                    break
+                position = page.next_position
+        else:
+            # Paging disabled (PIPELINE_SCHEDULING_PAGE_SIZE=0): legacy scan.
+            candidates = await self.doc_status.get_docs_by_statuses(
+                [DocStatus.FAILED, DocStatus.PROCESSING], strict=True
+            )
+            await _roll_back_batch(
+                [
+                    doc_id
+                    for doc_id, status_doc in candidates.items()
+                    if doc_status_custom_chunk_patch(status_doc) is not None
+                ]
+            )
+
+        return {
+            "rolled_back_count": rolled_back_count,
+            "failed_count": failed_count,
+            "rolled_back_sample": rolled_back_sample,
+            "failed_sample": failed_sample,
+        }
 
     async def _rollback_one_custom_chunk_patch(
         self,
@@ -2584,7 +2728,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         logger.warning(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            append_pipeline_history(pipeline_status, log_message)
 
         return updated_rows
 
@@ -2681,7 +2825,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
-                    pipeline_status["history_messages"].append(error_msg)
+                    append_pipeline_history(pipeline_status, error_msg)
             raise e
 
     def _index_storages(self) -> list:
@@ -2851,7 +2995,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
     async def _insert_done_with_cleanup(self) -> None:
         """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
@@ -4046,7 +4190,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
             for edge_data in affected_edges:
                 src = edge_data.get("source")
@@ -4111,7 +4255,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
             # Update entity/relation chunk-tracking with the remaining sources.
             current_time = int(time.time())
@@ -4175,7 +4319,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
             except Exception as e:
                 logger.error(
                     f"[purge] Failed to delete relationships for {doc_id}: {e}"
@@ -4238,7 +4382,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
             except Exception as e:
                 logger.error(f"[purge] Failed to delete entities for {doc_id}: {e}")
                 raise Exception(f"Failed to delete entities: {e}") from e
@@ -4301,7 +4445,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
         except Exception as e:
             logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
             raise Exception(f"Failed to delete document chunks: {e}") from e
@@ -4462,7 +4606,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 log_message = f"Starting deletion process for document {doc_id}"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
@@ -4514,7 +4658,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Update pipeline status for monitoring
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = warning_msg
-                    pipeline_status["history_messages"].append(warning_msg)
+                    append_pipeline_history(pipeline_status, warning_msg)
 
             # 2. Get chunk IDs from document status
             metadata = doc_status_data.get("metadata", {})
@@ -4581,7 +4725,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         logger.error(no_cache_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = no_cache_msg
-                            pipeline_status["history_messages"].append(no_cache_msg)
+                            append_pipeline_history(pipeline_status, no_cache_msg)
                         raise Exception(no_cache_msg)
                     try:
                         deletion_stage = "delete_llm_cache"
@@ -4623,7 +4767,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
                 deletion_fully_completed = True
                 return DeletionResult(
@@ -4861,7 +5005,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     log_message = f"Found {len(entities_to_rebuild)} affected entities"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
                 # Process relationships
                 for edge_data in affected_edges:
@@ -4938,7 +5082,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
                 current_time = int(time.time())
                 deletion_stage = "update_chunk_tracking"
@@ -4992,7 +5136,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to delete chunks: {e}")
@@ -5030,7 +5174,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         log_message = f"Successfully deleted {len(relationships_to_delete)} relations"
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to delete relationships: {e}")
@@ -5127,7 +5271,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to delete entities: {e}")
@@ -5178,7 +5322,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.error(log_message)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     raise Exception(log_message)
                 try:
                     deletion_stage = "delete_llm_cache"
@@ -5198,7 +5342,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.info(cache_log_message)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = cache_log_message
-                        pipeline_status["history_messages"].append(cache_log_message)
+                        append_pipeline_history(pipeline_status, cache_log_message)
                     log_message = cache_log_message
                 except Exception as cache_delete_error:
                     log_message = (
@@ -5209,7 +5353,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.error(traceback.format_exc())
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     raise Exception(log_message) from cache_delete_error
 
             # 10. Delete from full_entities and full_relations storage
@@ -5334,7 +5478,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             "or enqueued document is not silently deferred: "
                             f"{probe_error}"
                         )
-                status["history_messages"].append(completion_msg)
+                append_pipeline_history(status, completion_msg)
                 logger.info(completion_msg)
                 if ingress_has_work:
                     status.update(updates)

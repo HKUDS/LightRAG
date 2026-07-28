@@ -7,7 +7,7 @@ import re
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, TypeVar, Union, final
+from typing import Any, Awaitable, Callable, ClassVar, Sequence, TypeVar, Union, final
 import numpy as np
 import configparser
 import ssl
@@ -27,15 +27,33 @@ from tenacity import (
 )
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    SourceAbsent,
+    SourceConflict,
+    SourceConflictPage,
+    SourceConflictRepairResult,
+    SourceConflictSummary,
+    SourceResolution,
+    SourceUnique,
 )
-from ..constants import DEFAULT_QUERY_PRIORITY
-from ..exceptions import DataMigrationError
+from ..constants import CUSTOM_CHUNK_PATCH_METADATA_KEY, DEFAULT_QUERY_PRIORITY
+from ..exceptions import (
+    DataMigrationError,
+    SourceConflictRepairCASError,
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
+)
 from ..namespace import NameSpace, is_namespace
 from ..utils import (
     logger,
@@ -1566,6 +1584,93 @@ class PostgreSQLDB:
                 f"Failed to create partial content_hash index on LIGHTRAG_DOC_STATUS: {e}"
             )
 
+    async def _migrate_doc_status_add_scheduling_index(self):
+        """Create the keyset-sweep index backing the memory-bounding scheduling
+        page API (Phase 1).
+
+        ``NULLS FIRST`` is load-bearing, not decoration. PostgreSQL's default for
+        ``ASC`` is NULLS LAST, so an index declared ``(… created_at, id)`` does
+        NOT satisfy ``ORDER BY created_at ASC NULLS FIRST, id ASC`` — the planner
+        cannot use it for ordering and falls back to a bitmap scan plus a
+        top-N sort of every row past the cursor. Measured at 60k rows: the old
+        index sorted 7583 rows per page; with this one the same page is an
+        ordered index scan touching exactly ``limit`` rows (500), 4.6ms → 0.23ms.
+
+        Superseded name: the old index is dropped, because
+        ``CREATE INDEX IF NOT EXISTS`` on the same name would keep the (wrong)
+        existing definition forever. A doc_status index is derived state, so
+        rebuilding it is inside the documented upgrade envelope.
+
+        Order matters: create, VERIFY from ``pg_indexes``, and only then retire
+        the superseded index. Dropping first and swallowing a failed create left
+        the table with NO scheduling index — strictly worse than before the
+        upgrade, and silently: the service starts, pages stay correct and
+        memory-bounded (the top-N sort keeps only ``limit`` rows), and only the
+        I/O degrades to a full scan plus a sort per page. Verification reads the
+        catalog rather than inferring success from the absence of an exception.
+
+        A missing index is NOT fatal — index DDL can fail transiently (lock
+        timeout, concurrent DDL, a role without CREATE) and every startup retries
+        — but it is reported at WARNING with the consequence and the DDL to run
+        by hand, because nothing else about a degraded plan is observable.
+
+        Guarded and idempotent — retried on every startup until present.
+        """
+        index_name = "idx_lightrag_doc_status_ws_status_created_nf_id"
+        create_sql = (
+            f"CREATE INDEX IF NOT EXISTS {index_name} "
+            "ON LIGHTRAG_DOC_STATUS "
+            "(workspace, status, created_at NULLS FIRST, id)"
+        )
+        superseded_name = "idx_lightrag_doc_status_ws_status_created_id"
+
+        try:
+            if not await self._doc_status_index_exists(index_name):
+                logger.info(f"Creating index {index_name} on LIGHTRAG_DOC_STATUS")
+                await self.execute(create_sql)
+        except Exception as e:
+            logger.error(
+                f"Failed to create index {index_name} on LIGHTRAG_DOC_STATUS: {e}"
+            )
+
+        try:
+            created = await self._doc_status_index_exists(index_name)
+        except Exception as verify_error:
+            logger.error(
+                f"Could not verify scheduling index {index_name}: {verify_error}"
+            )
+            created = False
+
+        if not created:
+            logger.warning(
+                f"Scheduling index {index_name} is MISSING on LIGHTRAG_DOC_STATUS: "
+                "every scheduling page falls back to a full scan plus a per-page "
+                "sort (O(rows) I/O per page, O(rows²/page_size) per sweep). "
+                f"Keeping the superseded index {superseded_name} so paging is no "
+                "worse than before this upgrade; startup retries the creation. "
+                f"To create it by hand: {create_sql}"
+            )
+            return
+
+        # Only now is the old index dead weight: it costs writes without ever
+        # serving the page query (PG's ASC default is NULLS LAST).
+        try:
+            await self.execute(f"DROP INDEX IF EXISTS {superseded_name}")
+        except Exception as drop_error:  # pragma: no cover - best effort
+            logger.warning(f"Could not drop superseded scheduling index: {drop_error}")
+
+    async def _doc_status_index_exists(self, index_name: str) -> bool:
+        """Is ``index_name`` present on LIGHTRAG_DOC_STATUS, per the catalog?"""
+        rows = await self.query(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE tablename = 'lightrag_doc_status'
+              AND indexname = $1
+            """,
+            [index_name],
+        )
+        return bool(rows)
+
     async def _migrate_text_chunks_add_heading_sidecar(self):
         """Add heading and sidecar JSONB columns to LIGHTRAG_DOC_CHUNKS if missing."""
         columns_to_add = [
@@ -1943,6 +2048,15 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(
                 f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_CHUNKS heading/sidecar fields: {e}"
+            )
+
+        # Migrate LIGHTRAG_DOC_STATUS to add the keyset-sweep index backing the
+        # memory-bounding scheduling page API (Phase 1)
+        try:
+            await self._migrate_doc_status_add_scheduling_index()
+        except Exception as e:
+            logger.error(
+                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_STATUS scheduling index: {e}"
             )
 
     async def _migrate_create_full_entities_relations_tables(self):
@@ -2544,6 +2658,8 @@ class ClientManager:
 class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = field(default=None)
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __post_init__(self):
         validate_workspace(self.workspace)
         self._max_batch_size = 200  # DB batch size, independent of embedding batch size
@@ -2723,6 +2839,16 @@ class PGKVStorage(BaseKVStorage):
             response["update_time"] = create_time if update_time == 0 else update_time
 
         return response if response else None
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``db.query`` propagates every asyncpg transport/server error (nothing
+        in this class swallows it), so a ``None`` from the legacy read is a
+        positively confirmed absence — safe for callers that take destructive
+        action on a miss.
+        """
+        return await self.get_by_id(id)
 
     # Query by id
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -4823,10 +4949,42 @@ def _parse_doc_status_datetime(
         return None
 
 
+# Columns that the targeted-update path (update_doc_status_fields) may write.
+# Column names are interpolated into SQL, so they MUST come from this whitelist
+# — unknown keys raise instead of being quoted. created_at is deliberately
+# absent: it is the immutable keyset sort key (update_doc_status_fields refuses
+# it).
+_DOC_STATUS_UPDATABLE_COLUMNS = frozenset(
+    {
+        "content_summary",
+        "content_length",
+        "chunks_count",
+        "status",
+        "file_path",
+        "chunks_list",
+        "track_id",
+        "metadata",
+        "error_msg",
+        "content_hash",
+        "updated_at",
+    }
+)
+# JSONB columns serialized exactly like the batch upsert does (json.dumps).
+_DOC_STATUS_JSON_COLUMNS = frozenset({"chunks_list", "metadata"})
+# TIMESTAMP columns converted via _parse_doc_status_datetime like the upsert.
+_DOC_STATUS_DATETIME_COLUMNS = frozenset({"updated_at", "created_at"})
+
+
 @final
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
     db: PostgreSQLDB = field(default=None)
+
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
+    # source-conflict listing/repair APIs — never materialize the whole set.
+    _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
 
     def __post_init__(self):
         validate_workspace(self.workspace)
@@ -5058,6 +5216,13 @@ class PGDocStatusStorage(DocStatusStorage):
         the canonical ``file_path`` column. The caller is responsible for
         passing an already-canonical basename; storage performs an exact match
         only.
+
+        ``file_path`` is one-to-many (duplicate-attempt ``dup-*`` rows keep the
+        same canonical basename); this returns the single PRIMARY
+        (``metadata.is_duplicate != true``) row — callers doing identity checks
+        / dedup want the document, never a duplicate marker. When only
+        duplicate markers remain (primary deleted) the basename is free again
+        and this returns ``None``.
         """
         if not basename:
             return None
@@ -5065,9 +5230,15 @@ class PGDocStatusStorage(DocStatusStorage):
         if basename == "unknown_source":
             return None
 
+        # COALESCE((metadata->>'is_duplicate')::boolean, false) excludes
+        # duplicate-marker rows; NULL/absent metadata keys coalesce to false
+        # (primary). metadata is JSONB, so ->> yields 'true'/'false' text that
+        # casts cleanly; a non-boolean value raises and propagates (fail
+        # closed) rather than silently matching.
         sql = (
             "SELECT * FROM LIGHTRAG_DOC_STATUS "
             "WHERE workspace=$1 AND file_path = $2 "
+            "AND COALESCE((metadata->>'is_duplicate')::boolean, false) = false "
             "ORDER BY created_at ASC, id ASC LIMIT 1"
         )
         params = [self.workspace, basename]
@@ -5111,23 +5282,46 @@ class PGDocStatusStorage(DocStatusStorage):
         return str(row["id"]), doc
 
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> tuple[str, dict[str, Any]] | None:
         """PG-native override of content-hash document lookup.
 
         Replaces the base-class full-table scan with an indexed query on
         ``workspace + content_hash``. Empty strings are treated as a miss
-        to align with the partial-index predicate.
+        to align with the partial-index predicate. ``exclude_doc_id`` adds an
+        indexed ``AND id != $3`` plus a jsonb predicate dropping any row that
+        merely POINTS at that id (``is_duplicate`` naming it as
+        ``original_doc_id``), so the duplicate check gets the earliest holder
+        that is neither the row being processed nor a record of it, in one
+        bounded query (see base contract). Both are WHERE predicates on the same
+        indexed scan, so skipping a pointer row cannot truncate the search —
+        ``LIMIT 1`` still returns the earliest row that survives them.
         """
         if not content_hash:
             return None
 
+        params: list[Any] = [self.workspace, content_hash]
+        exclude_clause = ""
+        if exclude_doc_id is not None:
+            params.append(exclude_doc_id)
+            # Same ``(metadata->>'is_duplicate')::boolean`` reading as
+            # ``_PRIMARY_PREDICATE`` — one interpretation of that flag per
+            # backend, and a non-boolean value raises (fail closed) instead of
+            # silently deciding. ``original_doc_id`` is COALESCEd because a NULL
+            # would make the whole NOT(...) NULL, and a WHERE that is NULL drops
+            # the row — filtering out a duplicate marker that recorded no
+            # original, which is not what this excludes.
+            exclude_clause = (
+                f" AND id <> ${len(params)} AND NOT ("
+                "COALESCE((metadata->>'is_duplicate')::boolean, false) "
+                f"AND COALESCE(metadata->>'original_doc_id', '') = ${len(params)})"
+            )
         sql = (
             "SELECT * FROM LIGHTRAG_DOC_STATUS "
-            "WHERE workspace=$1 AND content_hash=$2 "
+            f"WHERE workspace=$1 AND content_hash=$2{exclude_clause} "
             "ORDER BY created_at ASC, id ASC LIMIT 1"
         )
-        result = await self.db.query(sql, [self.workspace, content_hash], True)
+        result = await self.db.query(sql, params, True)
         if not result:
             return None
         row = result[0]
@@ -5164,6 +5358,631 @@ class PGDocStatusStorage(DocStatusStorage):
             content_hash=row.get("content_hash"),
         )
         return str(row["id"]), doc
+
+    # SQL predicate isolating PRIMARY (non-duplicate) rows. metadata is JSONB,
+    # so ->> yields 'true'/'false' text that casts cleanly; a NULL/absent key
+    # coalesces to false (primary), and a non-boolean value raises and
+    # propagates (fail closed) rather than silently matching.
+    _PRIMARY_PREDICATE = "COALESCE((metadata->>'is_duplicate')::boolean, false) = false"
+
+    async def resolve_doc_source_strict(
+        self, canonical_source_key: str
+    ) -> SourceResolution:
+        """Typed, conflict-aware source resolution (see base contract).
+
+        Fetches up to two PRIMARY rows for the canonical basename and maps
+        0/1/≥2 → Absent/Unique/Conflict. When two are found the exact count is
+        an indexed ``COUNT(*)`` on the same predicate. Every asyncpg
+        transport/server error propagates out of ``db.query`` (nothing here
+        swallows it), so a returned ``SourceAbsent`` IS a confirmed absence.
+        """
+        if not canonical_source_key or canonical_source_key == "unknown_source":
+            return SourceAbsent()
+
+        sql = (
+            "SELECT id, status, created_at, updated_at, file_path, track_id, "
+            "metadata FROM LIGHTRAG_DOC_STATUS "
+            "WHERE workspace=$1 AND file_path=$2 "
+            f"AND {self._PRIMARY_PREDICATE} "
+            "ORDER BY created_at ASC, id ASC LIMIT 2"
+        )
+        rows = await self.db.query(sql, [self.workspace, canonical_source_key], True)
+        if not rows:
+            return SourceAbsent()
+        if len(rows) == 1:
+            row = rows[0]
+            return SourceUnique(
+                doc_id=str(row["id"]),
+                doc=self._pg_scheduling_record_from_row(row, strict=True),
+            )
+        # ≥2 primary candidates: exact count is cheap on the indexed predicate.
+        count_row = await self.db.query(
+            "SELECT COUNT(*) AS c FROM LIGHTRAG_DOC_STATUS "
+            "WHERE workspace=$1 AND file_path=$2 "
+            f"AND {self._PRIMARY_PREDICATE}",
+            [self.workspace, canonical_source_key],
+        )
+        candidate_count = int(count_row["c"]) if count_row else None
+        return SourceConflict(
+            candidate_count=candidate_count,
+            sample_doc_ids=tuple(sorted(str(r["id"]) for r in rows)),
+        )
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``db.query`` propagates every transport/server error, so a ``None``
+        from the aligned legacy read is a confirmed absence.
+        """
+        return await self.get_by_id(id)
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> tuple[datetime.datetime | None, str]:
+        """Decode an opaque page cursor into (created_at, id).
+
+        The opaque form is ``json.dumps([created_at_iso | None, id])``
+        produced by ``_encode_cursor``. A ``None`` first element marks the
+        NULL-created_at bucket (corrupt rows, sorted FIRST — see the page
+        docstring); a string round-trips exactly through
+        ``datetime.fromisoformat`` (microseconds preserved) and is normalized
+        back to the naive-UTC form the TIMESTAMP column stores, so the
+        parameterized row-value comparison resumes at exactly the last
+        consumed key. A malformed cursor raises
+        :class:`~lightrag.exceptions.StorageControlPlaneError`.
+        """
+        try:
+            decoded = json.loads(opaque)
+            created_iso, doc_id = decoded
+            if not isinstance(doc_id, str):
+                raise ValueError("cursor id must be a string")
+            if created_iso is None:
+                return None, doc_id
+            if not isinstance(created_iso, str):
+                raise ValueError("cursor created_at must be a string or null")
+            created = datetime.datetime.fromisoformat(created_iso)
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for PGDocStatusStorage: {e}"
+            ) from e
+        if created.tzinfo is not None:
+            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+        return created, doc_id
+
+    def _encode_cursor(self, row: dict[str, Any]) -> str:
+        """Encode the keyset key of a returned DB row as an opaque cursor.
+
+        Rows with a NULL created_at (corrupt writes — the column defaults to
+        CURRENT_TIMESTAMP) sort FIRST and encode as ``[null, id]`` so the
+        sweep traverses past them instead of losing them behind a row-value
+        comparison that NULL can never satisfy (matching the JSON/Redis
+        backends, which sort a missing created_at first as "")."""
+        created = row.get("created_at")
+        if not isinstance(created, datetime.datetime):
+            return json.dumps([None, str(row["id"])])
+        return json.dumps(
+            [self._format_datetime_with_timezone(created), str(row["id"])]
+        )
+
+    def _pg_scheduling_record_from_row(
+        self, row: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one DB row; strict raises on unusable rows, relaxed returns
+        None (the row was still returned by the scan and stays consumed)."""
+        doc_id = str(row.get("id") or "")
+        try:
+            if not doc_id:
+                raise KeyError("id")
+            status = DocStatus(str(row["status"]))
+            created_raw = row["created_at"]
+            if not isinstance(created_raw, datetime.datetime):
+                raise TypeError("created_at must be a timestamp")
+            updated_raw = row.get("updated_at") or created_raw
+            if not isinstance(updated_raw, datetime.datetime):
+                raise TypeError("updated_at must be a timestamp")
+            metadata = row.get("metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=self._format_datetime_with_timezone(created_raw),
+                updated_at=self._format_datetime_with_timezone(updated_raw),
+                file_path=row.get("file_path") or "no-file-path",
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=isinstance(
+                    metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(
+                f"[{self.workspace}] Unusable scheduling row "
+                f"{doc_id or '<unknown>'}: {e}"
+            )
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page over LIGHTRAG_DOC_STATUS.
+
+        **One parenthesised branch per status, UNION ALL'd**, each carrying the
+        same keyset predicate, the same ``ORDER BY created_at ASC NULLS FIRST,
+        id ASC`` and the same ``LIMIT``; the wrapper re-sorts and re-limits. That
+        shape is what lets the planner MergeAppend ordered index scans on
+        ``idx_lightrag_doc_status_ws_status_created_nf_id``.
+
+        It replaced a single ``status = ANY($2)`` query, which read as if the
+        planner would combine per-status index ranges under the LIMIT. Measured
+        instead, on 60k rows: one status was a bitmap scan plus a top-N sort of
+        7583 rows, and TWO statuses — the AUTO sweep's own shape — was a full
+        ``Seq Scan`` of the table plus a sort, every page. Page *memory* was
+        bounded (top-N heapsort keeps ``limit`` rows), so the RSS claim held, but
+        the I/O was O(table) per page, making a full sweep O(n²/page_size).
+        With the branch form the same two-status page is an ordered index scan
+        touching 501 rows, 14.8ms → 0.29ms.
+
+        The consumed-frontier rules survive the rewrite. ``next_position`` is the
+        last RETURNED row's key: an unreturned row is either one of the fetched
+        rows outside the top-``limit`` window (so above the frontier), or beyond
+        a branch that hit its own LIMIT — and that branch's last fetched row is
+        itself ≥ the frontier, since otherwise all of its rows would have fitted
+        in the window. ``returned < limit`` still proves exhaustion, because the
+        union can only be short when every branch was short.
+
+        Consumed-position contract (SQL-side filtering makes it trivial):
+        every predicate — workspace and status membership — is part of the DB
+        scan itself, so the database skips non-matching rows and keeps scanning
+        until LIMIT rows are collected or the keyset range ends. The rows
+        returned by the query therefore ARE the consumed frontier:
+
+        * ``next_position`` = key of the LAST RETURNED row, and
+        * ``returned < limit`` proves the (unfiltered) keyset range is
+          exhausted — the scan only stops early when the range ends, so a
+          short page can never hide rows that were merely filtered out
+          (unlike client-side filtering, where a fully-filtered page must
+          still advance without terminating).
+
+        ``strict=True``: any DB error or row-conversion failure raises without
+        returning partial docs or a cursor (single round-trip — there is no
+        partial-page surface). In relaxed mode an unusable row is skipped from
+        the projection but stays consumed (it was returned by the scan).
+
+        NULL created_at (corrupt writes): such rows sort FIRST
+        (``NULLS FIRST``, mirroring JSON/Redis where a missing created_at
+        sorts first as "") and the keyset comparison is bucket-aware — a
+        plain ``(created_at, id) > ($c, $i)`` row-value comparison evaluates
+        to NULL for them, which would silently starve them out of every page
+        after the first, violating the strict complete-or-raise promise.
+        They therefore stay reachable: raised under strict, skipped (but
+        consumed) under relaxed.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+
+        params: list[Any] = [self.workspace]
+
+        # The keyset predicate is identical in every branch; build it once.
+        cursor_sql = ""
+        if isinstance(position, CursorAfter):
+            cur_created, cur_id = self._decode_cursor(position.opaque)
+            if cur_created is None:
+                # Cursor inside the NULL bucket (sorted first): continue
+                # through the remaining NULL rows by id, then everything
+                # with a real timestamp.
+                params.append(cur_id)
+                cursor_sql = (
+                    f" AND ((created_at IS NULL AND id > ${len(params)}) "
+                    "OR created_at IS NOT NULL)"
+                )
+            else:
+                # Past the NULL bucket: only real-timestamp rows can follow.
+                params.append(cur_created)
+                params.append(cur_id)
+                cursor_sql = (
+                    " AND created_at IS NOT NULL AND "
+                    f"(created_at, id) > (${len(params) - 1}::timestamp, "
+                    f"${len(params)})"
+                )
+        params.append(limit)
+        limit_param = len(params)
+
+        order_by = "ORDER BY created_at ASC NULLS FIRST, id ASC"
+        branches: list[str] = []
+        for status in statuses:
+            params.append(status.value)
+            branches.append(
+                "(SELECT id, status, created_at, updated_at, file_path, "
+                "track_id, metadata FROM LIGHTRAG_DOC_STATUS "
+                f"WHERE workspace=$1 AND status=${len(params)}{cursor_sql} "
+                f"{order_by} LIMIT ${limit_param})"
+            )
+        if len(branches) == 1:
+            sql = branches[0]
+        else:
+            sql = (
+                f"SELECT * FROM ({' UNION ALL '.join(branches)}) u "
+                f"{order_by} LIMIT ${limit_param}"
+            )
+
+        # Any asyncpg error propagates out of db.query — strict pages never
+        # commit a new cursor on failure.
+        rows = await self.db.query(sql, params, multirows=True) or []
+
+        docs: dict[str, DocSchedulingRecord] = {}
+        for row in rows:
+            record = self._pg_scheduling_record_from_row(row, strict=strict)
+            if record is None:
+                continue  # relaxed skip is still consumed (see docstring)
+            docs[record.id] = record
+
+        if len(rows) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(self._encode_cursor(rows[-1]))
+        return DocStatusPage(docs=docs, next_position=next_position)
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count: an accurate number or an exception.
+
+        Unlike ``get_status_counts`` implementations that swallow errors,
+        every DB failure propagates — admission control treats an error as
+        "refuse", never as "capacity available".
+        """
+        if not statuses:
+            return 0
+        sql = (
+            'SELECT COUNT(*) AS "count" FROM LIGHTRAG_DOC_STATUS '
+            "WHERE workspace=$1 AND status = ANY($2)"
+        )
+        row = await self.db.query(sql, [self.workspace, [s.value for s in statuses]])
+        if row is None or row.get("count") is None:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] COUNT query returned no row for "
+                "count_docs_by_statuses; refusing to report a count"
+            )
+        return int(row["count"])
+
+    def _prepare_doc_status_field_value(self, column: str, value: Any) -> Any:
+        """Serialize one field for a targeted UPDATE/INSERT, matching the
+        batch upsert's handling of JSONB and TIMESTAMP columns."""
+        if column in _DOC_STATUS_JSON_COLUMNS:
+            return value if isinstance(value, str) else json.dumps(value)
+        if column in _DOC_STATUS_DATETIME_COLUMNS:
+            return _parse_doc_status_datetime(
+                value, f"[{self.workspace}] doc status {column}"
+            )
+        return value
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted single-row UPDATE of the given fields only.
+
+        ``created_at`` is refused (immutable keyset sort key); unknown field
+        names are refused too — column names are interpolated into SQL and
+        must come from the whitelist. 0 rows updated raises
+        :class:`~lightrag.exceptions.StorageRecordNotFoundError` unless
+        ``missing_ok=True``.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        unknown = set(fields) - _DOC_STATUS_UPDATABLE_COLUMNS
+        if unknown:
+            raise ValueError(
+                f"update_doc_status_fields received unknown doc_status "
+                f"column(s): {sorted(unknown)}"
+            )
+        if not fields:
+            # Nothing to write; still honour the existence contract.
+            row = await self.db.query(
+                "SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id=$2",
+                [self.workspace, doc_id],
+            )
+            if row is None and not missing_ok:
+                raise StorageRecordNotFoundError(doc_id)
+            return
+
+        params: list[Any] = [self.workspace, doc_id]
+        set_clauses: list[str] = []
+        for column, value in fields.items():
+            params.append(self._prepare_doc_status_field_value(column, value))
+            set_clauses.append(f"{column} = ${len(params)}")
+        sql = (
+            "UPDATE LIGHTRAG_DOC_STATUS SET "
+            + ", ".join(set_clauses)
+            + " WHERE workspace=$1 AND id=$2 RETURNING id"
+        )
+        row = await self.db.query(sql, params)
+        if row is None:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+
+    # ------------------------------------------------------------------
+    # Strict batch read
+    # ------------------------------------------------------------------
+
+    async def get_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocSchedulingRecord]:
+        """Batch strict read of scheduling records (see base contract).
+
+        One indexed round-trip (``WHERE workspace=$1 AND id = ANY($2)``): a
+        missing id is positively confirmed absent (simply not in the result
+        set) and omitted. ``strict=True`` fails the WHOLE call — any asyncpg
+        error propagates out of ``db.query`` and any returned row that cannot
+        be projected raises — rather than returning a partial mapping the
+        feeder would mistake for stale ids. Results use the lightweight
+        projection (no chunks / full content).
+        """
+        ids = [str(d) for d in doc_ids]
+        if not ids:
+            return {}
+        sql = (
+            "SELECT id, status, created_at, updated_at, file_path, track_id, "
+            "metadata FROM LIGHTRAG_DOC_STATUS "
+            "WHERE workspace=$1 AND id = ANY($2)"
+        )
+        rows = await self.db.query(sql, [self.workspace, ids], multirows=True) or []
+        result: dict[str, DocSchedulingRecord] = {}
+        for row in rows:
+            record = self._pg_scheduling_record_from_row(row, strict=strict)
+            if record is None:
+                continue  # relaxed skip of an unusable row (still consumed)
+            result[record.id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration of FULL DocProcessingStatus records (see base contract).
+
+        One indexed round-trip (``SELECT * ... WHERE workspace=$1 AND id =
+        ANY($2)``) mirroring :meth:`get_docs_by_ids`, but reusing the SAME raw
+        -> :class:`DocProcessingStatus` normalisation as
+        :meth:`get_docs_by_statuses` so every full field (content_summary /
+        content_length / chunks_list / metadata / ...) is populated. A missing
+        id is positively confirmed absent (simply not in the result set) and
+        omitted. ``strict=True`` fails the WHOLE call — any asyncpg error
+        propagates out of ``db.query`` and any row that cannot be converted
+        raises — rather than returning a partial mapping the scheduler would
+        mistake for stale ids.
+        """
+        ids = [str(d) for d in doc_ids]
+        if not ids:
+            return {}
+        sql = "SELECT * FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        rows = await self.db.query(sql, [self.workspace, ids], multirows=True) or []
+        result: dict[str, DocProcessingStatus] = {}
+        for element in rows:
+            try:
+                result[element["id"]] = self._pg_doc_processing_status_from_row(element)
+            except (KeyError, TypeError) as e:
+                doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
+                logger.error(
+                    f"[{self.workspace}] Skipping document '{doc_id_hint}' — "
+                    f"required field missing or wrong type while parsing DB row: {e!r}"
+                )
+                if strict:
+                    raise
+                continue
+        return result
+
+    # ------------------------------------------------------------------
+    # Source-conflict listing and explicit CAS repair
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _conflict_fingerprint(sorted_doc_ids: list[str]) -> str:
+        """Deterministic digest over candidate doc IDs in stable sort order."""
+        digest = hashlib.sha256()
+        for doc_id in sorted_doc_ids:
+            digest.update(doc_id.encode("utf-8"))
+            digest.update(b"\x00")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _decode_conflict_cursor(opaque: str) -> str:
+        try:
+            key = json.loads(opaque)
+            if not isinstance(key, str):
+                raise ValueError("conflict cursor must be a string")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed source-conflict cursor for PGDocStatusStorage: {e}"
+            ) from e
+        return key
+
+    async def list_source_conflicts_page(
+        self,
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+    ) -> SourceConflictPage:
+        """Page canonical source keys with >1 primary candidate (see base).
+
+        ``GROUP BY file_path HAVING COUNT(*) >= 2`` over PRIMARY rows only,
+        keyset-ordered by the canonical key so pages are stable and bounded.
+        Each key's bounded sample is fetched with its own ``ORDER BY id LIMIT
+        _CONFLICT_SAMPLE_CAP`` query, so no group ever materializes its whole
+        candidate set.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if position is CURSOR_END:
+            return SourceConflictPage(conflicts=(), next_position=CURSOR_END)
+        params: list[Any] = [self.workspace]
+        sql = (
+            "SELECT file_path, COUNT(*) AS c FROM LIGHTRAG_DOC_STATUS "
+            f"WHERE workspace=$1 AND {self._PRIMARY_PREDICATE} "
+            "AND file_path IS NOT NULL "
+            "AND file_path NOT IN ('', 'unknown_source', 'no-file-path')"
+        )
+        if isinstance(position, CursorAfter):
+            params.append(self._decode_conflict_cursor(position.opaque))
+            sql += f" AND file_path > ${len(params)}"
+        params.append(limit)
+        sql += (
+            " GROUP BY file_path HAVING COUNT(*) >= 2 "
+            f"ORDER BY file_path ASC LIMIT ${len(params)}"
+        )
+        rows = await self.db.query(sql, params, multirows=True) or []
+
+        conflicts: list[SourceConflictSummary] = []
+        for row in rows:
+            key = row["file_path"]
+            sample = (
+                await self.db.query(
+                    "SELECT id FROM LIGHTRAG_DOC_STATUS "
+                    f"WHERE workspace=$1 AND file_path=$2 AND {self._PRIMARY_PREDICATE} "
+                    "ORDER BY id ASC LIMIT $3",
+                    [self.workspace, key, self._CONFLICT_SAMPLE_CAP],
+                    multirows=True,
+                )
+                or []
+            )
+            conflicts.append(
+                SourceConflictSummary(
+                    canonical_source_key=key,
+                    candidate_count=int(row["c"]),
+                    sample_doc_ids=tuple(str(r["id"]) for r in sample),
+                )
+            )
+
+        if len(rows) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(
+                json.dumps(rows[-1]["file_path"], ensure_ascii=False)
+            )
+        return SourceConflictPage(
+            conflicts=tuple(conflicts), next_position=next_position
+        )
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key: str,
+        *,
+        primary_doc_id: str,
+        expected_candidate_count: int,
+        expected_candidate_fingerprint: str,
+        dry_run: bool = True,
+    ) -> SourceConflictRepairResult:
+        """Demote all-but-one primary to duplicate, CAS-guarded (see base).
+
+        The candidate set is re-read ``FOR UPDATE`` inside ONE transaction, so
+        the count/fingerprint recomputation, the CAS check and the demotions
+        are atomic with respect to the rows it SAW. ``FOR UPDATE`` takes no
+        predicate lock, so it cannot block a new primary being INSERTED for the
+        same canonical key mid-repair — see the base contract for what
+        ``committed`` does and does not claim, and for the caller-side locks
+        that serialize repair against enqueue. dry-run reports the current
+        count/fingerprint without mutating; commit refuses
+        (:class:`SourceConflictRepairCASError`) when they no longer match the
+        operator-echoed expectation. Losing candidates get
+        ``metadata.is_duplicate=true`` + ``original_doc_id=primary_doc_id`` in
+        the same transaction; content is never deleted. ``primary_doc_id`` not
+        in the current candidate set raises ``ValueError``.
+        """
+        workspace = self.workspace
+        predicate = self._PRIMARY_PREDICATE
+        sample_cap = self._CONFLICT_SAMPLE_CAP
+
+        async def _repair(
+            connection: asyncpg.Connection,
+        ) -> SourceConflictRepairResult:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    "SELECT id FROM LIGHTRAG_DOC_STATUS "
+                    f"WHERE workspace=$1 AND file_path=$2 AND {predicate} "
+                    "ORDER BY id ASC FOR UPDATE",
+                    workspace,
+                    canonical_source_key,
+                )
+                candidates = sorted(str(r["id"]) for r in rows)
+                count = len(candidates)
+                fingerprint = self._conflict_fingerprint(candidates)
+                if primary_doc_id not in candidates:
+                    raise ValueError(
+                        f"primary_doc_id {primary_doc_id!r} is not a current "
+                        f"primary candidate for {canonical_source_key!r}"
+                    )
+                demoted = [d for d in candidates if d != primary_doc_id]
+                if dry_run:
+                    return SourceConflictRepairResult(
+                        canonical_source_key=canonical_source_key,
+                        primary_doc_id=primary_doc_id,
+                        candidate_count=count,
+                        fingerprint=fingerprint,
+                        demoted_sample_doc_ids=tuple(demoted[:sample_cap]),
+                        committed=False,
+                    )
+                if (
+                    count != expected_candidate_count
+                    or fingerprint != expected_candidate_fingerprint
+                ):
+                    raise SourceConflictRepairCASError(
+                        f"[{workspace}] source-conflict repair CAS failed for "
+                        f"{canonical_source_key!r}: candidate set changed "
+                        f"(count {count} vs {expected_candidate_count})"
+                    )
+                if demoted:
+                    # jsonb_set both keys, coalescing a NULL/missing metadata
+                    # to '{}' first; the derived is_duplicate exclusion updates
+                    # in the same transaction as the row rewrite.
+                    await connection.execute(
+                        "UPDATE LIGHTRAG_DOC_STATUS SET metadata = jsonb_set("
+                        "jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+                        "'{is_duplicate}', 'true'::jsonb, true), "
+                        "'{original_doc_id}', to_jsonb($3::text), true) "
+                        "WHERE workspace=$1 AND id = ANY($2)",
+                        workspace,
+                        demoted,
+                        primary_doc_id,
+                    )
+                return SourceConflictRepairResult(
+                    canonical_source_key=canonical_source_key,
+                    primary_doc_id=primary_doc_id,
+                    candidate_count=count,
+                    fingerprint=fingerprint,
+                    demoted_sample_doc_ids=tuple(demoted[:sample_cap]),
+                    committed=True,
+                )
+
+        return await self.db._run_with_retry(_repair)
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -5233,6 +6052,50 @@ class PGDocStatusStorage(DocStatusStorage):
 
         return docs_by_status
 
+    def _pg_doc_processing_status_from_row(
+        self, element: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalise a raw doc_status DB row into a FULL DocProcessingStatus.
+
+        Single source of the raw -> status construction shared by
+        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
+        path (chunks_list / metadata JSON decode, timezone-normalised
+        timestamps, file_path fallback). Raises ``KeyError``/``TypeError`` on a
+        malformed row; the caller decides strict (raise) vs relaxed (skip).
+        """
+        chunks_list = element.get("chunks_list", [])
+        if isinstance(chunks_list, str):
+            try:
+                chunks_list = json.loads(chunks_list)
+            except json.JSONDecodeError:
+                chunks_list = []
+
+        metadata = element.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        file_path = element.get("file_path") or "no-file-path"
+
+        return DocProcessingStatus(
+            content_summary=element["content_summary"],
+            content_length=element["content_length"],
+            status=element["status"],
+            created_at=self._format_datetime_with_timezone(element["created_at"]),
+            updated_at=self._format_datetime_with_timezone(element["updated_at"]),
+            chunks_count=element["chunks_count"],
+            file_path=file_path,
+            chunks_list=chunks_list,
+            metadata=metadata,
+            error_msg=element.get("error_msg"),
+            track_id=element.get("track_id"),
+            content_hash=element.get("content_hash"),
+        )
+
     async def get_docs_by_statuses(
         self, statuses: list[DocStatus], strict: bool = False
     ) -> dict[str, DocProcessingStatus]:
@@ -5259,42 +6122,7 @@ class PGDocStatusStorage(DocStatusStorage):
         docs: dict[str, DocProcessingStatus] = {}
         for element in result or []:
             try:
-                chunks_list = element.get("chunks_list", [])
-                if isinstance(chunks_list, str):
-                    try:
-                        chunks_list = json.loads(chunks_list)
-                    except json.JSONDecodeError:
-                        chunks_list = []
-
-                metadata = element.get("metadata", {})
-                if isinstance(metadata, str):
-                    try:
-                        metadata = json.loads(metadata)
-                    except json.JSONDecodeError:
-                        metadata = {}
-                if not isinstance(metadata, dict):
-                    metadata = {}
-
-                file_path = element.get("file_path") or "no-file-path"
-
-                docs[element["id"]] = DocProcessingStatus(
-                    content_summary=element["content_summary"],
-                    content_length=element["content_length"],
-                    status=element["status"],
-                    created_at=self._format_datetime_with_timezone(
-                        element["created_at"]
-                    ),
-                    updated_at=self._format_datetime_with_timezone(
-                        element["updated_at"]
-                    ),
-                    chunks_count=element["chunks_count"],
-                    file_path=file_path,
-                    chunks_list=chunks_list,
-                    metadata=metadata,
-                    error_msg=element.get("error_msg"),
-                    track_id=element.get("track_id"),
-                    content_hash=element.get("content_hash"),
-                )
+                docs[element["id"]] = self._pg_doc_processing_status_from_row(element)
             except (KeyError, TypeError) as e:
                 doc_id_hint = element.get("id", "<unknown>") if element else "<unknown>"
                 logger.error(

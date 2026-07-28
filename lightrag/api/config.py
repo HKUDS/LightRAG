@@ -34,6 +34,12 @@ from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_MAX_PARALLEL_INSERT,
+    DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE,
+    DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+    DEFAULT_MAX_PENDING_DOCUMENTS,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_MAX_TEXTS_PER_REQUEST,
+    DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
     DEFAULT_SUMMARY_CONTEXT_SIZE,
@@ -165,6 +171,75 @@ def validate_auth_configuration(args: argparse.Namespace) -> None:
         raise ValueError(
             "TOKEN_SECRET must be explicitly set to a non-default value when AUTH_ACCOUNTS is configured."
         )
+
+
+def validate_scan_batch_configuration(args: argparse.Namespace) -> None:
+    """Reject a non-positive scan enqueue batch size (LR2 §8.2/§11).
+
+    Unlike ``PIPELINE_SCHEDULING_PAGE_SIZE`` — where ``0`` legitimately means
+    "one page holds everything" — there is no unbounded scan batch to fall back
+    to: streaming discovery holds at most this many claimed files before it
+    writes them, so ``0`` or a negative value would mean "never flush" (or flush
+    on every file, depending on how it is read). Fail at startup instead of
+    silently picking one of those readings.
+    """
+    if not hasattr(args, "scan_enqueue_batch_size"):
+        # A programmatic caller may hand ``initialize_config`` a partial
+        # namespace (the documented custom-configuration path); ``parse_args``
+        # always sets this field, so an absent one is not an operator's
+        # misconfiguration. The scan's reader falls back to the bounded default.
+        return
+    batch_size = args.scan_enqueue_batch_size
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size <= 0
+    ):
+        raise ValueError(
+            "SCAN_ENQUEUE_BATCH_SIZE must be a positive integer (it bounds how "
+            f"many discovered files one scan batch holds); got {batch_size!r}"
+        )
+
+
+def validate_admission_configuration(args: argparse.Namespace) -> None:
+    """Reject negative values for the three ingestion ceilings (LR2 §9.1/§11).
+
+    ``0`` legitimately disables each of them, but a negative value would refuse
+    every request — never what an operator meant, and a failure mode that only
+    shows up on the first request.
+    """
+    if not hasattr(args, "max_pending_documents"):
+        # Partial namespace from a programmatic caller — see
+        # validate_scan_batch_configuration.
+        return
+    capacity = args.max_pending_documents
+    if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 0:
+        raise ValueError(
+            "MAX_PENDING_DOCUMENTS must be an integer >= 0 (0 disables "
+            f"admission control); got {capacity!r}"
+        )
+    if hasattr(args, "max_request_body_bytes"):
+        body_limit = args.max_request_body_bytes
+        if (
+            not isinstance(body_limit, int)
+            or isinstance(body_limit, bool)
+            or body_limit < 0
+        ):
+            raise ValueError(
+                "MAX_REQUEST_BODY_BYTES must be an integer >= 0 (0 disables the "
+                f"body limit); got {body_limit!r}"
+            )
+    if hasattr(args, "max_texts_per_request"):
+        texts_limit = args.max_texts_per_request
+        if (
+            not isinstance(texts_limit, int)
+            or isinstance(texts_limit, bool)
+            or texts_limit < 0
+        ):
+            raise ValueError(
+                "MAX_TEXTS_PER_REQUEST must be an integer >= 0 (0 disables the "
+                f"per-request text limit); got {texts_limit!r}"
+            )
 
 
 def _is_set(value: str | None) -> bool:
@@ -506,6 +581,47 @@ def parse_args() -> argparse.Namespace:
         "MAX_PARALLEL_INSERT", DEFAULT_MAX_PARALLEL_INSERT, int
     )
 
+    # Bounded scheduling page size (LR2 Phase 2); 0 disables paging.
+    args.pipeline_scheduling_page_size = get_env_value(
+        "PIPELINE_SCHEDULING_PAGE_SIZE", DEFAULT_PIPELINE_SCHEDULING_PAGE_SIZE, int
+    )
+
+    # Turn a missing strict doc_status capability into a startup failure instead
+    # of a warning + /health degradation report (LR2 §11).
+    args.pipeline_require_strict_storage_reads = get_env_value(
+        "PIPELINE_REQUIRE_STRICT_STORAGE_READS",
+        DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
+        bool,
+    )
+
+    # How many newly claimed files one /documents/scan batch holds before
+    # writing them to doc_status (LR2 §8.2). Always positive — validated below.
+    args.scan_enqueue_batch_size = get_env_value(
+        "SCAN_ENQUEUE_BATCH_SIZE", DEFAULT_SCAN_ENQUEUE_BATCH_SIZE, int
+    )
+
+    # Where /documents/scan puts its disposable candidate spool, which holds the
+    # O(files-in-INPUT_DIR) ordering state that keeps scan memory bounded (LR2
+    # §8.2). Empty → WORKING_DIR/scan_spool. Set this when WORKING_DIR is a
+    # network volume, or when the OS temp dir is a RAM-backed tmpfs (the usual
+    # systemd default) — the point of the spool is to be on real disk.
+    args.scan_spool_dir = get_env_value("SCAN_SPOOL_DIR", "", str)
+
+    # Admission capacity for ordinary ingestion (LR2 §9.1); 0 disables it.
+    args.max_pending_documents = get_env_value(
+        "MAX_PENDING_DOCUMENTS", DEFAULT_MAX_PENDING_DOCUMENTS, int
+    )
+
+    # Raw request-body ceiling for the ingestion endpoints (LR2 §9.4); 0 disables.
+    args.max_request_body_bytes = get_env_value(
+        "MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES, int
+    )
+
+    # Document fan-out ceiling for one /documents/texts request (LR2 §11); 0 disables.
+    args.max_texts_per_request = get_env_value(
+        "MAX_TEXTS_PER_REQUEST", DEFAULT_MAX_TEXTS_PER_REQUEST, int
+    )
+
     # Get MAX_GRAPH_NODES from environment
     args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
 
@@ -811,6 +927,8 @@ def initialize_config(args=None, force=False):
     resolved_args = args if args is not None else parse_args()
     validate_auth_configuration(resolved_args)
     validate_bedrock_auth_configuration(resolved_args)
+    validate_scan_batch_configuration(resolved_args)
+    validate_admission_configuration(resolved_args)
     _global_args = resolved_args
     _initialized = True
     return _global_args

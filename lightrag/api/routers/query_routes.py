@@ -141,6 +141,10 @@ class QueryRequest(BaseModel):
                 raise ValueError("Each message must have a 'role' key.")
             if not isinstance(msg["role"], str) or not msg["role"].strip():
                 raise ValueError("Each message 'role' must be a non-empty string.")
+            if "content" not in msg:
+                raise ValueError("Each message must have a 'content' key.")
+            if not isinstance(msg["content"], str):
+                raise ValueError("Each message 'content' must be a string.")
         return conversation_history
 
     def to_query_params(self, is_stream: bool) -> "QueryParam":

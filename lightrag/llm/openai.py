@@ -809,8 +809,7 @@ async def openai_complete_if_cache(
             if getattr(response.choices[0], "finish_reason", None) == "length":
                 logger.warning(
                     "OpenAI response truncated by token limit "
-                    f"(finish_reason=length, content_len={len(final_content)}); "
-                    "returning partial content but not caching it"
+                    f"(finish_reason=length, content_len={len(final_content)}), returning partial content"
                 )
                 final_content = TruncatedResponse(final_content)
 

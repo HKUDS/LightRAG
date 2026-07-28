@@ -2,20 +2,34 @@ import os
 import re
 import json
 import time
+import hashlib
 from dataclasses import dataclass, field
 import numpy as np
 import configparser
 import asyncio
 
-from typing import Any, Union, final
+from typing import Any, ClassVar, Sequence, Union, final
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    SourceAbsent,
+    SourceConflict,
+    SourceConflictPage,
+    SourceConflictRepairResult,
+    SourceConflictSummary,
+    SourceResolution,
+    SourceUnique,
 )
 from ..utils import (
     logger,
@@ -25,7 +39,16 @@ from ..utils import (
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
+from ..constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    GRAPH_FIELD_SEP,
+    DEFAULT_QUERY_PRIORITY,
+)
+from ..exceptions import (
+    SourceConflictRepairCASError,
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
+)
 from .._version import __version__
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
@@ -327,6 +350,8 @@ class MongoKVStorage(BaseKVStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
             namespace=namespace,
@@ -401,6 +426,15 @@ class MongoKVStorage(BaseKVStorage):
             doc.setdefault("create_time", 0)
             doc.setdefault("update_time", 0)
         return doc
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``find_one`` either answers definitively or raises a ``PyMongoError``
+        — nothing is swallowed on this path, so a ``None`` IS a confirmed
+        absence (the FAILED-stub deletion path may act on it).
+        """
+        return await self.get_by_id(id)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
@@ -552,6 +586,12 @@ class MongoDocStatusStorage(DocStatusStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
+    # source-conflict listing/repair APIs — never materialize the whole set.
+    _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
+
     def _prepare_doc_status_data(self, doc: dict[str, Any]) -> dict[str, Any]:
         """Normalize and migrate a raw Mongo document to DocProcessingStatus-compatible dict."""
         # Make a copy of the data to avoid modifying the original
@@ -575,6 +615,21 @@ class MongoDocStatusStorage(DocStatusStorage):
             else:
                 data.pop("error", None)
         return data
+
+    def _mongo_doc_processing_status_from_doc(
+        self, doc: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalise a raw Mongo document into a FULL DocProcessingStatus.
+
+        Single source of the raw -> status construction shared by
+        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
+        path. Raises ``KeyError``/``TypeError`` on a malformed document
+        (``TypeError`` is what ``DocProcessingStatus(**data)`` raises on
+        missing required fields); the caller decides strict (raise) vs relaxed
+        (skip).
+        """
+        data = self._prepare_doc_status_data(doc)
+        return DocProcessingStatus(**data)
 
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
@@ -641,6 +696,15 @@ class MongoDocStatusStorage(DocStatusStorage):
             self._data = None
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+        return await self._data.find_one({"_id": id})
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``find_one`` either answers definitively or raises a ``PyMongoError``
+        — nothing is swallowed on this path, so a ``None`` IS a confirmed
+        absence.
+        """
         return await self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -714,8 +778,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         result = {}
         for doc in docs:
             try:
-                data = self._prepare_doc_status_data(doc)
-                result[doc["_id"]] = DocProcessingStatus(**data)
+                result[doc["_id"]] = self._mongo_doc_processing_status_from_doc(doc)
             except (KeyError, TypeError) as e:
                 # TypeError is what DocProcessingStatus(**data) actually raises
                 # on missing required fields — without it here, the relaxed
@@ -842,6 +905,14 @@ class MongoDocStatusStorage(DocStatusStorage):
                     "partialFilterExpression": {
                         "content_hash": {"$exists": True, "$type": "string", "$gt": ""}
                     },
+                },
+                # Keyset sweep index for the bounded scheduling page API:
+                # matches the MUST sort of get_docs_by_statuses_page
+                # ((created_at ASC, _id ASC) within each status branch of a
+                # status $in — the server merges the per-status keysets).
+                {
+                    "name": f"{workspace_prefix}status_created_at_id_asc",
+                    "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
                 },
             ]
 
@@ -1038,20 +1109,26 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Mongo-native override of basename-based document lookup.
+        """Mongo-native override of basename-based document lookup (legacy).
 
         The caller is responsible for passing an already-canonical basename;
         stored ``file_path`` values are canonicalized by the business layer, so
         this lookup performs an exact match only and relies on the file_path
         index created by ``create_and_migrate_indexes_if_not_exists``.
-        """
-        if not basename:
-            return None
-        if basename == "unknown_source":
-            return None
 
+        Returns the PRIMARY (``metadata.is_duplicate != true``) row only —
+        duplicate-attempt ``dup-*`` markers keep the same canonical basename
+        and must never satisfy an identity lookup. Legacy error semantics:
+        query failures are logged and read as a best-effort miss (``None``);
+        callers that need "None == confirmed absent" or conflict detection must
+        use :meth:`resolve_doc_source_strict`.
+        """
+        if not basename or basename == "unknown_source":
+            return None
         try:
-            doc = await self._data.find_one({"file_path": basename})
+            doc = await self._data.find_one(
+                {"file_path": basename, "metadata.is_duplicate": {"$ne": True}}
+            )
         except PyMongoError as e:
             logger.error(f"[{self.workspace}] Error in get_doc_by_file_basename: {e}")
             return None
@@ -1062,30 +1139,563 @@ class MongoDocStatusStorage(DocStatusStorage):
             return None
         return str(doc_id), doc
 
+    async def resolve_doc_source_strict(
+        self, canonical_source_key: str
+    ) -> SourceResolution:
+        """Typed, conflict-aware source resolution (see base contract).
+
+        Locates up to two PRIMARY (``metadata.is_duplicate != true``) rows via
+        an indexed ``find(...).limit(2)`` and maps 0/1/≥2 →
+        Absent/Unique/Conflict. Transport/query errors PROPAGATE (a swallowed
+        failure would read as :class:`SourceAbsent`, and scan/enqueue treat
+        Absent as "confirmed new", minting duplicate primaries). The ≥2 branch
+        runs one cheap indexed ``count_documents`` for the exact candidate
+        count surfaced in the conflict.
+        """
+        if not canonical_source_key or canonical_source_key == "unknown_source":
+            return SourceAbsent()
+
+        query = {
+            "file_path": canonical_source_key,
+            "metadata.is_duplicate": {"$ne": True},
+        }
+        cursor = self._data.find(query).limit(2)
+        rows = await cursor.to_list(length=2)
+        if not rows:
+            return SourceAbsent()
+        if len(rows) == 1:
+            doc = rows[0]
+            return SourceUnique(
+                doc_id=str(doc.get("_id")),
+                doc=self._scheduling_record_from_doc(doc, strict=True),
+            )
+        candidate_count = await self._data.count_documents(query)
+        return SourceConflict(
+            candidate_count=candidate_count,
+            sample_doc_ids=tuple(sorted(str(d.get("_id")) for d in rows)),
+        )
+
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Mongo-native override of content-hash document lookup.
 
         Uses the partial ``content_hash`` index. Empty strings are treated as a
         miss to align with the partial-index predicate; legacy rows missing the
-        field cannot match a non-empty query because ``find_one`` requires an
-        exact value.
+        field cannot match a non-empty query because the query requires an
+        exact value. ``exclude_doc_id`` adds ``_id: {$ne: ...}`` plus a ``$nor``
+        clause dropping any row that merely POINTS at that id (``is_duplicate``
+        naming it as ``original_doc_id``), so the duplicate check excludes both
+        the doc being processed and a record of it in-query (see base contract),
+        still served by the content_hash index. Both are query predicates, so
+        skipping a pointer row cannot truncate the search — the sort + ``limit``
+        still yield the earliest row that survives them.
+
+        Fail-closed: a query error PROPAGATES. ``None`` means "confirmed no
+        other holder", which the dedup callers act on destructively — they
+        enqueue the document and ingest its content — so reporting a transport
+        failure as "no duplicate" would mint duplicate rows and duplicate
+        graph contributions.
+
+        ``sort`` makes the "earliest other holder" of the base contract real:
+        ``find_one`` alone returns whatever the index/natural order yields, so
+        the ``original_doc_id`` written into a duplicate's row would vary
+        between runs over the same data.
         """
         if not content_hash:
             return None
 
-        try:
-            doc = await self._data.find_one({"content_hash": content_hash})
-        except PyMongoError as e:
-            logger.error(f"[{self.workspace}] Error in get_doc_by_content_hash: {e}")
+        query: dict[str, Any] = {"content_hash": content_hash}
+        if exclude_doc_id is not None:
+            query["_id"] = {"$ne": exclude_doc_id}
+            query["$nor"] = [
+                {
+                    "metadata.is_duplicate": True,
+                    "metadata.original_doc_id": exclude_doc_id,
+                }
+            ]
+        cursor = self._data.find(query).sort([("created_at", 1), ("_id", 1)]).limit(1)
+        rows = await cursor.to_list(length=1)
+        if not rows:
             return None
-        if not doc:
-            return None
+        doc = rows[0]
         doc_id = doc.get("_id")
         if doc_id is None:
             return None
         return str(doc_id), doc
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _encode_cursor(created_at: str | None, doc_id: str) -> str:
+        return json.dumps([created_at, doc_id], ensure_ascii=False)
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> tuple[str | None, str]:
+        try:
+            decoded = json.loads(opaque)
+            created, doc_id = decoded
+            if not isinstance(doc_id, str):
+                raise ValueError("cursor id must be a string")
+            if created is not None and not isinstance(created, str):
+                raise ValueError("cursor created_at must be a string or null")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for MongoDocStatusStorage: {e}"
+            ) from e
+        return created, doc_id
+
+    @staticmethod
+    def _doc_cursor_key(doc: dict[str, Any]) -> tuple[str | None, str]:
+        """(created_at, _id) keyset key of a RAW query-returned doc.
+
+        A missing/null/non-string created_at encodes as ``None`` — the
+        missing/null bucket, which BSON sorts BEFORE every string. Encoding
+        it as ``""`` would break the resume filter: ``{"created_at": ""}``
+        matches neither a missing field nor a null value, so a second corrupt
+        row past the page boundary would silently fall out of the sweep. The
+        ``None`` marker resumes with the ``{"created_at": None}`` predicate,
+        which Mongo defines to match BOTH missing and null."""
+        created = doc.get("created_at")
+        return (created if isinstance(created, str) else None, str(doc.get("_id")))
+
+    def _scheduling_record_from_doc(
+        self, doc: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one raw Mongo doc; strict raises on unusable docs, relaxed
+        returns None (the caller still counts the doc as consumed)."""
+        doc_id = str(doc.get("_id"))
+        try:
+            status = DocStatus(str(doc["status"]))
+            created_at = doc["created_at"]
+            updated_at = doc.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = doc.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=doc.get("file_path") or "no-file-path",
+                track_id=doc.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page: one indexed ``find`` with ``sort`` + ``limit``.
+
+        ``created_at`` is stored as an ISO-8601 string, so the keyset
+        comparison stays string-typed end to end (cursor ↔ query ↔ sort).
+
+        Consumed-position contract: every predicate (status, keyset resume) is
+        evaluated SERVER-side, so the
+        set of query-returned docs IS the set of consumed records — the
+        frontier is the last RETURNED doc's ``(created_at, _id)`` key, and
+        fewer returned docs than ``limit`` proves the sweep is exhausted
+        (CURSOR_END). A relaxed-mode conversion skip drops the doc from the
+        page but the doc was still returned by the query, hence consumed:
+        the cursor advances past it (never re-read, never terminal-by-skip).
+
+        Transport/query errors always propagate (never swallowed into a
+        partial page); ``strict=True`` additionally raises on any returned
+        doc that cannot be projected to :class:`DocSchedulingRecord`.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+
+        query: dict[str, Any] = {"status": {"$in": sorted({s.value for s in statuses})}}
+        and_clauses: list[dict[str, Any]] = []
+        if isinstance(position, CursorAfter):
+            created, doc_id = self._decode_cursor(position.opaque)
+            if created is None:
+                # Cursor inside the missing/null bucket (sorted first by
+                # BSON): continue through its remaining docs by _id —
+                # {"created_at": None} matches BOTH missing and null — then
+                # every doc with a real (non-null, existing) value.
+                and_clauses.append(
+                    {
+                        "$or": [
+                            {"created_at": None, "_id": {"$gt": doc_id}},
+                            {"created_at": {"$ne": None}},
+                        ]
+                    }
+                )
+            else:
+                # Past the missing/null bucket: string-typed $gt/$eq never
+                # match missing or null fields, which is correct — that
+                # bucket was already consumed before this cursor.
+                and_clauses.append(
+                    {
+                        "$or": [
+                            {"created_at": {"$gt": created}},
+                            {"created_at": created, "_id": {"$gt": doc_id}},
+                        ]
+                    }
+                )
+        if and_clauses:
+            query["$and"] = and_clauses
+
+        cursor = (
+            self._data.find(query).sort([("created_at", 1), ("_id", 1)]).limit(limit)
+        )
+        raw_docs = await cursor.to_list(length=limit)
+
+        docs: dict[str, DocSchedulingRecord] = {}
+        for doc in raw_docs:
+            record = self._scheduling_record_from_doc(doc, strict=strict)
+            if record is None:
+                continue  # relaxed skip: query-returned, hence still consumed
+            docs[record.id] = record
+
+        if len(raw_docs) < limit:
+            return DocStatusPage(docs=docs, next_position=CURSOR_END)
+        last_created, last_id = self._doc_cursor_key(raw_docs[-1])
+        return DocStatusPage(
+            docs=docs,
+            next_position=CursorAfter(self._encode_cursor(last_created, last_id)),
+        )
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count: accurate ``count_documents`` or raise
+        (errors propagate — admission control treats an error as "refuse")."""
+        if not statuses:
+            return 0
+        return await self._data.count_documents(
+            {"status": {"$in": sorted({s.value for s in statuses})}}
+        )
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted ``$set`` of the given fields only (no read-modify-write,
+        so a huge ``chunks_list`` never travels through memory)."""
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        if not fields:
+            # Mongo rejects an empty $set document; still honour the
+            # existence contract for a no-op update.
+            if missing_ok:
+                return
+            if await self._data.find_one({"_id": doc_id}, {"_id": 1}) is None:
+                raise StorageRecordNotFoundError(doc_id)
+            return
+        result = await self._data.update_one({"_id": doc_id}, {"$set": fields})
+        if result.matched_count == 0:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+
+    # ------------------------------------------------------------------
+    # Strict batch read
+    # ------------------------------------------------------------------
+
+    async def get_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocSchedulingRecord]:
+        """Batch strict read (see base contract).
+
+        One indexed ``find({"_id": {"$in": ids}})`` — the server answers
+        definitively or raises, so any id absent from the result set is a
+        CONFIRMED absence (never a swallowed failure). ``strict=True`` raises
+        on any returned doc that cannot be projected to
+        :class:`DocSchedulingRecord`, failing the WHOLE call rather than
+        returning a partial mapping.
+        """
+        ids = list(doc_ids)
+        if not ids:
+            return {}
+        cursor = self._data.find({"_id": {"$in": ids}})
+        raw_docs = await cursor.to_list(length=None)
+        result: dict[str, DocSchedulingRecord] = {}
+        for doc in raw_docs:
+            record = self._scheduling_record_from_doc(doc, strict=strict)
+            if record is None:
+                continue
+            result[record.id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to full DocProcessingStatus (see base contract).
+
+        One indexed ``find({"_id": {"$in": ids}})`` — the server answers
+        definitively or raises, so any id absent from the result set is a
+        CONFIRMED absence and is omitted. Reuses the SAME raw ->
+        DocProcessingStatus normalisation as ``get_docs_by_statuses``.
+        ``strict=True`` raises on any returned document that cannot be
+        converted, failing the WHOLE call rather than returning a partial
+        mapping.
+        """
+        ids = list(doc_ids)
+        if not ids:
+            return {}
+        cursor = self._data.find({"_id": {"$in": ids}})
+        raw_docs = await cursor.to_list(length=None)
+        result: dict[str, DocProcessingStatus] = {}
+        for doc in raw_docs:
+            try:
+                result[doc["_id"]] = self._mongo_doc_processing_status_from_doc(doc)
+            except (KeyError, TypeError) as e:
+                logger.error(
+                    f"[{self.workspace}] Unusable doc_status document hydrating "
+                    f"{doc.get('_id')}: {e}"
+                )
+                if strict:
+                    raise
+                continue
+        return result
+
+    # ------------------------------------------------------------------
+    # Source-conflict listing and explicit CAS repair
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _conflict_fingerprint(sorted_doc_ids: list[str]) -> str:
+        """Deterministic digest over candidate doc IDs in stable sort order."""
+        digest = hashlib.sha256()
+        for doc_id in sorted_doc_ids:
+            digest.update(doc_id.encode("utf-8"))
+            digest.update(b"\x00")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _decode_conflict_cursor(opaque: str) -> str:
+        try:
+            key = json.loads(opaque)
+            if not isinstance(key, str):
+                raise ValueError("conflict cursor must be a string")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed source-conflict cursor for MongoDocStatusStorage: {e}"
+            ) from e
+        return key
+
+    async def _primary_candidates(
+        self, canonical_source_key: str, *, session: Any = None
+    ) -> list[str]:
+        """Sorted primary (``metadata.is_duplicate != true``) doc IDs for a
+        canonical key, projecting only ``_id`` (optionally in a session)."""
+        cursor = self._data.find(
+            {"file_path": canonical_source_key, "metadata.is_duplicate": {"$ne": True}},
+            {"_id": 1},
+            session=session,
+        )
+        rows = await cursor.to_list(length=None)
+        return sorted(str(r.get("_id")) for r in rows)
+
+    async def _primary_candidate_sample(
+        self, canonical_source_key: str
+    ) -> tuple[str, ...]:
+        """The lexicographically first ``_CONFLICT_SAMPLE_CAP`` primary ids.
+
+        Server-side bounded: ``sort(_id) + limit(cap)`` projecting only ``_id``,
+        so a key with a pathological number of primaries still ships a fixed
+        sample (unlike an aggregation ``$push`` of every id).
+        """
+        cursor = (
+            self._data.find(
+                {
+                    "file_path": canonical_source_key,
+                    "metadata.is_duplicate": {"$ne": True},
+                },
+                {"_id": 1},
+            )
+            .sort([("_id", 1)])
+            .limit(self._CONFLICT_SAMPLE_CAP)
+        )
+        rows = await cursor.to_list(length=self._CONFLICT_SAMPLE_CAP)
+        return tuple(str(r.get("_id")) for r in rows)
+
+    async def list_source_conflicts_page(
+        self,
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+    ) -> SourceConflictPage:
+        """Page canonical source keys with >1 primary candidate (see base).
+
+        A server-side aggregation groups PRIMARY (``metadata.is_duplicate !=
+        true``) rows by ``file_path``, keeps groups with candidate count ≥ 2,
+        resumes strictly after the cursor's canonical key (``$gt``) and sorts
+        by canonical key so the keyset is stable.
+
+        The accumulator is COUNT-ONLY: ``$push``-ing the ids would build one
+        array per distinct ``file_path`` in the workspace — every group, not
+        just the conflicting ones, since ``candidate_count >= 2`` can only be
+        applied AFTER ``$group`` — so peak aggregation memory would scale with
+        the document count instead of the number of source keys. Samples are
+        instead fetched per SURFACED key (at most ``limit`` bounded queries),
+        so nothing unbounded crosses the wire either. Detecting "keys with more
+        than one primary" inherently groups the whole collection, so the group
+        set itself still scales with the number of distinct source keys (as it
+        does on PostgreSQL) — ``allowDiskUse`` covers that.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if position is CURSOR_END:
+            return SourceConflictPage(conflicts=(), next_position=CURSOR_END)
+
+        match: dict[str, Any] = {
+            "file_path": {
+                "$type": "string",
+                "$nin": ["", "unknown_source", "no-file-path"],
+            },
+            "metadata.is_duplicate": {"$ne": True},
+        }
+        if isinstance(position, CursorAfter):
+            match["file_path"]["$gt"] = self._decode_conflict_cursor(position.opaque)
+
+        pipeline = [
+            {"$match": match},
+            {"$group": {"_id": "$file_path", "candidate_count": {"$sum": 1}}},
+            {"$match": {"candidate_count": {"$gte": 2}}},
+            {"$sort": {"_id": 1}},
+            {"$limit": limit},
+        ]
+        cursor = await self._data.aggregate(pipeline, allowDiskUse=True)
+        groups = await cursor.to_list(length=limit)
+
+        summaries: list[SourceConflictSummary] = []
+        for group in groups:
+            canonical = str(group["_id"])
+            summaries.append(
+                SourceConflictSummary(
+                    canonical_source_key=canonical,
+                    candidate_count=int(group["candidate_count"]),
+                    sample_doc_ids=await self._primary_candidate_sample(canonical),
+                )
+            )
+        conflicts = tuple(summaries)
+        if len(groups) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(
+                json.dumps(str(groups[-1]["_id"]), ensure_ascii=False)
+            )
+        return SourceConflictPage(conflicts=conflicts, next_position=next_position)
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key: str,
+        *,
+        primary_doc_id: str,
+        expected_candidate_count: int,
+        expected_candidate_fingerprint: str,
+        dry_run: bool = True,
+    ) -> SourceConflictRepairResult:
+        """Demote all-but-one primary to duplicate, CAS-guarded (see base).
+
+        A dry run reads the current candidate set and returns the
+        count/fingerprint the operator must echo back. A commit re-reads the
+        candidates INSIDE a Mongo transaction; if the count/fingerprint no
+        longer match the echoed expectation it raises
+        ``SourceConflictRepairCASError`` (CAS — never overwrites a concurrent
+        change) and the transaction aborts. Otherwise every losing candidate
+        is marked ``metadata.is_duplicate=true`` +
+        ``original_doc_id=primary_doc_id`` in the same transaction (content is
+        never deleted). ``primary_doc_id`` absent from the current candidate
+        set raises ``ValueError``.
+
+        The transaction gives snapshot isolation, not predicate locking: a new
+        primary INSERTed for the same canonical key mid-repair is a phantom the
+        snapshot never sees and no write conflict reports. See the base contract
+        for what ``committed`` does and does not claim, and for the caller-side
+        keyed lock that serializes repair against enqueue.
+        """
+        if dry_run:
+            candidates = await self._primary_candidates(canonical_source_key)
+            count = len(candidates)
+            fingerprint = self._conflict_fingerprint(candidates)
+            if primary_doc_id not in candidates:
+                raise ValueError(
+                    f"primary_doc_id {primary_doc_id!r} is not a current primary "
+                    f"candidate for {canonical_source_key!r}"
+                )
+            demoted = [d for d in candidates if d != primary_doc_id]
+            return SourceConflictRepairResult(
+                canonical_source_key=canonical_source_key,
+                primary_doc_id=primary_doc_id,
+                candidate_count=count,
+                fingerprint=fingerprint,
+                demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+                committed=False,
+            )
+
+        async with self.db.client.start_session() as session:
+            async with await session.start_transaction():
+                candidates = await self._primary_candidates(
+                    canonical_source_key, session=session
+                )
+                count = len(candidates)
+                fingerprint = self._conflict_fingerprint(candidates)
+                if primary_doc_id not in candidates:
+                    raise ValueError(
+                        f"primary_doc_id {primary_doc_id!r} is not a current "
+                        f"primary candidate for {canonical_source_key!r}"
+                    )
+                if (
+                    count != expected_candidate_count
+                    or fingerprint != expected_candidate_fingerprint
+                ):
+                    raise SourceConflictRepairCASError(
+                        f"[{self.workspace}] source-conflict repair CAS failed for "
+                        f"{canonical_source_key!r}: candidate set changed "
+                        f"(count {count} vs {expected_candidate_count})"
+                    )
+                demoted = [d for d in candidates if d != primary_doc_id]
+                if demoted:
+                    await self._data.update_many(
+                        {"_id": {"$in": demoted}},
+                        {
+                            "$set": {
+                                "metadata.is_duplicate": True,
+                                "metadata.original_doc_id": primary_doc_id,
+                            }
+                        },
+                        session=session,
+                    )
+        return SourceConflictRepairResult(
+            canonical_source_key=canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            candidate_count=count,
+            fingerprint=fingerprint,
+            demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+            committed=True,
+        )
 
 
 @final

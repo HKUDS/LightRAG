@@ -150,6 +150,45 @@ async def test_enqueue_acquire_combines_recovery_and_reservation_update(monkeypa
 
 
 @pytest.mark.offline
+async def test_enqueue_acquire_rejects_under_manual_freeze():
+    # LR2 Phase 3 §6.1/§7.2: a manual retry freeze rejects NEW enqueue
+    # reservations with the dedicated MANUAL_FREEZE conflict (HTTP 409).
+    ps = {
+        "busy": False,
+        "busy_owner": None,
+        "scanning_owner": None,
+        "destructive_busy": False,
+        "manual_freeze_requested": True,
+        "pending_enqueue_tokens": {},
+        "pending_enqueues": 0,
+    }
+
+    result = await acquire_enqueue_reservation(
+        ps,
+        asyncio.Lock(),
+        token="new",
+        reject_when=(
+            ("destructive_busy", "destructive"),
+            ("manual_freeze_requested", "manual retry draining"),
+        ),
+    )
+
+    assert result.acquired is False
+    assert result.conflict is shared_storage.PipelineReservationConflict.MANUAL_FREEZE
+    assert result.message == "manual retry draining"
+    # No slot taken while frozen.
+    assert ps["pending_enqueue_tokens"] == {} and ps["pending_enqueues"] == 0
+
+
+@pytest.mark.offline
+def test_manual_freeze_flag_maps_to_manual_freeze_conflict():
+    assert (
+        shared_storage._conflict_for_status_flag("manual_freeze_requested")
+        is shared_storage.PipelineReservationConflict.MANUAL_FREEZE
+    )
+
+
+@pytest.mark.offline
 async def test_single_owner_acquire_always_honors_recovery_fence(monkeypatch):
     monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
     monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)
@@ -188,6 +227,88 @@ async def test_single_owner_acquire_always_honors_recovery_fence(monkeypatch):
     assert ps.copy_calls == 1
     assert ps.get_calls == 0
     assert ps.update_calls == 1
+
+
+@pytest.mark.offline
+async def test_owner_with_no_pid_fences_instead_of_holding_forever(monkeypatch):
+    """LR2 §6.1: an owner whose liveness can NEVER be adjudicated fences the
+    workspace with ``recovery_required`` and keeps its flags.
+
+    A record with no PID has nothing to probe, ever — so ``_process_alive``
+    answers ALIVE on every pass and the reclaim never fires. Left at that, the
+    flags it holds (a manual freeze included) survive until the service is
+    restarted, and callers see a bounded-window 409 forever with no documented
+    way out. The fence turns that into a 503 plus
+    ``/documents/recovery/force_reset``, WITHOUT lifting the reservation on a
+    guess.
+    """
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
+    ps = _CountingStatus(
+        {
+            "busy": True,
+            "destructive_busy": False,
+            "busy_owner": {"token": "orphan", "kind": "processing"},  # no pid
+            "scanning_owner": None,
+            "manual_freeze_requested": True,
+            "pending_enqueue_tokens": {},
+            "pending_enqueues": 0,
+        }
+    )
+
+    result = await acquire_reservation(
+        ps,
+        asyncio.Lock(),
+        owner_key="busy_owner",
+        owner="new",
+        owner_kind="processing",
+        flags={"busy": True},
+        reject_when=(),
+    )
+
+    assert result.acquired is False
+    assert (
+        result.conflict is shared_storage.PipelineReservationConflict.RECOVERY_REQUIRED
+    )
+    # Fenced, but NOT reclaimed: the flags and the owner stay put.
+    assert ps["recovery_required"]["owner_key"] == "busy_owner"
+    assert "no process identity" in ps["recovery_required"]["message"]
+    assert ps["busy"] is True
+    assert ps["busy_owner"] == {"token": "orphan", "kind": "processing"}
+    assert ps["manual_freeze_requested"] is True
+
+
+@pytest.mark.offline
+async def test_dead_owner_without_start_id_is_still_reclaimed(monkeypatch):
+    """A missing ``process_start_id`` is NOT undecidable: death is provable from
+    the PID alone (only PID-*reuse* detection is lost). Such an owner must be
+    reclaimed as before, never fenced — otherwise every deployment whose
+    ``/proc`` start-time read failed would fence instead of recovering."""
+    monkeypatch.setattr(shared_storage, "_reservation_recovery_enabled", lambda: True)
+    monkeypatch.setattr(shared_storage, "_process_alive", lambda *_: False)
+    ps = _CountingStatus(
+        {
+            "busy": True,
+            "destructive_busy": False,
+            "busy_owner": {"token": "dead", "pid": 999999, "kind": "processing"},
+            "scanning_owner": None,
+            "pending_enqueue_tokens": {},
+            "pending_enqueues": 0,
+        }
+    )
+
+    result = await acquire_reservation(
+        ps,
+        asyncio.Lock(),
+        owner_key="busy_owner",
+        owner="new",
+        owner_kind="processing",
+        flags={"busy": True},
+        reject_when=(),
+    )
+
+    # processing is re-runnable: the slot is handed to the new owner, no fence.
+    assert result.acquired is True
+    assert ps.get("recovery_required") in (None, {}, False)
 
 
 @pytest.mark.offline

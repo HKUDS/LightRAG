@@ -452,8 +452,7 @@ async def bedrock_complete_if_cache(
             if response.get("stopReason") == "max_tokens":
                 logger.warning(
                     "Bedrock response truncated by token limit "
-                    f"(stopReason=max_tokens, content_len={len(content)}); "
-                    "returning partial content but not caching it"
+                    f"(stopReason=max_tokens, content_len={len(content)}), returning partial content"
                 )
                 content = TruncatedResponse(content)
 

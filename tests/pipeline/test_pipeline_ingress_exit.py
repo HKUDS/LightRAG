@@ -26,7 +26,13 @@ from lightrag.kg.shared_storage import (
     get_namespace_lock,
     get_pipeline_ingress,
 )
-from lightrag.pipeline import PipelineNextDecision, PipelineNextStep
+from lightrag.base import CURSOR_END, CURSOR_START
+from lightrag.pipeline import (
+    PipelineNextDecision,
+    PipelineNextStep,
+    _AUTO_RESUME_DOC_STATUSES,
+    _ManualDrainProgress,
+)
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 from lightrag.utils_pipeline import CUSTOM_CHUNK_PATCH_METADATA_KEY
 
@@ -225,6 +231,9 @@ async def test_refetch_document_failure_republishes_and_arms_auto(tmp_path):
     otherwise the drained notifications die with the exception."""
     rag = await _build_rag(tmp_path, _MarkerExtract())
     try:
+        # Legacy single-scan path so the failure lands on get_docs_by_statuses;
+        # the drain→scan compensation under test is shared with the paged path.
+        rag.pipeline_scheduling_page_size = 0
         ingress = await get_pipeline_ingress(rag.workspace)
         ingress.consume_auto_rescan()
         ingress.put_document(_doc_msg("doc-a"))
@@ -235,9 +244,19 @@ async def test_refetch_document_failure_republishes_and_arms_auto(tmp_path):
 
         rag.doc_status.get_docs_by_statuses = dead_scan
 
+        status, lock = await _pipeline_ns(rag)
         decision = PipelineNextDecision(PipelineNextStep.CONTINUE_DOCUMENT)
         with pytest.raises(ConnectionError):
-            await rag._refetch_for_decision(decision, ingress)
+            await rag._refetch_for_decision(
+                decision,
+                _AUTO_RESUME_DOC_STATUSES,
+                CURSOR_START,
+                ingress,
+                token="tok",
+                pipeline_status=status,
+                pipeline_status_lock=lock,
+                drain_progress=_ManualDrainProgress(),
+            )
 
         republished = {m.doc_id for m in ingress.drain_documents()}
         assert republished == {"doc-a", "doc-b"}
@@ -308,6 +327,7 @@ async def test_refetch_compensation_failure_does_not_mask_original_error(tmp_pat
     outage, but their docs are PENDING rows recovered by the next trigger."""
     rag = await _build_rag(tmp_path, _MarkerExtract())
     try:
+        rag.pipeline_scheduling_page_size = 0  # legacy single-scan path
         ingress = await get_pipeline_ingress(rag.workspace)
         ingress.put_document(_doc_msg("doc-a"))
 
@@ -324,9 +344,19 @@ async def test_refetch_compensation_failure_does_not_mask_original_error(tmp_pat
         ingress.put_document = dead_put
         ingress.request_auto_rescan = dead_arm
 
+        status, lock = await _pipeline_ns(rag)
         decision = PipelineNextDecision(PipelineNextStep.CONTINUE_DOCUMENT)
         with pytest.raises(ConnectionError, match="original strict-scan failure"):
-            await rag._refetch_for_decision(decision, ingress)
+            await rag._refetch_for_decision(
+                decision,
+                _AUTO_RESUME_DOC_STATUSES,
+                CURSOR_START,
+                ingress,
+                token="tok",
+                pipeline_status=status,
+                pipeline_status_lock=lock,
+                drain_progress=_ManualDrainProgress(),
+            )
     finally:
         await rag.finalize_storages()
 
@@ -401,8 +431,8 @@ async def test_cancel_after_auto_decision_restores_consumed_signal(tmp_path):
         orig_decide = rag._decide_pipeline_next_step
         cancelled_after = []
 
-        async def decide_then_cancel(ps, ps_lock, ing):
-            decision = await orig_decide(ps, ps_lock, ing)
+        async def decide_then_cancel(ps, ps_lock, ing, sweep_cursor=CURSOR_END):
+            decision = await orig_decide(ps, ps_lock, ing, sweep_cursor)
             if decision.step is PipelineNextStep.CONTINUE_AUTO and not cancelled_after:
                 cancelled_after.append(True)
                 # Lands in the exact window: decision consumed the flag, the
@@ -459,8 +489,8 @@ async def test_cancel_after_document_decision_restores_consumed_signal(tmp_path)
         orig_decide = rag._decide_pipeline_next_step
         cancelled_after = []
 
-        async def decide_then_cancel(ps, ps_lock, ing):
-            decision = await orig_decide(ps, ps_lock, ing)
+        async def decide_then_cancel(ps, ps_lock, ing, sweep_cursor=CURSOR_END):
+            decision = await orig_decide(ps, ps_lock, ing, sweep_cursor)
             if (
                 decision.step is PipelineNextStep.CONTINUE_DOCUMENT
                 and not cancelled_after
@@ -495,6 +525,10 @@ async def test_initial_scan_cancellation_restores_absorbed_auto_signal(tmp_path)
     intact for the next explicit trigger."""
     rag = await _build_rag(tmp_path, _MarkerExtract())
     try:
+        # Legacy single-scan entry path so the cancel lands on the mocked
+        # get_docs_by_statuses; the entry's absorb-then-cancel compensation
+        # (the finally re-arming on uncommitted_wakeup) is path-independent.
+        rag.pipeline_scheduling_page_size = 0
         status, _lock = await _pipeline_ns(rag)
         ingress = await get_pipeline_ingress(rag.workspace)
         ingress.request_auto_rescan()

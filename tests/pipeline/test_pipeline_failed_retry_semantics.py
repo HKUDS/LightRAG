@@ -16,7 +16,10 @@ import pytest
 
 from lightrag import LightRAG
 from lightrag.base import DocStatus
-from lightrag.kg.pipeline_ingress import PipelineIngressMessage
+from lightrag.kg.pipeline_ingress import (
+    ManualRetryPublishResult,
+    PipelineIngressMessage,
+)
 from lightrag.kg.shared_storage import get_pipeline_ingress
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
@@ -148,7 +151,7 @@ def test_manual_retry_processes_failed_and_acks(tmp_path):
                         kind="rescan", retry_failed=True, request_id=request_id
                     ),
                 )
-                is False
+                is ManualRetryPublishResult.ALREADY_TERMINAL
             )
 
             # A second, DIFFERENT request is a fresh attempt (no doc is
@@ -209,6 +212,11 @@ def test_strict_scan_failure_keeps_request_sticky(tmp_path):
         extract = _CountingExtract()
         rag = await _build_rag(tmp_path, f"frs-{uuid4().hex[:8]}", extract)
         try:
+            # Legacy single-scan path (LR2 Phase 3): the manual protocol's AUTO
+            # drain and exclusive FAILED reset both route through
+            # get_docs_by_statuses when paging is off, so the injected failure
+            # lands on the very first strict scan of the run.
+            rag.pipeline_scheduling_page_size = 0
             failed_id = await _make_failed_doc(rag, "a.txt", extract)
             ingress = await get_pipeline_ingress(rag.workspace)
             request_id = await request_failed_retry(rag)
@@ -247,12 +255,38 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
     re-arm it before propagating (sole-consumer compensation rule)."""
 
     async def _run():
-        from lightrag.pipeline import PipelineNextDecision, PipelineNextStep
+        from lightrag.base import CURSOR_START
+        from lightrag.pipeline import (
+            PipelineNextDecision,
+            PipelineNextStep,
+            _AUTO_RESUME_DOC_STATUSES,
+            _ManualDrainProgress,
+        )
+
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_namespace_lock,
+            make_owner_record,
+        )
 
         extract = _CountingExtract()
         rag = await _build_rag(tmp_path, f"frs-{uuid4().hex[:8]}", extract)
         try:
+            # Force the legacy single-scan path so the failure lands on
+            # get_docs_by_statuses; the compensation code under test is shared
+            # with the paged path (both raise through _next_scheduling_page).
+            rag.pipeline_scheduling_page_size = 0
             ingress = await get_pipeline_ingress(rag.workspace)
+            status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            lock = get_namespace_lock("pipeline_status", workspace=rag.workspace)
+            # This run owns busy — the manual drain/reset is owner-checked
+            # against this token.
+            token = "owner-tok"
+            status.update(
+                {"busy": True, "busy_owner": make_owner_record(token, "processing")}
+            )
 
             async def boom(statuses, strict=False):
                 raise RuntimeError("refetch boom")
@@ -260,18 +294,37 @@ def test_auto_rescan_rearmed_when_strict_refetch_fails(tmp_path):
             rag.doc_status.get_docs_by_statuses = boom
             decision = PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
             with pytest.raises(RuntimeError, match="refetch boom"):
-                await rag._refetch_for_decision(decision, ingress)
+                await rag._refetch_for_decision(
+                    decision,
+                    _AUTO_RESUME_DOC_STATUSES,
+                    CURSOR_START,
+                    ingress,
+                    token=token,
+                    pipeline_status=status,
+                    pipeline_status_lock=lock,
+                    drain_progress=_ManualDrainProgress(),
+                )
             assert ingress.consume_auto_rescan() is True  # re-armed
 
-            # A manual continuation stays sticky on its own — no re-arm.
+            # A manual continuation (LR2 Phase 3): CONTINUE_MANUAL begins the
+            # drain (freeze set), then the AUTO drain scan fails. The manual
+            # stays sticky on its own — no auto-rescan re-arm.
             with pytest.raises(RuntimeError, match="refetch boom"):
                 await rag._refetch_for_decision(
                     PipelineNextDecision(
                         PipelineNextStep.CONTINUE_MANUAL, manual_request_id="r1"
                     ),
+                    _AUTO_RESUME_DOC_STATUSES,
+                    CURSOR_START,
                     ingress,
+                    token=token,
+                    pipeline_status=status,
+                    pipeline_status_lock=lock,
+                    drain_progress=_ManualDrainProgress(),
                 )
             assert ingress.consume_auto_rescan() is False
+            # The freeze was set by begin-drain and must be visible.
+            assert status["manual_freeze_requested"] is True
         finally:
             await rag.finalize_storages()
 

@@ -1,6 +1,6 @@
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 pytest.importorskip(
     "pymongo",
@@ -553,6 +553,29 @@ class TestMongoEdgeReadCanonicalFilter:
         assert len(s.edge_collection.delete_many.call_args[0][0]["$or"]) == 5
 
 
+class _FakeFindCursor:
+    """Records the find(...).sort(...).limit(...).to_list(...) chain."""
+
+    def __init__(self, docs, error=None):
+        self._docs = list(docs)
+        self._error = error
+        self.sort_spec = None
+        self.limit_value = None
+
+    def sort(self, spec):
+        self.sort_spec = spec
+        return self
+
+    def limit(self, n):
+        self.limit_value = n
+        return self
+
+    async def to_list(self, length=None):
+        if self._error is not None:
+            raise self._error
+        return self._docs
+
+
 class TestMongoDocStatusLookup:
     """Cover the Mongo-native overrides for basename / content_hash lookups."""
 
@@ -581,7 +604,11 @@ class TestMongoDocStatusLookup:
         doc_id, doc = result
         assert doc_id == "doc-1"
         assert doc["file_path"] == "report.pdf"
-        storage._data.find_one.assert_awaited_once_with({"file_path": "report.pdf"})
+        # Primary-only lookup: duplicate markers (metadata.is_duplicate=true)
+        # are excluded so filename dedup never matches a dup-* row.
+        storage._data.find_one.assert_awaited_once_with(
+            {"file_path": "report.pdf", "metadata.is_duplicate": {"$ne": True}}
+        )
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_basename_empty_returns_none_without_query(self):
@@ -609,16 +636,21 @@ class TestMongoDocStatusLookup:
         assert await storage.get_doc_by_file_basename("missing.pdf") is None
 
     @pytest.mark.asyncio
-    async def test_get_doc_by_content_hash_returns_tuple_on_hit(self):
+    async def test_get_doc_by_content_hash_returns_earliest_on_hit(self):
+        # Sorted + limited server-side: the base contract promises the EARLIEST
+        # holder, because that id is persisted as a duplicate's original_doc_id.
         storage = self._make_storage()
-        storage._data.find_one = AsyncMock(
-            return_value={
-                "_id": "doc-1",
-                "file_path": "report.pdf",
-                "content_hash": "abc123",
-                "status": "processed",
-            }
+        cursor = _FakeFindCursor(
+            [
+                {
+                    "_id": "doc-1",
+                    "file_path": "report.pdf",
+                    "content_hash": "abc123",
+                    "status": "processed",
+                }
+            ]
         )
+        storage._data.find = MagicMock(return_value=cursor)
 
         result = await storage.get_doc_by_content_hash("abc123")
 
@@ -626,31 +658,45 @@ class TestMongoDocStatusLookup:
         doc_id, doc = result
         assert doc_id == "doc-1"
         assert doc["content_hash"] == "abc123"
-        storage._data.find_one.assert_awaited_once_with({"content_hash": "abc123"})
+        storage._data.find.assert_called_once_with({"content_hash": "abc123"})
+        assert cursor.sort_spec == [("created_at", 1), ("_id", 1)]
+        assert cursor.limit_value == 1
 
     @pytest.mark.asyncio
     async def test_get_doc_by_content_hash_empty_returns_none_without_query(self):
         # Empty hash must short-circuit so it cannot match legacy rows missing
         # the field via accidental coercion.
         storage = self._make_storage()
-        storage._data.find_one = AsyncMock()
+        storage._data.find = MagicMock()
 
         assert await storage.get_doc_by_content_hash("") is None
-        storage._data.find_one.assert_not_called()
+        storage._data.find.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_doc_by_content_hash_miss_returns_none(self):
         storage = self._make_storage()
-        storage._data.find_one = AsyncMock(return_value=None)
+        storage._data.find = MagicMock(return_value=_FakeFindCursor([]))
 
         assert await storage.get_doc_by_content_hash("zzz999") is None
 
     @pytest.mark.asyncio
-    async def test_lookup_swallows_pymongo_error_and_returns_none(self):
-        # PyMongoError must not propagate to the caller; the dedup path treats
-        # a storage failure as "no match" and the error is logged instead.
+    async def test_basename_lookup_swallows_pymongo_error_and_returns_none(self):
+        # The legacy basename lookup keeps its documented best-effort miss;
+        # identity-critical callers use resolve_doc_source_strict instead.
         storage = self._make_storage()
         storage._data.find_one = AsyncMock(side_effect=PyMongoError("boom"))
 
         assert await storage.get_doc_by_file_basename("report.pdf") is None
-        assert await storage.get_doc_by_content_hash("abc123") is None
+
+    @pytest.mark.asyncio
+    async def test_content_hash_lookup_raises_instead_of_reporting_no_match(self):
+        """Fail-proof: a PyMongoError used to be swallowed into None, which the
+        dedup callers read as "no duplicate" — so a transport blip enqueued a
+        duplicate row and ingested its content again. It must propagate."""
+        storage = self._make_storage()
+        storage._data.find = MagicMock(
+            return_value=_FakeFindCursor([], error=PyMongoError("boom"))
+        )
+
+        with pytest.raises(PyMongoError):
+            await storage.get_doc_by_content_hash("abc123")

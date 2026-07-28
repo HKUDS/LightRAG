@@ -11,7 +11,17 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from contextvars import ContextVar
-from typing import Any, Dict, List, Mapping, Optional, Union, TypeVar, Generic
+from typing import (
+    Any,
+    Dict,
+    Generic,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    TypeVar,
+    Union,
+)
 
 try:
     import psutil
@@ -23,14 +33,27 @@ from lightrag.constants import (
     DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE,
     DEFAULT_GLOBAL_SLOT_WAITER_STALE_TTL,
     DEFAULT_QUEUE_STATS_STALE_TTL,
+    PIPELINE_HISTORY_MAX_MESSAGES,
+    PIPELINE_HISTORY_MESSAGE_MAX_BYTES,
 )
-from lightrag.exceptions import PipelineNotInitializedError
+from lightrag import pipeline_metrics
+from lightrag.exceptions import (
+    PipelineBackpressureError,
+    PipelineNotInitializedError,
+)
 from lightrag.kg.pipeline_ingress import (
     AsyncioPipelineIngress,
     ManagerPipelineIngress,
+    ManualRetryPublishResult,
     PipelineIngressHub,
     PipelineIngressMessage,
     _PipelineIngressHubProxy,
+)
+from lightrag.kg.scan_job_store import (
+    AsyncioScanJobStore,
+    ManagerScanJobStore,
+    ScanJobStoreHub,
+    _ScanJobStoreHubProxy,
 )
 
 DEBUG_LOCKS = False
@@ -126,6 +149,15 @@ KEY_SEP = "\x1f"
 _CONCURRENCY_LEASE_NAMESPACE = "concurrency_leases"
 _QUEUE_STATS_NAMESPACE = "queue_stats"
 
+# Manual retry protocol phases (LR2 §6.1). Stored as PLAIN STRINGS in
+# ``pipeline_status["manual_phase"]`` — never enum members — so a Manager
+# ``DictProxy`` round-trip and any ``str(...)`` interpolation stay byte-stable
+# (cf. the Phase 2 enum-status bug where ``str(DocStatus.PENDING)`` yielded
+# "DocStatus.PENDING").
+MANUAL_PHASE_IDLE = "idle"
+MANUAL_PHASE_DRAIN_TO_IDLE = "drain_to_idle"
+MANUAL_PHASE_EXCLUSIVE_RESET = "exclusive_reset"
+
 # Heartbeat / staleness parameters (module-level so tests can monkeypatch).
 _heartbeat_ttl: float = DEFAULT_GLOBAL_SLOT_HEARTBEAT_TTL
 _suspect_grace: float = DEFAULT_GLOBAL_SLOT_SUSPECT_GRACE
@@ -161,6 +193,12 @@ _namespace_data_cache: Optional[Dict[str, Any]] = None
 # an explicit workspace teardown, or test cleanup may drop it.
 _pipeline_ingress_local: Optional[Dict[str, Any]] = None
 _pipeline_ingress_hub: Optional[Any] = None
+
+# Scan job store: SAME topology as the ingress (per-process cache of
+# per-workspace views + one multiprocess-only server-side hub). A scan job
+# record belongs to the workspace, not to any LightRAG instance.
+_scan_job_store_local: Optional[Dict[str, Any]] = None
+_scan_job_store_hub: Optional[Any] = None
 
 # Rate limiting for acquire-failure warnings (fail-closed path).
 _ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
@@ -547,6 +585,38 @@ def _my_start_id() -> Optional[str]:
     return _MY_START_ID_CACHE
 
 
+def _owner_identity_unprobeable(rec: Optional[Mapping[str, Any]]) -> bool:
+    """Can this owner record NEVER be resolved to alive-or-dead?
+
+    Only ONE condition qualifies: no recorded PID, so there is nothing to probe
+    however often the reclaim runs. LR2 §6.1 wants exactly that state to fence
+    the workspace with ``recovery_required`` (upload/manual/scan → 503) instead
+    of leaving a freeze held forever by an owner nobody can adjudicate and no
+    documented way out but restarting the service.
+
+    Two neighbouring states are deliberately NOT undecidable, because treating
+    them as such would fence live or reclaimable workspaces:
+
+    * **a missing ``process_start_id``** — death is still provable from the PID
+      alone (:func:`_pid_alive`); what is lost is only PID-*reuse* detection. A
+      dead owner here must still be reclaimed, so this predicate is evaluated
+      AFTER the confirmed-dead check.
+    * **an unreadable ``/proc`` entry for a PID that was just alive** — the
+      process exited between the two probes. :func:`_process_alive` answers ALIVE
+      and the next pass confirms the death; fencing on that benign race would
+      turn every ordinary worker exit into an operator ticket.
+
+    Reachability note: :func:`make_owner_record` always stamps ``os.getpid()``,
+    and the reclaim layer is gated to Linux multi-worker where ``/proc`` answers,
+    so in a healthy deployment this predicate is false. It exists so a
+    hand-written, truncated or foreign-writer record fences rather than pinning a
+    freeze that nothing can ever clear.
+    """
+    if not isinstance(rec, Mapping):
+        return False
+    return rec.get("pid") is None
+
+
 def _process_alive(pid: Optional[int], start_id: Optional[str]) -> bool:
     """Dead-only liveness for lock / reservation owners.
 
@@ -799,6 +869,11 @@ _LightRAGManager.register(
     "PipelineIngressHub",
     PipelineIngressHub,
     proxytype=_PipelineIngressHubProxy,
+)
+_LightRAGManager.register(
+    "ScanJobStoreHub",
+    ScanJobStoreHub,
+    proxytype=_ScanJobStoreHubProxy,
 )
 
 
@@ -1489,7 +1564,9 @@ def initialize_share_data(
         _queue_stats_ns_cache, \
         _namespace_data_cache, \
         _pipeline_ingress_local, \
-        _pipeline_ingress_hub
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if _initialized:
@@ -1512,6 +1589,7 @@ def initialize_share_data(
     _queue_stats_ns_cache = None
     _namespace_data_cache = {}
     _pipeline_ingress_local = {}
+    _scan_job_store_local = {}
     if _global_concurrency_limits:
         direct_log(
             f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
@@ -1536,6 +1614,9 @@ def initialize_share_data(
         # proxy and bind namespaces to it — no per-workspace proxy creation,
         # no client-held creation lock.
         _pipeline_ingress_hub = _manager.PipelineIngressHub()
+        # Server-side hub owning every workspace's scan job store (same pre-fork
+        # topology): workers inherit this one proxy and bind namespaces to it.
+        _scan_job_store_hub = _manager.ScanJobStoreHub()
 
         _storage_keyed_lock = KeyedUnifiedLock()
 
@@ -1558,6 +1639,7 @@ def initialize_share_data(
         _init_flags = {}
         _update_flags = {}
         _pipeline_ingress_hub = None  # multiprocess-only server-side hub
+        _scan_job_store_hub = None  # multiprocess-only server-side hub
         _async_locks = None  # No need for async locks in single process mode
 
         _storage_keyed_lock = KeyedUnifiedLock()
@@ -1590,7 +1672,6 @@ async def initialize_pipeline_status(workspace: str | None = None):
         history_messages = _manager.list() if _is_multiprocess else []
         pipeline_namespace.update(
             {
-                "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 # Destructive subset of ``busy``: clear / delete jobs that
                 # DROP storages or remove input files.  Concurrent enqueue
@@ -1637,6 +1718,30 @@ async def initialize_pipeline_status(workspace: str | None = None):
                 "busy_owner": None,
                 "scanning_owner": None,
                 "pending_enqueue_tokens": {},
+                # ---- manual retry coordination (LR2 §6.1) ----
+                # Runtime-only state for the freeze → DRAIN_TO_IDLE →
+                # EXCLUSIVE_RESET manual-retry protocol.  NEVER written to
+                # doc_status and NEVER surviving a Manager/whole-process restart
+                # (a restart resets them to idle; recovery is driven only by the
+                # persistent doc_status: PENDING resumes via AUTO, FAILED waits
+                # for the next explicit manual request).
+                #
+                # ``manual_freeze_requested`` rejects NEW enqueue reservations
+                # (upload/text/SDK direct enqueue) but lets already-reserved
+                # requests finish; ``manual_resetting`` marks the exclusive
+                # FAILED→PENDING phase (no worker runs); ``manual_phase`` is one
+                # of MANUAL_PHASE_{IDLE,DRAIN_TO_IDLE,EXCLUSIVE_RESET}.  The
+                # freeze/reset flags and ``manual_owner`` are ALWAYS written in
+                # a single atomic update: there is never a True flag with no
+                # owner (LR2 §6.1).  ``manual_owner`` is the busy processing run
+                # that holds the freeze — {request_id, owner_token, pid,
+                # process_start_id} — so a dead busy owner clears the manual
+                # state too (see _dead_reservation_updates).
+                "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
             }
         )
 
@@ -1748,6 +1853,42 @@ async def finalize_pipeline_ingress(workspace: str | None = None) -> None:
     _pipeline_ingress_local.pop(final_namespace, None)
 
 
+def get_scan_job_store(workspace: str | None = None):
+    """Get (or lazily create) the scan job store view for ``workspace``.
+
+    Same topology as :func:`get_pipeline_ingress` but LOOP-AGNOSTIC (the store
+    is a plain ``threading.Lock``-guarded object with no asyncio primitives and
+    no blocking waits, so it needs no loop-migration): single-process a
+    per-process :class:`AsyncioScanJobStore`, multiprocess a
+    :class:`ManagerScanJobStore` view binding the namespace to the one
+    server-side hub. Synchronous by design (no RPC needs an event loop)."""
+    if _scan_job_store_local is None:
+        raise ValueError("Shared dictionaries not initialized")
+
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    store = _scan_job_store_local.get(final_namespace)
+    if store is None:
+        if _is_multiprocess and _scan_job_store_hub is not None:
+            created: Any = ManagerScanJobStore(_scan_job_store_hub, final_namespace)
+        else:
+            created = AsyncioScanJobStore(final_namespace)
+        store = _scan_job_store_local.setdefault(final_namespace, created)
+    return store
+
+
+def finalize_scan_job_store(workspace: str | None = None) -> None:
+    """Drop the workspace scan job store from THIS process's registry.
+
+    Teardown/tests ONLY (like :func:`finalize_pipeline_ingress`). Single-process
+    fully drops the instance; multiprocess drops only the local view — the
+    server-side store persists in the hub until :func:`finalize_share_data` or a
+    destructive workspace wipe (``store.clear()``). Idempotent."""
+    if _scan_job_store_local is None:
+        return
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    _scan_job_store_local.pop(final_namespace, None)
+
+
 def _debug_log_failure(message: str, exc: Exception) -> None:
     """Record a swallowed pipeline-status log-write failure without ever raising.
 
@@ -1767,6 +1908,125 @@ _UNRESOLVED = object()
 ``None`` cannot serve as the sentinel: a ``.get()`` that *returned* None
 (missing key / late init) must NOT be cached, so the next write retries.
 """
+
+
+# ---------------------------------------------------------------------------
+# Bounded pipeline status history (LR2 §10.3)
+# ---------------------------------------------------------------------------
+#
+# Every history write in the repo funnels through ``append_pipeline_history``
+# (or :class:`PipelineStatusLogger`, which shares the helpers below). Two bounds
+# are enforced together because either alone is insufficient: a message count
+# without a size cap still lets one ``traceback.format_exc()`` line dominate the
+# log, and a size cap without a count is unbounded by definition.
+
+# How many appends may pass before the capacity check is taken. The check itself
+# is a ``len()`` — one Manager RPC in multiprocess mode — and the hot extraction
+# path logs thousands of lines per document, so checking every time would add
+# 50% to the per-line RPC budget that PipelineStatusLogger exists to hold at 2.
+# Amortizing it makes the real bound ``capacity + interval × concurrently
+# written histories`` (2.5% overshoot per writer), which is still a fixed bound.
+_HISTORY_TRIM_CHECK_INTERVAL = 128
+
+# Process-local, deliberately not synchronized: this is a heuristic for *when* to
+# check, never a correctness input. A racing double-check just runs the trim
+# twice, and the trim is idempotent (it always leaves the newest `capacity`).
+_history_appends_since_trim = 0
+
+
+def clamp_pipeline_history_message(message: Any) -> Any:
+    """Cut one history line to ``PIPELINE_HISTORY_MESSAGE_MAX_BYTES`` UTF-8 bytes.
+
+    Truncation keeps the HEAD plus a marker naming the original size: status
+    lines put the identifying part first (stage, counter, doc id, file path), and
+    an operator who sees "48213 bytes" knows to look in the server log for the
+    full text — which every one of these call sites has already written there.
+
+    Never raises (part of the status-write contract): an unexpected object is
+    returned untouched rather than failing the operation being logged.
+    """
+    try:
+        if not isinstance(message, str):
+            message = str(message)
+        raw = message.encode("utf-8")
+        if len(raw) <= PIPELINE_HISTORY_MESSAGE_MAX_BYTES:
+            return message
+        marker = f"…[truncated, {len(raw)} bytes]"
+        budget = max(
+            0, PIPELINE_HISTORY_MESSAGE_MAX_BYTES - len(marker.encode("utf-8"))
+        )
+        # Slice the BYTES and drop the partial trailing character (the whole
+        # point of errors="ignore" here); slicing characters instead would
+        # overshoot the byte budget by up to 3x on CJK text.
+        return raw[:budget].decode("utf-8", errors="ignore") + marker
+    except Exception as exc:
+        _debug_log_failure("history message clamp skipped", exc)
+        return message
+
+
+def _maybe_trim_pipeline_history(history, appended: int = 1) -> None:
+    """Enforce the ring capacity on an already-resolved history handle.
+
+    ``appended`` counts MESSAGES, not calls: a group write advances the counter by
+    its own length, so the overshoot stays ``interval`` regardless of how large a
+    group a call site passes.
+
+    Lock-free on purpose. The trim is a read-modify-write, but its only possible
+    race outcome is running twice, and ``del history[:overflow]`` never removes a
+    message newer than the retained window — so no reader can observe anything a
+    single-threaded trim would not also have produced. Coordination state still
+    requires ``pipeline_status_lock``; this is status log housekeeping.
+    """
+    global _history_appends_since_trim
+    _history_appends_since_trim += appended
+    if _history_appends_since_trim < _HISTORY_TRIM_CHECK_INTERVAL:
+        return
+    _history_appends_since_trim = 0
+    try:
+        overflow = len(history) - PIPELINE_HISTORY_MAX_MESSAGES
+        if overflow > 0:
+            # In place, and by slice: `history` is the shared Manager ListProxy
+            # that every worker appends to and PipelineStatusLogger caches, so
+            # rebinding it would orphan both. One `del` is one server-side RPC;
+            # popping in a loop would be `overflow` of them.
+            del history[:overflow]
+    except Exception as exc:
+        _debug_log_failure("history trim skipped", exc)
+
+
+def append_pipeline_history(pipeline_status, *messages) -> None:
+    """The single funnel for pipeline status history writes (LR2 §10.3).
+
+    Replaces the raw ``history_messages`` append at every call site — a repo-wide
+    test fails if one is re-introduced, because a single unfunnelled writer is an
+    unbounded leak that nothing else would notice.
+
+    Deliberately does NOT touch ``latest_message``: the call sites that set it do
+    so alongside other coordination fields in one ``update()``, and folding that
+    in would turn a mechanical, reviewable substitution into a behaviour change.
+
+    Same never-raise contract as :class:`PipelineStatusLogger`, for the same
+    reason — the call sites are shaped ``except ...: log(...); raise`` and a
+    raising status write would mask the real exception. A missing/None
+    ``history_messages`` is skipped rather than raising KeyError.
+    """
+    if pipeline_status is None or not messages:
+        return
+    try:
+        history = pipeline_status.get("history_messages")
+    except Exception as exc:
+        _debug_log_failure("history fetch skipped", exc)
+        return
+    if history is None:
+        return
+    try:
+        # One `extend` per group: N appends would be N RPCs, and a group written
+        # by one call site belongs together in the log.
+        history.extend([clamp_pipeline_history_message(m) for m in messages])
+    except Exception as exc:
+        _debug_log_failure("history append skipped", exc)
+        return
+    _maybe_trim_pipeline_history(history, len(messages))
 
 
 class PipelineStatusLogger:
@@ -1793,13 +2053,15 @@ class PipelineStatusLogger:
       reset IN PLACE (``del h[:]`` / ``h[:] = [...]``) and never replaced with
       a new list object; a replacement would leave this logger appending to
       the orphaned list for the rest of the operation.
-    - History *trimming* is deliberately not offered here: the ``len`` check
-      plus delete is a read-modify-write and must stay inside
-      ``async with pipeline_status_lock`` (see the processing loop).
+    - Shares the LR2 §10.3 bounds with :func:`append_pipeline_history`: each
+      message is clamped by :func:`clamp_pipeline_history_message` and the ring
+      capacity is enforced by :func:`_maybe_trim_pipeline_history`. This is the
+      hot path (thousands of lines per document), which is exactly why the
+      capacity check there is amortized rather than taken per line.
 
     Why lock-free is safe: this is for pure status logging ONLY, never for
     coordination state (``busy`` / ``cancellation_*`` /
-    reservation owner tokens / ``cur_batch`` / the history trim), which stays
+    reservation owner tokens / ``cur_batch``), which stays
     in ``async with pipeline_status_lock`` read-modify-write blocks. Each of
     ``dict.__setitem__`` and ``list.extend`` is a single indivisible operation
     on the backing dict/list under the Manager server's CPython GIL (for plain
@@ -1838,6 +2100,10 @@ class PipelineStatusLogger:
         the whole group to history with one ``extend``."""
         if self._pipeline_status is None or not messages:
             return
+        # Clamp once, up front: `latest_message` is a single slot but it is read
+        # back on every status poll, so an unclamped 48 KB line would be shipped
+        # to the UI for as long as it stays the latest.
+        messages = tuple(clamp_pipeline_history_message(m) for m in messages)
         try:
             self._pipeline_status["latest_message"] = messages[-1]
         except Exception as exc:
@@ -1861,6 +2127,8 @@ class PipelineStatusLogger:
             # Do NOT retry these messages: the extend may have half-committed.
             self._history = _UNRESOLVED
             _debug_log_failure("history append skipped", exc)
+            return
+        _maybe_trim_pipeline_history(history, len(messages))
 
 
 # ============================================================================
@@ -1897,6 +2165,15 @@ _INTERNAL_PIPELINE_STATUS_FIELDS = (
     "operation_record",
     "recovery_required",
     "scan_deferred_processing",
+    # ``manual_owner`` carries a pid / process_start_id / owner token — internal
+    # coordination identity, never surfaced on /pipeline_status. The
+    # manual_freeze_requested / manual_resetting / manual_phase booleans+string
+    # are also hidden here in Phase 3; Phase 6 adds a curated observability view.
+    "manual_owner",
+    "manual_freeze_requested",
+    "manual_freeze_started_at",
+    "manual_resetting",
+    "manual_phase",
 )
 
 # Owner ``kind`` values whose work is safely RE-RUNNABLE after a dead-owner
@@ -1918,11 +2195,23 @@ def _reservation_recovery_enabled() -> bool:
 
 def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
     """Human-readable refusal for a mutation attempted while ``recovery_required``
-    is set (a worker died mid custom_chunks/delete/clear, which may have
-    half-committed). Returns a generic message if the pipeline is not fenced."""
+    is set. Returns a generic message if the pipeline is not fenced.
+
+    The fence has more than one cause, and rendering them all as "a worker died"
+    would send an operator looking for a crash that never happened. A record
+    carrying an explicit ``message`` (a stalled manual drain, an owner whose
+    liveness can never be adjudicated) supplies its own wording; the original
+    dead-owner cause keeps the derived one.
+    """
     rec = pipeline_status.get("recovery_required")
     if not isinstance(rec, dict):
         return "Pipeline is not fenced for recovery."
+    explicit = rec.get("message")
+    if isinstance(explicit, str) and explicit:
+        return (
+            f"Pipeline is fenced pending recovery: {explicit} All mutations are "
+            "refused until the workspace is recovered or force-reset."
+        )
     op = rec.get("operation_record") or {}
     target = op.get("doc_id") or op.get("scope") or ""
     target = f" (target: {target})" if target else ""
@@ -1932,6 +2221,40 @@ def pipeline_recovery_blocked_message(pipeline_status: Dict[str, Any]) -> str:
         "partially-committed state. All mutations are refused until the "
         "workspace is recovered or force-reset."
     )
+
+
+def describe_recovery_fence(pipeline_status: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read-only, API-safe projection of the ``recovery_required`` fence.
+
+    The raw fence record is in :data:`_INTERNAL_PIPELINE_STATUS_FIELDS` and is
+    stripped from every response, for a good reason: it embeds an
+    ``operation_record`` and is written next to owner records carrying PIDs and
+    reservation tokens, which authorize releasing a reservation. But stripping it
+    left an operator with no read-only way to see THAT the workspace is fenced,
+    why, or which documents to look at — only a 503 on every write and a log line
+    they may not have kept.
+
+    So this returns the three things they need and nothing more:
+    ``recovery_required`` (bool), ``recovery_kind`` (the coarse cause) and
+    ``recovery_message`` (the same human-readable text the refusals carry, which
+    includes the bounded blocker sample for a stalled drain). No PID, no token, no
+    raw ``operation_record``.
+    """
+    rec = pipeline_status.get("recovery_required")
+    if not isinstance(rec, dict) or not rec:
+        return {
+            "recovery_required": False,
+            "recovery_kind": None,
+            "recovery_message": None,
+        }
+    kind = rec.get("kind")
+    return {
+        "recovery_required": True,
+        "recovery_kind": str(kind) if kind is not None else None,
+        "recovery_message": pipeline_recovery_blocked_message(
+            {"recovery_required": rec}
+        ),
+    }
 
 
 def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
@@ -1956,6 +2279,23 @@ def make_owner_record(token: str, kind: str) -> Dict[str, Any]:
     }
 
 
+def make_manual_owner_record(request_id: str, token: str) -> Dict[str, Any]:
+    """Build the manual-retry freeze owner record (LR2 §6.1):
+    ``{request_id, owner_token, pid, process_start_id}``.
+
+    The freeze/drain/reset is driven BY the busy processing run, so the process
+    identity reuses :func:`make_owner_record` (same pid / process_start_id as the
+    busy owner) — a dead busy owner is therefore a dead manual owner. Kept in the
+    shared coordination layer so process identity is only ever captured here."""
+    owner = make_owner_record(token, "manual")
+    return {
+        "request_id": request_id,
+        "owner_token": owner["token"],
+        "pid": owner["pid"],
+        "process_start_id": owner["process_start_id"],
+    }
+
+
 def _dead_reservation_updates(
     pipeline_status: Mapping[str, Any],
     owner_key: str,
@@ -1973,6 +2313,23 @@ def _dead_reservation_updates(
     updates: Dict[str, Any] = {owner_key: None}
     for flag in flags:
         updates[flag] = False
+    # The manual-retry freeze/reset is driven BY the busy processing run
+    # (manual_owner shares its pid/process_start_id). A dead busy owner cannot
+    # legitimately still hold a freeze, so clear the whole manual state in the
+    # SAME atomic update — never leave a True freeze flag with no live owner
+    # (LR2 §6.1). The sticky manual request itself survives in the ingress
+    # mailbox and is re-run from scratch (idempotent drain→reset) by the next
+    # owner. ``processing`` is re-runnable, so busy is simply cleared here.
+    if owner_key == "busy_owner":
+        updates.update(
+            {
+                "manual_freeze_requested": False,
+                "manual_freeze_started_at": None,
+                "manual_resetting": False,
+                "manual_phase": MANUAL_PHASE_IDLE,
+                "manual_owner": None,
+            }
+        )
     if rec.get("kind") not in _RERUNNABLE_RESERVATION_KINDS:
         updates["recovery_required"] = {
             "kind": rec.get("kind"),
@@ -1993,6 +2350,14 @@ def _dead_pipeline_reservation_updates(
     field reads stay local so a reconciliation decision costs one proxy ``copy``
     at its caller instead of one RPC per ``get``. Only confirmed-dead owners are
     reclaimed; a live-but-slow owner is never preempted.
+
+    An owner whose liveness can NEVER be adjudicated (no PID / no
+    ``process_start_id`` — see :func:`_owner_identity_undecidable`) is neither
+    reclaimed nor ignored: LR2 §6.1 requires it to fence the workspace with
+    ``recovery_required`` while leaving every flag it holds in place, so the
+    freeze is never risked on a guess and the operator gets a 503 plus the
+    documented ``/documents/recovery/force_reset`` exit instead of a 409 that
+    can only be cleared by restarting the service.
     """
     if not _reservation_recovery_enabled():
         return {}
@@ -2011,6 +2376,27 @@ def _dead_pipeline_reservation_updates(
         if not any(snapshot.get(flag) for flag in flags):
             continue
         if _process_alive(rec.get("pid"), rec.get("process_start_id")):
+            # Alive, or not confirmed dead. Distinguish the transient uncertainty
+            # (re-probed and settled on a later pass) from a record that can
+            # NEVER be adjudicated: the latter would otherwise hold its flags —
+            # a manual freeze included — until the service is restarted, with no
+            # 503 and no documented exit. Checked AFTER the dead branch so a
+            # provable death is always a reclaim, never a fence.
+            if _owner_identity_unprobeable(rec) and not snapshot.get(
+                "recovery_required"
+            ):
+                fence = {
+                    "kind": rec.get("kind") or owner_key,
+                    "owner_key": owner_key,
+                    "operation_record": snapshot.get("operation_record"),
+                    "message": (
+                        f"the '{owner_key}' holder records no process identity, so "
+                        "it can never be confirmed alive or dead; its reservation "
+                        "is left untouched rather than reclaimed on a guess."
+                    ),
+                }
+                snapshot["recovery_required"] = fence
+                updates["recovery_required"] = fence
             continue
         owner_updates = _dead_reservation_updates(snapshot, owner_key, flags, rec)
         snapshot.update(owner_updates)
@@ -2063,6 +2449,59 @@ def reconcile_dead_pipeline_reservations(
     return updates
 
 
+async def reap_dead_reservations_locked(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+) -> None:
+    """Reap confirmed-dead reservation tokens under ``pipeline_status_lock``.
+
+    A liveness escape hatch for a caller that is NOT taking a reservation (so it
+    cannot use the acquire helpers, which reconcile as a side effect) but must
+    not stall on a phantom count — specifically the manual DRAIN_TO_IDLE wait,
+    where the freeze blocks the uploads whose acquire would otherwise reap a
+    worker SIGKILLed mid-enqueue. No-op off Linux multi-worker
+    (:func:`_reservation_recovery_enabled`). Keeps
+    ``reconcile_dead_pipeline_reservations`` shared-storage-private."""
+    async with pipeline_status_lock:
+        reconcile_dead_pipeline_reservations(pipeline_status)
+
+
+async def fence_workspace_for_recovery(
+    pipeline_status: Dict[str, Any],
+    pipeline_status_lock,
+    *,
+    kind: str,
+    message: str,
+    operation_record: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Set ``recovery_required`` so every later mutation is refused with 503.
+
+    The self-fencing counterpart of the dead-owner reclaim: a running owner that
+    discovers it cannot make progress fences the workspace itself rather than
+    spinning (LR2 §7.2). Deliberately NOT owner-checked and deliberately
+    idempotent-by-first-writer: the fence outlives whichever reservation observed
+    the problem — the caller's own ``finally`` releases that reservation straight
+    afterwards — and an existing fence (e.g. a dead-owner one) is more specific
+    than a later generic one, so the first cause is the one kept.
+
+    Runs to completion under cancellation: a fence that a cancel could skip would
+    hand the next run the same spin.
+    """
+
+    async def _run() -> None:
+        async with pipeline_status_lock:
+            if pipeline_status.get("recovery_required"):
+                return
+            pipeline_status["recovery_required"] = {
+                "kind": kind,
+                "owner_key": "busy_owner",
+                "operation_record": operation_record,
+                "message": message,
+            }
+
+    await run_to_completion(_run)
+
+
 class PipelineReservationConflict(str, Enum):
     """Structured reason why a pipeline reservation was refused."""
 
@@ -2071,6 +2510,11 @@ class PipelineReservationConflict(str, Enum):
     PENDING_ENQUEUE = "pending_enqueue"
     DESTRUCTIVE = "destructive"
     RECOVERY_REQUIRED = "recovery_required"
+    # A manual retry has frozen new enqueues while it drains the pipeline to
+    # idle and exclusively resets FAILED→PENDING (LR2 §6.1/§7.2). Maps to HTTP
+    # 409 like every non-recovery conflict — the freeze is a bounded window,
+    # not a fenced workspace.
+    MANUAL_FREEZE = "manual_freeze"
 
 
 @dataclass(frozen=True)
@@ -2081,6 +2525,14 @@ class PipelineReservationResult:
     conflict: Optional[PipelineReservationConflict] = None
     message: Optional[str] = None
     snapshot: Optional[Dict[str, Any]] = None
+    fence: Optional[str] = None
+    """The ``pipeline_status`` flag that refused, when one specific flag did.
+
+    Finer-grained than ``conflict``, which folds ``scanning`` and
+    ``scanning_exclusive`` into one member: a caller telling an operator WHICH
+    fence to wait on needs the flag, and a caller choosing an HTTP status needs
+    the member. Both are carried so neither has to be reconstructed from the
+    message."""
 
 
 def _recovery_required_result(
@@ -2091,10 +2543,19 @@ def _recovery_required_result(
         conflict=PipelineReservationConflict.RECOVERY_REQUIRED,
         message=pipeline_recovery_blocked_message(snapshot),
         snapshot=snapshot,
+        # The fence IS a pipeline_status field, so ``fence`` is populated here for
+        # the same reason as on every flag refusal: the structured contract says
+        # it names the field that refused, and leaving it None here would make
+        # exactly one refusal shape lie about itself.
+        fence="recovery_required",
     )
 
 
 def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
+    if flag_key == "manual_freeze_requested":
+        # One chokepoint for every ingress path (enqueue reservation, last-line
+        # guard, scan fence), so the count cannot drift between them.
+        pipeline_metrics.increment(pipeline_metrics.FREEZE_REJECTS)
     try:
         return {
             "busy": PipelineReservationConflict.BUSY,
@@ -2102,6 +2563,7 @@ def _conflict_for_status_flag(flag_key: str) -> PipelineReservationConflict:
             "scanning_exclusive": PipelineReservationConflict.SCANNING,
             "pending_enqueues": PipelineReservationConflict.PENDING_ENQUEUE,
             "destructive_busy": PipelineReservationConflict.DESTRUCTIVE,
+            "manual_freeze_requested": PipelineReservationConflict.MANUAL_FREEZE,
         }[flag_key]
     except KeyError:
         # Fail-fast on an unmapped reject_when flag: a silent BUSY fallback would
@@ -2186,6 +2648,8 @@ async def acquire_reservation(
     owner_kind: Optional[str] = None,
     flags: Dict[str, Any],
     reject_when,
+    pipeline_ingress: Any = None,
+    refuse_when_manual_pending: bool = False,
 ) -> PipelineReservationResult:
     """Atomically take a single-holder reservation.
 
@@ -2196,11 +2660,27 @@ async def acquire_reservation(
     token or an owner record dict; ``owner_kind`` converts a token into a process
     identity record inside this shared coordination layer.
 
+    ``refuse_when_manual_pending`` (``/scan`` only, LR2 §8.1) additionally
+    refuses while ANY un-ACKed sticky manual retry request sits in the mailbox:
+    a scan is itself a manual retry (it publishes its own intent and runs the
+    exclusive FAILED reset under ``scanning_exclusive``), so granting it while an
+    earlier request is queued would both jump the manual FIFO and deadlock that
+    request's run — the scan fence refuses every processing reservation. The peek
+    happens in the SAME critical section as the flag checks (one mailbox call, no
+    storage query, exactly like the auto-rescan arm in
+    :func:`acquire_processing_reservation`), so a request published concurrently
+    is either seen here or lands after the fence is up. ``pipeline_ingress`` MUST
+    be resolved by the caller beforehand — never lazily under the lock.
+
     The caller MUST have entered its ``try`` before calling this so a cancel at
     the lock exit still runs the ``finally`` that releases ``owner`` by token.
     """
     if owner_kind is not None:
         owner = make_owner_record(str(owner), owner_kind)
+    if refuse_when_manual_pending and pipeline_ingress is None:
+        raise ValueError(
+            "refuse_when_manual_pending requires a pre-resolved pipeline_ingress"
+        )
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
@@ -2215,6 +2695,24 @@ async def acquire_reservation(
                     acquired=False,
                     conflict=_conflict_for_status_flag(flag_key),
                     message=reason,
+                    snapshot=snapshot,
+                    fence=flag_key,
+                )
+        if refuse_when_manual_pending:
+            # Cheapest checks first: the flags above catch a manual retry that is
+            # already draining (it holds ``busy``); this catches one still queued.
+            pending_manual = pipeline_ingress.peek_next_manual_retry()
+            if pending_manual is not None:
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=PipelineReservationConflict.MANUAL_FREEZE,
+                    message=(
+                        "An earlier manual retry request "
+                        f"({pending_manual.request_id[:8]}) is still queued. A scan "
+                        "must not jump the manual retry FIFO — retry once it has "
+                        "been served."
+                    ),
                     snapshot=snapshot,
                 )
         updates = dict(flags)
@@ -2224,19 +2722,74 @@ async def acquire_reservation(
     return PipelineReservationResult(acquired=True, snapshot=snapshot)
 
 
+def _reservation_weight(metadata: Any) -> int:
+    """Documents an in-flight reservation intends to write (0 when unweighted)."""
+    if not isinstance(metadata, Mapping):
+        return 0
+    weight = metadata.get("weight")
+    return weight if isinstance(weight, int) and weight > 0 else 0
+
+
 async def acquire_enqueue_reservation(
     pipeline_status: Dict[str, Any],
     pipeline_status_lock,
     *,
     token: str,
     reject_when,
+    weight: int = 0,
+    capacity: int = 0,
+    active_count: Optional[int] = None,
 ) -> PipelineReservationResult:
-    """Take one of the (concurrent) pending-enqueue reservations.
+    """Take (or re-weight) one of the concurrent pending-enqueue reservations.
 
     ``pending_enqueue_tokens`` is a ``{token: metadata}`` set; several enqueues
     may hold slots at once. Adds ``token`` and mirrors the count into
     ``pending_enqueues`` in a single atomic update.
+
+    ``weight`` records how many documents this reservation intends to write, and
+    with ``capacity > 0`` the same critical section enforces the admission rule
+    (LR2 §9.1)::
+
+        active_count + Σ(other tokens' weights) + weight <= capacity
+
+    Registering an existing token again is how a reservation is *re-weighted*
+    (e.g. ``/texts`` learning its real document count after body parse, or the
+    enqueue guard narrowing a coarse pre-body reservation down to the deduped
+    count): the token's own previous weight is excluded from the sum, so a
+    re-weight can never double-count itself.
+
+    Refusal semantics are deliberately different per cause:
+
+    * mutual exclusion (``reject_when`` flags) → a refusal *result* (→ 409),
+      evaluated BEFORE capacity, so a manual freeze refuses regardless of how
+      much room there is — but **only for a NEW reservation**. A re-weight of a
+      token that is already registered is exempt, because holding a
+      pending-enqueue reservation is itself the protection against every ingress
+      fence (LR2 §9.2 "冻结前被准入的请求跑完"):
+
+      - ``scanning``/``scanning_exclusive`` and ``destructive_busy`` cannot even
+        be raised while it is held — both of those acquires list
+        ``pending_enqueues`` in their own ``reject_when``, in the same critical
+        section as their flag write;
+      - ``manual_freeze_requested`` may be raised, and DRAIN_TO_IDLE is then
+        contractually required to WAIT for ``pending_enqueues`` to reach zero.
+
+      Refusing a re-weight would turn that "wait for it" into "drop its work".
+      The new/existing decision is read from THIS snapshot rather than taken on
+      the caller's word: a caller that merely passes a token string cannot talk
+      its way past a fence.
+    * no capacity → :class:`~lightrag.exceptions.PipelineBackpressureError`
+      (→ 429) carrying the numbers the client needs.
+
+    ``capacity > 0`` requires ``active_count``: the caller must have taken a
+    strict count under its serialisation lock. Passing ``None`` is a programming
+    error, not a licence to assume there is room.
     """
+    if capacity > 0 and active_count is None:
+        raise ValueError(
+            "acquire_enqueue_reservation requires active_count when capacity "
+            "is enforced; admission must never guess the active count"
+        )
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
@@ -2244,17 +2797,44 @@ async def acquire_enqueue_reservation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
-        for flag_key, reason in reject_when:
-            if snapshot.get(flag_key):
-                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
-                return PipelineReservationResult(
-                    acquired=False,
-                    conflict=_conflict_for_status_flag(flag_key),
-                    message=reason,
-                    snapshot=snapshot,
-                )
         tokens = dict(snapshot.get("pending_enqueue_tokens", {}))
-        tokens[token] = {"pid": os.getpid(), "process_start_id": _my_start_id()}
+        # The fences gate NEW reservations only; a re-weight of a token this
+        # snapshot already knows is exempt (see the docstring).
+        if token not in tokens:
+            for flag_key, reason in reject_when:
+                if snapshot.get(flag_key):
+                    _commit_pipeline_reservation_updates(
+                        pipeline_status, recovery_updates
+                    )
+                    return PipelineReservationResult(
+                        acquired=False,
+                        conflict=_conflict_for_status_flag(flag_key),
+                        message=reason,
+                        snapshot=snapshot,
+                        fence=flag_key,
+                    )
+        if capacity > 0:
+            reserved_elsewhere = sum(
+                _reservation_weight(meta)
+                for other, meta in tokens.items()
+                if other != token
+            )
+            current = active_count + reserved_elsewhere
+            if current + weight > capacity:
+                # Commit the reconciliation writes we already computed, then
+                # refuse: the reaper's work must not be lost just because this
+                # request bounced.
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                raise PipelineBackpressureError(
+                    current=current,
+                    requested=weight,
+                    capacity=capacity,
+                )
+        tokens[token] = {
+            "pid": os.getpid(),
+            "process_start_id": _my_start_id(),
+            "weight": weight,
+        }
         updates = {
             "pending_enqueue_tokens": tokens,
             "pending_enqueues": len(tokens),
@@ -2269,11 +2849,22 @@ async def check_pipeline_status_mutation(
     pipeline_status_lock,
     *,
     reject_when=(),
+    exempt_if_reserved: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Reconcile and evaluate a mutation fence without taking a reservation.
 
     The recovery fence is mandatory. Optional status conflicts are evaluated
     from the same local snapshot, and recovery writes use at most one update.
+
+    ``exempt_if_reserved`` is a pending-enqueue token: when this snapshot shows
+    it REGISTERED in ``pending_enqueue_tokens``, the optional ``reject_when``
+    fences are skipped, for the same reason a re-weight is exempt in
+    :func:`acquire_enqueue_reservation` — the holder was admitted before the
+    fence, and every ingress fence either cannot be raised while a reservation
+    is held or must wait for it (LR2 §9.2). Refusing here instead would DROP the
+    work of a request the protocol promised to let finish, and the client has
+    usually already been told it was accepted. Registration is verified from the
+    snapshot, never taken on the caller's word.
     """
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
@@ -2282,6 +2873,10 @@ async def check_pipeline_status_mutation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
+        if exempt_if_reserved is not None and exempt_if_reserved in (
+            snapshot.get("pending_enqueue_tokens") or {}
+        ):
+            reject_when = ()
         for flag_key, reason in reject_when:
             if snapshot.get(flag_key):
                 _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
@@ -2290,6 +2885,7 @@ async def check_pipeline_status_mutation(
                     conflict=_conflict_for_status_flag(flag_key),
                     message=reason,
                     snapshot=snapshot,
+                    fence=flag_key,
                 )
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
         return PipelineReservationResult(acquired=True, snapshot=snapshot)
@@ -2303,6 +2899,7 @@ async def acquire_processing_reservation(
     already_held: bool,
     pipeline_ingress,
     flags: Mapping[str, Any],
+    scan_reset_owner_token: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Acquire/take over the single processing slot from one proxy snapshot.
 
@@ -2314,6 +2911,16 @@ async def acquire_processing_reservation(
     signal. A handed-off run (``already_held``) is exempt from both: it already
     owns the slot. The caller may owner-check release unconditionally because
     the token is stamped atomically with ``busy``.
+
+    ``scan_reset_owner_token`` identifies the ONE caller that legitimately takes
+    ``busy`` while ``scanning_exclusive`` is held: the scan's own exclusive
+    FAILED→PENDING reset, which runs BEFORE the scan discovers any file (LR2
+    §8.1) and needs ``busy`` so it can reuse the owner-checked manual reset
+    helpers. It is exempted only when it matches the live ``scanning_owner``
+    token, and — unlike a queue drive — it does NOT clear
+    ``scan_deferred_processing``: the reset starts no worker and drains no queue,
+    so a request the scan fence turned away must stay deferred for the scan's
+    post-classification drive.
 
     ``pipeline_ingress`` MUST be resolved by the caller before this call — a
     lazy resolve while ``pipeline_status_lock`` is held would nest a Manager
@@ -2328,13 +2935,25 @@ async def acquire_processing_reservation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
+        # The scan that OWNS the exclusive fence is not fenced by it (see the
+        # docstring): match on the live owner token, never on its mere presence —
+        # a legacy/test path can set ``scanning_exclusive`` with no owner at all,
+        # and a ``None`` token must not silently match that.
+        owns_scan_fence = scan_reset_owner_token is not None and (
+            _reservation_owner_token(snapshot.get("scanning_owner"))
+            == scan_reset_owner_token
+        )
         # A scan's classification phase (``scanning_exclusive``) mutates
         # doc_status; a new processor must not read/process concurrently or it
         # races those rewrites. A handed-off run (``already_held``) took the slot
         # before scanning could start, so it is exempt. Plain ``scanning`` (the
         # scan's own post-classification queue drive) is NOT fenced here: the scan
         # releases ``scanning_exclusive`` before it drives processing.
-        if not already_held and snapshot.get("scanning_exclusive"):
+        if (
+            not already_held
+            and not owns_scan_fence
+            and snapshot.get("scanning_exclusive")
+        ):
             # Record the turned-away request so the scan drives the queue once it
             # releases scanning_exclusive (run_scanning_process finally): an SDK
             # insert's PENDING doc may have no scan-visible file and no other
@@ -2363,6 +2982,7 @@ async def acquire_processing_reservation(
             # (busy=False — this acquire would have succeeded instead).
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             pipeline_ingress.request_auto_rescan()
+            pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
             return PipelineReservationResult(
                 acquired=False,
                 conflict=PipelineReservationConflict.BUSY,
@@ -2375,12 +2995,14 @@ async def acquire_processing_reservation(
             {
                 "busy": True,
                 "busy_owner": make_owner_record(token, "processing"),
-                # This run drains the queue, satisfying any request the
-                # scanning_exclusive fence deferred earlier — clear the flag so the
-                # scan's post-release drive stays a no-op.
-                "scan_deferred_processing": False,
             }
         )
+        if not owns_scan_fence:
+            # This run drains the queue, satisfying any request the
+            # scanning_exclusive fence deferred earlier — clear the flag so the
+            # scan's post-release drive stays a no-op. The scan's own exclusive
+            # reset drains nothing, so it leaves the flag for that drive.
+            updates["scan_deferred_processing"] = False
         snapshot.update(updates)
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
         # history_messages is a ListProxy and must remain the same shared object.
@@ -2678,14 +3300,32 @@ async def start_reserved_background_task(
     raise RuntimeError("reserved background task failed to start")
 
 
+class ManualIntentRefusal(NamedTuple):
+    """A refusal a ``commit`` implementation can return instead of a bare string.
+
+    ``capacity_exceeded`` is the one distinction the HTTP layer must not lose:
+    the manual channel being full is a "later" (429 + Retry-After), while every
+    other refusal — fence held, id already finalized — is a "not like this"
+    (503 / client error). See LR2 §10.1.
+    """
+
+    message: str
+    capacity_exceeded: bool = False
+
+
 class ManualIntentRefused(Exception):
     """A manual-intent commit was refused by the pipeline fence.
 
     Raised by :func:`start_committed_background_task` when ``commit`` returned
     a refusal: the fence rejected the request BEFORE the sticky message was
     published, so no side effect exists and the endpoint can surface the
-    message (e.g. as a 503) without any cleanup.
+    message (e.g. as a 503) without any cleanup. ``capacity_exceeded`` marks the
+    one refusal that is worth retrying unchanged (429).
     """
+
+    def __init__(self, message: str, *, capacity_exceeded: bool = False) -> None:
+        super().__init__(message)
+        self.capacity_exceeded = capacity_exceeded
 
 
 async def commit_manual_retry_request(
@@ -2733,14 +3373,25 @@ async def commit_manual_retry_request(
                 "it finishes."
             )
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
-        if not ingress.request_manual_retry(request_id, message):
+        publish = ingress.request_manual_retry(request_id, message)
+        if publish is ManualRetryPublishResult.ALREADY_TERMINAL:
             # The id is already terminal (ACKED / CANCELLED_BY_CLEAR): nothing
             # was published and nothing is owned. Unreachable for the current
             # callers (they mint a fresh uuid per request) but a future caller
             # reusing ids must get a refusal, not a phantom commit.
-            return (
+            return ManualIntentRefusal(
                 f"manual retry request id {request_id!r} was already "
                 "finalized; mint a new request id"
+            )
+        if publish is ManualRetryPublishResult.CAPACITY_EXCEEDED:
+            # Sticky channel full (LR2 §10.1): un-ACKed requests are waiting for
+            # exclusive resets that have not run yet. Retrying later works, so
+            # this is the one publish refusal the API answers with 429.
+            return ManualIntentRefusal(
+                "Too many manual retry requests are still waiting to be "
+                "served for this workspace. Retry once the queued requests "
+                "have been processed.",
+                capacity_exceeded=True,
             )
         state["committed"] = True
         return None
@@ -2848,7 +3499,12 @@ async def start_committed_background_task(
     if join_cancel is not None:
         raise join_cancel
     if state["refusal"] is not None:
-        raise ManualIntentRefused(state["refusal"])
+        refusal = state["refusal"]
+        if isinstance(refusal, ManualIntentRefusal):
+            raise ManualIntentRefused(
+                refusal.message, capacity_exceeded=refusal.capacity_exceeded
+            )
+        raise ManualIntentRefused(str(refusal))
     raise RuntimeError("committed background task failed to start")
 
 
@@ -3201,7 +3857,9 @@ def finalize_share_data():
         _queue_stats_ns_cache, \
         _namespace_data_cache, \
         _pipeline_ingress_local, \
-        _pipeline_ingress_hub
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if not _initialized:
@@ -3273,6 +3931,8 @@ def finalize_share_data():
     _namespace_data_cache = None
     _pipeline_ingress_local = None
     _pipeline_ingress_hub = None
+    _scan_job_store_local = None
+    _scan_job_store_hub = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 

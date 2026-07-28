@@ -25,7 +25,9 @@ from lightrag.base import DocStatus
 from lightrag.kg.opensearch_impl import (
     ClientManager,
     OpenSearchDocStatusStorage,
+    OpenSearchGraphStorage,
     OpenSearchKVStorage,
+    OpenSearchVectorDBStorage,
 )
 
 pytestmark = pytest.mark.offline
@@ -95,12 +97,24 @@ class _EmbedFunc:
         raise AssertionError("doc-status/kv reads must not embed")
 
 
+def _migrated_mapping(index: str, **_kwargs) -> dict:
+    """Mapping of an index that already carries the __mirrored_id tiebreaker."""
+    return {index: {"mappings": {"properties": {"__mirrored_id": {"type": "keyword"}}}}}
+
+
 def _make_client() -> AsyncMock:
     client = AsyncMock(spec=AsyncOpenSearch)
     client.indices = AsyncMock()
     client.indices.exists = AsyncMock(return_value=True)
     client.indices.create = AsyncMock()
-    client.indices.get_mapping = AsyncMock(return_value={})
+    client.indices.get_mapping = AsyncMock(side_effect=_migrated_mapping)
+    client.indices.put_mapping = AsyncMock()
+    # A healthy index: startup's unconditional __mirrored_id coverage audit
+    # finds zero gaps. ``query_params`` wraps client methods in a SYNC wrapper,
+    # so spec'd children default to MagicMock — async ones must be set here or
+    # ``await client.count(...)`` fails with "MagicMock can't be used in await".
+    client.count = AsyncMock(return_value={"count": 0})
+    client.update_by_query = AsyncMock(return_value={"updated": 0, "failures": []})
     client.create_pit = AsyncMock(return_value={"pit_id": "pit-1"})
     client.delete_pit = AsyncMock()
     return client
@@ -142,6 +156,40 @@ async def _make_kv(global_config, client) -> OpenSearchKVStorage:
     with patch.object(ClientManager, "get_client", return_value=client):
         storage = OpenSearchKVStorage(
             namespace="full_docs",
+            global_config=global_config,
+            embedding_func=_EmbedFunc(),
+            workspace="strictws",
+        )
+        await storage.initialize()
+    return storage
+
+
+def _make_graph_client() -> AsyncMock:
+    """Graph indices don't exist yet -- skips canonical-edge migration and
+    PPL auto-detect cleanly falls back to client-side BFS."""
+    client = _make_client()
+    client.indices.exists = AsyncMock(return_value=False)
+    client.transport = AsyncMock()
+    client.transport.perform_request = AsyncMock(side_effect=Exception("no PPL"))
+    return client
+
+
+async def _make_graph(global_config, client) -> OpenSearchGraphStorage:
+    with patch.object(ClientManager, "get_client", return_value=client):
+        storage = OpenSearchGraphStorage(
+            namespace="chunk_entity_relation",
+            global_config=global_config,
+            embedding_func=_EmbedFunc(),
+            workspace="strictws",
+        )
+        await storage.initialize()
+    return storage
+
+
+async def _make_vector(global_config, client) -> OpenSearchVectorDBStorage:
+    with patch.object(ClientManager, "get_client", return_value=client):
+        storage = OpenSearchVectorDBStorage(
+            namespace="chunks",
             global_config=global_config,
             embedding_func=_EmbedFunc(),
             workspace="strictws",
@@ -477,3 +525,192 @@ async def test_filter_keys_missing_index_returns_all_keys(global_config):
     ds._index_ready = True
     ds_client.mget = AsyncMock(side_effect=_missing_index_error())
     assert await ds.filter_keys({"a", "b"}) == {"a", "b"}
+
+
+async def test_doc_status_get_by_ids_raises_on_whole_call_transient(global_config):
+    """A whole-call transport error (not an item-level error) is NOT the same
+    as 'every id is absent' -- unlike the item-level contract above, this used
+    to be swallowed into an all-None result before the fix."""
+    client = _make_client()
+    storage = await _make_doc_status(global_config, client)
+    storage._index_ready = True
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_by_ids(["doc-1", "doc-2"])
+
+
+# ---------------------------------------------------------------------------
+# Graph reads: same scheduling-safe contract as KV/doc_status.
+#
+# A whole-call transport error must not be reported as "node/edge doesn't
+# exist" (has_node/has_edge/get_node/...), "no neighbors"
+# (get_nodes_batch/get_node_edges/...), or "empty graph" (get_all_*). Entity
+# merge/dedup and knowledge-graph queries treat those as confirmed facts.
+# ---------------------------------------------------------------------------
+
+
+async def test_graph_has_node_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.exists = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.has_node("Alice")
+
+
+async def test_graph_get_node_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_node("Alice")
+
+
+async def test_graph_get_nodes_batch_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_nodes_batch(["Alice", "Bob"])
+
+
+async def test_graph_has_nodes_batch_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.has_nodes_batch(["Alice", "Bob"])
+
+
+async def test_graph_get_all_nodes_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.search = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_all_nodes()
+
+
+async def test_graph_missing_index_still_returns_empty(global_config):
+    """The confirmed-empty case (missing index) is unaffected by the fix."""
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.exists = AsyncMock(side_effect=_missing_index_error())
+    assert await storage.has_node("Alice") is False
+
+
+async def test_bfs_subgraph_transient_error_raises_not_reports_false_complete(
+    global_config,
+):
+    """Regression for the truncation-flag bug: a mid-BFS transport error used
+    to ``break`` the level loop silently, then compute
+    ``is_truncated = len(seen_nodes) >= max_nodes`` -- False, since max_nodes
+    was never reached -- reporting a partial subgraph as a complete one. It
+    must now raise instead of returning a falsely-complete KnowledgeGraph."""
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    storage._ppl_graphlookup_available = False
+    client.mget = AsyncMock(
+        return_value={
+            "docs": [
+                {
+                    "_id": "start",
+                    "found": True,
+                    "_source": {"entity_type": "person"},
+                }
+            ]
+        }
+    )
+    client.search = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.get_knowledge_graph("start", max_depth=2, max_nodes=100)
+
+
+async def test_vector_query_raises_on_whole_call_transient(global_config):
+    """Matches the raise-on-unexpected-error convention every other vector
+    backend's query() follows (Postgres/Milvus/Qdrant/Mongo)."""
+    client = _make_client()
+    storage = await _make_vector(global_config, client)
+    client.search = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.query("q", top_k=5, query_embedding=[0.1] * 8)
+
+
+async def test_vector_query_missing_index_still_returns_empty(global_config):
+    client = _make_client()
+    storage = await _make_vector(global_config, client)
+    client.search = AsyncMock(side_effect=_missing_index_error())
+    assert await storage.query("q", top_k=5, query_embedding=[0.1] * 8) == []
+
+
+# ---------------------------------------------------------------------------
+# Graph writes: has_node()/has_nodes_batch() now raise on a transient error
+# (see above). upsert_edge()/upsert_edges_batch() call them internally as an
+# existence check before writing -- if the outer write's own except block
+# swallowed that propagated exception, the edge would silently never be
+# written while the caller believed the upsert succeeded. Every graph write
+# method must raise on failure so the pipeline marks the document failed and
+# retries, matching upsert_node/upsert_edge/delete_node in postgres_impl.py
+# and neo4j_impl.py.
+# ---------------------------------------------------------------------------
+
+
+async def test_upsert_edge_raises_when_has_node_check_fails(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.exists = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.upsert_edge("A", "B", {})
+
+
+async def test_upsert_edges_batch_raises_when_has_nodes_batch_fails(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.mget = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.upsert_edges_batch([("A", "B", {})])
+
+
+async def test_upsert_node_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.index = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.upsert_node("A", {})
+
+
+async def test_delete_node_raises_on_transient_error(global_config):
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.delete_by_query = AsyncMock(side_effect=_transient_error())
+    with pytest.raises(TransportError):
+        await storage.delete_node("A")
+
+
+async def test_get_nodes_edges_batch_success_path_returns_dict_not_none(
+    global_config,
+):
+    """Regression: the swallow -> raise cleanup at the whole-call except block
+    dropped the trailing ``return result`` that used to run unconditionally
+    after the try/except (the try body itself never returned). Without it, a
+    successful call fell off the end of the function and implicitly returned
+    None -- adelete_by_doc_id then crashed on ``nodes_edges_dict.items()``."""
+    client = _make_graph_client()
+    storage = await _make_graph(global_config, client)
+    client.search = AsyncMock(
+        return_value={
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "source_node_id": "A",
+                            "target_node_id": "B",
+                        },
+                        "sort": ["A", "B"],
+                    }
+                ]
+            }
+        }
+    )
+    result = await storage.get_nodes_edges_batch(["A", "B"])
+    assert result is not None
+    assert result["A"] == [("A", "B")]
+    assert result["B"] == [("A", "B")]

@@ -71,6 +71,12 @@ class _MiniDocStatus:
     async def upsert(self, data):
         return None
 
+    async def update_doc_status_fields(self, doc_id, fields, *, missing_ok=False):
+        # ``_persist_parsed_full_docs`` syncs content_hash through the targeted
+        # field update; ``missing_ok`` makes an absent row a no-op, which is what
+        # these parser tests want (they assert on full_docs only).
+        return None
+
 
 class _CharTokenizer(TokenizerInterface):
     def encode(self, content: str):

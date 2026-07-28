@@ -25,6 +25,28 @@ LIGHTRAG_PARSER=*:legacy-F
 - Changing chunker settings (`CHUNK_*`) affects documents enqueued after the server restarts. Reprocess older documents if you want their stored `chunk_options` snapshot to match the new settings.
 - Enabling multimodal options (`i/t/e`) requires parsed sidecars plus `VLM_PROCESS_ENABLE=true`. Existing documents can be reprocessed to run VLM analysis on available sidecars; switching extraction engines still requires delete + re-upload.
 
+## Upgrading to bounded pipeline scheduling
+
+The release that introduces `PIPELINE_SCHEDULING_PAGE_SIZE`, `MAX_PENDING_DOCUMENTS` and `MAX_UNACKED_MANUAL_RETRIES` (see `env.example`) also changes the **concurrency protocol** writers use to coordinate through shared state. It is a one-time, in-place upgrade that writes no marker and no protocol version, so the storage cannot detect a stale writer for you. The requirement is therefore operational:
+
+> **Stop every old writer before starting a new one against the same storage and workspace.** A rolling restart that leaves one old worker — or one old instance sharing the same Redis/PostgreSQL workspace — running is the failure case, not a slower upgrade.
+
+Three things an old writer cannot honour:
+
+- **The manual retry freeze.** `/documents/reprocess_failed` no longer resets `FAILED` rows inline. It publishes an intent, freezes ingestion, waits for the pipeline to go idle, and only then rewrites `FAILED`→`PENDING` page by page with no worker running. An old writer does not read the freeze flag, so it keeps enqueueing into a window the reset assumes is exclusive.
+- **The scheduling sort key.** `created_at` is now the immutable `(created_at, id)` keyset cursor, written as a UTC ISO-8601 timestamp. Rows an old writer stamps in another format sort inconsistently against it, and a keyset page can then skip or repeat documents.
+- **Derived indexes.** On Redis the status set and the source multimap are maintained in the same transaction as the document row. An old writer updates the row only, leaving the index stale — after which strict paging and the strict active count silently omit that document.
+
+Recommended sequence:
+
+1. Stop accepting new documents and let the pipeline finish. On the authenticated `/health`, `scheduling.drain_waiting_on_workers` is `false` and `scheduling.drain_pending_enqueues` is `0` when nothing is in flight.
+2. Stop **all** workers and instances that share the storage and workspace.
+3. Start the new version.
+
+No data migration is required. The first sweep after startup is a strict full sweep, so a document an old writer left mid-flight — a row stuck in `PARSING`/`ANALYZING`/`PROCESSING` with no worker behind it — is picked up and reprocessed on its own. If a run genuinely cannot be drained, stopping mid-run is still safe for the same reason; what is not safe is starting the old version again afterwards.
+
+**After starting, check the log for a strict-capability warning.** All five built-in `doc_status` backends (JSON, Redis, PostgreSQL, MongoDB, OpenSearch) have every capability. A third-party backend may not, and each gap fails closed rather than degrading quietly: admission answers 503, the source-conflict endpoints answer 501, and a scan keeps re-examining a stale `FAILED` stub. Startup names each missing capability and what it costs, and the authenticated `/health` reports the same under `capabilities`. Set `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` to turn those gaps into a startup failure instead. There is no equivalent knob for bounded paging: the paging and typed source-resolution methods are abstract, so a backend without them cannot be constructed at all.
+
 ## Getting Started
 
 ### Installation
@@ -454,6 +476,24 @@ server {
    - Nginx validates the `Content-Length` header first
    - LightRAG performs streaming validation during upload
    - Setting appropriate limits at both layers ensures better error messages and security
+6. **Server-side ingestion limits** (all off by default, see `env.example`):
+   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of `/documents/upload`, `/text`
+     and `/texts`, counted as it streams through ASGI. Unlike `MAX_UPLOAD_SIZE`
+     (which bounds one uploaded file after multipart parsing), it also stops a
+     body that understates or omits its `Content-Length`, answering **413**
+     before the whole body is read.
+   - `MAX_TEXTS_PER_REQUEST` bounds how many texts one `/documents/texts` request
+     may carry, answering **413** before any per-text storage lookup. It bounds
+     the fan-out of a single request, so — unlike the capacity limit below — it is
+     not a "retry later" condition: an oversized batch never fits and must be
+     split.
+   - `MAX_PENDING_DOCUMENTS` bounds how many documents may be active
+     (`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`) or reserved by an in-flight
+     request. Over capacity the server answers **429** with a `Retry-After`
+     header and a detail naming the current count, the requested count and the
+     capacity — refused *before* the body is transferred. `/documents/scan` and
+     manual retries exceed the cap on purpose; the documents they create make
+     ordinary uploads wait.
 
 ### Offline Deployment
 

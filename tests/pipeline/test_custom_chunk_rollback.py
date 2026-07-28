@@ -145,7 +145,12 @@ async def test_rollback_restores_exact_pre_patch_state(tmp_path, monkeypatch):
         staged_id = _chunk_id("doc-1", "bob is there")
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-1"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-1"],
+            "failed_sample": [],
+        }
 
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value
@@ -179,7 +184,12 @@ async def test_missing_cache_rolls_back_with_structural_warning(tmp_path, monkey
             await rag.ainsert_custom_chunks("base", ["alice patch"], doc_id="doc-1")
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-1"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-1"],
+            "failed_sample": [],
+        }
 
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value
@@ -243,7 +253,12 @@ async def test_warning_persistence_failure_keeps_journal_and_retry_converges(
         monkeypatch.setattr(rag.doc_status, "upsert", fail_warning_upsert_once)
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": [], "failed": ["doc-1"]}
+        assert result == {
+            "rolled_back_count": 0,
+            "failed_count": 1,
+            "rolled_back_sample": [],
+            "failed_sample": ["doc-1"],
+        }
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.FAILED.value
         assert _journal(row) is not None
@@ -252,7 +267,12 @@ async def test_warning_persistence_failure_keeps_journal_and_retry_converges(
         # already be gone. A journal retry must still rebuild its candidates,
         # persist the warning, and clear the journal idempotently.
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-1"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-1"],
+            "failed_sample": [],
+        }
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value
         assert _journal(row) is None
@@ -271,7 +291,12 @@ async def test_rollback_of_failed_create_removes_document(tmp_path, monkeypatch)
             await rag.ainsert_custom_chunks("fresh", ["alice is here"], doc_id="doc-9")
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-9"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-9"],
+            "failed_sample": [],
+        }
 
         assert await rag.doc_status.get_by_id("doc-9") is None
         assert await rag.full_docs.get_by_id("doc-9") is None
@@ -313,7 +338,12 @@ async def test_create_rollback_warning_is_attached_to_surviving_owner(
             )
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-9"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-9"],
+            "failed_sample": [],
+        }
         assert await rag.doc_status.get_by_id("doc-9") is None
 
         owner_row = await rag.doc_status.get_by_id("doc-1")
@@ -400,14 +430,24 @@ async def test_failed_rollback_keeps_journal_and_retries(tmp_path, monkeypatch):
         monkeypatch.setattr(rag, "_purge_kg_contributions", purge_boom)
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": [], "failed": ["doc-1"]}
+        assert result == {
+            "rolled_back_count": 0,
+            "failed_count": 1,
+            "rolled_back_sample": [],
+            "failed_sample": ["doc-1"],
+        }
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.FAILED.value
         assert _journal(row) is not None, "journal must survive a failed rollback"
 
         # The next scan's rollback succeeds.
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": ["doc-1"], "failed": []}
+        assert result == {
+            "rolled_back_count": 1,
+            "failed_count": 0,
+            "rolled_back_sample": ["doc-1"],
+            "failed_sample": [],
+        }
         row = await rag.doc_status.get_by_id("doc-1")
         assert _status_text(row) == DocStatus.PROCESSED.value
         assert _journal(row) is None
@@ -422,7 +462,12 @@ async def test_rollback_noop_without_journaled_documents(tmp_path, monkeypatch):
         _fake_extraction(rag, monkeypatch)
         await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": [], "failed": []}
+        assert result == {
+            "rolled_back_count": 0,
+            "failed_count": 0,
+            "rolled_back_sample": [],
+            "failed_sample": [],
+        }
     finally:
         await rag.finalize_storages()
 
@@ -441,7 +486,12 @@ async def test_sdk_resume_still_possible_before_scan_rolls_back(tmp_path, monkey
         assert _status_text(row) == DocStatus.PROCESSED.value
 
         result = await rag.arollback_failed_custom_chunk_patches()
-        assert result == {"rolled_back": [], "failed": []}
+        assert result == {
+            "rolled_back_count": 0,
+            "failed_count": 0,
+            "rolled_back_sample": [],
+            "failed_sample": [],
+        }
         anchors = await rag.full_entities.get_by_id("doc-1")
         assert anchors["entity_names"] == ["ALICE", "BOB"]
     finally:
@@ -457,6 +507,10 @@ async def test_rollback_candidate_discovery_uses_strict(tmp_path, monkeypatch):
     the raise and keeps the journal/FAILED rows for the next scan."""
     rag = await _build_rag(tmp_path)
     try:
+        # Legacy single-scan discovery path so the failure lands on
+        # get_docs_by_statuses; the paged path (page_size>0) is likewise strict
+        # (it passes strict=True to get_docs_by_statuses_page).
+        rag.pipeline_scheduling_page_size = 0
         seen_strict: list[bool] = []
 
         async def _raising_query(statuses, strict=False):
@@ -471,5 +525,88 @@ async def test_rollback_candidate_discovery_uses_strict(tmp_path, monkeypatch):
             await rag.arollback_failed_custom_chunk_patches()
 
         assert seen_strict == [True]  # discovery used strict, not relaxed
+    finally:
+        await rag.finalize_storages()
+
+
+async def _seed_journaled_docs(rag, monkeypatch, doc_ids: list[str]) -> None:
+    """Leave a failed (journaled) custom-chunk patch on each doc id."""
+    _fake_extraction(rag, monkeypatch)
+    for doc_id in doc_ids:
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id=doc_id)
+        await _fail_one_merge(monkeypatch)
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["bob is there"], doc_id=doc_id)
+
+
+@pytest.mark.asyncio
+async def test_rollback_interleaves_with_paging(tmp_path, monkeypatch):
+    """Fix-proof: the sweep paged its discovery but still collected EVERY
+    journaled id before rolling anything back, so peak memory stayed
+    proportional to the journaled-document count. Each page must now be rolled
+    back before the next one is fetched.
+
+    Shape-independent: measured by when rollbacks happen relative to the page
+    fetches, not by the report the call returns.
+    """
+    rag = await _build_rag(tmp_path)
+    try:
+        doc_ids = ["doc-a", "doc-b", "doc-c"]
+        await _seed_journaled_docs(rag, monkeypatch, doc_ids)
+        rag.pipeline_scheduling_page_size = 1
+
+        done = {"n": 0}
+        original_rollback_one = rag._rollback_one_custom_chunk_patch
+        original_page = rag.doc_status.get_docs_by_statuses_page
+        # Rollbacks completed at the moment each page was requested.
+        progress_at_fetch: list[int] = []
+
+        async def counting_rollback_one(*args, **kwargs):
+            result = await original_rollback_one(*args, **kwargs)
+            done["n"] += 1
+            return result
+
+        async def observing_page(*args, **kwargs):
+            progress_at_fetch.append(done["n"])
+            return await original_page(*args, **kwargs)
+
+        monkeypatch.setattr(
+            rag, "_rollback_one_custom_chunk_patch", counting_rollback_one
+        )
+        monkeypatch.setattr(rag.doc_status, "get_docs_by_statuses_page", observing_page)
+
+        result = await rag.arollback_failed_custom_chunk_patches()
+
+        assert result["rolled_back_count"] == len(doc_ids)
+        assert result["failed_count"] == 0
+        # More than one page was needed (limit=1 over 3 journaled docs).
+        assert len(progress_at_fetch) > 1
+        # Collect-all-first would leave every fetch at 0 rollbacks done.
+        assert progress_at_fetch[-1] > 0, (
+            "no rollback had completed by the last page fetch — discovery is "
+            "still collecting every journaled id before doing any work"
+        )
+        assert progress_at_fetch == sorted(progress_at_fetch)
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_rollback_report_samples_are_capped(tmp_path, monkeypatch):
+    """Counts stay exact while the id lists stop growing at the cap, so the
+    report cannot reintroduce an O(journaled-docs) accumulation."""
+    rag = await _build_rag(tmp_path)
+    try:
+        monkeypatch.setattr(lightrag_module, "ROLLBACK_REPORT_SAMPLE_CAP", 2)
+        doc_ids = ["doc-a", "doc-b", "doc-c"]
+        await _seed_journaled_docs(rag, monkeypatch, doc_ids)
+
+        result = await rag.arollback_failed_custom_chunk_patches()
+
+        assert result["rolled_back_count"] == 3
+        assert len(result["rolled_back_sample"]) == 2
+        assert set(result["rolled_back_sample"]) <= set(doc_ids)
+        assert result["failed_count"] == 0
+        assert result["failed_sample"] == []
     finally:
         await rag.finalize_storages()

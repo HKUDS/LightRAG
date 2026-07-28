@@ -9,23 +9,42 @@ Requirements:
     - OpenSearch 3.x or higher with k-NN plugin enabled
 """
 
+import hashlib
+import json
 import os
 import re
-import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Union, final
+from typing import Any, AsyncIterator, ClassVar, Sequence, Union, final
 import numpy as np
 import configparser
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    SourceAbsent,
+    SourceConflict,
+    SourceConflictPage,
+    SourceConflictRepairResult,
+    SourceConflictSummary,
+    SourceResolution,
+    SourceUnique,
+)
+from ..exceptions import (
+    SourceConflictRepairCASError,
+    StorageControlPlaneError,
+    StorageRecordNotFoundError,
 )
 from ..utils import (
     logger,
@@ -35,7 +54,11 @@ from ..utils import (
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..constants import GRAPH_FIELD_SEP, DEFAULT_QUERY_PRIORITY
+from ..constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    GRAPH_FIELD_SEP,
+    DEFAULT_QUERY_PRIORITY,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 
 import pipmaster as pm
@@ -476,18 +499,17 @@ class ClientManager:
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 
-                ssl_context = None
-                if use_ssl and not verify_certs:
-                    ssl_context = ssl_module.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl_module.CERT_NONE
-
+                # No explicit ssl_context here: opensearch-py already builds the
+                # exact same insecure context internally from verify_certs=False
+                # (check_hostname=False, CERT_NONE — see AsyncHttpConnection) when
+                # none is supplied. Passing our own duplicate makes it emit
+                # "When using `ssl_context`, all other SSL related kwargs are
+                # ignored" at every startup for no behavioral difference.
                 client = AsyncOpenSearch(
                     hosts=hosts,
                     http_auth=(username, password) if username else None,
                     use_ssl=use_ssl,
                     verify_certs=verify_certs,
-                    ssl_context=ssl_context,
                     ssl_show_warn=False,
                     timeout=timeout,
                     max_retries=max_retries,
@@ -657,6 +679,8 @@ async def _verify_mirrored_id_mapping(client: AsyncOpenSearch, index_name: str) 
 @dataclass
 class OpenSearchKVStorage(BaseKVStorage):
     """Key-Value storage using OpenSearch. Uses dynamic mapping to support varied schemas."""
+
+    supports_strict_point_reads: ClassVar[bool] = True
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
@@ -901,6 +925,60 @@ class OpenSearchKVStorage(BaseKVStorage):
             # would delete a live doc_status row on a transient failure.
             logger.error(f"[{self.workspace}] Error getting document {id}: {e}")
             raise
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Point read with complete-or-raise semantics (base contract).
+
+        Three-state contract on top of the pending buffer:
+
+        * pending delete (tombstone) → ``None`` — the delete is already
+          decided, so absence after flush is a certainty;
+        * pending upsert → the buffered doc (present);
+        * ``_index_ready=False`` → raise ``StorageControlPlaneError``: the
+          index was dropped or previously observed missing, so this class
+          CANNOT positively confirm absence (unlike ``get_by_id``, which
+          reads that state as a best-effort miss);
+        * a live ``index_not_found`` error → raise as well — after
+          ``initialize()`` the index always exists, so it vanishing mid-read
+          (restore/concurrent drop) is indistinguishable from data loss and
+          must not be presented as "confirmed absent";
+        * healthy mget with ``found=False`` → ``None`` (confirmed absent);
+        * any other transport/server or item-level error → raise.
+        """
+        async with self._flush_lock:
+            if id in self._pending_kv_deletes:
+                return None
+            pending = self._pending_upserts.get(id)
+            if pending is not None:
+                return self._materialize_pending_kv_doc(id, pending)
+            if not self._index_ready:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' is not ready; cannot confirm "
+                    f"absence of '{id}' (strict point read)"
+                )
+        try:
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] {self.namespace} index "
+                    f"'{self._index_name}' unexpectedly missing; cannot "
+                    f"confirm absence of '{id}' (strict point read)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error strictly getting document {id}: {e}"
+            )
+            raise
+        if response is None:
+            return None
+        doc = response["_source"]
+        doc.pop("__mirrored_id", None)
+        doc["_id"] = response["_id"]
+        doc.setdefault("create_time", 0)
+        doc.setdefault("update_time", 0)
+        return doc
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple documents by IDs (read-your-writes), preserving order.
@@ -1295,7 +1373,54 @@ class OpenSearchKVStorage(BaseKVStorage):
 @final
 @dataclass
 class OpenSearchDocStatusStorage(DocStatusStorage):
-    """Document status storage using OpenSearch."""
+    """Document status storage using OpenSearch.
+
+    Memory-bounding scheduling API (Phase 1): implements native
+    ``search_after`` keyset pages sorted ``(created_at ASC, __mirrored_id
+    ASC)`` — ``_id`` is not sortable in OpenSearch, so ``__mirrored_id``
+    (a keyword copy of the doc id that every write path mirrors) is the
+    page-sort tiebreaker, and startup guarantees every doc carries a VALUE
+    for it on every cluster version (no PIT here means no ``_shard_doc``
+    fallback — see ``_ensure_scheduling_tiebreaker_ready``). A missing/NULL
+    ``created_at`` sorts FIRST (``"missing": "_first"``) so legacy rows stay
+    reachable across page boundaries, aligning with the other backends'
+    NULLS-FIRST keyset.
+    Conflict-aware strict source resolution, strict batch reads and the
+    operator source-conflict repair flow round out the contract.
+    """
+
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    # Bounded upper limit on the sample of conflicting doc IDs surfaced by the
+    # source-conflict listing/repair APIs — never materialize the whole set.
+    _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
+
+    # How many of the earliest content_hash holders one dedup lookup may read
+    # while skipping duplicate markers that point at the excluded document (see
+    # ``get_doc_by_content_hash``). Every hit past the first is a pointer row, so
+    # this bounds a pathological chain rather than a normal lookup.
+    _CONTENT_HASH_POINTER_WINDOW: ClassVar[int] = 8
+
+    # Fields the lightweight scheduling projection needs from ``_source`` —
+    # never ``chunks_list`` (see ``get_docs_by_ids``).
+    _SCHEDULING_SOURCE_FIELDS: ClassVar[list[str]] = [
+        "status",
+        "created_at",
+        "updated_at",
+        "file_path",
+        "track_id",
+        "metadata",
+    ]
+
+    # ``__mirrored_id`` is a keyword copy of the doc id mirrored by every
+    # write path: ``_id`` is not sortable, so this is the page-sort
+    # tiebreaker. Included in the ensured mapping so legacy indexes gain the
+    # keyword mapping for new writes; their OLD docs are backfilled from
+    # ``_id`` at startup by ``_ensure_scheduling_tiebreaker_ready`` (a missing
+    # VALUE means NO tiebreaker, which silently skips docs — see there).
+    _SCHEDULING_FIELD_MAPPINGS: ClassVar[dict[str, dict[str, str]]] = {
+        "__mirrored_id": {"type": "keyword"},
+    }
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
@@ -1337,8 +1462,22 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 data.pop("error", None)
         return data
 
+    def _os_doc_processing_status_from_source(
+        self, source: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalize a raw OpenSearch ``_source`` into a FULL DocProcessingStatus.
+
+        Single source of the ``_source`` -> :class:`DocProcessingStatus`
+        construction shared by :meth:`get_docs_by_statuses` (via
+        :meth:`_search_all_docs`) and the :meth:`get_full_docs_by_ids`
+        hydration path. Raises ``KeyError``/``TypeError`` on a malformed
+        source; the caller decides strict (raise) vs relaxed (skip).
+        """
+        data = self._prepare_doc_status_data(source)
+        return DocProcessingStatus(**data)
+
     async def initialize(self):
-        """Initialize client connection and create doc status index."""
+        """Initialize client connection and create the doc-status index."""
         async with get_data_init_lock():
             if self.client is None:
                 self.client = await ClientManager.get_client()
@@ -1391,8 +1530,20 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                     f"[{self.workspace}] Created doc status index: {self._index_name}"
                 )
             else:
-                await _verify_mirrored_id_mapping(self.client, self._index_name)
                 await self._ensure_content_hash_mapping()
+                await self._ensure_scheduling_fields_mapping()
+                # Unconditional for every pre-existing index. Gating this on
+                # "we just added the mapping" was wrong: the mapping present
+                # does NOT imply the values are present. A snapshot restore, a
+                # hand-added mapping, an external writer — and, worst, THIS
+                # migration itself: put_mapping lands before the backfill, so a
+                # crash or a raise in between leaves the mapping present with
+                # values missing, and the next startup would then skip the audit
+                # forever. The audit is one `_count` on a healthy index (see
+                # _ensure_scheduling_tiebreaker_ready), which is the right price
+                # for an invariant whose violation silently drops documents from
+                # every sweep.
+                await self._ensure_scheduling_tiebreaker_ready()
         except RequestError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
@@ -1432,6 +1583,127 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 f"{self._index_name}: {e}"
             )
 
+    async def _ensure_scheduling_fields_mapping(self) -> set[str]:
+        """Ensure the ``__mirrored_id`` keyword mapping on a pre-existing index.
+
+        Same idempotent put_mapping pattern as ``_ensure_content_hash_mapping``
+        (new fields only — existing indexes need nothing else for new docs).
+        The mapping alone is NOT sufficient: legacy docs predating the field
+        still lack the VALUE, which
+        :meth:`_ensure_scheduling_tiebreaker_ready` repairs — unconditionally,
+        because this method landing the mapping is not evidence about the values
+        (not even when it just added it: it returns before the backfill runs). A
+        put failure is logged rather than raised here — the readiness check that
+        follows is the one that fails startup.
+
+        Returns the field names that were absent, for callers that want to log
+        the migration; it is NOT a licence to skip the value audit.
+        """
+        try:
+            mapping = await self.client.indices.get_mapping(index=self._index_name)
+        except OpenSearchException:
+            return set()
+        props = (
+            mapping.get(self._index_name, {}).get("mappings", {}).get("properties", {})
+        )
+        missing = {
+            name: spec
+            for name, spec in self._SCHEDULING_FIELD_MAPPINGS.items()
+            if name not in props
+        }
+        if not missing:
+            return set()
+        try:
+            await self.client.indices.put_mapping(
+                index=self._index_name,
+                body={"properties": missing},
+            )
+            logger.info(
+                f"[{self.workspace}] Added scheduling field mappings "
+                f"{sorted(missing)} to {self._index_name}"
+            )
+        except OpenSearchException as e:
+            logger.warning(
+                f"[{self.workspace}] Failed to add scheduling field mappings to "
+                f"{self._index_name}: {e}"
+            )
+        return set(missing)
+
+    async def _count_docs_missing_mirrored_id(self) -> int:
+        """Count docs with no ``__mirrored_id`` VALUE (not just no mapping)."""
+        response = await self.client.count(
+            index=self._index_name,
+            body={
+                "query": {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}}
+            },
+        )
+        count = response.get("count")
+        if not isinstance(count, int):
+            raise RuntimeError(
+                f"OpenSearch _count returned a malformed response while auditing "
+                f"'__mirrored_id' coverage on '{self._index_name}': {response!r}"
+            )
+        return count
+
+    async def _ensure_scheduling_tiebreaker_ready(self) -> None:
+        """Guarantee every doc carries a ``__mirrored_id`` VALUE, or fail startup.
+
+        The scheduling page (:meth:`get_docs_by_statuses_page`) is a PLAIN
+        ``search_after`` keyset with NO point-in-time, so ``_shard_doc`` — the
+        implicit tiebreaker that makes PIT pagination safe on OpenSearch >=
+        3.3.0 — is not available to it. ``__mirrored_id`` is therefore the ONLY
+        tiebreaker, on every cluster version, and a doc missing its VALUE has no
+        tiebreaker at all: ``search_after`` excludes sort values EQUAL to the
+        cursor, so once a page boundary lands on such a doc, every other doc
+        sharing its ``created_at`` (common for bulk ingest, which stamps the
+        same millisecond) is silently SKIPPED and never scheduled.
+
+        Restore-then-serve (never serve a broken invariant): add the mapping,
+        backfill the missing values server-side with one bounded
+        ``_update_by_query``, then VERIFY coverage and raise if anything
+        remains. Verifying the outcome rather than trusting the script also
+        means a cluster that refuses ``ctx._id`` fails loudly instead of
+        leaving a silently lossy sweep. Idempotent and cheap in steady state:
+        indexes written by current code match zero docs, so this costs one
+        ``_count``.
+        """
+        missing = await self._count_docs_missing_mirrored_id()
+        if missing == 0:
+            return
+        logger.warning(
+            f"[{self.workspace}] {missing} doc(s) in '{self._index_name}' predate "
+            f"the '__mirrored_id' page-sort tiebreaker; backfilling from _id "
+            f"before serving scheduling pages"
+        )
+        await self.client.update_by_query(
+            index=self._index_name,
+            body={
+                "query": {"bool": {"must_not": {"exists": {"field": "__mirrored_id"}}}},
+                "script": {
+                    "source": "ctx._source.__mirrored_id = ctx._id",
+                    "lang": "painless",
+                },
+                # Concurrent writers may bump versions mid-backfill; those docs
+                # already carry the field, so proceeding is correct and the
+                # verification below is what actually decides.
+                "conflicts": "proceed",
+            },
+            refresh=True,
+        )
+        remaining = await self._count_docs_missing_mirrored_id()
+        if remaining:
+            raise RuntimeError(
+                f"Index '{self._index_name}' still has {remaining} doc(s) without a "
+                f"'__mirrored_id' value after the backfill. Bounded scheduling "
+                f"pages cannot be served safely: documents sharing a 'created_at' "
+                f"would be silently skipped by the sweep. Reindex the data, then "
+                f"restart."
+            )
+        logger.info(
+            f"[{self.workspace}] Backfilled '__mirrored_id' for {missing} legacy "
+            f"doc(s) in '{self._index_name}'"
+        )
+
     async def finalize(self):
         """Release the OpenSearch client connection."""
         if self.client is not None:
@@ -1455,6 +1727,41 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 return None
             logger.error(f"[{self.workspace}] Error getting doc status {id}: {e}")
             return None
+
+    async def get_by_id_strict(self, id: str) -> Union[dict[str, Any], None]:
+        """Point read with complete-or-raise semantics (base contract).
+
+        Unlike ``get_by_id`` (best-effort: errors and a not-ready index read
+        as a miss), ``None`` here is only returned on a healthy mget miss —
+        ``_index_ready=False``, a live missing-index error and any transport
+        or item-level error RAISE because absence cannot be positively
+        confirmed in those states.
+        """
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm absence of '{id}' (strict point "
+                f"read)"
+            )
+        try:
+            response = await _mget_optional_doc(self.client, self._index_name, id)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot confirm absence of '{id}' "
+                    f"(strict point read)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error strictly getting doc status {id}: {e}"
+            )
+            raise
+        if response is None:
+            return None
+        doc = response["_source"]
+        doc["_id"] = response["_id"]
+        return doc
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple document status records by IDs."""
@@ -1485,8 +1792,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return [None] * len(ids)
+            # Scheduling-safe: a whole-call transport error is NOT "every id is
+            # absent" -- see OpenSearchKVStorage.get_by_ids for the same contract.
             logger.error(f"[{self.workspace}] Error getting doc statuses: {e}")
-            return [None] * len(ids)
+            raise
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return the subset of keys that do not exist in storage."""
@@ -1641,8 +1950,11 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                         break
                     for hit in hits:
                         try:
-                            data = self._prepare_doc_status_data(hit["_source"])
-                            result[hit["_id"]] = DocProcessingStatus(**data)
+                            result[hit["_id"]] = (
+                                self._os_doc_processing_status_from_source(
+                                    hit["_source"]
+                                )
+                            )
                         except (KeyError, TypeError) as e:
                             logger.error(
                                 f"[{self.workspace}] Error parsing doc {hit['_id']}: {e}"
@@ -1840,15 +2152,38 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error getting doc by file_path: {e}")
             return None
 
+    @staticmethod
+    def _primary_basename_query(basename: str) -> dict[str, Any]:
+        """Exact basename match restricted to the PRIMARY row.
+
+        ``file_path`` is one-to-many (duplicate-attempt ``dup-*`` rows keep
+        the same canonical basename); ``metadata.is_duplicate == true`` rows
+        are excluded so identity checks / dedup always see the document,
+        never a duplicate marker. Legacy rows without the field are not
+        excluded (``must_not term`` matches nothing on a missing field).
+        """
+        return {
+            "query": {
+                "bool": {
+                    "filter": [{"term": {"file_path": basename}}],
+                    "must_not": [{"term": {"metadata.is_duplicate": True}}],
+                }
+            },
+            "size": 1,
+        }
+
     async def get_doc_by_file_basename(
         self, basename: str
     ) -> Union[tuple[str, dict[str, Any]], None]:
-        """Find an existing record whose canonical basename matches.
+        """Find the PRIMARY record whose canonical basename matches.
 
         The caller is responsible for passing an already-canonical basename;
         stored ``file_path`` values are canonicalized by the business layer, so
         this lookup performs an exact term query against the file_path keyword
-        field.
+        field, restricted to the primary (``metadata.is_duplicate != true``)
+        row. Legacy best-effort semantics: errors are swallowed and read as a
+        miss — dedup/identity callers that need fail-closed, conflict-aware
+        confirmation use :meth:`resolve_doc_source_strict`.
         """
         if not basename:
             return None
@@ -1857,7 +2192,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
         if not self._index_ready:
             return None
         try:
-            body = {"query": {"term": {"file_path": basename}}, "size": 1}
+            body = self._primary_basename_query(basename)
             response = await self.client.search(index=self._index_name, body=body)
             hits = response["hits"]["hits"]
             if not hits:
@@ -1872,35 +2207,839 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             logger.error(f"[{self.workspace}] Error getting doc by file_basename: {e}")
             return None
 
+    async def resolve_doc_source_strict(
+        self, canonical_source_key: str
+    ) -> SourceResolution:
+        """Typed, conflict-aware source resolution (base contract).
+
+        Queries PRIMARY (``metadata.is_duplicate != true``) rows for the
+        canonical basename with ``size: 2`` to distinguish
+        Absent/Unique/Conflict without materializing the whole set; a
+        ``SourceConflict`` then runs the cheap ``_count`` API for the exact
+        candidate count. ``_index_ready=False`` and a live missing-index
+        error raise ``StorageControlPlaneError`` (never ``SourceAbsent``) —
+        scan/enqueue treat Absent as "confirmed new", so a swallowed failure
+        would mint duplicate rows. Other transport errors propagate.
+        """
+        if not canonical_source_key or canonical_source_key == "unknown_source":
+            return SourceAbsent()
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot resolve source '{canonical_source_key}' "
+                f"(strict source resolution)"
+            )
+        query = self._primary_basename_query(canonical_source_key)["query"]
+        body = {
+            "query": query,
+            "sort": [{"__mirrored_id": {"order": "asc"}}],
+            "size": 2,
+        }
+        try:
+            response = await self.client.search(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot resolve source "
+                    f"'{canonical_source_key}' (strict source resolution)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error resolving doc source "
+                f"'{canonical_source_key}': {e}"
+            )
+            raise
+        hits = response["hits"]["hits"]
+        if not hits:
+            return SourceAbsent()
+        if len(hits) == 1:
+            hit = hits[0]
+            return SourceUnique(
+                doc_id=hit["_id"],
+                doc=self._scheduling_record_from_hit(hit, strict=True),
+            )
+        # >=2 primary candidates: exact count via the cheap _count API.
+        try:
+            count_resp = await self.client.count(
+                index=self._index_name, body={"query": query}
+            )
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing while counting source conflict "
+                    f"'{canonical_source_key}' (strict source resolution)"
+                ) from e
+            logger.error(
+                f"[{self.workspace}] Error counting source conflict "
+                f"'{canonical_source_key}': {e}"
+            )
+            raise
+        count = count_resp.get("count")
+        candidate_count = count if isinstance(count, int) else None
+        sample_doc_ids = tuple(sorted(hit["_id"] for hit in hits[:2]))
+        return SourceConflict(
+            candidate_count=candidate_count,
+            sample_doc_ids=sample_doc_ids,
+        )
+
     async def get_doc_by_content_hash(
-        self, content_hash: str
+        self, content_hash: str, *, exclude_doc_id: str | None = None
     ) -> Union[tuple[str, dict[str, Any]], None]:
         """Find an existing record whose content_hash field matches.
 
         Uses the content_hash keyword mapping created by
         ``_create_index_if_not_exists`` / ``_ensure_content_hash_mapping``.
         Empty values short-circuit so legacy rows without the field cannot
-        accidentally match via type coercion.
+        accidentally match via type coercion. ``exclude_doc_id`` adds a
+        ``must_not`` ids clause so the duplicate check excludes the doc being
+        processed in-query (see base contract), still served by the keyword
+        term.
+
+        Its second half — dropping a row that merely POINTS at that id
+        (``is_duplicate`` naming it as ``original_doc_id``) — is applied to
+        ``_source`` over a bounded ordered window instead of as a term query.
+        ``metadata`` is under ``dynamic: true`` with no declared mapping for
+        ``original_doc_id``, so its field type is whatever dynamic mapping made
+        it (a string becomes ``text`` plus a ``.keyword`` subfield): a term
+        query on the bare path would silently match nothing, which fails OPEN
+        exactly where the pointer must be excluded. ``_source`` carries the
+        value whatever the mapping says. The window keeps the read bounded and
+        the search intact — the first surviving hit is still the earliest holder
+        — and a window filled entirely with pointers to the same document
+        RAISES rather than reporting "no holder", since ``None`` here drives
+        destructive action.
+
+        Fail-closed, three-state (the distinction the dedup callers need):
+        a match → the row; a completed query with no hits → ``None`` (CONFIRMED
+        no other holder); an index that is not ready or has vanished, or any
+        transport error → raise. ``None`` drives destructive action — the
+        callers enqueue the document and ingest its content — so a swallowed
+        failure would mint duplicate rows and duplicate graph contributions.
+
+        Sorted ``(created_at ASC, __mirrored_id ASC)`` so "earliest other
+        holder" in the base contract is real rather than whatever order the
+        shards happen to return; every row carries a ``__mirrored_id`` value
+        (guaranteed at startup, see ``_ensure_scheduling_tiebreaker_ready``).
         """
         if not content_hash:
             return None
         if not self._index_ready:
-            return None
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm whether content_hash "
+                f"'{content_hash}' has another holder"
+            )
         try:
-            body = {"query": {"term": {"content_hash": content_hash}}, "size": 1}
+            if exclude_doc_id is not None:
+                query: dict[str, Any] = {
+                    "bool": {
+                        "must": [{"term": {"content_hash": content_hash}}],
+                        "must_not": [{"ids": {"values": [exclude_doc_id]}}],
+                    }
+                }
+            else:
+                query = {"term": {"content_hash": content_hash}}
+            body = {
+                "query": query,
+                "sort": [
+                    {"created_at": {"order": "asc", "missing": "_first"}},
+                    {"__mirrored_id": {"order": "asc"}},
+                ],
+                # One hit is enough unless pointer rows have to be skipped; the
+                # window is only wider when there is an id to point AT.
+                "size": (
+                    self._CONTENT_HASH_POINTER_WINDOW
+                    if exclude_doc_id is not None
+                    else 1
+                ),
+            }
             response = await self.client.search(index=self._index_name, body=body)
             hits = response["hits"]["hits"]
             if not hits:
                 return None
-            hit = hits[0]
-            doc = hit["_source"]
-            return hit["_id"], doc
+            for hit in hits:
+                doc = hit["_source"]
+                if self._row_points_at_as_duplicate(doc, exclude_doc_id):
+                    continue
+                return hit["_id"], doc
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] every one of the {len(hits)} earliest "
+                f"holders of content_hash '{content_hash}' is a duplicate marker "
+                f"pointing at {exclude_doc_id}; cannot confirm whether a further "
+                f"holder exists beyond the bounded window"
+            )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
-                return None
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"vanished; cannot confirm whether content_hash "
+                    f"'{content_hash}' has another holder"
+                ) from e
             logger.error(f"[{self.workspace}] Error getting doc by content_hash: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # Memory-bounding scheduling API (Phase 1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_page_cursor(opaque: str) -> list[Any]:
+        """Decode an opaque page cursor back into ``search_after`` values.
+
+        The cursor is ``json.dumps(hits[-1]["sort"])`` — the last hit's sort
+        values verbatim, i.e. ``[created_at sort value, __mirrored_id]``.
+        Anything that does not decode to that two-element list is a corrupt
+        continuation token: raise a control-plane error instead of silently
+        restarting (or worse, mis-positioning) the sweep.
+        """
+        try:
+            decoded = json.loads(opaque)
+        except (TypeError, ValueError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for OpenSearchDocStatusStorage: {e}"
+            ) from e
+        if not isinstance(decoded, list) or len(decoded) != 2:
+            raise StorageControlPlaneError(
+                "Malformed scheduling cursor for OpenSearchDocStatusStorage: "
+                f"expected a 2-element sort-values list, got {decoded!r}"
+            )
+        return decoded
+
+    @staticmethod
+    def _build_scheduling_page_query(status_values: list[str]) -> dict[str, Any]:
+        """Server-side page query: a status terms filter over the sweep set."""
+        return {"terms": {"status": sorted(status_values)}}
+
+    def _scheduling_record_from_hit(
+        self, hit: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one search hit; strict raises on unusable rows, relaxed
+        returns None (the row still counts as consumed — the cursor is the
+        last HIT's sort values, so skipped hits never re-appear)."""
+        doc_id = hit.get("_id")
+        source = hit.get("_source")
+        try:
+            if not isinstance(doc_id, str) or not isinstance(source, dict):
+                raise TypeError("malformed search hit")
+            status = DocStatus(str(source["status"]))
+            created_at = source["created_at"]
+            updated_at = source.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = source.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=source.get("file_path") or "no-file-path",
+                track_id=source.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
             return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page via native ``search_after`` (base contract).
+
+        Sort is ``(created_at ASC, __mirrored_id ASC)`` — ``_id`` is not
+        sortable in OpenSearch, so the id is tie-broken on the keyword field
+        every write path mirrors it into. The ``created_at`` sort carries
+        ``"missing": "_first"`` so rows lacking the field sort FIRST (an
+        empty bucket) and stay reachable across page boundaries — aligning
+        with the other backends' NULLS-FIRST keyset rather than OpenSearch's
+        ``_last`` default. Plain ``search_after`` (NO point-in-time): the
+        contract is live-view across requests, not a snapshot. Filtering (a
+        status terms clause) is fully server-side, so every hit is consumed
+        by construction and ``returned < limit`` proves exhaustion
+        (CURSOR_END); a full page continues with
+        ``CursorAfter(json.dumps(hits[-1]["sort"]))`` — the last hit's sort
+        values are the natural consumed frontier (they cover hits skipped as
+        unusable in relaxed mode, too).
+
+        Strict/failure semantics: a lost index — whether already known
+        (``_index_ready=False``) or discovered live (``index_not_found``) —
+        raises under ``strict``; both mean the same thing (the index is gone,
+        so the sweep cannot be confirmed complete) and must not differ merely
+        by which call noticed first. An empty terminal page would be read as
+        "no work left", stranding every document. A legitimate ``drop()``
+        already clears ``_index_ready``, so reaching the live branch means the
+        index vanished from under us. Relaxed mode keeps the best-effort empty
+        terminal page. Transport errors raise WITHOUT returning partial docs or
+        a new cursor; ``strict`` additionally turns unusable-row skips into
+        raises.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        if not self._index_ready:
+            if strict:
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"is not ready; cannot serve a complete scheduling page"
+                )
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        search_after: list[Any] | None = None
+        if isinstance(position, CursorAfter):
+            search_after = self._decode_page_cursor(position.opaque)
+        body: dict[str, Any] = {
+            "query": self._build_scheduling_page_query([s.value for s in statuses]),
+            "sort": [
+                {"created_at": {"order": "asc", "missing": "_first"}},
+                {"__mirrored_id": {"order": "asc"}},
+            ],
+            "size": limit,
+        }
+        if search_after is not None:
+            body["search_after"] = search_after
+        try:
+            response = await self.client.search(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                if strict:
+                    raise StorageControlPlaneError(
+                        f"[{self.workspace}] doc status index "
+                        f"'{self._index_name}' vanished mid-sweep; cannot "
+                        f"serve a complete scheduling page"
+                    ) from e
+                return DocStatusPage(docs={}, next_position=CURSOR_END)
+            # Complete-or-raise in BOTH modes: a partial page + advanced
+            # cursor would silently strand the missed documents.
+            logger.error(f"[{self.workspace}] Scheduling page query failed: {e}")
+            raise
+        hits = response["hits"]["hits"]
+        docs: dict[str, DocSchedulingRecord] = {}
+        for hit in hits:
+            record = self._scheduling_record_from_hit(hit, strict=strict)
+            if record is None:
+                continue  # relaxed skip is still consumed (see cursor note)
+            docs[record.id] = record
+        if len(hits) < limit:
+            return DocStatusPage(docs=docs, next_position=CURSOR_END)
+        return DocStatusPage(
+            docs=docs,
+            next_position=CursorAfter(json.dumps(hits[-1]["sort"])),
+        )
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count via the ``_count`` API (base contract).
+
+        Always accurate-or-raise regardless of ``strict`` — admission control
+        must never read an error as "capacity available". A lost index raises
+        whether it was already known (``_index_ready=False``) or discovered
+        live (``index_not_found``): returning ``0`` for the live case would
+        make the FIRST call after an external drop report full capacity and
+        only later calls fail closed. A legitimate ``drop()`` already clears
+        ``_index_ready``, so the live branch means the index vanished from
+        under us.
+        """
+        if not statuses:
+            return 0
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot produce an accurate status count"
+            )
+        body = {"query": {"terms": {"status": sorted({s.value for s in statuses})}}}
+        try:
+            response = await self.client.count(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"vanished; cannot produce an accurate status count"
+                ) from e
+            logger.error(f"[{self.workspace}] Error counting doc statuses: {e}")
+            raise
+        count = response.get("count")
+        if not isinstance(count, int):
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] OpenSearch _count returned a malformed "
+                f"response for {self.namespace}: {response!r}"
+            )
+        return count
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted partial update via the ``_update`` doc-merge API.
+
+        No read-modify-write: untouched fields (including a huge
+        ``chunks_list``) never travel through memory. ``refresh="wait_for"``
+        matches the visibility of the bulk upsert path (search-based readers
+        may query immediately after). This class keeps no pending buffer for
+        doc-status writes, so the update is immediately authoritative.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        await self._ensure_index_ready()
+        try:
+            await self.client.update(
+                index=self._index_name,
+                id=doc_id,
+                body={"doc": fields},
+                refresh="wait_for",
+            )
+        except NotFoundError as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing while updating '{doc_id}'"
+                ) from e
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id) from e
+        except OpenSearchException as e:
+            logger.error(
+                f"[{self.workspace}] Error updating doc status fields for {doc_id}: {e}"
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # Strict batch read
+    # ------------------------------------------------------------------
+
+    async def get_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocSchedulingRecord]:
+        """Batch strict read via a single mget (base contract).
+
+        Lightweight projection (``_source_includes`` limits the fetch to the
+        scheduling fields — never ``chunks_list``). A missing id is a
+        CONFIRMED absence (``found=false``) and is omitted; an item-level
+        mget error is NEVER read as absent (``_interpret_mget_item`` raises).
+        With ``strict=True`` an unusable present row also raises; a not-ready
+        index and a live missing-index error raise ``StorageControlPlaneError``
+        in both modes (absence cannot be confirmed there), and other transport
+        errors propagate — the whole call fails rather than returning a
+        partial map the feeder would treat as "the rest went stale".
+        """
+        result: dict[str, DocSchedulingRecord] = {}
+        ids = list(doc_ids)
+        if not ids:
+            return result
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm absence for a strict batch read"
+            )
+        try:
+            response = await self.client.mget(
+                index=self._index_name,
+                body={"ids": ids},
+                _source_includes=self._SCHEDULING_SOURCE_FIELDS,
+            )
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot confirm absence for a strict "
+                    f"batch read"
+                ) from e
+            logger.error(f"[{self.workspace}] Error batch-reading doc statuses: {e}")
+            raise
+        docs = response.get("docs")
+        if not isinstance(docs, list) or len(docs) != len(ids):
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearch mget returned "
+                f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                f"for {len(ids)} requested ids"
+            )
+        for requested_id, item in zip(ids, docs):
+            interpreted = _interpret_mget_item(item, requested_id)
+            if interpreted is None:
+                continue  # confirmed absent
+            record = self._scheduling_record_from_hit(interpreted, strict=strict)
+            if record is not None:
+                result[requested_id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to FULL DocProcessingStatus via a single mget.
+
+        Mirrors :meth:`get_docs_by_ids` (same ``mget`` by id, same
+        ``_interpret_mget_item`` absent-vs-error discipline) but fetches the
+        COMPLETE ``_source`` -- no ``_source_includes`` projection -- and
+        normalises each hit through
+        :meth:`_os_doc_processing_status_from_source`, so callers see every
+        field (``content_summary`` / ``content_length`` / ``chunks_list`` /
+        ``metadata`` / ...). A confirmed-absent id (``found=false``) is
+        omitted; with ``strict=True`` an unusable present row or any
+        transport/index error fails the WHOLE call rather than returning a
+        partial map (see base contract).
+        """
+        result: dict[str, DocProcessingStatus] = {}
+        ids = list(doc_ids)
+        if not ids:
+            return result
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot confirm absence for a strict batch read"
+            )
+        try:
+            response = await self.client.mget(
+                index=self._index_name,
+                body={"ids": ids},
+            )
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing; cannot confirm absence for a strict "
+                    f"batch read"
+                ) from e
+            logger.error(f"[{self.workspace}] Error batch-reading doc statuses: {e}")
+            raise
+        docs = response.get("docs")
+        if not isinstance(docs, list) or len(docs) != len(ids):
+            raise RuntimeError(
+                f"[{self.workspace}] OpenSearch mget returned "
+                f"{len(docs) if isinstance(docs, list) else 'no'} items "
+                f"for {len(ids)} requested ids"
+            )
+        for requested_id, item in zip(ids, docs):
+            interpreted = _interpret_mget_item(item, requested_id)
+            if interpreted is None:
+                continue  # confirmed absent
+            try:
+                result[requested_id] = self._os_doc_processing_status_from_source(
+                    interpreted["_source"]
+                )
+            except (KeyError, TypeError) as e:
+                logger.error(
+                    f"[{self.workspace}] Unusable doc_status row hydrating "
+                    f"{requested_id}: {e}"
+                )
+                if strict:
+                    raise
+                continue
+        return result
+
+    # ------------------------------------------------------------------
+    # Source-conflict listing and explicit CAS repair
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _conflict_fingerprint(sorted_doc_ids: list[str]) -> str:
+        """Deterministic digest over candidate doc IDs in stable sort order."""
+        digest = hashlib.sha256()
+        for doc_id in sorted_doc_ids:
+            digest.update(doc_id.encode("utf-8"))
+            digest.update(b"\x00")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _conflict_scan_query() -> dict[str, Any]:
+        """Restrict conflict scans to PRIMARY rows with a real canonical basename.
+
+        Excludes duplicate markers (``metadata.is_duplicate == true``), the
+        sentinel basenames the business layer never treats as identity, and
+        rows without a ``file_path`` at all (mirrors the JSON reference).
+        """
+        return {
+            "bool": {
+                "filter": [{"exists": {"field": "file_path"}}],
+                "must_not": [
+                    {"term": {"metadata.is_duplicate": True}},
+                    {"terms": {"file_path": ["", "unknown_source", "no-file-path"]}},
+                ],
+            }
+        }
+
+    @staticmethod
+    def _decode_conflict_cursor(opaque: str) -> dict[str, Any]:
+        """Decode a source-conflict page cursor into a composite ``after`` key.
+
+        The cursor is ``json.dumps(after_key)`` — the composite aggregation's
+        ``after_key`` object verbatim. Anything that does not decode to a JSON
+        object is a corrupt continuation token: raise a control-plane error
+        instead of silently restarting the sweep.
+        """
+        try:
+            after = json.loads(opaque)
+            if not isinstance(after, dict):
+                raise ValueError("conflict cursor must be a composite after-key object")
+        except (TypeError, ValueError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed source-conflict cursor for OpenSearchDocStatusStorage: {e}"
+            ) from e
+        return after
+
+    async def _primary_candidate_ids_sorted(
+        self, canonical_source_key: str
+    ) -> list[str]:
+        """All PRIMARY doc IDs for a canonical basename, sorted (ids only).
+
+        Paginates ``search_after`` (``_source=False``) so the full candidate
+        set is collected without materializing any row bodies — historical
+        conflicts are small, but the scan is bounded per page regardless. A
+        live missing-index error raises a control-plane error (the caller
+        already verified ``_index_ready``).
+        """
+        query = self._primary_basename_query(canonical_source_key)["query"]
+        ids: list[str] = []
+        search_after: list[Any] | None = None
+        batch = 1000
+        while True:
+            body: dict[str, Any] = {
+                "query": query,
+                "sort": [{"__mirrored_id": {"order": "asc"}}],
+                "size": batch,
+                "_source": False,
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+            try:
+                response = await self.client.search(index=self._index_name, body=body)
+            except OpenSearchException as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                    raise StorageControlPlaneError(
+                        f"[{self.workspace}] doc status index "
+                        f"'{self._index_name}' unexpectedly missing while "
+                        f"scanning primary candidates for "
+                        f"'{canonical_source_key}'"
+                    ) from e
+                logger.error(
+                    f"[{self.workspace}] Error scanning primary candidates for "
+                    f"'{canonical_source_key}': {e}"
+                )
+                raise
+            hits = response["hits"]["hits"]
+            if not hits:
+                break
+            for hit in hits:
+                hit_id = hit.get("_id")
+                if isinstance(hit_id, str):
+                    ids.append(hit_id)
+            if len(hits) < batch:
+                break
+            search_after = hits[-1]["sort"]
+        return sorted(ids)
+
+    async def list_source_conflicts_page(
+        self,
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+    ) -> SourceConflictPage:
+        """Page canonical source keys with >1 PRIMARY candidate (base contract).
+
+        A ``composite`` aggregation over ``file_path`` (query restricted to
+        primaries and real basenames) pages the key space deterministically
+        via its ``after_key``; a ``top_hits`` sub-agg yields a bounded doc-id
+        sample per bucket. Single-primary buckets are dropped client-side, so
+        a page may carry fewer than ``limit`` conflicts (or none) while more
+        composite buckets remain — the sweep terminates only on ``CURSOR_END``
+        (the composite returned fewer buckets than requested). ``_index_ready
+        =False`` and a live missing-index error raise a control-plane error.
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if position is CURSOR_END:
+            return SourceConflictPage(conflicts=(), next_position=CURSOR_END)
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot list source conflicts"
+            )
+        after: dict[str, Any] | None = None
+        if isinstance(position, CursorAfter):
+            after = self._decode_conflict_cursor(position.opaque)
+        composite: dict[str, Any] = {
+            "size": limit,
+            "sources": [
+                {"file_path": {"terms": {"field": "file_path", "order": "asc"}}}
+            ],
+        }
+        if after is not None:
+            composite["after"] = after
+        body = {
+            "size": 0,
+            "query": self._conflict_scan_query(),
+            "aggs": {
+                "conflicts": {
+                    "composite": composite,
+                    "aggs": {
+                        "sample_ids": {
+                            "top_hits": {
+                                "size": self._CONFLICT_SAMPLE_CAP,
+                                "_source": False,
+                                "sort": [{"__mirrored_id": {"order": "asc"}}],
+                            }
+                        }
+                    },
+                }
+            },
+        }
+        try:
+            response = await self.client.search(index=self._index_name, body=body)
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] doc status index '{self._index_name}' "
+                    f"unexpectedly missing while listing source conflicts"
+                ) from e
+            logger.error(f"[{self.workspace}] Error listing source conflicts: {e}")
+            raise
+        agg = response.get("aggregations", {}).get("conflicts", {})
+        buckets = agg.get("buckets", [])
+        conflicts_list: list[SourceConflictSummary] = []
+        for bucket in buckets:
+            count = bucket.get("doc_count", 0)
+            if not isinstance(count, int) or count < 2:
+                continue
+            key = bucket.get("key", {}).get("file_path")
+            if not isinstance(key, str):
+                continue
+            sample_hits = bucket.get("sample_ids", {}).get("hits", {}).get("hits", [])
+            sample_doc_ids = tuple(
+                sorted(h["_id"] for h in sample_hits if isinstance(h.get("_id"), str))[
+                    : self._CONFLICT_SAMPLE_CAP
+                ]
+            )
+            conflicts_list.append(
+                SourceConflictSummary(
+                    canonical_source_key=key,
+                    candidate_count=count,
+                    sample_doc_ids=sample_doc_ids,
+                )
+            )
+        conflicts = tuple(conflicts_list)
+        after_key = agg.get("after_key")
+        if len(buckets) < limit or not isinstance(after_key, dict):
+            return SourceConflictPage(conflicts=conflicts, next_position=CURSOR_END)
+        return SourceConflictPage(
+            conflicts=conflicts,
+            next_position=CursorAfter(json.dumps(after_key)),
+        )
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key: str,
+        *,
+        primary_doc_id: str,
+        expected_candidate_count: int,
+        expected_candidate_fingerprint: str,
+        dry_run: bool = True,
+    ) -> SourceConflictRepairResult:
+        """Demote all-but-one primary to duplicate, CAS-guarded (base contract).
+
+        OpenSearch has no multi-doc transaction, so the CAS is a
+        recompute-and-compare: the current primary candidate set is re-scanned
+        (live view) and its count/fingerprint must equal the operator-echoed
+        ``expected_*`` before any demotion runs, otherwise a
+        ``StorageControlPlaneError`` is raised rather than overwriting a
+        concurrent change. Demotions are ``_update`` doc-merges (deep-merging
+        ``metadata.is_duplicate=true`` + ``original_doc_id`` so other metadata
+        keys survive) with ``refresh="wait_for"``; content is never deleted.
+        The residual window between the re-scan and the demote writes is the
+        documented non-transactional boundary of this backend.
+        """
+        if not self._index_ready:
+            raise StorageControlPlaneError(
+                f"[{self.workspace}] doc status index '{self._index_name}' is "
+                f"not ready; cannot repair source conflict "
+                f"'{canonical_source_key}'"
+            )
+        candidates = await self._primary_candidate_ids_sorted(canonical_source_key)
+        count = len(candidates)
+        fingerprint = self._conflict_fingerprint(candidates)
+        if primary_doc_id not in candidates:
+            raise ValueError(
+                f"primary_doc_id {primary_doc_id!r} is not a current primary "
+                f"candidate for {canonical_source_key!r}"
+            )
+        demoted = [d for d in candidates if d != primary_doc_id]
+        if dry_run:
+            return SourceConflictRepairResult(
+                canonical_source_key=canonical_source_key,
+                primary_doc_id=primary_doc_id,
+                candidate_count=count,
+                fingerprint=fingerprint,
+                demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+                committed=False,
+            )
+        if (
+            count != expected_candidate_count
+            or fingerprint != expected_candidate_fingerprint
+        ):
+            raise SourceConflictRepairCASError(
+                f"[{self.workspace}] source-conflict repair CAS failed for "
+                f"{canonical_source_key!r}: candidate set changed "
+                f"(count {count} vs {expected_candidate_count})"
+            )
+        for doc_id in demoted:
+            try:
+                await self.client.update(
+                    index=self._index_name,
+                    id=doc_id,
+                    body={
+                        "doc": {
+                            "metadata": {
+                                "is_duplicate": True,
+                                "original_doc_id": primary_doc_id,
+                            }
+                        }
+                    },
+                    refresh="wait_for",
+                )
+            except NotFoundError as e:
+                if _is_missing_index_error(e):
+                    self._mark_index_missing()
+                raise StorageControlPlaneError(
+                    f"[{self.workspace}] source-conflict repair for "
+                    f"{canonical_source_key!r}: candidate '{doc_id}' vanished "
+                    f"mid-repair"
+                ) from e
+        return SourceConflictRepairResult(
+            canonical_source_key=canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            candidate_count=count,
+            fingerprint=fingerprint,
+            demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+            committed=True,
+        )
 
     async def index_done_callback(self) -> None:
         """Refresh index to make recently indexed documents searchable."""
@@ -2557,7 +3696,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return False
+                return False
+            # A whole-call transport error is NOT "the node doesn't exist" --
+            # callers (e.g. entity merge/dedup) would otherwise treat a
+            # confirmed-absent node the same as an unknown-state one.
+            logger.error(f"[{self.workspace}] Error checking node existence: {e}")
+            raise
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """Check whether an edge exists between two nodes.
@@ -2575,7 +3719,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return False
+                return False
+            logger.error(f"[{self.workspace}] Error checking edge existence: {e}")
+            raise
 
     async def node_degree(self, node_id: str) -> int:
         """Count the number of edges connected to a node."""
@@ -2600,7 +3746,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return 0
+                return 0
+            logger.error(f"[{self.workspace}] Error counting node degree: {e}")
+            raise
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Sum of degrees of both endpoint nodes."""
@@ -2622,7 +3770,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return None
+                return None
+            logger.error(f"[{self.workspace}] Error getting node {node_id}: {e}")
+            raise
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -2646,7 +3796,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return None
+                return None
+            logger.error(
+                f"[{self.workspace}] Error getting edge "
+                f"{source_node_id}->{target_node_id}: {e}"
+            )
+            raise
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all (source, target) edge tuples connected to a node."""
@@ -2704,7 +3859,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return None
+                return None
+            logger.error(
+                f"[{self.workspace}] Error getting node edges for {source_node_id}: {e}"
+            )
+            raise
 
     # --- Batch operations ---
 
@@ -2726,7 +3885,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return {}
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting nodes: {e}")
+            raise
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Batch-fetch edge counts for multiple nodes using aggregations."""
@@ -2778,7 +3939,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return {}
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting node degrees: {e}")
+            raise
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
@@ -2837,7 +4000,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            pass
+                return result
+            logger.error(f"[{self.workspace}] Error batch-getting node edges: {e}")
+            raise
         return result
 
     # --- Upsert operations ---
@@ -2855,7 +4020,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             await self.client.index(index=self._nodes_index, id=node_id, body=doc)
             self._nodes_dirty = True
         except OpenSearchException as e:
+            # Swallowing here would let the pipeline believe this node was
+            # persisted and mark the document processed -- raise so it is
+            # marked failed and retried instead.
             logger.error(f"[{self.workspace}] Error upserting node {node_id}: {e}")
+            raise
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -2888,9 +4057,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
             self._edges_dirty = True
         except OpenSearchException as e:
+            # A transient failure here (including one propagated from the
+            # has_node() existence check above) must not be reported as a
+            # successful edge write -- raise so the pipeline marks the
+            # document failed and retries, instead of silently proceeding
+            # with a graph that never got the edge.
             logger.error(
                 f"[{self.workspace}] Error upserting edge {source_node_id}->{target_node_id}: {e}"
             )
+            raise
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes using the OpenSearch bulk API.
@@ -2928,6 +4103,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._nodes_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error during batch node upsert: {e}")
+            raise
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes using a single mget request.
@@ -2950,7 +4126,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return set()
+                return set()
+            logger.error(f"[{self.workspace}] Error batch-checking node existence: {e}")
+            raise
 
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -3008,7 +4186,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             )
             self._edges_dirty = True
         except OpenSearchException as e:
+            # Same reasoning as upsert_edge: has_nodes_batch() above can now
+            # raise on a transient error too, and either way a swallowed
+            # failure here must not look like a successful batch write.
             logger.error(f"[{self.workspace}] Error during batch edge upsert: {e}")
+            raise
 
     # --- Delete operations ---
 
@@ -3047,6 +4229,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
+            raise
 
     async def remove_nodes(self, nodes: list[str]) -> None:
         """Batch-delete multiple nodes and their connected edges.
@@ -3095,6 +4278,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
+            raise
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         """Batch-delete multiple edges by canonical ID (real-time).
@@ -3139,6 +4323,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
+            raise
 
     # --- Query operations ---
 
@@ -3184,7 +4369,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting all labels: {e}")
+            raise
 
     async def _collect_node_ids(
         self, limit: int, exclude_ids: set[str] | None = None
@@ -3386,6 +4573,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._mark_indices_missing()
                 return KnowledgeGraph()
             logger.error(f"[{self.workspace}] Graph query failed: {e}")
+            raise
 
         return result
 
@@ -3458,6 +4646,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._mark_indices_missing()
                 return result
             logger.error(f"[{self.workspace}] Error in get_knowledge_graph_all: {e}")
+            raise
         return result
 
     async def _bfs_subgraph_ppl(
@@ -3627,10 +4816,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "_source": ["source_node_id", "target_node_id"],
                 "size": 10000,
             }
-            try:
-                resp = await self.client.search(index=self._edges_index, body=body)
-            except OpenSearchException:
-                break
+            # No try/except here: a transport error must propagate rather than
+            # being read as "no more neighbors," which would silently truncate
+            # the subgraph while is_truncated stays False (looks complete).
+            resp = await self.client.search(index=self._edges_index, body=body)
 
             next_level = set()
             for hit in resp["hits"]["hits"]:
@@ -3665,10 +4854,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         # Fetch all edges between seen nodes using PIT scrolling
         all_ids = list(seen_nodes)
         if all_ids:
-            try:
-                await self._append_edges_between_nodes(all_ids, result)
-            except OpenSearchException:
-                pass
+            # No try/except here either -- same reasoning as the level-fetch
+            # above: a partial edge fetch must not be mistaken for a complete
+            # (but small) subgraph.
+            await self._append_edges_between_nodes(all_ids, result)
 
         result.is_truncated = len(seen_nodes) >= max_nodes
         return result
@@ -3715,7 +4904,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting all nodes: {e}")
+            raise
 
     async def get_all_edges(self) -> list[dict]:
         """Get all edges with source/target fields added."""
@@ -3762,7 +4953,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting all edges: {e}")
+            raise
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get node labels ranked by edge degree (most connected first)."""
@@ -3792,7 +4985,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting popular labels: {e}")
+            raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """Search node labels with wildcard and prefix matching."""
@@ -3833,7 +5028,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error searching labels: {e}")
+            raise
 
     async def index_done_callback(self) -> None:
         """Refresh both node and edge indices."""
@@ -4398,8 +5595,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return []
+            # Matches the raise-on-unexpected-error convention every other
+            # vector backend's query() follows (Postgres/Milvus/Qdrant/Mongo):
+            # a transport error is not "no results," which the LLM would
+            # otherwise report as a confident "nothing found."
             logger.error(f"[{self.workspace}] Error querying vectors: {e}")
-            return []
+            raise
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts/deletes (pipeline aborting on error)."""

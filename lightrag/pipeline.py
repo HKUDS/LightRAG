@@ -17,11 +17,11 @@ import inspect
 import json
 
 import mimetypes
-import os
 import threading
 import time
 import traceback
 import uuid
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -29,8 +29,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.base import (
+    CURSOR_END,
+    CURSOR_START,
+    CursorPosition,
+    DocProcessingStatus,
+    DocStatus,
+    SourceConflict,
+    SourceUnique,
+)
 from lightrag.constants import (
+    ENQUEUE_SERIALIZE_LOCK_NAMESPACE,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
@@ -39,18 +48,29 @@ from lightrag.constants import (
 from lightrag.exceptions import (
     MultimodalAnalysisError,
     PipelineCancelledException,
+    PipelineRecoveryRequiredError,
+    PipelineReservationConflictError,
     IndexFlushError,
 )
 from lightrag.kg.shared_storage import (
+    MANUAL_PHASE_DRAIN_TO_IDLE,
+    MANUAL_PHASE_EXCLUSIVE_RESET,
+    MANUAL_PHASE_IDLE,
     PipelineReservationConflict,
     _reservation_owner_token,
     acquire_processing_reservation,
+    append_pipeline_history,
     check_pipeline_status_mutation,
+    fence_workspace_for_recovery,
     get_namespace_data,
     get_namespace_lock,
     get_pipeline_ingress,
+    make_manual_owner_record,
+    reap_dead_reservations_locked,
     run_to_completion,
+    with_reservation_lock,
 )
+from lightrag import pipeline_metrics
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.operate import merge_nodes_and_edges
 from lightrag.parser.base import ParseContext
@@ -103,39 +123,34 @@ from lightrag.utils_pipeline import (
     doc_status_transition_metadata,
     get_duplicate_doc_by_content_hash,
     get_existing_doc_by_content_hash,
-    get_existing_doc_by_file_basename,
     has_known_document_source,
     input_dir_path,
     normalize_document_file_path,
     doc_status_metadata_has_attempt_fields,
     doc_status_reset_metadata,
     read_source_file_basename,
+    resolve_existing_doc_source,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
+    source_candidate_set_lock,
     strip_lightrag_doc_prefix,
 )
 
 
 # Document statuses the pipeline resumes AUTOMATICALLY — the initial snapshot
-# of every run and every quiescence refetch.  PROCESSING/PARSING/ANALYZING are
-# dead-process orphans (an interrupted run left them mid-flight) and must
-# self-heal; FAILED is deliberately absent: a document that genuinely failed
-# is retried only through an explicit human request (see
-# ``_MANUAL_RETRY_DOC_STATUSES``), never as a side effect of an unrelated
-# upload or rescan.
+# of every run and every quiescence refetch, AND the only statuses any
+# ``_next_scheduling_page`` sweep ever carries.  PROCESSING/PARSING/ANALYZING
+# are dead-process orphans (an interrupted run left them mid-flight) and must
+# self-heal; FAILED is deliberately absent: a document that genuinely failed is
+# retried only through an explicit manual request, whose EXCLUSIVE_RESET phase
+# pages FAILED→PENDING via ``_next_failed_page`` with no worker running (LR2
+# §7.3) — never as a side effect of an unrelated upload or rescan.
 _AUTO_RESUME_DOC_STATUSES = (
     DocStatus.PENDING,
     DocStatus.PROCESSING,
     DocStatus.PARSING,
     DocStatus.ANALYZING,
 )
-
-# Superset used exactly once per manual retry request (``/documents/scan`` /
-# ``/documents/reprocess_failed``): the sticky ingress request is the only
-# path that may pull FAILED documents back into the pipeline, and it is ACKed
-# after their reset-to-PENDING persists — so a doc that fails AGAIN inside
-# that run stays FAILED until the next explicit human request (no retry loop).
-_MANUAL_RETRY_DOC_STATUSES = (*_AUTO_RESUME_DOC_STATUSES, DocStatus.FAILED)
 
 # Multiprocess feeder poll interval: the Manager-backed ingress has no async
 # ``get_document``, so the feeder blocks a worker thread in
@@ -151,6 +166,73 @@ _FEEDER_POLL_SECONDS = 0.5
 # one admission, not a whole drain.
 _FEEDER_DRAIN_LIMIT = 256
 
+# Manual DRAIN_TO_IDLE poll: how long to sleep between re-checks while waiting
+# for pre-freeze in-flight enqueue reservations (pending_enqueues > 0) to
+# finish (LR2 §7.2 step 5). Bounded by the background enqueue's own duration —
+# the freeze admits no NEW reservations, so the count only decreases.
+_MANUAL_DRAIN_POLL_SECONDS = 0.2
+
+# How many ``_MANUAL_DRAIN_POLL_SECONDS`` re-checks a SCAN-driven reset gives the
+# in-flight enqueue count before abandoning the reset (LR2 §8.1). Unlike the
+# manual endpoint's unbounded drain wait, a scan was only granted its
+# reservation while ``pending_enqueues == 0``, so a non-zero count here means a
+# reservation slipped into the window before the freeze went up: wait it out
+# briefly, then leave the request to the standard drain path rather than blocking
+# file discovery behind it.
+_SCAN_DRAIN_CONFIRM_ATTEMPTS = 25
+
+# How many consecutive DRAIN_TO_IDLE confirmation rounds may report the SAME
+# blocking active rows before the drain is declared stalled and the workspace is
+# fenced (LR2 §7.2 "DRAIN_TO_IDLE 的前进性" / §13.2 case 16).
+#
+# One round is not evidence: the confirmation sweep legitimately returns rows the
+# run then processes. But a round that changes nothing produces an identical id
+# set, and re-sweeping identical rows can only produce the same result again — so
+# a small count separates "still draining" from "cannot drain", with no wall-clock
+# timeout to tune. Every routed page leaves the AUTO set (terminal or FAILED), and
+# a shrinking/changing set resets the counter, so a large-but-finite backlog is
+# never mistaken for a stall.
+_MANUAL_DRAIN_STALL_ROUNDS = 3
+
+# Upper bound on the blocking doc ids reported with the stall fence. The point is
+# to name the offending rows, not to serialise a backlog into an error message.
+_MANUAL_DRAIN_STALL_SAMPLE = 8
+
+# Same bound for the drain's blocker report (active rows the drain cannot advance
+# at all — see ``_confirm_auto_drained``). Kept separate from the stall sample so
+# either report can be widened without silently widening the other.
+_MANUAL_DRAIN_BLOCKER_SAMPLE = 8
+
+
+class _ManualDrainProgress:
+    """Forward-progress tracker for one run's DRAIN_TO_IDLE (LR2 §7.2).
+
+    Run-scoped, not shared state: it only has to detect a spin WITHIN one
+    processing run, because a run that exits releases the freeze and the next one
+    re-drains from scratch.
+    """
+
+    __slots__ = ("_blocking_ids", "_repeats")
+
+    def __init__(self) -> None:
+        self._blocking_ids: frozenset[str] | None = None
+        self._repeats = 0
+
+    def observe(self, doc_ids) -> bool:
+        """Record one "the drain is not idle yet" observation.
+
+        Returns False once the SAME rows have blocked the drain for
+        :data:`_MANUAL_DRAIN_STALL_ROUNDS` consecutive rounds — the caller must
+        then fence rather than sweep again.
+        """
+        ids = frozenset(doc_ids)
+        if ids != self._blocking_ids:
+            self._blocking_ids = ids
+            self._repeats = 1
+            return True
+        self._repeats += 1
+        return self._repeats < _MANUAL_DRAIN_STALL_ROUNDS
+
 
 class PipelineNextStep(Enum):
     """Outcome of the atomic quiescence decision (see
@@ -158,13 +240,32 @@ class PipelineNextStep(Enum):
 
     RELEASED = "released"
     CONTINUE_AUTO = "continue_auto"
+    # A sticky manual retry is pending and the pipeline is IDLE: BEGIN the
+    # manual protocol (LR2 §6.1/§7.2) — freeze new ingress, then drain the AUTO
+    # backlog to idle.  No FAILED is swept here; FAILED is reset only in the
+    # exclusive phase below.  The request stays sticky (ACKed after the reset).
     CONTINUE_MANUAL = "continue_manual"
+    # Manual drain reached AUTO-empty but pre-freeze in-flight enqueue
+    # reservations (pending_enqueues > 0) have not finished.  Bounded-wait for
+    # them so their PENDING docs join this drain cohort before the reset
+    # (LR2 §7.2 step 5 / §7.3 pending_enqueues=0 precondition).
+    CONTINUE_DRAIN_WAIT = "continue_drain_wait"
+    # Manual drain reached strict idle (no AUTO, no in-flight, no mailbox):
+    # enter EXCLUSIVE_RESET — page FAILED→PENDING with NO worker running, then
+    # ACK the request and resume normal processing (LR2 §7.3).
+    BEGIN_EXCLUSIVE_RESET = "begin_exclusive_reset"
     # Document messages still resident in the mailbox at quiescence (e.g. an
     # enqueue that landed after the batch's feeder stopped, or a stale
     # notification for a doc that has since reached a terminal state).  The
     # refetch drains a bounded chunk and lets the strict scan decide: live
     # docs come back as the next batch, provably-stale messages are dropped.
     CONTINUE_DOCUMENT = "continue_document"
+    # The in-progress bounded AUTO sweep has more pages (its keyset cursor is
+    # not yet CURSOR_END).  No wake-up signal is consumed: the run simply
+    # fetches the next page of the SAME sweep before honouring quiescence
+    # signals, so a huge PENDING backlog drains page-by-page while cancellation
+    # and manual retry still preempt at every page boundary (LR2 Phase 2 §6.3).
+    CONTINUE_SWEEP_PAGE = "continue_sweep_page"
     # Cancellation pending: the run must stop WITHOUT consuming any wake-up
     # signal — the ingress is fully retained for the next explicit trigger.
     CANCELLED = "cancelled"
@@ -179,6 +280,21 @@ class PipelineNextDecision:
     # Set only for CANCELLED: True when the cancellation is an internal-error
     # abort, whose exit path surfaces the actionable halt message.
     internal_error: bool = False
+
+
+def _vlm_image_budget_limits() -> tuple[int, int]:
+    """Resolve VLM image byte/pixel floors from env (empty → documented defaults)."""
+    from lightrag.constants import DEFAULT_MM_IMAGE_MIN_PIXEL
+
+    max_image_bytes = max(
+        256 * 1024,
+        get_env_value("VLM_MAX_IMAGE_BYTES", 5 * 1024 * 1024, int),
+    )
+    min_image_pixel = max(
+        1,
+        get_env_value("VLM_MIN_IMAGE_PIXEL", DEFAULT_MM_IMAGE_MIN_PIXEL, int),
+    )
+    return max_image_bytes, min_image_pixel
 
 
 @lru_cache(maxsize=64)
@@ -243,6 +359,18 @@ def _call_source_file_resolver(
             parser_engine=parser_engine,
         )
     return resolver(source_file or file_path)
+
+
+def _rearm_auto_rescan(ingress: Any) -> None:
+    """Set the auto-rescan dirty flag and count the re-arm (LR2 Phase 6 item 3).
+
+    Every re-arm costs a later strict sweep, so the rate explains sweep load that
+    no upload accounts for. Counted here rather than inside the ingress because in
+    multiprocess mode the mailbox lives in the Manager process, where a counter
+    would be invisible to the worker answering /health.
+    """
+    ingress.request_auto_rescan()
+    pipeline_metrics.increment(pipeline_metrics.AUTO_RESCAN_REARMS)
 
 
 # Backward-compatible source-file reader.  Implementation lives in
@@ -340,6 +468,14 @@ class _BatchRunContext:
     #    set.
     inflight_doc_ids: set = field(default_factory=set)
     routing_doc_ids: set = field(default_factory=set)
+    # Reservation token of the run that owns ``busy`` for this batch (LR2 §7.7
+    # items 3/4/7). Every worker status write verifies it is still the current
+    # ``busy_owner`` before touching doc_status, so a run whose ownership was
+    # reclaimed (dead-process reaper, Manager generation change) discards its
+    # late results instead of writing a final status over the new owner's work.
+    # ``None`` disables the check and exists only for call paths that construct
+    # a context outside a reservation (tests).
+    run_owner_token: str | None = None
 
 
 class _PipelineMixin:
@@ -351,6 +487,108 @@ class _PipelineMixin:
     shared methods ``self._insert_done`` / ``self._process_extract_entities``
     which remain in the main class and are resolved through MRO.
     """
+
+    # ============================================================
+    # Admission control (LR2 §9)
+    # ============================================================
+
+    async def _reserve_ingress_slot(
+        self,
+        pipeline_status: dict[str, Any],
+        pipeline_status_lock,
+        *,
+        admission_token: str | None,
+        requested: int,
+        reject_when,
+    ) -> str | None:
+        """Register this enqueue in ``pending_enqueue_tokens`` and charge
+        ``requested`` new documents against the admission capacity (LR2 §9.2).
+
+        Called inside ``enqueue_serialize_lock``, after dedup and before the
+        FIRST storage write of the critical section — the duplicate ``dup-*``
+        FAILED records included. That position matters three times over:
+
+        * the strict active count it takes cannot be raced by a sibling enqueue
+          (which is waiting on that same lock);
+        * ``requested`` is the real deduped count, not the coarse pre-body
+          estimate an endpoint had to reserve with;
+        * **the reservation is what makes the write side mutually exclusive with
+          a manual retry.** ``manual_freeze_requested`` refuses a NEW
+          reservation here, and DRAIN_TO_IDLE waits for ``pending_enqueues`` to
+          reach zero (LR2 §6.1/§7.2), so the exclusive FAILED→PENDING reset
+          cannot begin between this check and the last write below. The fence
+          check at the top of :meth:`apipeline_enqueue_documents` cannot do
+          that job: it takes no reservation, so it leaves the whole validate →
+          dedup → write span invisible to the drain.
+
+        ``reject_when`` is passed unconditionally and
+        :func:`acquire_enqueue_reservation` applies it only when the token is
+        NOT already registered — i.e. only when this call mints a reservation
+        for a reservation-less caller (SDK ``ainsert`` / direct
+        ``apipeline_enqueue_documents``). When the caller already holds one (an
+        endpoint reserved it, fences and all, before parsing the request body)
+        this is a RE-WEIGHT, and a request admitted before a freeze appeared is
+        deliberately allowed to finish — the drain is already waiting for it.
+        Deciding that inside the reservation, from the same snapshot, is what
+        keeps the exemption from being self-attested: passing a token string is
+        not enough to skip a fence. A token's own previous weight is excluded
+        from the capacity sum, so re-weighting never counts a request against
+        itself.
+
+        Returns the token this function owns and the caller must release (only
+        for a minted one), or ``None`` when the reservation belongs to the
+        caller.
+
+        Raises:
+            PipelineReservationConflictError: a mutual-exclusion fence or the
+                recovery fence refused this reservation. Nothing has been written
+                yet. The refusal REASON survives as data (LR2 §9.1): a caller
+                reads ``.conflict`` / ``.recovery_required`` to tell a fenced
+                workspace (→ 503) from a bounded manual-freeze / scan /
+                destructive window it should retry (→ 409), rather than parsing
+                the message. Subclasses ``RuntimeError``, so a caller written
+                against the older coarse contract still catches it.
+            PipelineBackpressureError: no capacity (→ 429).
+            StorageCapabilityError / StorageControlPlaneError: the strict count
+                failed. Deliberately propagated rather than treated as "room
+                available" (→ 503): admission fails closed.
+        """
+        from lightrag.kg.shared_storage import acquire_enqueue_reservation
+        from lightrag.utils_pipeline import count_active_documents
+
+        capacity = self.max_pending_documents
+        # Only the capacity math needs the count, and it is a strict full scan:
+        # taking it with admission disabled would tax every enqueue for nothing.
+        active_count = (
+            await count_active_documents(self.doc_status) if capacity > 0 else None
+        )
+        token = admission_token or f"admission-{uuid.uuid4().hex}"
+        result = await acquire_enqueue_reservation(
+            pipeline_status,
+            pipeline_status_lock,
+            token=token,
+            reject_when=tuple(reject_when),
+            weight=requested,
+            capacity=capacity,
+            active_count=active_count,
+        )
+        if not result.acquired:
+            raise PipelineReservationConflictError(
+                result.message or "pipeline reservation is unavailable",
+                conflict=result.conflict,
+                fence=result.fence,
+            )
+        return None if admission_token else token
+
+    async def _release_admission_reservation(self, token: str) -> None:
+        """Drop a reservation minted by :meth:`_reserve_ingress_slot`."""
+        from lightrag.kg.shared_storage import release_token_set_reservation
+
+        await release_token_set_reservation(
+            self.workspace,
+            tokens_key="pending_enqueue_tokens",
+            token=token,
+        )
 
     # ============================================================
     # Public document ingestion API (entry points)
@@ -366,6 +604,7 @@ class _PipelineMixin:
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
+        admission_token: str | None = None,
         from_scan: bool = False,
     ) -> str:
         """
@@ -412,6 +651,13 @@ class _PipelineMixin:
                 result here; this function is intentionally chunker-
                 config agnostic.  See
                 ``docs/FileProcessingConfiguration-zh.md`` for the schema.
+            admission_token: the pending-enqueue reservation the caller already
+                holds (endpoints reserve one before reading the request body).
+                With ``MAX_PENDING_DOCUMENTS > 0`` the admission guard
+                re-weights THAT token to the deduped document count instead of
+                registering a second reservation, so a request is never counted
+                against itself. Leave ``None`` on the SDK path: the guard mints
+                and releases its own short-lived reservation.
             from_scan: when True, the caller is the scan-owned background task
                 that already holds ``pipeline_status["scanning"]``.  Scan
                 does additional doc_status reads during its classification
@@ -441,7 +687,7 @@ class _PipelineMixin:
         # doc_status, so a consistency check never sees a ghost row, and
         # (b) the running loop observes the ingress mailbox mid-batch and
         # at every batch boundary, so work that arrives while busy is
-        # picked up without a new run.  Two states still block enqueue:
+        # picked up without a new run.  Three states still block enqueue:
         #   * ``scanning_exclusive`` — scan task is in its CLASSIFICATION
         #     phase, reading doc_status to classify files and possibly
         #     deleting stale stubs.  Concurrent enqueue would race
@@ -449,9 +695,21 @@ class _PipelineMixin:
         #     lifts this guard for the scan task's own enqueues.
         #     ``scanning`` alone (the processing phase) does NOT block,
         #     identical to the upload-during-busy case.
+        #   * ``manual_freeze_requested`` — a manual retry has frozen new
+        #     ingress while it drains the pipeline to idle and exclusively
+        #     resets FAILED→PENDING (LR2 §6.1/§7.2).  Also lifted by
+        #     ``from_scan=True`` (the scan owns the manual operation).
         #   * ``destructive_busy`` — clear / delete is dropping storages
         #     or removing input files; a concurrent write would be
         #     silently clobbered.
+        #
+        # The check below is a FAST FAIL, not the guarantee: it registers
+        # nothing, so a fence raised after it (a manual retry freezing ingress)
+        # would not see this call at all.  The same ``reject_when`` list is
+        # re-evaluated atomically with the pending-enqueue reservation that
+        # covers the writes — see ``_reserve_ingress_slot``.  Checking here as
+        # well is worth it because it refuses before the body is validated,
+        # parsed and deduped.
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -467,6 +725,17 @@ class _PipelineMixin:
                     "classification phase to finish before retrying.",
                 )
             )
+            # A manual retry (LR2 §6.1/§7.2) froze new ingress while it drains
+            # the pipeline and exclusively resets FAILED→PENDING. Lifted for
+            # ``from_scan=True`` exactly like scanning_exclusive: the scan is the
+            # manual operation's own driver, so its enqueues must not self-block.
+            reject_when.append(
+                (
+                    "manual_freeze_requested",
+                    "Cannot enqueue while a manual retry is draining the pipeline; "
+                    "wait for it to finish before retrying.",
+                )
+            )
         reject_when.append(
             (
                 "destructive_busy",
@@ -478,9 +747,23 @@ class _PipelineMixin:
             pipeline_status,
             pipeline_status_lock,
             reject_when=reject_when,
+            # A caller holding a registered pending-enqueue reservation was
+            # admitted before any fence raised since, and the fence holder either
+            # could not raise it while that reservation exists or is waiting for
+            # it (LR2 §9.2). Refusing here would drop the work of a request whose
+            # client was already told it was accepted — and for /text there is no
+            # input file to rediscover, so the content would simply be lost.
+            exempt_if_reserved=admission_token,
         )
         if not mutation_result.acquired:
-            raise RuntimeError(mutation_result.message)
+            # Structured, not a bare message (LR2 §9.1): an SDK caller must be
+            # able to tell a fenced workspace (503) from a bounded freeze/scan/
+            # destructive window worth retrying (409) without string matching.
+            raise PipelineReservationConflictError(
+                mutation_result.message or "pipeline reservation is unavailable",
+                conflict=mutation_result.conflict,
+                fence=mutation_result.fence,
+            )
 
         # Generate track_id if not provided
         if track_id is None or track_id.strip() == "":
@@ -497,7 +780,6 @@ class _PipelineMixin:
             process_options = [process_options] * len(input)
         if isinstance(chunk_options, dict):
             chunk_options = [chunk_options] * len(input)
-
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
             if isinstance(file_paths, str):
@@ -731,12 +1013,18 @@ class _PipelineMixin:
                 _add_content(i, cleaned_content, FULL_DOCS_FORMAT_RAW)
 
         # 2. Generate document initial status (without content)
-        def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
+        def _initial_doc_status(
+            doc_id: str, content_data: dict[str, Any]
+        ) -> dict[str, Any]:
             body_text = content_data.get("content", "")
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(body_text),
                 "content_length": len(body_text),
+                # The row's immutable scheduling key is its actual first
+                # persistence time. Scan mtime controls pre-persistence enqueue
+                # order only; filesystem timestamps never masquerade as row
+                # creation metadata.
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
@@ -758,7 +1046,7 @@ class _PipelineMixin:
             return base
 
         new_docs: dict[str, Any] = {
-            id_: _initial_doc_status(content_data)
+            id_: _initial_doc_status(id_, content_data)
             for id_, content_data in contents.items()
         }
 
@@ -780,12 +1068,17 @@ class _PipelineMixin:
         # ingress publish inside is fine; no caller holds
         # pipeline_status_lock first then needs enqueue_serialize).
         enqueue_serialize_lock = get_namespace_lock(
-            "enqueue_serialize", workspace=self.workspace
+            ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=self.workspace
         )
         status_upsert_error: Exception | None = None
         process_after_status_error = False
 
-        async with enqueue_serialize_lock:
+        # The exit stack releases an admission reservation minted below (SDK
+        # path) once the writes are done, on every exit including cancellation —
+        # without indenting the whole critical section. It unwinds AFTER the
+        # serialize lock, so the reservation outlives the doc_status upsert
+        # exactly as §9.2 requires ("token 持续到 doc_status 可见").
+        async with AsyncExitStack() as admission_stack, enqueue_serialize_lock:
             # 3. Filter out already processed documents
             # Get docs ids
             all_new_doc_ids = set(new_docs.keys())
@@ -800,26 +1093,50 @@ class _PipelineMixin:
             for doc_id in list(unique_new_doc_ids):
                 content_data = contents[doc_id]
 
-                # 3a. Filename-based dedup: same basename always treated as duplicate.
-                match = await get_existing_doc_by_file_basename(
+                # 3a. Filename-based dedup: same basename always treated as
+                # duplicate. Resolved STRICTLY — a storage failure raises rather
+                # than reporting "no match", which this branch would read as
+                # "not a duplicate" and admit a second row for a filename that
+                # already exists.
+                resolution = await resolve_existing_doc_source(
                     self.doc_status, content_data["file_path"]
                 )
-                if match:
-                    existing_doc_id, existing_doc = match
+                if isinstance(resolution, SourceConflict):
+                    # Several primaries already share this basename (a historical
+                    # collision). Refuse rather than attach the new document to an
+                    # arbitrary one of them: which row is "the original" is
+                    # exactly what an operator has to decide, via the
+                    # source-conflict repair flow. The record is trackable so the
+                    # submitter sees why nothing was processed.
                     unique_new_doc_ids.discard(doc_id)
                     duplicate_attempts.append(
                         {
                             "doc_id": doc_id,
-                            "original_doc_id": existing_doc_id,
+                            "file_path": content_data["file_path"],
+                            "content_length": new_docs.get(doc_id, {}).get(
+                                "content_length", 0
+                            ),
+                            "conflict_sample_doc_ids": resolution.sample_doc_ids,
+                            "conflict_candidate_count": resolution.candidate_count,
+                            "duplicate_kind": "filename_conflict",
+                        }
+                    )
+                    continue
+                if isinstance(resolution, SourceUnique):
+                    unique_new_doc_ids.discard(doc_id)
+                    duplicate_attempts.append(
+                        {
+                            "doc_id": doc_id,
+                            "original_doc_id": resolution.doc_id,
                             "file_path": content_data["file_path"],
                             "content_length": new_docs.get(doc_id, {}).get(
                                 "content_length", 0
                             ),
                             "existing_status": doc_status_field(
-                                existing_doc, "status", "unknown"
+                                resolution.doc, "status", "unknown"
                             ),
                             "existing_track_id": doc_status_field(
-                                existing_doc, "track_id", ""
+                                resolution.doc, "track_id", ""
                             ),
                             "duplicate_kind": "filename",
                         }
@@ -831,7 +1148,13 @@ class _PipelineMixin:
                 if not content_hash:
                     continue
                 hash_match = await get_existing_doc_by_content_hash(
-                    self.doc_status, content_hash
+                    self.doc_status,
+                    content_hash,
+                    # This id does not exist yet (filter_keys removed the ones
+                    # that do); passing it lets the lookup ignore a pointer row
+                    # that names it as ITS original, which is what makes content
+                    # whose primary row was deleted re-ingestible.
+                    candidate_doc_id=doc_id,
                 )
                 if hash_match:
                     existing_doc_id, existing_doc = hash_match
@@ -884,6 +1207,49 @@ class _PipelineMixin:
                     }
                 )
 
+            # The documents this call will actually write as new work. Computed
+            # BEFORE the reservation below, because the reservation's weight is
+            # the deduped count — and before the duplicate records are stored,
+            # because the reservation has to cover every write in this section.
+            admitted_doc_ids = [
+                doc_id for doc_id in unique_new_doc_ids if doc_id in new_docs
+            ]
+
+            # Ingress reservation + admission (LR2 §9.2), at the ONE chokepoint
+            # every entry point funnels through: endpoints, the SDK's
+            # ainsert/apipeline_enqueue_documents, and any future caller. It sits
+            # here — after dedup, before the first storage write of this critical
+            # section — so a manual retry's exclusive FAILED reset cannot start
+            # while this enqueue is on its way to the writes: a freeze refuses a
+            # new reservation, and DRAIN_TO_IDLE waits for the reservations that
+            # already exist. The entry fence check above is only a fast fail; it
+            # registers nothing, so on its own it leaves this whole span open.
+            #
+            # Two callers legitimately skip it:
+            #   * ``from_scan`` — exempt from the cap by design (§9.1: a scan may
+            #     exceed it, and the active rows it creates are what makes
+            #     ordinary uploads wait). Its exclusion is structural instead: it
+            #     holds ``scanning_exclusive`` across its whole enqueue span,
+            #     which refuses every processing reservation, so no manual reset
+            #     can be draining alongside it.
+            #   * a caller that already holds a reservation while admission is
+            #     disabled — there is no capacity to charge, and the drain is
+            #     already waiting for that token.
+            if not from_scan and (
+                admission_token is None or self.max_pending_documents > 0
+            ):
+                minted_token = await self._reserve_ingress_slot(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    admission_token=admission_token,
+                    requested=len(admitted_doc_ids),
+                    reject_when=reject_when,
+                )
+                if minted_token is not None:
+                    admission_stack.push_async_callback(
+                        self._release_admission_reservation, minted_token
+                    )
+
             if duplicate_attempts:
                 duplicate_docs: dict[str, Any] = {}
                 for index, attempt in enumerate(duplicate_attempts):
@@ -899,18 +1265,42 @@ class _PipelineMixin:
                     dup_record_id = compute_mdhash_id(
                         f"{doc_id}-{track_id}-{index}-{file_path}", prefix="dup-"
                     )
-                    if duplicate_kind == "content_hash":
-                        error_prefix = (
-                            "Identical content already exists under another filename."
+                    if duplicate_kind == "filename_conflict":
+                        # No original is named: several primaries already share
+                        # this basename and choosing between them is the
+                        # operator's decision (source-conflict repair), so the
+                        # message carries the bounded candidate sample instead of
+                        # asserting one of them is "the" original.
+                        count = attempt.get("conflict_candidate_count")
+                        sample = attempt.get("conflict_sample_doc_ids") or ()
+                        error_msg = (
+                            f"{count if count is not None else 'Multiple'} existing "
+                            f"documents already share this file name, so this "
+                            f"upload cannot be attributed to one of them. Repair "
+                            f"the conflict by doc id first (sample doc ids: "
+                            f"{', '.join(sample) or 'unavailable'})."
+                        )
+                        summary = (
+                            f"[DUPLICATE:{duplicate_kind}] Unresolved file-name "
+                            f"conflict; repair required"
                         )
                     else:
-                        error_prefix = "File name already exists."
-                    duplicate_docs[dup_record_id] = {
-                        "status": DocStatus.FAILED,
-                        "content_summary": (
+                        if duplicate_kind == "content_hash":
+                            error_prefix = "Identical content already exists under another filename."
+                        else:
+                            error_prefix = "File name already exists."
+                        error_msg = (
+                            f"{error_prefix} "
+                            f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
+                            f"Status: {attempt.get('existing_status', 'unknown')}"
+                        )
+                        summary = (
                             f"[DUPLICATE:{duplicate_kind}] Original document: "
                             f"{attempt.get('original_doc_id', doc_id)}"
-                        ),
+                        )
+                    duplicate_docs[dup_record_id] = {
+                        "status": DocStatus.FAILED,
+                        "content_summary": summary,
                         "content_length": attempt.get("content_length", 0),
                         "chunks_count": 0,
                         "chunks_list": [],
@@ -918,11 +1308,7 @@ class _PipelineMixin:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                         "file_path": file_path,
                         "track_id": track_id,  # Use current track_id for tracking
-                        "error_msg": (
-                            f"{error_prefix} "
-                            f"Original doc_id: {attempt.get('original_doc_id', doc_id)}, "
-                            f"Status: {attempt.get('existing_status', 'unknown')}"
-                        ),
+                        "error_msg": error_msg,
                         "metadata": {
                             "is_duplicate": True,
                             "duplicate_kind": duplicate_kind,
@@ -938,12 +1324,9 @@ class _PipelineMixin:
                         f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                     )
 
-            # Filter new_docs to only include documents with unique IDs
-            new_docs = {
-                doc_id: new_docs[doc_id]
-                for doc_id in unique_new_doc_ids
-                if doc_id in new_docs
-            }
+            # Filter new_docs to only include documents with unique IDs (the set
+            # the reservation above was weighted for).
+            new_docs = {doc_id: new_docs[doc_id] for doc_id in admitted_doc_ids}
 
             if not new_docs:
                 logger.warning("No new unique documents were found.")
@@ -1014,7 +1397,7 @@ class _PipelineMixin:
                         # the enqueue re-raises the storage error either way.
                         if not pipeline_status.get("busy"):
                             process_after_status_error = True
-                        ingress.request_auto_rescan()
+                        _rearm_auto_rescan(ingress)
                 except Exception as wake_error:
                     logger.error(
                         "Failed to wake document processing after enqueue "
@@ -1080,7 +1463,7 @@ class _PipelineMixin:
                 )
             except Exception as publish_error:
                 try:
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
                     logger.warning(
                         "Ingress document notification failed after a "
                         "successful enqueue; armed the auto-rescan flag "
@@ -1243,6 +1626,12 @@ class _PipelineMixin:
         uncommitted_wakeup = False
         ingress = None
 
+        # Forward-progress tracker for this run's manual DRAIN_TO_IDLE (LR2 §7.2).
+        # Run-scoped: a run that exits releases the freeze, and the next one
+        # re-drains from scratch, so a stall only ever has to be detected within
+        # one run.
+        drain_progress = _ManualDrainProgress()
+
         try:
             # Resolve the ingress handle BEFORE the reservation: the acquire's
             # busy-refusal arms the auto-rescan flag inside its own critical
@@ -1299,22 +1688,25 @@ class _PipelineMixin:
                 return
 
             # Run-start peek protocol: the ingress mailbox is the ONLY source
-            # of manual retry intent (processing carries no manual params).
-            # The earliest sticky request — if any — selects the manual status
-            # tuple for the initial scan and is ACKed only after its
-            # FAILED→PENDING resets persist (in the loop, post-validation, or
-            # right below on a legitimately-empty complete result).  With no
-            # manual request pending, this run IS the rescan: absorb the
-            # auto-rescan dirty flag so quiescence doesn't re-trigger for work
-            # this very scan already picks up.
-            pending_manual_ack: str | None = None
+            # of manual retry intent (processing carries no manual params). The
+            # earliest sticky request — if any — BEGINS the manual drain right
+            # here: set the freeze + owner (owner-checked, tied to this run's
+            # busy token) BEFORE any AUTO work, so no new ingress enters during
+            # the drain (LR2 §7.2). The request stays sticky and is ACKed only
+            # after the exclusive FAILED→PENDING reset persists (in
+            # BEGIN_EXCLUSIVE_RESET). FAILED is never swept inline — the initial
+            # scan drains the AUTO backlog only. With no manual request pending,
+            # this run IS the rescan: absorb the auto-rescan dirty flag so
+            # quiescence doesn't re-trigger for work this very scan already
+            # picks up.
+            initial_statuses = _AUTO_RESUME_DOC_STATUSES
             manual_msg = ingress.peek_next_manual_retry()
             if manual_msg is not None:
-                initial_statuses = _MANUAL_RETRY_DOC_STATUSES
-                pending_manual_ack = manual_msg.request_id
+                await self._begin_manual_drain(
+                    manual_msg.request_id, token, pipeline_status, pipeline_status_lock
+                )
                 absorbed_auto_rescan = False
             else:
-                initial_statuses = _AUTO_RESUME_DOC_STATUSES
                 absorbed_auto_rescan = ingress.consume_auto_rescan()
             # Own the absorbed signal from the INSTANT of consumption (see the
             # definition above the try): if the strict scan below raises —
@@ -1325,11 +1717,19 @@ class _PipelineMixin:
             # peeked and stays sticky on its own.)
             uncommitted_wakeup = absorbed_auto_rescan
 
-            to_process_docs: dict[
-                str, DocProcessingStatus
-            ] = await self.doc_status.get_docs_by_statuses(
-                list(initial_statuses), strict=True
-            )
+            # Bounded scheduling sweep (LR2 Phase 2): the initial scan is now
+            # the first PAGE of a keyset sweep. ``sweep_statuses`` /
+            # ``sweep_cursor`` are threaded through every quiescence decision so
+            # the run drains the KNOWN backlog page-by-page (CONTINUE_SWEEP_PAGE)
+            # before honouring auto-rescan/document signals. A manual sweep and
+            # PIPELINE_SCHEDULING_PAGE_SIZE=0 both collapse to a single
+            # CURSOR_END page (legacy single-scan; see _next_scheduling_page).
+            sweep_statuses = initial_statuses
+            to_process_docs: dict[str, DocProcessingStatus]
+            (
+                to_process_docs,
+                sweep_cursor,
+            ) = await self._next_scheduling_page(sweep_statuses, CURSOR_START)
 
             # The scan is complete: an empty result means the signal was fully
             # SERVED, not lost — release ownership.  A non-empty result keeps
@@ -1340,20 +1740,18 @@ class _PipelineMixin:
             uncommitted_wakeup = absorbed_auto_rescan and bool(to_process_docs)
 
             if not to_process_docs:
-                # Empty queue — a complete strict result, so a pending manual
-                # request is satisfied (nothing to retry) and can be ACKed.
-                if pending_manual_ack is not None:
-                    ingress.ack_manual_retry(pending_manual_ack)
-                    pending_manual_ack = None
-                # Release the slot we just took WITHOUT the "pipeline stopped"
-                # bookkeeping — a run that did no work should record nothing —
-                # but through the atomic quiescence decision that also consumes
-                # a wake-up signal (manual/auto/document) set by a
-                # concurrent publisher AFTER our read, so a doc that landed in
-                # that gap is not stranded in PENDING.
+                # Empty AUTO scan. Release the slot we just took WITHOUT the
+                # "pipeline stopped" bookkeeping — a run that did no work should
+                # record nothing — but through the atomic quiescence decision
+                # that also consumes a wake-up signal (manual/auto/document) set
+                # by a concurrent publisher AFTER our read, so a doc that landed
+                # in that gap is not stranded in PENDING. A pending manual is
+                # served here too: the decision returns BEGIN_EXCLUSIVE_RESET
+                # (phase already DRAIN_TO_IDLE), whose refetch runs the reset and
+                # ACKs — never RELEASED while a manual is being served.
                 logger.info("No documents to process")
                 decision = await self._decide_pipeline_next_step(
-                    pipeline_status, pipeline_status_lock, ingress
+                    pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                 )
                 if decision.step is PipelineNextStep.RELEASED:
                     # No pending work: slot released silently, finally is a no-op.
@@ -1364,10 +1762,22 @@ class _PipelineMixin:
                     # the finally resets the cancellation state (surfacing the
                     # internal halt when applicable) and releases the slot.
                     return
-                # A wake-up signal was pending: re-fetch per the decision and
-                # fall through into the loop to process it.
-                to_process_docs, pending_manual_ack = await self._refetch_for_decision(
-                    decision, ingress
+                # A wake-up signal (or an unfinished sweep / manual reset) was
+                # pending: re-fetch per the decision and fall through into the
+                # loop to process it.
+                (
+                    to_process_docs,
+                    sweep_statuses,
+                    sweep_cursor,
+                ) = await self._refetch_for_decision(
+                    decision,
+                    sweep_statuses,
+                    sweep_cursor,
+                    ingress,
+                    token=token,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                    drain_progress=drain_progress,
                 )
                 uncommitted_wakeup = decision.step in (
                     PipelineNextStep.CONTINUE_AUTO,
@@ -1407,7 +1817,7 @@ class _PipelineMixin:
                                 "latest_message": log_message,
                             }
                         )
-                        status_snapshot["history_messages"].append(log_message)
+                        append_pipeline_history(status_snapshot, log_message)
 
                         # A signal consumed by the immediately-preceding
                         # decision (or the entry absorb) that no batch took
@@ -1421,17 +1831,12 @@ class _PipelineMixin:
                         return
 
                 if not to_process_docs:
-                    # The strict fetch that produced this empty view was
-                    # complete, so a manual request served by it is satisfied.
-                    if pending_manual_ack is not None:
-                        ingress.ack_manual_retry(pending_manual_ack)
-                        pending_manual_ack = None
                     log_message = "All enqueued documents have been processed"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
                     decision = await self._decide_pipeline_next_step(
-                        pipeline_status, pipeline_status_lock, ingress
+                        pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
                     if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
@@ -1442,33 +1847,37 @@ class _PipelineMixin:
                         continue  # loop-top handler does the cancel bookkeeping
                     (
                         to_process_docs,
-                        pending_manual_ack,
-                    ) = await self._refetch_for_decision(decision, ingress)
+                        sweep_statuses,
+                        sweep_cursor,
+                    ) = await self._refetch_for_decision(
+                        decision,
+                        sweep_statuses,
+                        sweep_cursor,
+                        ingress,
+                        token=token,
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                        drain_progress=drain_progress,
+                    )
                     uncommitted_wakeup = decision.step in (
                         PipelineNextStep.CONTINUE_AUTO,
                         PipelineNextStep.CONTINUE_DOCUMENT,
                     ) and bool(to_process_docs)
                     continue
 
-                # Validate document data consistency and fix any issues
+                # Validate document data consistency and fix any issues. The
+                # AUTO sweep never carries FAILED (manual resets happen in the
+                # exclusive phase), so the validator only normalises interrupted
+                # orphans / stale PENDING here — it no longer ACKs a manual
+                # request.
                 to_process_docs = await self._validate_and_fix_document_consistency(
                     to_process_docs, pipeline_status, pipeline_status_lock
                 )
-                # The validator has taken the docs over (its FAILED→PENDING
-                # resets are persisted): the consumed signal is committed, and
-                # from here the batch/feeder teardown and the PENDING rows own
-                # recovery — a later cancel must NOT re-arm.
+                # The validator has taken the docs over (its resets are
+                # persisted): the consumed signal is committed, and from here
+                # the batch/feeder teardown and the PENDING rows own recovery —
+                # a later cancel must NOT re-arm.
                 uncommitted_wakeup = False
-
-                # ACK point for a manual retry request: the validation above
-                # persisted every FAILED→PENDING reset, and no worker has
-                # started yet — a crash after this line leaves the documents
-                # PENDING (recovered automatically), a crash before it leaves
-                # the request sticky (re-executed by the next run).  Validation
-                # raising skips this, so the request is never lost.
-                if pending_manual_ack is not None:
-                    ingress.ack_manual_retry(pending_manual_ack)
-                    pending_manual_ack = None
 
                 if not to_process_docs:
                     log_message = (
@@ -1476,9 +1885,9 @@ class _PipelineMixin:
                     )
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
                     decision = await self._decide_pipeline_next_step(
-                        pipeline_status, pipeline_status_lock, ingress
+                        pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                     )
                     if decision.step is PipelineNextStep.RELEASED:
                         busy_released_in_loop = True
@@ -1489,8 +1898,18 @@ class _PipelineMixin:
                         continue  # loop-top handler does the cancel bookkeeping
                     (
                         to_process_docs,
-                        pending_manual_ack,
-                    ) = await self._refetch_for_decision(decision, ingress)
+                        sweep_statuses,
+                        sweep_cursor,
+                    ) = await self._refetch_for_decision(
+                        decision,
+                        sweep_statuses,
+                        sweep_cursor,
+                        ingress,
+                        token=token,
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                        drain_progress=drain_progress,
+                    )
                     uncommitted_wakeup = decision.step in (
                         PipelineNextStep.CONTINUE_AUTO,
                         PipelineNextStep.CONTINUE_DOCUMENT,
@@ -1507,13 +1926,14 @@ class _PipelineMixin:
                         "latest_message": log_message,
                     }
                 )
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
                 await self._run_pipeline_batch(
                     to_process_docs,
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
                     ingress=ingress,
+                    token=token,
                 )
 
                 # Atomic exit handoff: if a wake-up signal arrived during this
@@ -1528,7 +1948,7 @@ class _PipelineMixin:
                 # WHOLE run — no new epoch — with the ingress fully retained
                 # for the next explicit trigger.
                 decision = await self._decide_pipeline_next_step(
-                    pipeline_status, pipeline_status_lock, ingress
+                    pipeline_status, pipeline_status_lock, ingress, sweep_cursor
                 )
                 if decision.step is PipelineNextStep.RELEASED:
                     busy_released_in_loop = True
@@ -1545,11 +1965,24 @@ class _PipelineMixin:
                 log_message = "Processing additional documents due to pending request"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
-                # Check for pending documents again, per the decision's tuple
-                to_process_docs, pending_manual_ack = await self._refetch_for_decision(
-                    decision, ingress
+                # Fetch the next batch: the next page of the current sweep
+                # (CONTINUE_SWEEP_PAGE), a manual reset/drain (CONTINUE_MANUAL /
+                # BEGIN_EXCLUSIVE_RESET) or a fresh sweep per the decision.
+                (
+                    to_process_docs,
+                    sweep_statuses,
+                    sweep_cursor,
+                ) = await self._refetch_for_decision(
+                    decision,
+                    sweep_statuses,
+                    sweep_cursor,
+                    ingress,
+                    token=token,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                    drain_progress=drain_progress,
                 )
                 uncommitted_wakeup = decision.step in (
                     PipelineNextStep.CONTINUE_AUTO,
@@ -1583,7 +2016,7 @@ class _PipelineMixin:
                     # degrades to next-explicit-trigger recovery.
                     if uncommitted_wakeup and ingress is not None:
                         try:
-                            ingress.request_auto_rescan()
+                            _rearm_auto_rescan(ingress)
                         except Exception as restore_error:
                             logger.error(
                                 "[pipeline] failed to restore the consumed "
@@ -1601,7 +2034,25 @@ class _PipelineMixin:
                     # Release ``busy`` only if the loop did not already release it
                     # under the atomic exit check AND we still own the slot.
                     if not busy_released_in_loop and current_owner == token:
-                        updates.update({"busy": False, "busy_owner": None})
+                        # Clear the manual freeze in the SAME atomic update: an
+                        # abnormal exit (exception / cancel) mid drain-or-reset
+                        # must never leave a live-but-gone owner's freeze wedging
+                        # uploads forever (LR2 §6.1). The sticky manual request
+                        # survives in the mailbox and is re-run from Start by the
+                        # next owner (idempotent). A clean PROCESS-phase exit
+                        # already cleared it via _end_manual_drain, so this is a
+                        # no-op there.
+                        updates.update(
+                            {
+                                "busy": False,
+                                "busy_owner": None,
+                                "manual_freeze_requested": False,
+                                "manual_freeze_started_at": None,
+                                "manual_resetting": False,
+                                "manual_phase": MANUAL_PHASE_IDLE,
+                                "manual_owner": None,
+                            }
+                        )
                         current_owner = None  # slot is now free
                         released_here = True
 
@@ -1647,9 +2098,9 @@ class _PipelineMixin:
                         }
                     )
                     status.update(updates)
-                    status_snapshot["history_messages"].append(stopped_message)
+                    append_pipeline_history(status_snapshot, stopped_message)
                     if internal_halt is not None:
-                        status_snapshot["history_messages"].append(internal_halt)
+                        append_pipeline_history(status_snapshot, internal_halt)
 
             await run_to_completion(_finalize)
 
@@ -1840,6 +2291,27 @@ class _PipelineMixin:
             return True
         return False
 
+    def _feeder_epoch_full(self, ctx: "_BatchRunContext") -> bool:
+        """True when this epoch has admitted ``PIPELINE_SCHEDULING_PAGE_SIZE``
+        documents (``inflight`` + ``routing``) — the single-epoch bound of
+        LR2 §6.4.
+
+        ``inflight_doc_ids`` grows monotonically within a batch (it is the
+        dedup set of everything routed into this epoch, never shrunk on
+        completion), so this counts total admissions this epoch, not live
+        concurrency. Once the count reaches the page size the feeder stops
+        admitting and the remaining mailbox / doc_status work continues in the
+        NEXT epoch (a fresh page via CONTINUE_SWEEP_PAGE, or a CONTINUE_DOCUMENT
+        refetch). Disabled when paging is off (``page_size <= 0``) — the feeder
+        then admits freely, exactly as before Phase 2. Read without the lock: a
+        single-threaded ``len`` is a consistent snapshot and this is a soft
+        backpressure gate, not a hard invariant.
+        """
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size <= 0:
+            return False
+        return len(ctx.inflight_doc_ids) + len(ctx.routing_doc_ids) >= page_size
+
     async def _pipeline_feeder(self, ctx: "_BatchRunContext", ingress) -> None:
         """Route documents that arrive DURING a batch into its parse queues so
         they process without waiting for the batch barrier.
@@ -1894,11 +2366,27 @@ class _PipelineMixin:
                     # PENDING docs.
                     if self._feeder_should_yield(ctx, ingress, check_auto=True):
                         return
+                    # Single-epoch bound (LR2 §6.4): once this batch holds
+                    # PIPELINE_SCHEDULING_PAGE_SIZE docs the feeder stops
+                    # admitting; the rest continues in the next epoch (a fresh
+                    # page, or a CONTINUE_DOCUMENT refetch of the mailbox).
+                    if self._feeder_epoch_full(ctx):
+                        return
                     batch = await self._feeder_next_batch(ingress)
-                    if any(msg.doc_id for msg in batch):
-                        pending = await self.doc_status.get_docs_by_statuses(
-                            [DocStatus.PENDING], strict=True
+                    drained_ids = [msg.doc_id for msg in batch if msg.doc_id]
+                    if drained_ids:
+                        # Bounded to THIS drain's ids (not the whole PENDING
+                        # set): hydrate full status, keep only rows still
+                        # PENDING. A drained doc now processed/failed/deleted is
+                        # simply absent, and _route_one drops it as stale.
+                        hydrated = await self.doc_status.get_full_docs_by_ids(
+                            drained_ids, strict=True
                         )
+                        pending = {
+                            doc_id: doc
+                            for doc_id, doc in hydrated.items()
+                            if getattr(doc, "status", None) == DocStatus.PENDING
+                        }
                         for reached, msg in enumerate(batch):
                             # Honor an in-flight cancel/manual WITHIN one doc
                             # (auto-rescan is coarser — checked per drain above).
@@ -1907,12 +2395,17 @@ class _PipelineMixin:
                             ):
                                 deferred.extend(batch[reached:])  # unprocessed tail
                                 return
+                            # Re-check the epoch bound mid-drain: earlier
+                            # admissions in THIS loop may have reached the cap.
+                            if self._feeder_epoch_full(ctx):
+                                deferred.extend(batch[reached:])
+                                return
                             if not await self._route_one(ctx, msg, pending):
                                 deferred.append(msg)  # SKIP — survives to teardown
                                 # Arm the recovery signal so the skip is picked up
                                 # by the supervisor's next rescan even if this
                                 # feeder never otherwise reaches a boundary.
-                                ingress.request_auto_rescan()
+                                _rearm_auto_rescan(ingress)
                     reached = len(batch)  # every message reached a decision
                 except asyncio.CancelledError:
                     deferred.extend(batch[reached:])  # unprocessed tail → finally
@@ -1936,6 +2429,7 @@ class _PipelineMixin:
         pipeline_status: dict,
         pipeline_status_lock,
         ingress,
+        token: str | None = None,
     ) -> None:
         """Run one batch of pending documents through the parse → analyze →
         process queues.
@@ -1972,8 +2466,19 @@ class _PipelineMixin:
             # Pre-register the whole initial batch as inflight BEFORE the feeder
             # starts, so a document message that echoes an initial-batch doc is
             # deduplicated the moment the feeder runs.
+            run_owner_token=token,
             inflight_doc_ids=set(to_process_docs.keys()),
         )
+        # Publish the run context on the instance for the ONE storage write that
+        # cannot receive it as an argument: ``_persist_parsed_full_docs`` is
+        # reached as ``ctx.rag._persist_parsed_full_docs`` from inside a parser
+        # (in-tree and third-party alike), so a parameter would only guard the
+        # parsers that opt in. ``busy`` is a single per-workspace slot and this
+        # instance is per-workspace, so at most one run is ever published here;
+        # the previous value is restored rather than cleared so a nested/handed
+        # off run cannot blank an outer one.
+        previous_run_ctx = getattr(self, "_active_run_ctx", None)
+        self._active_run_ctx = ctx
 
         async def _watch_pipeline_cancellation() -> None:
             """Bridge shared cancellation state into native parser threads.
@@ -2082,6 +2587,7 @@ class _PipelineMixin:
                     content_data = await self.full_docs.get_by_id(doc_id) or {}
                 except Exception as e:
                     await self._finalize_doc_failure(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status_doc=status_doc,
                         file_path=file_path,
@@ -2151,6 +2657,9 @@ class _PipelineMixin:
             if feeder_task is not None:
                 teardown_tasks.append(feeder_task)
             await asyncio.gather(*teardown_tasks, return_exceptions=True)
+            # Every worker (hence every parser) is stopped and joined here, so
+            # no further ``_persist_parsed_full_docs`` call belongs to this run.
+            self._active_run_ctx = previous_run_ctx
 
         # If the batch aborted on an internal storage error, the shared
         # cross-file flush buffers may still hold records from the documents
@@ -2167,19 +2676,77 @@ class _PipelineMixin:
         if internal_abort:
             await self._discard_pending_index_ops()
 
+    def _build_pending_reset_update(
+        self,
+        status_doc: DocProcessingStatus,
+        content_data: dict | None,
+    ) -> tuple[dict, str, dict]:
+        """Build the doc_status upsert that returns one interrupted/FAILED doc
+        to a clean PENDING state, preserving the immutable ``created_at``.
+
+        Shared by the batch consistency validator and the manual EXCLUSIVE_RESET
+        (LR2 §7.3) so both scrub stale per-attempt metadata identically. Returns
+        ``(update_dict, resolved_file_path, reset_metadata)`` — the latter two so
+        the caller can also mirror them onto the in-memory ``status_doc`` when it
+        carries the doc forward into workers (the reset path does not).
+        """
+        preserved_chunks_list, preserved_chunks_count = chunk_fields_from_status_doc(
+            status_doc
+        )
+        resolved_file_path = resolve_doc_file_path(
+            status_doc=status_doc,
+            content_data=content_data,
+        )
+        # Directives-only metadata: drop per-attempt timing/result fields, keep
+        # process_options / source_file (legacy source_file_name tolerant).
+        reset_metadata = doc_status_reset_metadata(status_doc)
+        update = {
+            "status": DocStatus.PENDING,
+            "content_summary": status_doc.content_summary,
+            "content_length": status_doc.content_length,
+            "chunks_count": preserved_chunks_count,
+            "chunks_list": preserved_chunks_list,
+            "created_at": status_doc.created_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "file_path": resolved_file_path,
+            "track_id": getattr(status_doc, "track_id", ""),
+            "content_hash": getattr(status_doc, "content_hash", None),
+            "error_msg": "",
+            "metadata": reset_metadata,
+        }
+        return update, resolved_file_path, reset_metadata
+
     async def _validate_and_fix_document_consistency(
         self,
         to_process_docs: dict[str, DocProcessingStatus],
         pipeline_status: dict,
         pipeline_status_lock: asyncio.Lock,
     ) -> dict[str, DocProcessingStatus]:
-        """Validate and fix document data consistency by deleting inconsistent entries, but preserve failed documents"""
+        """Validate and fix document data consistency by deleting inconsistent
+        entries, but preserve failed documents.
+
+        The ``full_docs`` probe is STRICT where the backend supports it, because
+        a miss here is acted on DESTRUCTIVELY: an active row whose content is
+        absent has its ``doc_status`` row deleted. A plain ``get_by_id`` may
+        report a transport failure — or, on OpenSearch, an index that is merely
+        not ready or transiently missing — as a best-effort ``None``, and this
+        function would then delete every live scheduling row it swept during a
+        storage blip. LR2 §5.4/§7.2 require the opposite: only a CONFIRMED
+        absence may drive the deletion, and a backend that cannot confirm keeps
+        the row and reports a bounded warning. Same rule, same helper shape as
+        ``_reset_failed_page`` and scan's ``_confirm_full_docs_absent``.
+        """
         # Documents carrying a custom-chunk patch journal belong to an
         # in-flight or failed ainsert_custom_chunks operation (issue #3400
         # Phase 3). Ordinary pipeline processing must not touch them: a reset
         # would strip the journal and rebuild the whole document, discarding
         # the operation's recovery anchor. They are resumed by the SDK caller
         # (same call) or rolled back by /documents/scan.
+        #
+        # DEFENSIVE since the journal filter moved into ``_next_scheduling_page``
+        # (a journaled row popped here but left in an AUTO status made the manual
+        # drain's confirmation sweep spin forever). Kept because this function is
+        # also reachable with a caller-supplied map.
         journaled_patch_docs = [
             doc_id
             for doc_id, status_doc in to_process_docs.items()
@@ -2196,16 +2763,29 @@ class _PipelineMixin:
                 )
                 logger.info(skip_message)
                 pipeline_status["latest_message"] = skip_message
-                pipeline_status["history_messages"].append(skip_message)
+                append_pipeline_history(pipeline_status, skip_message)
 
         inconsistent_docs = []
         failed_docs_to_preserve = []
+        unconfirmed_docs = []
         successful_deletions = 0
+
+        # One read per document, reused by the reset loop below: the content is
+        # both the consistency verdict AND an input to the PENDING reset update,
+        # and reading it twice let the two disagree (and doubled the round trips).
+        content_by_doc: dict[str, dict | None] = {}
+        strict_reads = getattr(self.full_docs, "supports_strict_point_reads", False)
 
         # Check each document's data consistency
         for doc_id, status_doc in to_process_docs.items():
-            # Check if corresponding content exists in full_docs
-            content_data = await self.full_docs.get_by_id(doc_id)
+            # Check if corresponding content exists in full_docs. Strict where
+            # supported so "absent" is CONFIRMED absent before anything is
+            # deleted (see this method's docstring).
+            if strict_reads:
+                content_data = await self.full_docs.get_by_id_strict(doc_id)
+            else:
+                content_data = await self.full_docs.get_by_id(doc_id)
+            content_by_doc[doc_id] = content_data
             if not content_data:
                 # Check if this is a failed document that should be preserved
                 if (
@@ -2213,8 +2793,26 @@ class _PipelineMixin:
                     and status_doc.status == DocStatus.FAILED
                 ):
                     failed_docs_to_preserve.append(doc_id)
-                else:
+                elif strict_reads:
                     inconsistent_docs.append(doc_id)
+                else:
+                    # Cannot tell "content really gone" from "the read failed":
+                    # keep the row, keep it out of this batch, and say so.
+                    unconfirmed_docs.append(doc_id)
+
+        if unconfirmed_docs:
+            warning = (
+                f"Keeping {len(unconfirmed_docs)} document(s) with no readable "
+                f"content: {type(self.full_docs).__name__} cannot confirm whether "
+                "the content is really absent (no strict point reads), so a "
+                "storage failure is indistinguishable from an inconsistent entry"
+            )
+            logger.warning(warning)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = warning
+                append_pipeline_history(pipeline_status, warning)
+            for doc_id in unconfirmed_docs:
+                to_process_docs.pop(doc_id, None)
 
         # Log information about failed documents that will be preserved
         if failed_docs_to_preserve:
@@ -2222,7 +2820,7 @@ class _PipelineMixin:
                 preserve_message = f"Preserving {len(failed_docs_to_preserve)} failed document entries for manual review"
                 logger.info(preserve_message)
                 pipeline_status["latest_message"] = preserve_message
-                pipeline_status["history_messages"].append(preserve_message)
+                append_pipeline_history(pipeline_status, preserve_message)
 
             # Remove failed documents from processing list but keep them in doc_status
             for doc_id in failed_docs_to_preserve:
@@ -2236,7 +2834,7 @@ class _PipelineMixin:
                 )
                 logger.info(summary_message)
                 pipeline_status["latest_message"] = summary_message
-                pipeline_status["history_messages"].append(summary_message)
+                append_pipeline_history(pipeline_status, summary_message)
 
             successful_deletions = 0
             for doc_id in inconsistent_docs:
@@ -2255,7 +2853,7 @@ class _PipelineMixin:
                         )
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
 
                     # Remove from processing list
                     to_process_docs.pop(doc_id, None)
@@ -2266,7 +2864,7 @@ class _PipelineMixin:
                         error_message = f"Failed to delete entry: {doc_id} - {str(e)}"
                         logger.error(error_message)
                         pipeline_status["latest_message"] = error_message
-                        pipeline_status["history_messages"].append(error_message)
+                        append_pipeline_history(pipeline_status, error_message)
 
         # Final summary log
         # async with pipeline_status_lock:
@@ -2294,11 +2892,16 @@ class _PipelineMixin:
         normalized_count = 0
 
         for doc_id, status_doc in to_process_docs.items():
-            # Check if document has corresponding content in full_docs (consistency check)
-            content_data = await self.full_docs.get_by_id(doc_id)
+            # Content from the single consistency read above — no second probe,
+            # which could otherwise disagree with the verdict already acted on.
+            content_data = content_by_doc.get(doc_id)
             if not content_data:  # Fails consistency check; handled above
                 continue
             status = getattr(status_doc, "status", None)
+            # FAILED is DEFENSIVE here: post-Phase-3 the AUTO sweep that feeds
+            # this validator never carries FAILED (those are reset only by the
+            # manual EXCLUSIVE_RESET), so this branch handles orphan
+            # PROCESSING/PARSING/ANALYZING in practice.
             is_interrupted = status in (
                 DocStatus.PROCESSING,
                 DocStatus.FAILED,
@@ -2315,31 +2918,10 @@ class _PipelineMixin:
             if not (is_interrupted or needs_pending_normalize):
                 continue
 
-            preserved_chunks_list, preserved_chunks_count = (
-                chunk_fields_from_status_doc(status_doc)
+            reset_update, resolved_file_path, reset_metadata = (
+                self._build_pending_reset_update(status_doc, content_data)
             )
-            resolved_file_path = resolve_doc_file_path(
-                status_doc=status_doc,
-                content_data=content_data,
-            )
-            # Directives-only metadata: drop per-attempt timing/result fields,
-            # keep process_options / source_file (legacy source_file_name
-            # tolerant).
-            reset_metadata = doc_status_reset_metadata(status_doc)
-            docs_to_reset[doc_id] = {
-                "status": DocStatus.PENDING,
-                "content_summary": status_doc.content_summary,
-                "content_length": status_doc.content_length,
-                "chunks_count": preserved_chunks_count,
-                "chunks_list": preserved_chunks_list,
-                "created_at": status_doc.created_at,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "file_path": resolved_file_path,
-                "track_id": getattr(status_doc, "track_id", ""),
-                "content_hash": getattr(status_doc, "content_hash", None),
-                "error_msg": "",
-                "metadata": reset_metadata,
-            }
+            docs_to_reset[doc_id] = reset_update
 
             # Mirror onto the in-memory status_doc so workers carry it forward.
             status_doc.status = DocStatus.PENDING
@@ -2356,8 +2938,8 @@ class _PipelineMixin:
 
             async with pipeline_status_lock:
                 reset_message = (
-                    f"Reset {reset_count} documents from "
-                    "PARSING/ANALYZING/PROCESSING/FAILED to PENDING status"
+                    f"Reset {reset_count} interrupted document(s) from "
+                    "PARSING/ANALYZING/PROCESSING to PENDING status"
                     + (
                         f"; normalized {normalized_count} PENDING document(s) "
                         "with stale metadata"
@@ -2367,15 +2949,684 @@ class _PipelineMixin:
                 )
                 logger.info(reset_message)
                 pipeline_status["latest_message"] = reset_message
-                pipeline_status["history_messages"].append(reset_message)
+                append_pipeline_history(pipeline_status, reset_message)
 
         return to_process_docs
+
+    # ============================================================
+    # Manual retry protocol: freeze → DRAIN_TO_IDLE → EXCLUSIVE_RESET
+    # (LR2 §6.1/§7). The busy processing run drives all three phases; the
+    # freeze/phase/owner state is owner-checked against THIS run's busy token,
+    # so a dead owner's reaper reclaim (which shares the busy pid) clears the
+    # whole manual state and the sticky request is re-run from scratch.
+    # ============================================================
+
+    async def _begin_manual_drain(
+        self,
+        request_id: str,
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """Enter DRAIN_TO_IDLE for a manual retry (owner-checked, atomic).
+
+        Sets ``manual_freeze_requested=True`` (rejects new enqueue reservations),
+        ``manual_phase=DRAIN_TO_IDLE`` and ``manual_owner`` in ONE update, only
+        while we still own ``busy`` — never a True freeze flag with no owner
+        (LR2 §6.1). Returns False if we no longer own the slot."""
+        owner = make_manual_owner_record(request_id, token)
+
+        def _apply(status):
+            status.update(
+                {
+                    "manual_freeze_requested": True,
+                    "manual_freeze_started_at": time.time(),
+                    "manual_resetting": False,
+                    "manual_phase": MANUAL_PHASE_DRAIN_TO_IDLE,
+                    "manual_owner": owner,
+                }
+            )
+            return True
+
+        return bool(
+            await with_reservation_lock(
+                pipeline_status,
+                pipeline_status_lock,
+                owner_key="busy_owner",
+                token=token,
+                action=_apply,
+            )
+        )
+
+    async def _end_manual_drain(
+        self,
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Clear the manual freeze/reset state back to idle (owner-checked).
+
+        Called after the ACK at the PROCESS transition, and defensively in the
+        run's finally: a live-but-exiting owner must never leave a freeze that
+        wedges uploads forever. Owner-checked so a handed-off/new owner's state
+        is never clobbered; the sticky request (if not yet ACKed) survives in
+        the mailbox and is re-run."""
+
+        def _apply(status):
+            status.update(
+                {
+                    "manual_freeze_requested": False,
+                    "manual_freeze_started_at": None,
+                    "manual_resetting": False,
+                    "manual_phase": MANUAL_PHASE_IDLE,
+                    "manual_owner": None,
+                }
+            )
+            return True
+
+        await with_reservation_lock(
+            pipeline_status,
+            pipeline_status_lock,
+            owner_key="busy_owner",
+            token=token,
+            action=_apply,
+        )
+
+    async def _still_run_owner(self, ctx: "_BatchRunContext") -> bool:
+        """True iff this batch run still owns ``busy`` (LR2 §7.7 items 3/4/7).
+
+        Guards every worker status write. ``run_owner_token is None`` means the
+        context was built outside a reservation (tests) and skips the check.
+
+        This is an in-memory owner check, deliberately NOT an expiring lease:
+        LR2 §7.7 keeps stale writers out by never revoking a live owner, and
+        notes that forcing takeover from a process that is alive but unreachable
+        would require a storage-verifiable fencing token, which the no-new-field
+        design does not have. So this rejects writes from a run whose ownership
+        was reclaimed after its process was CONFIRMED dead (or after a Manager
+        generation change) — it is not a partition-safe fence.
+        """
+        if ctx.run_owner_token is None:
+            return True
+        return await self._still_freeze_owner(
+            ctx.run_owner_token, ctx.pipeline_status, ctx.pipeline_status_lock
+        )
+
+    async def _still_freeze_owner(
+        self,
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """True iff THIS run still owns ``busy`` (and therefore the freeze).
+
+        The manual protocol runs single-threaded in the busy owner's task, so
+        the owner can only change via the dead-process reaper — impossible while
+        this task is alive. This check is defense-in-depth (LR2 §7.7 item 8):
+        every FAILED reset page verifies ownership before it writes."""
+
+        async def _run() -> bool:
+            async with pipeline_status_lock:
+                return _reservation_owner_token(pipeline_status.get("busy_owner")) == (
+                    token
+                )
+
+        return await run_to_completion(_run)
+
+    async def _next_failed_page(
+        self, position: CursorPosition
+    ) -> tuple[dict[str, DocProcessingStatus], CursorPosition]:
+        """Fetch ONE bounded page of FAILED docs, hydrated to full status.
+
+        The manual EXCLUSIVE_RESET pages FAILED so a huge backlog (LR2 §13.2
+        case 1: 10,000 FAILED) never materialises at once. ``page_size <= 0``
+        collapses to the legacy single strict scan (paging disabled). Ordering
+        is the immutable ``(created_at, id)`` keyset. A strict page/hydration
+        error propagates so the caller neither advances the cursor nor drops a
+        FAILED row (it stays FAILED for the next run)."""
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size <= 0:
+            docs = await self.doc_status.get_docs_by_statuses(
+                [DocStatus.FAILED], strict=True
+            )
+            return docs, CURSOR_END
+
+        page = await self.doc_status.get_docs_by_statuses_page(
+            [DocStatus.FAILED],
+            limit=page_size,
+            position=position,
+            strict=True,
+        )
+        if not page.docs:
+            return {}, page.next_position
+        hydrated = await self.doc_status.get_full_docs_by_ids(
+            list(page.docs.keys()), strict=True
+        )
+        # Keep only rows still FAILED (a row raced out between page and
+        # hydration is no longer this reset's concern). str-enum equality lets
+        # a raw string or a DocStatus member both match.
+        failed = {
+            doc_id: doc
+            for doc_id, doc in hydrated.items()
+            if getattr(doc, "status", None) in {DocStatus.FAILED.value}
+        }
+        return failed, page.next_position
+
+    async def _reset_failed_page(
+        self,
+        docs: dict[str, DocProcessingStatus],
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> int:
+        """Reset one page of FAILED docs to PENDING (LR2 §7.3 per-FAILED rules).
+
+        * journaled custom-chunk patch → skipped (an in-flight SDK operation
+          owns it; a reset would strip its recovery anchor);
+        * FAILED without ``full_docs`` content → skipped, left FAILED (an
+          unprocessable stub; a reset would immediately re-fail — matches the
+          batch validator's "preserve failed for manual review");
+        * otherwise → reset to PENDING preserving the immutable ``created_at``.
+
+        The ``full_docs`` probe is STRICT where the backend supports it: a plain
+        ``get_by_id`` may report a transport failure (or, on OpenSearch, an index
+        that is merely not ready) as a best-effort ``None``, which this loop
+        would read as "unprocessable stub" and skip. Every doc would then be
+        skipped, the sweep would still page to End, and the manual retry would be
+        ACKed having reset nothing — the user's "retry my failed documents"
+        silently doing nothing. A strict read raises instead, so the caller keeps
+        the request sticky and does not advance the cursor. Backends without the
+        capability keep the conservative skip but are COUNTED, so the operator
+        sees the reset was not complete instead of inferring success from silence.
+
+        The page upsert is owner-checked: ownership is verified immediately
+        before the write, so a reaper reclaim (dead process) aborts the reset
+        instead of a stale task writing doc_status. Returns the reset count.
+        Raises on a storage read/write error so the caller keeps the request
+        sticky and does not advance the cursor."""
+        docs_to_reset: dict[str, dict] = {}
+        unconfirmed = 0
+        strict_reads = getattr(self.full_docs, "supports_strict_point_reads", False)
+        for doc_id, status_doc in docs.items():
+            if doc_status_custom_chunk_patch(status_doc) is not None:
+                continue
+            if strict_reads:
+                content_data = await self.full_docs.get_by_id_strict(doc_id)
+            else:
+                content_data = await self.full_docs.get_by_id(doc_id)
+                if not content_data:
+                    unconfirmed += 1
+            if not content_data:
+                continue
+            update, _, _ = self._build_pending_reset_update(status_doc, content_data)
+            docs_to_reset[doc_id] = update
+        if unconfirmed:
+            warning = (
+                f"Manual retry: {unconfirmed} FAILED document(s) left untouched — "
+                f"{type(self.full_docs).__name__} cannot confirm whether their "
+                f"content is really absent (no strict point reads), so a storage "
+                f"failure is indistinguishable from an unprocessable stub"
+            )
+            logger.warning(warning)
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = warning
+                append_pipeline_history(pipeline_status, warning)
+        if not docs_to_reset:
+            return 0
+        # Owner-checked page write (LR2 §7.7 item 8): confirm we still hold the
+        # freeze before persisting, so a dead-owner reclaim cannot be overwritten
+        # by this stale task.
+        if not await self._still_freeze_owner(
+            token, pipeline_status, pipeline_status_lock
+        ):
+            raise RuntimeError(
+                "manual reset lost freeze ownership before a FAILED→PENDING page "
+                "write; aborting so a new owner re-runs the reset from Start"
+            )
+        await self.doc_status.upsert(docs_to_reset)
+        return len(docs_to_reset)
+
+    async def _run_exclusive_failed_reset(
+        self,
+        request_id: str,
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """Phase two (LR2 §7.3): page FAILED→PENDING with NO worker running.
+
+        Precondition (guaranteed by the caller): DRAIN_TO_IDLE reached strict
+        idle — pending_enqueues/inflight/routing are 0 and no AUTO record
+        remains — so this reset runs without any failed producer. Transitions
+        ``manual_phase`` to EXCLUSIVE_RESET (``manual_resetting=True``,
+        owner-checked), then pages FAILED from Start to End, resetting each page.
+
+        Returns True when the reset reached End (caller ACKs); False if it lost
+        ownership. A storage error propagates: the request stays sticky, the
+        cursor does not advance, and the next run re-runs the reset from Start
+        (already-reset rows are PENDING and no longer appear on a FAILED page,
+        so no double reset — LR2 §7.3 "为什么不需要 generation/checkpoint")."""
+
+        def _enter(status):
+            # The freeze timestamp is wall clock because the freeze may have been
+            # taken by another process; this is the DRAIN_TO_IDLE window — the one
+            # an operator feels, since uploads are refused throughout it.
+            froze_at = status.get("manual_freeze_started_at")
+            if isinstance(froze_at, (int, float)) and froze_at > 0:
+                pipeline_metrics.observe(
+                    pipeline_metrics.MANUAL_DRAIN_SECONDS, time.time() - float(froze_at)
+                )
+            status.update(
+                {
+                    "manual_resetting": True,
+                    "manual_phase": MANUAL_PHASE_EXCLUSIVE_RESET,
+                }
+            )
+            return True
+
+        if not await with_reservation_lock(
+            pipeline_status,
+            pipeline_status_lock,
+            owner_key="busy_owner",
+            token=token,
+            action=_enter,
+        ):
+            return False
+
+        total_reset = 0
+        pages = 0
+        reset_started = time.monotonic()
+        cursor: CursorPosition = CURSOR_START
+        while True:
+            if not await self._still_freeze_owner(
+                token, pipeline_status, pipeline_status_lock
+            ):
+                return False
+            docs, cursor = await self._next_failed_page(cursor)
+            pages += 1
+            if docs:
+                total_reset += await self._reset_failed_page(
+                    docs, token, pipeline_status, pipeline_status_lock
+                )
+            if cursor is CURSOR_END:
+                break
+
+        # The reset runs with no worker, so its duration is exactly how long the
+        # pipeline was held idle on purpose (LR2 Phase 6 item 3).
+        pipeline_metrics.observe(
+            pipeline_metrics.MANUAL_RESET_SECONDS, time.monotonic() - reset_started
+        )
+        pipeline_metrics.increment(pipeline_metrics.MANUAL_RESET_PAGES, pages)
+        pipeline_metrics.increment(pipeline_metrics.MANUAL_RESET_DOCS, total_reset)
+
+        reset_message = (
+            f"Manual retry {request_id[:8]}: reset {total_reset} FAILED "
+            "document(s) to PENDING (exclusive phase, no worker running)"
+        )
+        logger.info(reset_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = reset_message
+            append_pipeline_history(pipeline_status, reset_message)
+        return True
+
+    async def _confirm_scan_drain_idle(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """DRAIN_TO_IDLE confirmation for a scan-driven reset (LR2 §8.1/§7.2).
+
+        A scan reservation is only granted while ``busy`` is False, no other
+        scan/destructive job holds the pipeline and ``pending_enqueues == 0``; the
+        scan fence plus the manual freeze then refuse every new enqueue
+        reservation and processing run. So the drain is already complete when this
+        runs, and ``inflight``/``routing`` are structurally zero: this reset owns
+        ``busy`` and starts no worker.
+
+        The bounded re-check below is defense-in-depth for the one window that can
+        still show a non-zero count — a reservation taken between the scan's
+        acquire and the freeze — and it reaps confirmed-dead tokens first so a
+        worker SIGKILLed mid-reserve cannot wedge it. Returns False when the count
+        does not reach zero within the bound: the caller then abandons the reset
+        (the sticky request survives for the standard drain path) rather than
+        resetting FAILED with a live producer around."""
+        for _ in range(_SCAN_DRAIN_CONFIRM_ATTEMPTS):
+            async with pipeline_status_lock:
+                pending = pipeline_status.get("pending_enqueues", 0)
+            if not pending:
+                return True
+            await reap_dead_reservations_locked(pipeline_status, pipeline_status_lock)
+            await asyncio.sleep(_MANUAL_DRAIN_POLL_SECONDS)
+        async with pipeline_status_lock:
+            pending = pipeline_status.get("pending_enqueues", 0)
+        if not pending:
+            return True
+        logger.warning(
+            f"Scan FAILED reset abandoned: {pending} enqueue reservation(s) still "
+            "in flight after the drain wait; the manual request stays sticky for "
+            "the standard drain path"
+        )
+        return False
+
+    async def apipeline_reset_failed_for_scan(
+        self,
+        request_id: str,
+        *,
+        scan_owner_token: str | None = None,
+    ) -> bool:
+        """Run a scan's manual intent through the SHARED exclusive reset (LR2 §8.1).
+
+        ``/scan`` is a composite operation: it retries the FAILED documents that
+        existed when it started AND discovers new files. The order is fixed —
+        reset FIRST, discover after — because enqueueing new files first would let
+        the scan's OWN new failures be absorbed by its own manual request.
+
+        Called by ``run_scanning_process`` while it holds
+        ``scanning``/``scanning_exclusive``, so:
+
+        * ``busy`` is taken with ``scan_reset_owner_token`` (the scan owns the
+          fence that would otherwise refuse it) — the reset needs the slot to
+          reuse the owner-checked manual helpers;
+        * DRAIN_TO_IDLE is confirmed rather than performed
+          (:meth:`_confirm_scan_drain_idle`) and the AUTO backlog is deliberately
+          NOT processed here: with no worker running (this call starts none) the
+          PENDING rows are inert, so they are not failed producers, and processing
+          them under the exclusive fence would hold uploads at 409 for the whole
+          backlog. They are processed after classification, by the scan's normal
+          drive (LR2 §8.1 "释放 scanning_exclusive → 处理 PENDING");
+        * the reset itself is :meth:`_run_exclusive_failed_reset` — the very helper
+          ``/reprocess_failed`` uses, not a second retry algorithm.
+
+        Returns True iff the reset reached End and the request was ACKed (the
+        caller may then discover files). False — slot refused, ownership lost,
+        drain not idle — leaves the request sticky and un-ACKed: the caller MUST
+        skip discovery so no new file can be enqueued ahead of the reset, and the
+        standard drain path (any later drive) serves the request instead. A
+        storage error propagates for the same reason.
+        """
+        run_workspace = self.workspace
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=run_workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=run_workspace
+        )
+        ingress = await get_pipeline_ingress(run_workspace)
+
+        token = uuid.uuid4().hex
+        holds_busy = False
+        try:
+            reservation = await acquire_processing_reservation(
+                pipeline_status,
+                pipeline_status_lock,
+                token=token,
+                already_held=False,
+                pipeline_ingress=ingress,
+                scan_reset_owner_token=scan_owner_token,
+                flags={
+                    "job_name": "Scan: reset failed documents",
+                    "job_start": datetime.now(timezone.utc).isoformat(),
+                    "docs": 0,
+                    "batchs": 0,
+                    "cur_batch": 0,
+                    "cancellation_requested": False,
+                    "cancellation_reason": None,
+                    "cancellation_detail": None,
+                    "latest_message": "",
+                },
+            )
+            if not reservation.acquired:
+                holds_busy = False
+                logger.warning(
+                    "Scan FAILED reset skipped: "
+                    f"{reservation.message or 'pipeline reservation unavailable'}"
+                )
+                return False
+            holds_busy = True
+
+            # Freeze new ingress + claim the manual owner record for THIS request,
+            # tied to the busy token we just took (every reset page re-verifies it).
+            if not await self._begin_manual_drain(
+                request_id, token, pipeline_status, pipeline_status_lock
+            ):
+                return False
+            if not await self._confirm_scan_drain_idle(
+                pipeline_status, pipeline_status_lock
+            ):
+                return False
+            if not await self._run_exclusive_failed_reset(
+                request_id, token, pipeline_status, pipeline_status_lock
+            ):
+                return False
+            # ACK only after every FAILED→PENDING write persisted (LR2 §7.3
+            # completion point): a crash before this re-runs the reset from Start.
+            ingress.ack_manual_retry(request_id)
+            return True
+        finally:
+            if holds_busy:
+                # Cancellation-resistant, owner-checked release: busy AND the
+                # whole manual state go in ONE update so an abnormal exit can
+                # never leave a freeze wedging uploads with no owner (LR2 §6.1).
+                # The scan keeps ``scanning``/``scanning_exclusive`` — its
+                # classification phase runs next, without ``busy``.
+                async def _release():
+                    def _apply(status):
+                        status.update(
+                            {
+                                "busy": False,
+                                "busy_owner": None,
+                                "manual_freeze_requested": False,
+                                "manual_freeze_started_at": None,
+                                "manual_resetting": False,
+                                "manual_phase": MANUAL_PHASE_IDLE,
+                                "manual_owner": None,
+                            }
+                        )
+                        return True
+
+                    await with_reservation_lock(
+                        pipeline_status,
+                        pipeline_status_lock,
+                        owner_key="busy_owner",
+                        token=token,
+                        action=_apply,
+                    )
+
+                await run_to_completion(_release)
+
+    async def _next_scheduling_page(
+        self,
+        statuses,
+        position: CursorPosition,
+    ) -> tuple[dict[str, DocProcessingStatus], CursorPosition]:
+        """Fetch ONE bounded scheduling page and hydrate it to full status.
+
+        Returns ``(to_process_docs, next_position)`` — the full
+        :class:`DocProcessingStatus` map for the page, plus the cursor to pass
+        back for the next page (``next_position is CURSOR_END`` ends the
+        sweep). Memory stays O(page_size): the lightweight keyset page only
+        carries ids/status, and the survivors are hydrated to full rows via
+        ``get_full_docs_by_ids`` right before routing.
+
+        ``PIPELINE_SCHEDULING_PAGE_SIZE=0`` collapses to the LEGACY single-scan
+        (one page terminating at ``CURSOR_END``), behaving byte-for-byte as
+        before Phase 2. Every caller passes ``_AUTO_RESUME_DOC_STATUSES`` (no
+        FAILED — those are reset only by the manual EXCLUSIVE_RESET's own
+        ``_next_failed_page``), so this sweep is always a plain AUTO drain.
+
+        The strict page + strict hydration are a complete-or-raise pair: any
+        backend error propagates so the caller neither advances the cursor nor
+        silently drops docs (they stay PENDING for the next sweep).
+
+        Either path drops rows carrying an unfinished custom-chunk journal — they
+        are not routable work; see the comment on the filter below.
+        """
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size <= 0:
+            docs = await self.doc_status.get_docs_by_statuses(
+                list(statuses), strict=True
+            )
+            return {
+                doc_id: doc
+                for doc_id, doc in docs.items()
+                if doc_status_custom_chunk_patch(doc) is None
+            }, CURSOR_END
+
+        routable_ids, _journaled_ids, next_position = await self._fetch_scheduling_page(
+            statuses, position, limit=page_size
+        )
+        if not routable_ids:
+            # A fully-filtered page is not termination — the cursor still
+            # advances (or is CURSOR_END); return the empty map and let the
+            # caller loop on next_position.
+            return {}, next_position
+
+        return await self._hydrate_scheduling_page(
+            routable_ids, statuses
+        ), next_position
+
+    async def _fetch_scheduling_page(
+        self,
+        statuses,
+        position: CursorPosition,
+        *,
+        limit: int,
+    ) -> tuple[list[str], list[str], CursorPosition]:
+        """One strict keyset page, split into routable and journaled doc ids.
+
+        Rows carrying an unfinished custom-chunk journal are NOT routable work:
+        they belong to an in-flight (or crash-interrupted) ``ainsert_custom_chunks``
+        operation, and only the SDK caller or ``/documents/scan``'s rollback may
+        advance them (see ``DocSchedulingRecord.has_custom_chunk_journal``, and the
+        identical drop in ``_route_one``). Splitting them out HERE — from the
+        lightweight page, before hydration — keeps a routing sweep from carrying a
+        row it must never route, while still REPORTING them, which is what the
+        manual drain's idle proof needs (see :meth:`_confirm_auto_drained`): the
+        two callers ask different questions of the same page and a filter that
+        only dropped rows could answer just one of them.
+        """
+        page_started = time.monotonic()
+        page = await self.doc_status.get_docs_by_statuses_page(
+            list(statuses),
+            limit=limit,
+            position=position,
+            strict=True,
+        )
+        # Timed around the keyset query alone (not the hydration): a slow page
+        # here means the backend's (created_at, id) index, and that is the one
+        # thing the bounded sweep cannot work around.
+        pipeline_metrics.observe(
+            pipeline_metrics.SCHEDULING_PAGE_SECONDS, time.monotonic() - page_started
+        )
+        routable_ids: list[str] = []
+        journaled_ids: list[str] = []
+        for doc_id, record in page.docs.items():
+            if record.has_custom_chunk_journal:
+                journaled_ids.append(doc_id)
+            else:
+                routable_ids.append(doc_id)
+        return routable_ids, journaled_ids, page.next_position
+
+    async def _hydrate_scheduling_page(
+        self,
+        doc_ids: list[str],
+        statuses,
+    ) -> dict[str, DocProcessingStatus]:
+        """Hydrate one page's routable ids to full rows, still in ``statuses``."""
+        hydrated = await self.doc_status.get_full_docs_by_ids(doc_ids, strict=True)
+        # Keep only rows still in the requested statuses (matches the legacy
+        # get_docs_by_statuses view): a row raced out of the set between the
+        # page and its hydration is no longer routable. str-enum equality lets
+        # a raw string or a DocStatus member both match.
+        status_values = {s.value for s in statuses}
+        return {
+            doc_id: doc
+            for doc_id, doc in hydrated.items()
+            if getattr(doc, "status", None) in status_values
+        }
+
+    async def _confirm_auto_drained(
+        self,
+    ) -> tuple[dict[str, DocProcessingStatus], CursorPosition, tuple[str, ...]]:
+        """Is the PERSISTENT AUTO set drained? (LR2 §4.2 / §7.2)
+
+        The manual drain's idle proof, and deliberately NOT
+        :meth:`_next_scheduling_page`, which answers a different question — "what
+        may this run route?" — and drops rows it must never route. Reusing that
+        filtered answer as the idle proof is fail-open in a way the spin it
+        replaced was not: the exclusive ``FAILED → PENDING`` reset would start,
+        and ACK, while the persistent AUTO set is NOT empty. §4.2 requires a
+        strict confirmation that the AUTO set is empty, and §7.2 requires an
+        active row that cannot be advanced to be REPORTED as a blocker rather
+        than silently ignored so the manual retry can start.
+
+        It also pages past fully-filtered pages instead of reading one as
+        termination. An empty ``docs`` with a live cursor means "call again" (the
+        page contract is explicit that ``CURSOR_END`` is the only termination
+        signal), so stopping at the first empty page could start the reset with
+        routable AUTO rows still ahead of the cursor — reachable whenever page one
+        happens to be all journaled rows, and before that whenever a page was
+        fully consumed by the status re-filter.
+
+        Returns ``(routable, cursor, blocking_ids)``:
+
+        * ``routable`` non-empty → work remains; the caller keeps draining, and
+          ``cursor`` is that page's continuation.
+        * ``routable`` empty and ``blocking_ids`` non-empty → the AUTO set is not
+          empty, but nothing left in it can be routed by this run: a drain
+          blocker. ``blocking_ids`` is a BOUNDED sample.
+        * both empty → genuinely drained; the reset may start.
+        """
+        page_size = getattr(self, "pipeline_scheduling_page_size", 0)
+        if page_size <= 0:
+            # Legacy single scan (paging disabled).
+            docs = await self.doc_status.get_docs_by_statuses(
+                list(_AUTO_RESUME_DOC_STATUSES), strict=True
+            )
+            routable = {
+                doc_id: doc
+                for doc_id, doc in docs.items()
+                if doc_status_custom_chunk_patch(doc) is None
+            }
+            if routable:
+                return routable, CURSOR_END, ()
+            blocked = sorted(doc_id for doc_id in docs if doc_id not in routable)
+            return {}, CURSOR_END, tuple(blocked[:_MANUAL_DRAIN_BLOCKER_SAMPLE])
+
+        blocking: list[str] = []
+        position: CursorPosition = CURSOR_START
+        while True:
+            (
+                routable_ids,
+                journaled_ids,
+                position,
+            ) = await self._fetch_scheduling_page(
+                _AUTO_RESUME_DOC_STATUSES, position, limit=page_size
+            )
+            if routable_ids:
+                hydrated = await self._hydrate_scheduling_page(
+                    routable_ids, _AUTO_RESUME_DOC_STATUSES
+                )
+                if hydrated:
+                    # Routable work found: return immediately so the drain keeps
+                    # its current latency and O(page) memory. Rows behind this
+                    # page are simply not reached yet.
+                    return hydrated, position, ()
+                # Every routable id raced out of the AUTO set between the page and
+                # its hydration — not a blocker, just a page that emptied itself.
+            for doc_id in journaled_ids:
+                if len(blocking) < _MANUAL_DRAIN_BLOCKER_SAMPLE:
+                    blocking.append(doc_id)
+            if position is CURSOR_END:
+                # Only CURSOR_END proves the sweep saw the whole AUTO set.
+                return {}, CURSOR_END, tuple(blocking)
 
     async def _decide_pipeline_next_step(
         self,
         pipeline_status: dict,
         pipeline_status_lock,
         ingress,
+        sweep_cursor: CursorPosition = CURSOR_END,
     ) -> PipelineNextDecision:
         """Atomic quiescence decision: continue for a pending wake-up signal
         or release ``busy`` in the same critical section.
@@ -2386,39 +3637,35 @@ class _PipelineMixin:
         critical section that would release ``busy``, so the loop refetches
         instead of stranding the new work.
 
-        Signal priority and semantics — the lock covers only this decision
-        (mailbox calls are single in-memory/Manager RPCs; storage queries
-        happen strictly outside, in :meth:`_refetch_for_decision`):
+        Fixed priority (LR2 §6.2): cancellation → advancement of the CURRENT
+        manual drain/reset → earliest (new) manual request → auto-rescan →
+        document mailbox → release. The lock covers only this decision (mailbox
+        calls are single in-memory/Manager RPCs; storage queries happen strictly
+        outside, in :meth:`_refetch_for_decision`).
 
-        0. **Cancellation** (consumes NOTHING): checked first, INSIDE this
-           critical section — the cancel endpoint sets the flag under the same
-           lock, so a cancel can never land between its own check and a
-           consuming step below.  The run stops with the ingress fully
-           retained; the caller routes an internal-error abort to the finally
-           (which surfaces the halt message) and a user cancel to the loop-top
-           handler (its "Pipeline cancelled" bookkeeping).
-        1. **Manual retry** (peeked, NOT consumed): earliest sticky request,
-           at most one per quiescence cycle; ACKed only after its
-           FAILED→PENDING resets persist, so crashing anywhere in between
-           re-executes it instead of losing it.
-        2. **Auto rescan** (consumed atomically): the supervisor is the sole
-           consumer of the dirty flag; a failed follow-up query re-arms it in
-           :meth:`_refetch_for_decision` — without consumption here,
-           ``has_work()`` would stay true forever and ``busy`` could never
-           release.
-        3. **Document channel non-empty** (peeked via ``counts``, NOT drained):
-           a message published after this batch's feeder stopped, or a stale
-           notification for a doc that has since reached a terminal state.
-           The run stays busy and the CONTINUE_DOCUMENT refetch resolves it —
-           live docs become the next batch, provably-stale messages are
-           compacted (see :meth:`_refetch_for_decision`).  Without this check
-           a doc published into a quiescing run with no other signal would
-           strand in PENDING until an unrelated trigger.
-        4. Nothing pending — ``has_work()`` is false: release the slot
-           together with its owner token so a later owner-checked release
-           (the finally, or a fresh acquirer) sees the slot as free and
-           unowned — RELEASED, caller breaks and skips clearing ``busy`` in
-           its finally block.
+        The decision is ``manual_phase``-aware (read from ``pipeline_status``
+        under this same lock):
+
+        * **DRAIN_TO_IDLE** — this run already holds the freeze and is draining
+          for a manual retry. Advancing THAT drain is top priority after cancel:
+          finish the AUTO sweep pages, consume auto-rescan / document backlog,
+          then wait for pre-freeze in-flight enqueues (CONTINUE_DRAIN_WAIT), and
+          once strictly idle enter the exclusive reset (BEGIN_EXCLUSIVE_RESET).
+          A second manual is NOT peeked here — it waits FIFO until this one ACKs
+          and the phase returns to IDLE (LR2 §7.5).
+        * **IDLE** — normal quiescence:
+          0. **Cancellation** (consumes NOTHING): the cancel endpoint sets the
+             flag under this same lock, so a cancel never lands between its
+             check and a consuming step below.
+          1. **Manual retry** (peeked, NOT consumed): earliest sticky request;
+             BEGINS a drain (CONTINUE_MANUAL sets the freeze). It preempts an
+             in-progress AUTO sweep (the drain re-scans AUTO from Start, so no
+             doc is lost). Stays sticky, ACKed only after the exclusive reset.
+          2. **Sweep page** — the in-progress bounded AUTO sweep has more pages.
+          3. **Auto rescan** (consumed atomically): sole consumer of the dirty
+             flag; re-armed on a failed follow-up query in the refetch.
+          4. **Document channel non-empty** (peeked, NOT drained).
+          5. Nothing pending: release the slot with its owner token — RELEASED.
 
         Boundary (documented, not solved here): this closes every
         published-but-missed handoff, but an enqueue that crashes BETWEEN its
@@ -2433,12 +3680,44 @@ class _PipelineMixin:
                     internal_error=pipeline_status.get("cancellation_reason")
                     == "internal_error",
                 )
+            if (
+                pipeline_status.get("manual_phase", MANUAL_PHASE_IDLE)
+                == MANUAL_PHASE_DRAIN_TO_IDLE
+            ):
+                # Advance the manual drain we already own (freeze is set). Drain
+                # every remaining page / signal, wait out pre-freeze in-flight
+                # enqueues, then run the exclusive reset. Do NOT peek a new
+                # manual — a second request waits FIFO (LR2 §7.5).
+                if sweep_cursor is not CURSOR_END:
+                    return PipelineNextDecision(PipelineNextStep.CONTINUE_SWEEP_PAGE)
+                if ingress.consume_auto_rescan():
+                    return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
+                if ingress.counts().get("documents"):
+                    return PipelineNextDecision(PipelineNextStep.CONTINUE_DOCUMENT)
+                if pipeline_status.get("pending_enqueues", 0) > 0:
+                    # Enqueues reserved BEFORE the freeze must finish (their
+                    # PENDING docs join this cohort) before the reset can start
+                    # with no failed producer (LR2 §7.2 step 5 / §7.3). The
+                    # CONTINUE_DRAIN_WAIT refetch reaps confirmed-dead tokens
+                    # before it waits, so a worker SIGKILLed mid-reserve (Linux
+                    # multi-worker) cannot leave a phantom count that wedges this
+                    # drain (the freeze blocks the uploads that would reap it).
+                    return PipelineNextDecision(PipelineNextStep.CONTINUE_DRAIN_WAIT)
+                return PipelineNextDecision(PipelineNextStep.BEGIN_EXCLUSIVE_RESET)
             manual_msg = ingress.peek_next_manual_retry()
             if manual_msg is not None:
                 return PipelineNextDecision(
                     PipelineNextStep.CONTINUE_MANUAL,
                     manual_request_id=manual_msg.request_id,
                 )
+            # The in-progress bounded sweep has more pages: finish draining the
+            # KNOWN backlog before consuming any quiescence signal. Preempted
+            # by cancellation and manual retry above (LR2 §6.3 "无 manual 时继续
+            # cursor"); consumes nothing, so auto-rescan/document stay pending
+            # for when the cursor reaches CURSOR_END. Collapses to a no-op when
+            # paging is off (cursor is CURSOR_END after a single-scan page).
+            if sweep_cursor is not CURSOR_END:
+                return PipelineNextDecision(PipelineNextStep.CONTINUE_SWEEP_PAGE)
             if ingress.consume_auto_rescan():
                 return PipelineNextDecision(PipelineNextStep.CONTINUE_AUTO)
             if ingress.counts().get("documents"):
@@ -2449,67 +3728,131 @@ class _PipelineMixin:
     async def _refetch_for_decision(
         self,
         decision: PipelineNextDecision,
+        sweep_statuses,
+        sweep_cursor: CursorPosition,
         ingress,
-    ) -> tuple[dict[str, DocProcessingStatus], str | None]:
-        """Strict doc_status refetch for a CONTINUE_* decision.
+        *,
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+        drain_progress: "_ManualDrainProgress",
+    ) -> tuple[dict[str, DocProcessingStatus], tuple, CursorPosition]:
+        """Fetch the next batch for a CONTINUE_*/BEGIN_* decision (bounded).
 
-        Selects the status tuple by decision kind — manual continuations are
-        the only path that may pull FAILED documents back in — and restores
-        the consumed wake-up signal on failure: a CONTINUE_AUTO whose strict
-        query raises re-arms the auto-rescan flag before propagating (the
-        signal was already consumed in the decision), while a manual request
-        was only peeked and stays sticky on its own.
+        Returns ``(docs, next_statuses, next_cursor)`` — the hydrated
+        full-status map to process plus the sweep state the caller threads into
+        the next ``_decide``/refetch (``next_cursor is CURSOR_END`` ends the
+        sweep). All manual ACKing is internal to BEGIN_EXCLUSIVE_RESET, so no
+        ACK id is returned.
 
-        CONTINUE_DOCUMENT resolves resident document messages with the same
-        drain→verify protocol the feeder uses, at the supervisor's quiescence
-        point: a bounded destructive drain FIRST, then the strict scan.  The
-        order is the correctness anchor — every drained message's doc that is
-        still live (its PENDING row persisted before its publish, which
-        preceded the drain) is necessarily in the scan result and comes back
-        as the next batch, so a drained message never needs re-publishing;
-        one absent from the scan is PROVABLY stale (terminal/FAILED/deleted —
-        FAILED is manual-only by ruling) and is compacted, which is what
-        keeps a stale notification from holding ``busy`` forever (the
-        has_work-only exit would otherwise livelock on it).  Messages
-        published after the drain stay in the mailbox for the next decision.
-        Crash/failure safety mirrors the feeder's drain: a strict-scan
-        failure re-publishes the drained messages and arms auto-rescan as a
-        backstop before propagating; a SIGKILL — or a Manager response lost
-        AFTER the server executed the drain (at-most-once RPC) — loses only
-        messages whose PENDING rows the next run's initial scan recovers.
+        The continuations:
 
-        Returns ``(docs, pending_manual_ack)`` where ``pending_manual_ack``
-        is the request id the caller must ACK once the FAILED→PENDING resets
-        persist (post-validation), or immediately on a legitimately-empty
-        complete result.
+        * **CONTINUE_SWEEP_PAGE** — advance the SAME sweep to its next page. A
+          page-fetch failure does NOT advance the cursor and arms auto-rescan so
+          the remaining backlog is recovered (LR2 §6.3).
+        * **CONTINUE_MANUAL** — BEGIN a manual drain (LR2 §7.2): set the freeze +
+          owner (owner-checked, tied to this run's busy token), phase →
+          DRAIN_TO_IDLE, then start a fresh AUTO sweep from ``CURSOR_START`` (the
+          drain processes the AUTO backlog; FAILED is reset only in the exclusive
+          phase). The manual request stays sticky — ACKed after the reset.
+        * **CONTINUE_DRAIN_WAIT** — bounded async sleep waiting for pre-freeze
+          in-flight enqueues to finish, then re-decide (empty batch).
+        * **BEGIN_EXCLUSIVE_RESET** — the drain reached strict idle. Do a FINAL
+          strict AUTO confirmation sweep (a doc a since-finished in-flight
+          enqueue added after the previous sweep passed); if non-empty, process
+          it and stay in the drain. If empty, run the exclusive FAILED→PENDING
+          reset (no worker), ACK the request, clear the freeze (→ PROCESS), then
+          fetch a fresh AUTO sweep so the just-reset PENDING docs get processed.
+        * **CONTINUE_AUTO** — start a fresh bounded AUTO sweep from
+          ``CURSOR_START``. The signal was consumed in the decision, so a
+          first-page failure re-arms auto-rescan before propagating.
+        * **CONTINUE_DOCUMENT** — bounded destructive drain of resident
+          document messages FIRST, then a fresh bounded AUTO sweep from
+          ``CURSOR_START``. Drain-before-scan is the correctness anchor: every
+          drained message's doc that is still live (its PENDING row persisted
+          before its publish, which preceded the drain) is a PENDING row the
+          multi-page sweep necessarily reaches, so a drained message never
+          needs re-publishing; a provably-stale one (terminal/deleted) is
+          compacted. A sweep-start failure re-publishes the drained messages
+          and arms auto-rescan before propagating.
         """
-        if decision.step is PipelineNextStep.CONTINUE_MANUAL:
-            statuses = _MANUAL_RETRY_DOC_STATUSES
-        else:
-            statuses = _AUTO_RESUME_DOC_STATUSES
+        step = decision.step
+
+        # (A) Continue the current bounded sweep — same statuses, next page.
+        if step is PipelineNextStep.CONTINUE_SWEEP_PAGE:
+            try:
+                docs, next_cursor = await self._next_scheduling_page(
+                    sweep_statuses, sweep_cursor
+                )
+            except BaseException:
+                try:
+                    _rearm_auto_rescan(ingress)
+                except BaseException as compensation_error:
+                    logger.warning(
+                        "[pipeline] failed to arm auto-rescan after a paged "
+                        "sweep refetch failure; the remaining backlog is "
+                        f"recovered by the NEXT explicit trigger: {compensation_error}"
+                    )
+                raise
+            return docs, sweep_statuses, next_cursor
+
+        # (A2) Manual drain: hold the freeze while the pre-freeze in-flight
+        # enqueues finish. Reap confirmed-dead reservation tokens FIRST — a
+        # worker SIGKILLed mid-reserve (Linux multi-worker) would otherwise leave
+        # a phantom pending_enqueues count that wedges this drain forever, since
+        # the freeze blocks the uploads whose acquire would normally reap it
+        # (no-op off Linux-multiworker). Then a bounded async sleep (not a
+        # busy-loop); the next decision drains any doc they publish, then
+        # re-checks pending_enqueues.
+        if step is PipelineNextStep.CONTINUE_DRAIN_WAIT:
+            await reap_dead_reservations_locked(pipeline_status, pipeline_status_lock)
+            await asyncio.sleep(_MANUAL_DRAIN_POLL_SECONDS)
+            return {}, sweep_statuses, sweep_cursor
+
+        # (A3) The manual drain reached strict idle — run the exclusive reset.
+        if step is PipelineNextStep.BEGIN_EXCLUSIVE_RESET:
+            return await self._refetch_begin_exclusive_reset(
+                ingress,
+                token=token,
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                drain_progress=drain_progress,
+            )
+
+        # (B) Start a FRESH sweep from CURSOR_START. CONTINUE_MANUAL begins the
+        # freeze first; CONTINUE_DOCUMENT drains the mailbox first (bounded).
         drained: list[PipelineIngressMessage] = []
-        if decision.step is PipelineNextStep.CONTINUE_DOCUMENT:
-            # Drain BEFORE the scan (see docstring proof). Bounded: a deeper
-            # backlog re-triggers CONTINUE_DOCUMENT on the next decision.
+        if step is PipelineNextStep.CONTINUE_MANUAL:
+            # Set the freeze + owner BEFORE draining so no new ingress enters
+            # (owner-checked; a lost slot winds the run down via an empty batch).
+            if not await self._begin_manual_drain(
+                decision.manual_request_id,
+                token,
+                pipeline_status,
+                pipeline_status_lock,
+            ):
+                return {}, _AUTO_RESUME_DOC_STATUSES, CURSOR_END
+        if step is PipelineNextStep.CONTINUE_DOCUMENT:
             drained = ingress.drain_documents(limit=_FEEDER_DRAIN_LIMIT)
         try:
-            docs = await self.doc_status.get_docs_by_statuses(
-                list(statuses), strict=True
+            docs, next_cursor = await self._next_scheduling_page(
+                _AUTO_RESUME_DOC_STATUSES, CURSOR_START
             )
         except BaseException:
             # Compensations must not raise over the original error (multiproc
             # mailbox calls are RPCs; BaseException here so even an interrupt
             # in a compensation call cannot displace it): the docs behind a
             # lost signal are still PENDING rows, recovered by the next run's
-            # initial scan.
+            # initial scan. A manual request stays sticky on its own (the freeze
+            # is cleared by the run's finally), so it needs no re-arm.
             try:
-                if decision.step is PipelineNextStep.CONTINUE_AUTO:
-                    ingress.request_auto_rescan()
+                if step is PipelineNextStep.CONTINUE_AUTO:
+                    _rearm_auto_rescan(ingress)
                 elif drained:
                     self._republish_documents(ingress, drained, source="quiescence")
                     # Backstop for re-publishes swallowed above: the strict
                     # rescan behind the flag recovers those PENDING docs.
-                    ingress.request_auto_rescan()
+                    _rearm_auto_rescan(ingress)
             except BaseException as compensation_error:
                 logger.warning(
                     "[pipeline] failed to restore the consumed wake-up signal "
@@ -2520,7 +3863,178 @@ class _PipelineMixin:
                     f"not automatically: {compensation_error}"
                 )
             raise
-        return docs, decision.manual_request_id
+        return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
+
+    async def _refetch_begin_exclusive_reset(
+        self,
+        ingress,
+        *,
+        token: str,
+        pipeline_status: dict,
+        pipeline_status_lock,
+        drain_progress: "_ManualDrainProgress",
+    ) -> tuple[dict[str, DocProcessingStatus], tuple, CursorPosition]:
+        """BEGIN_EXCLUSIVE_RESET handler (LR2 §7.2 step 7-8 → §7.3 → §7.4).
+
+        A final strict AUTO sweep confirms the drain is complete; if it finds a
+        doc (an in-flight enqueue added it after the previous sweep passed), the
+        run processes it and stays in DRAIN_TO_IDLE. Otherwise the exclusive
+        FAILED→PENDING reset runs (no worker), the request is ACKed, the freeze
+        is cleared (→ PROCESS), and a fresh AUTO sweep returns the just-reset
+        PENDING docs for normal processing.
+
+        This confirmation is also the drain's forward-progress checkpoint: it is
+        the single place that decides "not drained yet, sweep again", so it is
+        where a drain that CANNOT advance has to be caught (LR2 §7.2). Two
+        distinct failures are caught here:
+
+        * an active row the drain can never advance at all (an unfinished
+          custom-chunk journal) makes the AUTO set non-empty forever, so the
+          reset must NOT start — :meth:`_fence_blocked_manual_drain`;
+        * rows that look routable yet keep coming back unchanged fence the
+          workspace rather than being swept forever —
+          :meth:`_fence_stalled_manual_drain`."""
+        # (1) Final strict confirmation that the PERSISTENT AUTO set is drained.
+        # Unfiltered and paged to CURSOR_END (see _confirm_auto_drained): the
+        # routing sweep's filtered view is not an idle proof, and one empty page
+        # is not termination.
+        docs, next_cursor, blocking_ids = await self._confirm_auto_drained()
+        if docs:
+            if not drain_progress.observe(docs.keys()):
+                await self._fence_stalled_manual_drain(
+                    docs, pipeline_status, pipeline_status_lock
+                )
+            return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
+        if blocking_ids:
+            await self._fence_blocked_manual_drain(
+                blocking_ids, pipeline_status, pipeline_status_lock
+            )
+
+        # (2) Read the request id off the freeze owner, then run the reset. A
+        # missing owner means a concurrent reaper cleared the freeze (dead
+        # process) — wind the run down via an empty PROCESS sweep.
+        async with pipeline_status_lock:
+            manual_owner = pipeline_status.get("manual_owner")
+        request_id = (manual_owner or {}).get("request_id")
+        if request_id is None:
+            return {}, _AUTO_RESUME_DOC_STATUSES, CURSOR_END
+
+        if await self._run_exclusive_failed_reset(
+            request_id, token, pipeline_status, pipeline_status_lock
+        ):
+            # ACK only after every FAILED→PENDING reset persisted (LR2 §7.3
+            # completion point): a crash before this re-runs the reset; a crash
+            # after is recovered by the now-persistent PENDING rows.
+            ingress.ack_manual_retry(request_id)
+            await self._end_manual_drain(token, pipeline_status, pipeline_status_lock)
+
+        # (3) PROCESS: the reset PENDING docs (and any admitted since the freeze
+        # cleared) are picked up by a fresh AUTO sweep.
+        docs, next_cursor = await self._next_scheduling_page(
+            _AUTO_RESUME_DOC_STATUSES, CURSOR_START
+        )
+        return docs, _AUTO_RESUME_DOC_STATUSES, next_cursor
+
+    async def _fence_blocked_manual_drain(
+        self,
+        blocking_ids: tuple[str, ...],
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Fence the workspace: the AUTO set holds rows the drain cannot advance.
+
+        Rows with an unfinished custom-chunk journal — only ``/documents/scan``'s
+        rollback (or the owning SDK call) resolves those. LR2 §4.2 requires the
+        AUTO set to be confirmed empty before ``EXCLUSIVE_RESET`` and §7.2 forbids
+        silently ignoring an active row to let the manual retry start, so the reset
+        does not run and the request is NOT ACKed: no FAILED document is consumed
+        by an attempt that could not happen.
+
+        This sets ``recovery_required`` — §7.2's literal remedy — after an attempt
+        to avoid it did not survive review. Reporting the blocker WITHOUT fencing
+        looked better (a fence refuses every mutation, including the very
+        ``/documents/scan`` that fixes this) but the reasoning was wrong: a sticky
+        un-ACKed manual request already makes ``/scan`` refuse its reservation
+        (``refuse_when_manual_pending``, LR2 §8.1, so a scan cannot jump the manual
+        FIFO), and the blocker leaves exactly that request queued. So the
+        "unfenced" path had no reachable remedy either — it was a silent dead end
+        instead of a loud one, which is strictly worse.
+
+        The way out is therefore the same for both halves of the deadlock and is
+        documented on the fence: ``POST /documents/recovery/force_reset`` clears the
+        fence AND cancels the queued manual intents that were blocking ``/scan``,
+        after which ``POST /documents/scan`` rolls the journal back and runs the
+        FAILED reset itself.
+
+        Raises :class:`PipelineRecoveryRequiredError`, which unwinds the run
+        through its ``finally``: freeze and ``busy`` are released (owner-checked) so
+        a live-but-exiting owner never wedges the pipeline, while the fence
+        survives to refuse mutations with 503.
+        """
+        detail = (
+            f"manual retry cannot start: {len(blocking_ids)} or more active "
+            "document(s) hold an unfinished custom-chunk operation, so the "
+            "pipeline is not idle and the exclusive FAILED reset must not begin. "
+            "Clear this with POST /documents/recovery/force_reset (which also "
+            "cancels the queued retry that is blocking /documents/scan), then POST "
+            "/documents/scan to roll the operation back — the scan runs the FAILED "
+            f"reset itself (blocked doc id sample: {', '.join(blocking_ids) or 'unavailable'})."
+        )
+        logger.error(detail)
+        await fence_workspace_for_recovery(
+            pipeline_status,
+            pipeline_status_lock,
+            kind="manual_drain_blocked",
+            message=detail,
+            operation_record={"scope": ", ".join(blocking_ids)},
+        )
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = detail
+            append_pipeline_history(pipeline_status, detail)
+        raise PipelineRecoveryRequiredError(detail, blocked_doc_ids=tuple(blocking_ids))
+
+    async def _fence_stalled_manual_drain(
+        self,
+        docs: dict[str, DocProcessingStatus],
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> None:
+        """Fence the workspace for a DRAIN_TO_IDLE that cannot advance (LR2 §7.2).
+
+        The same active rows have now blocked the drain for
+        :data:`_MANUAL_DRAIN_STALL_ROUNDS` consecutive confirmation rounds without
+        changing state. Sweeping again is guaranteed to return them again, so the
+        design's rule applies: set ``recovery_required``, report a BOUNDED sample
+        of the blocking doc ids, and stop — never spin, and never silently drop
+        the active rows to let the manual retry start.
+
+        Raises :class:`PipelineRecoveryRequiredError`, which unwinds the run
+        through its ``finally``: the freeze and ``busy`` are released
+        (owner-checked) so nothing is wedged on a live-but-exiting owner, while
+        the fence survives and refuses every later mutation with 503 until an
+        operator resolves the rows or calls ``/documents/recovery/force_reset``.
+        The manual request stays sticky and un-ACKed, so no FAILED document is
+        consumed by an attempt that never ran.
+        """
+        blocked = sorted(docs)[:_MANUAL_DRAIN_STALL_SAMPLE]
+        detail = (
+            f"manual retry drain stalled: {len(docs)} active document(s) have "
+            f"blocked DRAIN_TO_IDLE for {_MANUAL_DRAIN_STALL_ROUNDS} consecutive "
+            f"rounds without changing state (blocked doc id sample: "
+            f"{', '.join(blocked) or 'unavailable'})."
+        )
+        logger.error(detail)
+        await fence_workspace_for_recovery(
+            pipeline_status,
+            pipeline_status_lock,
+            kind="manual_drain_stalled",
+            message=detail,
+            operation_record={"scope": ", ".join(blocked)},
+        )
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = detail
+            append_pipeline_history(pipeline_status, detail)
+        raise PipelineRecoveryRequiredError(detail, blocked_doc_ids=tuple(blocked))
 
     @staticmethod
     def _format_job_name(
@@ -2576,6 +4090,7 @@ class _PipelineMixin:
                     ctx.pipeline_status, ctx.pipeline_status_lock
                 ):
                     await self._mark_doc_cancelled_in_stage(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status_doc=status_doc_w,
                         file_path=file_path_w,
@@ -2615,6 +4130,7 @@ class _PipelineMixin:
                 # point), so they are not carried into this PARSING upsert.
                 status_doc_w.metadata["parse_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
                     status_doc=status_doc_w,
@@ -2624,7 +4140,7 @@ class _PipelineMixin:
                     log_message = f"Parsing ({engine}): {doc_id_w}"
                     logger.info(log_message)
                     ctx.pipeline_status["latest_message"] = log_message
-                    ctx.pipeline_status["history_messages"].append(log_message)
+                    append_pipeline_history(ctx.pipeline_status, log_message)
                 # Resolve the actual parser per-doc from the batch snapshot
                 # (snapshot-consistent: a mid-batch register_parser cannot be
                 # picked up here). ``engine`` is only the queue-group/pool id.
@@ -2719,6 +4235,7 @@ class _PipelineMixin:
                     ctx.pipeline_status, ctx.pipeline_status_lock
                 ):
                     await self._mark_doc_cancelled_in_stage(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status_doc=status_doc_w,
                         file_path=file_path_w,
@@ -2821,6 +4338,7 @@ class _PipelineMixin:
                     content_data=content_data_w,
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
+                    ctx=ctx,
                 ):
                     continue
 
@@ -2842,6 +4360,7 @@ class _PipelineMixin:
                 # ANALYZING transition via carry-over. content_hash is already
                 # refreshed and duplicates are filtered out by this point.
                 await self._upsert_doc_status_transition(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status=DocStatus.PARSING,
                     status_doc=status_doc_w,
@@ -2872,6 +4391,7 @@ class _PipelineMixin:
                 # event. Parser-executor shutdown is intentionally a distinct
                 # exception and remains a generic parse failure for audit.
                 await self._mark_doc_cancelled_in_stage(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
                     file_path=getattr(status_doc_w, "file_path", "unknown_source"),
@@ -2892,6 +4412,7 @@ class _PipelineMixin:
                 )
                 try:
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
@@ -2931,6 +4452,7 @@ class _PipelineMixin:
                     ctx.pipeline_status, ctx.pipeline_status_lock
                 ):
                     await self._mark_doc_cancelled_in_stage(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status_doc=status_doc_w,
                         file_path=file_path_w,
@@ -2951,6 +4473,7 @@ class _PipelineMixin:
                     status_doc_w.metadata = {}
                 status_doc_w.metadata["analyzing_start_time"] = int(time.time())
                 await self._upsert_doc_status_transition(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status=DocStatus.ANALYZING,
                     status_doc=status_doc_w,
@@ -2995,6 +4518,7 @@ class _PipelineMixin:
                 # the extra upsert; PROCESSING will be their next doc_status write.
                 if analyze_outcome_recorded:
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status=DocStatus.ANALYZING,
                         status_doc=status_doc_w,
@@ -3007,6 +4531,7 @@ class _PipelineMixin:
                 # Route through the friendly message path so error_msg and
                 # history_messages match the boundary-check branch.
                 await self._mark_doc_cancelled_in_stage(
+                    ctx=ctx,
                     doc_id=doc_id_w,
                     status_doc=status_doc_w,
                     file_path=getattr(status_doc_w, "file_path", "unknown_source"),
@@ -3023,6 +4548,7 @@ class _PipelineMixin:
                 logger.error(f"Analyze worker failed: {e}")
                 try:
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id_w,
                         status=DocStatus.FAILED,
                         status_doc=status_doc_w,
@@ -3152,18 +4678,14 @@ class _PipelineMixin:
                             "latest_message": processing_message,
                         }
                     )
-                    ctx.pipeline_status["history_messages"].append(extraction_message)
-                    ctx.pipeline_status["history_messages"].append(processing_message)
-
-                    # Prevent memory growth: keep only latest 5000 messages
-                    # when exceeding 10000.  Trim in place so Manager.list-
-                    # backed shared state remains appendable and visible
-                    # across processes.
-                    if len(ctx.pipeline_status["history_messages"]) > 10000:
-                        logger.info(
-                            f"Trimming pipeline history from {len(ctx.pipeline_status['history_messages'])} to 5000 messages"
-                        )
-                        del ctx.pipeline_status["history_messages"][:-5000]
+                    # One call: the pair belongs together in the log, and the
+                    # ring capacity that used to be enforced right here now
+                    # lives in the funnel — this loop was never the only writer
+                    # (deletes, scans and manual resets log plenty without ever
+                    # reaching it), so trimming here bounded nothing.
+                    append_pipeline_history(
+                        ctx.pipeline_status, extraction_message, processing_message
+                    )
 
                 # The parsed body is no longer carried through q_analyze /
                 # q_process (it would pin large documents in memory). Re-read it
@@ -3536,6 +5058,7 @@ class _PipelineMixin:
                 # Stage 1: persist doc_status PROCESSING + chunks in parallel.
                 doc_status_task = asyncio.create_task(
                     self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status=DocStatus.PROCESSING,
                         status_doc=status_doc,
@@ -3588,6 +5111,7 @@ class _PipelineMixin:
                     [entity_relation_task] if entity_relation_task else []
                 )
                 await self._finalize_doc_failure(
+                    ctx=ctx,
                     doc_id=doc_id,
                     status_doc=status_doc,
                     file_path=file_path,
@@ -3666,6 +5190,7 @@ class _PipelineMixin:
 
                     process_end_time = int(time.time())
                     await self._upsert_doc_status_transition(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status=DocStatus.PROCESSED,
                         status_doc=status_doc,
@@ -3689,7 +5214,7 @@ class _PipelineMixin:
                         )
                         logger.info(log_message)
                         ctx.pipeline_status["latest_message"] = log_message
-                        ctx.pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(ctx.pipeline_status, log_message)
 
                 except Exception as e:
                     # A storage flush failure (raised by _insert_done) is not
@@ -3716,6 +5241,7 @@ class _PipelineMixin:
                             f"Aborting pipeline batch due to storage flush error: {e}"
                         )
                     await self._finalize_doc_failure(
+                        ctx=ctx,
                         doc_id=doc_id,
                         status_doc=status_doc,
                         file_path=file_path,
@@ -3785,7 +5311,7 @@ class _PipelineMixin:
             logger.warning(log_message)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                append_pipeline_history(pipeline_status, log_message)
 
         # Order-preserving dedup; keep a list so it satisfies the storage delete
         # contract (``delete(ids: list[str])``) when passed down to purge.
@@ -3809,7 +5335,7 @@ class _PipelineMixin:
         logger.info(log_message)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            append_pipeline_history(pipeline_status, log_message)
         await self._purge_doc_chunks_and_kg(
             doc_id,
             stored_chunk_ids,
@@ -3833,6 +5359,7 @@ class _PipelineMixin:
         status_doc: DocProcessingStatus,
         file_path: str,
         *,
+        ctx: "_BatchRunContext",
         extra_fields: dict[str, Any] | None = None,
         metadata_extra: dict[str, Any] | None = None,
     ) -> None:
@@ -3843,7 +5370,25 @@ class _PipelineMixin:
         ``chunks_count`` / ``chunks_list`` / ``error_msg``; ``metadata_extra``
         is forwarded to ``doc_status_transition_metadata`` so carry-over
         fields (e.g. ``process_options``) survive every state change.
+
+        Owner-checked (LR2 §7.7 items 3/4/7): every worker status write verifies
+        its run still owns ``busy`` immediately before writing, and a run whose
+        ownership was reclaimed DISCARDS the result with a warning instead of
+        writing. Without this, a storage/LLM response arriving late in a run that
+        was already declared dead could stamp a final status over the new owner's
+        work — including re-FAILING a document the manual exclusive reset had just
+        moved to PENDING, which would ACK the retry with the document still
+        failed. ``ctx`` is required so a new call site has to state which run the
+        write belongs to.
         """
+        if not await self._still_run_owner(ctx):
+            logger.warning(
+                f"[stale-writer] Discarded {getattr(status, 'value', status)} "
+                f"status write for {doc_id} ({file_path}): this run no longer "
+                f"owns the pipeline (ownership was reclaimed), so the result is "
+                f"late and must not overwrite the current owner's state"
+            )
+            return
         payload: dict[str, Any] = {
             "status": status,
             "content_summary": status_doc.content_summary,
@@ -3942,6 +5487,7 @@ class _PipelineMixin:
         status_doc: DocProcessingStatus,
         file_path: str,
         stage_label: str,
+        ctx: "_BatchRunContext",
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
@@ -3962,13 +5508,14 @@ class _PipelineMixin:
         logger.warning(error_msg)
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = error_msg
-            pipeline_status["history_messages"].append(error_msg)
+            append_pipeline_history(pipeline_status, error_msg)
         await self._persist_llm_response_cache_best_effort(
             stage_label=f"{stage_label} cancellation",
             doc_id=doc_id,
         )
         try:
             await self._upsert_doc_status_transition(
+                ctx=ctx,
                 doc_id=doc_id,
                 status=DocStatus.FAILED,
                 status_doc=status_doc,
@@ -3991,6 +5538,7 @@ class _PipelineMixin:
         failed_chunks_snapshot: tuple[list[str], int],
         pending_tasks: list[asyncio.Task],
         metadata_extra: dict[str, Any],
+        ctx: "_BatchRunContext",
         pipeline_status: dict,
         pipeline_status_lock,
     ) -> None:
@@ -4027,7 +5575,7 @@ class _PipelineMixin:
             logger.warning(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, error_msg)
         else:
             doc_error_msg = str(error)
             logger.error(traceback.format_exc())
@@ -4044,8 +5592,8 @@ class _PipelineMixin:
             logger.error(error_msg)
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(traceback.format_exc())
-                pipeline_status["history_messages"].append(error_msg)
+                append_pipeline_history(pipeline_status, traceback.format_exc())
+                append_pipeline_history(pipeline_status, error_msg)
 
         for task in pending_tasks:
             if task and not task.done():
@@ -4058,6 +5606,7 @@ class _PipelineMixin:
 
         failed_chunks_list, failed_chunks_count = failed_chunks_snapshot
         await self._upsert_doc_status_transition(
+            ctx=ctx,
             doc_id=doc_id,
             status=DocStatus.FAILED,
             status_doc=status_doc,
@@ -4118,6 +5667,22 @@ class _PipelineMixin:
                 strip_lightrag_doc_prefix(record.get("content") or "", fmt)
             )
 
+        # Owner-checked like every other write a worker makes (LR2 §7.7 items
+        # 3/4/7). This one is reached from inside a parser via ``ctx.rag``, so it
+        # cannot take the batch context as an argument without leaving every
+        # third-party parser unguarded; ``_run_pipeline_batch`` publishes the
+        # context on the instance instead (see there). A parse result that comes
+        # back after this run's ownership was reclaimed must write NEITHER store:
+        # the full_docs body would overwrite content the new owner re-parsed, and
+        # the doc_status patch below would stamp a row the new owner now owns.
+        run_ctx = getattr(self, "_active_run_ctx", None)
+        if run_ctx is not None and not await self._still_run_owner(run_ctx):
+            logger.warning(
+                f"[stale-writer] Discarded parsed content for {doc_id}: this run "
+                "no longer owns the pipeline"
+            )
+            return None
+
         existing = await self.full_docs.get_by_id(doc_id)
         if isinstance(existing, dict):
             payload = {**existing, **record}
@@ -4130,12 +5695,19 @@ class _PipelineMixin:
         await self.full_docs.index_done_callback()
 
         if content_hash:
-            existing_status = await self.doc_status.get_by_id(doc_id)
-            if existing_status:
-                patched = dict(existing_status)
-                patched["content_hash"] = content_hash
-                patched["updated_at"] = datetime.now(timezone.utc).isoformat()
-                await self.doc_status.upsert({doc_id: patched})
+            # Targeted field update (LR2 §5.6), not a read-modify-write upsert:
+            # only two scalars change, and round-tripping the whole row would drag
+            # this document's ``chunks_list`` through memory for them.
+            # ``missing_ok`` keeps the previous behaviour of silently skipping a
+            # row that is already gone.
+            await self.doc_status.update_doc_status_fields(
+                doc_id,
+                {
+                    "content_hash": content_hash,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                missing_ok=True,
+            )
         return content_hash
 
     async def _mark_duplicate_after_parse(
@@ -4148,8 +5720,37 @@ class _PipelineMixin:
         content_data: dict[str, Any] | None = None,
         pipeline_status: dict | None = None,
         pipeline_status_lock: asyncio.Lock | None = None,
+        ctx: "_BatchRunContext | None" = None,
     ) -> bool:
-        """Mark post-parse content duplicates and stop further processing."""
+        """Mark post-parse content duplicates and stop further processing.
+
+        Owner-checked like every other worker status write (LR2 §7.7 items 3/4):
+        this one does not go through ``_upsert_doc_status_transition``, so it
+        verifies ownership itself before the FAILED-duplicate upsert.
+
+        Marking this document a duplicate REMOVES it from the primary candidates
+        of its canonical source, which makes this one of the writers LR2 §5.5
+        requires a source-conflict commit to be mutually exclusive with. So the
+        decision and the write happen together under
+        :func:`source_candidate_set_lock` — the same keyed lock the repair holds —
+        and the match is re-read inside it. That is what linearizes the two
+        operations instead of merely narrowing the window between them:
+
+        * marking wins the lock → the repair then finds this document is no longer
+          a candidate and refuses BEFORE demoting anything (409), rather than
+          committing demotions and reporting a 503 about storage that was fine;
+        * the repair wins → it commits, verifies the key is Unique and releases;
+          this marking then re-reads and, because the row it matched now points at
+          this document, the lookup skips it (see ``get_doc_by_content_hash``'s
+          exclusion contract) and the marking stands down. Should the content
+          genuinely belong to a THIRD document, the marking proceeds and the key
+          becomes Absent — an ordinary content-dedup state transition AFTER a
+          completed operation, not a half-applied one.
+
+        The probe outside the lock keeps the common case (not a duplicate) exactly
+        as cheap as before: no keyed lock is acquired for a document that has no
+        content twin.
+        """
         if not content_hash:
             return False
 
@@ -4159,43 +5760,63 @@ class _PipelineMixin:
         if not match:
             return False
 
-        original_doc_id, original_doc = match
-        original_track_id = doc_status_field(original_doc, "track_id", "")
-        original_status = doc_status_field(original_doc, "status", "unknown")
-        now = datetime.now(timezone.utc).isoformat()
-        message = (
-            "Identical content already exists under another filename. "
-            f"Original doc_id: {original_doc_id}, Status: {original_status}"
-        )
+        async with source_candidate_set_lock(self.workspace, file_path):
+            match = await get_duplicate_doc_by_content_hash(
+                self.doc_status, content_hash, doc_id
+            )
+            if not match:
+                logger.info(
+                    f"Duplicate marking for {doc_id} ({file_path}) stood down: the "
+                    "content's other holder is gone or now points at this document "
+                    "(a source-conflict repair kept it as the primary)"
+                )
+                return False
 
-        await self.doc_status.upsert(
-            {
-                doc_id: {
-                    "status": DocStatus.FAILED,
-                    "content_summary": (
-                        f"[DUPLICATE:content_hash] Original document: {original_doc_id}"
-                    ),
-                    "content_length": content_length,
-                    "chunks_count": 0,
-                    "chunks_list": [],
-                    "created_at": status_doc.created_at,
-                    "updated_at": now,
-                    "file_path": file_path,
-                    "track_id": status_doc.track_id,
-                    "content_hash": content_hash,
-                    "error_msg": message,
-                    "metadata": doc_status_transition_metadata(
-                        status_doc,
-                        extra={
-                            "is_duplicate": True,
-                            "duplicate_kind": "content_hash",
-                            "original_doc_id": original_doc_id,
-                            "original_track_id": original_track_id,
-                        },
-                    ),
+            if ctx is not None and not await self._still_run_owner(ctx):
+                logger.warning(
+                    f"[stale-writer] Discarded duplicate marking for {doc_id} "
+                    f"({file_path}): this run no longer owns the pipeline"
+                )
+                return False
+
+            original_doc_id, original_doc = match
+            original_track_id = doc_status_field(original_doc, "track_id", "")
+            original_status = doc_status_field(original_doc, "status", "unknown")
+            now = datetime.now(timezone.utc).isoformat()
+            message = (
+                "Identical content already exists under another filename. "
+                f"Original doc_id: {original_doc_id}, Status: {original_status}"
+            )
+
+            await self.doc_status.upsert(
+                {
+                    doc_id: {
+                        "status": DocStatus.FAILED,
+                        "content_summary": (
+                            f"[DUPLICATE:content_hash] Original document: "
+                            f"{original_doc_id}"
+                        ),
+                        "content_length": content_length,
+                        "chunks_count": 0,
+                        "chunks_list": [],
+                        "created_at": status_doc.created_at,
+                        "updated_at": now,
+                        "file_path": file_path,
+                        "track_id": status_doc.track_id,
+                        "content_hash": content_hash,
+                        "error_msg": message,
+                        "metadata": doc_status_transition_metadata(
+                            status_doc,
+                            extra={
+                                "is_duplicate": True,
+                                "duplicate_kind": "content_hash",
+                                "original_doc_id": original_doc_id,
+                                "original_track_id": original_track_id,
+                            },
+                        ),
+                    }
                 }
-            }
-        )
+            )
         try:
             await self.full_docs.delete([doc_id])
             await self.full_docs.index_done_callback()
@@ -4214,7 +5835,7 @@ class _PipelineMixin:
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = warning
-                pipeline_status["history_messages"].append(warning)
+                append_pipeline_history(pipeline_status, warning)
         return True
 
     def _resolve_source_file_for_parser(
@@ -4486,7 +6107,6 @@ class _PipelineMixin:
             )
             from lightrag.constants import (
                 DEFAULT_MM_ANALYSIS_PRIORITY,
-                DEFAULT_MM_IMAGE_MIN_PIXEL,
                 DEFAULT_SUMMARY_LANGUAGE,
             )
 
@@ -4498,14 +6118,7 @@ class _PipelineMixin:
                 or DEFAULT_SUMMARY_LANGUAGE
             )
             vlm_process_enable = bool(global_config.get("vlm_process_enable", False))
-            max_image_bytes = max(
-                256 * 1024,
-                int(os.getenv("VLM_MAX_IMAGE_BYTES", str(5 * 1024 * 1024))),
-            )
-            min_image_pixel = max(
-                1,
-                int(os.getenv("VLM_MIN_IMAGE_PIXEL", str(DEFAULT_MM_IMAGE_MIN_PIXEL))),
-            )
+            max_image_bytes, min_image_pixel = _vlm_image_budget_limits()
             # Multimodal analysis shares the entity-extraction cache flag
             # (both run with mode="default" — see handle_cache short-circuit
             # in lightrag.utils).  When the flag is off we must NOT save the
@@ -5125,7 +6738,7 @@ class _PipelineMixin:
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                     raise
                 result_obj = result[0] if isinstance(result, tuple) else {}
                 is_success = (
@@ -5138,7 +6751,7 @@ class _PipelineMixin:
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
+                            append_pipeline_history(pipeline_status, log_message)
                 else:
                     logger.debug(f"Analyzing  {kind}/{item_id}: skipped")
                 return result
@@ -5190,7 +6803,7 @@ class _PipelineMixin:
                         log_message = f"Analyzing multimodal: {doc_id}"
                         logger.info(log_message)
                         pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
+                        append_pipeline_history(pipeline_status, log_message)
                     start_logged = True
 
                 # Pre-schedule cancellation check: if the user cancelled

@@ -14,12 +14,21 @@ import json
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote, unquote, urlsplit
 
-from lightrag.base import DocProcessingStatus, DocStatus, DocStatusStorage
+from lightrag.base import (
+    DocProcessingStatus,
+    DocStatus,
+    DocStatusStorage,
+    SourceAbsent,
+    SourceResolution,
+)
 from lightrag.constants import (
+    CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
     LIGHTRAG_DOC_CONTENT_PREFIX,
@@ -27,6 +36,8 @@ from lightrag.constants import (
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_NATIVE,
 )
+from lightrag import pipeline_metrics
+from lightrag.exceptions import StorageCapabilityError
 from lightrag.parser.routing import canonicalize_parser_hinted_basename
 from lightrag.utils import (
     compute_mdhash_id,
@@ -264,13 +275,6 @@ def resolve_doc_status_parse_engine(
     )
 
 
-# Reserved doc_status.metadata key holding the custom-chunk patch journal
-# (issue #3400 Phase 3). While present, the document has an in-flight or
-# failed ainsert_custom_chunks operation: the pipeline must NOT process the
-# row as ordinary ingestion, resets must NOT strip it, and deletion must
-# include its staged chunk IDs.
-CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
-
 # Public, persistent audit trail for structurally successful but semantically
 # degraded KG recovery. The WebUI uses this key to distinguish a processed
 # document with recovery warnings from an ordinary informational metadata row.
@@ -298,6 +302,14 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     # in-flight/failed ainsert_custom_chunks operation. Must survive every
     # status transition until the operation commits or is rolled back.
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    # Duplicate demotion. ``metadata.is_duplicate`` is not a display field: it is
+    # the ONLY thing that makes a row ineligible as a primary candidate for its
+    # canonical source (``_basename_of`` returns None for it), so an operator's
+    # source-conflict repair lives or dies with it. Dropping it on a transition
+    # silently re-promoted the demoted row and put the key back in conflict —
+    # and since a repair deliberately keeps the row's content and status, that
+    # row is a normal document the pipeline will happily transition.
+    *DUPLICATE_DEMOTION_METADATA_KEYS,
 )
 
 
@@ -396,6 +408,12 @@ _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     # journal must survive — stripping it would orphan the operation's staged
     # data with no recovery anchor (issue #3400).
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    # A demotion is an operator decision, not a per-attempt result: the manual
+    # FAILED→PENDING retry must not undo it. A demoted row keeps its content and
+    # its FAILED status, so it is reset like any other failed document — and
+    # without these keys that reset handed the canonical source back to it,
+    # putting the key straight back into conflict.
+    *DUPLICATE_DEMOTION_METADATA_KEYS,
 )
 
 
@@ -537,6 +555,156 @@ def doc_status_value(doc: Any) -> str:
     return str(status or "")
 
 
+# Statuses that count against the admission capacity (LR2 §9.1): work the
+# pipeline still owes. PROCESSED and FAILED are finished — a FAILED document
+# only becomes active again through an explicit manual retry, which is exempt
+# from the cap anyway.
+ADMISSION_ACTIVE_STATUSES: tuple[DocStatus, ...] = (
+    DocStatus.PENDING,
+    DocStatus.PARSING,
+    DocStatus.ANALYZING,
+    DocStatus.PROCESSING,
+)
+
+
+def _overrides_base(doc_status: Any, method_name: str) -> bool:
+    """Whether this backend replaced ``DocStatusStorage``'s fail-closed default."""
+    base = getattr(DocStatusStorage, method_name, None)
+    implementation = getattr(type(doc_status), method_name, None)
+    return implementation is not None and implementation is not base
+
+
+def describe_doc_status_capabilities(doc_status: Any) -> dict[str, bool]:
+    """Report which strict capabilities this doc_status backend actually has.
+
+    The scheduling contract fails CLOSED on a missing capability: admission
+    refuses with 503, a stale FAILED stub is kept instead of deleted, source
+    conflicts cannot be listed. Each of those is a silent, confusing degradation
+    from the outside — an operator staring at 503s needs to be told that the
+    configured backend simply cannot count, not to go hunting for a database
+    problem (LR2 Phase 6 item 2).
+
+    Probes the class rather than calling anything: /health must stay cheap and
+    side-effect free.
+    """
+    return {
+        # Bounded keyset paging + typed source resolution are @abstractmethod on
+        # DocStatusStorage, so a first-party backend always has them; a
+        # third-party subclass that stubs them out shows up here as False.
+        "scheduling_pages": _overrides_base(doc_status, "get_docs_by_statuses_page"),
+        "typed_source_resolution": _overrides_base(
+            doc_status, "resolve_doc_source_strict"
+        ),
+        # Base defaults raise StorageCapabilityError — these three are the ones a
+        # deployment can genuinely lack.
+        "strict_active_count": _overrides_base(doc_status, "count_docs_by_statuses"),
+        "source_conflict_listing": _overrides_base(
+            doc_status, "list_source_conflicts_page"
+        ),
+        "source_conflict_repair": _overrides_base(doc_status, "repair_source_conflict"),
+        # Class-level opt-in: gates the STALE_STUB deletion during a scan.
+        "strict_point_reads": bool(
+            getattr(type(doc_status), "supports_strict_point_reads", False)
+        ),
+    }
+
+
+# What each strict capability costs when it is absent, in the terms an operator
+# experiences. Only the capabilities a deployment can genuinely lack appear here;
+# the two @abstractmethod ones cannot be missing on an instantiable backend.
+_CAPABILITY_CONSEQUENCES: dict[str, str] = {
+    "strict_active_count": (
+        "MAX_PENDING_DOCUMENTS admission cannot count active documents, so every "
+        "upload and text insert is refused with HTTP 503 while admission is enabled"
+    ),
+    "source_conflict_listing": (
+        "GET /documents/source_conflicts answers 501, so a scan that stops on a "
+        "duplicate file source cannot be diagnosed through the API"
+    ),
+    "source_conflict_repair": (
+        "POST /documents/source_conflicts/repair answers 501, so a duplicate file "
+        "source has to be resolved by deleting documents"
+    ),
+    "strict_point_reads": (
+        "a scan cannot confirm that a stale FAILED stub is really gone, so it keeps "
+        "the stub and re-examines that file on every scan"
+    ),
+}
+
+
+def enforce_strict_storage_capabilities(
+    doc_status: Any, *, require: bool = False
+) -> dict[str, bool]:
+    """Report (and optionally refuse to start on) missing strict capabilities.
+
+    The scheduling contract fails closed on every one of these, which from the
+    outside looks like a broken database rather than a backend that was never
+    able to do the thing. ``/health`` publishes the same probe, but a status page
+    only helps someone who already suspects a problem — the startup log is where
+    an operator finds out before the first 503 (LR2 §11, Phase 1 acceptance).
+
+    Never raises for its own reasons: a probe failure is logged and treated as
+    "nothing to report", because refusing to start over a broken *diagnostic*
+    would be worse than the degradation it was looking for. ``require=True``
+    raises :class:`StorageCapabilityError` only for genuinely missing
+    capabilities.
+    """
+    try:
+        capabilities = describe_doc_status_capabilities(doc_status)
+    except Exception as probe_error:  # pragma: no cover - defensive
+        logger.warning(f"Could not probe doc_status capabilities: {probe_error}")
+        return {}
+
+    missing = [
+        name
+        for name, consequence in _CAPABILITY_CONSEQUENCES.items()
+        if not capabilities.get(name, False)
+    ]
+    if not missing:
+        return capabilities
+
+    backend = type(doc_status).__name__
+    details = "; ".join(
+        f"{name} — {_CAPABILITY_CONSEQUENCES[name]}" for name in missing
+    )
+    if require:
+        raise StorageCapabilityError(
+            f"{backend} is missing strict capabilities required by "
+            f"PIPELINE_REQUIRE_STRICT_STORAGE_READS=true: {details}"
+        )
+    logger.warning(
+        f"{backend} is missing strict doc_status capabilities: {details}. "
+        "Set PIPELINE_REQUIRE_STRICT_STORAGE_READS=true to refuse to start "
+        "instead; /health reports the same gaps under 'capabilities'."
+    )
+    return capabilities
+
+
+async def count_active_documents(doc_status: DocStatusStorage) -> int:
+    """Strictly count the documents that occupy admission capacity.
+
+    Deliberately re-queried per admission decision instead of tracked in a
+    maintained counter: a counter is a second source of truth that drifts on
+    crash, backend swap or external write, and admission is the one place where
+    a drifting count either wedges ingestion or lets it grow unbounded.
+
+    Fail-closed: ``count_docs_by_statuses`` raises rather than returning zeros
+    on failure, and this helper does not soften that — a caller that cannot
+    learn the count must refuse the request (503), never assume there is room.
+    """
+    started = time.monotonic()
+    try:
+        return await doc_status.count_docs_by_statuses(
+            list(ADMISSION_ACTIVE_STATUSES), strict=True
+        )
+    finally:
+        # Recorded even on failure: a count that times out is exactly the case an
+        # operator needs to see when uploads start answering 503.
+        pipeline_metrics.observe(
+            pipeline_metrics.ACTIVE_COUNT_SECONDS, time.monotonic() - started
+        )
+
+
 # Sidecar item ids embed ``doc_hash`` (= doc_id without the ``doc-`` prefix),
 # and for pending_parse uploads doc_id derives from the filename — so the
 # same content under two filenames renders with different ids in
@@ -609,52 +777,129 @@ def configured_input_dir() -> Path:
     return Path(input_dir) if input_dir else Path.cwd() / "inputs"
 
 
-async def get_existing_doc_by_file_basename(
+async def resolve_existing_doc_source(
     doc_status: DocStatusStorage, file_path: Any
-) -> tuple[str, Any] | None:
-    """Find an existing doc_status record by canonical file basename.
+) -> SourceResolution:
+    """Resolve a file path to a typed, fail-closed source resolution.
 
     Inputs are normalized via :func:`normalize_document_file_path` so callers
     may pass either the bare canonical name (``abc.docx``) or a hint-bearing
     variant (``abc.[native-iet].docx``); both resolve to the same logical
-    document.
+    document. A name with no usable identity (``unknown_source``) collides with
+    nothing and is reported :class:`SourceAbsent` without querying.
+
+    Replaces ``get_doc_by_file_basename`` for the enqueue duplicate check. That
+    method is best-effort by contract — several backends swallow transport
+    errors and return ``None`` — and enqueue reads "no match" as "not a
+    duplicate", so a storage blip admitted a second row for a filename that
+    already existed. It also returns SOME primary on a historical basename
+    collision, hiding the collision instead of surfacing it. The strict
+    resolver raises instead of guessing, and distinguishes Absent / Unique /
+    Conflict so the caller can refuse the ambiguous case explicitly.
     """
     basename = normalize_document_file_path(file_path)
     if basename == "unknown_source":
-        return None
-    return await doc_status.get_doc_by_file_basename(basename)
+        return SourceAbsent()
+    return await doc_status.resolve_doc_source_strict(basename)
+
+
+@asynccontextmanager
+async def source_candidate_set_lock(workspace: str, canonical_source_key: str):
+    """Serialize writers that change WHICH documents claim one canonical source.
+
+    LR2 §5.5 requires a source-conflict commit to be mutually exclusive with
+    every writer that can change that key's candidate set — enqueue, delete,
+    manual reset, scan stale-stub deletion AND the processing stage's duplicate
+    marking. This is the keyed lock both sides take, defined once so the two
+    cannot compute a different namespace or key and silently stop excluding each
+    other (they are in different modules and only the string makes them the same
+    lock).
+
+    Lock ORDER, when a caller needs more than this one: the workspace's
+    enqueue-serialize lock OUTSIDE, this keyed lock inside, any
+    ``pipeline_status`` lock innermost. That is the order the enqueue path would
+    naturally take (it already holds enqueue-serialize and would reach for a
+    keyed source lock inside it), so every holder of both agrees and no cycle
+    exists. ``source_conflict_repair_lock`` acquires them in exactly that order.
+
+    Process-LOCAL machinery, so the scope is one deployment (its worker
+    processes included — they share the Manager the master created). A standalone
+    CLI or a second deployment writing the same database is outside it; the CAS
+    and the post-commit re-resolve are what keep those honest.
+
+    A document with no usable source identity (``unknown_source`` and friends) is
+    never a primary candidate for any key — every backend's candidate query
+    excludes it — so there is nothing to serialize and no lock is taken. That is
+    not a shortcut: locking on the sentinel would funnel EVERY unsourced document
+    in the workspace through one keyed lock.
+    """
+    from lightrag.constants import SOURCE_CONFLICT_LOCK_NAMESPACE
+    from lightrag.kg.shared_storage import get_storage_keyed_lock
+
+    canonical = normalize_document_file_path(canonical_source_key)
+    if not canonical or canonical in PLACEHOLDER_DOCUMENT_SOURCES:
+        yield
+        return
+    namespace = (
+        f"{workspace}:{SOURCE_CONFLICT_LOCK_NAMESPACE}"
+        if workspace
+        else SOURCE_CONFLICT_LOCK_NAMESPACE
+    )
+    async with get_storage_keyed_lock(
+        [canonical], namespace=namespace, enable_logging=False
+    ):
+        yield
 
 
 async def get_existing_doc_by_content_hash(
-    doc_status: DocStatusStorage, content_hash: str
+    doc_status: DocStatusStorage,
+    content_hash: str,
+    *,
+    candidate_doc_id: str = "",
 ) -> tuple[str, Any] | None:
-    """Find an existing doc_status record by content hash."""
+    """Find an existing doc_status record by content hash.
+
+    ``candidate_doc_id`` is the id the caller is about to create — the enqueue
+    dedup check runs before that row exists, so excluding it removes nothing by
+    id; what it buys is the other half of ``exclude_doc_id`` (see the base
+    contract): a row that merely POINTS at that id is not a holder of the
+    content, it is a record that the content belongs to the document being
+    created. Without it, a document whose primary row was deleted can never be
+    re-ingested — its doc id is derived from the file name, so a re-upload asks
+    about the very id the leftover pointer names, and the pointer keeps
+    answering for it.
+    """
     if not content_hash:
         return None
-    return await doc_status.get_doc_by_content_hash(content_hash)
+    return await doc_status.get_doc_by_content_hash(
+        content_hash, exclude_doc_id=candidate_doc_id or None
+    )
 
 
 async def get_duplicate_doc_by_content_hash(
     doc_status: DocStatusStorage, content_hash: str, current_doc_id: str
 ) -> tuple[str, Any] | None:
-    """Find another doc_status record with the same content hash."""
+    """Find ANOTHER doc_status record with the same content hash.
+
+    Excludes ``current_doc_id`` in-query (LR2 Phase 2.5): by the time the
+    post-parse duplicate check runs, the current doc's own content_hash is
+    already persisted to its doc_status row, so an ``exclude_doc_id``-less
+    lookup would return the doc itself. Passing ``exclude_doc_id`` gets the
+    earliest OTHER holder of the hash in one bounded/indexed query — replacing
+    the previous ``get_docs_by_statuses(list(DocStatus))`` full-store scan
+    fallback, which materialized the entire doc_status store (every status,
+    including the whole PROCESSED corpus with chunks_list) once per document.
+
+    The same exclusion also drops a row that points at ``current_doc_id`` as its
+    own original while the search continues past it, so this can neither close an
+    ``is_duplicate`` cycle nor hide a genuine third holder behind one (see the
+    base contract for both halves).
+    """
     if not content_hash:
         return None
-
-    match = await doc_status.get_doc_by_content_hash(content_hash)
-    if match and match[0] != current_doc_id:
-        return match
-
-    try:
-        docs = await doc_status.get_docs_by_statuses(list(DocStatus))
-    except Exception:
-        return None
-    for doc_id, doc in docs.items():
-        if doc_id == current_doc_id:
-            continue
-        if doc_status_field(doc, "content_hash", "") == content_hash:
-            return doc_id, doc
-    return None
+    return await doc_status.get_doc_by_content_hash(
+        content_hash, exclude_doc_id=current_doc_id
+    )
 
 
 def make_lightrag_doc_content(merged_text: str) -> str:
