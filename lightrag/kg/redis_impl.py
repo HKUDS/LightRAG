@@ -759,18 +759,26 @@ class RedisDocStatusStorage(DocStatusStorage):
     NOT gated by any persistent semantic marker. ``initialize`` rebuilds it
     from the actual doc_status rows when it is absent (fresh bootstrap of a
     pre-existing deployment, or recovery after the backend was replaced /
-    the derived keys were lost): a short-lease backend lock elects one
-    worker to stream the primary rows into a TEMPORARY keyspace
-    (``…__sched_rebuild:*``) and then atomically switch it into place
-    (per-key ``DELETE`` of the stale official keys + ``RENAME`` of the temp
-    keys inside a single ``MULTI/EXEC``). A crash before the switch leaves
-    the old official index untouched (still serving) and the unpublished
-    temp keyspace safe to discard on the next attempt. Once present, the
-    index is kept consistent by every write and never rebuilt, so a running
-    system's restarts do not clobber a live index. NOTE: an online rebuild
-    over a workspace under concurrent write traffic still requires a
-    maintenance freeze (deployment prerequisite) — the lock only serializes
-    rebuilding workers, it does not isolate unrelated live writers.
+    the derived keys were lost): it streams the primary rows into a
+    TEMPORARY keyspace (``…__sched_rebuild:*``) and then switches it into
+    place by ``RENAME``-ing the temp keys over the official ones in bounded
+    batches (see :meth:`_publish_rebuilt_index` — not one atomic
+    ``MULTI/EXEC``, deliberately). A crash before the switch leaves the old
+    official index untouched (still serving) and the unpublished temp
+    keyspace safe to discard on the next attempt; a crash during the switch
+    leaves a mix of renamed and un-renamed keys, detected on the next
+    startup by the same leftover temp keyspace (see
+    :meth:`_rebuild_scheduling_sidecar`). Once present, the index is kept
+    consistent by every write and never rebuilt, so a running system's
+    restarts do not clobber a live index. Exclusivity across workers comes
+    from :func:`get_data_init_lock` (cross-process, server-instance-wide,
+    held for all of ``initialize()``) rather than a Redis-side lock — see
+    :meth:`_rebuild_scheduling_sidecar` for why that is sufficient as long
+    as LightRAG does not support multiple server instances sharing one
+    Redis. NOTE: an online rebuild over a workspace under concurrent write
+    traffic still requires a maintenance freeze (deployment prerequisite) —
+    ``get_data_init_lock`` only serializes ``initialize()`` calls, it does
+    not isolate unrelated live writers already past their own initialize.
     """
 
     supports_strict_point_reads: ClassVar[bool] = True
@@ -1257,6 +1265,22 @@ class RedisDocStatusStorage(DocStatusStorage):
         return created, doc_id
 
     @staticmethod
+    def _status_value(value: Any) -> str:
+        """Plain status text for a sidecar ZSET key, from either a
+        persisted row (plain ``str``) or a caller-supplied ``DocStatus``.
+
+        ``DocStatus`` mixes in ``str``, so ``json.dumps`` happily encodes it
+        as its bare value ("pending") — but ``str(DocStatus.PENDING)`` goes
+        through ``Enum.__str__`` and yields ``"DocStatus.PENDING"`` instead.
+        Calling plain ``str()`` on a live enum member (as opposed to a value
+        already round-tripped through JSON) silently files the sidecar entry
+        under the wrong key, so every write after that member is added is
+        invisible to ``get_docs_by_statuses_page`` — do not inline this."""
+        if isinstance(value, DocStatus):
+            return value.value
+        return str(value) if value is not None else ""
+
+    @staticmethod
     def _is_duplicate_row(row: Any) -> bool:
         if not isinstance(row, dict):
             return False
@@ -1295,13 +1319,13 @@ class RedisDocStatusStorage(DocStatusStorage):
         makes the whole write atomic under a WATCH on the doc key alone.
         """
         if old_row is not None:
-            old_status = str(old_row.get("status") or "")
+            old_status = self._status_value(old_row.get("status"))
             if old_status:
                 pipe.zrem(
                     self._zset_key(old_status), self._zset_member(old_row, doc_id)
                 )
         if new_row is not None:
-            new_status = str(new_row.get("status") or "")
+            new_status = self._status_value(new_row.get("status"))
             if new_status:
                 pipe.zadd(
                     self._zset_key(new_status),
@@ -1425,7 +1449,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                             old_basename = self._basename_of(old_row)
                             pipe.multi()
                             pipe.delete(main_key)
-                            old_status = str(old_row.get("status") or "")
+                            old_status = self._status_value(old_row.get("status"))
                             if old_status:
                                 pipe.zrem(
                                     self._zset_key(old_status),
@@ -2324,8 +2348,19 @@ class RedisDocStatusStorage(DocStatusStorage):
         exists the index is already built and is kept consistent by every
         write, so leave it untouched (never clobber a live index); if none
         exists but primary rows do, it is a fresh pre-existing deployment or a
-        recovery and must be rebuilt. A short-lease backend lock elects one
-        rebuilding worker; losers wait (bounded) for the index to appear.
+        recovery and must be rebuilt.
+
+        Callable only while holding :func:`get_data_init_lock` — the caller,
+        ``initialize()``, holds it for its whole body. That lock is
+        cross-process and scoped to the ENTIRE server instance, so at most one
+        worker is ever inside this method at a time; LightRAG does not support
+        multiple server instances sharing one Redis. There is therefore no
+        second rebuilder to elect against or wait for here — unlike an
+        ordinary WRITE from an already-initialized peer worker, which is a
+        separate, still-real hazard handled by :meth:`_publish_rebuilt_index`
+        (it refuses to publish over a live index instead of overwriting it).
+        If that premise ever changes (multiple server instances against one
+        Redis), this method needs a distributed rebuild lock again.
 
         Deliberate limitation: "any status key exists" cannot detect a PARTIAL
         index (some status keys or members gone), so a partial loss is NOT
@@ -2338,58 +2373,29 @@ class RedisDocStatusStorage(DocStatusStorage):
         damaged index deletes the ``…__sched:*`` keys and restarts, which takes
         the branch below.
 
-        One exception to "any status key means built": a LEFTOVER temp keyspace
-        with no rebuild lock held. The publish is streamed in bounded batches
-        instead of switched in one transaction (see
-        :meth:`_publish_rebuilt_index`), so a rebuilder that died mid-publish
-        leaves some official keys switched and the rest absent — which the
-        structural check alone would read as healthy. The temp keyspace is what
-        distinguishes that: a completed rebuild leaves none, and only a live
-        rebuilder (lock held) legitimately has one."""
+        One exception to "any status key means built": a LEFTOVER temp
+        keyspace. The publish is streamed in bounded batches instead of
+        switched in one transaction (see :meth:`_publish_rebuilt_index`), so a
+        rebuild that died mid-publish leaves some official keys switched and
+        the rest absent — which the structural check alone would read as
+        healthy. The temp keyspace is what distinguishes that: a completed
+        rebuild leaves none, and with no concurrent rebuilder possible, any
+        keyspace found here is leftover from a prior, interrupted attempt."""
         status_pattern = f"{self._sched_prefix}:status:*"
         primary_pattern = f"{self.final_namespace}:*"
-        lock_key = f"{self._sched_prefix}:rebuild_lock"
         async with self._get_redis_connection() as redis:
-            interrupted = await self._interrupted_publish(redis, lock_key)
+            interrupted = await self._temp_keyspace_present(redis)
             if interrupted:
                 logger.warning(
                     f"[{self.workspace}] a previous scheduling sidecar rebuild for "
-                    f"{self.namespace} left its temp keyspace behind with no rebuild "
-                    f"in progress; the index may be half-published, so it is "
-                    f"rebuilt instead of trusted"
+                    f"{self.namespace} left its temp keyspace behind; the index "
+                    f"may be half-published, so it is rebuilt instead of trusted"
                 )
             if not interrupted and await self._any_key(redis, status_pattern):
                 return  # already built + maintained live
             if not await self._any_key(redis, primary_pattern):
                 return  # nothing to build (empty / freshly dropped workspace)
-            got_lock = await redis.set(lock_key, "1", nx=True, ex=300)
-            if not got_lock:
-                # Another worker is rebuilding: wait (bounded) for the switch.
-                # Completion is "status keys present AND no temp keyspace left":
-                # with a streamed publish the FIRST rename already makes a status
-                # key appear, so status keys alone would release us onto a
-                # half-published index.
-                for _ in range(60):
-                    await asyncio.sleep(1)
-                    if await self._any_key(
-                        redis, status_pattern
-                    ) and not await self._temp_keyspace_present(redis):
-                        return
-                    if not await self._any_key(redis, primary_pattern):
-                        return  # workspace emptied while we waited
-                raise StorageControlPlaneError(
-                    f"[{self.workspace}] scheduling sidecar rebuild by another "
-                    f"worker did not complete in time"
-                )
-            try:
-                # Re-check under the lock: another worker may have finished
-                # between our probe and acquiring the lock. An interrupted
-                # publish is NOT waved through by this check.
-                if not interrupted and await self._any_key(redis, status_pattern):
-                    return
-                await self._do_rebuild(redis, recover_stale_official=interrupted)
-            finally:
-                await redis.delete(lock_key)
+            await self._do_rebuild(redis, recover_stale_official=interrupted)
 
     async def _temp_keyspace_present(self, redis) -> bool:
         """Does the rebuild temp keyspace hold any key? (bounded probe)"""
@@ -2398,18 +2404,6 @@ class RedisDocStatusStorage(DocStatusStorage):
             if await self._any_key(redis, pattern):
                 return True
         return False
-
-    async def _interrupted_publish(self, redis, lock_key: str) -> bool:
-        """True when a temp keyspace survives with NO rebuilder holding the lock.
-
-        Probe order is temp-keyspace then lock, deliberately: a rebuilder that
-        finishes in between reads as "temp present, lock present" — a live
-        rebuild — so the worst case is one extra wait cycle rather than a
-        spurious O(total_docs) rebuild.
-        """
-        if not await self._temp_keyspace_present(redis):
-            return False
-        return await redis.get(lock_key) is None
 
     async def _do_rebuild(self, redis, *, recover_stale_official: bool = False) -> None:
         """Stream the primary rows into a temporary keyspace, then switch it in.
@@ -2479,7 +2473,7 @@ class RedisDocStatusStorage(DocStatusStorage):
                     if not isinstance(row, dict):
                         continue
                     doc_id = key.split(":", 1)[1]
-                    status = str(row.get("status") or "")
+                    status = self._status_value(row.get("status"))
                     if status:
                         statuses_seen.add(status)
                         write_pipe.zadd(

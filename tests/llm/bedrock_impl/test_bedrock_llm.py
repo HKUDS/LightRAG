@@ -14,6 +14,20 @@ from lightrag.llm.bedrock import (
     bedrock_complete_if_cache,
     bedrock_embed,
 )
+from lightrag.llm_roles import ROLES
+
+_ROLE_ATTR_SUFFIXES = (
+    "llm_binding",
+    "llm_model",
+    "llm_binding_host",
+    "llm_binding_api_key",
+    "llm_max_async",
+    "llm_timeout",
+    "aws_region",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+)
 
 _API_ENV_VARS_TO_ISOLATE = (
     "AUTH_ACCOUNTS",
@@ -665,6 +679,14 @@ def _make_args(tmp_path):
         args = parse_args()
     finally:
         sys.argv = original_argv
+
+    # parse_args() reads per-role LLM env vars (e.g. QUERY_LLM_MODEL) straight
+    # from a developer's local .env. Clear them all so these tests exercise
+    # only the base llm_binding/llm_model set below, never leaking whatever
+    # role overrides happen to be configured on the machine running pytest.
+    for spec in ROLES:
+        for suffix in _ROLE_ATTR_SUFFIXES:
+            setattr(args, f"{spec.name}_{suffix}", None)
 
     overrides = dict(
         host="127.0.0.1",

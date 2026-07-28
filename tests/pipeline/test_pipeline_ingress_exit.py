@@ -31,6 +31,7 @@ from lightrag.pipeline import (
     PipelineNextDecision,
     PipelineNextStep,
     _AUTO_RESUME_DOC_STATUSES,
+    _ManualDrainProgress,
 )
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 from lightrag.utils_pipeline import CUSTOM_CHUNK_PATCH_METADATA_KEY
@@ -254,6 +255,7 @@ async def test_refetch_document_failure_republishes_and_arms_auto(tmp_path):
                 token="tok",
                 pipeline_status=status,
                 pipeline_status_lock=lock,
+                drain_progress=_ManualDrainProgress(),
             )
 
         republished = {m.doc_id for m in ingress.drain_documents()}
@@ -353,6 +355,7 @@ async def test_refetch_compensation_failure_does_not_mask_original_error(tmp_pat
                 token="tok",
                 pipeline_status=status,
                 pipeline_status_lock=lock,
+                drain_progress=_ManualDrainProgress(),
             )
     finally:
         await rag.finalize_storages()

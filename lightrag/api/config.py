@@ -600,6 +600,13 @@ def parse_args() -> argparse.Namespace:
         "SCAN_ENQUEUE_BATCH_SIZE", DEFAULT_SCAN_ENQUEUE_BATCH_SIZE, int
     )
 
+    # Where /documents/scan puts its disposable candidate spool, which holds the
+    # O(files-in-INPUT_DIR) ordering state that keeps scan memory bounded (LR2
+    # §8.2). Empty → WORKING_DIR/scan_spool. Set this when WORKING_DIR is a
+    # network volume, or when the OS temp dir is a RAM-backed tmpfs (the usual
+    # systemd default) — the point of the spool is to be on real disk.
+    args.scan_spool_dir = get_env_value("SCAN_SPOOL_DIR", "", str)
+
     # Admission capacity for ordinary ingestion (LR2 §9.1); 0 disables it.
     args.max_pending_documents = get_env_value(
         "MAX_PENDING_DOCUMENTS", DEFAULT_MAX_PENDING_DOCUMENTS, int

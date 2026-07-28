@@ -1,15 +1,15 @@
-"""Streaming scan discovery in bounded batches (LR2 Phase 4-c, §8.2/§8.4).
+"""Disk-spooled scan ordering in bounded batches (LR2 §8.2/§8.4).
 
-Discovery is a single generator pass and the scan holds at most
-``SCAN_ENQUEUE_BATCH_SIZE`` claimed files: each batch is written to doc_status as
-soon as it fills — while discovery is still running — so peak memory is set by
-the batch, not by how many files the input directory holds. Inside one batch the
-first physical file to claim a canonical source key wins; a later variant is
-archived (never deleted).
+Discovery/classification is a single generator pass. New candidates and their
+scan-wide canonical claims live in a disposable SQLite spool, not Python memory.
+After discovery, its on-disk mtime index yields at most
+``SCAN_ENQUEUE_BATCH_SIZE`` paths per enqueue call. The first physical file to
+claim a canonical source key wins; a later variant is archived (never deleted).
 """
 
 import asyncio
 import importlib
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,21 +80,27 @@ def _batch_size(monkeypatch, size: int) -> None:
     )
 
 
-def test_batches_are_written_while_discovery_is_still_streaming(tmp_path, monkeypatch):
-    """The defining property of §8.2: batch 1 reaches doc_status BEFORE the last
-    file is discovered, and no batch exceeds ``SCAN_ENQUEUE_BATCH_SIZE``.
+def test_candidates_are_spooled_then_written_in_global_mtime_order(
+    tmp_path, monkeypatch
+):
+    """Exact global order crosses enqueue-batch boundaries without O(files) RAM.
 
-    Fix-proof: the previous implementation materialized ``scan_directory_for_new_files()``
-    into a list, grouped it by canonical name and enqueued everything in ONE
-    call — so the first write could not happen until discovery had finished, and
-    both structures grew with the directory."""
+    Discovery order is deliberately unrelated to mtime. Nothing reaches
+    doc_status until the unordered stream is exhausted; then bounded batches
+    preserve one global oldest-first order.
+    """
 
     async def _run():
         rag = _StreamRag()
         doc_manager = DocumentManager(str(tmp_path))
         _batch_size(monkeypatch, 2)
 
-        files = [tmp_path / f"doc{index}.txt" for index in range(5)]
+        by_age = [tmp_path / f"age-{index}.txt" for index in range(5)]
+        for index, file_path in enumerate(by_age):
+            file_path.write_text(str(index), encoding="utf-8")
+            stamp = 1_600_000_000 + index
+            os.utime(file_path, (stamp, stamp))
+        files = [by_age[4], by_age[1], by_age[3], by_age[0], by_age[2]]
         events: list[tuple[str, object]] = []
 
         def _iter_new_files():
@@ -104,9 +110,9 @@ def test_batches_are_written_while_discovery_is_still_streaming(tmp_path, monkey
 
         doc_manager.iter_new_files = _iter_new_files
 
-        async def _capture_batch(_rag, file_paths, _track_id):
-            events.append(("flush", [path.name for path in file_paths]))
-            return len(file_paths)
+        async def _capture_batch(_rag, candidates, _track_id):
+            events.append(("flush", [c.path.name for c in candidates]))
+            return len(candidates)
 
         monkeypatch.setattr(
             _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
@@ -116,31 +122,31 @@ def test_batches_are_written_while_discovery_is_still_streaming(tmp_path, monkey
 
         flushes = [event for event in events if event[0] == "flush"]
         assert [len(names) for _, names in flushes] == [2, 2, 1]
-        assert sorted(name for _, names in flushes for name in names) == [
-            f"doc{index}.txt" for index in range(5)
+        assert [name for _, names in flushes for name in names] == [
+            path.name for path in by_age
         ]
-        # Streaming, not batching-after-collecting: the first write lands before
-        # discovery yields its last file.
+        # Global sorting needs to see every candidate, but only the disposable
+        # disk spool grows; doc_status writes start after discovery.
         first_flush = events.index(flushes[0])
         last_yield = max(
             index for index, event in enumerate(events) if event[0] == "yield"
         )
-        assert first_flush < last_yield
+        assert first_flush > last_yield
         # One processing drive for the whole scan (§8.1), never per batch.
         assert rag.process_calls == 1
 
     asyncio.run(_run())
 
 
-def test_first_claim_in_a_batch_wins_and_the_alias_is_archived(tmp_path, monkeypatch):
-    """§8.4: a canonical key claimed inside the current batch is not yet visible
-    to the doc_status lookup, so the claim set is what stops a second variant
-    from minting a duplicate document. The loser is archived, not deleted."""
+def test_first_scan_wide_claim_wins_and_the_alias_is_archived(tmp_path, monkeypatch):
+    """The disk UNIQUE claim replaces both the old batch map and cross-batch
+    visibility through early doc_status writes."""
 
     async def _run():
         rag = _StreamRag()
         doc_manager = DocumentManager(str(tmp_path))
-        _batch_size(monkeypatch, 8)
+        # The variants would occupy different enqueue batches if both survived.
+        _batch_size(monkeypatch, 1)
 
         plain = doc_manager.input_dir / "same.txt"
         hinted = doc_manager.input_dir / "same.[native].txt"
@@ -151,9 +157,9 @@ def test_first_claim_in_a_batch_wins_and_the_alias_is_archived(tmp_path, monkeyp
 
         batched: list[Path] = []
 
-        async def _capture_batch(_rag, file_paths, _track_id):
-            batched.extend(file_paths)
-            return len(file_paths)
+        async def _capture_batch(_rag, candidates, _track_id):
+            batched.extend(c.path for c in candidates)
+            return len(candidates)
 
         monkeypatch.setattr(
             _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
@@ -173,6 +179,94 @@ def test_first_claim_in_a_batch_wins_and_the_alias_is_archived(tmp_path, monkeyp
         # Only ONE canonical lookup per physical file; the alias never reaches
         # the enqueue path (which would have created a ``dup-*`` row).
         assert rag.doc_status.lookups == ["same.txt", "same.txt"]
+
+    asyncio.run(_run())
+
+
+def test_unreadable_mtime_sorts_after_readable_candidates(tmp_path, monkeypatch):
+    """Losing a stat costs priority information, never the candidate itself."""
+
+    async def _run():
+        rag = _StreamRag()
+        doc_manager = DocumentManager(str(tmp_path))
+        _batch_size(monkeypatch, 2)
+
+        readable = tmp_path / "middle.txt"
+        readable.write_text("body", encoding="utf-8")
+        missing_b = tmp_path / "z-gone.txt"
+        missing_a = tmp_path / "a-gone.txt"
+        doc_manager.iter_new_files = lambda: iter([missing_b, readable, missing_a])
+
+        ordered: list[str] = []
+
+        async def _capture_batch(_rag, candidates, _track_id):
+            ordered.extend(c.path.name for c in candidates)
+            return len(candidates)
+
+        monkeypatch.setattr(
+            _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
+        )
+
+        await run_scanning_process(rag, doc_manager, "track-missing-mtime")
+
+        assert ordered == ["middle.txt", "a-gone.txt", "z-gone.txt"]
+
+    asyncio.run(_run())
+
+
+def test_an_unusable_spool_directory_fails_the_scan_closed(
+    tmp_path, monkeypatch, caplog
+):
+    """Fail-closed placement, at the route level.
+
+    The scan reports the misconfiguration and enqueues nothing, rather than
+    silently relocating its O(number of files) ordering state to a possibly
+    RAM-backed /tmp and surfacing the problem as an OOM kill partway through.
+    Files stay in INPUT_DIR, so fixing the setting and re-scanning loses
+    nothing.
+    """
+
+    async def _run():
+        rag = _StreamRag()
+        doc_manager = DocumentManager(str(tmp_path))
+        blocker = tmp_path / "blocked-by-a-regular-file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(
+            _document_routes,
+            "global_args",
+            SimpleNamespace(
+                scan_enqueue_batch_size=2,
+                scan_spool_dir=str(blocker / "spool"),
+            ),
+        )
+
+        candidate = doc_manager.input_dir / "candidate.txt"
+        candidate.write_text("body", encoding="utf-8")
+
+        batches: list[object] = []
+
+        async def _capture_batch(_rag, candidates, _track_id):
+            batches.append(candidates)
+            return len(candidates)
+
+        monkeypatch.setattr(
+            _document_routes, "pipeline_enqueue_scan_batch", _capture_batch
+        )
+
+        lightrag_logger = importlib.import_module("lightrag.utils").logger
+        previous = lightrag_logger.propagate
+        lightrag_logger.propagate = True
+        try:
+            with caplog.at_level("ERROR", logger=lightrag_logger.name):
+                await run_scanning_process(rag, doc_manager, "track-bad-spool")
+        finally:
+            lightrag_logger.propagate = previous
+
+        assert batches == []
+        assert candidate.exists()
+        assert not (doc_manager.input_dir / PARSED_DIR_NAME).exists()
+        # The failure names the knob the operator has to fix.
+        assert "SCAN_SPOOL_DIR" in caplog.text
 
     asyncio.run(_run())
 

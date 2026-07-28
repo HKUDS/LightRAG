@@ -50,11 +50,18 @@ def _ensure_shared_storage_initialized():
 class _ResolverDocStatus:
     """doc_status double driven by an explicit ``{canonical_key: resolution}`` map."""
 
-    def __init__(self, resolutions: dict, rows: dict | None = None):
+    def __init__(
+        self,
+        resolutions: dict,
+        rows: dict | None = None,
+        *,
+        delete_error: Exception | None = None,
+    ):
         self.resolutions = resolutions
         self.rows = rows or {}
         self.deleted_ids: list[str] = []
         self.hydrated: list[str] = []
+        self.delete_error = delete_error
 
     async def resolve_doc_source_strict(self, canonical_source_key):
         return self.resolutions.get(canonical_source_key, SourceAbsent())
@@ -64,13 +71,17 @@ class _ResolverDocStatus:
         return {doc_id: self.rows[doc_id] for doc_id in doc_ids if doc_id in self.rows}
 
     async def delete(self, ids):
+        if self.delete_error is not None:
+            raise self.delete_error
         self.deleted_ids.extend(ids)
 
 
 class _ClassifyRag:
-    def __init__(self, resolutions, rows=None, full_docs=None):
+    def __init__(self, resolutions, rows=None, full_docs=None, delete_error=None):
         self.workspace = f"scanexit-{uuid4().hex[:8]}"
-        self.doc_status = _ResolverDocStatus(resolutions, rows)
+        self.doc_status = _ResolverDocStatus(
+            resolutions, rows, delete_error=delete_error
+        )
         self.full_docs = full_docs if full_docs is not None else _StrictFullDocs({})
         self.process_calls = 0
 
@@ -291,9 +302,9 @@ def _scan_rig(tmp_path, monkeypatch, rag):
     doc_manager = DocumentManager(str(tmp_path))
     batched: list[Path] = []
 
-    async def _capture_batch(_rag, file_paths, _track_id):
-        batched.extend(file_paths)
-        return len(file_paths)
+    async def _capture_batch(_rag, candidates, _track_id):
+        batched.extend(c.path for c in candidates)
+        return len(candidates)
 
     monkeypatch.setattr(_document_routes, "pipeline_enqueue_scan_batch", _capture_batch)
     return doc_manager, batched
@@ -372,6 +383,67 @@ def test_stale_stub_is_deleted_then_enqueued_as_new(tmp_path, monkeypatch):
         assert rag.doc_status.deleted_ids == ["doc-stub"]
         assert batched == [fixed]
         assert fixed.exists()  # enqueue is mocked; the file is not archived
+
+    asyncio.run(_run())
+
+
+def test_failed_stub_delete_is_counted_as_an_error_not_a_resume(tmp_path, monkeypatch):
+    """A STALE_STUB whose ``doc_status`` delete FAILS is an error, nothing else.
+
+    It used to also be tallied under ``resume_same_physical_source`` and added to
+    the run summary's ``resuming`` count — reporting a document as being advanced
+    when nothing can advance it: the row has no ``full_docs`` content, so the
+    resume path can never move it. The file is simply left for the next scan."""
+
+    async def _run():
+        rag = _ClassifyRag(
+            {"fixed.txt": _unique("doc-stub", DocStatus.FAILED)},
+            rows={
+                "doc-stub": _row(
+                    "doc-stub", DocStatus.FAILED, {"source_file": "fixed.txt"}
+                )
+            },
+            full_docs=_StrictFullDocs({}),
+            delete_error=RuntimeError("doc_status delete boom"),
+        )
+        doc_manager, batched = _scan_rig(tmp_path, monkeypatch, rag)
+        fixed = doc_manager.input_dir / "fixed.txt"
+        fixed.write_text("fixed body", encoding="utf-8")
+
+        reported: dict = {}
+
+        class _Reporter:
+            enabled = False
+
+            def count(self, key, amount=1):
+                reported[key] = reported.get(key, 0) + amount
+
+            def sample(self, *_a, **_k):
+                return None
+
+            def flush(self):
+                return None
+
+            def renew(self):
+                return None
+
+            def finish(self, *_a, **_k):
+                return None
+
+        monkeypatch.setattr(
+            _document_routes, "_ScanJobReporter", lambda *_a: _Reporter()
+        )
+
+        await run_scanning_process(rag, doc_manager, "track-stub-fail")
+
+        # Not enqueued, not archived, row kept (delete failed) — and counted as
+        # an error ONLY.
+        assert batched == []
+        assert rag.doc_status.deleted_ids == []
+        assert fixed.exists()
+        assert reported.get("errors") == 1
+        assert _ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value not in reported
+        assert _ScanFileClass.STALE_STUB.value not in reported
 
     asyncio.run(_run())
 

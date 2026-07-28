@@ -206,8 +206,7 @@ async def _ollama_model_if_cache(
             if response.get("done_reason") == "length":
                 logger.warning(
                     "Ollama response truncated by token limit "
-                    f"(done_reason=length, content_len={len(model_response)}); "
-                    "returning partial content but not caching it"
+                    f"(done_reason=length, content_len={len(model_response)}), returning partial content"
                 )
                 model_response = TruncatedResponse(model_response)
 

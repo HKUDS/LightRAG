@@ -81,13 +81,24 @@ TERMINAL_MANUAL_REQUEST_IDS_CAPACITY = 4096
 # resource from one stalled workspace's feeder.
 DOCUMENT_CHANNEL_CAPACITY = 4096
 
-# Bound of the sticky manual-retry channel per workspace (LR2 §10.1). Unlike the
-# document channel, overflow here CANNOT be dropped and recovered later: a manual
-# retry is an explicit human intent with an ACK contract, so the publish is
-# refused instead and the caller is told to retry.
-MANUAL_CHANNEL_CAPACITY = get_env_value(
-    "MAX_UNACKED_MANUAL_RETRIES", DEFAULT_MAX_UNACKED_MANUAL_RETRIES, int
-)
+
+def manual_channel_capacity() -> int:
+    """Bound of the sticky manual-retry channel per workspace (LR2 §10.1).
+
+    Unlike the document channel, overflow here CANNOT be dropped and recovered
+    later: a manual retry is an explicit human intent with an ACK contract, so
+    the publish is refused instead and the caller is told to retry.
+
+    Resolved per mailbox construction rather than captured at import, matching
+    how ``SCAN_ENQUEUE_BATCH_SIZE`` is read per scan: a module-level constant
+    baked the value in at the first import of this module, so it depended on
+    whether the env had been loaded yet and a restart-free config reload could
+    never take effect.
+    """
+    return get_env_value(
+        "MAX_UNACKED_MANUAL_RETRIES", DEFAULT_MAX_UNACKED_MANUAL_RETRIES, int
+    )
+
 
 # Hard ceiling for one mailbox wait RPC.  A Manager server runs each client
 # connection on its own thread; a client SIGKILLed while a wait_for_* call is
@@ -235,6 +246,8 @@ class PipelineIngress(Protocol):
 
     def ack_manual_retry(self, request_id: str) -> bool: ...
 
+    def cancel_manual_retries(self) -> int: ...
+
     def clear(self) -> None: ...
 
     def counts(self) -> Dict[str, Any]: ...
@@ -261,11 +274,19 @@ class PipelineIngressMailbox:
     def __init__(
         self,
         document_capacity: int = DOCUMENT_CHANNEL_CAPACITY,
-        manual_capacity: int = MANUAL_CHANNEL_CAPACITY,
+        manual_capacity: int | None = None,
     ) -> None:
         self._cond = threading.Condition()
         self._document_capacity = max(1, int(document_capacity))
-        self._manual_capacity = max(1, int(manual_capacity))
+        # ``None`` = read the configured bound now (see manual_channel_capacity).
+        self._manual_capacity = max(
+            1,
+            int(
+                manual_channel_capacity()
+                if manual_capacity is None
+                else manual_capacity
+            ),
+        )
         self._documents: deque[PipelineIngressMessage] = deque()
         self._document_overflows = 0
         self._auto_rescan_pending = False
@@ -391,6 +412,24 @@ class PipelineIngressMailbox:
             self._manual_retries.pop(request_id, None)
             self._terminal_ids.add(request_id, MANUAL_RETRY_ACKED)
             return True
+
+    def cancel_manual_retries(self) -> int:
+        """Retire every pending manual request as CANCELLED_BY_CLEAR; returns the
+        count. Touches ONLY the manual channel — unlike :meth:`clear`, the document
+        notifications and the auto-rescan flag are legitimate pending work and are
+        left alone.
+
+        Used by the ``recovery_required`` force-reset: a sticky un-ACKed request
+        makes ``/documents/scan`` refuse its reservation (it may not jump the
+        manual FIFO), so clearing a fence without clearing these would leave the
+        documented recovery path blocked. Terminal ids are recorded, so a delayed
+        replay of a cancelled id is refused rather than silently re-queued."""
+        with self._cond:
+            cancelled = len(self._manual_retries)
+            for request_id in self._manual_retries:
+                self._terminal_ids.add(request_id, MANUAL_RETRY_CANCELLED_BY_CLEAR)
+            self._manual_retries.clear()
+            return cancelled
 
     def clear(self) -> None:
         with self._cond:
@@ -535,6 +574,9 @@ class PipelineIngressHub:
     def ack_manual_retry(self, namespace: str, request_id: str) -> bool:
         return self._mailbox(namespace).ack_manual_retry(request_id)
 
+    def cancel_manual_retries(self, namespace: str) -> int:
+        return self._mailbox(namespace).cancel_manual_retries()
+
     def clear(self, namespace: str) -> None:
         self._mailbox(namespace).clear()
 
@@ -572,6 +614,7 @@ class _PipelineIngressHubProxy(BaseProxy):
         "peek_next_manual_retry",
         "snapshot_manual_retries",
         "ack_manual_retry",
+        "cancel_manual_retries",
         "clear",
         "has_work",
         "counts",
@@ -611,6 +654,9 @@ class _PipelineIngressHubProxy(BaseProxy):
 
     def ack_manual_retry(self, namespace: str, request_id: str) -> bool:
         return self._callmethod("ack_manual_retry", (namespace, request_id))
+
+    def cancel_manual_retries(self, namespace: str) -> int:
+        return self._callmethod("cancel_manual_retries", (namespace,))
 
     def clear(self, namespace: str) -> None:
         self._callmethod("clear", (namespace,))
@@ -675,6 +721,9 @@ class ManagerPipelineIngress:
     def ack_manual_retry(self, request_id: str) -> bool:
         return self._hub.ack_manual_retry(self.namespace, request_id)
 
+    def cancel_manual_retries(self) -> int:
+        return self._hub.cancel_manual_retries(self.namespace)
+
     def clear(self) -> None:
         self._hub.clear(self.namespace)
 
@@ -716,11 +765,19 @@ class AsyncioPipelineIngress:
     def __init__(
         self,
         document_capacity: int = DOCUMENT_CHANNEL_CAPACITY,
-        manual_capacity: int = MANUAL_CHANNEL_CAPACITY,
+        manual_capacity: int | None = None,
     ) -> None:
         self.owning_loop = asyncio.get_running_loop()
         self._document_capacity = max(1, int(document_capacity))
-        self._manual_capacity = max(1, int(manual_capacity))
+        # ``None`` = read the configured bound now (see manual_channel_capacity).
+        self._manual_capacity = max(
+            1,
+            int(
+                manual_channel_capacity()
+                if manual_capacity is None
+                else manual_capacity
+            ),
+        )
         self.document_messages: asyncio.Queue[PipelineIngressMessage] = asyncio.Queue()
         self._document_overflows = 0
         self._auto_rescan_pending = False
@@ -842,6 +899,15 @@ class AsyncioPipelineIngress:
         self._terminal_ids.add(request_id, MANUAL_RETRY_ACKED)
         self._maybe_clear_event()
         return True
+
+    def cancel_manual_retries(self) -> int:
+        """Manual channel only (see PipelineIngressMailbox.cancel_manual_retries)."""
+        cancelled = len(self._manual_retries)
+        for request_id in self._manual_retries:
+            self._terminal_ids.add(request_id, MANUAL_RETRY_CANCELLED_BY_CLEAR)
+        self._manual_retries.clear()
+        self._maybe_clear_event()
+        return cancelled
 
     def clear(self) -> None:
         for request_id in self._manual_retries:

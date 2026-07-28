@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import ssl as ssl_module
 import time
 import asyncio
 from dataclasses import dataclass, field
@@ -500,18 +499,17 @@ class ClientManager:
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 
-                ssl_context = None
-                if use_ssl and not verify_certs:
-                    ssl_context = ssl_module.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl_module.CERT_NONE
-
+                # No explicit ssl_context here: opensearch-py already builds the
+                # exact same insecure context internally from verify_certs=False
+                # (check_hostname=False, CERT_NONE — see AsyncHttpConnection) when
+                # none is supplied. Passing our own duplicate makes it emit
+                # "When using `ssl_context`, all other SSL related kwargs are
+                # ignored" at every startup for no behavioral difference.
                 client = AsyncOpenSearch(
                     hosts=hosts,
                     http_auth=(username, password) if username else None,
                     use_ssl=use_ssl,
                     verify_certs=verify_certs,
-                    ssl_context=ssl_context,
                     ssl_show_warn=False,
                     timeout=timeout,
                     max_retries=max_retries,
@@ -1794,8 +1792,10 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return [None] * len(ids)
+            # Scheduling-safe: a whole-call transport error is NOT "every id is
+            # absent" -- see OpenSearchKVStorage.get_by_ids for the same contract.
             logger.error(f"[{self.workspace}] Error getting doc statuses: {e}")
-            return [None] * len(ids)
+            raise
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return the subset of keys that do not exist in storage."""
@@ -3696,7 +3696,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return False
+                return False
+            # A whole-call transport error is NOT "the node doesn't exist" --
+            # callers (e.g. entity merge/dedup) would otherwise treat a
+            # confirmed-absent node the same as an unknown-state one.
+            logger.error(f"[{self.workspace}] Error checking node existence: {e}")
+            raise
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """Check whether an edge exists between two nodes.
@@ -3714,7 +3719,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return False
+                return False
+            logger.error(f"[{self.workspace}] Error checking edge existence: {e}")
+            raise
 
     async def node_degree(self, node_id: str) -> int:
         """Count the number of edges connected to a node."""
@@ -3739,7 +3746,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return 0
+                return 0
+            logger.error(f"[{self.workspace}] Error counting node degree: {e}")
+            raise
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Sum of degrees of both endpoint nodes."""
@@ -3761,7 +3770,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return None
+                return None
+            logger.error(f"[{self.workspace}] Error getting node {node_id}: {e}")
+            raise
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -3785,7 +3796,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return None
+                return None
+            logger.error(
+                f"[{self.workspace}] Error getting edge "
+                f"{source_node_id}->{target_node_id}: {e}"
+            )
+            raise
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Get all (source, target) edge tuples connected to a node."""
@@ -3843,7 +3859,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return None
+                return None
+            logger.error(
+                f"[{self.workspace}] Error getting node edges for {source_node_id}: {e}"
+            )
+            raise
 
     # --- Batch operations ---
 
@@ -3865,7 +3885,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return {}
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting nodes: {e}")
+            raise
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Batch-fetch edge counts for multiple nodes using aggregations."""
@@ -3917,7 +3939,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return {}
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting node degrees: {e}")
+            raise
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
@@ -3976,7 +4000,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            pass
+                return result
+            logger.error(f"[{self.workspace}] Error batch-getting node edges: {e}")
+            raise
         return result
 
     # --- Upsert operations ---
@@ -3994,7 +4020,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             await self.client.index(index=self._nodes_index, id=node_id, body=doc)
             self._nodes_dirty = True
         except OpenSearchException as e:
+            # Swallowing here would let the pipeline believe this node was
+            # persisted and mark the document processed -- raise so it is
+            # marked failed and retried instead.
             logger.error(f"[{self.workspace}] Error upserting node {node_id}: {e}")
+            raise
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -4027,9 +4057,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             await self.client.index(index=self._edges_index, id=edge_id, body=doc)
             self._edges_dirty = True
         except OpenSearchException as e:
+            # A transient failure here (including one propagated from the
+            # has_node() existence check above) must not be reported as a
+            # successful edge write -- raise so the pipeline marks the
+            # document failed and retries, instead of silently proceeding
+            # with a graph that never got the edge.
             logger.error(
                 f"[{self.workspace}] Error upserting edge {source_node_id}->{target_node_id}: {e}"
             )
+            raise
 
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes using the OpenSearch bulk API.
@@ -4067,6 +4103,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._nodes_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error during batch node upsert: {e}")
+            raise
 
     async def has_nodes_batch(self, node_ids: list[str]) -> set[str]:
         """Check existence of multiple nodes using a single mget request.
@@ -4089,7 +4126,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return set()
+                return set()
+            logger.error(f"[{self.workspace}] Error batch-checking node existence: {e}")
+            raise
 
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -4147,7 +4186,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             )
             self._edges_dirty = True
         except OpenSearchException as e:
+            # Same reasoning as upsert_edge: has_nodes_batch() above can now
+            # raise on a transient error too, and either way a swallowed
+            # failure here must not look like a successful batch write.
             logger.error(f"[{self.workspace}] Error during batch edge upsert: {e}")
+            raise
 
     # --- Delete operations ---
 
@@ -4186,6 +4229,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
+            raise
 
     async def remove_nodes(self, nodes: list[str]) -> None:
         """Batch-delete multiple nodes and their connected edges.
@@ -4234,6 +4278,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
+            raise
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
         """Batch-delete multiple edges by canonical ID (real-time).
@@ -4278,6 +4323,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
+            raise
 
     # --- Query operations ---
 
@@ -4323,7 +4369,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting all labels: {e}")
+            raise
 
     async def _collect_node_ids(
         self, limit: int, exclude_ids: set[str] | None = None
@@ -4525,6 +4573,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._mark_indices_missing()
                 return KnowledgeGraph()
             logger.error(f"[{self.workspace}] Graph query failed: {e}")
+            raise
 
         return result
 
@@ -4597,6 +4646,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 self._mark_indices_missing()
                 return result
             logger.error(f"[{self.workspace}] Error in get_knowledge_graph_all: {e}")
+            raise
         return result
 
     async def _bfs_subgraph_ppl(
@@ -4766,10 +4816,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "_source": ["source_node_id", "target_node_id"],
                 "size": 10000,
             }
-            try:
-                resp = await self.client.search(index=self._edges_index, body=body)
-            except OpenSearchException:
-                break
+            # No try/except here: a transport error must propagate rather than
+            # being read as "no more neighbors," which would silently truncate
+            # the subgraph while is_truncated stays False (looks complete).
+            resp = await self.client.search(index=self._edges_index, body=body)
 
             next_level = set()
             for hit in resp["hits"]["hits"]:
@@ -4804,10 +4854,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         # Fetch all edges between seen nodes using PIT scrolling
         all_ids = list(seen_nodes)
         if all_ids:
-            try:
-                await self._append_edges_between_nodes(all_ids, result)
-            except OpenSearchException:
-                pass
+            # No try/except here either -- same reasoning as the level-fetch
+            # above: a partial edge fetch must not be mistaken for a complete
+            # (but small) subgraph.
+            await self._append_edges_between_nodes(all_ids, result)
 
         result.is_truncated = len(seen_nodes) >= max_nodes
         return result
@@ -4854,7 +4904,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting all nodes: {e}")
+            raise
 
     async def get_all_edges(self) -> list[dict]:
         """Get all edges with source/target fields added."""
@@ -4901,7 +4953,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting all edges: {e}")
+            raise
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get node labels ranked by edge degree (most connected first)."""
@@ -4931,7 +4985,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error getting popular labels: {e}")
+            raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """Search node labels with wildcard and prefix matching."""
@@ -4972,7 +5028,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()
-            return []
+                return []
+            logger.error(f"[{self.workspace}] Error searching labels: {e}")
+            raise
 
     async def index_done_callback(self) -> None:
         """Refresh both node and edge indices."""
@@ -5537,8 +5595,12 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return []
+            # Matches the raise-on-unexpected-error convention every other
+            # vector backend's query() follows (Postgres/Milvus/Qdrant/Mongo):
+            # a transport error is not "no results," which the LLM would
+            # otherwise report as a confident "nothing found."
             logger.error(f"[{self.workspace}] Error querying vectors: {e}")
-            return []
+            raise
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts/deletes (pipeline aborting on error)."""

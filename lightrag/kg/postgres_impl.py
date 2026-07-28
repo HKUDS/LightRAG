@@ -1584,7 +1584,7 @@ class PostgreSQLDB:
                 f"Failed to create partial content_hash index on LIGHTRAG_DOC_STATUS: {e}"
             )
 
-    async def _migrate_doc_status_add_scheduling_fields(self):
+    async def _migrate_doc_status_add_scheduling_index(self):
         """Create the keyset-sweep index backing the memory-bounding scheduling
         page API (Phase 1).
 
@@ -2053,10 +2053,10 @@ class PostgreSQLDB:
         # Migrate LIGHTRAG_DOC_STATUS to add the keyset-sweep index backing the
         # memory-bounding scheduling page API (Phase 1)
         try:
-            await self._migrate_doc_status_add_scheduling_fields()
+            await self._migrate_doc_status_add_scheduling_index()
         except Exception as e:
             logger.error(
-                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_STATUS scheduling fields: {e}"
+                f"PostgreSQL, Failed to migrate LIGHTRAG_DOC_STATUS scheduling index: {e}"
             )
 
     async def _migrate_create_full_entities_relations_tables(self):

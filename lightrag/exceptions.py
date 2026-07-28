@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from typing import Literal
+from typing import Any, Literal
 
 
 class APIStatusError(Exception):
@@ -132,6 +132,68 @@ class PipelineBackpressureError(RuntimeError):
             f"{self.reason}: {current} document(s) already active or reserved "
             f"+ {requested} requested exceeds capacity {capacity}"
         )
+
+
+class PipelineReservationConflictError(RuntimeError):
+    """A pipeline mutual-exclusion fence refused this caller.
+
+    The structured counterpart of the reservation helpers'
+    ``PipelineReservationResult`` for the paths that have to RAISE rather than
+    return it — the SDK / direct ``apipeline_enqueue_documents`` entry points,
+    which have no HTTP response to shape.
+
+    ``conflict`` is the ``PipelineReservationConflict`` member (kept as a plain
+    string-valued enum member so importing this module never pulls in the
+    shared-storage layer) and ``fence`` is the ``pipeline_status`` flag that
+    refused, when one specific flag did. LR2 §9.1 requires the distinction to
+    survive as data: ``recovery_required`` is a fenced workspace (→ 503) while
+    a manual freeze / ``scanning_exclusive`` / ``destructive_busy`` is a bounded
+    window the caller should retry (→ 409), and an SDK caller cannot tell those
+    apart from a message string.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        conflict: Any = None,
+        fence: str | None = None,
+    ) -> None:
+        self.conflict = conflict
+        self.fence = fence
+        super().__init__(message)
+
+    @property
+    def recovery_required(self) -> bool:
+        """True when the workspace is fenced pending recovery (→ 503), as
+        opposed to a bounded mutual-exclusion window (→ 409)."""
+        return getattr(self.conflict, "value", self.conflict) == "recovery_required"
+
+
+class PipelineRecoveryRequiredError(RuntimeError):
+    """The pipeline fenced its own workspace with ``recovery_required``.
+
+    Raised when a manual retry's DRAIN_TO_IDLE cannot make forward progress:
+    the same active ``doc_status`` rows blocked the drain for several
+    consecutive rounds without any of them changing state, so re-sweeping can
+    only spin (LR2 §7.2 "DRAIN_TO_IDLE 的前进性" / §13.2 case 16). The workspace
+    is fenced instead, every mutation is refused with 503, and
+    ``blocked_doc_ids`` carries the BOUNDED sample an operator needs to find the
+    offending rows — never the whole set.
+
+    Two causes reach this, distinguished by the fence record's ``kind``:
+    ``manual_drain_stalled`` (rows that look routable but never change state) and
+    ``manual_drain_blocked`` (rows the drain can never advance at all — an
+    unfinished custom-chunk operation). Both are cleared the same way:
+    ``POST /documents/recovery/force_reset``, which also cancels the queued manual
+    intents, since a sticky request is itself what makes ``/documents/scan``
+    refuse (``refuse_when_manual_pending``) and ``/scan`` is the remedy for the
+    blocked case.
+    """
+
+    def __init__(self, message: str, *, blocked_doc_ids: tuple[str, ...] = ()) -> None:
+        self.blocked_doc_ids = blocked_doc_ids
+        super().__init__(message)
 
 
 class SourceConflictRepairCASError(StorageControlPlaneError):

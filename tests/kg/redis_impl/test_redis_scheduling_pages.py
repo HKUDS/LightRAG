@@ -271,6 +271,32 @@ async def test_status_transition_moves_zset_membership(storage):
 
 
 @pytest.mark.asyncio
+async def test_upsert_with_a_live_docstatus_enum_is_discoverable(storage):
+    """Fix-proof: production callers (e.g. ``apipeline_enqueue_documents``)
+    write ``{"status": DocStatus.PENDING}`` — the live enum member, not its
+    ``.value`` string. ``DocStatus`` mixes in ``str`` so ``json.dumps``
+    happily persists the primary row as ``"pending"``, but the sidecar used
+    to key its ZSET off a plain ``str()`` call, which goes through
+    ``Enum.__str__`` and produces ``"DocStatus.PENDING"`` instead — filing
+    the brand-new doc under a ZSET no page/count query ever reads. Every
+    test above this one passes a pre-lowered plain string and would not have
+    caught this."""
+    await _bootstrap(storage)
+    await storage.upsert({"doc-1": _doc(DocStatus.PENDING, file_path="a.pdf")})
+
+    assert (await storage.get_by_id("doc-1"))["status"] == "pending"
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 1
+    ids, _ = await _sweep_ids(storage, [DocStatus.PENDING], limit=10)
+    assert ids == ["doc-1"]
+
+    # A transition written with the live enum, too, must move the membership
+    # rather than leaving it stranded under the mis-keyed bucket.
+    await storage.update_doc_status_fields("doc-1", {"status": DocStatus.PROCESSING})
+    assert await storage.count_docs_by_statuses([DocStatus.PENDING]) == 0
+    assert await storage.count_docs_by_statuses([DocStatus.PROCESSING]) == 1
+
+
+@pytest.mark.asyncio
 async def test_atomic_write_retries_on_watch_conflict(storage):
     """A concurrent bump of the doc key between the WATCH read and EXEC forces
     a retry; the write still lands and the sidecar stays consistent."""
@@ -712,8 +738,8 @@ async def test_a_half_published_index_is_rebuilt_not_trusted(storage):
         fake.store[f"{storage.final_namespace}:doc-{index}"] = json.dumps(
             _doc("pending", file_path=f"f{index}.pdf")
         )
-    # One document's entry published, the other two still in the temp keyspace,
-    # no rebuild lock held — exactly the state a killed rebuilder leaves.
+    # One document's entry published, the other two still in the temp keyspace —
+    # exactly the state a killed rebuilder leaves.
     fake.zsets[f"{storage._sched_prefix}:status:pending"] = {"x|doc-0"}
     fake.zsets[f"{storage._sched_prefix}_rebuild:status:pending"] = {"x|doc-1"}
 
@@ -723,20 +749,3 @@ async def test_a_half_published_index_is_rebuilt_not_trusted(storage):
     members = fake.zsets[f"{storage._sched_prefix}:status:pending"]
     assert len(members) == 3
     assert not [k for k in fake.zsets if "_rebuild:" in k]
-
-
-@pytest.mark.asyncio
-async def test_a_live_rebuild_is_not_mistaken_for_an_interrupted_one(storage):
-    """A temp keyspace WITH the rebuild lock held is a rebuild in progress, not a
-    crash: this worker must wait for it, never restart it underneath the owner."""
-    fake = storage._redis
-    fake.store[f"{storage.final_namespace}:doc-0"] = json.dumps(_doc("pending"))
-    fake.zsets[f"{storage._sched_prefix}_rebuild:status:pending"] = {"x|doc-0"}
-    fake.store[f"{storage._sched_prefix}:rebuild_lock"] = "1"
-
-    assert (
-        await storage._interrupted_publish(
-            fake, f"{storage._sched_prefix}:rebuild_lock"
-        )
-        is False
-    )

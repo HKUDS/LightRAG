@@ -554,8 +554,7 @@ async def gemini_complete_if_cache(
     if finish_reason == types.FinishReason.MAX_TOKENS:
         logger.warning(
             "Gemini response truncated by token limit "
-            f"(finish_reason=MAX_TOKENS, content_len={len(final_text)}); "
-            "returning partial content but not caching it"
+            f"(finish_reason=MAX_TOKENS, content_len={len(final_text)}), returning partial content"
         )
         final_text = TruncatedResponse(final_text)
 

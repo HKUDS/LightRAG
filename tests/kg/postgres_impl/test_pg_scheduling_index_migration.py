@@ -73,7 +73,7 @@ def _kinds(db: _FakeDB) -> list[str]:
 @pytest.mark.asyncio
 async def test_creates_then_drops_the_superseded_index_in_that_order():
     db = _FakeDB(existing={_SUPERSEDED})
-    await PostgreSQLDB._migrate_doc_status_add_scheduling_fields(db)
+    await PostgreSQLDB._migrate_doc_status_add_scheduling_index(db)
 
     assert _kinds(db) == ["create", "drop"]
     assert _NEW in db.existing
@@ -94,7 +94,7 @@ async def test_a_failed_create_keeps_the_superseded_index(caplog):
     logger.propagate = True
     try:
         with caplog.at_level(logging.WARNING, logger=logger.name):
-            await PostgreSQLDB._migrate_doc_status_add_scheduling_fields(db)
+            await PostgreSQLDB._migrate_doc_status_add_scheduling_index(db)
     finally:
         logger.propagate = False
 
@@ -114,7 +114,7 @@ async def test_the_drop_waits_on_the_catalog_not_on_the_absence_of_an_error():
     db = _FakeDB(existing={_SUPERSEDED})
     db.create_is_a_lie = True
 
-    await PostgreSQLDB._migrate_doc_status_add_scheduling_fields(db)
+    await PostgreSQLDB._migrate_doc_status_add_scheduling_index(db)
 
     assert _kinds(db) == ["create"]
     assert _SUPERSEDED in db.existing
@@ -123,7 +123,7 @@ async def test_the_drop_waits_on_the_catalog_not_on_the_absence_of_an_error():
 @pytest.mark.asyncio
 async def test_a_second_startup_creates_nothing_and_stays_idempotent():
     db = _FakeDB(existing={_NEW})
-    await PostgreSQLDB._migrate_doc_status_add_scheduling_fields(db)
+    await PostgreSQLDB._migrate_doc_status_add_scheduling_index(db)
 
     # Nothing to create; the drop is still issued (IF EXISTS, so a no-op here).
     assert _kinds(db) == ["drop"]
@@ -144,7 +144,7 @@ async def test_a_failed_verification_read_also_holds_the_drop_back():
         return await original(sql, params, multirows=multirows, **kwargs)
 
     db.query = _second_read_fails
-    await PostgreSQLDB._migrate_doc_status_add_scheduling_fields(db)
+    await PostgreSQLDB._migrate_doc_status_add_scheduling_index(db)
 
     assert "drop" not in _kinds(db)
     assert _SUPERSEDED in db.existing

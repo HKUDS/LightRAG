@@ -7,6 +7,8 @@ import base64
 import binascii
 import re
 import shutil
+import sqlite3
+import tempfile
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -22,7 +24,7 @@ import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Any, Literal
+from typing import Dict, Iterator, List, NamedTuple, Optional, Any, Literal, Sequence
 from fastapi import (
     APIRouter,
     Depends,
@@ -784,6 +786,18 @@ class ForceResetRecoveryResponse(BaseModel):
         description="reset = fence cleared; no_recovery_required = nothing to clear"
     )
     message: str = Field(description="Human-readable result")
+    cancelled_manual_retries: int = Field(
+        default=0,
+        description=(
+            "Queued manual retry requests cancelled along with the fence. A "
+            "sticky request makes /documents/scan refuse its reservation (it may "
+            "not jump the manual FIFO), so clearing the fence without clearing "
+            "these would leave the documented recovery path — force_reset then "
+            "/documents/scan — still blocked. The failed documents are untouched; "
+            "re-issue /documents/reprocess_failed, or let the scan's own FAILED "
+            "reset cover them."
+        ),
+    )
 
 
 class ClearCacheRequest(BaseModel):
@@ -1236,6 +1250,11 @@ class PipelineStatusResponse(BaseModel):
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
         update_status: Status of update flags for all namespaces
+        recovery_required: Whether the workspace is fenced pending recovery
+            (every mutation is refused with 503 until it is cleared)
+        recovery_kind: Coarse cause of the fence, when one is set
+        recovery_message: Operator-facing explanation of the fence, including the
+            bounded blocker sample where the cause provides one
     """
 
     busy: bool = False
@@ -1247,6 +1266,13 @@ class PipelineStatusResponse(BaseModel):
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
     update_status: Optional[dict] = None
+    # Sanitized fence projection (see shared_storage.describe_recovery_fence).
+    # The raw ``recovery_required`` record stays internal — it sits alongside
+    # owner records carrying PIDs and reservation tokens — but an operator still
+    # needs a read-only way to see that the workspace is fenced and why.
+    recovery_required: bool = False
+    recovery_kind: Optional[str] = None
+    recovery_message: Optional[str] = None
 
     @field_validator("job_start", mode="before")
     @classmethod
@@ -1344,10 +1370,11 @@ class DocumentManager:
         bare ``.png`` is not advertised), then narrowed to those whose resolved
         engine actually supports them (``is_supported_file``).
 
-        Deliberately unordered (LR2 §8.5): processing order comes from the
-        ``(created_at, id)`` doc_status sweep, not from discovery, and the old
-        hint-preferring group-by-canonical-name pass was exactly the
-        O(files-in-directory) structure this replaces.
+        Deliberately unordered (LR2 §8.5): candidates are written one at a time
+        to the disk-backed scan spool, whose mtime index supplies global order
+        without a whole-directory Python list. The old hint-preferring
+        group-by-canonical-name pass was exactly the O(files-in-directory)
+        memory structure this replaces.
         """
         from lightrag.parser.registry import available_engine_suffixes
         from lightrag.parser.routing import FilenameParserHintError
@@ -2125,12 +2152,32 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
 # legacy engine now extracts at the worker stage (LegacyParser), not here.
 
 
+class _ScanCandidate(NamedTuple):
+    """One spooled scan candidate: its path plus the size discovery already read.
+
+    Carrying the size forward keeps the enqueue phase from re-``stat``-ing a
+    file the spool just stat'ed — INPUT_DIR is frequently a network mount, where
+    that second metadata round-trip is the expensive part.
+
+    ``size`` is never ``None``: a candidate whose stat failed carries ``0``, the
+    same "size unknown" value ``pipeline_enqueue_file`` has always reported for
+    an unreadable file.  Keeping it an ``int`` is what makes "one metadata read
+    per candidate" true unconditionally — ``None`` would mean "caller supplied
+    nothing" and send the enqueue path back to the filesystem for exactly the
+    vanished files where the second read is most likely to be slow.
+    """
+
+    path: Path
+    size: int
+
+
 async def pipeline_enqueue_file(
     rag: LightRAG,
     file_path: Path,
     track_id: str = None,
     from_scan: bool = False,
     admission_token: str | None = None,
+    known_file_size: int | None = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -2145,8 +2192,11 @@ async def pipeline_enqueue_file(
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning guard there.
-            Also selects the file's ``st_mtime`` as the row's ``created_at``
-            (see below).
+        known_file_size: the size the caller already stat'ed, reused instead of
+            issuing a second metadata read.  Scan supplies the value its
+            candidate spool recorded at discovery time; it feeds error reports
+            only, so a size that went stale between discovery and enqueue costs
+            nothing.
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -2156,24 +2206,17 @@ async def pipeline_enqueue_file(
         track_id = generate_track_id("unknown")
 
     try:
-        file_size = 0
-        source_created_at: str | None = None
-
-        # One stat, two consumers: file size for error reporting, and — for
-        # scan-discovered files only — the mtime that becomes the row's
-        # immutable ``created_at`` scheduling key, so a bulk scan of an
-        # existing corpus drains oldest-file-first instead of in whatever
-        # order the directory happened to be iterated (LR2 §8.3.A/§8.5).
-        # Upload/text keep ``now()``: their arrival time *is* their age.
-        try:
-            stat = await asyncio.to_thread(file_path.stat)
-            file_size = stat.st_size
-            if from_scan:
-                source_created_at = datetime.fromtimestamp(
-                    stat.st_mtime, tz=timezone.utc
-                ).isoformat()
-        except Exception:
-            file_size = 0
+        # File size is used only for error reporting. Scan-time mtime ordering
+        # happens before this function, in the disk-backed candidate spool;
+        # doc_status.created_at always remains the actual first-persist time.
+        if known_file_size is not None:
+            file_size = known_file_size
+        else:
+            try:
+                stat = await asyncio.to_thread(file_path.stat)
+                file_size = stat.st_size
+            except Exception:
+                file_size = 0
 
         try:
             directives = resolve_parser_directives(file_path)
@@ -2255,10 +2298,6 @@ async def pipeline_enqueue_file(
                 enqueue_kwargs["admission_token"] = admission_token
             if hint_chunk_options is not None:
                 enqueue_kwargs["chunk_options"] = hint_chunk_options
-            if source_created_at is not None:
-                # Absent (stat failed) the enqueue falls back to now(): a
-                # missing mtime must not cost us the row.
-                enqueue_kwargs["created_at"] = source_created_at
             enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
             if enqueue_result is None:
                 try:
@@ -2345,13 +2384,14 @@ async def pipeline_index_file(
 
 async def pipeline_enqueue_scan_batch(
     rag: LightRAG,
-    file_paths: List[Path],
+    candidates: Sequence[_ScanCandidate],
     track_id: str = None,
 ) -> int:
-    """Write ONE bounded scan batch to doc_status — no processing drive (LR2 §8.2).
+    """Write ONE mtime-ordered, bounded scan batch — no processing drive (§8.2).
 
-    The streaming scan flushes a batch the moment it fills, while it still holds
-    ``scanning_exclusive``; processing runs exactly once afterwards, when the
+    Discovery first stages candidates in the disposable disk spool; its global
+    mtime index emits batches in order while the scan still holds
+    ``scanning_exclusive``. Processing runs exactly once afterwards, when the
     fence has dropped (§8.1). Enqueue is therefore separated from driving: a
     per-batch drive would be refused by that very fence and only set the
     deferred-processing flag.
@@ -2362,7 +2402,8 @@ async def pipeline_enqueue_scan_batch(
 
     Args:
         rag: LightRAG instance
-        file_paths: the batch's files (bounded by ``SCAN_ENQUEUE_BATCH_SIZE``)
+        candidates: the batch's spooled candidates IN ENQUEUE ORDER, bounded by
+            ``SCAN_ENQUEUE_BATCH_SIZE``
         track_id: tracking ID stamped on every document of this scan
 
     Returns:
@@ -2371,20 +2412,21 @@ async def pipeline_enqueue_scan_batch(
         ``pipeline_enqueue_file`` as an error document / archive and does not
         abort the rest of the batch.
     """
-    if not file_paths:
+    if not candidates:
         return 0
     enqueued = 0
     try:
-        # Bounded, batch-local ordering only (pinyin for Chinese names): it makes
-        # a batch's enqueue order deterministic but promises nothing globally —
-        # processing order comes from the ``(created_at, id)`` doc_status sweep
-        # (LR2 §8.5), and discovery itself is unordered.
-        for file_path in sorted(file_paths, key=lambda p: get_pinyin_sort_key(str(p))):
+        # Iterate in the order given. The disk spool emits candidates in global
+        # ``(mtime, path)`` order and created_at=now() records that order into
+        # doc_status one row at a time, so ANY re-sort here (the batch-local
+        # pinyin sort this replaced included) silently breaks oldest-file-first.
+        for candidate in candidates:
             success, _ = await pipeline_enqueue_file(
                 rag,
-                file_path,
+                candidate.path,
                 track_id,
                 from_scan=True,
+                known_file_size=candidate.size,
             )
             if success:
                 enqueued += 1
@@ -2956,6 +2998,308 @@ def _scan_enqueue_batch_size() -> int:
     return configured
 
 
+_SCAN_SPOOL_PREFIX = "lightrag-scan-sort-"
+
+
+def _scan_spool_base_dir(rag: LightRAG) -> Path | None:
+    """Where this scan creates its disposable candidate spool.
+
+    Resolution order: ``SCAN_SPOOL_DIR`` → ``WORKING_DIR/scan_spool``, each
+    narrowed to a per-workspace subdirectory.  The spool holds
+    O(files-in-INPUT_DIR) ordering rows, so it must land on real, writable,
+    local disk: ``/tmp`` is a RAM-backed tmpfs on many Linux hosts, which would
+    put the very state this design moves OUT of Python memory straight back into
+    memory.  WORKING_DIR is already LightRAG's own writable local state volume,
+    which makes it the right default.
+
+    INPUT_DIR is deliberately NOT a candidate.  It is frequently a network mount
+    (the slowest possible home for the one bulk-insert phase in the pipeline),
+    it is legitimately mounted read-only in "scan but never write" deployments,
+    and it is co-managed by sync tools that would copy or delete the spool
+    mid-scan.
+
+    The workspace subdirectory is what lets the spool have a FIXED name inside
+    it (see :class:`_ScanCandidateSpool`): two workspaces sharing one
+    WORKING_DIR must never reuse or delete each other's file.  That makes the
+    workspace → directory mapping load-bearing, so it is INJECTIVE by
+    construction — ``unnamed/`` for the empty workspace, ``named/<workspace>/``
+    for every other.  A bare sentinel would not be: ``validate_workspace``
+    accepts any single path component, so a workspace literally called
+    ``_default`` would collide with the unnamed one.  The two hold different
+    per-workspace scan locks and can therefore run concurrently, and the loser
+    of that race has its live database deleted out from under it.
+
+    Returns ``None`` only when no working directory can be determined at all —
+    a test rig, never a real ``LightRAG``, whose ``working_dir`` always defaults
+    to ``./rag_storage``.  There is no operator-chosen placement to honour in
+    that case, so the caller falls back to the OS temp dir.
+    """
+    configured = getattr(global_args, "scan_spool_dir", None)
+    if isinstance(configured, str) and configured.strip():
+        base = Path(configured.strip())
+    else:
+        working_dir = getattr(rag, "working_dir", None)
+        if not isinstance(working_dir, str) or not working_dir.strip():
+            return None
+        base = Path(working_dir.strip()) / "scan_spool"
+
+    workspace = getattr(rag, "workspace", "") or ""
+    if not workspace:
+        return base / "unnamed"
+    # Reuses the storage layer's rule rather than sanitizing: a workspace that
+    # could escape its directory is a configuration error everywhere else too.
+    return base / "named" / validate_workspace(workspace)
+
+
+class _ScanCandidateSpool:
+    """Disk-backed, globally mtime-ordered scan candidates.
+
+    Exact oldest-file-first ordering over an unordered directory iterator needs
+    O(number of files) state somewhere. Keeping that state in Python memory
+    would undo LR2's bounded scan, while overloading ``doc_status.created_at``
+    with the file's mtime makes a persistence timestamp lie. This disposable
+    SQLite spool is the separation point:
+
+    * discovery/classification inserts one lightweight row at a time;
+    * a UNIQUE canonical key preserves first-physical-claim-wins before any
+      candidate has reached doc_status;
+    * an on-disk ``(mtime, path, sequence)`` index provides the global order;
+    * :meth:`ordered_batches` fetches at most K candidates into Python memory;
+    * once a path is enqueued, doc_status stamps its real creation time and the
+      filesystem timestamp has no further role.
+
+    A missing mtime does not lose the candidate. It sorts after every readable
+    timestamp and the enqueue path reports a vanished/unreadable file normally.
+
+    **Lifetime.** The database is rebuildable coordination state, never
+    persistent LightRAG storage. It is deleted when the scan ends, and a process
+    death simply leaves the source files for the next scan to rediscover. But it
+    lives on a PERSISTENT volume, where nothing reclaims what ``kill -9`` leaves
+    behind — so its name inside the per-workspace directory is FIXED rather than
+    randomized, and the next scan deletes any leftover before opening its own.
+    Residue is therefore capped at one spool, not one per crash. Reusing a fixed
+    name is safe because ``scanning_exclusive`` already admits a single scan per
+    workspace, which is the same guarantee that keeps two scans from fighting
+    over INPUT_DIR.
+
+    **Placement is fail-closed.** If the operator's directory cannot be used,
+    the scan fails instead of quietly relocating to the OS temp dir. That
+    fallback is not a degraded-but-correct mode: on a host where ``/tmp`` is
+    tmpfs it silently restores the O(number of files) RAM cost this whole design
+    exists to remove, and the symptom is an OOM kill halfway through a large
+    scan rather than an error naming the misconfiguration.
+    """
+
+    _DB_NAME = "candidates.sqlite3"
+
+    def __init__(self, commit_interval: int, base_dir: Path | None = None):
+        self._spool_dir, self._temp_dir = self._prepare_dir(base_dir)
+        self._db_path = self._spool_dir / self._DB_NAME
+        try:
+            self._discard_database_files()
+        except OSError as residue_error:
+            # Opening on top of residue we could not remove would mean reading
+            # another scan's rows, so this is fail-closed like placement itself.
+            raise RuntimeError(
+                f"Scan candidate spool {self._db_path} could not be reclaimed "
+                f"({residue_error}); refusing to reuse another scan's database."
+            ) from residue_error
+        self._connection = sqlite3.connect(self._db_path)
+        # Bound SQLite's page cache and force any query scratch space to disk.
+        # The database is disposable, so fsync durability buys nothing: a
+        # process death simply makes the next /scan rediscover the source files.
+        self._connection.execute("PRAGMA cache_size = -2048")
+        self._connection.execute("PRAGMA temp_store = FILE")
+        self._connection.execute("PRAGMA synchronous = OFF")
+        self._connection.executescript(
+            """
+            CREATE TABLE candidates (
+                sequence INTEGER PRIMARY KEY,
+                canonical_key TEXT,
+                file_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                mtime_missing INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                path_sort_key TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX candidates_canonical
+                ON candidates(canonical_key);
+            CREATE INDEX candidates_schedule
+                ON candidates(
+                    mtime_missing,
+                    mtime_ns,
+                    path_sort_key,
+                    sequence
+                );
+            """
+        )
+        self._commit_interval = max(1, int(commit_interval))
+        self._pending_writes = 0
+
+    @staticmethod
+    def _prepare_dir(
+        base_dir: Path | None,
+    ) -> tuple[Path, tempfile.TemporaryDirectory | None]:
+        """Resolve the spool directory, or raise (see "Placement is fail-closed").
+
+        ``base_dir is None`` means no placement was determinable at all (a test
+        rig without a ``working_dir``); there is nothing to honour, so a
+        self-cleaning OS temp dir is used and returned for disposal.
+        """
+        if base_dir is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix=_SCAN_SPOOL_PREFIX)
+            return Path(temp_dir.name), temp_dir
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as spool_error:
+            raise RuntimeError(
+                f"Scan candidate spool directory {base_dir} is unusable "
+                f"({spool_error}). Point SCAN_SPOOL_DIR at a writable local "
+                "disk; the scan is refused rather than relocated, because the "
+                "OS temp dir is a RAM-backed tmpfs on many hosts and would "
+                "silently restore the memory cost the spool exists to avoid."
+            ) from spool_error
+        return base_dir, None
+
+    def _discard_database_files(self) -> None:
+        """Delete this workspace's spool database and any SQLite side files.
+
+        Called before opening (reclaiming a crashed scan's residue) and after
+        closing (ordinary disposal).
+        """
+        for path in self._spool_dir.glob(f"{self._DB_NAME}*"):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    async def claim(
+        self,
+        file_path: Path,
+        canonical_key: str,
+        sequence: int,
+    ) -> str | None:
+        """Stage one candidate; return the earlier claimer's path on conflict."""
+
+        try:
+            # INPUT_DIR may be a network mount. Keep its metadata read off the
+            # event loop so scan-job heartbeats and cancellation remain live.
+            # This is the ONLY stat of the file: the size travels with the
+            # candidate so the enqueue phase does not repeat the round-trip.
+            stat = await asyncio.to_thread(file_path.stat)
+            mtime_missing = 0
+            # NOT ``getattr(stat, "st_mtime_ns", <fallback>)``: Python evaluates
+            # a getattr default eagerly, so the fallback would read st_mtime on
+            # every call and an object exposing only st_mtime_ns would raise.
+            mtime_ns = getattr(stat, "st_mtime_ns", None)
+            if mtime_ns is None:
+                mtime_ns = int(stat.st_mtime * 1_000_000_000)
+            file_size = stat.st_size
+        except Exception:
+            mtime_missing = 1
+            mtime_ns = 0
+            # 0, not NULL: the candidate's size is always "already read", so the
+            # enqueue path never re-stats. 0 is exactly how pipeline_enqueue_file
+            # has always reported a size it could not read, and the field feeds
+            # error reports only.
+            file_size = 0
+
+        # SQLite UNIQUE permits multiple NULLs, matching unknown_source's
+        # "identity cannot be claimed" semantics: every such candidate is
+        # staged, none of them claims the others' slot.
+        stored_canonical = (
+            None if canonical_key == UNKNOWN_FILE_SOURCE else canonical_key
+        )
+        cursor = self._connection.execute(
+            """
+            INSERT OR IGNORE INTO candidates(
+                sequence,
+                canonical_key,
+                file_path,
+                file_size,
+                mtime_missing,
+                mtime_ns,
+                path_sort_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sequence,
+                stored_canonical,
+                str(file_path),
+                file_size,
+                mtime_missing,
+                int(mtime_ns),
+                get_pinyin_sort_key(str(file_path)),
+            ),
+        )
+        if cursor.rowcount == 0:
+            # OR IGNORE swallows EVERY constraint violation, so a row that did
+            # not land is only a duplicate canonical claim when we can name the
+            # claimer. Anything else (a reused sequence, a NOT NULL breach)
+            # would silently drop a discovered file — raise instead.
+            row = (
+                self._connection.execute(
+                    "SELECT file_path FROM candidates WHERE canonical_key = ?",
+                    (stored_canonical,),
+                ).fetchone()
+                if stored_canonical is not None
+                else None
+            )
+            if row is None:
+                raise RuntimeError(
+                    f"scan candidate {file_path} (sequence {sequence}) was "
+                    "rejected by the spool without a canonical claim to blame"
+                )
+            return str(row[0])
+
+        self._pending_writes += 1
+        if self._pending_writes >= self._commit_interval:
+            self._connection.commit()
+            self._pending_writes = 0
+        return None
+
+    def ordered_batches(self, batch_size: int) -> Iterator[list[_ScanCandidate]]:
+        """Yield globally oldest-first batches, each bounded by ``batch_size``."""
+
+        self._connection.commit()
+        self._pending_writes = 0
+        cursor = self._connection.execute(
+            """
+            SELECT file_path, file_size
+            FROM candidates
+            ORDER BY
+                mtime_missing ASC,
+                mtime_ns ASC,
+                path_sort_key ASC,
+                sequence ASC
+            """
+        )
+        while rows := cursor.fetchmany(batch_size):
+            yield [_ScanCandidate(Path(str(row[0])), int(row[1])) for row in rows]
+
+    def close(self) -> None:
+        try:
+            self._connection.close()
+        finally:
+            try:
+                self._discard_database_files()
+            except OSError as cleanup_error:
+                # The scan itself is done; leftover bytes are reclaimed by the
+                # next scan's pre-open discard, so this must not fail the run.
+                logger.warning(
+                    f"Could not delete scan spool {self._db_path} "
+                    f"({cleanup_error}); the next scan will reclaim it."
+                )
+            if self._temp_dir is not None:
+                self._temp_dir.cleanup()
+
+    def __enter__(self) -> "_ScanCandidateSpool":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback_value) -> None:
+        self.close()
+
+
 def _enforce_texts_per_request(count: int) -> None:
     """Refuse an oversized ``/documents/texts`` batch with 413 (LR2 §11).
 
@@ -3217,36 +3561,25 @@ async def run_scanning_process(
                 reporter.sample("error", abort_message)
                 return
 
-        # ---- streaming discovery + classification (LR2 §8.2/§8.4) ----------
-        # One pass over the input directory with at most ``SCAN_ENQUEUE_BATCH_SIZE``
-        # claimed files (and their canonical claims) resident: peak scan memory is
-        # set by the batch, not by how many files the directory holds. Each batch is
-        # written to doc_status as soon as it fills — while this scan still holds
-        # ``scanning_exclusive`` — and processing runs ONCE at the end (§8.1).
+        # ---- streaming discovery + disk-backed ordering (LR2 §8.2/§8.4) -----
+        # Discovery/classification stays a single pass with O(K) Python memory,
+        # but exact global mtime order needs O(number of files) ordering state
+        # somewhere. The disposable SQLite spool keeps that state on disk and
+        # yields at most ``SCAN_ENQUEUE_BATCH_SIZE`` paths at a time after
+        # discovery. Only then are rows written to doc_status, in oldest-file-
+        # first order, with created_at stamped at the actual write time.
+        #
+        # The cost of global ordering: nothing is persisted until discovery
+        # finishes, so an interrupted scan enqueues NOTHING (the source files
+        # stay in INPUT_DIR for the next scan to rediscover). The one thing that
+        # does not come back is a STALE_STUB row deleted below — the file is
+        # re-enqueued as new next time, but its preserved-for-review FAILED stub
+        # is gone.
         batch_size = _scan_enqueue_batch_size()
-        batch: list[Path] = []
-        # canonical source key -> the physical filename that claimed it in THIS
-        # batch. A row that is not persisted yet is invisible to the doc_status
-        # lookup, so without this claim set a second variant of the same canonical
-        # name inside one batch would mint a duplicate document (§8.4). Bounded by
-        # ``batch_size``; cleared on every flush.
-        batch_claims: dict[str, str] = {}
         discovered = 0
         enqueued_count = 0
         resumed_count = 0
         processed_count = 0
-
-        async def _flush_batch() -> None:
-            nonlocal enqueued_count
-            if not batch:
-                return
-            enqueued_count += await pipeline_enqueue_scan_batch(
-                rag, list(batch), track_id
-            )
-            batch.clear()
-            batch_claims.clear()
-            # Publish this batch's counters/samples (also renews the job lease).
-            reporter.flush()
 
         async def _archive(file_path: Path, warning: str, counter_key: str) -> None:
             """Archive an input file (never delete it) and record the reason."""
@@ -3265,132 +3598,133 @@ async def run_scanning_process(
                 reporter.sample("error", archive_error)
 
         async def _claim_new_file(
-            file_path: Path, canonical_key: str, counter_key: str
+            spool: _ScanCandidateSpool,
+            file_path: Path,
+            canonical_key: str,
+            counter_key: str,
+            sequence: int,
         ) -> None:
-            """Add a file to the current batch under its canonical claim (§8.4).
+            """Stage one file under the scan-wide first canonical claim (§8.4)."""
 
-            The first physical file to claim a canonical key wins and is enqueued;
-            a later variant in the SAME batch is an alias duplicate and is
-            archived — the resolver cannot see a row that has not been written
-            yet. ``unknown_source`` names carry no usable identity, so they are
-            batched without claiming anything.
-            """
-            if canonical_key != UNKNOWN_FILE_SOURCE:
-                claimer = batch_claims.get(canonical_key)
-                if claimer is not None:
-                    await _archive(
-                        file_path,
-                        "Skipping duplicate file in scan batch: "
-                        f"{file_path.name} duplicates {claimer} "
-                        f"(canonical: {canonical_key})",
-                        _ScanFileClass.ALIAS_DUPLICATE.value,
-                    )
-                    return
-                batch_claims[canonical_key] = file_path.name
-            batch.append(file_path)
-            reporter.count(counter_key)
-            if len(batch) >= batch_size:
-                await _flush_batch()
-
-        for file_path in doc_manager.iter_new_files():
-            discovered += 1
-            # Classifying a large tree can outlast the job lease; renewing here
-            # (time-based, a no-op most iterations) keeps the record from being
-            # reaped to ABANDONED under a live owner.
-            reporter.renew()
-            filename = file_path.name
-            canonical_key = normalize_file_path(str(file_path))
-            decision = await classify_scan_file(rag, file_path, canonical_key)
-
-            if decision.kind is _ScanFileClass.CLAIMED_NEW:
-                await _claim_new_file(
-                    file_path, canonical_key, _ScanFileClass.CLAIMED_NEW.value
-                )
-                continue
-
-            if decision.kind is _ScanFileClass.SOURCE_CONFLICT:
-                # §8.3.B: no enqueue, no doc_status delete, NO archive — the file
-                # stays put and an operator repairs the historical collision by
-                # doc id (the /documents/scan status report carries the bounded
-                # candidate sample).
-                await record_scan_warning(rag, decision.detail)
-                reporter.count(_ScanFileClass.SOURCE_CONFLICT.value)
-                reporter.sample("warning", decision.detail)
-                continue
-
-            if decision.kind is _ScanFileClass.PROCESSED:
-                processed_count += 1
+            claimer = await spool.claim(file_path, canonical_key, sequence)
+            if claimer is not None:
+                # Full paths, not basenames: two same-named files in different
+                # subdirectories share a canonical key, and "a.docx duplicates
+                # a.docx" tells an operator nothing about which one won.
                 await _archive(
                     file_path,
-                    f"Skipping already processed file: {filename}",
-                    _ScanFileClass.PROCESSED.value,
-                )
-                reporter.sample("processed", filename)
-                continue
-
-            if decision.kind is _ScanFileClass.STALE_STUB:
-                # §8.3.D: content confirmed absent, so this FAILED row can never
-                # be resumed — drop it and retry the (presumably fixed) file as
-                # new. A failed delete keeps the row: preserved-for-review is the
-                # safe side of that error.
-                try:
-                    await rag.doc_status.delete([decision.doc_id])
-                except Exception as delete_error:
-                    stub_error = (
-                        "Failed to delete stale failed-extraction doc_status stub "
-                        f"{decision.doc_id} ({filename}): {delete_error}"
-                    )
-                    logger.error(stub_error)
-                    reporter.count("errors")
-                    reporter.sample("error", stub_error)
-                    resumed_count += 1
-                    reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
-                    continue
-                logger.info(
-                    "Retrying previously failed extraction; removed stale "
-                    f"doc_status stub: {filename} (doc_id: {decision.doc_id})"
-                )
-                await _claim_new_file(
-                    file_path, canonical_key, _ScanFileClass.STALE_STUB.value
-                )
-                continue
-
-            if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:
-                # §8.3.E: a missing ``source_file`` is NOT evidence of a different
-                # physical file, so neither enqueue nor archive — keep both the
-                # file and the row, and surface a bounded warning.
-                await record_scan_warning(rag, decision.detail)
-                reporter.count(_ScanFileClass.SOURCE_IDENTITY_UNKNOWN.value)
-                reporter.sample("warning", decision.detail)
-                continue
-
-            if decision.kind is _ScanFileClass.ALIAS_DUPLICATE:
-                # §8.3.G: same canonical key, DIFFERENT physical file. Archiving
-                # it (rather than enqueuing) is what keeps the alias from minting
-                # a ``dup-*`` FAILED row.
-                await _archive(
-                    file_path,
-                    decision.detail,
+                    "Skipping duplicate file in scan: "
+                    f"{file_path} duplicates {claimer} "
+                    f"(canonical: {canonical_key})",
                     _ScanFileClass.ALIAS_DUPLICATE.value,
                 )
-                continue
+                return
+            reporter.count(counter_key)
 
-            # §8.3.F RESUME_SAME_PHYSICAL_SOURCE: the same physical file behind an
-            # unfinished row. It must NOT go through the enqueue path —
-            # apipeline_enqueue_documents would treat the canonical name as a
-            # duplicate (returning None) and pipeline_enqueue_file would archive
-            # the source as if it were one, corrupting pending-parse cases that
-            # still need it on disk. The pipeline's resume logic advances it from
-            # its existing row instead.
-            logger.info(
-                f"Resuming previously unfinished file from scan: {filename} "
-                f"(doc_id: {decision.doc_id})"
-            )
-            resumed_count += 1
-            reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+        with _ScanCandidateSpool(
+            batch_size, _scan_spool_base_dir(rag)
+        ) as candidate_spool:
+            for file_path in doc_manager.iter_new_files():
+                discovered += 1
+                # Classifying a large tree can outlast the job lease; renewing here
+                # (time-based, a no-op most iterations) keeps the record from being
+                # reaped to ABANDONED under a live owner.
+                reporter.renew()
+                filename = file_path.name
+                canonical_key = normalize_file_path(str(file_path))
+                decision = await classify_scan_file(rag, file_path, canonical_key)
 
-        # Tail batch (fewer than ``batch_size`` files).
-        await _flush_batch()
+                if decision.kind is _ScanFileClass.CLAIMED_NEW:
+                    await _claim_new_file(
+                        candidate_spool,
+                        file_path,
+                        canonical_key,
+                        _ScanFileClass.CLAIMED_NEW.value,
+                        discovered,
+                    )
+                    continue
+
+                if decision.kind is _ScanFileClass.SOURCE_CONFLICT:
+                    # §8.3.B: no enqueue, no doc_status delete, NO archive — the
+                    # file stays put and an operator repairs the historical
+                    # collision by doc id.
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.SOURCE_CONFLICT.value)
+                    reporter.sample("warning", decision.detail)
+                    continue
+
+                if decision.kind is _ScanFileClass.PROCESSED:
+                    processed_count += 1
+                    await _archive(
+                        file_path,
+                        f"Skipping already processed file: {filename}",
+                        _ScanFileClass.PROCESSED.value,
+                    )
+                    reporter.sample("processed", filename)
+                    continue
+
+                if decision.kind is _ScanFileClass.STALE_STUB:
+                    # §8.3.D: content confirmed absent, so this FAILED row can
+                    # never be resumed — drop it and retry the fixed file as new.
+                    try:
+                        await rag.doc_status.delete([decision.doc_id])
+                    except Exception as delete_error:
+                        stub_error = (
+                            "Failed to delete stale failed-extraction doc_status "
+                            f"stub {decision.doc_id} ({filename}): {delete_error}"
+                        )
+                        logger.error(stub_error)
+                        reporter.count("errors")
+                        reporter.sample("error", stub_error)
+                        continue
+                    logger.info(
+                        "Retrying previously failed extraction; removed stale "
+                        f"doc_status stub: {filename} (doc_id: {decision.doc_id})"
+                    )
+                    await _claim_new_file(
+                        candidate_spool,
+                        file_path,
+                        canonical_key,
+                        _ScanFileClass.STALE_STUB.value,
+                        discovered,
+                    )
+                    continue
+
+                if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:
+                    # §8.3.E: missing source_file is not evidence of a different
+                    # physical file; keep both file and row for review.
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.SOURCE_IDENTITY_UNKNOWN.value)
+                    reporter.sample("warning", decision.detail)
+                    continue
+
+                if decision.kind is _ScanFileClass.ALIAS_DUPLICATE:
+                    # §8.3.G: same canonical key, different physical file.
+                    await _archive(
+                        file_path,
+                        decision.detail,
+                        _ScanFileClass.ALIAS_DUPLICATE.value,
+                    )
+                    continue
+
+                # §8.3.F RESUME_SAME_PHYSICAL_SOURCE: the same physical file
+                # behind an unfinished row. Resume it from persistent state.
+                logger.info(
+                    f"Resuming previously unfinished file from scan: {filename} "
+                    f"(doc_id: {decision.doc_id})"
+                )
+                resumed_count += 1
+                reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+
+            # Discovery is complete. Iterate the on-disk mtime index in bounded
+            # pages; each successful enqueue stamps doc_status.created_at=now().
+            for ordered_batch in candidate_spool.ordered_batches(batch_size):
+                enqueued_count += await pipeline_enqueue_scan_batch(
+                    rag, ordered_batch, track_id
+                )
+                # Publish this batch's counters/samples and renew the job lease.
+                reporter.flush()
+
         reporter.count("discovered", discovered)
         reporter.flush()
 
@@ -5286,6 +5620,28 @@ def create_document_routes(
                     f"Successfully dropped all {storage_success_count} storage components",
                 )
 
+            # Some backends (OpenSearch) drop the doc_status index as a whole
+            # physical container rather than just its rows, and gate every
+            # subsequent STRICT read behind a readiness flag that only a
+            # write path clears back to healthy. /documents/scan's very first
+            # doc_status touch is a strict READ (the custom-chunk rollback,
+            # then the exclusive FAILED->PENDING reset) — neither is a write,
+            # so nothing would ever re-create the dropped index before the
+            # first scan tries to read it, permanently wedging every scan on
+            # this workspace until the process restarts. re-run the public,
+            # idempotent initialize() right away so the backend is exactly as
+            # ready as it was right after server startup; a backend without
+            # this gap (Postgres/Mongo/Redis/JSON row-level drop) just no-ops.
+            if rag.doc_status is not None:
+                try:
+                    await rag.doc_status.initialize()
+                except Exception as reinit_error:
+                    logger.error(
+                        f"/documents/clear: failed to re-initialize doc_status "
+                        f"after drop; the next /documents/scan may fail until "
+                        f"a write recreates it: {reinit_error}"
+                    )
+
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
@@ -5432,14 +5788,26 @@ def create_document_routes(
                 # values individually through the mapping protocol.
                 status_dict = pipeline_status.copy()
 
+            # Sanitized fence projection BEFORE the internal fields are dropped
+            # (``recovery_required`` is one of them): an operator needs a
+            # read-only way to see that the workspace is fenced, its coarse cause
+            # and the bounded blocker sample, without the PIDs / tokens / raw
+            # operation_record the internal record carries.
+            from lightrag.kg.shared_storage import (
+                _INTERNAL_PIPELINE_STATUS_FIELDS,
+                describe_recovery_fence,
+            )
+
+            fence_view = describe_recovery_fence(status_dict)
+
             # Drop internal reservation-ownership / dead-process-recovery
             # bookkeeping: these carry raw owner tokens, PIDs and per-token sets
             # that must never be exposed on the API (PipelineStatusResponse is
             # extra="allow", so unknown keys would otherwise pass through).
-            from lightrag.kg.shared_storage import _INTERNAL_PIPELINE_STATUS_FIELDS
-
             for _internal_field in _INTERNAL_PIPELINE_STATUS_FIELDS:
                 status_dict.pop(_internal_field, None)
+
+            status_dict.update(fence_view)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
@@ -6230,14 +6598,40 @@ def create_document_routes(
 
         The fence is raised when a worker is killed mid custom_chunks / delete /
         clear (Linux multi-worker), which may have left storage partially
-        committed — so every mutation is refused until the workspace is recovered.
-        This endpoint does NOT repair anything; it only drops the fence (and any
-        lingering reservation flags), re-opening a possibly-inconsistent
-        workspace. Requires ``confirm=true``. A true idempotent replay of the
-        interrupted operation is a separate concern (core atomicity / #3400).
+        committed, or when a manual retry's drain cannot reach idle — so every
+        mutation is refused until the workspace is recovered. This endpoint does
+        NOT repair anything; it only drops the fence (and any lingering
+        reservation flags), re-opening a possibly-inconsistent workspace. Requires
+        ``confirm=true``. A true idempotent replay of the interrupted operation is
+        a separate concern (core atomicity / #3400).
+
+        It ALSO cancels the workspace's queued manual retry requests, and that is
+        load-bearing rather than housekeeping: a sticky un-ACKed request makes
+        ``/documents/scan`` refuse its reservation (a scan runs its own exclusive
+        FAILED reset and may not jump the manual FIFO — LR2 §8.1). For the
+        blocked-drain fence, ``/documents/scan`` is the remedy, so clearing the
+        fence alone would leave the recovery path just as blocked as before. The
+        failed documents are untouched by the cancellation — the scan's own FAILED
+        reset covers them, or ``/documents/reprocess_failed`` can be re-issued —
+        and the cancelled ids are retired as terminal, so a delayed replay of one
+        cannot silently re-queue.
+
+        Because both halves are required, this endpoint is **fail-closed and
+        atomic**: the ingress is resolved first and a failure there returns 503
+        with the fence untouched, then the cancellation and the fence drop happen
+        in ONE ``pipeline_status_lock`` critical section with the cancellation
+        first. A cancellation failure also returns 503 and keeps the fence. The
+        only partial state this admits is "intents cancelled, fence still up",
+        which a retry completes; the opposite order would admit "fence down,
+        intents still queued", where ``/scan`` stays refused and nothing says so.
         """
         from lightrag.exceptions import PipelineNotInitializedError
-        from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+        from lightrag.kg.shared_storage import (
+            MANUAL_PHASE_IDLE,
+            get_namespace_data,
+            get_namespace_lock,
+            get_pipeline_ingress,
+        )
 
         if not request.confirm:
             raise HTTPException(
@@ -6260,15 +6654,80 @@ def create_document_routes(
         pipeline_status_lock = get_namespace_lock(
             "pipeline_status", workspace=rag.workspace
         )
+        # Resolved BEFORE the critical section (a Manager RPC handle must never be
+        # looked up lazily while pipeline_status_lock is held) and FAIL CLOSED if
+        # it cannot be reached. Cancelling the queued intents is one HALF of this
+        # recovery, so a force-reset that cannot do it must not drop the fence and
+        # report success: that leaves the sticky request in place, keeps
+        # /documents/scan refused, and recreates the silent dead end this endpoint
+        # exists to close. Keeping the fence is safely retryable; a false "reset"
+        # is not.
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+        except Exception as ingress_error:
+            logger.error(
+                "Force-reset refused: cannot reach the ingress mailbox to cancel "
+                f"the queued manual retries ({ingress_error}); the fence is kept "
+                "so the recovery can be retried rather than reported as done."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Cannot reach the ingress mailbox to cancel queued manual "
+                    "retries; the recovery fence is unchanged. Retry shortly."
+                ),
+            )
+
+        cancelled = 0
         async with pipeline_status_lock:
             if not pipeline_status.get("recovery_required"):
                 return ForceResetRecoveryResponse(
                     status="no_recovery_required",
                     message="No recovery_required fence is set.",
                 )
+
+            # Cancel the queued intents FIRST, and inside the SAME critical
+            # section that drops the fence. Two reasons, and the order is the
+            # whole point:
+            #
+            # * failure atomicity — if the cancellation succeeds but the status
+            #   update below fails, the workspace is left "intents cancelled,
+            #   fence still up", which is safely retryable. The reverse order
+            #   leaves "fence down, intents still queued": /scan stays refused
+            #   and nothing says so.
+            # * no window — dropping the fence and then cancelling outside the
+            #   lock let a new processing run acquire ``busy`` in between, peek
+            #   the still-sticky request and claim it in ``_begin_manual_drain``.
+            #   That run holds the request id, so it could go on to run
+            #   FAILED → PENDING for a request the operator had just cancelled.
+            #   Both mutations under one lock hold close it: when the lock is
+            #   released the fence is gone AND the mailbox is empty.
+            #
+            # The mailbox call is a single already-resolved RPC under the lock —
+            # the same shape as the scan endpoint's publish and the reservation
+            # helpers' manual-pending peek.
+            try:
+                cancelled = int(ingress.cancel_manual_retries() or 0)
+            except Exception as cancel_error:
+                logger.error(
+                    "Force-reset refused: the recovery fence is kept because the "
+                    "queued manual retries could not be cancelled "
+                    f"({cancel_error}); clearing the fence alone would leave "
+                    "/documents/scan refused."
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Could not cancel the queued manual retries; the recovery "
+                        "fence is unchanged. Retry shortly."
+                    ),
+                )
+
             # Drop the fence and any lingering reservation state in one atomic
             # update. This is deliberately owner-agnostic — it is a manual
-            # override, not a normal owner-checked release.
+            # override, not a normal owner-checked release. The manual freeze goes
+            # with it: it is held BY a run that this reset is abandoning, so
+            # leaving it would wedge every upload behind an owner that is gone.
             pipeline_status.update(
                 {
                     "recovery_required": None,
@@ -6279,16 +6738,30 @@ def create_document_routes(
                     "scanning": False,
                     "scanning_exclusive": False,
                     "scanning_owner": None,
+                    "manual_freeze_requested": False,
+                    "manual_freeze_started_at": None,
+                    "manual_resetting": False,
+                    "manual_phase": MANUAL_PHASE_IDLE,
+                    "manual_owner": None,
                 }
             )
+
         logger.warning(
             "recovery_required fence force-reset (unsafe manual override) for "
-            f"workspace {rag.workspace}"
+            f"workspace {rag.workspace}; cancelled {cancelled} queued manual "
+            "retry request(s)"
         )
         return ForceResetRecoveryResponse(
             status="reset",
+            cancelled_manual_retries=cancelled,
             message=(
-                "recovery_required fence cleared. The workspace may still be "
+                "recovery_required fence cleared"
+                + (
+                    f" and {cancelled} queued manual retry request(s) cancelled"
+                    if cancelled
+                    else ""
+                )
+                + ". The workspace may still be "
                 "partially committed — reprocess/verify affected documents."
             ),
         )
