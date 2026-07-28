@@ -1150,6 +1150,45 @@ async def test_upload_returns_409_when_scanning_classification(tmp_path, monkeyp
     assert not (tmp_path / "while_scanning.docx").exists()
 
 
+async def test_upload_returns_409_when_manual_freeze(tmp_path, monkeypatch):
+    """LR2 Phase 3: while a manual retry has frozen new ingress
+    (``manual_freeze_requested=True``) to drain the pipeline and reset FAILED,
+    a new upload must refuse with 409 (MANUAL_FREEZE) — not silently land in a
+    window that violates the reset's "no failed producer" precondition."""
+    import importlib
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status["busy"] = True
+    pipeline_status["manual_freeze_requested"] = True
+
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="while_freezing.docx",
+        file=BytesIO(b"docx bytes"),
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+    assert excinfo.value.status_code == 409
+    assert "retry of failed documents" in excinfo.value.detail.lower()
+    assert not (tmp_path / "while_freezing.docx").exists()
+
+
 async def test_upload_succeeds_during_scan_processing_phase(tmp_path, monkeypatch):
     """User-reported scenario: while pipeline is doing scan-driven
     processing (``scanning=True`` but ``scanning_exclusive=False``),

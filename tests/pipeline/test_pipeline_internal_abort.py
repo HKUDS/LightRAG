@@ -418,6 +418,19 @@ async def test_finalize_doc_failure_labels_internal_error_in_doc_status(tmp_path
         pipeline_status["cancellation_reason"] = "internal_error"
         pipeline_status["cancellation_detail"] = "RedisKVStorage[full_docs]: boom"
 
+        # run_owner_token stays None: this unit test drives the helper outside a
+        # reservation, so the owner check is a no-op (see _still_run_owner).
+        ctx = _BatchRunContext(
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            semaphore=asyncio.Semaphore(1),
+            total_files=10,
+            parse_queues={"native": asyncio.Queue()},
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
+
         await rag._finalize_doc_failure(
             doc_id=doc_id,
             status_doc=status_doc,
@@ -429,6 +442,7 @@ async def test_finalize_doc_failure_labels_internal_error_in_doc_status(tmp_path
             failed_chunks_snapshot=([], 0),
             pending_tasks=[],
             metadata_extra={},
+            ctx=ctx,
             pipeline_status=pipeline_status,
             pipeline_status_lock=pipeline_status_lock,
         )
@@ -463,8 +477,19 @@ async def test_finalize_doc_failure_keeps_user_cancel_label(tmp_path):
         pipeline_status["history_messages"] = []
         pipeline_status["cancellation_reason"] = None
         pipeline_status["cancellation_detail"] = None
+        ctx = _BatchRunContext(
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            semaphore=asyncio.Semaphore(1),
+            total_files=10,
+            parse_queues={"native": asyncio.Queue()},
+            parser_specs=parser_specs_snapshot(),
+            q_analyze=asyncio.Queue(),
+            q_process=asyncio.Queue(),
+        )
 
         await rag._finalize_doc_failure(
+            ctx=ctx,
             doc_id=doc_id,
             status_doc=status_doc,
             file_path=f"{doc_id}.txt",

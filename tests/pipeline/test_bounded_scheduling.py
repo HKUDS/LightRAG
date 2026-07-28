@@ -11,9 +11,10 @@ These cover the §12-Phase2 acceptance list:
   processed — the tail is never starved);
 * a page-query failure does NOT advance the cursor and re-arms auto-rescan,
   so the remaining backlog is recovered by the next run;
-* ``PIPELINE_SCHEDULING_PAGE_SIZE=0`` collapses to the legacy single scan;
-* a manual retry sweep (FAILED included) stays single-scan even with paging
-  on, preserving the ACK-after-all-resets contract.
+* ``PIPELINE_SCHEDULING_PAGE_SIZE=0`` collapses to the legacy single scan.
+
+(The AUTO sweep never carries FAILED post-Phase-3; the manual FAILED reset is
+paged separately by ``_next_failed_page`` — see ``test_manual_exclusive_reset``.)
 """
 
 from __future__ import annotations
@@ -25,12 +26,8 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG
-from lightrag.base import CURSOR_END, CURSOR_START, DocStatus
+from lightrag.base import CURSOR_START, DocStatus
 from lightrag.kg.shared_storage import get_pipeline_ingress
-from lightrag.pipeline import (
-    _AUTO_RESUME_DOC_STATUSES,
-    _MANUAL_RETRY_DOC_STATUSES,
-)
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 
 pytestmark = pytest.mark.offline
@@ -216,38 +213,6 @@ def test_sweep_page_failure_rearms_auto_and_recovers(tmp_path):
             await rag.apipeline_process_enqueue_documents()
             for doc_id in ids:
                 assert await _status_of(rag, doc_id) == DocStatus.PROCESSED.value
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
-
-
-def test_next_scheduling_page_manual_stays_single_scan(tmp_path):
-    """A manual retry sweep (FAILED in the tuple) is NEVER paged even with
-    paging on — the manual ACK contract needs all FAILED→PENDING resets to
-    persist before the ACK, which a multi-page sweep would break. It returns
-    one CURSOR_END page via the legacy scan."""
-
-    async def _run():
-        rag = await _build_rag(tmp_path, page_size=2)
-        try:
-            await _enqueue_n(rag, 3)
-            counts = _count_page_calls(rag)
-
-            docs, cursor = await rag._next_scheduling_page(
-                _MANUAL_RETRY_DOC_STATUSES, CURSOR_START
-            )
-            assert cursor is CURSOR_END  # single page, sweep exhausted
-            assert counts["scan"] == 1 and counts["page"] == 0
-            assert len(docs) == 3
-
-            # An AUTO sweep with the same page_size DOES page.
-            counts["scan"] = counts["page"] = 0
-            _docs, auto_cursor = await rag._next_scheduling_page(
-                _AUTO_RESUME_DOC_STATUSES, CURSOR_START
-            )
-            assert counts["page"] == 1 and counts["scan"] == 0
-            assert auto_cursor is not CURSOR_END  # 3 docs > page_size 2
         finally:
             await rag.finalize_storages()
 

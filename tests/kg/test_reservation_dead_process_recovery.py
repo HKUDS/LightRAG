@@ -83,6 +83,27 @@ def test_reconcile_reclaims_dead_processing_owner(recovery_enabled):
     assert "recovery_required" not in status  # re-runnable, not fenced
 
 
+def test_reconcile_clears_manual_state_with_dead_busy_owner(recovery_enabled):
+    # LR2 Phase 3 §6.1: the manual-retry freeze is driven BY the busy processing
+    # run, so a dead busy owner must clear the whole manual state in the same
+    # atomic reclaim — never a True freeze flag with no live owner. The sticky
+    # request survives in the mailbox and is re-run by the next owner.
+    status = {
+        "busy": True,
+        "busy_owner": _dead_owner("processing"),
+        "manual_freeze_requested": True,
+        "manual_resetting": True,
+        "manual_phase": shared_storage.MANUAL_PHASE_EXCLUSIVE_RESET,
+        "manual_owner": {"request_id": "r1", "token": "t", "pid": 999999},
+    }
+    reconcile_dead_pipeline_reservations(status)
+    assert status["busy"] is False and status["busy_owner"] is None
+    assert status["manual_freeze_requested"] is False
+    assert status["manual_resetting"] is False
+    assert status["manual_phase"] == shared_storage.MANUAL_PHASE_IDLE
+    assert status["manual_owner"] is None
+
+
 def test_reconcile_reclaims_dead_scan_owner(recovery_enabled):
     status = {
         "scanning": True,
@@ -156,6 +177,23 @@ def test_reconcile_is_noop_when_disabled():
     assert status["busy_owner"] is not None
 
 
+async def test_reap_dead_reservations_locked_drops_dead_token(recovery_enabled):
+    # LR2 Phase 3 liveness: the manual DRAIN_TO_IDLE wait reaps a dead
+    # enqueue token itself (the freeze blocks the uploads that would otherwise
+    # reap it), so the drain can reach the exclusive reset instead of polling
+    # forever on a phantom pending_enqueues count.
+    status = {
+        "pending_enqueues": 2,
+        "pending_enqueue_tokens": {
+            "live": {"pid": os.getpid(), "process_start_id": None},
+            "dead": {"pid": _dead_pid(), "process_start_id": "gone"},
+        },
+    }
+    await shared_storage.reap_dead_reservations_locked(status, asyncio.Lock())
+    assert set(status["pending_enqueue_tokens"]) == {"live"}
+    assert status["pending_enqueues"] == 1
+
+
 def test_pipeline_recovery_blocked_message():
     status = {
         "recovery_required": {
@@ -178,8 +216,30 @@ def test_internal_fields_constant_covers_recovery_state():
         "pending_enqueue_tokens",
         "operation_record",
         "recovery_required",
+        # Phase 3 manual coordination — hidden from the public /pipeline_status
+        # response (manual_owner carries pid/token identity).
+        "manual_owner",
+        "manual_freeze_requested",
+        "manual_resetting",
+        "manual_phase",
     ):
         assert field in _INTERNAL_PIPELINE_STATUS_FIELDS
+
+
+async def test_initialize_pipeline_status_seeds_manual_state_at_idle(tmp_path):
+    # Phase 3: the manual-retry runtime state exists at init, defaulted to a
+    # clean idle (no freeze, no owner) so a fresh workspace never appears frozen.
+    ws = "manual-init-ws"
+    initialize_share_data()
+    try:
+        await initialize_pipeline_status(workspace=ws)
+        ps = await get_namespace_data("pipeline_status", workspace=ws)
+        assert ps["manual_freeze_requested"] is False
+        assert ps["manual_resetting"] is False
+        assert ps["manual_phase"] == shared_storage.MANUAL_PHASE_IDLE
+        assert ps["manual_owner"] is None
+    finally:
+        finalize_share_data()
 
 
 # ---------------------------------------------------------------------------

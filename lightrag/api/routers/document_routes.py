@@ -1292,7 +1292,7 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
     scan transitions to driving the processing pipeline like any
     other enqueuer, and uploads can land alongside it.
 
-    Two states block new uploads/inserts:
+    Three states block new uploads/inserts:
 
     - ``scanning_exclusive``: scan task is in its CLASSIFICATION
       phase — reading doc_status to classify files (PROCESSED →
@@ -1305,6 +1305,11 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
       accepted in this window would write to a storage that is being
       torn down and silently lose the document after the client saw
       success.
+    - ``manual_freeze_requested``: a manual retry (``/reprocess_failed``
+      or ``/scan``) has frozen new ingress while it drains the pipeline
+      to idle and exclusively resets FAILED→PENDING (LR2 §6.1/§7.2).
+      An enqueue reserved BEFORE the freeze is allowed to finish; only
+      new reservations are refused, for the bounded freeze window.
 
     ``pending_enqueues`` is incremented so the scan endpoint can refuse
     while bg tasks are mid-enqueue.  The counter does NOT gate
@@ -1322,8 +1327,9 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
 
     Raises:
         HTTPException(409): when
-            ``pipeline_status['scanning_exclusive']`` or
-            ``pipeline_status['destructive_busy']`` is set.
+            ``pipeline_status['scanning_exclusive']``,
+            ``pipeline_status['destructive_busy']`` or
+            ``pipeline_status['manual_freeze_requested']`` is set.
     """
     from lightrag.exceptions import PipelineNotInitializedError
     from lightrag.kg.shared_storage import (
@@ -1356,6 +1362,11 @@ async def _reserve_enqueue_slot(rag: LightRAG, token: str) -> bool:
                 "destructive_busy",
                 "Pipeline is clearing or deleting documents. Wait for the running "
                 "job to finish before submitting new work.",
+            ),
+            (
+                "manual_freeze_requested",
+                "A retry of failed documents is draining the pipeline. Wait for it "
+                "to finish before submitting new work.",
             ),
         ),
     )
