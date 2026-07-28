@@ -1,0 +1,447 @@
+"""Operator source-conflict list / repair endpoints (LR2 Phase 4-f, §5.5).
+
+A scan that meets two primary documents claiming one canonical source refuses to
+pick a winner: it leaves the file and both rows alone and records the conflict.
+These endpoints are the operator's way out — enumerate the conflicts, then
+settle one by naming the document that keeps the source, guarded by a
+compare-and-set token so a concurrent change cannot be overwritten.
+
+The storage semantics (fingerprints, transactions, demotion) are covered per
+backend under ``tests/kg/``; what is pinned here is the HTTP contract: the
+status code each storage outcome maps to, the opaque cursor round-trip, the
+CAS-token requirement, and the audit trail.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import sys
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+_original_argv = sys.argv[:]
+sys.argv = [sys.argv[0]]
+_document_routes = importlib.import_module("lightrag.api.routers.document_routes")
+sys.argv = _original_argv
+
+from lightrag.base import (  # noqa: E402
+    CURSOR_END,
+    CURSOR_START,
+    CursorAfter,
+    SourceConflictPage,
+    SourceConflictRepairResult,
+    SourceConflictSummary,
+)
+from lightrag.exceptions import (  # noqa: E402
+    SourceConflictRepairCASError,
+    StorageCapabilityError,
+    StorageControlPlaneError,
+)
+
+create_document_routes = _document_routes.create_document_routes
+
+pytestmark = pytest.mark.offline
+
+_HEADERS = {"X-API-Key": "test-key"}
+
+
+def _fingerprint(doc_ids: list[str]) -> str:
+    return hashlib.sha256("\x00".join(sorted(doc_ids)).encode("utf-8")).hexdigest()[:32]
+
+
+class _ConflictDocStatus:
+    """doc_status double whose conflict surface mirrors the real backends.
+
+    ``groups`` maps a canonical source key to its primary candidates; a repair
+    demotes losers by removing them from the group, exactly as marking
+    ``metadata.is_duplicate=true`` removes them from the primary candidate set.
+    """
+
+    _SAMPLE_CAP = 2
+
+    def __init__(self, groups: dict[str, list[str]] | None = None):
+        self.groups = groups or {}
+        self.list_calls: list[tuple[int, object]] = []
+        self.repair_calls: list[dict] = []
+        self.list_error: Exception | None = None
+        self.repair_error: Exception | None = None
+
+    async def list_source_conflicts_page(self, *, limit, position=CURSOR_START):
+        self.list_calls.append((limit, position))
+        if self.list_error is not None:
+            raise self.list_error
+        keys = sorted(k for k, v in self.groups.items() if len(v) >= 2)
+        if isinstance(position, CursorAfter):
+            keys = [k for k in keys if k > position.opaque]
+        page_keys = keys[:limit]
+        conflicts = tuple(
+            SourceConflictSummary(
+                canonical_source_key=key,
+                candidate_count=len(self.groups[key]),
+                sample_doc_ids=tuple(sorted(self.groups[key])[: self._SAMPLE_CAP]),
+            )
+            for key in page_keys
+        )
+        next_position = (
+            CursorAfter(page_keys[-1]) if len(page_keys) == limit else CURSOR_END
+        )
+        return SourceConflictPage(conflicts=conflicts, next_position=next_position)
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key,
+        *,
+        primary_doc_id,
+        expected_candidate_count,
+        expected_candidate_fingerprint,
+        dry_run=True,
+    ):
+        self.repair_calls.append(
+            {
+                "canonical_source_key": canonical_source_key,
+                "primary_doc_id": primary_doc_id,
+                "expected_candidate_count": expected_candidate_count,
+                "expected_candidate_fingerprint": expected_candidate_fingerprint,
+                "dry_run": dry_run,
+            }
+        )
+        if self.repair_error is not None:
+            raise self.repair_error
+        candidates = sorted(self.groups.get(canonical_source_key, []))
+        count = len(candidates)
+        fingerprint = _fingerprint(candidates)
+        if primary_doc_id not in candidates:
+            raise ValueError(
+                f"primary_doc_id {primary_doc_id!r} is not a current primary "
+                f"candidate for {canonical_source_key!r}"
+            )
+        demoted = [d for d in candidates if d != primary_doc_id]
+        if not dry_run:
+            if (
+                count != expected_candidate_count
+                or fingerprint != expected_candidate_fingerprint
+            ):
+                raise SourceConflictRepairCASError(
+                    f"source-conflict repair CAS failed for {canonical_source_key!r}"
+                )
+            self.groups[canonical_source_key] = [primary_doc_id]
+        return SourceConflictRepairResult(
+            canonical_source_key=canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            candidate_count=count,
+            fingerprint=fingerprint,
+            demoted_sample_doc_ids=tuple(demoted[: self._SAMPLE_CAP]),
+            committed=not dry_run,
+        )
+
+
+def _client(doc_status: _ConflictDocStatus) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_document_routes(
+            SimpleNamespace(doc_status=doc_status, workspace="conflict-test"),
+            SimpleNamespace(),
+            api_key="test-key",
+        )
+    )
+    return TestClient(app)
+
+
+# --------------------------------------------------------------------------- #
+# listing
+# --------------------------------------------------------------------------- #
+
+
+def test_listing_projects_bounded_samples():
+    storage = _ConflictDocStatus(
+        {"a.pdf": ["doc-1", "doc-2", "doc-3"], "solo.pdf": ["doc-9"]}
+    )
+    response = _client(storage).get("/documents/source_conflicts", headers=_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_cursor"] is None  # exhausted
+    assert len(body["conflicts"]) == 1  # the single-candidate key is not a conflict
+    conflict = body["conflicts"][0]
+    assert conflict["canonical_source_key"] == "a.pdf"
+    assert conflict["candidate_count"] == 3
+    # Sample is capped: three candidates, two reported.
+    assert conflict["sample_doc_ids"] == ["doc-1", "doc-2"]
+
+
+def test_listing_cursor_round_trips_without_leaking_backend_tokens():
+    storage = _ConflictDocStatus(
+        {"a.pdf": ["doc-1", "doc-2"], "b.pdf": ["doc-3", "doc-4"]}
+    )
+    client = _client(storage)
+
+    first = client.get(
+        "/documents/source_conflicts", headers=_HEADERS, params={"limit": 1}
+    ).json()
+    assert [c["canonical_source_key"] for c in first["conflicts"]] == ["a.pdf"]
+    cursor = first["next_cursor"]
+    # The backend's own token must not appear verbatim in the client cursor.
+    assert cursor is not None and "a.pdf" not in cursor
+
+    second = client.get(
+        "/documents/source_conflicts",
+        headers=_HEADERS,
+        params={"limit": 1, "cursor": cursor},
+    ).json()
+    assert [c["canonical_source_key"] for c in second["conflicts"]] == ["b.pdf"]
+    # The endpoint handed the decoded backend token back to storage.
+    assert storage.list_calls[-1][1].opaque == "a.pdf"
+
+
+def test_malformed_cursor_is_a_client_error():
+    """A garbled cursor must not be reported as an unavailable service: the
+    envelope is validated at the endpoint, before storage sees it."""
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    response = _client(storage).get(
+        "/documents/source_conflicts",
+        headers=_HEADERS,
+        params={"cursor": "not-base64!!"},
+    )
+
+    assert response.status_code == 400
+    assert "cursor" in response.json()["detail"].lower()
+    assert storage.list_calls == []  # never reached storage
+
+
+def test_listing_limit_is_bounded():
+    storage = _ConflictDocStatus({})
+    client = _client(storage)
+
+    assert (
+        client.get(
+            "/documents/source_conflicts", headers=_HEADERS, params={"limit": 0}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/documents/source_conflicts", headers=_HEADERS, params={"limit": 10_000}
+        ).status_code
+        == 422
+    )
+
+
+def test_listing_maps_capability_and_storage_failures():
+    storage = _ConflictDocStatus({})
+    client = _client(storage)
+
+    storage.list_error = StorageCapabilityError("no strict source resolution")
+    assert (
+        client.get("/documents/source_conflicts", headers=_HEADERS).status_code == 501
+    )
+
+    storage.list_error = StorageControlPlaneError("index rebuilding")
+    response = client.get("/documents/source_conflicts", headers=_HEADERS)
+    assert response.status_code == 503
+    # The storage message never reaches the client verbatim.
+    assert "rebuilding" not in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# repair
+# --------------------------------------------------------------------------- #
+
+
+def test_dry_run_reports_the_cas_token_without_mutating():
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    response = _client(storage).post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["committed"] is False
+    assert body["candidate_count"] == 2
+    assert body["fingerprint"] == _fingerprint(["doc-1", "doc-2"])
+    assert body["demoted_sample_doc_ids"] == ["doc-1"]
+    assert storage.groups["a.pdf"] == ["doc-1", "doc-2"]  # untouched
+    assert storage.repair_calls[-1]["dry_run"] is True
+
+
+def test_commit_requires_the_cas_tokens():
+    """Without the echoed tokens there is nothing to compare against, so the
+    commit is refused before any backend sees a placeholder expectation."""
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    response = _client(storage).post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "dry_run": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert storage.repair_calls == []
+
+
+def test_commit_demotes_and_then_resolves_uniquely():
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    client = _client(storage)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    commit = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+
+    assert commit.status_code == 200
+    assert commit.json()["committed"] is True
+    assert storage.groups["a.pdf"] == ["doc-2"]
+    # The listing no longer reports it.
+    listed = client.get("/documents/source_conflicts", headers=_HEADERS).json()
+    assert listed["conflicts"] == []
+
+
+def test_stale_cas_token_is_a_conflict_not_a_service_error():
+    """The CAS failure subclasses StorageControlPlaneError; it must be caught
+    ahead of its parent so a moved candidate set reads as 409 (retry the
+    dry-run) rather than 503 (storage unavailable)."""
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    response = _client(storage).post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": 7,
+            "expected_candidate_fingerprint": "stale",
+            "dry_run": False,
+        },
+    )
+
+    assert response.status_code == 409
+    assert "dry-run" in response.json()["detail"]
+
+
+def test_unknown_primary_is_refused():
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    response = _client(storage).post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-typo"},
+    )
+
+    assert response.status_code == 409
+    assert "doc-typo" in response.json()["detail"]
+
+
+def test_repair_maps_capability_and_storage_failures():
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    client = _client(storage)
+    payload = {"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"}
+
+    storage.repair_error = StorageCapabilityError("cannot repair")
+    assert (
+        client.post(
+            "/documents/source_conflicts/repair", headers=_HEADERS, json=payload
+        ).status_code
+        == 501
+    )
+
+    storage.repair_error = StorageControlPlaneError("lock unavailable")
+    response = client.post(
+        "/documents/source_conflicts/repair", headers=_HEADERS, json=payload
+    )
+    assert response.status_code == 503
+    assert "lock unavailable" not in response.json()["detail"]
+
+
+def test_every_repair_is_audited(monkeypatch):
+    """A commit is an operator action on someone else's data: dry-runs land at
+    INFO, commits and refusals at WARNING, with the identifiers sanitized so a
+    crafted key cannot forge extra log lines."""
+    infos: list[str] = []
+    warnings: list[str] = []
+    monkeypatch.setattr(_document_routes.logger, "info", infos.append)
+    monkeypatch.setattr(_document_routes.logger, "warning", warnings.append)
+
+    storage = _ConflictDocStatus({"a\nb.pdf": ["doc-1", "doc-2"]})
+    client = _client(storage)
+
+    dry = client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a\nb.pdf", "primary_doc_id": "doc-2"},
+    ).json()
+    audit = [line for line in infos if "source-conflict repair" in line]
+    assert len(audit) == 1
+    assert "dry-run" in audit[0]
+    assert "\n" not in audit[0]  # newline in the key neutralized
+
+    client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={
+            "canonical_source_key": "a\nb.pdf",
+            "primary_doc_id": "doc-2",
+            "expected_candidate_count": dry["candidate_count"],
+            "expected_candidate_fingerprint": dry["fingerprint"],
+            "dry_run": False,
+        },
+    )
+    commits = [
+        line
+        for line in warnings
+        if "source-conflict repair" in line and "COMMIT" in line
+    ]
+    assert len(commits) == 1
+    assert "REFUSED" not in commits[0]
+    assert "doc-2" in commits[0]
+
+    # A refusal is audited too — a failed attempt is part of the trail.
+    client.post(
+        "/documents/source_conflicts/repair",
+        headers=_HEADERS,
+        json={"canonical_source_key": "a\nb.pdf", "primary_doc_id": "doc-1"},
+    )
+    assert any("REFUSED" in line for line in warnings)
+
+
+def test_endpoints_require_authentication():
+    """Both endpoints are behind ``combined_auth``, and a refused caller must not
+    reach the storage.
+
+    The refusal CODE is deliberately not pinned: the shared dependency answers
+    401 ("please login") when password auth is configured and 403 ("API Key
+    required") when only an API key is, so hard-coding either makes this test
+    pass or fail on whether the developer happens to have ``AUTH_ACCOUNTS`` in a
+    local ``.env`` — it passed locally and failed in CI for exactly that reason.
+    Which code the dependency picks is its own tests' business; what belongs here
+    is that these two routes are gated and the repair never ran.
+    """
+    storage = _ConflictDocStatus({"a.pdf": ["doc-1", "doc-2"]})
+    client = _client(storage)
+
+    listing = client.get("/documents/source_conflicts")
+    repair = client.post(
+        "/documents/source_conflicts/repair",
+        json={"canonical_source_key": "a.pdf", "primary_doc_id": "doc-2"},
+    )
+
+    assert listing.status_code in (401, 403), listing.status_code
+    assert repair.status_code in (401, 403), repair.status_code
+    assert storage.repair_calls == []

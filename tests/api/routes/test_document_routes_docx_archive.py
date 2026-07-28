@@ -22,6 +22,11 @@ sys.argv = _original_argv
 
 DocStatus = _base.DocStatus
 DeletionResult = _base.DeletionResult
+DocProcessingStatus = _base.DocProcessingStatus
+DocSchedulingRecord = _base.DocSchedulingRecord
+SourceAbsent = _base.SourceAbsent
+SourceConflict = _base.SourceConflict
+SourceUnique = _base.SourceUnique
 FULL_DOCS_FORMAT_LIGHTRAG = _constants.FULL_DOCS_FORMAT_LIGHTRAG
 FULL_DOCS_FORMAT_PENDING_PARSE = _constants.FULL_DOCS_FORMAT_PENDING_PARSE
 PARSED_DIR_NAME = _constants.PARSED_DIR_NAME
@@ -44,7 +49,7 @@ async def _parse_via_registry(rag, engine, doc_id, file_path, content_data):
 
 
 pipeline_index_file = _document_routes.pipeline_index_file
-pipeline_index_files = _document_routes.pipeline_index_files
+pipeline_enqueue_scan_batch = _document_routes.pipeline_enqueue_scan_batch
 pipeline_index_texts = _document_routes.pipeline_index_texts
 pipeline_enqueue_file = _document_routes.pipeline_enqueue_file
 run_scanning_process = _document_routes.run_scanning_process
@@ -160,6 +165,15 @@ class _DuplicateEnqueueRag(_FakeRag):
 
 
 class _ScanDocStatus:
+    """doc_status double implementing the typed source-resolution contract.
+
+    Rows are keyed by the string that doubles as their doc id; a canonical source
+    key matches a row when it equals that key's basename. Unless a fixture pins
+    ``metadata`` explicitly, a row is treated as scan/upload-origin — those always
+    record the physical basename that created them in ``metadata.source_file``,
+    which is what tells a resumed file apart from an alias (LR2 §8.3.E/F/G).
+    """
+
     def __init__(self, docs_by_path):
         self.docs_by_path = docs_by_path
         self.deleted_ids: list[str] = []
@@ -168,12 +182,68 @@ class _ScanDocStatus:
         return self.docs_by_path.get(file_path)
 
     async def get_doc_by_file_basename(self, basename):
-        from pathlib import Path as _Path
-
+        # Still the upload path's duplicate check (the SCAN moved to the typed
+        # resolver below); a single primary row per basename is all it models.
         for stored_path, doc in self.docs_by_path.items():
-            if _Path(stored_path).name == basename:
+            if Path(stored_path).name == basename:
                 return stored_path, doc
         return None
+
+    def _metadata(self, doc_id, row):
+        metadata = row.get("metadata")
+        if metadata is None:
+            return {"source_file": Path(doc_id).name}
+        return metadata
+
+    def _status(self, row):
+        status = row.get("status")
+        return status if isinstance(status, DocStatus) else DocStatus(status)
+
+    async def resolve_doc_source_strict(self, canonical_source_key):
+        candidates = [
+            (doc_id, row)
+            for doc_id, row in self.docs_by_path.items()
+            if Path(doc_id).name == canonical_source_key
+            and not (self._metadata(doc_id, row) or {}).get("is_duplicate")
+        ]
+        if not candidates:
+            return SourceAbsent()
+        if len(candidates) > 1:
+            return SourceConflict(
+                candidate_count=len(candidates),
+                sample_doc_ids=tuple(doc_id for doc_id, _ in candidates[:2]),
+            )
+        doc_id, row = candidates[0]
+        return SourceUnique(
+            doc_id=doc_id,
+            doc=DocSchedulingRecord(
+                id=doc_id,
+                status=self._status(row),
+                created_at=row.get("created_at", ""),
+                updated_at=row.get("updated_at", ""),
+                file_path=row.get("file_path") or Path(doc_id).name,
+                track_id=row.get("track_id"),
+                has_custom_chunk_journal=False,
+            ),
+        )
+
+    async def get_full_docs_by_ids(self, doc_ids, *, strict=False):
+        hydrated = {}
+        for doc_id in doc_ids:
+            row = self.docs_by_path.get(doc_id)
+            if row is None:
+                continue
+            hydrated[doc_id] = DocProcessingStatus(
+                content_summary=row.get("content_summary", ""),
+                content_length=row.get("content_length", 0),
+                file_path=row.get("file_path") or Path(doc_id).name,
+                status=self._status(row),
+                created_at=row.get("created_at", ""),
+                updated_at=row.get("updated_at", ""),
+                track_id=row.get("track_id"),
+                metadata=self._metadata(doc_id, row),
+            )
+        return hydrated
 
     async def delete(self, ids):
         for doc_id in ids:
@@ -184,16 +254,22 @@ class _ScanDocStatus:
 class _ScanFullDocs:
     """Minimal full_docs double for run_scanning_process.
 
-    The scan now consults ``full_docs.get_by_id`` to distinguish a
-    resumable FAILED row (content was stored, only a downstream step
-    failed) from an extraction-error stub recorded by
-    ``apipeline_enqueue_error_documents`` (no full_docs entry exists).
+    The scan distinguishes a resumable FAILED row (content was stored, only a
+    downstream step failed) from an extraction-error stub recorded by
+    ``apipeline_enqueue_error_documents`` (no full_docs entry) — and per LR2
+    §8.3.D only a STRICT point read may drive that destructive decision, so this
+    double declares the capability.
     """
+
+    supports_strict_point_reads = True
 
     def __init__(self, docs_by_id):
         self.docs_by_id = docs_by_id
 
     async def get_by_id(self, doc_id):
+        return self.docs_by_id.get(doc_id)
+
+    async def get_by_id_strict(self, doc_id):
         return self.docs_by_id.get(doc_id)
 
 
@@ -209,7 +285,12 @@ class _ScanRag:
             full_docs_by_id = {path: {"content": ""} for path in docs_by_path}
         self.full_docs = _ScanFullDocs(full_docs_by_id)
         self.process_calls = 0
-        self.workspace = "scan-test"
+        # A workspace per instance: a scan publishes a sticky manual retry
+        # request that only a REAL pipeline run ACKs, and the /scan reservation
+        # refuses while an earlier request is queued (LR2 §8.1). With a shared
+        # workspace one endpoint test would then refuse the next one.
+        self.workspace = f"scan-test-{uuid4().hex}"
+        self.reset_calls = []
         self.enqueued = []
         self.errors = []
 
@@ -241,6 +322,15 @@ class _ScanRag:
 
     async def apipeline_process_enqueue_documents(self):
         self.process_calls += 1
+
+    async def apipeline_reset_failed_for_scan(
+        self, request_id, *, scan_owner_token=None
+    ):
+        # LR2 §8.1: the real pipeline drains to idle and resets FAILED→PENDING
+        # here, BEFORE discovery. The mock records the call and reports the
+        # reset complete so classification proceeds.
+        self.reset_calls.append((request_id, scan_owner_token))
+        return True
 
 
 class _DuplicateUploadRag:
@@ -552,7 +642,7 @@ async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
     assert enqueued["process_options"] == "iet"
 
 
-async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
+async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
@@ -562,7 +652,7 @@ async def test_pipeline_index_files_leaves_lightrag_document_docx_batch(
     second.write_bytes(b"second docx bytes")
     rag = _FakeRag()
 
-    await pipeline_index_files(rag, [second, first], "track-scan")
+    await pipeline_enqueue_scan_batch(rag, [second, first], "track-scan")
 
     assert first.exists()
     assert second.exists()
@@ -623,7 +713,9 @@ async def test_scan_processed_same_name_archives_with_unique_name(
     async def fail_if_reenqueue(*args, **kwargs):
         raise AssertionError("existing docx should not be re-enqueued")
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", fail_if_reenqueue)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", fail_if_reenqueue
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
@@ -651,7 +743,9 @@ async def test_scan_processed_canonical_name_archives_hinted_file(
     async def fail_if_reenqueue(*args, **kwargs):
         raise AssertionError("canonical duplicate should not be re-enqueued")
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", fail_if_reenqueue)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", fail_if_reenqueue
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
@@ -677,25 +771,32 @@ async def test_scan_archives_same_batch_canonical_duplicates(tmp_path, monkeypat
                 "kwargs": kwargs,
             }
         )
+        return len(file_paths)
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
-    # Hinted variant is preferred so the user's explicit engine choice wins;
-    # the plain variant is the one that gets archived.
+    # LR2 §8.4/§8.5: the winner is whichever physical file claimed the canonical
+    # key FIRST in the batch — discovery is a single unordered streaming pass, so
+    # the previous "hinted variant always wins" preference (a whole-directory
+    # group-by pass) is gone by design. Exactly one variant is enqueued and the
+    # other is ARCHIVED, never deleted; which one wins is not promised.
     assert len(calls) == 1
-    assert calls[0]["file_paths"] == [hinted_file]
-    # The scan-owned background task forwards from_scan=True so per-file
-    # enqueues bypass the scanning guard whose ``scanning`` flag the
-    # scan task itself holds.
-    assert calls[0]["kwargs"] == {"from_scan": True}
+    assert len(calls[0]["file_paths"]) == 1
+    winner = calls[0]["file_paths"][0]
+    loser = plain_file if winner == hinted_file else hinted_file
+    # from_scan is implied by pipeline_enqueue_scan_batch — the scan is its only
+    # caller — so the batch call carries no extra keyword.
+    assert calls[0]["kwargs"] == {}
     archived_names = {
         path.name for path in (tmp_path / PARSED_DIR_NAME).iterdir() if path.is_file()
     }
-    assert archived_names == {"same.docx"}
-    assert hinted_file.exists()
-    assert not plain_file.exists()
+    assert archived_names == {loser.name}
+    assert winner.exists()
+    assert not loser.exists()
 
 
 async def test_scan_rejects_invalid_filename_hint(tmp_path, monkeypatch):
@@ -716,7 +817,11 @@ async def test_scan_rejects_invalid_filename_hint(tmp_path, monkeypatch):
         "[File Extraction]Filename hint error"
     )
     assert "multiple chunking modes" in error_files[0]["original_error"]
-    assert rag.process_calls == 0
+    # LR2 §8.1: every scan ends with exactly ONE processing drive, even when no
+    # file was enqueued — resume targets and the FAILED rows the pre-discovery
+    # reset turned into PENDING have no other trigger (an empty queue makes it a
+    # cheap no-op).
+    assert rag.process_calls == 1
     assert file_path.exists()
 
 
@@ -744,8 +849,11 @@ async def test_scan_existing_non_processed_reprocesses_file(tmp_path, monkeypatc
                 "kwargs": kwargs,
             }
         )
+        return len(file_paths)
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
@@ -799,8 +907,11 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
                 "kwargs": kwargs,
             }
         )
+        return len(file_paths)
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
@@ -809,7 +920,9 @@ async def test_scan_mixed_new_and_resume_routes_only_new_through_enqueue(
     # source on disk.
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [new_file]
-    assert calls[0]["kwargs"] == {"from_scan": True}
+    # from_scan is implied by pipeline_enqueue_scan_batch (the scan is its only
+    # caller), so the batch call carries no extra keyword.
+    assert calls[0]["kwargs"] == {}
     # The unconditional trigger fires once — guaranteeing the resume row
     # advances even if pipeline_index_files's internal trigger were to be
     # skipped (e.g. if every new file was rejected by enqueue).
@@ -853,8 +966,11 @@ async def test_scan_failed_extraction_record_without_full_docs_is_retried(
                 "kwargs": kwargs,
             }
         )
+        return len(file_paths)
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
@@ -864,8 +980,11 @@ async def test_scan_failed_extraction_record_without_full_docs_is_retried(
     assert rag.doc_status.deleted_ids == [str(file_path)]
     assert len(calls) == 1
     assert calls[0]["file_paths"] == [file_path]
-    assert calls[0]["kwargs"] == {"from_scan": True}
-    assert rag.process_calls == 0
+    # from_scan is implied by pipeline_enqueue_scan_batch (the scan is its only
+    # caller), so the batch call carries no extra keyword.
+    assert calls[0]["kwargs"] == {}
+    # One drive per scan (LR2 §8.1); the batch itself never drives processing.
+    assert rag.process_calls == 1
     assert file_path.exists()
 
 
@@ -892,7 +1011,9 @@ async def test_scan_failed_with_full_docs_resumes_normally(tmp_path, monkeypatch
     async def capture_pipeline(rag_arg, file_paths, track_id, **kwargs):
         calls.append(file_paths)
 
-    monkeypatch.setattr(_document_routes, "pipeline_index_files", capture_pipeline)
+    monkeypatch.setattr(
+        _document_routes, "pipeline_enqueue_scan_batch", capture_pipeline
+    )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
 
@@ -932,13 +1053,12 @@ async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(
     )
 
     async def index_files_all_rejected(rag_arg, file_paths, track_id, **kwargs):
-        # Real pipeline_index_files skips its internal
-        # apipeline_process_enqueue_documents call when no per-file enqueue
-        # succeeded; the mock omits the call entirely to mirror that.
-        return None
+        # Mirror the real helper when every per-file enqueue is rejected: the
+        # batch lands nothing (0), and enqueue never drives processing anyway.
+        return 0
 
     monkeypatch.setattr(
-        _document_routes, "pipeline_index_files", index_files_all_rejected
+        _document_routes, "pipeline_enqueue_scan_batch", index_files_all_rejected
     )
 
     await run_scanning_process(rag, doc_manager, "track-scan")
@@ -3012,7 +3132,7 @@ def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path, monkeypat
     assert not dm.is_supported_file("sample.foo")
     (dm.input_dir / "sample.foo").write_text("x", encoding="utf-8")
     (dm.input_dir / "hinted.[fooengine].foo").write_text("x", encoding="utf-8")
-    assert not [p for p in dm.scan_directory_for_new_files() if p.suffix == ".foo"]
+    assert not [p for p in dm.iter_new_files() if p.suffix == ".foo"]
 
     registry.register_parser(
         registry.ParserSpec(
@@ -3029,14 +3149,14 @@ def test_third_party_engine_suffixes_join_allowlist_and_scan(tmp_path, monkeypat
         # The hinted file routes to fooengine: uploadable AND discoverable
         # by scan (glob covers the capability surface, filter is per-name).
         assert dm.is_supported_file("hinted.[fooengine].foo")
-        scanned = {p.name for p in dm.scan_directory_for_new_files()}
+        scanned = {p.name for p in dm.iter_new_files()}
         assert "hinted.[fooengine].foo" in scanned
         assert "sample.foo" not in scanned
         # A routing rule makes the bare suffix routable.
         monkeypatch.setenv("LIGHTRAG_PARSER", "foo:fooengine")
         assert ".foo" in dm.supported_extensions
         assert dm.is_supported_file("sample.foo")
-        assert "sample.foo" in {p.name for p in dm.scan_directory_for_new_files()}
+        assert "sample.foo" in {p.name for p in dm.iter_new_files()}
     finally:
         registry._REGISTRY.pop("fooengine", None)
     assert not dm.is_supported_file("sample.foo")

@@ -1473,8 +1473,13 @@ class DocStatusStorage(BaseKVStorage, ABC):
           summary plus the deterministic ``fingerprint`` / ``candidate_count``.
         * On commit, the current candidate set is re-read strictly and a
           mismatch with ``expected_candidate_count`` /
-          ``expected_candidate_fingerprint`` fails as a CAS conflict rather
-          than overwriting a concurrent change.
+          ``expected_candidate_fingerprint`` raises
+          :class:`~lightrag.exceptions.SourceConflictRepairCASError` rather
+          than overwriting a concurrent change — a *known* stale-token state
+          (surface it as 409), distinct from its ``StorageControlPlaneError``
+          parent, which means the true state is unknown (503).
+        * A ``primary_doc_id`` that is not currently a primary candidate
+          raises ``ValueError``; the operator must re-read the candidates.
         * The other candidates are marked ``metadata.is_duplicate=true`` with
           ``original_doc_id=primary_doc_id``; content is never deleted.
 
@@ -1484,11 +1489,15 @@ class DocStatusStorage(BaseKVStorage, ABC):
         rows it saw, but a brand-new primary for the same key is a phantom that
         neither a ``SELECT … FOR UPDATE`` (PostgreSQL), a snapshot transaction
         (MongoDB) nor a non-transactional re-scan (Redis, OpenSearch) can block.
-        Serializing repair against enqueue is therefore the CALLER's job, via a
-        ``get_storage_keyed_lock`` on the canonical source key held across both
-        the resolve→enqueue decision and the dry-run→commit pair. That lock
-        spans one deployment (its worker processes included), not several
-        deployments sharing a database.
+        Serializing repair against enqueue is therefore the CALLER's job:
+        ``lightrag.tools.source_conflict_repair.source_conflict_repair_lock``
+        holds a ``get_storage_keyed_lock`` on the canonical source key (so
+        concurrent repairs of one key serialize) plus the workspace's
+        ``ENQUEUE_SERIALIZE_LOCK_NAMESPACE`` namespace lock, which is the one
+        that actually excludes the phantom because the enqueue critical section
+        (``filter_keys`` → dedup → ``upsert``) already holds it. Those locks span
+        one deployment (its worker processes included), not several deployments
+        sharing a database.
 
         ``committed=True`` accordingly means "the demotions named in this result
         were committed" — NOT "this source key is now conflict-free". A primary

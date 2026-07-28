@@ -43,6 +43,7 @@ from ..base import (
     SourceUnique,
 )
 from ..exceptions import (
+    SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
 )
@@ -2966,7 +2967,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
             count != expected_candidate_count
             or fingerprint != expected_candidate_fingerprint
         ):
-            raise StorageControlPlaneError(
+            raise SourceConflictRepairCASError(
                 f"[{self.workspace}] source-conflict repair CAS failed for "
                 f"{canonical_source_key!r}: candidate set changed "
                 f"(count {count} vs {expected_candidate_count})"

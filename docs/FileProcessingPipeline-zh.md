@@ -671,7 +671,7 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 - 分析结果文件：LightRAG Document blocks 文件以及 sidecar 都使用规范化文件名的主干命名，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`；同一目录下还可能包含 `report.tables.json`、`report.drawings.json`、`report.equations.json` 和 `report.blocks.assets/` 图片资源目录。**sidecar 是否生成由文档内容决定**：解析器只在文档实际包含表格/图片/公式时写出对应文件。这是模态可用性的唯一信号 —— 引擎不需要在 meta 中声明能力。`i`/`t`/`e` 选项只决定下一阶段是否对已存在的 sidecar 调用 VLM 做摘要分析。
 - 解析失败时，原文件不会移动，便于修复配置后重新处理。
 - `/documents/scan` 扫描到同名且已 `PROCESSED` 的文件时，该输入文件会被视为已处理并移动到 `__parsed__`，不会作为新文档入队。
-- `/documents/scan` 同一次扫描中发现多个规范化后同名的文件时，会优先保留带支持引擎 hint 的文件以尊重用户的引擎选择；如果没有任何变体带 hint，则按排序处理第一个文件。其余变体会输出 warning 并移动到 `__parsed__`，避免同批文件互相覆盖。例如 `abc.docx` 和 `abc.[native].docx` 同时存在时只会处理 `abc.[native].docx`。
+- `/documents/scan` 同一次扫描中发现多个规范化后同名的文件时，**先取得 canonical claim 的文件获胜**（即目录流式遍历时先到达的那个），其余变体会输出 warning 并移动到 `__parsed__`，避免同批文件互相覆盖。例如 `abc.docx` 和 `abc.[native].docx` 同时存在时只处理先被遍历到的那一个。hint 只决定引擎，不再提供调度优先级——旧版本为了偏好 hint 变体需要对整个目录做两遍扫描并 group-by，这与有界批流式发现不兼容，已移除。
 - 扫描或解析过程中发现内容 hash 重复时，该输入文件同样会移动到 `__parsed__`；本次 `doc_status` 保留为 `FAILED duplicate` 以便追踪。
 - 移动文件只作用于当前输入文件，不会覆盖或移动既有文档源文件。若目标目录已存在同名文件，系统会自动追加 `_001`、`_002` 等编号，例如 `report.pdf` 会依次归档为 `report_001.pdf`、`report_002.pdf`。若分析结果目录名已被普通文件占用，也会追加编号，例如 `report.docx.parsed_001/`。
 
@@ -772,13 +772,21 @@ __parsed__/<base>.docling_raw/
 - 判断粒度为 basename，不包含目录路径和 workspace 路径。例如 `/data/a.pdf`、`inputs/a.pdf` 和 `a.pdf` 都视为同一个文件名 `a.pdf`。
 - 文件名查重以 `canonical_basename` 为索引：将文件名末尾的支持引擎处理提示 hint 剥离后再比对，因此 `abc.docx`、`abc.[native].docx`、`abc.[native-iet].docx` 之间互相视为同名；不支持的 hint 不会被剥离，例如 `abc.[draft].docx` 仍按原文件名处理。
 - 对普通上传、文本接口和核心入队 API，只要 `doc_status` 中已经存在同名文件记录，无论该记录当前处于 `PENDING`、`PARSING`、`ANALYZING`、`PROCESSING`、`FAILED` 还是 `PROCESSED`，同名文件都会被视为重复。
-- 对 `/documents/scan` 目录扫描：
-  - 同一次扫描中如果有多个文件规范化后同名，优先处理带支持引擎 hint 的文件；若无任何 hint 变体，则处理排序后的第一个文件，其余文件会归档到 `__parsed__` 并跳过。
-  - 如果同名记录已经是 `PROCESSED`，当前扫描到的文件视为已处理文件，系统会输出 warning，将该输入文件移动到同级 `__parsed__` 目录，并跳过入队。
-  - 如果同名记录不是 `PROCESSED`，扫描文件**不**仅因文件名相同而跳过，但**也不**会重新提取/覆盖既有记录。具体路径取决于既有记录的形态（与下文"为什么 scan 仍是独占写者"一节列举的分类规则一致）：
-    - 同名非 PROCESSED 且 `full_docs` 存在 → **resume 路径**：doc_status 现状保留，源文件留在 `INPUT/`，由处理循环按状态查询接走（不重新提取、不覆盖既有状态）。
-    - 同名 `FAILED` 且 `full_docs` 缺失 → 视为 `apipeline_enqueue_error_documents` 写下的提取错误 stub：scan 删掉这条 stub 后**把当前文件按新文件重新入队**。这是唯一会重新提取的子分支，目的是让"修好源文件再 scan 一次"自动生效。
-- 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；扫描路径上述两种自动恢复仅用于目录扫描场景。
+- 对 `/documents/scan` 目录扫描：canonical basename 只用于**定位**候选记录，不假设唯一（custom ID 插入、legacy id、历史碰撞都可能共享同一个 canonical）。扫描对每个物理文件算出 canonical source key，用 `resolve_doc_source_strict` 做一次 typed 解析，再按固定的互斥顺序落到七类出口之一。分类阶段**只读**：入队、归档、删 stub 等破坏性动作都在分类之后执行，因此每个决策都能先记日志、计数和采样。
+
+  | 出口 | 条件 | 动作 |
+  | --- | --- | --- |
+  | `CLAIMED_NEW` | 无同 canonical 记录（`SourceAbsent`） | 加入当前有界批入队；`created_at` 取文件 `st_mtime`；`metadata.source_file` 保存带 hint 的原始 basename |
+  | `SOURCE_CONFLICT` | 同 canonical 有多条主记录（`SourceConflict`，历史遗留） | 不入队、不删任何记录、**也不归档文件**（operator 需要现场文件）；job 记录有界的候选 doc ID 摘要，等按 doc ID 修复后再扫。修复入口：`GET /documents/source_conflicts` 列出冲突，`POST /documents/source_conflicts/repair` 指定保留的 `primary_doc_id`（默认 dry-run，拿到 `candidate_count`/`fingerprint` 后回填提交；候选集有变动则 409），或离线用 `python -m lightrag.tools.source_conflict_repair` |
+  | `PROCESSED` | 唯一记录已 `PROCESSED` | 输出 warning，源文件归档到 `__parsed__`，跳过入队 |
+  | `STALE_STUB` | 唯一记录为 `FAILED`，且 strict point read **确认** `full_docs` 不存在 | 视为 `apipeline_enqueue_error_documents` 写下的提取错误 stub（一致性检查会保留它供人工 review）：删掉 stub 后把当前文件按 `CLAIMED_NEW` 重新入队。这是唯一会重新提取的出口，让"修好源文件再 scan 一次"自动生效。point read 能力缺失或读取失败时**不删**，转下面的非破坏性出口 |
+  | `SOURCE_IDENTITY_UNKNOWN` | 唯一记录缺 `metadata.source_file`（custom ID / legacy / 非 scan 来源的 RAW 行） | 保留文件、不入队、记录有界告警；缺失**不**等于"不同的物理文件" |
+  | `RESUME_SAME_PHYSICAL_SOURCE` | 物理 basename == `source_file` | **resume 路径**：doc_status 现状保留，源文件留在 `INPUT/`，由处理循环按状态查询接走（不重新提取、不覆盖既有状态） |
+  | `ALIAS_DUPLICATE` | 物理 basename != `source_file` | 同 canonical 的另一个物理文件：归档 alias 并输出 warning，不走普通入队（避免制造 `dup-*` FAILED 行） |
+
+  同一有界批（`SCAN_ENQUEUE_BATCH_SIZE`）内第一条 PENDING 尚未落库时 resolver 看不到它，所以扫描另外维护至多 K 条批内 claim：同批第二次出现同 canonical 直接判 `ALIAS_DUPLICATE`，批落库后清空。
+- 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；上述自动恢复（`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`）仅用于目录扫描场景。
+- 扫描入队的文档 `created_at` 取文件 `st_mtime`，上传/文本接口取 `now()`；处理顺序由 `doc_status` 的 `(created_at, id)` 决定且写入后不可变，因此批量扫描一个存量目录时按**文件年龄从旧到新**处理，而不是按目录遍历到达的顺序。文件的 mtime 不可读（例如刚被删掉）时退回 `now()`：丢时间戳不能连带丢掉这条记录。
 - 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时直接返回 400。
 - SDK 路径调用 `insert` / `ainsert` / `apipeline_enqueue_documents` 时不传 `file_paths` 是被允许的，相关行为详见 §8.4。这类无来源文档的 `file_path` 保存为 `unknown_source`。
 - 空字符串、`no-file-path` 和 `unknown_source` 都会被视为未知来源；它们不会阻止新的无来源文本入队，也不会作为同名文件互相去重。
@@ -845,13 +853,9 @@ __parsed__/<base>.docling_raw/
 
 ### 6.4 为什么 scan 仍是独占写者
 
-scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每个文件去向：
+scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每个文件去向（`PROCESSED` 归档、resume 保留、stale stub 删除重入队等，七类出口见 [§5.1](#51-文件名basename查重)）。
 
-- 同名 `PROCESSED` 行 → 归档源文件、跳过入队。
-- 同名非 PROCESSED 且 `full_docs` 存在 → resume 路径，源文件**保留在 `INPUT/`**，不归档（pending-parse 解析器仍可能需要它），由处理循环按状态查询接走。
-- 同名 `FAILED` 且 `full_docs` 缺失 → 识别为之前 `apipeline_enqueue_error_documents` 写下的提取错误 stub（一致性检查会保留这种行供人工 review），scan 自动删除该 stub 并把当前文件按新文件重新入队，让用户"修好源文件再 scan 一次"能直接生效。
-
-这些"读—决策—写"组合不能与其它写者交错，否则分类决策会基于过期视图。所以 scan 必须独占，且 scan 端点会在 `busy` / `scanning` / `pending_enqueues>0` 任一存在时拒绝。
+这些"读—决策—写"组合不能与其它写者交错，否则分类决策会基于过期视图。所以分类阶段必须独占（`scanning_exclusive`），且 scan 端点会在 `busy` / `scanning` / `pending_enqueues>0` / 独占 reset 冻结（`manual_freeze_requested`）/ 有更早未处理的人工重试请求 任一成立时拒绝——最后一条保证 scan 不会插队到人工重试请求之前。
 
 ### 6.5 严格名字预检（upload 路径）
 

@@ -365,6 +365,24 @@ def performance_timing_log(msg: str, *args, **kwargs):
         logger.info(msg, *args, **kwargs)
 
 
+def safe_log_value(value: str, max_length: int = 200) -> str:
+    """Make a caller-supplied value safe to embed in a log line.
+
+    Replaces non-printable characters -- notably CR/LF, which could otherwise
+    be used to forge extra log lines (log injection) -- with '?' and truncates
+    over-long values. Only the *logged* form is sanitized; the caller keeps the
+    original value for its own logic.
+
+    Used wherever untrusted input reaches the log: rate-limit keys built from a
+    submitted username, and operator-supplied identifiers in audited admin
+    actions (source-conflict repair).
+    """
+    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "…(truncated)"
+    return sanitized
+
+
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
 
 

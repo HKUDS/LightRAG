@@ -19,6 +19,7 @@ _document_routes = importlib.import_module("lightrag.api.routers.document_routes
 sys.argv = _original_argv
 
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage  # noqa: E402
+from lightrag.kg.scan_job_store import ScanJobStatus  # noqa: E402
 from lightrag.kg.shared_storage import get_pipeline_ingress  # noqa: E402
 
 DocumentManager = _document_routes.DocumentManager
@@ -140,3 +141,40 @@ async def test_clear_documents_survives_ingress_clear_failure(tmp_path):
     )
     assert pipeline_status.get("busy") is False
     assert pipeline_status.get("destructive_busy") is False
+
+
+async def test_clear_documents_retires_finished_scan_jobs_only(tmp_path):
+    """LR2 §8.6: a destructive clear removes the scan job records nobody owns —
+    terminal ones, plus lease-expired RUNNING ones the store reaps to ABANDONED
+    on read — but never a still-valid RUNNING job (its owner would lose the
+    record it is CAS-updating)."""
+    workspace = f"clear-jobs-{uuid4().hex[:8]}"
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=workspace)
+
+    store = shared_storage.get_scan_job_store(workspace)
+    live_token, done_token = uuid4().hex, uuid4().hex
+    store.create("scan-live", live_token)
+    store.create("scan-done", done_token)
+    finished = store.get("scan-done")
+    assert store.set_status(
+        "scan-done",
+        done_token,
+        ScanJobStatus.COMPLETED,
+        expected_version=finished["version"],
+    ).ok
+
+    rag = _ClearRag(workspace)
+    router = create_document_routes(rag, DocumentManager(str(tmp_path)))
+    clear_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "clear_documents"
+    ][-1]
+
+    response = await clear_endpoint()
+    assert response.status in ("success", "partial_success")
+
+    assert [record["track_id"] for record in store.snapshot()] == ["scan-live"]
+    assert store.get("scan-live")["status"] == "running"

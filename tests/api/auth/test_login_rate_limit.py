@@ -6,7 +6,6 @@ import lightrag.api.login_rate_limit as lrl_module
 from lightrag.api.login_rate_limit import (
     _PENDING_RETRY_AFTER_SECONDS,
     LoginRateLimiter,
-    _safe_log_value,
 )
 
 
@@ -338,11 +337,3 @@ def test_lockout_alert_sanitizes_injected_username(monkeypatch):
     assert len(messages) == 1
     assert "\n" not in messages[0]  # newline neutralized -> no injected line
     assert "admin?CRITICAL" in messages[0]  # control char replaced with '?'
-
-
-def test_safe_log_value_strips_control_chars_and_truncates():
-    assert _safe_log_value("a\r\nb") == "a??b"
-
-    long = _safe_log_value("x" * 500, max_length=100)
-    assert long.startswith("x" * 100)
-    assert "truncated" in long

@@ -98,6 +98,24 @@ class StorageControlPlaneError(RuntimeError):
     """
 
 
+class SourceConflictRepairCASError(StorageControlPlaneError):
+    """A source-conflict repair commit lost its compare-and-set check.
+
+    The candidate set for the canonical source key changed between the
+    operator's dry-run and the commit (count / fingerprint mismatch), so
+    ``repair_source_conflict`` refused instead of overwriting the concurrent
+    change.
+
+    Unlike its parent — "the true state is unknown, fail closed" — this error
+    reports a *known* state that simply no longer matches what the operator
+    echoed back: re-running the dry-run yields a fresh token and the repair can
+    proceed. Callers therefore surface it as a conflict (HTTP 409), never as an
+    unavailable control plane (503). It subclasses
+    ``StorageControlPlaneError`` so a caller that only knows the coarse
+    fail-closed contract still behaves safely.
+    """
+
+
 class StorageRecordNotFoundError(KeyError):
     """A targeted doc_status field update referenced a non-existent record.
 

@@ -32,6 +32,12 @@ from lightrag.kg.pipeline_ingress import (
     PipelineIngressMessage,
     _PipelineIngressHubProxy,
 )
+from lightrag.kg.scan_job_store import (
+    AsyncioScanJobStore,
+    ManagerScanJobStore,
+    ScanJobStoreHub,
+    _ScanJobStoreHubProxy,
+)
 
 DEBUG_LOCKS = False
 
@@ -170,6 +176,12 @@ _namespace_data_cache: Optional[Dict[str, Any]] = None
 # an explicit workspace teardown, or test cleanup may drop it.
 _pipeline_ingress_local: Optional[Dict[str, Any]] = None
 _pipeline_ingress_hub: Optional[Any] = None
+
+# Scan job store: SAME topology as the ingress (per-process cache of
+# per-workspace views + one multiprocess-only server-side hub). A scan job
+# record belongs to the workspace, not to any LightRAG instance.
+_scan_job_store_local: Optional[Dict[str, Any]] = None
+_scan_job_store_hub: Optional[Any] = None
 
 # Rate limiting for acquire-failure warnings (fail-closed path).
 _ACQUIRE_FAILURE_LOG_INTERVAL = 30.0
@@ -808,6 +820,11 @@ _LightRAGManager.register(
     "PipelineIngressHub",
     PipelineIngressHub,
     proxytype=_PipelineIngressHubProxy,
+)
+_LightRAGManager.register(
+    "ScanJobStoreHub",
+    ScanJobStoreHub,
+    proxytype=_ScanJobStoreHubProxy,
 )
 
 
@@ -1498,7 +1515,9 @@ def initialize_share_data(
         _queue_stats_ns_cache, \
         _namespace_data_cache, \
         _pipeline_ingress_local, \
-        _pipeline_ingress_hub
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if _initialized:
@@ -1521,6 +1540,7 @@ def initialize_share_data(
     _queue_stats_ns_cache = None
     _namespace_data_cache = {}
     _pipeline_ingress_local = {}
+    _scan_job_store_local = {}
     if _global_concurrency_limits:
         direct_log(
             f"Process {os.getpid()} Global concurrency limits: {_global_concurrency_limits}",
@@ -1545,6 +1565,9 @@ def initialize_share_data(
         # proxy and bind namespaces to it — no per-workspace proxy creation,
         # no client-held creation lock.
         _pipeline_ingress_hub = _manager.PipelineIngressHub()
+        # Server-side hub owning every workspace's scan job store (same pre-fork
+        # topology): workers inherit this one proxy and bind namespaces to it.
+        _scan_job_store_hub = _manager.ScanJobStoreHub()
 
         _storage_keyed_lock = KeyedUnifiedLock()
 
@@ -1567,6 +1590,7 @@ def initialize_share_data(
         _init_flags = {}
         _update_flags = {}
         _pipeline_ingress_hub = None  # multiprocess-only server-side hub
+        _scan_job_store_hub = None  # multiprocess-only server-side hub
         _async_locks = None  # No need for async locks in single process mode
 
         _storage_keyed_lock = KeyedUnifiedLock()
@@ -1599,7 +1623,6 @@ async def initialize_pipeline_status(workspace: str | None = None):
         history_messages = _manager.list() if _is_multiprocess else []
         pipeline_namespace.update(
             {
-                "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 # Destructive subset of ``busy``: clear / delete jobs that
                 # DROP storages or remove input files.  Concurrent enqueue
@@ -1778,6 +1801,42 @@ async def finalize_pipeline_ingress(workspace: str | None = None) -> None:
         return
     final_namespace = get_final_namespace("pipeline_ingress", workspace)
     _pipeline_ingress_local.pop(final_namespace, None)
+
+
+def get_scan_job_store(workspace: str | None = None):
+    """Get (or lazily create) the scan job store view for ``workspace``.
+
+    Same topology as :func:`get_pipeline_ingress` but LOOP-AGNOSTIC (the store
+    is a plain ``threading.Lock``-guarded object with no asyncio primitives and
+    no blocking waits, so it needs no loop-migration): single-process a
+    per-process :class:`AsyncioScanJobStore`, multiprocess a
+    :class:`ManagerScanJobStore` view binding the namespace to the one
+    server-side hub. Synchronous by design (no RPC needs an event loop)."""
+    if _scan_job_store_local is None:
+        raise ValueError("Shared dictionaries not initialized")
+
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    store = _scan_job_store_local.get(final_namespace)
+    if store is None:
+        if _is_multiprocess and _scan_job_store_hub is not None:
+            created: Any = ManagerScanJobStore(_scan_job_store_hub, final_namespace)
+        else:
+            created = AsyncioScanJobStore(final_namespace)
+        store = _scan_job_store_local.setdefault(final_namespace, created)
+    return store
+
+
+def finalize_scan_job_store(workspace: str | None = None) -> None:
+    """Drop the workspace scan job store from THIS process's registry.
+
+    Teardown/tests ONLY (like :func:`finalize_pipeline_ingress`). Single-process
+    fully drops the instance; multiprocess drops only the local view — the
+    server-side store persists in the hub until :func:`finalize_share_data` or a
+    destructive workspace wipe (``store.clear()``). Idempotent."""
+    if _scan_job_store_local is None:
+        return
+    final_namespace = get_final_namespace("scan_job_store", workspace)
+    _scan_job_store_local.pop(final_namespace, None)
 
 
 def _debug_log_failure(message: str, exc: Exception) -> None:
@@ -2282,6 +2341,8 @@ async def acquire_reservation(
     owner_kind: Optional[str] = None,
     flags: Dict[str, Any],
     reject_when,
+    pipeline_ingress: Any = None,
+    refuse_when_manual_pending: bool = False,
 ) -> PipelineReservationResult:
     """Atomically take a single-holder reservation.
 
@@ -2292,11 +2353,27 @@ async def acquire_reservation(
     token or an owner record dict; ``owner_kind`` converts a token into a process
     identity record inside this shared coordination layer.
 
+    ``refuse_when_manual_pending`` (``/scan`` only, LR2 §8.1) additionally
+    refuses while ANY un-ACKed sticky manual retry request sits in the mailbox:
+    a scan is itself a manual retry (it publishes its own intent and runs the
+    exclusive FAILED reset under ``scanning_exclusive``), so granting it while an
+    earlier request is queued would both jump the manual FIFO and deadlock that
+    request's run — the scan fence refuses every processing reservation. The peek
+    happens in the SAME critical section as the flag checks (one mailbox call, no
+    storage query, exactly like the auto-rescan arm in
+    :func:`acquire_processing_reservation`), so a request published concurrently
+    is either seen here or lands after the fence is up. ``pipeline_ingress`` MUST
+    be resolved by the caller beforehand — never lazily under the lock.
+
     The caller MUST have entered its ``try`` before calling this so a cancel at
     the lock exit still runs the ``finally`` that releases ``owner`` by token.
     """
     if owner_kind is not None:
         owner = make_owner_record(str(owner), owner_kind)
+    if refuse_when_manual_pending and pipeline_ingress is None:
+        raise ValueError(
+            "refuse_when_manual_pending requires a pre-resolved pipeline_ingress"
+        )
     async with pipeline_status_lock:
         snapshot, recovery_updates = _prepare_pipeline_reservation_decision(
             pipeline_status
@@ -2311,6 +2388,23 @@ async def acquire_reservation(
                     acquired=False,
                     conflict=_conflict_for_status_flag(flag_key),
                     message=reason,
+                    snapshot=snapshot,
+                )
+        if refuse_when_manual_pending:
+            # Cheapest checks first: the flags above catch a manual retry that is
+            # already draining (it holds ``busy``); this catches one still queued.
+            pending_manual = pipeline_ingress.peek_next_manual_retry()
+            if pending_manual is not None:
+                _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
+                return PipelineReservationResult(
+                    acquired=False,
+                    conflict=PipelineReservationConflict.MANUAL_FREEZE,
+                    message=(
+                        "An earlier manual retry request "
+                        f"({pending_manual.request_id[:8]}) is still queued. A scan "
+                        "must not jump the manual retry FIFO — retry once it has "
+                        "been served."
+                    ),
                     snapshot=snapshot,
                 )
         updates = dict(flags)
@@ -2399,6 +2493,7 @@ async def acquire_processing_reservation(
     already_held: bool,
     pipeline_ingress,
     flags: Mapping[str, Any],
+    scan_reset_owner_token: Optional[str] = None,
 ) -> PipelineReservationResult:
     """Acquire/take over the single processing slot from one proxy snapshot.
 
@@ -2410,6 +2505,16 @@ async def acquire_processing_reservation(
     signal. A handed-off run (``already_held``) is exempt from both: it already
     owns the slot. The caller may owner-check release unconditionally because
     the token is stamped atomically with ``busy``.
+
+    ``scan_reset_owner_token`` identifies the ONE caller that legitimately takes
+    ``busy`` while ``scanning_exclusive`` is held: the scan's own exclusive
+    FAILED→PENDING reset, which runs BEFORE the scan discovers any file (LR2
+    §8.1) and needs ``busy`` so it can reuse the owner-checked manual reset
+    helpers. It is exempted only when it matches the live ``scanning_owner``
+    token, and — unlike a queue drive — it does NOT clear
+    ``scan_deferred_processing``: the reset starts no worker and drains no queue,
+    so a request the scan fence turned away must stay deferred for the scan's
+    post-classification drive.
 
     ``pipeline_ingress`` MUST be resolved by the caller before this call — a
     lazy resolve while ``pipeline_status_lock`` is held would nest a Manager
@@ -2424,13 +2529,25 @@ async def acquire_processing_reservation(
         if snapshot.get("recovery_required"):
             _commit_pipeline_reservation_updates(pipeline_status, recovery_updates)
             return _recovery_required_result(snapshot)
+        # The scan that OWNS the exclusive fence is not fenced by it (see the
+        # docstring): match on the live owner token, never on its mere presence —
+        # a legacy/test path can set ``scanning_exclusive`` with no owner at all,
+        # and a ``None`` token must not silently match that.
+        owns_scan_fence = scan_reset_owner_token is not None and (
+            _reservation_owner_token(snapshot.get("scanning_owner"))
+            == scan_reset_owner_token
+        )
         # A scan's classification phase (``scanning_exclusive``) mutates
         # doc_status; a new processor must not read/process concurrently or it
         # races those rewrites. A handed-off run (``already_held``) took the slot
         # before scanning could start, so it is exempt. Plain ``scanning`` (the
         # scan's own post-classification queue drive) is NOT fenced here: the scan
         # releases ``scanning_exclusive`` before it drives processing.
-        if not already_held and snapshot.get("scanning_exclusive"):
+        if (
+            not already_held
+            and not owns_scan_fence
+            and snapshot.get("scanning_exclusive")
+        ):
             # Record the turned-away request so the scan drives the queue once it
             # releases scanning_exclusive (run_scanning_process finally): an SDK
             # insert's PENDING doc may have no scan-visible file and no other
@@ -2471,12 +2588,14 @@ async def acquire_processing_reservation(
             {
                 "busy": True,
                 "busy_owner": make_owner_record(token, "processing"),
-                # This run drains the queue, satisfying any request the
-                # scanning_exclusive fence deferred earlier — clear the flag so the
-                # scan's post-release drive stays a no-op.
-                "scan_deferred_processing": False,
             }
         )
+        if not owns_scan_fence:
+            # This run drains the queue, satisfying any request the
+            # scanning_exclusive fence deferred earlier — clear the flag so the
+            # scan's post-release drive stays a no-op. The scan's own exclusive
+            # reset drains nothing, so it leaves the flag for that drive.
+            updates["scan_deferred_processing"] = False
         snapshot.update(updates)
         _commit_pipeline_reservation_updates(pipeline_status, recovery_updates, updates)
         # history_messages is a ListProxy and must remain the same shared object.
@@ -3297,7 +3416,9 @@ def finalize_share_data():
         _queue_stats_ns_cache, \
         _namespace_data_cache, \
         _pipeline_ingress_local, \
-        _pipeline_ingress_hub
+        _pipeline_ingress_hub, \
+        _scan_job_store_local, \
+        _scan_job_store_hub
 
     # Check if already initialized
     if not _initialized:
@@ -3369,6 +3490,8 @@ def finalize_share_data():
     _namespace_data_cache = None
     _pipeline_ingress_local = None
     _pipeline_ingress_hub = None
+    _scan_job_store_local = None
+    _scan_job_store_hub = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")
 

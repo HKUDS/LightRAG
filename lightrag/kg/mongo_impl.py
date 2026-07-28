@@ -45,6 +45,7 @@ from ..constants import (
     DEFAULT_QUERY_PRIORITY,
 )
 from ..exceptions import (
+    SourceConflictRepairCASError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
 )
@@ -1612,7 +1613,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         count/fingerprint the operator must echo back. A commit re-reads the
         candidates INSIDE a Mongo transaction; if the count/fingerprint no
         longer match the echoed expectation it raises
-        ``StorageControlPlaneError`` (CAS — never overwrites a concurrent
+        ``SourceConflictRepairCASError`` (CAS — never overwrites a concurrent
         change) and the transaction aborts. Otherwise every losing candidate
         is marked ``metadata.is_duplicate=true`` +
         ``original_doc_id=primary_doc_id`` in the same transaction (content is
@@ -1660,7 +1661,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                     count != expected_candidate_count
                     or fingerprint != expected_candidate_fingerprint
                 ):
-                    raise StorageControlPlaneError(
+                    raise SourceConflictRepairCASError(
                         f"[{self.workspace}] source-conflict repair CAS failed for "
                         f"{canonical_source_key!r}: candidate set changed "
                         f"(count {count} vs {expected_candidate_count})"

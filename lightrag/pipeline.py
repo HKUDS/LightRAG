@@ -39,6 +39,7 @@ from lightrag.base import (
     SourceUnique,
 )
 from lightrag.constants import (
+    ENQUEUE_SERIALIZE_LOCK_NAMESPACE,
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
@@ -165,6 +166,15 @@ _FEEDER_DRAIN_LIMIT = 256
 # the freeze admits no NEW reservations, so the count only decreases.
 _MANUAL_DRAIN_POLL_SECONDS = 0.2
 
+# How many ``_MANUAL_DRAIN_POLL_SECONDS`` re-checks a SCAN-driven reset gives the
+# in-flight enqueue count before abandoning the reset (LR2 §8.1). Unlike the
+# manual endpoint's unbounded drain wait, a scan was only granted its
+# reservation while ``pending_enqueues == 0``, so a non-zero count here means a
+# reservation slipped into the window before the freeze went up: wait it out
+# briefly, then leave the request to the standard drain path rather than blocking
+# file discovery behind it.
+_SCAN_DRAIN_CONFIRM_ATTEMPTS = 25
+
 
 class PipelineNextStep(Enum):
     """Outcome of the atomic quiescence decision (see
@@ -276,6 +286,35 @@ def _call_source_file_resolver(
             parser_engine=parser_engine,
         )
     return resolver(source_file or file_path)
+
+
+def _normalize_scheduling_timestamp(value: Any) -> str:
+    """Validate a caller-supplied ``doc_status.created_at`` and return it in UTC.
+
+    ``created_at`` is the leading component of the immutable scheduling sort
+    key ``(created_at, id)``, and the file-backed / Redis backends compare it
+    as a plain string.  Two rows written with different UTC offsets would
+    therefore sort by their offset rather than by their instant, so every
+    value is converted to a ``+00:00`` representation here — the one place a
+    caller can supply it (LR2 §8.5).
+
+    A naive timestamp is rejected instead of being assumed to be UTC: guessing
+    would silently shift a row by the local offset relative to every
+    ``datetime.now(timezone.utc)`` row already in the table.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"created_at must be a non-empty ISO-8601 string, got {value!r}"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError as e:
+        raise ValueError(f"Malformed created_at timestamp {value!r}: {e}") from e
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"created_at must carry a UTC offset, got naive timestamp {value!r}"
+        )
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 # Backward-compatible source-file reader.  Implementation lives in
@@ -407,6 +446,7 @@ class _PipelineMixin:
         parse_engine: str | list[str] | None = None,
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
+        created_at: str | list[str] | None = None,
         from_scan: bool = False,
     ) -> str:
         """
@@ -453,6 +493,19 @@ class _PipelineMixin:
                 result here; this function is intentionally chunker-
                 config agnostic.  See
                 ``docs/FileProcessingConfiguration-zh.md`` for the schema.
+            created_at: optional timezone-aware ISO-8601 timestamp used as the
+                new row's ``doc_status.created_at``, accepted as a single
+                string broadcast to every input or as a list aligned with
+                ``input``.  ``created_at`` is the primary key of the
+                scheduling sort order ``(created_at, id)`` and is immutable
+                once written, so this is the ONLY place it can be set.
+                ``/scan`` passes each discovered file's ``st_mtime`` here so
+                a bulk-scanned directory is processed oldest-file-first
+                instead of in directory-iteration order (LR2 §8.3.A/§8.5);
+                upload/text leave it ``None`` and get ``now()``.  Values are
+                normalised to UTC because the sort key is compared as a
+                string on some backends — a naive timestamp is rejected
+                rather than silently assumed to be UTC.
             from_scan: when True, the caller is the scan-owned background task
                 that already holds ``pipeline_status["scanning"]``.  Scan
                 does additional doc_status reads during its classification
@@ -553,6 +606,11 @@ class _PipelineMixin:
             process_options = [process_options] * len(input)
         if isinstance(chunk_options, dict):
             chunk_options = [chunk_options] * len(input)
+        # Broadcast any scalar (not just a str) so a wrong-typed value reaches
+        # the validator below and gets a precise error instead of a bare
+        # "object of type int has no len()".
+        if created_at is not None and not isinstance(created_at, (list, tuple)):
+            created_at = [created_at] * len(input)
 
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
@@ -589,6 +647,18 @@ class _PipelineMixin:
             raise ValueError(
                 "Number of chunk_options dicts must match the number of documents"
             )
+        if created_at is not None and len(created_at) != len(input):
+            raise ValueError(
+                "Number of created_at timestamps must match the number of documents"
+            )
+        # Validate/normalise the caller-supplied scheduling timestamps up front:
+        # created_at is immutable and orders the whole sweep, so a bad value
+        # must fail the enqueue rather than land a permanently mis-sorted row.
+        created_at_utc: list[str] | None = None
+        if created_at is not None:
+            created_at_utc = [
+                _normalize_scheduling_timestamp(value) for value in created_at
+            ]
 
         def _parse_engine_at(index: int, doc_format: str) -> str | None:
             if parse_engine is None:
@@ -679,6 +749,10 @@ class _PipelineMixin:
         source_to_doc_id: dict[str, str] = {}
         content_hash_to_doc_id: dict[str, str] = {}
         duplicate_attempts: list[dict[str, Any]] = []
+        # doc_id → caller-supplied scheduling timestamp.  Kept out of
+        # ``contents`` on purpose: that dict is the full_docs staging payload,
+        # and created_at belongs to doc_status alone.
+        doc_created_at: dict[str, str] = {}
 
         def _add_content(
             index: int,
@@ -761,6 +835,8 @@ class _PipelineMixin:
             # (default) is used.
             content_data["chunk_options"] = _chunk_options_at(index)
             contents[doc_id] = content_data
+            if created_at_utc is not None:
+                doc_created_at[doc_id] = created_at_utc[index]
 
         # ``ids`` outranks ``docs_format`` by design: explicit ids mark the
         # SDK raw direct-insert path (ainsert), which always enqueues the
@@ -787,13 +863,19 @@ class _PipelineMixin:
                 _add_content(i, cleaned_content, FULL_DOCS_FORMAT_RAW)
 
         # 2. Generate document initial status (without content)
-        def _initial_doc_status(content_data: dict[str, Any]) -> dict[str, Any]:
+        def _initial_doc_status(
+            doc_id: str, content_data: dict[str, Any]
+        ) -> dict[str, Any]:
             body_text = content_data.get("content", "")
             base: dict[str, Any] = {
                 "status": DocStatus.PENDING,
                 "content_summary": get_content_summary(body_text),
                 "content_length": len(body_text),
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                # created_at may come from the caller (scan passes the file's
+                # mtime so a bulk scan drains oldest-file-first); updated_at is
+                # always the write time.
+                "created_at": doc_created_at.get(doc_id)
+                or datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "file_path": content_data["file_path"],
                 "track_id": track_id,
@@ -814,7 +896,7 @@ class _PipelineMixin:
             return base
 
         new_docs: dict[str, Any] = {
-            id_: _initial_doc_status(content_data)
+            id_: _initial_doc_status(id_, content_data)
             for id_, content_data in contents.items()
         }
 
@@ -836,7 +918,7 @@ class _PipelineMixin:
         # ingress publish inside is fine; no caller holds
         # pipeline_status_lock first then needs enqueue_serialize).
         enqueue_serialize_lock = get_namespace_lock(
-            "enqueue_serialize", workspace=self.workspace
+            ENQUEUE_SERIALIZE_LOCK_NAMESPACE, workspace=self.workspace
         )
         status_upsert_error: Exception | None = None
         process_after_status_error = False
@@ -2890,6 +2972,170 @@ class _PipelineMixin:
             pipeline_status["latest_message"] = reset_message
             pipeline_status["history_messages"].append(reset_message)
         return True
+
+    async def _confirm_scan_drain_idle(
+        self,
+        pipeline_status: dict,
+        pipeline_status_lock,
+    ) -> bool:
+        """DRAIN_TO_IDLE confirmation for a scan-driven reset (LR2 §8.1/§7.2).
+
+        A scan reservation is only granted while ``busy`` is False, no other
+        scan/destructive job holds the pipeline and ``pending_enqueues == 0``; the
+        scan fence plus the manual freeze then refuse every new enqueue
+        reservation and processing run. So the drain is already complete when this
+        runs, and ``inflight``/``routing`` are structurally zero: this reset owns
+        ``busy`` and starts no worker.
+
+        The bounded re-check below is defense-in-depth for the one window that can
+        still show a non-zero count — a reservation taken between the scan's
+        acquire and the freeze — and it reaps confirmed-dead tokens first so a
+        worker SIGKILLed mid-reserve cannot wedge it. Returns False when the count
+        does not reach zero within the bound: the caller then abandons the reset
+        (the sticky request survives for the standard drain path) rather than
+        resetting FAILED with a live producer around."""
+        for _ in range(_SCAN_DRAIN_CONFIRM_ATTEMPTS):
+            async with pipeline_status_lock:
+                pending = pipeline_status.get("pending_enqueues", 0)
+            if not pending:
+                return True
+            await reap_dead_reservations_locked(pipeline_status, pipeline_status_lock)
+            await asyncio.sleep(_MANUAL_DRAIN_POLL_SECONDS)
+        async with pipeline_status_lock:
+            pending = pipeline_status.get("pending_enqueues", 0)
+        if not pending:
+            return True
+        logger.warning(
+            f"Scan FAILED reset abandoned: {pending} enqueue reservation(s) still "
+            "in flight after the drain wait; the manual request stays sticky for "
+            "the standard drain path"
+        )
+        return False
+
+    async def apipeline_reset_failed_for_scan(
+        self,
+        request_id: str,
+        *,
+        scan_owner_token: str | None = None,
+    ) -> bool:
+        """Run a scan's manual intent through the SHARED exclusive reset (LR2 §8.1).
+
+        ``/scan`` is a composite operation: it retries the FAILED documents that
+        existed when it started AND discovers new files. The order is fixed —
+        reset FIRST, discover after — because enqueueing new files first would let
+        the scan's OWN new failures be absorbed by its own manual request.
+
+        Called by ``run_scanning_process`` while it holds
+        ``scanning``/``scanning_exclusive``, so:
+
+        * ``busy`` is taken with ``scan_reset_owner_token`` (the scan owns the
+          fence that would otherwise refuse it) — the reset needs the slot to
+          reuse the owner-checked manual helpers;
+        * DRAIN_TO_IDLE is confirmed rather than performed
+          (:meth:`_confirm_scan_drain_idle`) and the AUTO backlog is deliberately
+          NOT processed here: with no worker running (this call starts none) the
+          PENDING rows are inert, so they are not failed producers, and processing
+          them under the exclusive fence would hold uploads at 409 for the whole
+          backlog. They are processed after classification, by the scan's normal
+          drive (LR2 §8.1 "释放 scanning_exclusive → 处理 PENDING");
+        * the reset itself is :meth:`_run_exclusive_failed_reset` — the very helper
+          ``/reprocess_failed`` uses, not a second retry algorithm.
+
+        Returns True iff the reset reached End and the request was ACKed (the
+        caller may then discover files). False — slot refused, ownership lost,
+        drain not idle — leaves the request sticky and un-ACKed: the caller MUST
+        skip discovery so no new file can be enqueued ahead of the reset, and the
+        standard drain path (any later drive) serves the request instead. A
+        storage error propagates for the same reason.
+        """
+        run_workspace = self.workspace
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=run_workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=run_workspace
+        )
+        ingress = await get_pipeline_ingress(run_workspace)
+
+        token = uuid.uuid4().hex
+        holds_busy = False
+        try:
+            reservation = await acquire_processing_reservation(
+                pipeline_status,
+                pipeline_status_lock,
+                token=token,
+                already_held=False,
+                pipeline_ingress=ingress,
+                scan_reset_owner_token=scan_owner_token,
+                flags={
+                    "job_name": "Scan: reset failed documents",
+                    "job_start": datetime.now(timezone.utc).isoformat(),
+                    "docs": 0,
+                    "batchs": 0,
+                    "cur_batch": 0,
+                    "cancellation_requested": False,
+                    "cancellation_reason": None,
+                    "cancellation_detail": None,
+                    "latest_message": "",
+                },
+            )
+            if not reservation.acquired:
+                holds_busy = False
+                logger.warning(
+                    "Scan FAILED reset skipped: "
+                    f"{reservation.message or 'pipeline reservation unavailable'}"
+                )
+                return False
+            holds_busy = True
+
+            # Freeze new ingress + claim the manual owner record for THIS request,
+            # tied to the busy token we just took (every reset page re-verifies it).
+            if not await self._begin_manual_drain(
+                request_id, token, pipeline_status, pipeline_status_lock
+            ):
+                return False
+            if not await self._confirm_scan_drain_idle(
+                pipeline_status, pipeline_status_lock
+            ):
+                return False
+            if not await self._run_exclusive_failed_reset(
+                request_id, token, pipeline_status, pipeline_status_lock
+            ):
+                return False
+            # ACK only after every FAILED→PENDING write persisted (LR2 §7.3
+            # completion point): a crash before this re-runs the reset from Start.
+            ingress.ack_manual_retry(request_id)
+            return True
+        finally:
+            if holds_busy:
+                # Cancellation-resistant, owner-checked release: busy AND the
+                # whole manual state go in ONE update so an abnormal exit can
+                # never leave a freeze wedging uploads with no owner (LR2 §6.1).
+                # The scan keeps ``scanning``/``scanning_exclusive`` — its
+                # classification phase runs next, without ``busy``.
+                async def _release():
+                    def _apply(status):
+                        status.update(
+                            {
+                                "busy": False,
+                                "busy_owner": None,
+                                "manual_freeze_requested": False,
+                                "manual_resetting": False,
+                                "manual_phase": MANUAL_PHASE_IDLE,
+                                "manual_owner": None,
+                            }
+                        )
+                        return True
+
+                    await with_reservation_lock(
+                        pipeline_status,
+                        pipeline_status_lock,
+                        owner_key="busy_owner",
+                        token=token,
+                        action=_apply,
+                    )
+
+                await run_to_completion(_release)
 
     async def _next_scheduling_page(
         self,
