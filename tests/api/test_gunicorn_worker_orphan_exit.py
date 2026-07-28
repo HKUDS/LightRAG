@@ -14,7 +14,7 @@ import signal
 from types import SimpleNamespace
 
 import pytest
-from uvicorn.workers import UvicornWorker
+from uvicorn_worker import UvicornWorker
 
 from lightrag.api.gunicorn_worker import LightRAGUvicornWorker
 

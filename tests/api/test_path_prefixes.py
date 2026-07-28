@@ -654,7 +654,7 @@ class TestUvicornRootPathSemantics:
         while proving nothing extra — a subclass could add root_path under any
         name.
         """
-        from uvicorn.workers import UvicornWorker
+        from uvicorn_worker import UvicornWorker
 
         from lightrag.api import gunicorn_config
         from gunicorn.util import load_class

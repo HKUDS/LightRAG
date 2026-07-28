@@ -36,7 +36,7 @@ import os
 import signal
 from typing import Any
 
-from uvicorn.workers import UvicornWorker
+from uvicorn_worker import UvicornWorker
 
 
 class LightRAGUvicornWorker(UvicornWorker):
