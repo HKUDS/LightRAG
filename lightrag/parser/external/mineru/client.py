@@ -423,9 +423,27 @@ class MinerURawClient:
         # a crafted value can't break out of ``/tasks/{id}``. The raw value is
         # kept for the error/timeout messages below where the real ID matters.
         poll_url = f"{self.local_endpoint}/tasks/{quote(task_id, safe='')}"
-        for _ in range(self.max_polls):
+        for poll_index in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
-            resp = await client.get(poll_url)
+            try:
+                resp = await client.get(poll_url)
+            except httpx.RequestError as exc:
+                # Local MinerU runs some OCR/layout phases synchronously. A
+                # long GPU/CPU-bound phase can temporarily starve the FastAPI
+                # event loop and reset or time out one poll connection even
+                # though the task continues successfully in the worker. Treat
+                # an isolated transport error as a missed poll; the global
+                # max_polls budget still bounds permanent outages.
+                logger.warning(
+                    "[mineru_raw] transient local poll error for task %s "
+                    "(attempt %s/%s): %s: %s",
+                    task_id,
+                    poll_index + 1,
+                    self.max_polls,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
             raise_for_status_with_detail(resp, "MinerU local task poll")
             payload = resp.json() if resp.text else {}
             status = str(payload.get("status") or "").lower()

@@ -6184,7 +6184,10 @@ class _PipelineMixin:
                 }
 
             def _validate_text_analysis(
-                kind: str, item_id: str, parsed: dict[str, Any]
+                kind: str,
+                item_id: str,
+                parsed: dict[str, Any],
+                equation_fallback: str = "",
             ) -> dict[str, str]:
                 prefix = f"{kind}/{item_id}"
                 result_obj = {
@@ -6192,9 +6195,26 @@ class _PipelineMixin:
                     "description": _required_json_string(parsed, prefix, "description"),
                 }
                 if kind == "equation":
-                    result_obj["equation"] = _required_json_string(
-                        parsed, prefix, "equation"
-                    )
+                    equation_value = parsed.get("equation")
+                    if isinstance(equation_value, str) and equation_value.strip():
+                        result_obj["equation"] = equation_value.strip()
+                    elif equation_fallback.strip():
+                        # The sidecar content is the parser's authoritative
+                        # LaTeX. Some otherwise valid model responses omit
+                        # the redundant normalized-equation echo; do not fail
+                        # an entire document after hundreds of equations for
+                        # that omission. Keep requiring the semantic name and
+                        # description, and fall back only for this deterministic
+                        # field.
+                        logger.warning(
+                            f"[analyze_multimodal] {prefix}: model response "
+                            "missing valid 'equation'; using sidecar content"
+                        )
+                        result_obj["equation"] = equation_fallback.strip()
+                    else:
+                        result_obj["equation"] = _required_json_string(
+                            parsed, prefix, "equation"
+                        )
                 return result_obj
 
             async def _run_json_conformance_retry(
@@ -6669,7 +6689,12 @@ class _PipelineMixin:
                     f"{kind}/{item_id}",
                     cached,
                     _call_extract_once,
-                    lambda parsed: _validate_text_analysis(kind, item_id, parsed),
+                    lambda parsed: _validate_text_analysis(
+                        kind,
+                        item_id,
+                        parsed,
+                        equation_fallback=content_text,
+                    ),
                 )
                 result_obj: dict[str, Any] = {
                     "name": analysis_fields["name"],

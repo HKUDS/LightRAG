@@ -18,8 +18,8 @@ Conversion rules (informed by spec §3-§六):
   behavior (see ``parser/docx/parse_document.py``).
 - Content emitted before the first heading lands in a synthetic
   ``Preface/Uncategorized`` block at level 0.
-- ``list`` items joined with ``\n``; ``code`` body taken from ``code_body``
-  if present.
+- ``list`` / ``index`` items are joined with ``\n``. ``code`` / ``algorithm``
+  items preserve caption, body, and footnotes in source order.
 - ``table`` → IRTable + ``{{TBL:k}}`` placeholder. MinerU HTML tables are
   preserved verbatim on ``IRTable.html`` so merged cells (``rowspan`` /
   ``colspan``) survive in ``tables.json``; the block placeholder receives
@@ -27,8 +27,12 @@ Conversion rules (informed by spec §3-§六):
   is reserved for explicit 2D-array / non-HTML compatibility inputs. A real
   HTML ``<thead>`` populates ``table_header`` (per spec §5); otherwise the
   adapter does not guess a header row.
-- ``image`` / ``picture`` / ``drawing`` → IRDrawing + ``{{IMG:k}}`` placeholder.
-  Asset bytes are referenced via ``img_path`` relative to the raw dir.
+- ``image`` / ``picture`` / ``drawing`` / ``chart`` → IRDrawing +
+  ``{{IMG:k}}`` placeholder. Asset bytes are referenced via ``img_path``
+  relative to the raw dir. MinerU-specific visual type/content is retained in
+  ``IRDrawing.extras``.
+- A ``table`` without a usable structured body, or an ``equation`` without
+  LaTeX, falls back to IRDrawing when MinerU supplied an ``img_path`` crop.
 - ``equation`` → IREquation. ``is_block`` is decided by whether
   ``text_format=="block"`` (MinerU explicit flag) OR ``text_level==0`` with
   no inline neighbours; otherwise inline. The latex string is preserved
@@ -47,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -77,6 +82,20 @@ from lightrag.utils import logger
 
 PREFACE_HEADING = "Preface/Uncategorized"
 CONTENT_LIST_FILENAME = "content_list.json"
+DEFAULT_DROP_ITEM_TYPES = frozenset(
+    {"page_number", "header", "footer", "header_image", "footer_image"}
+)
+DRAWING_ITEM_TYPES = frozenset({"image", "picture", "drawing", "chart", "seal"})
+PLAIN_TEXT_ITEM_TYPES = frozenset(
+    {
+        "abstract",
+        "aside_text",
+        "page_footnote",
+        "phonetic",
+        "ref_text",
+        "vertical_text",
+    }
+)
 
 
 class MinerUIRBuilder:
@@ -89,6 +108,25 @@ class MinerUIRBuilder:
         # ``images/<basename>``. The builder has to look in the same place.
         self.image_url_template = os.getenv("MINERU_IMAGE_URL_TEMPLATE", "").strip()
         self.bbox_attributes = self._load_bbox_attributes_env()
+        self.drop_item_types = self._load_drop_item_types_env()
+
+    def _load_drop_item_types_env(self) -> frozenset[str]:
+        """Return normalized MinerU layout-noise types to discard.
+
+        Textbooks repeat headers, footers, and page numbers on nearly every
+        page. They add retrieval noise and misleading source positions, so the
+        adapter drops them by default. Operators can override the set with a
+        comma-separated ``MINERU_DROP_TYPES`` value; ``none`` keeps everything.
+        """
+        raw = os.getenv("MINERU_DROP_TYPES")
+        if raw is None or not raw.strip():
+            return DEFAULT_DROP_ITEM_TYPES
+        values = frozenset(
+            part.strip().lower() for part in raw.split(",") if part.strip()
+        )
+        if values == {"none"}:
+            return frozenset()
+        return values
 
     def _load_bbox_attributes_env(self) -> dict[str, Any]:
         default = {"origin": "LEFTTOP", "max": 1000}
@@ -161,6 +199,8 @@ class MinerUIRBuilder:
         blocks: list[IRBlock] = []
         assets: list[AssetSpec] = []
         seen_assets: dict[str, str] = {}  # ref → suggested_name
+        unknown_type_counts: Counter[str] = Counter()
+        unknown_dropped_counts: Counter[str] = Counter()
         doc_title = ""
         placeholder_counter = 0
 
@@ -268,18 +308,37 @@ class MinerUIRBuilder:
             cb_lines.append(text)
             return True
 
+        def _append_drawing(
+            item: dict,
+            item_index: int,
+            *,
+            source_type: str,
+        ) -> None:
+            """Append a visual item (including structured-content fallback)."""
+            drawing, asset = self._build_ir_drawing(
+                item,
+                raw_dir,
+                seen_assets,
+                source_type=source_type,
+            )
+            placeholder = _next_key("im")
+            drawing.placeholder_key = placeholder
+            drawing.self_ref = _content_list_self_ref(item_index)
+            if asset is not None:
+                assets.append(asset)
+            cb_drawings.append(drawing)
+            cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
+            _record_position(item)
+
         for item_index, item in enumerate(content_list):
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("type") or item.get("label") or "").lower()
 
-            # Page numbers are layout noise, not document body. MinerU emits a
-            # ``page_number`` item per page; skip it entirely so it never enters
-            # the block content nor leaks its page_idx into block positions.
-            # (Empty-text page numbers were already dropped by the fallback's
-            # _append_text guard; this also drops page numbers that carry real
-            # text like "12" / "iii".)
-            if item_type == "page_number":
+            # Repeated page decorations are layout noise, not document body.
+            # Skip them before heading/text detection so neither their content
+            # nor page_idx leaks into a real block. The set is env-configurable.
+            if item_type in self.drop_item_types:
                 continue
 
             heading_text, heading_level = _detect_heading(item, item_type)
@@ -310,25 +369,37 @@ class MinerUIRBuilder:
                     _record_position(item)
                 continue
 
-            if item_type == "list":
+            if item_type in {"list", "index"} or (
+                item_type == "ref_text" and isinstance(item.get("list_items"), list)
+            ):
                 items = item.get("list_items")
                 if isinstance(items, list):
-                    text = "\n".join(str(x) for x in items if str(x).strip())
+                    text = "\n".join(
+                        value for x in items if (value := _coerce_list_item(x))
+                    )
                 else:
                     text = _coerce_text(item)
                 if _append_text(text):
                     _record_position(item)
                 continue
 
-            if item_type == "code":
-                if _append_text(item.get("code_body") or _coerce_text(item)):
+            if item_type in {"code", "algorithm"}:
+                if _append_text(_coerce_code_text(item, item_type)):
                     _record_position(item)
                 continue
 
             if item_type == "equation":
                 latex_raw = _coerce_text(item)
                 if not latex_raw:
-                    # Spec compliance fix: empty equation must not enter sidecar.
+                    # Formula recognition can fail while MinerU still provides
+                    # a crop. Keep that crop for the downstream VLM instead of
+                    # silently losing the formula.
+                    if _coerce_image_path(item):
+                        _append_drawing(
+                            item,
+                            item_index,
+                            source_type="equation_image",
+                        )
                     continue
                 # Preserve MinerU's raw latex (including any ``$$``/``$``
                 # wrappers); the writer strips them when emitting
@@ -356,9 +427,15 @@ class MinerUIRBuilder:
             if item_type == "table":
                 table = self._build_ir_table(item)
                 if table is None:
-                    # Empty body — _build_ir_table already logged the drop.
-                    # Skip placeholder allocation and position recording so
-                    # the misidentified item leaves no trace in the IR.
+                    # Structured recognition can fail while the crop survives.
+                    # Route it through VLM as a drawing; a truly empty/noise
+                    # table still leaves no trace.
+                    if _coerce_image_path(item):
+                        _append_drawing(
+                            item,
+                            item_index,
+                            source_type="table_image",
+                        )
                     continue
                 placeholder = _next_key("tb")
                 table.placeholder_key = placeholder
@@ -368,26 +445,38 @@ class MinerUIRBuilder:
                 _record_position(item)
                 continue
 
-            if item_type in {"image", "picture", "drawing"}:
-                drawing, asset = self._build_ir_drawing(item, raw_dir, seen_assets)
-                placeholder = _next_key("im")
-                drawing.placeholder_key = placeholder
-                drawing.self_ref = _content_list_self_ref(item_index)
-                if asset is not None and asset.ref not in {a.ref for a in assets}:
-                    assets.append(asset)
-                cb_drawings.append(drawing)
-                cb_lines.append(f"{{{{IMG:{placeholder}}}}}")
-                _record_position(item)
+            if item_type in DRAWING_ITEM_TYPES:
+                _append_drawing(item, item_index, source_type=item_type)
+                continue
+
+            if item_type in PLAIN_TEXT_ITEM_TYPES:
+                if _append_text(_coerce_text(item)):
+                    _record_position(item)
                 continue
 
             # Fallback: serialize unknown items as plain text so we don't
-            # silently drop information. Position only recorded when the
-            # fallback actually contributed text — empty unknown items must
-            # not leak their page_idx into the current block.
+            # silently drop information, and report the type summary once per
+            # document so MinerU schema additions are visible during bulk runs.
+            unknown_key = item_type or "<missing>"
+            unknown_type_counts[unknown_key] += 1
             if _append_text(_coerce_text(item)):
                 _record_position(item)
+            else:
+                unknown_dropped_counts[unknown_key] += 1
 
         _flush_block()
+
+        if unknown_type_counts:
+            summary = ", ".join(
+                f"{item_type}={count}"
+                f" (dropped={unknown_dropped_counts.get(item_type, 0)})"
+                for item_type, count in sorted(unknown_type_counts.items())
+            )
+            logger.warning(
+                "[mineru_ir_builder] unsupported content_list item types in %s: %s",
+                document_name,
+                summary,
+            )
 
         if not doc_title:
             doc_title = Path(document_name).stem or document_name
@@ -518,10 +607,13 @@ class MinerUIRBuilder:
         item: dict,
         raw_dir: Path,
         seen: dict[str, str],
+        *,
+        source_type: str,
     ) -> tuple[IRDrawing, AssetSpec | None]:
-        img_path = str(item.get("img_path") or item.get("path") or "")
+        img_path = _coerce_image_path(item)
         src_val = str(item.get("src") or "")
-        captions = item.get("image_caption") or item.get("captions")
+        caption_key, footnote_key = _visual_annotation_keys(source_type)
+        captions = item.get(caption_key) or item.get("captions")
         caption = str(item.get("caption") or "")
         if not caption and isinstance(captions, list) and captions:
             caption = str(captions[0])
@@ -558,13 +650,31 @@ class MinerUIRBuilder:
                 )
                 seen[ref] = suggested_name
 
+        footnotes = _as_str_list(item.get(footnote_key) or item.get("footnotes"))
+        extras: dict[str, Any] = {}
+        # ``image`` is already implied by the drawing sidecar. Preserve a
+        # source type when it carries additional semantics (chart / fallback /
+        # compatibility aliases), allowing downstream prompt specialization.
+        if source_type != "image":
+            extras["source_type"] = source_type
+        sub_type = str(item.get("sub_type") or "").strip()
+        if sub_type:
+            extras["sub_type"] = sub_type
+        mineru_content = _coerce_visual_content(item.get("content"))
+        if mineru_content:
+            extras["mineru_content"] = mineru_content
+        caption_values = _as_str_list(captions)
+        if len(caption_values) > 1:
+            extras["captions"] = caption_values
+
         drawing = IRDrawing(
             placeholder_key="",  # filled by caller
             asset_ref=ref,
             fmt=fmt,
             caption=caption,
-            footnotes=_as_str_list(item.get("image_footnote") or item.get("footnotes")),
+            footnotes=footnotes,
             src=src_val,
+            extras=extras,
         )
         return drawing, asset
 
@@ -600,6 +710,77 @@ def _coerce_text(item: dict) -> str:
         if isinstance(val, str) and val.strip():
             return val
     return ""
+
+
+def _coerce_list_item(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("item_content", "text", "content", "body"):
+            item_value = value.get(key)
+            if isinstance(item_value, str) and item_value.strip():
+                return item_value.strip()
+        return ""
+    return str(value).strip() if value is not None else ""
+
+
+def _coerce_code_text(item: dict, item_type: str) -> str:
+    """Preserve legacy code/algorithm caption, body, and footnotes."""
+    is_algorithm = (
+        item_type == "algorithm"
+        or str(item.get("sub_type") or "").lower() == "algorithm"
+    )
+    caption_keys = (
+        ("algorithm_caption", "code_caption", "caption")
+        if is_algorithm
+        else ("code_caption", "caption")
+    )
+    body_keys = (
+        (
+            "algorithm_body",
+            "algorithm_content",
+            "code_body",
+            "content",
+            "body",
+            "text",
+        )
+        if is_algorithm
+        else ("code_body", "content", "body", "text")
+    )
+    footnote_keys = (
+        ("algorithm_footnote", "code_footnote", "footnotes")
+        if is_algorithm
+        else ("code_footnote", "footnotes")
+    )
+
+    parts: list[str] = []
+    for keys in (caption_keys, body_keys, footnote_keys):
+        for key in keys:
+            values = _as_str_list(item.get(key))
+            if values:
+                parts.extend(values)
+                break
+    return "\n".join(parts)
+
+
+def _coerce_image_path(item: dict) -> str:
+    return str(item.get("img_path") or item.get("path") or "").strip()
+
+
+def _coerce_visual_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n".join(str(part).strip() for part in value if str(part).strip())
+    return ""
+
+
+def _visual_annotation_keys(source_type: str) -> tuple[str, str]:
+    if source_type == "chart":
+        return "chart_caption", "chart_footnote"
+    if source_type == "table_image":
+        return "table_caption", "table_footnote"
+    return "image_caption", "image_footnote"
 
 
 def _as_str_list(value: Any) -> list[str]:

@@ -3051,6 +3051,78 @@ def test_analyze_multimodal_table_without_image_uses_textual_analysis(tmp_path):
 
 
 @pytest.mark.offline
+def test_analyze_multimodal_equation_uses_source_when_model_omits_equation(
+    tmp_path,
+):
+    async def _run():
+        calls = {"n": 0}
+
+        async def _extract(_prompt, **_kwargs):
+            calls["n"] += 1
+            return json.dumps(
+                {
+                    "name": "sample_quantile_definition",
+                    "description": "The piecewise formula defines a sample quantile.",
+                }
+            )
+
+        rag = _new_rag(tmp_path, extract_llm_model_func=_extract)
+        await rag.initialize_storages()
+
+        blocks = tmp_path / "demo.blocks.jsonl"
+        blocks.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "meta", "format_version": "1.0"}),
+                    json.dumps({"type": "content", "content": "body"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        source_latex = (
+            r"x_p=\begin{cases}x_{([np]+1)},&np\notin\mathbb{Z}\\"
+            r"\frac12[x_{(np)}+x_{(np+1)}],&np\in\mathbb{Z}\end{cases}"
+        )
+        equations = tmp_path / "demo.equations.json"
+        equations.write_text(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "equations": {
+                        "eq-1": {
+                            "id": "eq-1",
+                            "format": "latex",
+                            "content": source_latex,
+                            "caption": "",
+                            "footnotes": [],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        parsed = {
+            "doc_id": "doc-1",
+            "file_path": "demo.pdf",
+            "blocks_path": str(blocks),
+            "content": "body",
+        }
+        await rag.analyze_multimodal("doc-1", "demo.pdf", parsed, process_options="e")
+
+        payload = json.loads(equations.read_text(encoding="utf-8"))
+        result = payload["equations"]["eq-1"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "sample_quantile_definition"
+        assert result["equation"] == source_latex
+        assert calls["n"] == 1
+
+    asyncio.run(_run())
+
+
+@pytest.mark.offline
 def test_parser_source_resolver_finds_hint_variant_by_canonical_name(
     tmp_path, monkeypatch
 ):

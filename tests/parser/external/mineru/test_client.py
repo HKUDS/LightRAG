@@ -434,6 +434,44 @@ async def test_client_local_mode_round_trip(
     assert (raw / "images" / "img_001.png").read_bytes() == b"\x89PNGnested"
 
 
+class _LocalTransientPollDispatcher(_LocalDispatcher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.poll_attempts = 0
+
+    def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        if url == "http://127.0.0.1:8000/tasks/L-1":
+            self.poll_attempts += 1
+            if self.poll_attempts == 1:
+                raise _FakeRequestError("temporary read failure")
+        return super().get(url, **kwargs)
+
+
+@pytest.mark.offline
+async def test_client_local_poll_recovers_from_transient_transport_error(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("MINERU_MAX_POLLS", "3")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    dispatcher = _LocalTransientPollDispatcher()
+    _CURRENT.dispatcher = dispatcher
+    manifest = await MinerURawClient().download_into(raw, src)
+
+    assert dispatcher.poll_attempts == 2
+    assert manifest.task_id == "L-1"
+    assert (raw / "content_list.json").is_file()
+
+
 @pytest.mark.offline
 async def test_client_local_upload_name_overrides_multipart_filename(
     tmp_path: Path,

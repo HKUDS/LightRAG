@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from lightrag.parser.external.mineru import MinerUIRBuilder
+from lightrag.parser.external.mineru import ir_builder as mineru_ir_builder
 
 
 def _write_bundle(tmp_path: Path, content_list: list[dict]) -> Path:
@@ -485,6 +486,103 @@ def test_adapter_empty_equation_dropped(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_adapter_chart_becomes_typed_drawing(tmp_path: Path) -> None:
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "chart",
+                "img_path": "images/chart.jpg",
+                "content": "x-axis is time; y-axis is count",
+                "chart_caption": ["Figure 1", "Secondary caption"],
+                "chart_footnote": ["Unit: people"],
+                "page_idx": 2,
+            }
+        ],
+    )
+    image_dir = raw / "images"
+    image_dir.mkdir()
+    chart_path = image_dir / "chart.jpg"
+    chart_path.write_bytes(b"jpeg")
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="chart.pdf")
+    assert len(ir.blocks) == 1
+    block = ir.blocks[0]
+    assert len(block.drawings) == 1
+    drawing = block.drawings[0]
+    assert drawing.caption == "Figure 1"
+    assert drawing.footnotes == ["Unit: people"]
+    assert drawing.extras == {
+        "source_type": "chart",
+        "mineru_content": "x-axis is time; y-axis is count",
+        "captions": ["Figure 1", "Secondary caption"],
+    }
+    assert block.content_template == f"{{{{IMG:{drawing.placeholder_key}}}}}"
+    assert ir.assets[0].ref == "images/chart.jpg"
+    assert ir.assets[0].source == chart_path
+
+
+@pytest.mark.offline
+def test_adapter_equation_and_table_image_fallbacks(tmp_path: Path) -> None:
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "equation",
+                "text": "",
+                "img_path": "images/equation.png",
+                "caption": "unrecognized formula",
+            },
+            {
+                "type": "table",
+                "table_body": "",
+                "img_path": "images/table.png",
+                "table_caption": ["Table 2"],
+                "table_footnote": ["estimated values"],
+            },
+        ],
+    )
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="fallback.pdf")
+    assert sum(len(block.equations) for block in ir.blocks) == 0
+    assert sum(len(block.tables) for block in ir.blocks) == 0
+    drawings = [drawing for block in ir.blocks for drawing in block.drawings]
+    assert len(drawings) == 2
+    assert drawings[0].caption == "unrecognized formula"
+    assert drawings[0].extras["source_type"] == "equation_image"
+    assert drawings[1].caption == "Table 2"
+    assert drawings[1].footnotes == ["estimated values"]
+    assert drawings[1].extras["source_type"] == "table_image"
+
+
+@pytest.mark.offline
+def test_adapter_code_algorithm_and_index_preserve_all_text(tmp_path: Path) -> None:
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "code",
+                "sub_type": "algorithm",
+                "code_caption": ["Algorithm 1"],
+                "code_body": "step 1\nstep 2",
+                "code_footnote": ["O(n)"],
+            },
+            {
+                "type": "index",
+                "list_items": [
+                    "Chapter 1",
+                    {"item_content": "Chapter 2"},
+                ],
+            },
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="code.pdf")
+    assert ir.blocks[0].content_template == (
+        "Algorithm 1\nstep 1\nstep 2\nO(n)\nChapter 1\nChapter 2"
+    )
+
+
+@pytest.mark.offline
 def test_adapter_empty_table_dropped(tmp_path: Path) -> None:
     """Table items with no usable body MUST NOT enter the IR.
 
@@ -549,6 +647,59 @@ def test_adapter_page_number_dropped(tmp_path: Path) -> None:
     # Anchors are 1-based strings, so page_idx 7/8/9 would surface as 8/9/10.
     anchors = {pos.anchor for b in ir.blocks for pos in b.positions}
     assert anchors.isdisjoint({"8", "9", "10"})
+
+
+@pytest.mark.offline
+def test_adapter_repeated_page_decorations_dropped_by_default(tmp_path: Path) -> None:
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "header", "text": "Repeated book title", "page_idx": 0},
+            {"type": "text", "text": "kept", "page_idx": 0},
+            {"type": "footer", "text": "Publisher", "page_idx": 0},
+            {"type": "page_footnote", "text": "Meaningful note", "page_idx": 0},
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="noise.pdf")
+    joined = "\n".join(block.content_template for block in ir.blocks)
+    assert "Repeated book title" not in joined
+    assert "Publisher" not in joined
+    assert "kept" in joined
+    assert "Meaningful note" in joined
+
+
+@pytest.mark.offline
+def test_adapter_drop_types_can_be_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MINERU_DROP_TYPES", "none")
+    raw = _write_bundle(tmp_path, [{"type": "header", "text": "keep header"}])
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="all.pdf")
+    assert ir.blocks[0].content_template == "keep header"
+
+
+@pytest.mark.offline
+def test_adapter_unknown_types_are_reported_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warnings: list[str] = []
+
+    def _capture_warning(message: str, *args: object) -> None:
+        warnings.append(message % args)
+
+    monkeypatch.setattr(mineru_ir_builder.logger, "warning", _capture_warning)
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {"type": "future_text", "text": "preserved"},
+            {"type": "future_binary", "img_path": "images/future.bin"},
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="future.pdf")
+    assert ir.blocks[0].content_template == "preserved"
+    assert len(warnings) == 1
+    assert "future_text=1 (dropped=0)" in warnings[0]
+    assert "future_binary=1 (dropped=1)" in warnings[0]
 
 
 @pytest.mark.offline
