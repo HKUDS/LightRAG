@@ -98,6 +98,42 @@ class StorageControlPlaneError(RuntimeError):
     """
 
 
+class PipelineBackpressureError(RuntimeError):
+    """Admission refused: the pipeline already holds its capacity of documents.
+
+    Raised when ``MAX_PENDING_DOCUMENTS > 0`` and
+
+        strict active count + other in-flight reservation weights + requested
+
+    would exceed the capacity. Active means PENDING / PARSING / ANALYZING /
+    PROCESSING — work the pipeline still has to do.
+
+    The fields are structured on purpose (LR2 §9.1): an SDK caller must be able
+    to tell the client how much room there is rather than parse a string, and
+    the API maps ONLY this error to 429. A mutual-exclusion refusal
+    (manual freeze / scanning_exclusive / destructive_busy) is a
+    ``PipelineReservationConflict`` → 409, and a storage / control-plane failure
+    is 503 — never disguised as "no capacity".
+    """
+
+    def __init__(
+        self,
+        *,
+        current: int,
+        requested: int,
+        capacity: int,
+        reason: str = "",
+    ) -> None:
+        self.current = current
+        self.requested = requested
+        self.capacity = capacity
+        self.reason = reason or "pipeline document capacity reached"
+        super().__init__(
+            f"{self.reason}: {current} document(s) already active or reserved "
+            f"+ {requested} requested exceeds capacity {capacity}"
+        )
+
+
 class SourceConflictRepairCASError(StorageControlPlaneError):
     """A source-conflict repair commit lost its compare-and-set check.
 

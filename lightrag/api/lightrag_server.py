@@ -35,6 +35,7 @@ from lightrag.api.utils_api import (
     check_env_file,
     internal_server_error,
 )
+from lightrag.api.admission_middleware import AdmissionMiddleware
 from .config import (
     global_args,
     update_uvicorn_mode_config,
@@ -1290,6 +1291,26 @@ def create_app(args):
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
 
+            # Admission control needs a doc_status backend that can count
+            # strictly (LR2 §9.1). Probe once here so an unsupported backend
+            # fails at startup instead of turning every upload into a 503.
+            if getattr(rag, "max_pending_documents", 0) > 0:
+                from lightrag.utils_pipeline import count_active_documents
+
+                try:
+                    active_now = await count_active_documents(rag.doc_status)
+                except Exception as admission_probe_error:
+                    raise RuntimeError(
+                        "MAX_PENDING_DOCUMENTS is set but the configured "
+                        f"doc_status backend cannot count strictly: "
+                        f"{admission_probe_error}"
+                    ) from admission_probe_error
+                logger.info(
+                    f"Admission control enabled: capacity "
+                    f"{rag.max_pending_documents}, {active_now} document(s) "
+                    "currently active"
+                )
+
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
             yield
@@ -1424,6 +1445,27 @@ def create_app(args):
     # docstring.
     if api_prefix:
         app.add_middleware(_RootPathNormalizationMiddleware)
+
+    # Pre-body admission control (LR2 §9.3). Installed only when there is a
+    # capacity to enforce; the ingestion routes keep their own reservation, so an
+    # absent middleware costs economy (the body is read before the refusal), not
+    # correctness. ``rag`` is built further down in this function, hence the lazy
+    # getter.
+    #
+    # Added BEFORE the CORS middleware on purpose: the most recently added
+    # middleware runs outermost, so CORS ends up wrapping this one and its 401 /
+    # 429 responses carry the CORS headers a browser needs to read the status
+    # (without them the WebUI would see an opaque network error instead of "at
+    # capacity"). It therefore also sees the un-normalized path, which is why it
+    # strips ``api_prefix`` itself.
+    if args.max_pending_documents > 0 or args.max_request_body_bytes > 0:
+        app.add_middleware(
+            AdmissionMiddleware,
+            rag_getter=lambda: rag,
+            api_key=api_key,
+            api_prefix=api_prefix,
+            max_body_bytes=args.max_request_body_bytes,
+        )
 
     # Add CORS middleware
     cors_origins = get_cors_origins()
@@ -2148,6 +2190,7 @@ def create_app(args):
             default_rerank_timeout=args.rerank_timeout,
             max_parallel_insert=args.max_parallel_insert,
             pipeline_scheduling_page_size=args.pipeline_scheduling_page_size,
+            max_pending_documents=args.max_pending_documents,
             max_graph_nodes=args.max_graph_nodes,
             addon_params=addon_params,
             ollama_server_infos=ollama_server_infos,

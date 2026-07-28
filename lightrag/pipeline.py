@@ -22,6 +22,7 @@ import threading
 import time
 import traceback
 import uuid
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -433,6 +434,98 @@ class _PipelineMixin:
     """
 
     # ============================================================
+    # Admission control (LR2 §9)
+    # ============================================================
+
+    async def _reserve_ingress_slot(
+        self,
+        pipeline_status: dict[str, Any],
+        pipeline_status_lock,
+        *,
+        admission_token: str | None,
+        requested: int,
+        reject_when,
+    ) -> str | None:
+        """Register this enqueue in ``pending_enqueue_tokens`` and charge
+        ``requested`` new documents against the admission capacity (LR2 §9.2).
+
+        Called inside ``enqueue_serialize_lock``, after dedup and before the
+        FIRST storage write of the critical section — the duplicate ``dup-*``
+        FAILED records included. That position matters three times over:
+
+        * the strict active count it takes cannot be raced by a sibling enqueue
+          (which is waiting on that same lock);
+        * ``requested`` is the real deduped count, not the coarse pre-body
+          estimate an endpoint had to reserve with;
+        * **the reservation is what makes the write side mutually exclusive with
+          a manual retry.** ``manual_freeze_requested`` refuses a NEW
+          reservation here, and DRAIN_TO_IDLE waits for ``pending_enqueues`` to
+          reach zero (LR2 §6.1/§7.2), so the exclusive FAILED→PENDING reset
+          cannot begin between this check and the last write below. The fence
+          check at the top of :meth:`apipeline_enqueue_documents` cannot do
+          that job: it takes no reservation, so it leaves the whole validate →
+          dedup → write span invisible to the drain.
+
+        ``reject_when`` is passed unconditionally and
+        :func:`acquire_enqueue_reservation` applies it only when the token is
+        NOT already registered — i.e. only when this call mints a reservation
+        for a reservation-less caller (SDK ``ainsert`` / direct
+        ``apipeline_enqueue_documents``). When the caller already holds one (an
+        endpoint reserved it, fences and all, before parsing the request body)
+        this is a RE-WEIGHT, and a request admitted before a freeze appeared is
+        deliberately allowed to finish — the drain is already waiting for it.
+        Deciding that inside the reservation, from the same snapshot, is what
+        keeps the exemption from being self-attested: passing a token string is
+        not enough to skip a fence. A token's own previous weight is excluded
+        from the capacity sum, so re-weighting never counts a request against
+        itself.
+
+        Returns the token this function owns and the caller must release (only
+        for a minted one), or ``None`` when the reservation belongs to the
+        caller.
+
+        Raises:
+            RuntimeError: a mutual-exclusion fence or the recovery fence refused
+                this reservation (→ 409/503). Nothing has been written yet.
+            PipelineBackpressureError: no capacity (→ 429).
+            StorageCapabilityError / StorageControlPlaneError: the strict count
+                failed. Deliberately propagated rather than treated as "room
+                available" (→ 503): admission fails closed.
+        """
+        from lightrag.kg.shared_storage import acquire_enqueue_reservation
+        from lightrag.utils_pipeline import count_active_documents
+
+        capacity = self.max_pending_documents
+        # Only the capacity math needs the count, and it is a strict full scan:
+        # taking it with admission disabled would tax every enqueue for nothing.
+        active_count = (
+            await count_active_documents(self.doc_status) if capacity > 0 else None
+        )
+        token = admission_token or f"admission-{uuid.uuid4().hex}"
+        result = await acquire_enqueue_reservation(
+            pipeline_status,
+            pipeline_status_lock,
+            token=token,
+            reject_when=tuple(reject_when),
+            weight=requested,
+            capacity=capacity,
+            active_count=active_count,
+        )
+        if not result.acquired:
+            raise RuntimeError(result.message)
+        return None if admission_token else token
+
+    async def _release_admission_reservation(self, token: str) -> None:
+        """Drop a reservation minted by :meth:`_reserve_ingress_slot`."""
+        from lightrag.kg.shared_storage import release_token_set_reservation
+
+        await release_token_set_reservation(
+            self.workspace,
+            tokens_key="pending_enqueue_tokens",
+            token=token,
+        )
+
+    # ============================================================
     # Public document ingestion API (entry points)
     # ============================================================
 
@@ -447,6 +540,7 @@ class _PipelineMixin:
         process_options: str | list[str] | None = None,
         chunk_options: dict | list[dict] | None = None,
         created_at: str | list[str] | None = None,
+        admission_token: str | None = None,
         from_scan: bool = False,
     ) -> str:
         """
@@ -506,6 +600,13 @@ class _PipelineMixin:
                 normalised to UTC because the sort key is compared as a
                 string on some backends — a naive timestamp is rejected
                 rather than silently assumed to be UTC.
+            admission_token: the pending-enqueue reservation the caller already
+                holds (endpoints reserve one before reading the request body).
+                With ``MAX_PENDING_DOCUMENTS > 0`` the admission guard
+                re-weights THAT token to the deduped document count instead of
+                registering a second reservation, so a request is never counted
+                against itself. Leave ``None`` on the SDK path: the guard mints
+                and releases its own short-lived reservation.
             from_scan: when True, the caller is the scan-owned background task
                 that already holds ``pipeline_status["scanning"]``.  Scan
                 does additional doc_status reads during its classification
@@ -550,6 +651,14 @@ class _PipelineMixin:
         #   * ``destructive_busy`` — clear / delete is dropping storages
         #     or removing input files; a concurrent write would be
         #     silently clobbered.
+        #
+        # The check below is a FAST FAIL, not the guarantee: it registers
+        # nothing, so a fence raised after it (a manual retry freezing ingress)
+        # would not see this call at all.  The same ``reject_when`` list is
+        # re-evaluated atomically with the pending-enqueue reservation that
+        # covers the writes — see ``_reserve_ingress_slot``.  Checking here as
+        # well is worth it because it refuses before the body is validated,
+        # parsed and deduped.
         pipeline_status = await get_namespace_data(
             "pipeline_status", workspace=self.workspace
         )
@@ -587,6 +696,13 @@ class _PipelineMixin:
             pipeline_status,
             pipeline_status_lock,
             reject_when=reject_when,
+            # A caller holding a registered pending-enqueue reservation was
+            # admitted before any fence raised since, and the fence holder either
+            # could not raise it while that reservation exists or is waiting for
+            # it (LR2 §9.2). Refusing here would drop the work of a request whose
+            # client was already told it was accepted — and for /text there is no
+            # input file to rediscover, so the content would simply be lost.
+            exempt_if_reserved=admission_token,
         )
         if not mutation_result.acquired:
             raise RuntimeError(mutation_result.message)
@@ -923,7 +1039,12 @@ class _PipelineMixin:
         status_upsert_error: Exception | None = None
         process_after_status_error = False
 
-        async with enqueue_serialize_lock:
+        # The exit stack releases an admission reservation minted below (SDK
+        # path) once the writes are done, on every exit including cancellation —
+        # without indenting the whole critical section. It unwinds AFTER the
+        # serialize lock, so the reservation outlives the doc_status upsert
+        # exactly as §9.2 requires ("token 持续到 doc_status 可见").
+        async with AsyncExitStack() as admission_stack, enqueue_serialize_lock:
             # 3. Filter out already processed documents
             # Get docs ids
             all_new_doc_ids = set(new_docs.keys())
@@ -1046,6 +1167,49 @@ class _PipelineMixin:
                     }
                 )
 
+            # The documents this call will actually write as new work. Computed
+            # BEFORE the reservation below, because the reservation's weight is
+            # the deduped count — and before the duplicate records are stored,
+            # because the reservation has to cover every write in this section.
+            admitted_doc_ids = [
+                doc_id for doc_id in unique_new_doc_ids if doc_id in new_docs
+            ]
+
+            # Ingress reservation + admission (LR2 §9.2), at the ONE chokepoint
+            # every entry point funnels through: endpoints, the SDK's
+            # ainsert/apipeline_enqueue_documents, and any future caller. It sits
+            # here — after dedup, before the first storage write of this critical
+            # section — so a manual retry's exclusive FAILED reset cannot start
+            # while this enqueue is on its way to the writes: a freeze refuses a
+            # new reservation, and DRAIN_TO_IDLE waits for the reservations that
+            # already exist. The entry fence check above is only a fast fail; it
+            # registers nothing, so on its own it leaves this whole span open.
+            #
+            # Two callers legitimately skip it:
+            #   * ``from_scan`` — exempt from the cap by design (§9.1: a scan may
+            #     exceed it, and the active rows it creates are what makes
+            #     ordinary uploads wait). Its exclusion is structural instead: it
+            #     holds ``scanning_exclusive`` across its whole enqueue span,
+            #     which refuses every processing reservation, so no manual reset
+            #     can be draining alongside it.
+            #   * a caller that already holds a reservation while admission is
+            #     disabled — there is no capacity to charge, and the drain is
+            #     already waiting for that token.
+            if not from_scan and (
+                admission_token is None or self.max_pending_documents > 0
+            ):
+                minted_token = await self._reserve_ingress_slot(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    admission_token=admission_token,
+                    requested=len(admitted_doc_ids),
+                    reject_when=reject_when,
+                )
+                if minted_token is not None:
+                    admission_stack.push_async_callback(
+                        self._release_admission_reservation, minted_token
+                    )
+
             if duplicate_attempts:
                 duplicate_docs: dict[str, Any] = {}
                 for index, attempt in enumerate(duplicate_attempts):
@@ -1120,12 +1284,9 @@ class _PipelineMixin:
                         f"Created {len(duplicate_docs)} duplicate document records with track_id: {track_id}"
                     )
 
-            # Filter new_docs to only include documents with unique IDs
-            new_docs = {
-                doc_id: new_docs[doc_id]
-                for doc_id in unique_new_doc_ids
-                if doc_id in new_docs
-            }
+            # Filter new_docs to only include documents with unique IDs (the set
+            # the reservation above was weighted for).
+            new_docs = {doc_id: new_docs[doc_id] for doc_id in admitted_doc_ids}
 
             if not new_docs:
                 logger.warning("No new unique documents were found.")

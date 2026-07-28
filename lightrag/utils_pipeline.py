@@ -537,6 +537,35 @@ def doc_status_value(doc: Any) -> str:
     return str(status or "")
 
 
+# Statuses that count against the admission capacity (LR2 §9.1): work the
+# pipeline still owes. PROCESSED and FAILED are finished — a FAILED document
+# only becomes active again through an explicit manual retry, which is exempt
+# from the cap anyway.
+ADMISSION_ACTIVE_STATUSES: tuple[DocStatus, ...] = (
+    DocStatus.PENDING,
+    DocStatus.PARSING,
+    DocStatus.ANALYZING,
+    DocStatus.PROCESSING,
+)
+
+
+async def count_active_documents(doc_status: DocStatusStorage) -> int:
+    """Strictly count the documents that occupy admission capacity.
+
+    Deliberately re-queried per admission decision instead of tracked in a
+    maintained counter: a counter is a second source of truth that drifts on
+    crash, backend swap or external write, and admission is the one place where
+    a drifting count either wedges ingestion or lets it grow unbounded.
+
+    Fail-closed: ``count_docs_by_statuses`` raises rather than returning zeros
+    on failure, and this helper does not soften that — a caller that cannot
+    learn the count must refuse the request (503), never assume there is room.
+    """
+    return await doc_status.count_docs_by_statuses(
+        list(ADMISSION_ACTIVE_STATUSES), strict=True
+    )
+
+
 # Sidecar item ids embed ``doc_hash`` (= doc_id without the ``doc-`` prefix),
 # and for pending_parse uploads doc_id derives from the filename — so the
 # same content under two filenames renders with different ids in

@@ -122,6 +122,62 @@ for path in whitelist_paths:
 auth_configured = bool(auth_handler.accounts)
 
 
+def path_is_whitelisted(path: str) -> bool:
+    """Whether ``WHITELIST_PATHS`` exempts ``path`` from authentication.
+
+    Shared so every layer that has to answer "may this request skip auth?" uses
+    one matcher: the enforcing route dependency
+    (:func:`get_combined_auth_dependency`) and the pure-ASGI admission
+    middleware, which must pre-authenticate before reading a request body and
+    would otherwise 401 a path the route itself lets through (LR2 §9.3).
+    """
+    for pattern, is_prefix in whitelist_patterns:
+        if (is_prefix and path.startswith(pattern)) or (
+            not is_prefix and path == pattern
+        ):
+            return True
+    return False
+
+
+def credentials_accepted(
+    *,
+    token: Optional[str],
+    api_key_header_value: Optional[str],
+    api_key: Optional[str],
+) -> bool:
+    """Whether these credentials authenticate, per the configured auth mode.
+
+    The acceptance rules, in one place, for every caller that needs the answer
+    as a boolean rather than as an exception:
+
+      - fully open (no ``AUTH_ACCOUNTS``, no API key): nothing is protected
+        anywhere, so the request is authenticated;
+      - a valid API key authenticates in any mode where one is configured;
+      - password auth (``AUTH_ACCOUNTS`` set): a valid non-guest token
+        authenticates. A guest token never does — in API-key-only mode it is
+        forgeable by anyone (GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9), so it
+        must not substitute for the API key.
+
+    Deliberately path-agnostic: ``WHITELIST_PATHS`` is a separate question
+    (:func:`path_is_whitelisted`), because a whitelisted path is unauthenticated
+    but reachable — conflating the two would let ``/health`` report itself as an
+    authenticated caller and reveal configuration.
+    """
+    api_key_configured = bool(api_key)
+    if not auth_configured and not api_key_configured:
+        return True
+    if api_key_configured and api_key_header_value and api_key_header_value == api_key:
+        return True
+    if token:
+        try:
+            token_info = auth_handler.validate_token(token)
+        except Exception:
+            token_info = None
+        if token_info and auth_configured and token_info.get("role") != "guest":
+            return True
+    return False
+
+
 def get_combined_auth_dependency(api_key: Optional[str] = None):
     """
     Create a combined authentication dependency that implements authentication logic
@@ -161,11 +217,8 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     ):
         # 1. Check if path is in whitelist
         path = request.url.path
-        for pattern, is_prefix in whitelist_patterns:
-            if (is_prefix and path.startswith(pattern)) or (
-                not is_prefix and path == pattern
-            ):
-                return  # Whitelist path, allow access
+        if path_is_whitelisted(path):
+            return  # Whitelist path, allow access
 
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
         if token:
@@ -351,31 +404,13 @@ def get_auth_status_dependency(api_key: Optional[str] = None):
         if api_key_header is None
         else Security(api_key_header),
     ) -> bool:
-        # Fully-open mode: nothing is protected anywhere, so reveal config too.
-        if not auth_configured and not api_key_configured:
-            return True
-
-        # A valid API key authenticates in any mode where one is configured.
-        if (
-            api_key_configured
-            and api_key_header_value
-            and api_key_header_value == api_key
-        ):
-            return True
-
-        if token:
-            try:
-                token_info = auth_handler.validate_token(token)
-            except Exception:
-                token_info = None
-            if token_info:
-                role = token_info.get("role")
-                # Password auth: accept a non-guest token. A guest token never
-                # authenticates here (in API-key-only mode it is forgeable).
-                if auth_configured and role != "guest":
-                    return True
-
-        return False
+        # Path-agnostic on purpose: /health is itself whitelisted, so folding
+        # the whitelist in here would report every caller as authenticated.
+        return credentials_accepted(
+            token=token,
+            api_key_header_value=api_key_header_value,
+            api_key=api_key,
+        )
 
     return auth_status_dependency
 
