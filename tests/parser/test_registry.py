@@ -5,6 +5,7 @@ import sys
 
 
 from lightrag.parser import registry
+from lightrag.parser.routing import validate_parser_routing_config
 
 
 def test_supported_engines_are_user_selectable_only():
@@ -21,6 +22,38 @@ def test_suffix_capabilities_lookup():
         {"docx", "md", "textpack"}
     )
     assert registry.suffix_capabilities("unknown-engine") == frozenset()
+
+
+def test_docling_document_formats_are_routable(monkeypatch):
+    """Keep LightRAG's allowlist aligned with Docling's document formats.
+
+    Audio and video are intentionally outside this regression because they
+    require optional ASR and ffmpeg support on the Docling endpoint.
+    """
+    expected = {
+        "doc",
+        "xls",
+        "ppt",
+        "odt",
+        "ods",
+        "odp",
+        "epub",
+        "adoc",
+        "tex",
+        "csv",
+        "vtt",
+        "boxnote",
+        "dclg",
+        "dclx",
+        "xml",
+        "json",
+    }
+    monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling.test")
+
+    assert expected <= registry.suffix_capabilities("docling")
+    assert expected <= registry.available_engine_suffixes()
+    for suffix in expected:
+        validate_parser_routing_config(f"{suffix}:docling")
 
 
 def test_get_parser_unknown_returns_none():
