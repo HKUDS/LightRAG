@@ -4024,6 +4024,48 @@ async def extract_entities(
     return chunk_results
 
 
+# Policy version of the query-answer cache (cache_type="query"). Bump it when the
+# meaning of an entry changes in a way the other key fields cannot express, so
+# entries written by older versions become unreachable instead of being served
+# under a key whose semantics have moved. v2 retires every entry written before
+# the _answer_cache_kv bypass below: such an entry may hold history-conditioned
+# text filed under a history-blind key, and entries record no history, so a
+# tainted entry cannot be told apart from a clean one. Only the answer cache is
+# versioned; keyword/extract/summary entries never see conversation_history.
+_ANSWER_CACHE_POLICY_VERSION = "query-answer-cache-v2"
+
+
+def _answer_cache_kv(
+    query_param: QueryParam, hashing_kv: BaseKVStorage | None
+) -> BaseKVStorage | None:
+    """Return the storage backing the query-answer cache, or None to bypass it.
+
+    The answer cache key deliberately excludes ``conversation_history``: every
+    turn of a conversation carries a different history, so keying on it would
+    make each entry unique and turn a cache that is meant to be shared across
+    callers into a per-session one. But the history *is* handed to the model as
+    ``history_messages``, so an answer generated under it is not interchangeable
+    with the history-blind key it would be filed under. Requests carrying a
+    history therefore use neither side of the cache:
+
+    - they never write, so caller-supplied history cannot decide the answer that
+      other callers will be served for the same question;
+    - they never read, so a multi-turn caller is not served an answer that was
+      generated while ignoring its history.
+
+    Keyword extraction is unaffected and keeps using ``hashing_kv`` directly: it
+    derives keywords from the query text alone and never receives the history.
+    """
+    if query_param.conversation_history:
+        logger.debug(
+            " == LLM cache == Query answer cache bypassed: conversation_history "
+            f"is set ({len(query_param.conversation_history)} message(s), "
+            f"mode:{query_param.mode})"
+        )
+        return None
+    return hashing_kv
+
+
 async def kg_query(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -4153,7 +4195,9 @@ async def kg_query(
     )
 
     # Handle cache
+    answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
     args_hash = compute_args_hash(
+        _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
         query,
         query_param.response_type,
@@ -4172,7 +4216,7 @@ async def kg_query(
     )
 
     cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
 
     if cached_result is not None:
@@ -4193,11 +4237,12 @@ async def kg_query(
         )
 
         if (
-            hashing_kv
-            and hashing_kv.global_config.get("enable_llm_cache")
+            answer_cache_kv
+            and answer_cache_kv.global_config.get("enable_llm_cache")
             and not is_truncated_response(response)
         ):
             queryparam_dict = {
+                "answer_cache_version": _ANSWER_CACHE_POLICY_VERSION,
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
                 "top_k": query_param.top_k,
@@ -4214,7 +4259,7 @@ async def kg_query(
                 ),
             }
             await save_to_cache(
-                hashing_kv,
+                answer_cache_kv,
                 CacheData(
                     args_hash=args_hash,
                     content=response,
@@ -6168,7 +6213,9 @@ async def naive_query(
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
     # Handle cache
+    answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
     args_hash = compute_args_hash(
+        _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
         query,
         query_param.response_type,
@@ -6184,7 +6231,7 @@ async def naive_query(
         serialize_llm_cache_identity(llm_cache_identity),
     )
     cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -6202,11 +6249,12 @@ async def naive_query(
         )
 
         if (
-            hashing_kv
-            and hashing_kv.global_config.get("enable_llm_cache")
+            answer_cache_kv
+            and answer_cache_kv.global_config.get("enable_llm_cache")
             and not is_truncated_response(response)
         ):
             queryparam_dict = {
+                "answer_cache_version": _ANSWER_CACHE_POLICY_VERSION,
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
                 "top_k": query_param.top_k,
@@ -6221,7 +6269,7 @@ async def naive_query(
                 ),
             }
             await save_to_cache(
-                hashing_kv,
+                answer_cache_kv,
                 CacheData(
                     args_hash=args_hash,
                     content=response,
