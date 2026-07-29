@@ -7,9 +7,7 @@ but empty (common in ``.env`` / Compose). Route through ``get_env_value``.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
+import numpy as np
 from pathlib import Path
 
 import pytest
@@ -96,36 +94,78 @@ def test_malformed_chunk_size_envs_raise(
 @pytest.mark.offline
 @pytest.mark.parametrize("env_value", ["", "  "])
 def test_empty_chunk_size_env_does_not_crash_lightrag_init(
-    env_value: str, tmp_path: Path
+    env_value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    env = os.environ.copy()
-    env["CHUNK_SIZE"] = env_value
-    env["CHUNK_OVERLAP_SIZE"] = env_value
-    env["PYTHONPATH"] = str(REPO_ROOT) + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    monkeypatch.setenv("CHUNK_SIZE", env_value)
+    monkeypatch.setenv("CHUNK_OVERLAP_SIZE", env_value)
+    monkeypatch.setattr(
+        "lightrag.lightrag.verify_storage_implementation", lambda *a: None
     )
-    script = f"""
-from lightrag.utils import EmbeddingFunc
-import numpy as np
-from lightrag.lightrag import LightRAG
+    monkeypatch.setattr("lightrag.lightrag.check_storage_env_vars", lambda *a: None)
 
-async def emb(texts):
-    return np.zeros((len(texts), 8))
+    class DummyStorage:
+        def __init__(self, *a, **k):
+            pass
 
-rag = LightRAG(
-    working_dir={str(tmp_path / "wd")!r},
-    embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
-    llm_model_func=lambda *a, **k: "ok",
+    monkeypatch.setattr(
+        "lightrag.lightrag.get_storage_class", lambda *a, **k: DummyStorage
+    )
+
+    async def emb(texts: list[str]) -> np.ndarray:
+        return np.zeros((len(texts), 8))
+
+    from lightrag.lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    rag = LightRAG(
+        working_dir=str(tmp_path / "wd"),
+        embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
+        llm_model_func=lambda *a, **k: "ok",
+    )
+    assert rag.chunk_token_size == 1200
+    assert rag.chunk_overlap_token_size == 100
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "env_key",
+    [
+        "CHUNK_SIZE",
+        "CHUNK_OVERLAP_SIZE",
+        "CHUNK_P_SIZE",
+        "CHUNK_F_SIZE",
+        "CHUNK_R_SIZE",
+        "CHUNK_V_SIZE",
+    ],
 )
-print(rag.chunk_token_size, rag.chunk_overlap_token_size)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+def test_malformed_chunk_size_envs_raise_in_lightrag_init(
+    env_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malformed non-empty env values must raise ValueError on LightRAG init."""
+    monkeypatch.setenv(env_key, "20OO")
+    monkeypatch.setattr(
+        "lightrag.lightrag.verify_storage_implementation", lambda *a: None
     )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "1200 100"
+    monkeypatch.setattr("lightrag.lightrag.check_storage_env_vars", lambda *a: None)
+
+    class DummyStorage:
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(
+        "lightrag.lightrag.get_storage_class", lambda *a, **k: DummyStorage
+    )
+
+    async def emb(texts: list[str]) -> np.ndarray:
+        return np.zeros((len(texts), 8))
+
+    from lightrag.lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    with pytest.raises(ValueError, match=env_key):
+        LightRAG(
+            working_dir=str(tmp_path / "wd"),
+            addon_params={"chunker": {"paragraph_semantic": {}}},
+            embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
+            llm_model_func=lambda *a, **k: "ok",
+        )

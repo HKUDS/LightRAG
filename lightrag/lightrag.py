@@ -82,6 +82,7 @@ from lightrag.constants import (
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
+from lightrag.parser.routing import _chunk_env_int
 
 from lightrag.kg import (
     verify_storage_implementation,
@@ -832,15 +833,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if self.chunk_token_size is not None:
                 chunker_cfg["chunk_token_size"] = self.chunk_token_size
             else:
-                chunker_cfg["chunk_token_size"] = get_env_value("CHUNK_SIZE", 1200, int)
-
+                chunker_cfg["chunk_token_size"] = _chunk_env_int("CHUNK_SIZE", 1200)
         # Per-strategy chunk_overlap_token_size — strategy env (if set)
         # already lives in the sub-dict.  Slots still missing fall back
         # to the legacy ctor field, then CHUNK_OVERLAP_SIZE env.
         if self.chunk_overlap_token_size is not None:
             legacy_overlap_default = self.chunk_overlap_token_size
         else:
-            legacy_overlap_default = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+            legacy_overlap_default = _chunk_env_int("CHUNK_OVERLAP_SIZE", 100)
         for strategy_key in (
             "fixed_token",
             "recursive_character",
@@ -871,9 +871,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # callers still pick up env overrides.
         chunker_cfg["paragraph_semantic"].setdefault(
             "chunk_token_size",
-            get_env_value("CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE, int),
+            _chunk_env_int("CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE),
         )
-
         # Per-strategy F/R/V chunk_token_size from strategy env
         # (CHUNK_F_SIZE / CHUNK_R_SIZE / CHUNK_V_SIZE).  Same rationale as the
         # P backfill above: ``default_chunker_config`` seeds these when it
@@ -890,7 +889,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ("recursive_character", "CHUNK_R_SIZE"),
             ("semantic_vector", "CHUNK_V_SIZE"),
         ):
-            size_val = get_env_value(size_env, None, int)
+            size_val = _chunk_env_int(size_env, None)
             if size_val is None:
                 continue
             sub = chunker_cfg.get(strategy_key)
