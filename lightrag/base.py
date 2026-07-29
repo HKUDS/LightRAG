@@ -225,20 +225,23 @@ class StorageNameSpace(ABC):
 
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
-    embedding_func: EmbeddingFunc
+    requires_embedding_func: ClassVar[bool] = True
+
+    embedding_func: EmbeddingFunc | None
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
     def _validate_embedding_func(self):
-        """Validate that embedding_func is provided.
+        """Validate the backend's embedding function requirement.
 
         This method should be called at the beginning of __post_init__
-        in all vector storage implementations.
+        in all vector storage implementations. Backends that never materialize
+        vectors may set ``requires_embedding_func`` to ``False``.
 
         Raises:
-            ValueError: If embedding_func is None
+            ValueError: If the backend requires embedding_func and it is None
         """
-        if self.embedding_func is None:
+        if self.requires_embedding_func and self.embedding_func is None:
             raise ValueError(
                 "embedding_func is required for vector storage. "
                 "Please provide a valid EmbeddingFunc instance."
