@@ -153,69 +153,36 @@ _MINERU_SUFFIXES = frozenset(
         "bmp",
     }
 )
-# Document and image extensions from Docling's ``FormatToExtensions`` mapping.
-# Audio/video formats are excluded because they require optional ASR/ffmpeg
-# support on the remote endpoint.
+
+
+def _env_suffixes(env_name: str) -> frozenset[str]:
+    suffixes = {
+        value.strip().lower().lstrip(".")
+        for value in os.getenv(env_name, "").split(",")
+    }
+    suffixes.discard("")
+    return frozenset(suffixes)
+
+
+# Formats available in the baseline Docling deployment. Optional converters
+# depend on packages installed by the endpoint and must be opted into.
 _DOCLING_SUFFIXES = frozenset(
     {
         "pdf",
         "docx",
-        "dotx",
-        "docm",
-        "dotm",
-        "doc",
-        "dot",
         "pptx",
-        "potx",
-        "ppsx",
-        "pptm",
-        "potm",
-        "ppsm",
-        "ppt",
-        "pot",
-        "pps",
         "xlsx",
-        "xlsm",
-        "xls",
-        "xlt",
-        "odt",
-        "ott",
-        "ods",
-        "ots",
-        "odp",
-        "otp",
         "md",
-        "txt",
-        "text",
-        "qmd",
-        "rmd",
         "html",
-        "htm",
         "xhtml",
-        "adoc",
-        "asciidoc",
-        "asc",
-        "tex",
-        "latex",
-        "csv",
-        "epub",
-        "vtt",
-        "boxnote",
-        "xml",
-        "nxml",
-        "xbrl",
-        "dclg",
-        "dclx",
-        "json",
         "png",
         "jpg",
         "jpeg",
-        "tif",
         "tiff",
         "webp",
         "bmp",
     }
-)
+) | _env_suffixes("DOCLING_ADDITIONAL_SUFFIXES")
 
 
 _REGISTRY: dict[str, ParserSpec] = {
