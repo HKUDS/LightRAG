@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "Bắt đầu truy xuất bằng cách nhập truy vấn của bạn bên dưới",
+      "scrollToBottom": "Cuộn đến tin nhắn mới nhất",
       "clear": "Xóa",
       "send": "Gửi",
       "stop": "Dừng",

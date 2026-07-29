@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "输入查询开始检索",
+      "scrollToBottom": "回到最新消息",
       "clear": "清空",
       "send": "发送",
       "stop": "停止",

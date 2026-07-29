@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "輸入查詢開始檢索",
+      "scrollToBottom": "回到最新訊息",
       "clear": "清空",
       "send": "送出",
       "stop": "停止",
