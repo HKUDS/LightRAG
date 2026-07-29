@@ -30,7 +30,7 @@ Conversion rules (informed by spec §3-§六):
 - ``image`` / ``picture`` / ``drawing`` / ``chart`` → IRDrawing +
   ``{{IMG:k}}`` placeholder. Asset bytes are referenced via ``img_path``
   relative to the raw dir. MinerU-specific visual type/content is retained in
-  ``IRDrawing.extras``.
+  ``IRDrawing.extras`` and supplied to downstream visual-analysis prompts.
 - A ``table`` without a usable structured body, or an ``equation`` without
   LaTeX, falls back to IRDrawing when MinerU supplied an ``img_path`` crop.
 - ``equation`` → IREquation. ``is_block`` is decided by whether

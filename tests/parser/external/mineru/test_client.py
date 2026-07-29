@@ -447,6 +447,22 @@ class _LocalTransientPollDispatcher(_LocalDispatcher):
         return super().get(url, **kwargs)
 
 
+class _LocalPollSequenceDispatcher(_LocalDispatcher):
+    def __init__(self, outcomes: list[str]) -> None:
+        super().__init__()
+        self.outcomes = list(outcomes)
+        self.poll_attempts = 0
+
+    def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        if url == "http://127.0.0.1:8000/tasks/L-1":
+            self.poll_attempts += 1
+            outcome = self.outcomes.pop(0)
+            if outcome == "error":
+                raise _FakeRequestError("temporary read failure")
+            return _FakeResponse(text=json.dumps({"task_id": "L-1", "status": outcome}))
+        return super().get(url, **kwargs)
+
+
 @pytest.mark.offline
 async def test_client_local_poll_recovers_from_transient_transport_error(
     tmp_path: Path,
@@ -470,6 +486,90 @@ async def test_client_local_poll_recovers_from_transient_transport_error(
     assert dispatcher.poll_attempts == 2
     assert manifest.task_id == "L-1"
     assert (raw / "content_list.json").is_file()
+
+
+@pytest.mark.offline
+async def test_client_local_poll_resets_consecutive_transport_error_count(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("MINERU_MAX_POLLS", "6")
+    monkeypatch.setenv("MINERU_MAX_CONSECUTIVE_POLL_ERRORS", "3")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    dispatcher = _LocalPollSequenceDispatcher(
+        ["error", "error", "running", "error", "error", "completed"]
+    )
+    _CURRENT.dispatcher = dispatcher
+    manifest = await MinerURawClient().download_into(raw, src)
+
+    assert dispatcher.poll_attempts == 6
+    assert manifest.task_id == "L-1"
+    assert (raw / "content_list.json").is_file()
+
+
+@pytest.mark.offline
+async def test_client_local_poll_fails_after_consecutive_transport_error_limit(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("MINERU_MAX_POLLS", "100")
+    monkeypatch.setenv("MINERU_MAX_CONSECUTIVE_POLL_ERRORS", "3")
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDFBYTES" * 200)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    dispatcher = _LocalPollSequenceDispatcher(["error"] * 100)
+    _CURRENT.dispatcher = dispatcher
+    with pytest.raises(RuntimeError, match="MinerU local backend request failed"):
+        await MinerURawClient().download_into(raw, src)
+
+    assert dispatcher.poll_attempts == 3
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_client_rejects_nonpositive_consecutive_poll_error_limit(
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_MAX_CONSECUTIVE_POLL_ERRORS", value)
+
+    with pytest.raises(
+        ValueError, match="MINERU_MAX_CONSECUTIVE_POLL_ERRORS must be at least 1"
+    ):
+        MinerURawClient()
+
+
+@pytest.mark.offline
+def test_client_official_mode_ignores_local_consecutive_poll_error_limit(
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINERU_API_MODE", "official")
+    monkeypatch.setenv("MINERU_API_TOKEN", "token-123")
+    monkeypatch.setenv("MINERU_MAX_CONSECUTIVE_POLL_ERRORS", "invalid-local-value")
+
+    client = MinerURawClient()
+
+    assert client.max_consecutive_poll_errors == 5
 
 
 @pytest.mark.offline

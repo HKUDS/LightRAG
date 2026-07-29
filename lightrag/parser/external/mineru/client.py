@@ -162,6 +162,16 @@ class MinerURawClient:
         self.poll_interval = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2"))
         # 600 * 2s client-side sleep ≈ 20 min worst case; raise for very large PDFs.
         self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "600"))
+        self.max_consecutive_poll_errors = 5
+        if self.api_mode == "local":
+            self.max_consecutive_poll_errors = int(
+                os.getenv("MINERU_MAX_CONSECUTIVE_POLL_ERRORS", "5")
+            )
+            if self.max_consecutive_poll_errors < 1:
+                raise ValueError(
+                    "MINERU_MAX_CONSECUTIVE_POLL_ERRORS must be at least 1, "
+                    f"got {self.max_consecutive_poll_errors}"
+                )
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
 
         options = MinerUParserOptions.from_env(
@@ -423,6 +433,7 @@ class MinerURawClient:
         # a crafted value can't break out of ``/tasks/{id}``. The raw value is
         # kept for the error/timeout messages below where the real ID matters.
         poll_url = f"{self.local_endpoint}/tasks/{quote(task_id, safe='')}"
+        consecutive_poll_errors = 0
         for poll_index in range(self.max_polls):
             await asyncio.sleep(self.poll_interval)
             try:
@@ -432,18 +443,25 @@ class MinerURawClient:
                 # long GPU/CPU-bound phase can temporarily starve the FastAPI
                 # event loop and reset or time out one poll connection even
                 # though the task continues successfully in the worker. Treat
-                # an isolated transport error as a missed poll; the global
-                # max_polls budget still bounds permanent outages.
+                # an isolated transport error as a missed poll. A separate
+                # consecutive-error bound prevents a permanent outage from
+                # consuming the much larger task-completion poll budget.
+                consecutive_poll_errors += 1
                 logger.warning(
                     "[mineru_raw] transient local poll error for task %s "
-                    "(attempt %s/%s): %s: %s",
+                    "(attempt %s/%s, consecutive %s/%s): %s: %s",
                     task_id,
                     poll_index + 1,
                     self.max_polls,
+                    consecutive_poll_errors,
+                    self.max_consecutive_poll_errors,
                     type(exc).__name__,
                     exc,
                 )
+                if consecutive_poll_errors >= self.max_consecutive_poll_errors:
+                    raise
                 continue
+            consecutive_poll_errors = 0
             raise_for_status_with_detail(resp, "MinerU local task poll")
             payload = resp.json() if resp.text else {}
             status = str(payload.get("status") or "").lower()

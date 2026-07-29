@@ -6200,15 +6200,16 @@ class _PipelineMixin:
                         result_obj["equation"] = equation_value.strip()
                     elif equation_fallback.strip():
                         # The sidecar content is the parser's authoritative
-                        # LaTeX. Some otherwise valid model responses omit
-                        # the redundant normalized-equation echo; do not fail
-                        # an entire document after hundreds of equations for
-                        # that omission. Keep requiring the semantic name and
-                        # description, and fall back only for this deterministic
-                        # field.
+                        # source LaTeX. It may not include the normalization
+                        # requested from the model (for example align→aligned
+                        # conversion or tag removal), but preserving that
+                        # source is preferable to failing an entire document
+                        # when an otherwise valid response omits the field.
+                        # Keep requiring the semantic name and description.
                         logger.warning(
                             f"[analyze_multimodal] {prefix}: model response "
-                            "missing valid 'equation'; using sidecar content"
+                            "missing valid 'equation'; using unnormalized "
+                            "source LaTeX from sidecar"
                         )
                         result_obj["equation"] = equation_fallback.strip()
                     else:
@@ -6283,6 +6284,62 @@ class _PipelineMixin:
                 value = _normalize_text(surrounding.get(key))
                 return value or "n/a"
 
+            def _drawing_source_type(item_obj: dict[str, Any]) -> str:
+                extras = item_obj.get("extras")
+                if not isinstance(extras, dict):
+                    return ""
+                return _normalize_text(
+                    extras.get("source_type") or extras.get("sub_type")
+                ).lower()
+
+            def _drawing_parser_content(item_obj: dict[str, Any]) -> str:
+                extras = item_obj.get("extras")
+                if not isinstance(extras, dict):
+                    return ""
+                return _normalize_text(extras.get("mineru_content"))
+
+            def _drawing_prompt_content(item_id: str, parser_content: str) -> str:
+                if not parser_content:
+                    return ""
+
+                from lightrag.multimodal_context import trim_content_to_budget
+
+                max_tokens = get_env_value(
+                    "MM_IMAGE_CONTENT_MAX_TOKENS",
+                    2000,
+                    int,
+                )
+                trimmed, was_trimmed = trim_content_to_budget(
+                    parser_content,
+                    kind="drawings",
+                    max_tokens=max_tokens,
+                    tokenizer=tokenizer,
+                )
+                if was_trimmed:
+                    logger.warning(
+                        f"[analyze_multimodal] drawings/{item_id}: "
+                        "parser-provided content trimmed to "
+                        f"MM_IMAGE_CONTENT_MAX_TOKENS={max_tokens}"
+                    )
+                return trimmed
+
+            def _render_drawing_prompt(
+                item_id: str,
+                item: dict[str, Any],
+                *,
+                parser_content: str,
+            ) -> str:
+                return MULTIMODAL_PROMPTS["image_analysis"].format(
+                    language=language,
+                    content=parser_content or "n/a",
+                    captions=_captions_value(item),
+                    footnotes=_footnotes_value(item),
+                    leading=_surrounding_value(item, "leading"),
+                    trailing=_surrounding_value(item, "trailing"),
+                    item_id=item_id,
+                    file_path=file_path,
+                )
+
             def _resolve_image_path(
                 path_str: str | None, sidecar_dir: Path
             ) -> Path | None:
@@ -6314,17 +6371,89 @@ class _PipelineMixin:
             async def _analyze_drawing(
                 item_id: str, item: dict[str, Any], sidecar_dir: Path
             ) -> tuple[dict[str, Any], str | None]:
+                parser_content = _drawing_parser_content(item)
+                source_type = _drawing_source_type(item)
+
+                promoted_mineru_types = {
+                    "chart",
+                    "seal",
+                    "equation_image",
+                    "table_image",
+                }
+
+                def _parser_content_result(
+                    reason: str,
+                ) -> tuple[dict[str, Any], str | None] | None:
+                    """Keep newly promoted MinerU text retrievable without VLM."""
+                    if not parser_content or source_type not in promoted_mineru_types:
+                        return None
+                    caption = _normalize_text(item.get("caption"))
+                    image_type = {
+                        "chart": "Chart",
+                        "table_image": "Table",
+                    }.get(source_type, IMAGE_TYPE_FALLBACK)
+                    logger.warning(
+                        f"[analyze_multimodal] drawings/{item_id}: using "
+                        f"parser-provided content without VLM ({reason})"
+                    )
+                    return (
+                        {
+                            "name": caption or f"mineru_{source_type}_{item_id}",
+                            "type": image_type,
+                            "description": parser_content,
+                            "analyze_time": int(time.time()),
+                            "status": "success",
+                            "message": f"parser-content fallback: {reason}",
+                        },
+                        None,
+                    )
+
+                vlm_available = vlm_process_enable and use_vlm_func is not None
+                if not vlm_available:
+                    fallback_result = _parser_content_result("VLM role is unavailable")
+                    if fallback_result is not None:
+                        return fallback_result
+                    # These MinerU records were newly promoted from silently
+                    # dropped/unknown items to drawings. Without either a VLM
+                    # or usable parser text, preserve the sidecar for a future
+                    # re-run but do not turn the promotion into a new document
+                    # failure. Existing image/picture/drawing behavior remains
+                    # strict so genuine image-analysis misconfiguration is
+                    # still surfaced.
+                    if source_type in promoted_mineru_types:
+                        return (
+                            _skipped_result(
+                                f"VLM unavailable for MinerU {source_type} drawing"
+                            ),
+                            None,
+                        )
+                    raise MultimodalAnalysisError(
+                        f"drawings/{item_id}: VLM analysis required but "
+                        "VLM role is not available "
+                        "(VLM_PROCESS_ENABLE or vlm role config)"
+                    )
+
                 path_str = (
                     item.get("path") or item.get("img_path") or item.get("image_path")
                 )
                 candidate = _resolve_image_path(path_str, sidecar_dir)
                 if candidate is None:
+                    fallback_result = _parser_content_result(
+                        "image file is unavailable"
+                    )
+                    if fallback_result is not None:
+                        return fallback_result
                     return (
                         _skipped_result(f"image file not found: {path_str or 'n/a'}"),
                         None,
                     )
                 ext = candidate.suffix.lower()
                 if ext not in _VLM_RASTER_EXTS:
+                    fallback_result = _parser_content_result(
+                        f"unsupported image format: {ext}"
+                    )
+                    if fallback_result is not None:
+                        return fallback_result
                     return (
                         _skipped_result(f"unsupported image format: {ext}"),
                         None,
@@ -6333,29 +6462,41 @@ class _PipelineMixin:
                 if dims is not None and (
                     dims[0] < min_image_pixel or dims[1] < min_image_pixel
                 ):
+                    fallback_result = _parser_content_result(
+                        "image dimensions are below the VLM threshold"
+                    )
+                    if fallback_result is not None:
+                        return fallback_result
                     return (
                         _skipped_result(
                             f"image width or height is smaller than {min_image_pixel}px"
                         ),
                         None,
                     )
-                if not vlm_process_enable or use_vlm_func is None:
-                    raise MultimodalAnalysisError(
-                        f"drawings/{item_id}: VLM analysis required but "
-                        "VLM role is not available "
-                        "(VLM_PROCESS_ENABLE or vlm role config)"
-                    )
                 try:
                     raw = candidate.read_bytes()
                 except OSError as exc:
+                    fallback_result = _parser_content_result(
+                        f"image file cannot be read: {type(exc).__name__}"
+                    )
+                    if fallback_result is not None:
+                        return fallback_result
                     raise MultimodalAnalysisError(
                         f"drawings/{item_id}: cannot read image {candidate}: {exc}"
                     ) from exc
                 if not raw:
+                    fallback_result = _parser_content_result("image file is empty")
+                    if fallback_result is not None:
+                        return fallback_result
                     raise MultimodalAnalysisError(
                         f"drawings/{item_id}: image file is empty"
                     )
                 if len(raw) > max_image_bytes:
+                    fallback_result = _parser_content_result(
+                        "image exceeds the VLM byte limit"
+                    )
+                    if fallback_result is not None:
+                        return fallback_result
                     return (
                         _skipped_result(
                             f"image too large: {len(raw)} bytes "
@@ -6374,15 +6515,10 @@ class _PipelineMixin:
                     "doc_id": doc_id,
                 }
                 normalized_images = normalize_image_inputs([img_payload])
-                prompt = MULTIMODAL_PROMPTS["image_analysis"].format(
-                    language=language,
-                    content="",
-                    captions=_captions_value(item),
-                    footnotes=_footnotes_value(item),
-                    leading=_surrounding_value(item, "leading"),
-                    trailing=_surrounding_value(item, "trailing"),
-                    item_id=item_id,
-                    file_path=file_path,
+                prompt = _render_drawing_prompt(
+                    item_id,
+                    item,
+                    parser_content=_drawing_prompt_content(item_id, parser_content),
                 )
                 args_hash = compute_args_hash(
                     prompt,

@@ -523,6 +523,33 @@ def test_adapter_chart_becomes_typed_drawing(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_adapter_seal_subtype_uses_image_annotations(tmp_path: Path) -> None:
+    """MinerU emits seals as image + sub_type, not seal_caption fields."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            {
+                "type": "image",
+                "sub_type": "seal",
+                "img_path": "images/seal.png",
+                "content": "某某学校",
+                "image_caption": ["School seal"],
+                "image_footnote": ["OCR may be approximate"],
+            }
+        ],
+    )
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="seal.pdf")
+    drawing = ir.blocks[0].drawings[0]
+    assert drawing.caption == "School seal"
+    assert drawing.footnotes == ["OCR may be approximate"]
+    assert drawing.extras == {
+        "sub_type": "seal",
+        "mineru_content": "某某学校",
+    }
+
+
+@pytest.mark.offline
 def test_adapter_equation_and_table_image_fallbacks(tmp_path: Path) -> None:
     raw = _write_bundle(
         tmp_path,
