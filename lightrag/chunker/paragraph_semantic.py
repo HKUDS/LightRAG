@@ -207,26 +207,42 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _references_tail_n() -> int:
-    """Trailing-block window for reference detection (live from env).
-
-    Read at chunk time (NOT snapshotted) so changing
-    ``CHUNK_P_REFERENCES_TAIL_N`` takes effect on re-runs of already-enqueued
-    documents.  Falls back to :data:`DEFAULT_P_REFERENCES_TAIL_N`.
-    """
-    raw = os.getenv("CHUNK_P_REFERENCES_TAIL_N")
-    if raw is None:
-        return DEFAULT_P_REFERENCES_TAIL_N
+def _normalize_references_tail_n(raw: object, *, setting: str) -> int:
+    """Parse a non-negative reference scan window, falling back on errors."""
     try:
-        return max(int(raw), 0)
-    except ValueError:
+        value = int(raw)
+    except (TypeError, ValueError):
         logger.warning(
-            "[paragraph_semantic] invalid CHUNK_P_REFERENCES_TAIL_N=%r; "
-            "using default %d",
+            "[paragraph_semantic] invalid %s=%r; using default %d",
+            setting,
             raw,
             DEFAULT_P_REFERENCES_TAIL_N,
         )
         return DEFAULT_P_REFERENCES_TAIL_N
+    if value < 0:
+        logger.warning(
+            "[paragraph_semantic] negative %s=%r; using default %d",
+            setting,
+            raw,
+            DEFAULT_P_REFERENCES_TAIL_N,
+        )
+        return DEFAULT_P_REFERENCES_TAIL_N
+    return value
+
+
+def _references_tail_n() -> int:
+    """Content-block window for reference detection (live from env).
+
+    Read at chunk time (NOT snapshotted) so changing
+    ``CHUNK_P_REFERENCES_TAIL_N`` takes effect on re-runs of already-enqueued
+    documents.  ``0`` scans all content blocks; a positive value restricts
+    detection to the last N blocks.  Invalid or negative values fall back to
+    :data:`DEFAULT_P_REFERENCES_TAIL_N`.
+    """
+    raw = os.getenv("CHUNK_P_REFERENCES_TAIL_N")
+    if raw is None:
+        return DEFAULT_P_REFERENCES_TAIL_N
+    return _normalize_references_tail_n(raw, setting="CHUNK_P_REFERENCES_TAIL_N")
 
 
 def _references_headings() -> list[str]:
@@ -2095,14 +2111,15 @@ def chunking_by_paragraph_semantic(
             and as the per-side budget for duplicating text between two
             adjacent oversized table chunks. Structural table row splits
             remain row-bounded and non-overlapping.
-        drop_references: When ``True``, drop the trailing reference section
-            (e.g. "References" / "参考文献") before splitting/merging. A block
-            is removed only when it BOTH sits within the last
-            ``references_tail_n`` content blocks AND its heading matches a
-            reference prefix. This is the only reference knob that is
-            snapshotted into ``chunk_options`` (it may come from a per-file
-            hint) and recorded in ``doc_status.metadata['chunk_opts']``.
-        references_tail_n: Trailing-block window for the detection above.
+        drop_references: When ``True``, drop reference blocks (e.g. blocks
+            headed "References" / "参考文献") before splitting/merging. A block
+            is removed when its heading matches a reference prefix and it is
+            inside the configured content-block window. This is the only
+            reference knob that is snapshotted into ``chunk_options`` (it may
+            come from a per-file hint) and recorded in
+            ``doc_status.metadata['chunk_opts']``.
+        references_tail_n: Content-block window for the detection above.
+            ``0`` scans all blocks; a positive value scans only the last N.
             ``None`` (the normal pipeline value) means "read
             ``CHUNK_P_REFERENCES_TAIL_N`` env live at run time, default
             ``DEFAULT_P_REFERENCES_TAIL_N``"; a kwarg is only passed by tests.
@@ -2204,12 +2221,11 @@ def chunking_by_paragraph_semantic(
             chunk_overlap_token_size=overlap,
         )
 
-    # Drop the trailing reference section before any split/merge runs (operates
-    # on the raw blocks.jsonl content rows — one heading == one block).  A block
-    # is dropped only when it BOTH sits within the last ``tail_n`` rows AND its
-    # heading matches a reference prefix; the tail window is a safety guard so a
-    # mid-document "References" subsection is never removed.  Detection knobs are
-    # read live from env (NOT snapshotted) unless injected via kwargs (tests).
+    # Drop reference blocks before any split/merge runs (operates on the raw
+    # blocks.jsonl content rows — one heading == one block).  Zero scans all
+    # rows; a positive ``tail_n`` restricts detection to the trailing window.
+    # Detection knobs are read live from env (NOT snapshotted) unless injected
+    # via kwargs (tests).
     if drop_references and rows:
         prefixes = (
             list(references_headings)
@@ -2217,43 +2233,39 @@ def chunking_by_paragraph_semantic(
             else _references_headings()
         )
         tail_n = (
-            max(int(references_tail_n), 0)
+            _normalize_references_tail_n(references_tail_n, setting="references_tail_n")
             if references_tail_n is not None
             else _references_tail_n()
         )
-        if tail_n:
-            start = max(0, len(rows) - tail_n)
-            kept: list[dict[str, Any]] = []
-            dropped_headings: list[str] = []
-            for idx, row in enumerate(rows):
-                if idx >= start and _is_reference_heading(
-                    row.get("heading", "") or "", prefixes
-                ):
-                    dropped_headings.append((row.get("heading") or "").strip())
-                else:
-                    kept.append(row)
-            # Protect against an empty document: base the guard on rows that
-            # still carry content (the loop below skips blank-content rows), so
-            # a pathological sidecar whose only kept rows are empty does not
-            # silently produce zero chunks.
-            if dropped_headings and any(
-                (row.get("content") or "").strip() for row in kept
+        start = 0 if tail_n == 0 else max(0, len(rows) - tail_n)
+        kept: list[dict[str, Any]] = []
+        dropped_headings: list[str] = []
+        for idx, row in enumerate(rows):
+            if idx >= start and _is_reference_heading(
+                row.get("heading", "") or "", prefixes
             ):
-                logger.info(
-                    "[paragraph_semantic] removed %d reference block(s) %s "
-                    "from doc_id: %s",
-                    len(dropped_headings),
-                    _format_dropped_headings(dropped_headings),
-                    doc_id or "unknown",
-                )
-                rows = kept
-            elif dropped_headings:
-                logger.warning(
-                    "[paragraph_semantic] dropping reference block(s) %s would "
-                    "leave no content; keeping them from doc_id: %s",
-                    _format_dropped_headings(dropped_headings),
-                    doc_id or "unknown",
-                )
+                dropped_headings.append((row.get("heading") or "").strip())
+            else:
+                kept.append(row)
+        # Protect against an empty document: base the guard on rows that
+        # still carry content (the loop below skips blank-content rows), so
+        # a pathological sidecar whose only kept rows are empty does not
+        # silently produce zero chunks.
+        if dropped_headings and any((row.get("content") or "").strip() for row in kept):
+            logger.info(
+                "[paragraph_semantic] removed %d reference block(s) %s from doc_id: %s",
+                len(dropped_headings),
+                _format_dropped_headings(dropped_headings),
+                doc_id or "unknown",
+            )
+            rows = kept
+        elif dropped_headings:
+            logger.warning(
+                "[paragraph_semantic] dropping reference block(s) %s would "
+                "leave no content; keeping them from doc_id: %s",
+                _format_dropped_headings(dropped_headings),
+                doc_id or "unknown",
+            )
 
     # Build initial blocks (HeadingBlocks output, already persisted).
     initial: list[dict[str, Any]] = []

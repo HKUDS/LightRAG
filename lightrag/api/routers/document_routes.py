@@ -502,7 +502,7 @@ class RecursiveCharacterChunkParams(_OverlapChunkParams):
 
 
 class ParagraphSemanticChunkParams(_OverlapChunkParams):
-    # Drop the trailing reference section before chunking. ``None`` means
+    # Drop matching reference blocks before chunking. ``None`` means
     # "not supplied — inherit the addon_params/env default at process time".
     # Detection-tuning knobs (tail window / heading prefixes) are env-only and
     # read live by the chunker, so they are intentionally not exposed here.

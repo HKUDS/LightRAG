@@ -363,7 +363,7 @@ LightRAG 的默认存储全部都是基于文件进行持久化的内存数据�
 - **模型太慢。** 速度低于约 50 tokens/秒的模型，可能无法在请求超时前完成包含大量实体关系的文本块的抽取。可以通过 `*_LLM_TIMEOUT` 增大超时时间——既可以是全局的 `LLM_TIMEOUT`，也可以是抽取阶段专用的角色参数 `EXTRACT_LLM_TIMEOUT`。注意实际的执行超时是所配置值的**两倍**，因此 `EXTRACT_LLM_TIMEOUT=300` 对应最长 **600 秒**。
 - **文本块产生的实体关系太多。** 例如参考文献文本块会让模型输出极其大量的记录，从而无法在限定时间内完成。可以通过 `OPENAI_LLM_MAX_TOKENS` 或 `OPENAI_LLM_MAX_COMPLETION_TOKENS` 限制输出长度（具体参数名取决于 LLM 供应商，详见 `env.example`）。一个实用的估算规则是 `max_output_tokens < LLM_TIMEOUT × 每秒token数`（例如 `9000 < 240s × 50 tps`）。
 - **模型存在缺陷，陷入输出死循环。** 某些模型（尤其是本地部署的 Qwen 模型）在遇到特殊文本时偶尔会陷入无尽的输出死循环。如果是偶发情况，通常只需将该文档重新处理一次即可解决。
-- **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除末尾的参考文献部分，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
+- **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除匹配的参考文献块，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
 
 ### 文档查询阶段其他重要配置
 
