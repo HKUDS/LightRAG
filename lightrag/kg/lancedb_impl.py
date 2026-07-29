@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import hashlib
+import heapq
 import json
 import os
 import re
@@ -44,20 +45,38 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
-from typing import Any, Iterable, Iterator, final
+from typing import Any, ClassVar, Iterable, Iterator, Sequence, final
 
 import numpy as np
 
 from ..base import (
+    CURSOR_END,
+    CURSOR_START,
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    CursorAfter,
+    CursorPosition,
     DocProcessingStatus,
+    DocSchedulingRecord,
     DocStatus,
+    DocStatusPage,
     DocStatusStorage,
+    SourceAbsent,
+    SourceConflict,
+    SourceConflictPage,
+    SourceConflictRepairResult,
+    SourceConflictSummary,
+    SourceResolution,
+    SourceUnique,
 )
-from ..constants import DEFAULT_QUERY_PRIORITY
-from ..exceptions import StorageNotInitializedError
+from ..constants import CUSTOM_CHUNK_PATCH_METADATA_KEY, DEFAULT_QUERY_PRIORITY
+from ..exceptions import (
+    SourceConflictRepairCASError,
+    StorageControlPlaneError,
+    StorageNotInitializedError,
+    StorageRecordNotFoundError,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..types import KnowledgeGraph, KnowledgeGraphEdge, KnowledgeGraphNode
 from ..utils import (
@@ -418,6 +437,10 @@ async def _fetch_rows_by_ids(
 class LanceDBKVStorage(BaseKVStorage):
     """Key-value storage: JSON payload per id, workspace-prefixed table."""
 
+    # Every read goes straight to the embedded table with no error-swallowing
+    # path: a miss is a confirmed absence and any I/O failure propagates.
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __post_init__(self):
         self.workspace = self.workspace or ""
         validate_workspace(self.workspace)
@@ -462,6 +485,15 @@ class LanceDBKVStorage(BaseKVStorage):
         if not rows:
             return None
         return self._format_record(id, rows[0].get("payload"))
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``get_by_id`` is already strict on this backend — the scan has no
+        ``except`` that could turn an I/O failure into a miss — so the strict
+        surface is the same call rather than a separate code path.
+        """
+        return await self.get_by_id(id)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         if not ids:
@@ -1509,6 +1541,11 @@ class LanceDBGraphStorage(BaseGraphStorage):
 class LanceDBDocStatusStorage(DocStatusStorage):
     """Document status storage with typed columns for status/dedup lookups."""
 
+    # Same rationale as LanceDBKVStorage: reads have no error-swallowing path.
+    supports_strict_point_reads: ClassVar[bool] = True
+
+    _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
+
     def __post_init__(self):
         self.workspace = self.workspace or ""
         validate_workspace(self.workspace)
@@ -1561,6 +1598,25 @@ class LanceDBDocStatusStorage(DocStatusStorage):
         rows = await _fetch_rows_by_ids(self._table(), list(keys), columns=["id"])
         return keys - {row["id"] for row in rows}
 
+    @staticmethod
+    def _status_row(doc_id: str, record: dict[str, Any]) -> dict[str, Any]:
+        """Project a full record into one table row.
+
+        The typed columns are a projection of the payload and every write path
+        MUST build them here — a column that drifts from the payload silently
+        corrupts the pushed-down status/file_path/content_hash filters.
+        """
+        return {
+            "id": doc_id,
+            "status": _status_value(record.get("status")),
+            # Normalize like _prepare_doc_status_data's read path so the
+            # typed column agrees with the payload's normalized file_path.
+            "file_path": record.get("file_path") or "no-file-path",
+            "track_id": record.get("track_id"),
+            "content_hash": record.get("content_hash"),
+            "payload": _json_dumps(record),
+        }
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return
@@ -1569,18 +1625,7 @@ class LanceDBDocStatusStorage(DocStatusStorage):
         for i, (key, value) in enumerate(data.items(), 1):
             record = dict(value)
             record.setdefault("chunks_list", [])
-            rows.append(
-                {
-                    "id": key,
-                    "status": _status_value(record.get("status")),
-                    # Normalize like _prepare_doc_status_data's read path so the
-                    # typed column agrees with the payload's normalized file_path.
-                    "file_path": record.get("file_path") or "no-file-path",
-                    "track_id": record.get("track_id"),
-                    "content_hash": record.get("content_hash"),
-                    "payload": _json_dumps(record),
-                }
-            )
+            rows.append(self._status_row(key, record))
             await _cooperative_yield(i)
         async with self._client.table_lock(self._table_name):
             await (
@@ -1680,6 +1725,432 @@ class LanceDBDocStatusStorage(DocStatusStorage):
         where = _sql_in("status", [_status_value(status) for status in statuses])
         rows = await _fetch_rows(self._table(), where=where, columns=["id", "payload"])
         return self._rows_to_statuses(rows, strict=strict)
+
+    # ------------------------------------------------------------------
+    # Bounded scheduling contract (keyset pages, strict batch reads and
+    # typed source resolution). See DocStatusStorage for the contracts.
+    # ------------------------------------------------------------------
+
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read: complete-or-raise (base contract).
+
+        ``get_by_id`` has no ``except`` that could mask an I/O failure as a
+        miss, so it already satisfies the strict contract.
+        """
+        return await self.get_by_id(id)
+
+    @staticmethod
+    def _row_sort_key(doc_id: str, record: dict[str, Any]) -> tuple[str, str]:
+        """(created_at, id) keyset key. A missing/non-string created_at sorts
+        deterministically first as "" — such legacy rows stay reachable and are
+        consumed (skipped or raised per strictness) without moving mid-sweep."""
+        created = record.get("created_at")
+        return (created if isinstance(created, str) else "", doc_id)
+
+    @staticmethod
+    def _encode_cursor(key: tuple[str, str]) -> str:
+        return json.dumps(list(key), ensure_ascii=False)
+
+    @staticmethod
+    def _decode_cursor(opaque: str) -> tuple[str, str]:
+        try:
+            created, doc_id = json.loads(opaque)
+            if not isinstance(created, str) or not isinstance(doc_id, str):
+                raise ValueError("cursor fields must be strings")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed scheduling cursor for LanceDBDocStatusStorage: {e}"
+            ) from e
+        return (created, doc_id)
+
+    @staticmethod
+    def _is_duplicate_record(record: Any) -> bool:
+        """True for duplicate-attempt marker rows: ``metadata.is_duplicate``."""
+        if not isinstance(record, dict):
+            return False
+        metadata = record.get("metadata")
+        return bool(isinstance(metadata, dict) and metadata.get("is_duplicate"))
+
+    def _scheduling_record_from_payload(
+        self, doc_id: str, record: dict[str, Any], *, strict: bool
+    ) -> DocSchedulingRecord | None:
+        """Project one decoded payload; strict raises on an unusable row while
+        relaxed returns None (the caller still counts the row as consumed)."""
+        try:
+            raw_status = record["status"]
+            status = (
+                raw_status
+                if isinstance(raw_status, DocStatus)
+                else DocStatus(raw_status)
+            )
+            created_at = record["created_at"]
+            updated_at = record.get("updated_at", created_at)
+            if not isinstance(created_at, str) or not isinstance(updated_at, str):
+                raise TypeError("created_at/updated_at must be strings")
+            metadata = record.get("metadata")
+            return DocSchedulingRecord(
+                id=doc_id,
+                status=status,
+                created_at=created_at,
+                updated_at=updated_at,
+                file_path=record.get("file_path") or "no-file-path",
+                track_id=record.get("track_id"),
+                has_custom_chunk_journal=isinstance(metadata, dict)
+                and isinstance(metadata.get(CUSTOM_CHUNK_PATCH_METADATA_KEY), dict),
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"[{self.workspace}] Unusable scheduling row {doc_id}: {e}")
+            if strict:
+                raise
+            return None
+
+    async def get_docs_by_statuses_page(
+        self,
+        statuses: list[DocStatus],
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+        strict: bool = False,
+    ) -> DocStatusPage:
+        """Bounded keyset page over the requested statuses.
+
+        The status filter is pushed into the scan (``status`` is a typed
+        column), but ``created_at`` lives inside the JSON ``payload`` and is
+        therefore not a filterable column: candidate selection re-scans the
+        matching rows each page and bounds the page with a heap
+        (``heapq.nsmallest``), so page memory is O(limit) while the candidate
+        scan is O(rows in the swept statuses) — the same documented boundary
+        the JSON backend carries, and the reason this backend is embedded-scale.
+
+        Consumed-position contract: every selected candidate is consumed —
+        returned, or skipped as unusable in relaxed mode — so the cursor
+        advances past a fully-filtered page instead of re-reading it; fewer
+        candidates than ``limit`` proves exhaustion (CURSOR_END).
+        """
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if not statuses or position is CURSOR_END:
+            return DocStatusPage(docs={}, next_position=CURSOR_END)
+        table = self._table()
+        last_key: tuple[str, str] | None = None
+        if isinstance(position, CursorAfter):
+            last_key = self._decode_cursor(position.opaque)
+        where = _sql_in("status", [_status_value(status) for status in statuses])
+        rows = await _fetch_rows(table, where=where, columns=["id", "payload"])
+
+        def _candidates():
+            for row in rows:
+                doc_id = row["id"]
+                record = _json_loads(row.get("payload"))
+                key = self._row_sort_key(doc_id, record)
+                if last_key is not None and key <= last_key:
+                    continue
+                yield key, doc_id, record
+
+        selected = heapq.nsmallest(limit, _candidates(), key=lambda t: t[0])
+        docs: dict[str, DocSchedulingRecord] = {}
+        for _key, doc_id, record in selected:
+            scheduling_record = self._scheduling_record_from_payload(
+                doc_id, record, strict=strict
+            )
+            if scheduling_record is not None:
+                docs[doc_id] = scheduling_record  # relaxed skip is still consumed
+        if len(selected) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(self._encode_cursor(selected[-1][0]))
+        return DocStatusPage(docs=docs, next_position=next_position)
+
+    async def get_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocSchedulingRecord]:
+        """Batch strict read of scheduling records (see base contract).
+
+        ``_fetch_rows_by_ids`` gathers every id chunk and re-raises on any
+        chunk failure, so a partial mapping can never be returned; an id that
+        is simply absent from the result is a confirmed absence.
+        """
+        if not doc_ids:
+            return {}
+        rows = await _fetch_rows_by_ids(
+            self._table(), list(doc_ids), columns=["id", "payload"]
+        )
+        result: dict[str, DocSchedulingRecord] = {}
+        for row in rows:
+            doc_id = row["id"]
+            record = self._scheduling_record_from_payload(
+                doc_id, _json_loads(row.get("payload")), strict=strict
+            )
+            if record is not None:
+                result[doc_id] = record
+        return result
+
+    async def get_full_docs_by_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, DocProcessingStatus]:
+        """Batch hydration to FULL DocProcessingStatus (see base contract).
+
+        Reuses ``_build_doc_status`` — the same raw → status normalisation as
+        ``get_docs_by_statuses`` — so a row hydrates identically on both paths.
+        """
+        if not doc_ids:
+            return {}
+        rows = await _fetch_rows_by_ids(
+            self._table(), list(doc_ids), columns=["id", "payload"]
+        )
+        return self._rows_to_statuses(rows, strict=strict)
+
+    async def count_docs_by_statuses(
+        self, statuses: list[DocStatus], *, strict: bool = True
+    ) -> int:
+        """Fail-closed status count, pushed down to ``count_rows``.
+
+        Admission control treats an error as "refuse", never as "capacity
+        available", so the count either is accurate or the call raises.
+        """
+        if not statuses:
+            return 0
+        where = _sql_in("status", [_status_value(status) for status in statuses])
+        return await self._table().count_rows(where)
+
+    async def update_doc_status_fields(
+        self,
+        doc_id: str,
+        fields: dict[str, Any],
+        *,
+        missing_ok: bool = False,
+    ) -> None:
+        """Targeted field update that keeps the typed columns in step.
+
+        The typed columns are a projection of the payload, so they are
+        recomputed from the merged record inside the table lock — otherwise a
+        status update would leave the ``status`` column disagreeing with the
+        payload and corrupt every pushed-down filter.
+        """
+        if "created_at" in fields:
+            raise ValueError(
+                "created_at is an immutable scheduling sort key and cannot "
+                "be changed via update_doc_status_fields"
+            )
+        table = self._table()
+        async with self._client.table_lock(self._table_name):
+            rows = await _fetch_rows(
+                table,
+                where=f"id = {_sql_quote(doc_id)}",
+                columns=["id", "payload"],
+                limit=1,
+            )
+            if not rows:
+                if missing_ok:
+                    return
+                raise StorageRecordNotFoundError(doc_id)
+            merged = {**_json_loads(rows[0].get("payload")), **fields}
+            merged.pop("_id", None)
+            await (
+                table.merge_insert("id")
+                .when_matched_update_all()
+                .execute([self._status_row(doc_id, merged)])
+            )
+            self._client.bump_writes(self._table_name)
+
+    async def _primary_candidates(self, canonical_source_key: str) -> list[str]:
+        """Sorted primary (non-duplicate) doc IDs for a canonical source key.
+
+        ``file_path`` is a typed column, so the candidate set is narrowed by
+        the scan and only the duplicate-marker test needs the payload.
+        """
+        rows = await _fetch_rows(
+            self._table(),
+            where=f"file_path = {_sql_quote(canonical_source_key)}",
+            columns=["id", "payload"],
+        )
+        return sorted(
+            row["id"]
+            for row in rows
+            if not self._is_duplicate_record(_json_loads(row.get("payload")))
+        )
+
+    async def resolve_doc_source_strict(
+        self, canonical_source_key: str
+    ) -> SourceResolution:
+        """Typed source resolution (see base contract).
+
+        Fail-closed by construction: the scan raises on any I/O failure rather
+        than reporting ``SourceAbsent``, which enqueue would read as "confirmed
+        new" and use to mint a duplicate row.
+        """
+        if not canonical_source_key or canonical_source_key == "unknown_source":
+            return SourceAbsent()
+        rows = await _fetch_rows(
+            self._table(),
+            where=f"file_path = {_sql_quote(canonical_source_key)}",
+            columns=["id", "payload"],
+        )
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for row in rows:
+            record = _json_loads(row.get("payload"))
+            if self._is_duplicate_record(record):
+                continue
+            candidates.append((row["id"], record))
+            if len(candidates) >= 2:
+                break  # "at least two" is all a Conflict needs
+        if not candidates:
+            return SourceAbsent()
+        if len(candidates) == 1:
+            doc_id, record = candidates[0]
+            return SourceUnique(
+                doc_id=doc_id,
+                doc=self._scheduling_record_from_raw(doc_id, record),
+            )
+        return SourceConflict(
+            candidate_count=None,
+            sample_doc_ids=tuple(sorted(doc_id for doc_id, _ in candidates)),
+        )
+
+    @staticmethod
+    def _decode_conflict_cursor(opaque: str) -> str:
+        try:
+            key = json.loads(opaque)
+            if not isinstance(key, str):
+                raise ValueError("conflict cursor must be a string")
+        except (ValueError, TypeError) as e:
+            raise StorageControlPlaneError(
+                f"Malformed source-conflict cursor for LanceDBDocStatusStorage: {e}"
+            ) from e
+        return key
+
+    async def list_source_conflicts_page(
+        self,
+        *,
+        limit: int,
+        position: CursorPosition = CURSOR_START,
+    ) -> SourceConflictPage:
+        """Page canonical source keys with >1 primary candidate (see base)."""
+        if limit <= 0:
+            raise ValueError(f"page limit must be positive, got {limit}")
+        if position is CURSOR_END:
+            return SourceConflictPage(conflicts=(), next_position=CURSOR_END)
+        last_key: str | None = None
+        if isinstance(position, CursorAfter):
+            last_key = self._decode_conflict_cursor(position.opaque)
+        rows = await _fetch_rows(self._table(), columns=["id", "file_path", "payload"])
+        groups: dict[str, list[str]] = {}
+        for row in rows:
+            file_path = row.get("file_path")
+            if not isinstance(file_path, str) or file_path in (
+                "",
+                "unknown_source",
+                "no-file-path",
+            ):
+                continue
+            if self._is_duplicate_record(_json_loads(row.get("payload"))):
+                continue
+            groups.setdefault(file_path, []).append(row["id"])
+        conflict_keys = sorted(k for k, v in groups.items() if len(v) >= 2)
+        page_keys = [k for k in conflict_keys if last_key is None or k > last_key][
+            :limit
+        ]
+        conflicts = tuple(
+            SourceConflictSummary(
+                canonical_source_key=k,
+                candidate_count=len(groups[k]),
+                sample_doc_ids=tuple(sorted(groups[k])[: self._CONFLICT_SAMPLE_CAP]),
+            )
+            for k in page_keys
+        )
+        if len(page_keys) < limit:
+            next_position: CursorPosition = CURSOR_END
+        else:
+            next_position = CursorAfter(json.dumps(page_keys[-1], ensure_ascii=False))
+        return SourceConflictPage(conflicts=conflicts, next_position=next_position)
+
+    @staticmethod
+    def _conflict_fingerprint(sorted_doc_ids: list[str]) -> str:
+        """Deterministic digest over candidate doc IDs in stable sort order."""
+        digest = hashlib.sha256()
+        for doc_id in sorted_doc_ids:
+            digest.update(doc_id.encode("utf-8"))
+            digest.update(b"\x00")
+        return digest.hexdigest()
+
+    async def repair_source_conflict(
+        self,
+        canonical_source_key: str,
+        *,
+        primary_doc_id: str,
+        expected_candidate_count: int,
+        expected_candidate_fingerprint: str,
+        dry_run: bool = True,
+    ) -> SourceConflictRepairResult:
+        """Demote all-but-one primary to duplicate, CAS-guarded (see base).
+
+        The per-table write lock makes the re-read + CAS + demotion atomic
+        against other writers in this process. It does NOT exclude a brand-new
+        primary for the same key — that phantom is the caller's to serialize
+        (see the base contract's note on ``source_conflict_repair_lock``).
+        """
+        table = self._table()
+        async with self._client.table_lock(self._table_name):
+            rows = await _fetch_rows(
+                table,
+                where=f"file_path = {_sql_quote(canonical_source_key)}",
+                columns=["id", "payload"],
+            )
+            records = {
+                row["id"]: record
+                for row in rows
+                if not self._is_duplicate_record(
+                    record := _json_loads(row.get("payload"))
+                )
+            }
+            candidates = sorted(records)
+            count = len(candidates)
+            fingerprint = self._conflict_fingerprint(candidates)
+            if primary_doc_id not in records:
+                raise ValueError(
+                    f"primary_doc_id {primary_doc_id!r} is not a current primary "
+                    f"candidate for {canonical_source_key!r}"
+                )
+            demoted = [d for d in candidates if d != primary_doc_id]
+            if not dry_run:
+                if (
+                    count != expected_candidate_count
+                    or fingerprint != expected_candidate_fingerprint
+                ):
+                    raise SourceConflictRepairCASError(
+                        f"[{self.workspace}] source-conflict repair CAS failed for "
+                        f"{canonical_source_key!r}: candidate set changed "
+                        f"(count {count} vs {expected_candidate_count})"
+                    )
+                updates = []
+                for doc_id in demoted:
+                    record = dict(records[doc_id])
+                    metadata = dict(record.get("metadata") or {})
+                    metadata["is_duplicate"] = True
+                    metadata["original_doc_id"] = primary_doc_id
+                    record["metadata"] = metadata
+                    updates.append(self._status_row(doc_id, record))
+                if updates:
+                    await (
+                        table.merge_insert("id")
+                        .when_matched_update_all()
+                        .execute(updates)
+                    )
+                    self._client.bump_writes(self._table_name)
+        return SourceConflictRepairResult(
+            canonical_source_key=canonical_source_key,
+            primary_doc_id=primary_doc_id,
+            candidate_count=count,
+            fingerprint=fingerprint,
+            demoted_sample_doc_ids=tuple(demoted[: self._CONFLICT_SAMPLE_CAP]),
+            committed=not dry_run,
+        )
 
     async def get_docs_by_track_id(
         self, track_id: str
