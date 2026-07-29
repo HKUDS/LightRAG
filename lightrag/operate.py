@@ -3986,21 +3986,42 @@ async def extract_entities(
     # This allows us to cancel remaining tasks if any task fails
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-    # Check if any task raised an exception and ensure all exceptions are retrieved
+    # Check if any task raised an exception and ensure all exceptions are retrieved.
+    #
+    # ORDER: `done` is a SET whose iteration order derives from object identity
+    # (Task inherits object.__hash__, i.e. its memory address), so it is neither
+    # completion order nor creation order, and it is unstable across processes.
+    # Collecting results from it made `chunk_results` a different permutation on
+    # every run of the same document. That permutation reaches persisted state
+    # through merge_nodes_and_edges: `source_id` and `file_path` are built by
+    # order-preserving dedup with no sort to fall back on, and
+    # apply_source_ids_limit then truncates a DIFFERENT subset of chunks. (The
+    # description lists are sorted by (timestamp, -len) downstream, so those are
+    # only exposed on ties -- the persisted id/path fields are the unguarded
+    # ones.) Results are therefore materialised from `tasks`, a list built in
+    # `ordered_chunks` order, so chunk_results[i] always maps to ordered_chunks[i].
+    #
+    # The two passes cannot be folded into one loop over `tasks`: on the
+    # exception path `tasks` still holds pending entries, and calling
+    # .exception() on those raises InvalidStateError, which the `except Exception`
+    # below would latch as `first_exception`, masking the real failure.
     first_exception = None
     chunk_results = []
 
     for task in done:
         try:
             exception = task.exception()
-            if exception is not None:
-                if first_exception is None:
-                    first_exception = exception
-            else:
-                chunk_results.append(task.result())
+            if exception is not None and first_exception is None:
+                first_exception = exception
         except Exception as e:
             if first_exception is None:
                 first_exception = e
+
+    # No exception means FIRST_EXCEPTION behaved as ALL_COMPLETED: `pending` is
+    # empty and every task in `tasks` holds a result. On the exception path we
+    # are about to unwind, so materialising results there would be wasted work.
+    if first_exception is None:
+        chunk_results = [task.result() for task in tasks]
 
     # If any task failed, cancel all pending tasks and raise the first exception
     if first_exception is not None:
