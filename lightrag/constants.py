@@ -128,15 +128,15 @@ DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
 DEFAULT_CHUNK_P_SIZE = 2000
 
 # Paragraph-semantic "drop references" detection defaults (the chunking="P"
-# drop_references option).  DEFAULT_P_REFERENCES_TAIL_N: a reference block is
-# only dropped when it sits within the last N content blocks of the document
-# (a safety window so a mid-document "References" subsection is not removed).
+# drop_references option).  DEFAULT_P_REFERENCES_TAIL_N: 0 scans all content
+# blocks for reference headings; a positive value restricts detection to the
+# last N content blocks as a safety window.
 # DEFAULT_P_REFERENCES_HEADINGS: heading prefixes that mark a reference
 # section — English words matched case-insensitively at a word boundary,
 # the Chinese "参考文献" matched as a plain prefix.  Both are tunable via env
 # (CHUNK_P_REFERENCES_TAIL_N / CHUNK_P_REFERENCES_HEADINGS, the latter
 # pipe-separated) read live by the chunker at run time.
-DEFAULT_P_REFERENCES_TAIL_N = 2
+DEFAULT_P_REFERENCES_TAIL_N = 0
 DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
