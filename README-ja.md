@@ -483,10 +483,6 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 ---
 
-## ⭐ スター履歴
-
-[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
-
 ## 🤝 貢献
 
 <div align="center">

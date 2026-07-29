@@ -492,10 +492,6 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 ---
 
-## ⭐ Star 历史
-
-[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
-
 ## 🤝 贡献
 
 <div align="center">

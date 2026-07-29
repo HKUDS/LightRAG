@@ -492,10 +492,6 @@ LightRAG consistently outperforms NaiveRAG, RQ-RAG, HyDE, and GraphRAG across ag
 
 ---
 
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
-
 ## 🤝 Contribution
 
 <div align="center">
