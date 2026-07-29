@@ -139,18 +139,18 @@
       "filters": {
         "all": "الكل",
         "completed": "مكتمل",
-        "parse": "استخراج",
-        "analyze": "تحليل",
-        "process": "معالجة",
+        "parse": "تحليل ملف",
+        "analyze": "وسائط",
+        "process": "استخراج",
         "failed": "فشل"
       },
       "status": {
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",
-        "parsing": "جارٍ التحليل الأولي",
-        "analyzing": "جارٍ التحليل",
-        "processing": "قيد المعالجة",
+        "parsing": "تحليل ملف",
+        "analyzing": "وسائط",
+        "processing": "استخراج",
         "pending": "معلق",
         "failed": "فشل"
       },

@@ -139,18 +139,18 @@
       "filters": {
         "all": "Tất cả",
         "completed": "Hoàn tất",
-        "parse": "Trích xuất",
+        "parse": "Cú pháp",
         "analyze": "Phân tích",
         "process": "Xử lý",
         "failed": "Thất bại"
       },
       "status": {
         "all": "Tất cả",
-        "completed": "Hoàn thành",
+        "completed": "Hoàn tất",
         "preprocessed": "Đã tiền xử lý",
-        "parsing": "Đang phân tích cú pháp",
-        "analyzing": "Đang phân tích",
-        "processing": "Đang xử lý",
+        "parsing": "Cú pháp",
+        "analyzing": "Phân tích",
+        "processing": "Xử lý",
         "pending": "Đang chờ",
         "failed": "Thất bại"
       },

@@ -139,9 +139,9 @@
       "filters": {
         "all": "전체",
         "completed": "완료",
-        "parse": "추출",
-        "analyze": "분석",
-        "process": "처리",
+        "parse": "파싱 중",
+        "analyze": "분석 중",
+        "process": "처리 중",
         "failed": "실패"
       },
       "status": {

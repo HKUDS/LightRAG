@@ -139,7 +139,7 @@
       "filters": {
         "all": "Все",
         "completed": "Завершено",
-        "parse": "Извлечение",
+        "parse": "Разбор",
         "analyze": "Анализ",
         "process": "Обработка",
         "failed": "Ошибка"

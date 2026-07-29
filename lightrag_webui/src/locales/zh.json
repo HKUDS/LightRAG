@@ -139,18 +139,18 @@
       "filters": {
         "all": "全部",
         "completed": "已完成",
-        "parse": "内容解析",
+        "parse": "文件解析",
         "analyze": "模态分析",
-        "process": "抽取处理",
+        "process": "图谱处理",
         "failed": "失败"
       },
       "status": {
         "all": "全部",
         "completed": "已完成",
         "preprocessed": "预处理",
-        "parsing": "内容提取",
-        "analyzing": "分析中",
-        "processing": "处理中",
+        "parsing": "文件解析",
+        "analyzing": "模态分析",
+        "processing": "图谱处理",
         "pending": "等待中",
         "failed": "失败"
       },

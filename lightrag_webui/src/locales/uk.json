@@ -137,12 +137,12 @@
         "select": "Вибрати"
       },
       "filters": {
-        "all": "Усі",
+        "all": "Всі",
         "completed": "Завершено",
-        "parse": "Видобування",
+        "parse": "Розбір",
         "analyze": "Аналіз",
         "process": "Обробка",
-        "failed": "Помилка"
+        "failed": "Невдало"
       },
       "status": {
         "all": "Всі",

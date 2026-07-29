@@ -138,21 +138,21 @@
       },
       "filters": {
         "all": "Alle",
-        "completed": "Abgeschlossen",
-        "parse": "Extraktion",
+        "completed": "Fertig",
+        "parse": "Parsing",
         "analyze": "Analyse",
-        "process": "Verarbeitung",
-        "failed": "Fehlgeschlagen"
+        "process": "Extraktion",
+        "failed": "Fehler"
       },
       "status": {
         "all": "Alle",
-        "completed": "Abgeschlossen",
+        "completed": "Fertig",
         "preprocessed": "Vorverarbeitet",
-        "parsing": "Wird geparst",
-        "analyzing": "Wird analysiert",
-        "processing": "Verarbeitung",
+        "parsing": "Parsing",
+        "analyzing": "Analyse",
+        "processing": "Extraktion",
         "pending": "Ausstehend",
-        "failed": "Fehlgeschlagen"
+        "failed": "Fehler"
       },
       "errors": {
         "loadFailed": "Dokumente konnten nicht geladen werden\n{{error}}",

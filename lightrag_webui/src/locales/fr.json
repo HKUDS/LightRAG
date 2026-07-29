@@ -139,18 +139,18 @@
       "filters": {
         "all": "Tous",
         "completed": "Terminé",
-        "parse": "Extraction",
+        "parse": "Parsing",
         "analyze": "Analyse",
-        "process": "Traitement",
-        "failed": "Échec"
+        "process": "Extraction",
+        "failed": "Échoué"
       },
       "status": {
         "all": "Tous",
         "completed": "Terminé",
         "preprocessed": "Prétraité",
-        "parsing": "Analyse syntaxique",
-        "analyzing": "Analyse en cours",
-        "processing": "En traitement",
+        "parsing": "Parsing",
+        "analyzing": "Analyse",
+        "processing": "Extraction",
         "pending": "En attente",
         "failed": "Échoué"
       },

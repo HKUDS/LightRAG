@@ -139,9 +139,9 @@
       "filters": {
         "all": "すべて",
         "completed": "完了",
-        "parse": "抽出",
-        "analyze": "分析",
-        "process": "処理",
+        "parse": "解析中",
+        "analyze": "分析中",
+        "process": "処理中",
         "failed": "失敗"
       },
       "status": {
