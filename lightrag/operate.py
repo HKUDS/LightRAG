@@ -3986,21 +3986,31 @@ async def extract_entities(
     # This allows us to cancel remaining tasks if any task fails
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-    # Check if any task raised an exception and ensure all exceptions are retrieved
+    # Check if any task raised an exception and ensure all exceptions are retrieved.
+    # NOTE ON ORDER: `done` is a SET, whose iteration order is __hash__-based and
+    # effectively random per event loop instance. Two runs of the same document
+    # (fresh cache, identical LLM) would materialise `chunk_results` in different
+    # orders, which then propagates into `merge_nodes_and_edges`' defaultdict(list)
+    # accumulation → different description-summary LLM input → different graph
+    # for the same input. We iterate `tasks` (a LIST — deterministic creation
+    # order matching `ordered_chunks`) so `chunk_results` is stable across runs.
     first_exception = None
     chunk_results = []
 
     for task in done:
         try:
             exception = task.exception()
-            if exception is not None:
-                if first_exception is None:
-                    first_exception = exception
-            else:
-                chunk_results.append(task.result())
+            if exception is not None and first_exception is None:
+                first_exception = exception
         except Exception as e:
             if first_exception is None:
                 first_exception = e
+
+    # Materialise chunk_results in the deterministic tasks-order — only when no
+    # exception occurred (otherwise we're about to raise and unwind).
+    if first_exception is None:
+        for task in tasks:
+            chunk_results.append(task.result())
 
     # If any task failed, cancel all pending tasks and raise the first exception
     if first_exception is not None:
