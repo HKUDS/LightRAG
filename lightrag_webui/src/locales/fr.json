@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
+      "scrollToBottom": "Aller au dernier message",
       "clear": "Effacer",
       "send": "Envoyer",
       "stop": "Arrêter",

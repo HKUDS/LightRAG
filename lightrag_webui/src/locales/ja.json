@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "下にクエリを入力して検索を開始",
+      "scrollToBottom": "最新のメッセージへ",
       "clear": "クリア",
       "send": "送信",
       "stop": "停止",

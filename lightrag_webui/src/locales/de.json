@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
+      "scrollToBottom": "Zur neuesten Nachricht",
       "clear": "Löschen",
       "send": "Senden",
       "stop": "Stopp",

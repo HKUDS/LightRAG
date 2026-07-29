@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
+      "scrollToBottom": "최신 메시지로 이동",
       "clear": "지우기",
       "send": "전송",
       "stop": "중지",
