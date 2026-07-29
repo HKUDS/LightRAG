@@ -15,6 +15,8 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./data/prompts:/app/data/prompts
       - ./.env:/app/.env:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       HOST: "0.0.0.0"
       PORT: "9621"
