@@ -12,9 +12,11 @@ Covers:
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
+from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
 from lightrag.tools.rebuild_vdb import (
     _strip_agtype_quotes,
     check_vdb_consistency,
@@ -34,6 +36,32 @@ pytestmark = pytest.mark.offline
 # ---------------------------------------------------------------------------
 # Mocks
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_library_rebuild_rejects_noop_vector_storage_before_source_reads():
+    noop_vdb = NoopVectorDBStorage(
+        namespace="test_vectors",
+        workspace="",
+        global_config={},
+        embedding_func=None,
+    )
+    graph = SimpleNamespace(
+        get_all_nodes=AsyncMock(),
+        get_all_edges=AsyncMock(),
+    )
+    text_chunks = SimpleNamespace()
+    error_match = "NoopVectorDBStorage.*persistent vector storage"
+
+    with pytest.raises(RuntimeError, match=error_match):
+        await rebuild_entities_vdb(graph, noop_vdb, {})
+    with pytest.raises(RuntimeError, match=error_match):
+        await rebuild_relationships_vdb(graph, noop_vdb, {})
+    with pytest.raises(RuntimeError, match=error_match):
+        await rebuild_chunks_vdb(text_chunks, noop_vdb)
+
+    graph.get_all_nodes.assert_not_awaited()
+    graph.get_all_edges.assert_not_awaited()
 
 
 class MockVDB:
