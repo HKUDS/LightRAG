@@ -59,7 +59,11 @@ pytestmark = pytest.mark.offline
 _PIPELINE_PAGE_SIZE = 64
 _QUEUE_SIZE = 4
 _RSS_SAMPLE_SECONDS = 0.001
-_RSS_FIXED_HEADROOM = 8 * 1024 * 1024
+# Darwin's allocator and SQLite working set repeatedly add about 10 MiB of RSS
+# high-water noise to the 10k-file scan even after discovery is truly streaming.
+# Keep Linux CI's tighter allowance; the deterministic scandir regression test
+# guards against accidentally restoring Path.iterdir/os.listdir materialization.
+_RSS_FIXED_HEADROOM = (12 if sys.platform == "darwin" else 8) * 1024 * 1024
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 

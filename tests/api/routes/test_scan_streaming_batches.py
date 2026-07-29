@@ -271,19 +271,44 @@ def test_an_unusable_spool_directory_fails_the_scan_closed(
     asyncio.run(_run())
 
 
-def test_iter_new_files_is_lazy_and_skips_directories(tmp_path):
-    """Discovery must be a generator (no whole-directory list) and must not hand
-    a directory named like a document to the enqueue path."""
+def test_iter_new_files_is_lazy_and_skips_directories(tmp_path, monkeypatch):
+    """Discovery must not read the next directory entry before yielding the
+    current file, or hand a directory named like a document to enqueue."""
     doc_manager = DocumentManager(str(tmp_path))
     (doc_manager.input_dir / "a.txt").write_text("a", encoding="utf-8")
     (doc_manager.input_dir / "b.txt").write_text("b", encoding="utf-8")
     (doc_manager.input_dir / "trap.txt").mkdir()
     (doc_manager.input_dir / "ignored.bin").write_text("x", encoding="utf-8")
 
-    stream = doc_manager.iter_new_files()
-    assert not isinstance(stream, list)
-    first = next(iter(stream))  # consumes ONE entry, not the directory
-    assert first.suffix == ".txt"
+    class _OneThenTrap:
+        """A scandir iterator that fails if discovery reads ahead."""
+
+        def __init__(self, directory):
+            self._first = SimpleNamespace(path=str(Path(directory) / "a.txt"))
+            self._yielded = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self._yielded:
+                raise AssertionError("directory scan read ahead before yielding")
+            self._yielded = True
+            return self._first
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_document_routes.os, "scandir", _OneThenTrap)
+        stream = doc_manager.iter_new_files()
+        assert not isinstance(stream, list)
+        first = next(stream)
+        assert first.name == "a.txt"
+        stream.close()
 
     names = {path.name for path in doc_manager.iter_new_files()}
     assert names == {"a.txt", "b.txt"}

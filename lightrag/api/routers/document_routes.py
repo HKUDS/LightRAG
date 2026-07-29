@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -1373,10 +1374,12 @@ class DocumentManager:
     def iter_new_files(self) -> Iterator[Path]:
         """Yield new, routable input files ONE AT A TIME (LR2 §8.2).
 
-        A single streaming pass: one ``iterdir()`` over the input directory, no
+        A single streaming pass: one ``scandir()`` over the input directory, no
         whole-directory list and no whole-directory sort, so the scan's peak
         memory is set by its enqueue batch (``SCAN_ENQUEUE_BATCH_SIZE``) rather
-        than by how many files the directory holds. An interrupted scan needs no
+        than by how many files the directory holds. ``Path.iterdir()`` is not
+        suitable here because it uses ``os.listdir()`` and materializes every
+        entry name before yielding the first one. An interrupted scan needs no
         in-memory resume state — the next scan re-discovers, and the persistent
         ``doc_status`` rows are the deduplication authority.
 
@@ -1396,22 +1399,24 @@ class DocumentManager:
 
         suffixes = {f".{s}" for s in available_engine_suffixes()}
         logger.debug(f"Streaming scan of {self.input_dir} for {len(suffixes)} suffixes")
-        for file_path in self.input_dir.iterdir():
-            # Suffix comparison is case-sensitive, matching the per-suffix glob
-            # this replaced; ``__parsed__`` and any other directory is skipped.
-            if file_path.suffix not in suffixes or not file_path.is_file():
-                continue
-            if file_path in self.indexed_files:
-                continue
-            try:
-                if not self.is_supported_file(file_path.name):
+        with os.scandir(self.input_dir) as entries:
+            for entry in entries:
+                file_path = Path(entry.path)
+                # Suffix comparison is case-sensitive, matching the per-suffix glob
+                # this replaced; ``__parsed__`` and any other directory is skipped.
+                if file_path.suffix not in suffixes or not file_path.is_file():
                     continue
-            except FilenameParserHintError:
-                # Malformed hint: pass the file through — the enqueue path
-                # reports a detailed error document, instead of the scan
-                # silently ignoring the user's file.
-                pass
-            yield file_path
+                if file_path in self.indexed_files:
+                    continue
+                try:
+                    if not self.is_supported_file(file_path.name):
+                        continue
+                except FilenameParserHintError:
+                    # Malformed hint: pass the file through — the enqueue path
+                    # reports a detailed error document, instead of the scan
+                    # silently ignoring the user's file.
+                    pass
+                yield file_path
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
