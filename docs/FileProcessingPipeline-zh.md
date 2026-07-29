@@ -147,6 +147,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 ```text
 paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # 文件名 hint
+paddle.[paddleocr_vl(page_range=1-3,page_range=5,useOcrForImageBlock=true)].pdf
 scan.[docling(force_ocr=true)].pdf
 LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规则
 ```
@@ -159,10 +160,15 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 | `mineru` | `language` | — | str | OCR / 模型语言（如 `en`、`ch`） |
 | `mineru` | `local_parse_method` | `local_pm` | 枚举 | `auto` / `txt` / `ocr`（local 模式） |
 | `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+| `paddleocr_vl` | `page_range` | `pr` | 列表 | 一个或多个页码范围；发送为 PaddleOCR-VL official 请求字段 `pageRanges` |
+| `paddleocr_vl` | `use_ocr_for_image_block` | `useOcrForImageBlock` | bool | 按文件覆盖 `PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK` |
+| `paddleocr_vl` | `use_seal_recognition` | `useSealRecognition` | bool | 按文件覆盖 `PADDLEOCR_VL_USE_SEAL_RECOGNITION` |
+| `paddleocr_vl` | `use_doc_unwarping` | `useDocUnwarping` | bool | 按文件覆盖 `PADDLEOCR_VL_USE_DOC_UNWARPING` |
 
 - **`page_range` 可写多个页码段——每段都单独写一个 `page_range=...`。** 括号 `(...)` 内逗号只分隔参数，因此多段页码要写成 `page_range=1-3,page_range=5,page_range=7-9`，不要写成环境变量里的单串形式 `MINERU_PAGE_RANGES="1-3,5,7-9"`。**多段** `page_range` 需要 `MINERU_API_MODE=official`；`local` 模式只接受单页/单段（如 `page_range=1-3`）。
+- PaddleOCR-VL official 模式有自己的 `pageRanges` 字段；它的 `page_range` hint 使用同样的重复键语法，但不继承 MinerU local 模式的单段限制。本地部署的 PaddleOCR-VL 不支持 `pageRanges`；需要按页范围解析时请使用 official 模式。
 - **`local_parse_method` 仅限 local 模式。** 它只影响本地 MinerU 请求，因此在 `MINERU_API_MODE=official` 下会被**拒绝**（official API 既不发送它、也不计入缓存键——接受它将静默无效）。
-- 只有 `mineru` 与 `docling` 接受引擎参数；把参数加到 `legacy`/`native` 会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
+- 只有 `mineru`、`docling` 与 `paddleocr_vl` 接受引擎参数；把参数加到 `legacy`/`native` 会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
 - 合并优先级：引擎参数按**最终引擎**解析——当文件名 hint 选中了另一个可用引擎时，规则的引擎参数会被丢弃。
 - `parse_engine` 以 hint 语法存储（如 `mineru(page_range=1-3)`），并展示在 `doc_status` metadata 中，便于查看文档当时使用的解析参数。
 
@@ -174,10 +180,11 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 | `native` | 内置智能结构化内容抽取器 | `docx` `md` `textpack` |
 | `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
 | `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
+| `paddleocr_vl` | 外部 PaddleOCR-VL 内容提取引擎 | `pdf` `jpeg` `jpg` `png` `tiff` `tif` `bmp` `webp` |
 
-`mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
+`mineru`、`docling` 和 `paddleocr_vl` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
 
-LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
+LightRAG 在本地会缓存 `mineru`、`docling` 和 `paddleocr_vl` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改这些引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
 #### 使用 Native 文件解析引擎
 
@@ -363,6 +370,144 @@ docker rm temp_mineru
 ```bash
 docker compose -f compose.yaml --profile api up -d
 ```
+
+#### 使用 PaddleOCR-VL 文件解析引擎
+
+LightRAG 也可以把 PDF 和常见图片（`jpeg`、`jpg`、`png`、`tiff`、`tif`、`bmp`、`webp`）交给 `paddleocr_vl` 引擎解析。PaddleOCR-VL 与 MinerU / Docling 一样属于外部解析服务：启用路由规则前，需要先配置云端 token 或本地服务 endpoint。
+
+- `official` 模式：使用 PaddleOCR AIStudio 云服务异步 API。先获取 access token，再在 LightRAG 的 `.env` 中配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=official
+PADDLEOCR_VL_API_TOKEN=<your_access_token>
+# PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+```
+
+- `local` 模式：使用本地部署的 PaddleOCR-VL 服务。服务启动后，在 LightRAG 的 `.env` 中配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://<your_paddleocr_vl_server_ip>:8080
+```
+
+如果 LightRAG API Server 跑在 Docker 容器中，而 PaddleOCR-VL 服务跑在宿主机上，`PADDLEOCR_VL_LOCAL_ENDPOINT` 不要写 `localhost`，应写容器可访问的地址，例如 Linux 下的宿主机网关 IP，或 Docker Desktop 环境中的 `http://host.docker.internal:8080`。
+
+`paddleocr_vl` 支持的请求参数、缓存目录和 cache 失效规则见后文 [4.5 PaddleOCR-VL 原始产物目录](#45-paddleocr-vl-原始产物目录-basepaddleocr_vl_raw)。
+
+#### **本地部署 PaddleOCR-VL 服务**
+
+PaddleOCR-VL 本地部署有两种常见形态。两者使用同一套核心 Pipeline：文档解码、可选方向/去扭曲预处理、PP-DocLayoutV3 版面分析、区域裁剪合并、PaddleOCR-VL-1.6-0.9B VLM 识别、Markdown/JSON 后处理、可选跨页表格合并和标题层级重排。区别主要在服务化层和并发调度。本节只说明 LightRAG 侧如何选择 endpoint、如何验证服务、以及如何接入 `paddleocr_vl` 引擎；具体镜像构建、`.env` 参数含义、模型路径、批处理大小、设备参数、各类 accelerator 的部署差异，请以 PaddleOCR 官方教程和对应目录 README 为准。官方教程见 [PaddleOCR-VL 使用教程](https://www.paddleocr.ai/latest/version3.x/pipeline_usage/PaddleOCR-VL.html)。
+
+| 部署方式 | 官方目录 | 容器结构 | 说明 |
+| --- | --- | --- | --- |
+| 简化版（加速算子部署） | `deploy/paddleocr_vl_docker/accelerators/<accelerator>` | `paddleocr-vl-api` + `paddleocr-vlm-server` | 按硬件类型分别提供部署目录，PaddleX 内置 HTTP 服务直接调用 Pipeline |
+| HPS 高性能服务化部署 | `deploy/paddleocr_vl_docker/hps` | `paddleocr-vl-api` + `paddleocr-vl-pipeline` + `paddleocr-vlm-server` | FastAPI 网关 + Triton 动态批处理 + vLLM 连续批处理；根据当前官方文档，该方案目前仅支持 NVIDIA GPU |
+
+**前置条件**
+
+- 已安装 Docker / Docker Compose；
+- 推理设备、驱动、运行时和容器工具链与所选官方部署目录匹配；
+- 使用 HPS 方案时，根据当前官方文档，需要 x64 CPU、NVIDIA GPU（Compute Capability >= 8.0 且 < 10.0）、支持 CUDA 12.6 的 NVIDIA 驱动、Docker >= 19.03 和 Docker Compose >= 2.0；
+- 显存足以加载 `PaddleOCR-VL-1.6-0.9B` 和版面分析模型；
+- 如果服务器在内网或离线环境，需要提前准备模型权重和镜像源。
+
+**方式一：简化版部署**
+
+从 PaddleOCR 官方仓库复制 `deploy/paddleocr_vl_docker/accelerators` 下与你的加速卡匹配的目录。官方目前在该目录下按硬件划分了多个子目录，例如 `amd-gpu`、`huawei-npu`、`hygon-dcu`、`iluvatar-gpu`、`intel-gpu`、`kunlunxin-xpu`、`metax-gpu`、`nvidia-gpu`、`nvidia-gpu-sm120` 等。每个子目录的镜像、环境变量、启动参数和硬件要求可能不同，应以对应子目录中的官方说明为准。
+
+```bash
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+cd PaddleOCR/deploy/paddleocr_vl_docker/accelerators/<your_accelerator>
+
+# 按实际环境修改 .env，例如模型路径、GPU、镜像源等
+docker compose -f compose.yaml up -d --build
+```
+
+启动后应有两个服务：
+
+- `paddleocr-vl-api`：对外暴露文档解析 API；
+- `paddleocr-vlm-server`：提供 VLM 推理服务，通常以 OpenAI 兼容的 `/v1` 接口被 Pipeline 调用。
+
+**方式二：HPS 高性能部署**
+
+HPS 目录通常位于 PaddleOCR 官方仓库的 `deploy/paddleocr_vl_docker/hps`。根据当前官方 README，该方案目前暂时只支持 NVIDIA GPU，对其他推理设备的支持仍在完善中。该方式会启动三层服务：FastAPI 网关、Triton Pipeline 和 vLLM Server。
+
+```bash
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+cd PaddleOCR/deploy/paddleocr_vl_docker/hps
+
+# 按官方 README 修改 .env，例如 HPS_PIPELINE_NAME、PaddleX 版本、SDK 目录、并发、超时和 VLM 服务地址
+cp .env.example .env
+bash prepare.sh
+docker compose -f compose.yaml up -d --build
+```
+
+HPS 的默认对外入口一般是网关端口 `8080`。网关会把 `/layout-parsing` 请求转发给 Triton Pipeline，Pipeline 再调用 vLLM Server 完成区域识别。`HPS_PIPELINE_NAME`、`HPS_PADDLEX_VERSION`、`HPS_SDK_DIR`、`HPS_MAX_CONCURRENT_INFERENCE_REQUESTS`、`HPS_MAX_CONCURRENT_NON_INFERENCE_REQUESTS`、`HPS_INFERENCE_TIMEOUT`、`HPS_UVICORN_WORKERS`、`HPS_DEVICE_ID` 等参数的含义和取值建议，以官方 HPS README 为准。吞吐较高时优先调 HPS 网关和 Triton/vLLM 侧参数，而不是盲目提高 LightRAG 的 `MAX_PARALLEL_PARSE_PADDLEOCR_VL`。
+
+**检查服务状态**
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/health/ready
+```
+
+就绪接口返回 `errorCode=0` 后再开始解析。首次启动时 VLM 模型需要加载到显存，可能需要等待数分钟。
+
+**直接调用 PaddleOCR-VL 本地 API 验证**
+
+官方 HPS 网关常见接口是 `multipart/form-data`：
+
+```bash
+curl -X POST http://localhost:8080/layout-parsing \
+  -F "file=@/path/to/document.pdf" \
+  -F "useLayoutDetection=true" \
+  -F "useChartRecognition=true" \
+  -F "formatBlockContent=true" \
+  -F "prettifyMarkdown=true" \
+  -F "restructurePages=true" \
+  -F "mergeTables=true" \
+  -F "temperature=0.0" \
+  -F "maxNewTokens=4096"
+```
+
+响应成功时应包含 `layoutParsingResults`，其中每页结果里有 Markdown 文本、版面 JSON 和可选图片资源。
+
+**接入 LightRAG**
+
+确认本地服务可用后，把 LightRAG 配成 `local` 模式：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
+MAX_PARALLEL_PARSE_PADDLEOCR_VL=1
+```
+
+当前 LightRAG 的 `paddleocr_vl` local client 会向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，并把文件内容放在 base64 编码的 `file` 字段中；其它 PaddleOCR-VL 选项作为顶层 JSON 字段发送。如果你使用的官方网关只接受 `multipart/form-data`，需要在 PaddleOCR-VL 网关前加一个轻量兼容适配层，或把本地网关调整为同时接受 JSON/base64 请求。适配层的职责只有两点：把 JSON 中的 base64 `file` 转成上传文件，并把服务返回结果规范化为 `{"errorCode": 0, "result": {"layoutParsingResults": [...]}}`。
+
+用 parser CLI 做端到端验证：
+
+```bash
+PADDLEOCR_VL_API_MODE=local \
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080 \
+python -m lightrag.parser.cli ./inputs/sample.pdf \
+  --engine paddleocr_vl \
+  --force-reparse
+```
+
+成功后会生成 `sample.pdf.paddleocr_vl_raw/` 和 `sample.pdf.parsed/`。其中 `content_list.json` 是 PaddleOCR-VL 原始结果，`*.blocks.jsonl` / `tables.json` / `drawings.json` / `equations.json` 是 LightRAG 后续流水线使用的 sidecar。
+
+**常见问题**
+
+| 现象 | 排查方向 |
+| --- | --- |
+| `/health/ready` 长时间不 ready | 等待 VLM 模型加载；检查 GPU 显存、模型路径、容器日志 |
+| LightRAG 容器连不上 `localhost:8080` | Docker 内的 `localhost` 指向 LightRAG 容器自身，改用宿主机网关 IP 或 `host.docker.internal` |
+| 直接 `curl -F` 成功，但 LightRAG local 失败 | 当前 LightRAG local client 使用 JSON/base64 请求；给本地网关加兼容适配层 |
+| 首次解析很慢 | VLM 冷启动、PDF 页数多或 `restructurePages=true`；先用小 PDF 验证 |
+| 解析成功但没有重新调用服务 | 命中了 `*.paddleocr_vl_raw/` cache；设置 `LIGHTRAG_FORCE_REPARSE_PADDLEOCR_VL=true` 或 CLI 使用 `--force-reparse` |
 
 #### 使用 Docling 文件解析引擎
 
@@ -763,6 +908,140 @@ __parsed__/<base>.docling_raw/
 
 > `engine_version` / `endpoint_signature` 的"任一侧为空即跳过"语义与 MinerU §4.3 一致：manifest 写入时该字段为空（首次未配置 `DOCLING_ENGINE_VERSION`）或当前环境变量未设置时，该项不参与失效判断；事后补上版本号不会自动让历史缓存失效，需要 `LIGHTRAG_FORCE_REPARSE_DOCLING=true` 触发。
 
+### 4.5 PaddleOCR-VL 原始产物目录 `<base>.paddleocr_vl_raw/`
+
+`paddleocr_vl` 引擎调用 PaddleOCR-VL，把返回的版面解析结果保存为 `content_list.json`，并下载或解码 Markdown / outputImages 中引用的图片资源，统一写入 `__parsed__/<规范文件名>.paddleocr_vl_raw/`，同时用 `_manifest.json` 作为完整性校验文件。
+
+最小配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=official
+PADDLEOCR_VL_API_TOKEN=<your_access_token>
+# PADDLEOCR_VL_OFFICIAL_ENDPOINT=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
+```
+
+`PADDLEOCR_VL_API_MODE` 支持 `official` 和 `local`。`official` 对接 PaddleOCR 云端异步 API：提交任务到 `PADDLEOCR_VL_OFFICIAL_ENDPOINT`，轮询完成后再下载结果 JSONL。`local` 对接自部署、且兼容 LightRAG 请求约定的 PaddleOCR-VL 服务，向 `POST {PADDLEOCR_VL_LOCAL_ENDPOINT}/layout-parsing` 发送同步 JSON 请求，服务会在文档解析完成后直接返回结果。`PADDLEOCR_VL_ENDPOINT` 仍作为 `PADDLEOCR_VL_OFFICIAL_ENDPOINT` 的兼容别名保留。
+
+`PADDLEOCR_VL_TIMEOUT_SECONDS` 控制 `official` 和 `local` 两种模式的 HTTP
+请求超时，默认值为 `120` 秒。当同步 local 解析可能耗时更长时可调大该值；连接
+超时仍固定为 `30` 秒。
+
+PaddleOCR-VL 默认把 `outputImages`、`inputImage`、`markdown.images`、
+`exports` 等二进制字段以 Base64 内联返回。当服务端启用
+`Serving.return_urls=true` 时，这些字段的结构不变，但值会变成预签名对象存储
+URL。LightRAG 会落盘 `markdown.images` 和 `outputImages` 资源；默认的
+`*.bcebos.com` pattern 只下载 BOS（百度智能云对象存储）子域名上的 HTTPS
+图片 URL，例如：
+
+```bash
+https://pplines-online.bj.bcebos.com/deploy/official/paddleocr/pp-ocr-vl-16-online/.../markdown_0/imgs/example.jpg?authorization=...
+```
+
+可通过 `PADDLEOCR_VL_ALLOWED_ASSET_HOSTS` 配置逗号分隔的精确或 wildcard
+host pattern，放行额外的自部署资源地址。裸 pattern（如 `example.com`）只匹配
+完全相同的 host；wildcard pattern（如 `*.example.com`）可匹配
+`assets.example.com`、`nested.assets.example.com` 等子域名，但不匹配裸
+`example.com` 或形似的 `notexample.com`。`markdown.images` 资源若不在
+allowlist 中或无法解码，会因为正文引用该资源而使文档解析失败；
+`outputImages` 仅用于诊断，其下载或解码失败只记录日志并跳过。Base64 内联图片
+仍会正常解码。
+
+local 模式最小配置：
+
+```bash
+LIGHTRAG_PARSER=pdf:paddleocr_vl-iteP;*:legacy-R
+PADDLEOCR_VL_API_MODE=local
+PADDLEOCR_VL_LOCAL_ENDPOINT=http://localhost:8080
+```
+
+official 异步提交任务还支持顶层 `pageRanges` 和 `batchId` 字段。在 `official` 模式下，`pageRanges` 可通过引擎 hint 按文件覆盖，`batchId` 和默认模型则保留为全局 client 配置：
+
+```bash
+# 推荐使用 PaddleOCR-VL-1.6 和 PaddleOCR-VL-1.5。
+PADDLEOCR_VL_MODEL=PaddleOCR-VL-1.6
+PADDLEOCR_VL_PAGE_RANGES=
+PADDLEOCR_VL_BATCH_ID=
+```
+
+PaddleOCR-VL sidecar 中的页码 anchor 按解析器返回页面的顺序从 1 开始编号。
+使用 `pageRanges` 筛选页面后，anchor 不会映射回原始文档页码。这与现有
+MinerU 行为一致：MinerU 返回的页索引同样按解析结果顺序编号，而不是按请求的
+原文页码范围编号。
+
+PaddleOCR-VL 的可选请求参数从环境变量读取，并写入 official API 的
+`optionalPayload`。其中 `useOcrForImageBlock`、`useSealRecognition` 和
+`useDocUnwarping` 也可通过文件 hint 按文件覆盖，例如 official 模式下的
+`paddleocr_vl(page_range=1-3,useOcrForImageBlock=true)`，或 local 模式下的
+`paddleocr_vl(useOcrForImageBlock=true)`。local 模式下，本地服务支持的有效解析参数会按照 PaddleOCR-VL
+`POST /layout-parsing` 兼容接口的要求，作为 base64 `file` 旁边的顶层 JSON 字段发送。
+client 会对 PDF 输入发送 `fileType=0`，对图片输入发送 `fileType=1`。下面这些参数未设置时会随当前 client 默认值发送：
+
+```bash
+PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=false
+PADDLEOCR_VL_USE_DOC_UNWARPING=false
+PADDLEOCR_VL_USE_LAYOUT_DETECTION=true
+PADDLEOCR_VL_USE_CHART_RECOGNITION=true
+PADDLEOCR_VL_USE_SEAL_RECOGNITION=true
+PADDLEOCR_VL_USE_OCR_FOR_IMAGE_BLOCK=false
+PADDLEOCR_VL_LAYOUT_NMS=true
+PADDLEOCR_VL_LAYOUT_SHAPE_MODE=auto
+PADDLEOCR_VL_PROMPT_LABEL=ocr
+PADDLEOCR_VL_FORMAT_BLOCK_CONTENT=false
+PADDLEOCR_VL_REPETITION_PENALTY=1
+PADDLEOCR_VL_TEMPERATURE=0
+PADDLEOCR_VL_TOP_P=1
+PADDLEOCR_VL_MIN_PIXELS=147384
+PADDLEOCR_VL_MAX_PIXELS=2822400
+PADDLEOCR_VL_MERGE_LAYOUT_BLOCKS=true
+PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS=["header","header_image","footer","footer_image","number","footnote","aside_text"]
+PADDLEOCR_VL_SHOW_FORMULA_NUMBER=false
+PADDLEOCR_VL_RETURN_MARKDOWN_IMAGES=true
+PADDLEOCR_VL_RESTRUCTURE_PAGES=true
+PADDLEOCR_VL_MERGE_TABLES=true
+PADDLEOCR_VL_RELEVEL_TITLES=true
+PADDLEOCR_VL_PRETTIFY_MARKDOWN=true
+PADDLEOCR_VL_VISUALIZE=false
+```
+
+> **注意：** PaddleOCR-VL 仅在 ``relevel_titles=True`` 时才能根据
+> Markdown ``#`` 前缀识别段落标题级别。不开启该选项时，所有
+> ``paragraph_title`` 块均按 2 级标题处理，忽略其实际的 Markdown 标题深度。
+
+下面这些官方 API 参数未设置时不会传给服务，由服务端使用部署默认值：
+
+```bash
+PADDLEOCR_VL_LAYOUT_THRESHOLD=
+PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO=
+PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE=
+PADDLEOCR_VL_MAX_NEW_TOKENS=
+PADDLEOCR_VL_VLM_EXTRA_ARGS=
+```
+
+支持 number/object/array 形式的参数（例如
+`PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO`、`PADDLEOCR_VL_MARKDOWN_IGNORE_LABELS` 和
+`PADDLEOCR_VL_VLM_EXTRA_ARGS`）可以用 JSON 写法配置。
+`PADDLEOCR_VL_LAYOUT_THRESHOLD` 与
+`PADDLEOCR_VL_LAYOUT_MERGE_BBOXES_MODE` 的 object 按整数类别 ID 作为 key。
+`PADDLEOCR_VL_LAYOUT_UNCLIP_RATIO` 支持单个数值、两个数值的 JSON array，
+或按整数类别 ID 作为 key 的 object。
+
+目录布局：
+
+```text
+__parsed__/<base>.paddleocr_vl_raw/
+├── _manifest.json
+├── content_list.json
+├── imgs/
+│   └── *.jpg
+└── outputImages/
+    └── *.jpg
+```
+
+强制重新解析（绕过 cache）：设置 `LIGHTRAG_FORCE_REPARSE_PADDLEOCR_VL=true`。
+
+缓存失效条件与其它外部引擎一致：源文件大小/hash、API mode、endpoint 签名、参数签名（全局模型、仅 official 模式使用的 `pageRanges` / `batchId`，以及上面列出的所有 PaddleOCR-VL 请求参数）、可选 `PADDLEOCR_VL_ENGINE_VERSION`、`content_list.json` 大小/sha256，以及记录的图片资源大小。cache 命中时，LightRAG 不再调用 PaddleOCR-VL API，而是直接从本地 `content_list.json` 重建 sidecar。
+
 ## 五、文档重复判定规则
 
 文件上传、文件解析入队和文本接口会按照「文件名 + 内容 hash」两道关卡判断是否重复，命中任一即视为重复并写入一条 `FAILED` 记录，不会覆盖已有的 `full_docs`。`/documents/scan` 目录扫描也使用同一套索引，但为了便于自动重试未完成文件，对文件名重复有单独的归档与重处理规则。
@@ -957,27 +1236,29 @@ POST /documents/recovery/force_reset
 
 ```
           ┌─ parse_queues["native"]  ─► [native 池  × N1] ─┐   ← legacy 共享此池
-PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
+PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼─► q_analyze ─►[analyzer × N5] ─► q_process ─►[processor × N6]
           ├─ parse_queues["docling"] ─► [docling 池 × N3] ─┤
+          ├─ parse_queues["paddleocr_vl"] ─► [PaddleOCR-VL 池 × N4] ─┤
           └─ parse_queues[<第三方组>] ─► [自定义并发池]  ──┘   ← 按 ParserSpec.queue_group 动态创建
 ```
 
-解析队列**按注册表的 `ParserSpec.queue_group` 动态创建**（每批取一次注册表快照）：内置 native/mineru/docling 各占一组，legacy 共享 native 池（本地、无网络），第三方引擎可声明独立组与自定义并发数（见 `docs/ThirdPartyParser-zh.md`）。入队时 `resolve_stored_document_parser_engine` 根据每个文档的 `parser_engine`（来自 `LIGHTRAG_PARSER` 默认值或文件 hint）把它放入对应解析队列；各解析队列**完全互不阻塞**——mineru 占满不会拖慢 docling 或 native。解析完成后统一进入 `q_analyze`（多模态分析），再进入 `q_process`（实体/关系抽取 + 入库）。
+解析队列**按注册表的 `ParserSpec.queue_group` 动态创建**（每批取一次注册表快照）：内置 native/mineru/docling/paddleocr_vl 各占一组，legacy 共享 native 池（本地、无网络），第三方引擎可声明独立组与自定义并发数（见 `docs/ThirdPartyParser-zh.md`）。入队时 `resolve_stored_document_parser_engine` 根据每个文档的 `parser_engine`（来自 `LIGHTRAG_PARSER` 默认值或文件 hint）把它放入对应解析队列；各解析队列**完全互不阻塞**——mineru 占满不会拖慢 docling 或 native。解析完成后统一进入 `q_analyze`（多模态分析），再进入 `q_process`（实体/关系抽取 + 入库）。
 
 | 环境变量 | 默认值 | 作用 | 调优建议 |
 | --- | --- | --- | --- |
 | `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: native 解析（docx / pdf / txt 等纯本地处理）并发 worker 数 | 纯 CPU、内存占用低，可按 CPU 核数提高 |
 | `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: MinerU 解析并发 worker 数 | MinerU 占用 GPU/CPU 显著，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且显存充足时可设 2-3；走 MinerU 官方云端服务时可适当提高（受云端配额限制） |
 | `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: Docling 解析并发 worker 数 | Docling 同样资源敏感，**默认 2 为适度并发**。资源紧张时可降到 1；本地部署且 CPU/GPU 充足时可设 2-3 |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
-| `MAX_PARALLEL_INSERT` | `3` | N5: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
+| `MAX_PARALLEL_PARSE_PADDLEOCR_VL` | `2` | N4: PaddleOCR-VL 解析并发 worker 数 | 外部云/API 配额约束，除非账号并发额度足够，否则保持默认即可 |
+| `MAX_PARALLEL_ANALYZE` | `5` | N5: 多模态分析（VLM 图片 / 表格描述）并发 worker 数 | 直接消耗 VLM 配额。建议 ≤ VLM 服务并发上限 |
+| `MAX_PARALLEL_INSERT` | `3` | N6: 实体 / 关系抽取 + 入库阶段并发文档数 | 推荐 `MAX_ASYNC_LLM / 3`，区间 2~10。该阶段每个文档会触发多次 LLM 调用，过高会撞 LLM 限流。同时该值还作为 `asyncio.Semaphore` 用于二次约束（worker 数和信号量值一致） |
 | `QUEUE_SIZE_PARSE` | `20` | parse（native/MinerU/Docling）输入队列长度 | 一般无需调整。队列内仅为轻量 doc_id（大文档体在进入 analyze 前已剥离），仅限制 pipeline 一次预派发给 parse worker 的待处理文档数，调整影响很小 |
 | `QUEUE_SIZE_ANALYZE` | `100` | analyze 队列（parse → analyze 阶段）的有界容量 | 一般无需调整。极少量大批量任务（成千上万）可适当提高，避免 enqueue 端反压；内存紧张时可调低 |
 | `QUEUE_SIZE_INSERT` | `4` | analyze → process 阶段间的队列容量 | process 是流水线中最慢、最耗内存的阶段，队列特意做小，给上游提供反压防止内存堆积 |
 
 **几个要点：**
 
-1. **解析阶段按引擎隔离**，所以混用 native/mineru/docling 时不必担心一种引擎慢拖累另一种。
+1. **解析阶段按引擎隔离**，所以混用 native/mineru/docling/paddleocr_vl 时不必担心一种引擎慢拖累另一种。
 2. **mineru / docling 默认 2**：两者资源占用高，默认保持适度并发。资源紧张时可降到 1（避免 OOM / 显存竞争 / 失败重试）；如果你部署了多 GPU 或专门的解析服务器，可手动调高。
 3. **`MAX_PARALLEL_INSERT` 兼任 worker 池大小和信号量上限**：流水线创建 `Semaphore(max_parallel_insert)`，每个 process worker 在抽取入库前还要拿一次信号量。所以哪怕你把 worker 数手动改大，实际并发上限仍由这个值决定——直接调它就够了。
 4. **queue size 与背压**：`QUEUE_SIZE_INSERT=4` 这个偏小的默认值是有意为之——process 阶段慢且占内存，让 analyze 阶段在队列写满时阻塞、再反压到 parse 阶段，避免一次性把成千上万份解析结果堆在内存里。
