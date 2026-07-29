@@ -317,9 +317,8 @@ def slim_chunk_options(
     result[key] = deepcopy(dict(src.get(key) or {}))
     if key == "paragraph_semantic":
         if "chunk_token_size" not in result[key]:
-            p_size_raw = os.getenv("CHUNK_P_SIZE")
-            result[key]["chunk_token_size"] = (
-                int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+            result[key]["chunk_token_size"] = _chunk_env_int(
+                "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE
             )
         # Mirror the CHUNK_P_DROP_REFERENCES env default for the drop-references
         # switch here — this is the single chokepoint every enqueue path runs
@@ -344,6 +343,27 @@ def _env_optional_str(key: str) -> str | None:
     if not stripped or stripped.lower() == "none":
         return None
     return raw
+
+
+def _chunk_env_int(env_key: str, default: int | None) -> int | None:
+    """Read a chunk size/overlap env as int.
+
+    Unset, empty, whitespace, and literal ``None`` fall back to ``default``
+    (empty ``.env`` / Compose slots). Non-empty malformed values raise so a
+    typo like ``20OO`` does not silently change retrieval defaults.
+    """
+    raw = os.getenv(env_key)
+    if raw is None:
+        return default
+    stripped = raw.strip()
+    if not stripped or stripped.lower() == "none":
+        return default
+    try:
+        return int(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"Environment variable {env_key}={raw!r} is not a valid integer"
+        ) from exc
 
 
 def _env_r_separators() -> list[str]:
@@ -433,48 +453,47 @@ def default_chunker_config() -> dict[str, Any]:
     }
 
     # Strategy-specific overlap envs only — leave the slot absent when
-    # unset so overlay can detect provenance and fill from the legacy
+    # unset/empty so overlay can detect provenance and fill from the legacy
     # tier (constructor field → CHUNK_OVERLAP_SIZE env).
-    f_overlap_raw = os.getenv("CHUNK_F_OVERLAP_SIZE")
-    if f_overlap_raw is not None:
-        config["fixed_token"]["chunk_overlap_token_size"] = int(f_overlap_raw)
-    r_overlap_raw = os.getenv("CHUNK_R_OVERLAP_SIZE")
-    if r_overlap_raw is not None:
-        config["recursive_character"]["chunk_overlap_token_size"] = int(r_overlap_raw)
-    p_overlap_raw = os.getenv("CHUNK_P_OVERLAP_SIZE")
-    if p_overlap_raw is not None:
-        config["paragraph_semantic"]["chunk_overlap_token_size"] = int(p_overlap_raw)
+    f_overlap = _chunk_env_int("CHUNK_F_OVERLAP_SIZE", None)
+    if f_overlap is not None:
+        config["fixed_token"]["chunk_overlap_token_size"] = f_overlap
+    r_overlap = _chunk_env_int("CHUNK_R_OVERLAP_SIZE", None)
+    if r_overlap is not None:
+        config["recursive_character"]["chunk_overlap_token_size"] = r_overlap
+    p_overlap = _chunk_env_int("CHUNK_P_OVERLAP_SIZE", None)
+    if p_overlap is not None:
+        config["paragraph_semantic"]["chunk_overlap_token_size"] = p_overlap
 
     # P strategy carries its own ``chunk_token_size`` override so the
     # paragraph-semantic merge target can diverge from the global
     # ``CHUNK_SIZE`` (e.g. heading-aligned chunks may want a larger
     # ceiling).  Unlike R/V, the slot is ALWAYS populated — when
-    # ``CHUNK_P_SIZE`` is unset we use ``DEFAULT_CHUNK_P_SIZE`` (2000)
+    # ``CHUNK_P_SIZE`` is unset/empty we use ``DEFAULT_CHUNK_P_SIZE`` (2000)
     # rather than letting the dispatcher fall back to the global
     # ``CHUNK_SIZE`` (1200): paragraph-semantic merging needs more
     # headroom than the global default to keep related paragraphs
     # together, and silently inheriting the smaller global ceiling
     # defeats the strategy's purpose.
-    p_size_raw = os.getenv("CHUNK_P_SIZE")
-    config["paragraph_semantic"]["chunk_token_size"] = (
-        int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+    config["paragraph_semantic"]["chunk_token_size"] = _chunk_env_int(
+        "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE
     )
 
     # F/R/V strategies likewise carry their own optional ``chunk_token_size``
     # overrides (fixed-token may want a deployment-specific window, recursive
     # character splitting a smaller target, semantic-vector clustering a larger
     # advisory ceiling).  Same slot-absent convention as P: leave the slot
-    # absent when the env is unset so the strategy inherits the top-level
+    # absent when the env is unset/empty so the strategy inherits the top-level
     # ``chunk_token_size`` fallback at consumption time.
-    f_size_raw = os.getenv("CHUNK_F_SIZE")
-    if f_size_raw is not None:
-        config["fixed_token"]["chunk_token_size"] = int(f_size_raw)
-    r_size_raw = os.getenv("CHUNK_R_SIZE")
-    if r_size_raw is not None:
-        config["recursive_character"]["chunk_token_size"] = int(r_size_raw)
-    v_size_raw = os.getenv("CHUNK_V_SIZE")
-    if v_size_raw is not None:
-        config["semantic_vector"]["chunk_token_size"] = int(v_size_raw)
+    f_size = _chunk_env_int("CHUNK_F_SIZE", None)
+    if f_size is not None:
+        config["fixed_token"]["chunk_token_size"] = f_size
+    r_size = _chunk_env_int("CHUNK_R_SIZE", None)
+    if r_size is not None:
+        config["recursive_character"]["chunk_token_size"] = r_size
+    v_size = _chunk_env_int("CHUNK_V_SIZE", None)
+    if v_size is not None:
+        config["semantic_vector"]["chunk_token_size"] = v_size
 
     return config
 
