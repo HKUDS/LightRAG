@@ -139,9 +139,9 @@
       "filters": {
         "all": "전체",
         "completed": "완료",
-        "parse": "추출",
-        "analyze": "분석",
-        "process": "처리",
+        "parse": "파싱 중",
+        "analyze": "분석 중",
+        "process": "처리 중",
         "failed": "실패"
       },
       "status": {
@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
+      "scrollToBottom": "최신 메시지로 이동",
       "clear": "지우기",
       "send": "전송",
       "stop": "중지",

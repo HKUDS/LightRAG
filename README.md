@@ -76,6 +76,7 @@
 ---
 
 ## 🎉 News
+- [2026.07]🎯[New Feature]: Add **Smart Heading** recognition feature for word documents.
 - [2026.05]🎯[New Feature]: **Merge RagAnything into LightRAG**🎉. Multimodal content parsing and extraction via **MinerU / Docling** services.
 - [2026.05]🎯[New Feature]: Introducing four selectable text chunking strategies: `Fix`, `Recursive`, `Vector`, and `Paragraph`.
 - [2026.05]🎯[New Feature]: **Role-specific LLM configuration** support, 4 distinct roles: EXTRACT, QUERY, KEYWORDS, and VLM, with independent LLM settings.
@@ -131,12 +132,6 @@ uv tool install "lightrag-hku[api]"
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
-
-### Build front-end artifacts
-cd lightrag_webui
-bun install --frozen-lockfile
-bun run build
-cd ..
 
 # Setup env file
 # Obtain the env.example file by downloading it from the GitHub repository root
@@ -249,15 +244,14 @@ LightRAG is a lightweight knowledge-graph RAG framework and an efficient alterna
 - **Deep Contextual Understanding:** Through graph-structured indexing, LightRAG captures complex semantic dependencies between entities, overcoming the fragmented context limitations typical of traditional chunk-based retrieval methods. Its generation quality and context awareness are particularly outstanding in vertical domains (e.g., legal, financial) that require global comprehension or logical reasoning.
 - **Exceptional Comprehensiveness & Diversity:** LightRAG’s dual-level retrieval mechanism allows it to integrate detailed facts and abstract concepts concurrently. This enables the system to achieve remarkable performance in query result comprehensiveness and diversity, making it highly effective at handling complex, cross-document queries.
 - **Extreme Retrieval Efficiency & Low Cost:** LightRAG does not rely on inefficient community reports or multi-hop reasoning for complex queries. This drastically reduces the number of LLM calls required during both the indexing and querying phases, significantly lowering response latency and LLM computational costs.
-- **Rapid Adaptation to Dynamic Data:** LightRAG supports seamless, incremental knowledge base updates. New data only needs to go through a standard graph indexing pipeline to generate a local graph, which is then directly integrated into the existing graph via set merging. This process eliminates the need to disrupt the original structure or rebuild the global index, ensuring real-time relevance in dynamic data environments. When deleting documents, the system leverages LLM caching from the construction phase to rapidly rebuild affected entity relationships, vastly improving knowledge base update efficiency.
+- **Incremental Updates & Selective Deletion:** LightRAG addresses the challenges of incrementally updating and selectively deleting content from graph-based knowledge bases, keeping them current in dynamic data environments. When a document is deleted, the system can use the LLM cache created during indexing to quickly rebuild the affected entities and relationships, substantially improving update efficiency.
+- **Multiple Document Parsing Engines:** LightRAG's document processing pipeline supports MinerU, Docling, and Native and can be extended with third-party parsers. LightRAG's Native engine efficiently parses images, tables, and formulas in Word and Markdown documents, making it especially suitable for documents rich in multimodal content. The Native engine also automatically detects and corrects section headings in Word documents, improving content extraction from documents with inconsistent outlines and laying the foundation for section-aware text chunking.
+- **Multiple Text Chunking Strategies:** LightRAG supports four text chunking strategies: `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, and `Paragraph semantic (P)`. The LightRAG-native `Paragraph semantic (P)` strategy **aligns chunk boundaries with the document's native semantic boundaries**—headings, paragraphs, and tables—as closely as possible. This reduces problems such as mismatched headings and content or missing header rows when long tables are split.
+- **Multiple Storage Backends:** LightRAG's default KV, vector, and graph stores use in-memory databases with local file persistence, making them well suited for quickly evaluating the project. LightRAG also supports a wide range of commonly used storage backends for production deployments with large datasets.
 
 ### Multimodal Capability Upgrades
 
-Starting from version v1.5, LightRAG has officially introduced analysis and retrieval capabilities for multimodal documents:
-
-- **Multi-Engine Document Parsing:** Its document processing pipeline supports parsing engines such as MinerU, Docling, and Native, enabling the highly efficient extraction of text, tables, formulas, and images from documents.
-- **Cross-Modal Entity & Relation Mapping:** It achieves cross-modal entity extraction and relationship mapping within a unified framework, resulting in seamless indexing and querying.
-- **Enhanced Application Scenarios:** The brand-new multimodal processing pipeline significantly improves RAG quality for documents rich in multimodal content, such as operation manuals and academic papers.
+Traditional RAG systems lack an effective way to process multimodal content such as images, formulas, and tables in documents. Starting with v1.5, LightRAG seamlessly integrates multimodal processing into its document pipeline and query flow. Through the knowledge graph, LightRAG connects multimodal content with the body text and can use that information when answering queries to produce more accurate and reliable responses. This capability can substantially improve RAG quality for documents rich in multimodal content, such as operation manuals and academic papers.
 
 ### LightRAG API Server
 
@@ -363,7 +357,7 @@ LLM timeouts during entity-relation extraction usually trace back to one of thre
 - **The model is slow.** A model running below ~50 tokens/second may be unable to finish a chunk that contains many entities and relations before the request times out. Increase the timeout via `*_LLM_TIMEOUT` — either the global `LLM_TIMEOUT` or the role-specific `EXTRACT_LLM_TIMEOUT` for the extraction phase. Note that the effective execution timeout is **twice** the configured value, so `EXTRACT_LLM_TIMEOUT=300` allows up to **600 seconds**.
 - **The chunk produces too many entities and relations.** Reference/bibliography chunks, for example, can make the model emit an enormous number of records that cannot complete in time. Cap the output length with `OPENAI_LLM_MAX_TOKENS` or `OPENAI_LLM_MAX_COMPLETION_TOKENS` (the correct parameter name depends on the LLM provider — see `env.example`). A useful sizing rule is `max_output_tokens < LLM_TIMEOUT × tokens_per_second` (e.g., `9000 < 240s × 50 tps`).
 - **The model gets stuck in an output loop.** Some models (locally deployed Qwen models in particular) occasionally fall into an endless-output loop on certain text. When this is intermittent, simply re-processing the document once usually resolves it.
-- **References specifically (P chunking strategy).** When using the paragraph-semantic (`P`) chunking strategy (e.g., `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` to automatically drop the trailing reference section before chunking. This prevents references from generating a flood of low-value entities and relations, a common source of timeouts. It can also be enabled per file via the filename hint `paper.[-P(drop_rf=true)].pdf`; related detection knobs (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) are documented in `env.example`.
+- **References specifically (P chunking strategy).** When using the paragraph-semantic (`P`) chunking strategy (e.g., `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` to automatically drop matching reference blocks before chunking. This prevents references from generating a flood of low-value entities and relations, a common source of timeouts. It can also be enabled per file via the filename hint `paper.[-P(drop_rf=true)].pdf`; related detection knobs (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) are documented in `env.example`.
 
 ### Other Important Configurations for Document Querying
 
@@ -491,10 +485,6 @@ LightRAG consistently outperforms NaiveRAG, RQ-RAG, HyDE, and GraphRAG across ag
 </div>
 
 ---
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
 
 ## 🤝 Contribution
 

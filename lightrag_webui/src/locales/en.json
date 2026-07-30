@@ -139,10 +139,10 @@
       "filters": {
         "all": "All",
         "completed": "Completed",
-        "parse": "Parse",
-        "analyze": "Analyze",
-        "process": "Process",
-        "failed": "Fail"
+        "parse": "Parsing",
+        "analyze": "Analyzing",
+        "process": "Processing",
+        "failed": "Failed"
       },
       "status": {
         "all": "All",
@@ -423,6 +423,7 @@
     },
     "retrieval": {
       "startPrompt": "Start a retrieval by typing your query below",
+      "scrollToBottom": "Scroll to latest",
       "clear": "Clear",
       "send": "Send",
       "stop": "Stop",

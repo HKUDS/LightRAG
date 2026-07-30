@@ -5,12 +5,19 @@ This module contains all graph-related routes for the LightRAG API.
 from typing import Optional, Dict, Any
 import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lightrag.base import DeletionResult
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency, internal_server_error
 from .document_routes import check_pipeline_busy_or_raise
+
+
+def _require_nonempty_entity_name(entity_name: str) -> str:
+    """Strip and reject blank names so create/update match delete routes."""
+    if not entity_name or not entity_name.strip():
+        raise ValueError("Entity name cannot be empty")
+    return entity_name.strip()
 
 
 class EntityUpdateRequest(BaseModel):
@@ -19,11 +26,32 @@ class EntityUpdateRequest(BaseModel):
     allow_rename: bool = False
     allow_merge: bool = False
 
+    @field_validator("entity_name", mode="after")
+    @classmethod
+    def validate_entity_name(cls, entity_name: str) -> str:
+        return _require_nonempty_entity_name(entity_name)
+
+    @model_validator(mode="after")
+    def validate_rename_target_name(self) -> "EntityUpdateRequest":
+        # Rename payloads put the new name in updated_data["entity_name"].
+        if "entity_name" not in self.updated_data:
+            return self
+        new_name = self.updated_data["entity_name"]
+        if not isinstance(new_name, str):
+            raise ValueError("Entity name cannot be empty")
+        self.updated_data["entity_name"] = _require_nonempty_entity_name(new_name)
+        return self
+
 
 class RelationUpdateRequest(BaseModel):
     source_id: str
     target_id: str
     updated_data: Dict[str, Any]
+
+    @field_validator("source_id", "target_id", mode="after")
+    @classmethod
+    def validate_endpoint_names(cls, entity_name: str) -> str:
+        return _require_nonempty_entity_name(entity_name)
 
 
 class EntityMergeRequest(BaseModel):
@@ -39,6 +67,16 @@ class EntityMergeRequest(BaseModel):
         min_length=1,
         examples=["Elon Musk"],
     )
+
+    @field_validator("entities_to_change", mode="after")
+    @classmethod
+    def validate_entities_to_change(cls, entities: list[str]) -> list[str]:
+        return [_require_nonempty_entity_name(name) for name in entities]
+
+    @field_validator("entity_to_change_into", mode="after")
+    @classmethod
+    def validate_entity_to_change_into(cls, entity_name: str) -> str:
+        return _require_nonempty_entity_name(entity_name)
 
 
 class EntityCreateRequest(BaseModel):
@@ -59,6 +97,11 @@ class EntityCreateRequest(BaseModel):
         ],
     )
 
+    @field_validator("entity_name", mode="after")
+    @classmethod
+    def validate_entity_name(cls, entity_name: str) -> str:
+        return _require_nonempty_entity_name(entity_name)
+
 
 class DeleteEntityRequest(BaseModel):
     entity_name: str = Field(..., description="The name of the entity to delete.")
@@ -66,9 +109,7 @@ class DeleteEntityRequest(BaseModel):
     @field_validator("entity_name", mode="after")
     @classmethod
     def validate_entity_name(cls, entity_name: str) -> str:
-        if not entity_name or not entity_name.strip():
-            raise ValueError("Entity name cannot be empty")
-        return entity_name.strip()
+        return _require_nonempty_entity_name(entity_name)
 
 
 class DeleteRelationRequest(BaseModel):
@@ -78,9 +119,7 @@ class DeleteRelationRequest(BaseModel):
     @field_validator("source_entity", "target_entity", mode="after")
     @classmethod
     def validate_entity_names(cls, entity_name: str) -> str:
-        if not entity_name or not entity_name.strip():
-            raise ValueError("Entity name cannot be empty")
-        return entity_name.strip()
+        return _require_nonempty_entity_name(entity_name)
 
 
 class RelationCreateRequest(BaseModel):
@@ -107,6 +146,11 @@ class RelationCreateRequest(BaseModel):
             }
         ],
     )
+
+    @field_validator("source_entity", "target_entity", mode="after")
+    @classmethod
+    def validate_entity_names(cls, entity_name: str) -> str:
+        return _require_nonempty_entity_name(entity_name)
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):

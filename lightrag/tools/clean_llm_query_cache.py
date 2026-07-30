@@ -2,7 +2,7 @@
 """
 LLM Query Cache Cleanup Tool for LightRAG
 
-This tool cleans up LLM query cache (mix:*, hybrid:*, local:*, global:*)
+This tool cleans up LLM query cache (mix:*, hybrid:*, local:*, global:*, naive:*)
 from KV storage implementations while preserving workspace isolation.
 
 Usage:
@@ -59,8 +59,10 @@ WORKSPACE_ENV_MAP = {
     "OpenSearchKVStorage": "OPENSEARCH_WORKSPACE",
 }
 
-# Query cache modes
-QUERY_MODES = ["mix", "hybrid", "local", "global"]
+# Query cache modes. Must cover every QueryParam.mode that reaches the LLM cache,
+# i.e. all of them except "bypass", which answers straight from the LLM and writes
+# no cache entry. Entries for a mode missing here are neither counted nor deleted.
+QUERY_MODES = ["mix", "hybrid", "local", "global", "naive"]
 
 # Query cache types
 CACHE_TYPES = ["query", "keywords"]

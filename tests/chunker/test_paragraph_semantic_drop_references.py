@@ -1,7 +1,8 @@
 """Tests for the paragraph-semantic ``drop_references`` option (chunking=P).
 
-A reference block is dropped only when it BOTH sits within the last
-``references_tail_n`` content blocks AND its heading matches a reference prefix.
+A reference block is dropped when its heading matches a reference prefix and it
+sits within the configured content-block window.  ``references_tail_n=0`` scans
+all content blocks; a positive value scans only the last N.
 The switch is the only knob that flows through ``chunk_options``; the tail
 window and heading prefixes are read live from env at chunk time (verified here
 by mutating env between calls, proving they are NOT snapshotted).
@@ -181,6 +182,50 @@ def test_mid_document_reference_section_outside_window_kept(tmp_path):
         )
     )
     assert "REF_MARKER" in body
+
+
+@pytest.mark.offline
+def test_tail_n_zero_scans_all_blocks(tmp_path, monkeypatch):
+    tokenizer = _make_tokenizer()
+    rows = [
+        _row("Introduction", "INTRO_MARKER intro body"),
+        _row("References", "REF_MARKER [1] Foo."),
+        _row("Appendix", "APPENDIX_MARKER appendix body"),
+    ]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    monkeypatch.setenv("CHUNK_P_REFERENCES_TAIL_N", "0")
+    body = _all_content(
+        chunking_by_paragraph_semantic(
+            tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
+        )
+    )
+
+    assert "REF_MARKER" not in body
+    assert "INTRO_MARKER" in body
+    assert "APPENDIX_MARKER" in body
+
+
+@pytest.mark.offline
+def test_default_tail_window_scans_all_blocks(tmp_path, monkeypatch):
+    tokenizer = _make_tokenizer()
+    rows = [
+        _row("Introduction", "INTRO_MARKER intro body"),
+        _row("References", "REF_MARKER [1] Foo."),
+        _row("Appendix", "APPENDIX_MARKER appendix body"),
+    ]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    monkeypatch.delenv("CHUNK_P_REFERENCES_TAIL_N", raising=False)
+    body = _all_content(
+        chunking_by_paragraph_semantic(
+            tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
+        )
+    )
+
+    assert "REF_MARKER" not in body
+    assert "INTRO_MARKER" in body
+    assert "APPENDIX_MARKER" in body
 
 
 @pytest.mark.offline

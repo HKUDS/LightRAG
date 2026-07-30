@@ -76,6 +76,7 @@
 ---
 
 ## 🎉 新闻
+- [2026.07]🎯[新功能]: 添加 Word 文档 **智能章节标题** 识别功能。
 - [2026.05]🎯[新功能]：**将 RagAnything 合并至 LightRAG**🎉。支持通过 **MinerU / Docling** 服务进行多模态内容解析与提取。
 - [2026.05]🎯[新功能]：引入四种可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）和 `Paragraph`（段落语义）。
 - [2026.05]🎯[新功能]：**支持按角色配置 LLM**，提供四个独立角色：EXTRACT、QUERY、KEYWORDS 和 VLM，每个角色拥有独立的 LLM 设置。
@@ -131,12 +132,6 @@ uv tool install "lightrag-hku[api]"
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
-
-### 构建前端代码
-cd lightrag_webui
-bun install --frozen-lockfile
-bun run build
-cd ..
 
 # 配置 env 文件
 # 从 GitHub 仓库的根目录上下载 env.example 文件
@@ -249,15 +244,14 @@ DOCX_SMART_HEADING=true
 1. **深度上下文理解**：通过图结构索引，LightRAG 能够捕捉实体间复杂的语义依赖关系，克服了传统分块检索方法上下文割裂的缺陷。在需要全局理解或逻辑推理的垂直领域（如法律、金融），其生成质量与上下文感知能力尤为突出。
 2. **卓越的全面性与多样性**：LightRAG的双层检索机制使其能够同时整合详细事实与抽象概念，让其在查询结果全面性（Comprehensiveness）和多样性（Diversity）取得卓越的成绩，有效应对复杂的跨文档查询。
 3. **极高的检索效率与低成本**：LightRAG不需要依赖低效的社区报告和复杂查询时的多跳推理，大幅度减少了索引和查询阶段对LLM的调用，显著减少了响应延迟与LLM计算成本。
-4. **快速适应动态数据**：LightRAG 支持无缝的增量知识库更新。新数据只需经过标准的图索引流程生成局部图谱，即可通过集合合并的方式直接融入现有图谱，无需破坏原有结构或重建全局索引，保证了系统在动态数据环境下的时效性。删除文档时可以利用构建阶段的LLM缓存快速重建受影响的实体关系，大幅度提高了知识库更新效率。
+4. **支持增量更新与局部删除**：LightRAG 解决了基于图的知识库难以增量更新和局部删除的问题，保证系统在动态数据环境下的时效性。删除文档时，系统可以利用构建阶段的 LLM 缓存快速重建受影响的实体与关系，大幅提升知识库的更新效率。
+5. **支持多种文档解析引擎**：LightRAG 的文件处理管线支持 MinerU、Docling 和 Native 等文档解析引擎，也支持第三方扩展解析引擎。LightRAG 专属的 Native 引擎可高效解析 Word 和 Markdown 文档中的图片、表格和公式，尤其适合处理多模态内容丰富的文档。Native 引擎还支持自动识别和纠正 Word 文档的章节标题，即使文档大纲不规范，也能改善内容提取效果，为后续按章节进行文本分块打下基础。
+6. **支持多种文本分块策略**：LightRAG 支持 4 种文本分块策略，分别是 `固定长度分块(F)`、`递归字符分块(R)`、`向量语义分块(V)` 和 `段落语义分块(P)`。其中，`段落语义分块(P)` 是 LightRAG 专属的分块策略，可以**让分块边界尽可能对齐文档原生的语义边界**（标题、段落和表格），从而减少标题与内容错配、长表格切分后丢失标题行等问题。
+7. **支持多种存储后端**：LightRAG 默认的 KV、向量和图存储均采用基于本地文件持久化的内存数据库，非常适合研究者快速评估项目。LightRAG 还支持多种主流后端存储，可用于大规模数据集的生产部署。
 
 ### 多模态能力的升级
 
-从 LightRAG v1.5 版本开始，该框架正式引入了对多模态文档的分析和检索能力：
-
-* **多引擎文档解析：** 其文件处理流水线（Pipeline）支持使用 MinerU、Docling 和 Native 文档解析引擎，可高效提取文档中的文字、表格、公式和图片。
-* **跨模态实体与关系映射：** 在统一的框架内实现跨模态的实体提取和关系映射，从而达成无缝的索引与查询。
-* **应用场景提升：** 全新的多模态处理流水线能够大幅提高操作说明书、学术论文等含有丰富多模态内容文档的 RAG 质量。
+传统 RAG 系统缺乏有效处理文档中图片、公式和表格等多模态内容的能力。从 v1.5 版本开始，LightRAG 将多模态处理能力无缝集成到文件处理管线和查询流程中。LightRAG 通过知识图谱将这些多模态内容与正文有机联系起来，在回答用户查询时能够结合多模态信息，给出更准确、更可靠的答案。这一能力可大幅提升操作说明书、学术论文等多模态内容丰富文档的 RAG 质量。
 
 ### LightRAG API 服务器
 
@@ -363,7 +357,7 @@ LightRAG 的默认存储全部都是基于文件进行持久化的内存数据�
 - **模型太慢。** 速度低于约 50 tokens/秒的模型，可能无法在请求超时前完成包含大量实体关系的文本块的抽取。可以通过 `*_LLM_TIMEOUT` 增大超时时间——既可以是全局的 `LLM_TIMEOUT`，也可以是抽取阶段专用的角色参数 `EXTRACT_LLM_TIMEOUT`。注意实际的执行超时是所配置值的**两倍**，因此 `EXTRACT_LLM_TIMEOUT=300` 对应最长 **600 秒**。
 - **文本块产生的实体关系太多。** 例如参考文献文本块会让模型输出极其大量的记录，从而无法在限定时间内完成。可以通过 `OPENAI_LLM_MAX_TOKENS` 或 `OPENAI_LLM_MAX_COMPLETION_TOKENS` 限制输出长度（具体参数名取决于 LLM 供应商，详见 `env.example`）。一个实用的估算规则是 `max_output_tokens < LLM_TIMEOUT × 每秒token数`（例如 `9000 < 240s × 50 tps`）。
 - **模型存在缺陷，陷入输出死循环。** 某些模型（尤其是本地部署的 Qwen 模型）在遇到特殊文本时偶尔会陷入无尽的输出死循环。如果是偶发情况，通常只需将该文档重新处理一次即可解决。
-- **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除末尾的参考文献部分，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
+- **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除匹配的参考文献块，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
 
 ### 文档查询阶段其他重要配置
 
@@ -491,10 +485,6 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 </div>
 
 ---
-
-## ⭐ Star 历史
-
-[![Star History Chart](https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date)](https://star-history.com/#HKUDS/LightRAG&Date)
 
 ## 🤝 贡献
 

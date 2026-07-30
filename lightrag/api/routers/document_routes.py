@@ -5,6 +5,8 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 import base64
 import binascii
+import math
+import os
 import re
 import shutil
 import sqlite3
@@ -500,7 +502,7 @@ class RecursiveCharacterChunkParams(_OverlapChunkParams):
 
 
 class ParagraphSemanticChunkParams(_OverlapChunkParams):
-    # Drop the trailing reference section before chunking. ``None`` means
+    # Drop matching reference blocks before chunking. ``None`` means
     # "not supplied — inherit the addon_params/env default at process time".
     # Detection-tuning knobs (tail window / heading prefixes) are env-only and
     # read live by the chunker, so they are intentionally not exposed here.
@@ -538,11 +540,25 @@ class SemanticVectorChunkParams(_StrictChunkParams):
             ) from exc
         return v
 
+    @field_validator("breakpoint_threshold_amount", mode="before")
+    @classmethod
+    def _reject_nonfinite_amount(cls, v: Any) -> Any:
+        # JSON decoders may deliver nan/inf as floats. Raising while leaving
+        # those values in ValidationError.input makes FastAPI's JSONResponse
+        # fail (non-compliant floats) and turn the 422 into a 500. Replace
+        # with a JSON-safe marker so strict float typing rejects cleanly.
+        if isinstance(v, float) and not math.isfinite(v):
+            return "non-finite"
+        return v
+
     @model_validator(mode="after")
     def _amount_in_range(self) -> "SemanticVectorChunkParams":
         amt = self.breakpoint_threshold_amount
         if amt is None:
             return self
+        # nan comparisons are always False, so reject non-finite before <= / > checks.
+        if not math.isfinite(amt):
+            raise ValueError("breakpoint_threshold_amount must be a finite number")
         # ``> 0`` is type-independent (every threshold type wants a positive
         # magnitude), so it is safe to enforce at parse time.
         if amt <= 0:
@@ -1358,10 +1374,12 @@ class DocumentManager:
     def iter_new_files(self) -> Iterator[Path]:
         """Yield new, routable input files ONE AT A TIME (LR2 §8.2).
 
-        A single streaming pass: one ``iterdir()`` over the input directory, no
+        A single streaming pass: one ``scandir()`` over the input directory, no
         whole-directory list and no whole-directory sort, so the scan's peak
         memory is set by its enqueue batch (``SCAN_ENQUEUE_BATCH_SIZE``) rather
-        than by how many files the directory holds. An interrupted scan needs no
+        than by how many files the directory holds. ``Path.iterdir()`` is not
+        suitable here because it uses ``os.listdir()`` and materializes every
+        entry name before yielding the first one. An interrupted scan needs no
         in-memory resume state — the next scan re-discovers, and the persistent
         ``doc_status`` rows are the deduplication authority.
 
@@ -1381,22 +1399,24 @@ class DocumentManager:
 
         suffixes = {f".{s}" for s in available_engine_suffixes()}
         logger.debug(f"Streaming scan of {self.input_dir} for {len(suffixes)} suffixes")
-        for file_path in self.input_dir.iterdir():
-            # Suffix comparison is case-sensitive, matching the per-suffix glob
-            # this replaced; ``__parsed__`` and any other directory is skipped.
-            if file_path.suffix not in suffixes or not file_path.is_file():
-                continue
-            if file_path in self.indexed_files:
-                continue
-            try:
-                if not self.is_supported_file(file_path.name):
+        with os.scandir(self.input_dir) as entries:
+            for entry in entries:
+                file_path = Path(entry.path)
+                # Suffix comparison is case-sensitive, matching the per-suffix glob
+                # this replaced; ``__parsed__`` and any other directory is skipped.
+                if file_path.suffix not in suffixes or not file_path.is_file():
                     continue
-            except FilenameParserHintError:
-                # Malformed hint: pass the file through — the enqueue path
-                # reports a detailed error document, instead of the scan
-                # silently ignoring the user's file.
-                pass
-            yield file_path
+                if file_path in self.indexed_files:
+                    continue
+                try:
+                    if not self.is_supported_file(file_path.name):
+                        continue
+                except FilenameParserHintError:
+                    # Malformed hint: pass the file through — the enqueue path
+                    # reports a detailed error document, instead of the scan
+                    # silently ignoring the user's file.
+                    pass
+                yield file_path
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)

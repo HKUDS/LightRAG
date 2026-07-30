@@ -161,7 +161,7 @@ _CHUNK_PARAM_SPECS: tuple[ParamSpec, ...] = (
         ),
         min_value=0,
     ),
-    # Paragraph-semantic only: drop the trailing reference section before
+    # Paragraph-semantic only: drop matching reference blocks before
     # chunking.  Detection-tuning knobs (tail window / heading prefixes) are
     # env-only and read live by the chunker, so only the switch is a hint param.
     ParamSpec(

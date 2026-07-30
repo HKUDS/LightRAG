@@ -3986,21 +3986,42 @@ async def extract_entities(
     # This allows us to cancel remaining tasks if any task fails
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-    # Check if any task raised an exception and ensure all exceptions are retrieved
+    # Check if any task raised an exception and ensure all exceptions are retrieved.
+    #
+    # ORDER: `done` is a SET whose iteration order derives from object identity
+    # (Task inherits object.__hash__, i.e. its memory address), so it is neither
+    # completion order nor creation order, and it is unstable across processes.
+    # Collecting results from it made `chunk_results` a different permutation on
+    # every run of the same document. That permutation reaches persisted state
+    # through merge_nodes_and_edges: `source_id` and `file_path` are built by
+    # order-preserving dedup with no sort to fall back on, and
+    # apply_source_ids_limit then truncates a DIFFERENT subset of chunks. (The
+    # description lists are sorted by (timestamp, -len) downstream, so those are
+    # only exposed on ties -- the persisted id/path fields are the unguarded
+    # ones.) Results are therefore materialised from `tasks`, a list built in
+    # `ordered_chunks` order, so chunk_results[i] always maps to ordered_chunks[i].
+    #
+    # The two passes cannot be folded into one loop over `tasks`: on the
+    # exception path `tasks` still holds pending entries, and calling
+    # .exception() on those raises InvalidStateError, which the `except Exception`
+    # below would latch as `first_exception`, masking the real failure.
     first_exception = None
     chunk_results = []
 
     for task in done:
         try:
             exception = task.exception()
-            if exception is not None:
-                if first_exception is None:
-                    first_exception = exception
-            else:
-                chunk_results.append(task.result())
+            if exception is not None and first_exception is None:
+                first_exception = exception
         except Exception as e:
             if first_exception is None:
                 first_exception = e
+
+    # No exception means FIRST_EXCEPTION behaved as ALL_COMPLETED: `pending` is
+    # empty and every task in `tasks` holds a result. On the exception path we
+    # are about to unwind, so materialising results there would be wasted work.
+    if first_exception is None:
+        chunk_results = [task.result() for task in tasks]
 
     # If any task failed, cancel all pending tasks and raise the first exception
     if first_exception is not None:
@@ -4022,6 +4043,48 @@ async def extract_entities(
     # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges
     return chunk_results
+
+
+# Policy version of the query-answer cache (cache_type="query"). Bump it when the
+# meaning of an entry changes in a way the other key fields cannot express, so
+# entries written by older versions become unreachable instead of being served
+# under a key whose semantics have moved. v2 retires every entry written before
+# the _answer_cache_kv bypass below: such an entry may hold history-conditioned
+# text filed under a history-blind key, and entries record no history, so a
+# tainted entry cannot be told apart from a clean one. Only the answer cache is
+# versioned; keyword/extract/summary entries never see conversation_history.
+_ANSWER_CACHE_POLICY_VERSION = "query-answer-cache-v2"
+
+
+def _answer_cache_kv(
+    query_param: QueryParam, hashing_kv: BaseKVStorage | None
+) -> BaseKVStorage | None:
+    """Return the storage backing the query-answer cache, or None to bypass it.
+
+    The answer cache key deliberately excludes ``conversation_history``: every
+    turn of a conversation carries a different history, so keying on it would
+    make each entry unique and turn a cache that is meant to be shared across
+    callers into a per-session one. But the history *is* handed to the model as
+    ``history_messages``, so an answer generated under it is not interchangeable
+    with the history-blind key it would be filed under. Requests carrying a
+    history therefore use neither side of the cache:
+
+    - they never write, so caller-supplied history cannot decide the answer that
+      other callers will be served for the same question;
+    - they never read, so a multi-turn caller is not served an answer that was
+      generated while ignoring its history.
+
+    Keyword extraction is unaffected and keeps using ``hashing_kv`` directly: it
+    derives keywords from the query text alone and never receives the history.
+    """
+    if query_param.conversation_history:
+        logger.debug(
+            " == LLM cache == Query answer cache bypassed: conversation_history "
+            f"is set ({len(query_param.conversation_history)} message(s), "
+            f"mode:{query_param.mode})"
+        )
+        return None
+    return hashing_kv
 
 
 async def kg_query(
@@ -4153,7 +4216,9 @@ async def kg_query(
     )
 
     # Handle cache
+    answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
     args_hash = compute_args_hash(
+        _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
         query,
         query_param.response_type,
@@ -4172,7 +4237,7 @@ async def kg_query(
     )
 
     cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
 
     if cached_result is not None:
@@ -4193,11 +4258,12 @@ async def kg_query(
         )
 
         if (
-            hashing_kv
-            and hashing_kv.global_config.get("enable_llm_cache")
+            answer_cache_kv
+            and answer_cache_kv.global_config.get("enable_llm_cache")
             and not is_truncated_response(response)
         ):
             queryparam_dict = {
+                "answer_cache_version": _ANSWER_CACHE_POLICY_VERSION,
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
                 "top_k": query_param.top_k,
@@ -4214,7 +4280,7 @@ async def kg_query(
                 ),
             }
             await save_to_cache(
-                hashing_kv,
+                answer_cache_kv,
                 CacheData(
                     args_hash=args_hash,
                     content=response,
@@ -6168,7 +6234,9 @@ async def naive_query(
         return QueryResult(content=prompt_content, raw_data=raw_data)
 
     # Handle cache
+    answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
     args_hash = compute_args_hash(
+        _ANSWER_CACHE_POLICY_VERSION,
         query_param.mode,
         query,
         query_param.response_type,
@@ -6184,7 +6252,7 @@ async def naive_query(
         serialize_llm_cache_identity(llm_cache_identity),
     )
     cached_result = await handle_cache(
-        hashing_kv, args_hash, user_query, query_param.mode, cache_type="query"
+        answer_cache_kv, args_hash, user_query, query_param.mode, cache_type="query"
     )
     if cached_result is not None:
         cached_response, _ = cached_result  # Extract content, ignore timestamp
@@ -6202,11 +6270,12 @@ async def naive_query(
         )
 
         if (
-            hashing_kv
-            and hashing_kv.global_config.get("enable_llm_cache")
+            answer_cache_kv
+            and answer_cache_kv.global_config.get("enable_llm_cache")
             and not is_truncated_response(response)
         ):
             queryparam_dict = {
+                "answer_cache_version": _ANSWER_CACHE_POLICY_VERSION,
                 "mode": query_param.mode,
                 "response_type": query_param.response_type,
                 "top_k": query_param.top_k,
@@ -6221,7 +6290,7 @@ async def naive_query(
                 ),
             }
             await save_to_cache(
-                hashing_kv,
+                answer_cache_kv,
                 CacheData(
                     args_hash=args_hash,
                     content=response,
