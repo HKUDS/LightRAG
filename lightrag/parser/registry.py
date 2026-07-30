@@ -219,6 +219,11 @@ _LEGACY_SUFFIXES = frozenset(
         "less",
     }
 )
+# Formats a MinerU endpoint handles out of the box. Which of the remaining
+# MinerU input formats work depends on the endpoint (legacy Office goes through
+# LibreOffice on MinerU's side, and the official API's coverage is fixed by the
+# service) and on the active MINERU_API_MODE, so they are opted into per
+# deployment via MINERU_ADDITIONAL_SUFFIXES (see ``extra_suffixes_env``).
 _MINERU_SUFFIXES = frozenset(
     {
         "pdf",
@@ -284,6 +289,7 @@ _REGISTRY: dict[str, ParserSpec] = {
         queue_group=PARSER_ENGINE_MINERU,  # sized by max_parallel_parse_mineru
         endpoint_configured=_mineru_endpoint_configured,
         endpoint_requirement=_mineru_endpoint_requirement,
+        extra_suffixes_env="MINERU_ADDITIONAL_SUFFIXES",
     ),
     PARSER_ENGINE_DOCLING: ParserSpec(
         engine_name=PARSER_ENGINE_DOCLING,
