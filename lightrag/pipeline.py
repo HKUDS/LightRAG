@@ -6195,19 +6195,55 @@ class _PipelineMixin:
                     "description": _required_json_string(parsed, prefix, "description"),
                 }
                 if kind == "equation":
-                    # The model may return the equation under a semantically
-                    # equivalent key such as "equ", or omit it entirely. The
-                    # sidecar already holds the authoritative LaTeX, so fall
-                    # back to it rather than aborting the whole document
-                    # (#3502).
-                    equation_value = parsed.get("equation") or parsed.get("equ")
-                    if isinstance(equation_value, str) and equation_value.strip():
-                        result_obj["equation"] = equation_value.strip()
+                    # ``equation`` is the one deterministic analysis field: the
+                    # equations sidecar already carries the parser's
+                    # authoritative LaTeX.  An otherwise valid response (name +
+                    # description) must therefore not fail a whole document
+                    # just because the model renamed or dropped that one field
+                    # (#3502).  Resolution order:
+                    #   1. ``equation`` — the schema field, normalized as the
+                    #      equation_analysis prompt requires (delimiters and
+                    #      ``\tag{...}`` stripped, align→aligned, Markdown /
+                    #      Unicode math converted to LaTeX).
+                    #   2. ``equ`` — off-schema key observed in the wild, also
+                    #      model-normalized.  Kept deliberately narrow to keys
+                    #      actually seen, because any key accepted here
+                    #      shadows the sidecar fallback below.
+                    #   3. sidecar source LaTeX — NOT normalized (may still
+                    #      carry ``\tag{...}``, ``align``, Unicode math), but
+                    #      preserving it beats failing the document.
+                    equation_value = ""
+                    equation_key = ""
+                    for candidate_key in ("equation", "equ"):
+                        candidate = parsed.get(candidate_key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            equation_value = candidate.strip()
+                            equation_key = candidate_key
+                            break
+                    if equation_value:
+                        if equation_key != "equation":
+                            logger.warning(
+                                f"[analyze_multimodal] {prefix}: model returned "
+                                f"the equation under off-schema key "
+                                f"'{equation_key}'; accepting it as 'equation'"
+                            )
+                        result_obj["equation"] = equation_value
                     elif equation_fallback and equation_fallback.strip():
+                        logger.warning(
+                            f"[analyze_multimodal] {prefix}: model response "
+                            f"missing valid 'equation'; using unnormalized "
+                            f"source LaTeX from the equation sidecar"
+                        )
                         result_obj["equation"] = equation_fallback.strip()
                     else:
-                        raise _MMJSONConformanceError(
-                            f"{prefix}: missing or invalid field 'equation'"
+                        # Defensive only: ``_analyze_text_modality`` rejects an
+                        # equation item with empty sidecar content before any
+                        # analysis call, so the live path always has a fallback.
+                        # Reuse the standard validator so a future caller that
+                        # omits ``equation_fallback`` still fails with the
+                        # canonical conformance error (and gets the retry).
+                        result_obj["equation"] = _required_json_string(
+                            parsed, prefix, "equation"
                         )
                 return result_obj
 

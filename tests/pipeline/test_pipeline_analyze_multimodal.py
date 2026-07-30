@@ -866,10 +866,14 @@ def _write_equation_fixture(tmp_path: Path, latex: str) -> tuple[str, dict, Path
 
 
 @pytest.mark.asyncio
-async def test_equation_omitted_field_falls_back_to_sidecar_latex(tmp_path):
+async def test_equation_omitted_field_falls_back_to_sidecar_latex(
+    tmp_path, caplog, _propagate_lightrag_logger
+):
     """Regression #3502: when the model omits the `equation` field entirely,
     the analysis must fall back to the sidecar's authoritative LaTeX instead
-    of aborting the whole document."""
+    of aborting the whole document — and must say so in the log, since the
+    fallback silently trades the prompt-mandated normalization for source
+    LaTeX and no conformance retry fires any more."""
     extract_log: list[dict] = []
 
     async def extract_func(prompt, **kwargs):
@@ -895,12 +899,14 @@ async def test_equation_omitted_field_falls_back_to_sidecar_latex(tmp_path):
             tmp_path, sidecar_latex
         )
 
-        await rag.analyze_multimodal(
-            doc_id=doc_id,
-            file_path="fixture.pdf",
-            parsed_data=parsed_data,
-            process_options="e",
-        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="e",
+            )
         assert len(extract_log) == 1
         payload = json.loads(equations_path.read_text(encoding="utf-8"))
         result = payload["equations"]["eq-001"]["llm_analyze_result"]
@@ -908,14 +914,26 @@ async def test_equation_omitted_field_falls_back_to_sidecar_latex(tmp_path):
         assert result["name"] == "sample-quantile"
         # The equation field must be recovered from the sidecar LaTeX.
         assert result["equation"] == sidecar_latex
+        # Operators must be able to see that their model returns off-schema
+        # JSON: the fallback is the only remaining signal (the JSON
+        # conformance retry no longer fires for this response).
+        assert [
+            r
+            for r in caplog.records
+            if "equation/eq-001" in r.getMessage()
+            and "unnormalized source LaTeX" in r.getMessage()
+        ]
     finally:
         await rag.finalize_storages()
 
 
 @pytest.mark.asyncio
-async def test_equation_equ_alias_accepted(tmp_path):
+async def test_equation_equ_alias_accepted(
+    tmp_path, caplog, _propagate_lightrag_logger
+):
     """Regression #3502: when the model returns the equation under a
-    semantically equivalent key such as `equ`, it must be accepted."""
+    semantically equivalent key such as `equ`, it must be accepted (and
+    logged — an accepted alias shadows the sidecar's authoritative LaTeX)."""
     extract_log: list[dict] = []
 
     async def extract_func(prompt, **kwargs):
@@ -942,18 +960,31 @@ async def test_equation_equ_alias_accepted(tmp_path):
             tmp_path, sidecar_latex
         )
 
-        await rag.analyze_multimodal(
-            doc_id=doc_id,
-            file_path="fixture.pdf",
-            parsed_data=parsed_data,
-            process_options="e",
-        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="e",
+            )
         assert len(extract_log) == 1
         payload = json.loads(equations_path.read_text(encoding="utf-8"))
         result = payload["equations"]["eq-001"]["llm_analyze_result"]
         assert result["status"] == "success"
         # The `equ` alias value is used (preferred over the sidecar fallback).
         assert result["equation"] == r"x_p = x_{(k)}"
+        assert [
+            r
+            for r in caplog.records
+            if "equation/eq-001" in r.getMessage()
+            and "off-schema key 'equ'" in r.getMessage()
+        ]
+        # The sidecar fallback must NOT be reported when the alias supplied a
+        # usable body.
+        assert not [
+            r for r in caplog.records if "unnormalized source LaTeX" in r.getMessage()
+        ]
     finally:
         await rag.finalize_storages()
 
