@@ -6,6 +6,7 @@ from lightrag.rerank import aggregate_chunk_scores
 
 
 def test_aggregate_chunk_scores_handles_none_index_and_score():
+    """None-valued rerank results must not corrupt score aggregation."""
     chunk_results = [
         {"index": None, "relevance_score": 0.9},
         {"index": 0, "relevance_score": None},
