@@ -1003,6 +1003,8 @@ async def rebuild_knowledge_from_chunks(
                 # Merge entities and relationships from this extraction result
                 # Compare description lengths and keep the better version for the same chunk_id
                 for entity_name, entity_list in entities.items():
+                    if not entity_list:
+                        continue
                     if entity_name not in chunk_entities[chunk_id]:
                         # New entity for this chunk_id
                         chunk_entities[chunk_id][entity_name].extend(entity_list)
@@ -1026,6 +1028,8 @@ async def rebuild_knowledge_from_chunks(
 
                 # Compare description lengths and keep the better version for the same chunk_id
                 for rel_key, rel_list in relationships.items():
+                    if not rel_list:
+                        continue
                     if rel_key not in chunk_relationships[chunk_id]:
                         # New relationship for this chunk_id
                         chunk_relationships[chunk_id][rel_key].extend(rel_list)
@@ -2138,13 +2142,18 @@ async def _merge_nodes_then_upsert(
         source_id = GRAPH_FIELD_SEP.join(source_ids)
 
         # 6.2 Finalize entity type by highest count
-        entity_type = sorted(
-            Counter(
-                [dp["entity_type"] for dp in nodes_data] + already_entity_types
-            ).items(),
-            key=lambda x: x[1],
-            reverse=True,
-        )[0][0]
+        type_counts = Counter(
+            [dp["entity_type"] for dp in nodes_data if dp.get("entity_type")]
+            + already_entity_types
+        ).items()
+        if type_counts:
+            entity_type = sorted(
+                type_counts,
+                key=lambda x: x[1],
+                reverse=True,
+            )[0][0]
+        else:
+            entity_type = "UNKNOWN"
 
         # 7. Deduplicate nodes by description, keeping first occurrence in the same document
         unique_nodes = {}
@@ -3592,16 +3601,21 @@ async def extract_entities(
             for i, (entity_name, glean_entities) in enumerate(
                 glean_nodes.items(), start=1
             ):
+                if not glean_entities:
+                    continue
                 if entity_name in maybe_nodes:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_nodes[entity_name][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
-
-                    if glean_desc_len > original_desc_len:
+                    if not maybe_nodes[entity_name]:
                         maybe_nodes[entity_name] = list(glean_entities)
-                    # Otherwise keep original version
+                    else:
+                        # Compare description lengths and keep the better one
+                        original_desc_len = len(
+                            maybe_nodes[entity_name][0].get("description", "") or ""
+                        )
+                        glean_desc_len = len(glean_entities[0].get("description", "") or "")
+
+                        if glean_desc_len > original_desc_len:
+                            maybe_nodes[entity_name] = list(glean_entities)
+                        # Otherwise keep original version
                 else:
                     # New entity from gleaning stage
                     maybe_nodes[entity_name] = list(glean_entities)
@@ -3610,18 +3624,23 @@ async def extract_entities(
             for i, (edge_key, glean_edge_list) in enumerate(
                 glean_edges.items(), start=1
             ):
+                if not glean_edge_list:
+                    continue
                 if edge_key in maybe_edges:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_edges[edge_key][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(
-                        glean_edge_list[0].get("description", "") or ""
-                    )
-
-                    if glean_desc_len > original_desc_len:
+                    if not maybe_edges[edge_key]:
                         maybe_edges[edge_key] = list(glean_edge_list)
-                    # Otherwise keep original version
+                    else:
+                        # Compare description lengths and keep the better one
+                        original_desc_len = len(
+                            maybe_edges[edge_key][0].get("description", "") or ""
+                        )
+                        glean_desc_len = len(
+                            glean_edge_list[0].get("description", "") or ""
+                        )
+
+                        if glean_desc_len > original_desc_len:
+                            maybe_edges[edge_key] = list(glean_edge_list)
+                        # Otherwise keep original version
                 else:
                     # New edge from gleaning stage
                     maybe_edges[edge_key] = list(glean_edge_list)
@@ -5136,14 +5155,14 @@ async def _build_query_context(
             truncation_result.get("filtered_relations", [])
         ),
         "merged_chunks_count": len(merged_chunks),
-        "final_chunks_count": len(raw_data.get("data", {}).get("chunks", [])),
+        "final_chunks_count": len((raw_data.get("data") or {}).get("chunks", [])),
     }
 
     logger.debug(
         f"[_build_query_context] Context length: {len(context) if context else 0}"
     )
     logger.debug(
-        f"[_build_query_context] Raw data entities: {len(raw_data.get('data', {}).get('entities', []))}, relationships: {len(raw_data.get('data', {}).get('relationships', []))}, chunks: {len(raw_data.get('data', {}).get('chunks', []))}"
+        f"[_build_query_context] Raw data entities: {len((raw_data.get('data') or {}).get('entities', []))}, relationships: {len((raw_data.get('data') or {}).get('relationships', []))}, chunks: {len((raw_data.get('data') or {}).get('chunks', []))}"
     )
 
     return QueryContextResult(context=context, raw_data=raw_data)
