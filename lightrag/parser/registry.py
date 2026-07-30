@@ -182,7 +182,7 @@ _DOCLING_SUFFIXES = frozenset(
         "webp",
         "bmp",
     }
-) | _env_suffixes("DOCLING_ADDITIONAL_SUFFIXES")
+)
 
 
 _REGISTRY: dict[str, ParserSpec] = {
@@ -299,9 +299,9 @@ def available_engine_suffixes(
     suffixes join automatically (subject to its own endpoint gate).
     """
     out: set[str] = set()
-    for spec in _table(specs).values():
+    for name, spec in _table(specs).items():
         if spec.user_selectable and spec.endpoint_configured():
-            out |= spec.suffixes
+            out |= suffix_capabilities(name, specs)
     return frozenset(out)
 
 
@@ -309,7 +309,15 @@ def suffix_capabilities(
     engine: str, specs: dict[str, ParserSpec] | None = None
 ) -> frozenset[str]:
     spec = _table(specs).get(engine)
-    return spec.suffixes if spec is not None else frozenset()
+    if spec is None:
+        return frozenset()
+    suffixes = spec.suffixes
+    if (
+        engine == PARSER_ENGINE_DOCLING
+        and spec.impl == "lightrag.parser.external.docling.parser:DoclingParser"
+    ):
+        suffixes |= _env_suffixes("DOCLING_ADDITIONAL_SUFFIXES")
+    return suffixes
 
 
 def engine_endpoint_configured(

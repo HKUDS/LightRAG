@@ -47,6 +47,20 @@ def test_docling_additional_suffixes_are_routable():
     assert proc.returncode == 0, proc.stderr
 
 
+def test_docling_additional_suffixes_follow_late_env(monkeypatch):
+    monkeypatch.delenv("DOCLING_ADDITIONAL_SUFFIXES", raising=False)
+    baseline = registry.suffix_capabilities("docling")
+
+    monkeypatch.setenv("DOCLING_ENDPOINT", "http://docling.test")
+    monkeypatch.setenv("DOCLING_ADDITIONAL_SUFFIXES", " .LateFmt ")
+
+    assert "latefmt" in registry.suffix_capabilities("docling")
+    assert "latefmt" in registry.available_engine_suffixes()
+
+    monkeypatch.delenv("DOCLING_ADDITIONAL_SUFFIXES")
+    assert registry.suffix_capabilities("docling") == baseline
+
+
 def test_get_parser_unknown_returns_none():
     assert registry.get_parser("does-not-exist") is None
 
