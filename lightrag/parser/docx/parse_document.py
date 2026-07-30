@@ -1134,7 +1134,7 @@ def extract_docx_blocks(
         raise DocxContentError(
             format_error("File is not a valid DOCX document", details, solution)
         ) from exc
-    resolver = NumberingResolver(file_path)
+    resolver = NumberingResolver(file_path, warnings=parse_warnings)
     styles_outline = parse_styles_outline_levels(file_path)
 
     smart_enabled = bool(

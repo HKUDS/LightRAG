@@ -8,6 +8,8 @@ import zipfile
 from defusedxml import ElementTree as ET
 from typing import Dict
 
+from lightrag.utils import logger
+
 NSMAP = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
@@ -22,20 +24,32 @@ class NumberingResolver:
     Each paragraph references: numId (which definition) + ilvl (which level)
     """
 
-    # Number format converters
+    # Number format converters.
+    #
+    # The CJK families are NOT interchangeable — see [MS-DOCX] "numFmt
+    # Extensions" for the authoritative 1 / 10 / 100 sequences:
+    #   japaneseCounting / chineseCounting / taiwaneseCounting /
+    #   chineseCountingThousand  -> positional counting: 一 / 十 / …
+    #   ideographDigital         -> DIGIT-BY-DIGIT:      一 / 一〇 / 一〇〇
+    # Chinese-locale Word/WPS writes 一二三 auto-numbering as japaneseCounting
+    # (not chineseCounting), which is why both are mapped here.
     FORMAT_CONVERTERS = {
         "decimal": lambda n: str(n),
         "lowerLetter": lambda n: chr(ord("a") + (n - 1) % 26),
         "upperLetter": lambda n: chr(ord("A") + (n - 1) % 26),
         "lowerRoman": lambda n: NumberingResolver._to_roman(n).lower(),
         "upperRoman": lambda n: NumberingResolver._to_roman(n),
+        "chineseCounting": lambda n: NumberingResolver._to_chinese(n),
         "chineseCountingThousand": lambda n: NumberingResolver._to_chinese(n),
+        "japaneseCounting": lambda n: NumberingResolver._to_chinese(n),
+        "taiwaneseCounting": lambda n: NumberingResolver._to_chinese(n),
+        "ideographDigital": lambda n: NumberingResolver._to_ideograph_digital(n),
         "ideographTraditional": lambda n: "甲乙丙丁戊己庚辛壬癸"[(n - 1) % 10],
         "bullet": lambda n: "•",
         "none": lambda n: "",
     }
 
-    def __init__(self, docx_path: str):
+    def __init__(self, docx_path: str, *, warnings: Dict | None = None):
         self.abstract_nums: Dict[str, dict] = {}  # abstractNumId -> level definitions
         # abstractNumId -> {styleId -> ilvl}: per-level w:pStyle links. Word ties
         # a multilevel list's levels to heading styles here; used to recover a
@@ -56,8 +70,32 @@ class NumberingResolver:
         self.last_numId: str = None  # Previous paragraph's numId
         self.last_abstract_id: str = None  # Previous paragraph's abstractNumId
         self.last_style_id: str = None  # Previous paragraph's style ID
+        # numFmt values this resolver cannot render, collected the first time
+        # each is hit. An unknown numFmt is a legitimate OOXML value we simply
+        # do not implement (not corruption), so the label still degrades to
+        # decimal — but never silently: a wrong-looking-yet-plausible label is
+        # harder to notice than an outright error.
+        self.unsupported_formats: set[str] = set()
+        self._warnings = warnings
         self._parse_numbering_xml(docx_path)
         self._parse_styles_xml(docx_path)
+
+    def _note_unsupported_format(self, num_fmt: str) -> None:
+        """Record an unrenderable numFmt once. Must never raise: the callers
+        (:meth:`get_label` / :meth:`_format_label`) swallow exceptions to keep
+        document parsing alive, so a raise here would be invisible."""
+        if not num_fmt or num_fmt in self.unsupported_formats:
+            return
+        self.unsupported_formats.add(num_fmt)
+        logger.warning(
+            "Unsupported numbering format '%s' rendered as decimal; "
+            "auto-numbering labels for those paragraphs may be wrong",
+            num_fmt,
+        )
+        if self._warnings is not None:
+            self._warnings["numbering_unsupported_formats"] = len(
+                self.unsupported_formats
+            )
 
     def _parse_numbering_xml(self, docx_path: str):
         """Parse numbering.xml from DOCX archive"""
@@ -434,7 +472,10 @@ class NumberingResolver:
                     if current_is_lgl and i < ilvl:
                         num_fmt = "decimal"
                     count = self.counters[num_id][i]
-                    converter = self.FORMAT_CONVERTERS.get(num_fmt, lambda n: str(n))
+                    converter = self.FORMAT_CONVERTERS.get(num_fmt)
+                    if converter is None:
+                        self._note_unsupported_format(num_fmt)
+                        converter = str
                     formatted = converter(count)
                     result = result.replace(f"%{i + 1}", formatted)
 
@@ -471,7 +512,16 @@ class NumberingResolver:
 
     @staticmethod
     def _to_chinese(n: int) -> str:
-        """Convert integer to Chinese numeral"""
+        """Convert integer to a POSITIONAL Chinese numeral (10 -> 十).
+
+        Backs the counting families (japaneseCounting / chineseCounting /
+        taiwaneseCounting / chineseCountingThousand). Covers 1-99 and falls back
+        to the decimal string beyond that: [MS-DOCX] switches chineseCounting /
+        taiwaneseCounting to a U+25CB digit-by-digit form at 100 (一○○) which is
+        NOT what this produces, and list numbering practically never gets there.
+        For the digit-by-digit ideograph family use
+        :meth:`_to_ideograph_digital` — 10 renders 一〇 there, not 十.
+        """
         digits = "零一二三四五六七八九"
         if n <= 0 or n > 99:
             return str(n)
@@ -484,3 +534,19 @@ class NumberingResolver:
             ones = n % 10
             return digits[tens] + "十" + (digits[ones] if ones else "")
         return str(n)
+
+    @staticmethod
+    def _to_ideograph_digital(n: int) -> str:
+        """Convert integer to DIGIT-BY-DIGIT ideographs (10 -> 一〇).
+
+        The ``ideographDigital`` format is positional in the decimal sense, not
+        a counting system: per [MS-DOCX] "numFmt Extensions" the sequence for
+        1 / 10 / 100 is U+4E00 / U+4E00 U+3007 / U+4E00 U+3007 U+3007, i.e.
+        一 / 一〇 / 一〇〇. Zero is U+3007 IDEOGRAPHIC NUMBER ZERO 〇 — note this
+        differs from the U+25CB WHITE CIRCLE ○ that chineseCounting /
+        taiwaneseCounting use at 100.
+        """
+        if n <= 0:
+            return str(n)
+        digits = "〇一二三四五六七八九"
+        return "".join(digits[int(ch)] for ch in str(n))
