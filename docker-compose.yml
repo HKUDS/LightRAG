@@ -64,6 +64,11 @@ services:
     environment:
       NEO4J_AUTH: ${NEO4J_USERNAME:?NEO4J_USERNAME must be set in .env}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
       NEO4J_dbms_default__database: "neo4j"
+      # APOC is used by LightRAG for bounded subgraph traversal. Restrict
+      # the loaded/unrestricted surface to the apoc.path package only.
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_allowlist: "apoc.path.*"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.path.*"
     volumes:
       - neo4j_data:/data
     healthcheck:
