@@ -1,6 +1,7 @@
 """
 aggregate_chunk_scores must safely ignore chunk_results with None index or None relevance_score.
 """
+
 from lightrag.rerank import aggregate_chunk_scores
 
 

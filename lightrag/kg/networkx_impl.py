@@ -401,7 +401,11 @@ class NetworkXStorage(BaseGraphStorage):
             if not isinstance(item, (tuple, list)) or len(item) < 2:
                 continue
             source, target = item[0], item[1]
-            if source is not None and target is not None and graph.has_edge(source, target):
+            if (
+                source is not None
+                and target is not None
+                and graph.has_edge(source, target)
+            ):
                 graph.remove_edge(source, target)
 
     async def get_all_labels(self) -> list[str]:

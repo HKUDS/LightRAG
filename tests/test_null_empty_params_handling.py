@@ -31,7 +31,11 @@ def test_format_relation_edge_label_empty_and_none():
 
 
 def test_pick_by_weighted_polling_null_elements_and_none_chunks():
-    entities_or_relations = [None, {"sorted_chunks": None}, {"sorted_chunks": ["c1", "c2"]}]
+    entities_or_relations = [
+        None,
+        {"sorted_chunks": None},
+        {"sorted_chunks": ["c1", "c2"]},
+    ]
     result = pick_by_weighted_polling(entities_or_relations, max_related_chunks=2)
     assert result == ["c1", "c2"]
 
@@ -70,6 +74,9 @@ async def test_networkx_storage_null_edges(tmp_path):
     storage._storage_lock = asyncio.Lock()
     storage._graph = nx.Graph()
     storage.storage_updated = type("Value", (), {"value": False})()
+
+    await storage.upsert_edges_batch([])
+    assert storage._graph.number_of_edges() == 0
     # Malformed / None edges in batch operations
     await storage.upsert_edges_batch([None, ("A",), ("A", "B", {"weight": 1.0})])
     assert await storage.has_edge("A", "B") is True
