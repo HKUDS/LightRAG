@@ -12,7 +12,7 @@ from lightrag.kg.networkx_impl import NetworkXStorage
 
 
 def test_aggregate_chunk_scores_with_none_and_non_dict():
-    # Contains None and non-dict items alongside valid chunk result
+    """Ignore invalid score entries while retaining valid chunk scores."""
     chunk_results = [None, "invalid", {"index": 0, "relevance_score": 0.85}]
     doc_indices = [0]
     num_original_docs = 1
@@ -24,6 +24,7 @@ def test_aggregate_chunk_scores_with_none_and_non_dict():
 
 
 def test_format_relation_edge_label_empty_and_none():
+    """Format incomplete relation keys without indexing errors."""
     assert _format_relation_edge_label([]) == "N/A->N/A"
     assert _format_relation_edge_label(["A"]) == "A->N/A"
     assert _format_relation_edge_label(()) == "N/A->N/A"
@@ -31,6 +32,7 @@ def test_format_relation_edge_label_empty_and_none():
 
 
 def test_pick_by_weighted_polling_null_elements_and_none_chunks():
+    """Skip null polling inputs and return chunks from valid entries."""
     entities_or_relations = [
         None,
         {"sorted_chunks": None},
@@ -42,6 +44,7 @@ def test_pick_by_weighted_polling_null_elements_and_none_chunks():
 
 @pytest.mark.asyncio
 async def test_pick_by_vector_similarity_null_and_none_chunks():
+    """Return no matches when similarity inputs contain no usable chunks."""
     entity_info = [None, {"sorted_chunks": None}]
     result = await pick_by_vector_similarity(
         query="test",
@@ -55,6 +58,7 @@ async def test_pick_by_vector_similarity_null_and_none_chunks():
 
 
 def test_generate_reference_list_from_chunks_with_none():
+    """Ignore null chunks while assigning references to valid chunks."""
     chunks = [None, {"file_path": "doc1.txt"}]
     ref_list, updated_chunks = generate_reference_list_from_chunks(chunks)
     assert len(ref_list) == 1
@@ -65,6 +69,7 @@ def test_generate_reference_list_from_chunks_with_none():
 
 @pytest.mark.asyncio
 async def test_networkx_storage_null_edges(tmp_path):
+    """Handle empty and malformed edge batches without corrupting the graph."""
     storage = NetworkXStorage(
         namespace="test",
         global_config={"working_dir": str(tmp_path)},
@@ -77,7 +82,6 @@ async def test_networkx_storage_null_edges(tmp_path):
 
     await storage.upsert_edges_batch([])
     assert storage._graph.number_of_edges() == 0
-    # Malformed / None edges in batch operations
     await storage.upsert_edges_batch([None, ("A",), ("A", "B", {"weight": 1.0})])
     assert await storage.has_edge("A", "B") is True
 

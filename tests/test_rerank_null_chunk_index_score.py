@@ -6,6 +6,7 @@ from lightrag.rerank import aggregate_chunk_scores
 
 
 def test_aggregate_chunk_scores_handles_none_index_and_score():
+    """Ignore missing indices and scores while aggregating valid results."""
     chunk_results = [
         {"index": None, "relevance_score": 0.9},
         {"index": 0, "relevance_score": None},
