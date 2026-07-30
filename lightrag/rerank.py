@@ -155,9 +155,17 @@ def aggregate_chunk_scores(
         chunk_idx = result.get("index")
         score = result.get("relevance_score")
 
-        if chunk_idx is not None and isinstance(chunk_idx, int) and 0 <= chunk_idx < len(doc_indices):
+        if (
+            chunk_idx is not None
+            and isinstance(chunk_idx, int)
+            and 0 <= chunk_idx < len(doc_indices)
+        ):
             original_doc_idx = doc_indices[chunk_idx]
-            if isinstance(original_doc_idx, int) and 0 <= original_doc_idx < num_original_docs and score is not None:
+            if (
+                isinstance(original_doc_idx, int)
+                and 0 <= original_doc_idx < num_original_docs
+                and score is not None
+            ):
                 try:
                     score_val = float(score)
                     doc_scores[original_doc_idx].append(score_val)

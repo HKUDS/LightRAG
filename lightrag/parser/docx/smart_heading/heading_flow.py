@@ -270,6 +270,36 @@ def _log_physical_feature_summary(
     )
 
 
+def _center_pad_events(
+    records: Sequence[Any], body_indices: Sequence[int]
+) -> list[dict]:
+    """Audit rows for paragraphs whose ``w:jc=center`` a leading space pad
+    defeated (``guardrails.is_visually_centered``).
+
+    Emitted from ``run_smart_heading`` — a per-document terminal point — and
+    NOT from ``gate_candidates``, whose first pass may be discarded by a CB1
+    re-estimation (a counter incremented there would drift or double). The
+    property is purely physical, so one scan of the records is equivalent to
+    what every gate pass sees.
+
+    This is the only trace such a paragraph leaves: it matches no rule
+    afterwards and so takes ``gate_candidates``' silent ``continue`` without
+    producing a decision, leaving a later "why did my centered heading vanish"
+    with nothing to read. Values are ints/floats/strs in scan order —
+    deterministic and replayable.
+    """
+    return [
+        {
+            "rule": "center_pad_offset",
+            "index": i,
+            "pad_em": round(records[i].leading_pad_em, 2),
+        }
+        for i in body_indices
+        if records[i].alignment == "center"
+        and not guardrails.is_visually_centered(records[i])
+    ]
+
+
 # ---------------------------------------------------------------------------
 # step 1 — candidate gate
 # ---------------------------------------------------------------------------
@@ -488,9 +518,12 @@ def gate_candidates(
     # own — no companion needed (a two-line centered title has none). The
     # shape gate carries the exclusions that make solo admission safe: strong
     # body, genuine numbering, captions (图*/表*), a bare 成文日期 (a centered
-    # 落款 date), and letter-free decoration lines (page numbers ``- 1 -``,
-    # separators ``***``). Known residue (documented, not coded around):
-    # a centered issuer/signature line or slogan is shape-identical to a real
+    # 落款 date), letter-free decoration lines (page numbers ``- 1 -``,
+    # separators ``***``), and — via is_visually_centered — a line whose
+    # w:jc=center is defeated by a wide leading space pad (the 落款/署名 an
+    # author positions bottom-right by padding a centered paragraph).
+    # Known residue (documented, not coded around): a centered issuer/signature
+    # line or slogan that is NOT space-padded is shape-identical to a real
     # title — strong-body / LLM-veto / imprint-preceding cover most, and the
     # CB1 density breaker backstops centered-heavy documents.
     # Lines still group into runs (consecutive without an intervening body
@@ -504,7 +537,7 @@ def gate_candidates(
     for i in para_indices:
         rec = records[i]
         centered_shape[i] = (
-            rec.alignment == "center"
+            guardrails.is_visually_centered(rec)
             # A zero-visible-char placeholder is not a centered "line": it
             # neither takes the channel nor joins a centered run (a decorative
             # image between title lines must not push the run over the
@@ -753,7 +786,7 @@ def gate_candidates(
             font_size_pt=size,
             outline_level=rec.outline_level,
             numbering=cls,
-            centered=rec.alignment == "center",
+            centered=guardrails.is_visually_centered(rec),
             all_bold=rec.all_bold,
         )
         decision.note(rule)
@@ -2800,6 +2833,22 @@ def run_smart_heading(
 
     if _estimate_record_tokens(records, body_indices) < min_tokens:
         return None  # CB4 whole-document gate — smart never ran
+
+    # Counted AFTER the CB4 gate: a skipped short document ran no smart rules,
+    # so it must not report smart warnings.
+    center_pad_events = _center_pad_events(records, body_indices)
+    if center_pad_events:
+        audit["rule_events"].extend(center_pad_events)
+        warnings["smart_center_pad_offset"] = warnings.get(
+            "smart_center_pad_offset", 0
+        ) + len(center_pad_events)
+        logger.info(
+            "[smart_heading] %d centered paragraph(s) lost the centered channel "
+            "to a leading space pad (>= %.1f em): %s",
+            len(center_pad_events),
+            g.CENTER_MAX_LEADING_PAD_EM,
+            [(e["index"], e["pad_em"]) for e in center_pad_events],
+        )
 
     # --- title blocks -------------------------------------------------------
     # The title-block gate baseline is the GLOBAL FS_base initial

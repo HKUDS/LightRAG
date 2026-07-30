@@ -660,6 +660,12 @@ class ParagraphRecord:
     first_line_font_size_pt: float | None = None  # before first soft break
     all_bold: bool = False
     alignment: str | None = None  # resolved w:jc or None
+    # Net leading whitespace of the first line in CJK em (trailing subtracted).
+    # ``text`` above is already stripped, so this is the ONLY place the padding
+    # survives — it is what separates a genuinely centered title from a
+    # space-padded 落款 that merely carries w:jc=center
+    # (guardrails.is_visually_centered).
+    leading_pad_em: float = 0.0
     page_break_before: bool = False  # w:pPr/w:pageBreakBefore only
     has_page_break_run: bool = False  # w:br type="page" run inside this para
     has_leading_page_break_run: bool = False  # page-break run before any text
@@ -835,6 +841,7 @@ def _read_document_records(
                 )
                 rec.all_bold = phys.all_bold
                 rec.alignment = phys.alignment
+                rec.leading_pad_em = phys.leading_pad_em
                 rec.page_break_before = phys.page_break_before
                 rec.has_page_break_run = phys.has_page_break_run
                 rec.has_leading_page_break_run = phys.has_leading_page_break_run

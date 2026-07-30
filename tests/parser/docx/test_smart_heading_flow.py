@@ -716,6 +716,57 @@ def test_centered_run_longer_than_four_loses_channel() -> None:
     assert "居中标题一" in texts and "居中标题二" in texts
 
 
+def test_space_padded_centered_line_loses_the_channel() -> None:
+    """A leading space pad defeats w:jc=center: the 落款 an author positions
+    bottom-right by padding a centered paragraph is not heading-shaped.
+
+    The two lines are identical in every gate input except the pad, so the pad
+    is provably the discriminator — and losing the centered channel is not a
+    veto, so the leveling band split must see the same verdict.
+    """
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        CENTER_MAX_LEADING_PAD_EM,
+    )
+
+    records = _body(30)
+    records.append(_para("孤立居中标题", size=12.0, alignment="center"))
+    records += _body(3)
+    records.append(
+        _para(
+            "某某市科学技术局",
+            size=12.0,
+            alignment="center",
+            leading_pad_em=CENTER_MAX_LEADING_PAD_EM * 3,
+        )
+    )
+    result = _gate(records)
+    texts = _texts(result)
+    assert "孤立居中标题" in texts
+    assert "某某市科学技术局" not in texts
+    # The admitted line still reports itself as centered to the leveling pass.
+    assert next(x for x in result.decisions if x.text == "孤立居中标题").centered
+
+
+def test_padded_centered_line_still_admitted_by_another_channel() -> None:
+    """Losing centeredness is not a veto — numbering / size / bold still admit,
+    and such a line is then leveled as UNcentered (its w:jc is not what the
+    reader sees)."""
+    records = _body(30)
+    records.append(
+        _para("一、工作安排", size=12.0, alignment="center", leading_pad_em=14.5)
+    )
+    records += _body(3)
+    records.append(_para("二、联系方式", size=12.0, alignment="center"))
+    result = _gate(records)
+    by_text = {d.text: d for d in result.decisions}
+    assert by_text["一、工作安排"].rule_trail[0] == "base_series"
+    assert by_text["二、联系方式"].rule_trail[0] == "base_series"
+    # Same alignment attribute, same size, same numbering — only the pad
+    # differs, and only the padded line is leveled as uncentered.
+    assert by_text["一、工作安排"].centered is False
+    assert by_text["二、联系方式"].centered is True
+
+
 def test_solo_centered_line_is_heading_under_high_confidence() -> None:
     """The solo-centered channel admits a clean line at a reliable body size.
 

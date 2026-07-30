@@ -4561,15 +4561,34 @@ async def pick_by_vector_similarity(
             f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
         )
 
-        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
-            if not chunk_vectors:
-                logger.warning(
-                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
-                )
-            else:
-                logger.warning(
-                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
-                )
+        if not chunk_vectors:
+            logger.warning(
+                "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+            )
+            return []
+
+        if len(chunk_vectors) != len(all_chunk_ids):
+            # A referenced chunk with no stored vector signals an inconsistency
+            # between the graph/text stores and the vector store. Keep the
+            # existing safety behavior: abort vector ranking so callers can fall
+            # back to the WEIGHT method, but make the mismatch easier to observe
+            # and repair by logging counts and a bounded sample of missing IDs.
+            expected = len(all_chunk_ids)
+            retrieved = len(chunk_vectors)
+            missing_ids = [
+                chunk_id for chunk_id in all_chunk_ids if chunk_id not in chunk_vectors
+            ]
+            sample = missing_ids[:5]
+            logger.warning(
+                "Vector similarity chunk selection: data inconsistency detected "
+                "(expected %s, retrieved %s, missing %s). Falling back to WEIGHT method. "
+                "Missing chunk IDs (sample): %s. "
+                "Vector/text storages may be out of sync; consider re-embedding or repairing.",
+                expected,
+                retrieved,
+                expected - retrieved,
+                sample,
+            )
             return []
 
         # Calculate cosine similarities

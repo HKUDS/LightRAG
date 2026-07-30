@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
@@ -64,6 +65,79 @@ def _env_endpoint_configured(env_name: str) -> Callable[[], bool]:
     return lambda: bool(os.getenv(env_name, "").strip())
 
 
+# ---------------------------------------------------------------------------
+# Deployment-configured suffix extensions (``ParserSpec.extra_suffixes_env``)
+# ---------------------------------------------------------------------------
+_SUFFIX_TOKEN = re.compile(r"^[a-z0-9]+$")
+
+
+def _parse_env_suffixes(env_name: str) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Split ``env_name``'s comma-separated list into (valid, malformed) tokens.
+
+    Normalisation per entry: strip surrounding whitespace, lowercase, drop
+    leading dots — so ``" .PPT "`` and ``"ppt"`` are the same suffix and a
+    trailing comma is harmless.  Anything else that is not ``[a-z0-9]+`` is
+    *malformed*, not a suffix: it can never equal ``Path.suffix``, so silently
+    admitting it would leave the operator's actual intent unmet with no
+    diagnostic.  Malformed tokens are excluded from the capability set and
+    reported by :func:`malformed_env_suffixes` for the startup check.
+    """
+    valid: set[str] = set()
+    malformed: list[str] = []
+    for raw in os.getenv(env_name, "").split(","):
+        token = raw.strip().lower().lstrip(".")
+        if not token:
+            continue
+        if _SUFFIX_TOKEN.match(token):
+            valid.add(token)
+        else:
+            malformed.append(raw.strip())
+    return frozenset(valid), tuple(malformed)
+
+
+def _env_suffixes(env_name: str) -> frozenset[str]:
+    return _parse_env_suffixes(env_name)[0]
+
+
+class _EnvExtendedSuffixes:
+    """Descriptor-typed ``ParserSpec.suffixes``: declared baseline ∪ env extras.
+
+    A spec that names an ``extra_suffixes_env`` reads back its declared
+    baseline unioned with that variable's suffixes, resolved **at every
+    access** rather than at construction.  ``_REGISTRY`` is a module-level
+    literal built at import time, which for the parser debug CLI happens
+    inside ``_build_parser()`` — before ``_run()`` imports ``lightrag.utils``
+    and triggers ``load_dotenv``.  Baking the env in at construction would
+    therefore permanently capture an empty set for anyone configuring the
+    variable in ``.env`` rather than the parent shell.
+
+    Reading live keeps every consumer honest without any of them knowing an
+    env var is involved: ``spec.suffixes`` *is* the engine's capability, so
+    ``suffix_capabilities`` / ``available_engine_suffixes`` stay one-liners.
+    The cost is that ``__eq__`` / ``__hash__`` of a spec carrying
+    ``extra_suffixes_env`` shift with the environment; specs are values in
+    ``_REGISTRY`` and are never used as dict keys or set members.
+    """
+
+    def __set_name__(self, owner, name: str) -> None:
+        self._attr = f"_{name}"
+
+    def __get__(self, obj, objtype=None) -> frozenset[str]:
+        if obj is None:
+            # Deliberately not a dataclass default: ``suffixes`` stays a
+            # required argument, so a registrant that forgets it still gets a
+            # TypeError instead of an engine that silently matches nothing.
+            raise AttributeError(self._attr)
+        base: frozenset[str] = getattr(obj, self._attr)
+        env_name = getattr(obj, "extra_suffixes_env", None)
+        return base | _env_suffixes(env_name) if env_name else base
+
+    def __set__(self, obj, value) -> None:
+        # frozen dataclass: bypass the instance-assignment guard, and coerce so
+        # a registrant passing a plain ``set`` cannot have it mutated in place.
+        object.__setattr__(obj, self._attr, frozenset(value))
+
+
 @dataclass(frozen=True)
 class ParserSpec:
     """Lightweight, import-cheap metadata for one parser engine.
@@ -75,7 +149,7 @@ class ParserSpec:
 
     engine_name: str
     impl: str
-    suffixes: frozenset[str]
+    suffixes: frozenset[str] = _EnvExtendedSuffixes()
     user_selectable: bool = True
     queue_group: str = PARSER_ENGINE_NATIVE
     # Worker count for this spec's queue_group. The registrant bakes in any
@@ -87,6 +161,14 @@ class ParserSpec:
     concurrency: int | None = None
     endpoint_configured: Callable[[], bool] = field(default=lambda: True)
     endpoint_requirement: Callable[[], str | None] = field(default=lambda: None)
+    # Name of a deployment env var whose comma-separated list extends
+    # ``suffixes`` (read live — see :class:`_EnvExtendedSuffixes`). For engines
+    # whose real format coverage depends on optional packages installed on the
+    # endpoint rather than on LightRAG: docling's legacy Office formats need
+    # LibreOffice on the docling-serve side, so the baseline declaration stays
+    # honest and each deployment opts the rest in. Malformed entries are
+    # rejected at startup (``validate_parser_suffix_env_vars``).
+    extra_suffixes_env: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,11 +219,15 @@ _LEGACY_SUFFIXES = frozenset(
         "less",
     }
 )
+# Formats a MinerU endpoint handles out of the box. Which of the remaining
+# MinerU input formats work depends on the endpoint (legacy Office goes through
+# LibreOffice on MinerU's side, and the official API's coverage is fixed by the
+# service) and on the active MINERU_API_MODE, so they are opted into per
+# deployment via MINERU_ADDITIONAL_SUFFIXES (see ``extra_suffixes_env``).
 _MINERU_SUFFIXES = frozenset(
     {
         "pdf",
         "docx",
-        "ppt",
         "pptx",
         "xlsx",
         "png",
@@ -153,6 +239,11 @@ _MINERU_SUFFIXES = frozenset(
         "bmp",
     }
 )
+
+
+# Formats available in the baseline Docling deployment. Optional converters
+# depend on packages installed by the endpoint and are opted into per
+# deployment via DOCLING_ADDITIONAL_SUFFIXES (see ``extra_suffixes_env``).
 _DOCLING_SUFFIXES = frozenset(
     {
         "pdf",
@@ -197,6 +288,7 @@ _REGISTRY: dict[str, ParserSpec] = {
         queue_group=PARSER_ENGINE_MINERU,  # sized by max_parallel_parse_mineru
         endpoint_configured=_mineru_endpoint_configured,
         endpoint_requirement=_mineru_endpoint_requirement,
+        extra_suffixes_env="MINERU_ADDITIONAL_SUFFIXES",
     ),
     PARSER_ENGINE_DOCLING: ParserSpec(
         engine_name=PARSER_ENGINE_DOCLING,
@@ -205,6 +297,7 @@ _REGISTRY: dict[str, ParserSpec] = {
         queue_group=PARSER_ENGINE_DOCLING,  # sized by max_parallel_parse_docling
         endpoint_configured=_env_endpoint_configured("DOCLING_ENDPOINT"),
         endpoint_requirement=lambda: "DOCLING_ENDPOINT",
+        extra_suffixes_env="DOCLING_ADDITIONAL_SUFFIXES",
     ),
     PARSER_ENGINE_REUSE: ParserSpec(
         engine_name=PARSER_ENGINE_REUSE,
@@ -297,6 +390,27 @@ def suffix_capabilities(
 ) -> frozenset[str]:
     spec = _table(specs).get(engine)
     return spec.suffixes if spec is not None else frozenset()
+
+
+def malformed_env_suffixes(
+    specs: dict[str, ParserSpec] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Env var name -> its malformed entries, over specs declaring one.
+
+    Empty when every ``extra_suffixes_env`` holds a well-formed list (the
+    common case, including "unset"). Consumed by the startup check
+    ``routing.validate_parser_suffix_env_vars``; kept here so the parsing rule
+    and the reporting share one implementation.
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for spec in _table(specs).values():
+        env_name = spec.extra_suffixes_env
+        if not env_name:
+            continue
+        malformed = _parse_env_suffixes(env_name)[1]
+        if malformed:
+            out[env_name] = malformed
+    return out
 
 
 def engine_endpoint_configured(

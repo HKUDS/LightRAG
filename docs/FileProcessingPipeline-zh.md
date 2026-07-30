@@ -172,10 +172,12 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 | --- | --- | --- |
 | `legacy` | 旧版提取方式，在加入流水线前集中提取内容 | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
 | `native` | 内置智能结构化内容抽取器 | `docx` `md` `textpack` |
-| `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
-| `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
+| `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp`（可扩展，见 `MINERU_ADDITIONAL_SUFFIXES`） |
+| `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp`（可扩展，见 `DOCLING_ADDITIONAL_SUFFIXES`） |
 
 `mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
+
+两个外部引擎上表列的都是**基线**格式集 —— 即引擎开箱即可处理的格式。它们其余的输入格式（旧版 Office `doc` / `xls` / `ppt`，docling 还有 ODF、EPUB、AsciiDoc、LaTeX、CSV 等）取决于**服务侧而非 LightRAG 侧**安装的组件 —— 旧版 Office 转换需要服务侧装有 LibreOffice —— MinerU 还额外取决于当前的 `MINERU_API_MODE`。因此这些格式不全局对外声明：请用 `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` 声明你自己的部署实际能处理哪些（见下文各引擎小节，以及 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) 里的 MinerU / Docling 配置块），再用 `LIGHTRAG_PARSER` 规则或文件名 hint 把这些后缀路由过去 —— 只声明后缀并不会让裸 `x.doc` 变成可上传。
 
 LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
@@ -384,6 +386,18 @@ DOCLING_ENDPOINT=http://localhost:5001
 | `DOCLING_DO_FORMULA_ENRICHMENT` | `false` | 是识别文档中的公式并按LaTex格式输出；启用前需要确保Docling后台下载了公式识别模型（见后面说明） |
 
 未配置 `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` 时等同于 `auto`；未配置 `DOCLING_OCR_LANG` 时不向 docling-serve 传递语言列表，由 OCR 引擎使用自身默认值。解析缓存按这些有效参数计算签名，因此“未配置”和“显式填写默认值”不会导致缓存失效。
+
+可选输入格式 1 个 env：
+
+| Env | 默认 | 含义 |
+| --- | --- | --- |
+| `DOCLING_ADDITIONAL_SUFFIXES` | （空） | 本部署的 docling-serve 在 §2.4 基线格式集之外还能处理的后缀，逗号分隔，例如 `doc,ppt,xls`。Docling 的旧版 Office 支持需要 docling-serve 侧装有 LibreOffice，因此这些格式按部署逐个声明，不全局对外宣告 |
+
+`DOCLING_ADDITIONAL_SUFFIXES` 使用要点：
+
+- 用 `,` 分隔的裸小写后缀；允许带前导点和两侧空格（` .DOC ` 等同 `doc`）。其它写法（按 glob 习惯写成 `*.doc`、或用 `;` 分隔）会在启动时报错，不会被静默忽略。
+- 它只让该后缀**可以路由到 docling**，本身并不会让裸 `x.doc` 变成可上传。必须配合路由规则（`LIGHTRAG_PARSER=doc:docling`）或文件名 hint（`x.[docling].doc`）使用 —— 否则这类文件仍会落到默认的 `legacy` 引擎并被判为不支持的后缀。反过来，只写 `doc:docling` 规则而不配这个 env，会因 `doc` 不在 docling 能力表内而启动校验失败。
+- 该变量在使用时实时读取，因此写在父进程环境或 `.env` 里都同样生效。
 
 轮询预算 2 个 env（docling-serve 是 server-side long-poll，客户端不再额外 sleep）：
 
