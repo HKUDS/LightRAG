@@ -157,7 +157,8 @@ def aggregate_chunk_scores(
 
         if 0 <= chunk_idx < len(doc_indices):
             original_doc_idx = doc_indices[chunk_idx]
-            doc_scores[original_doc_idx].append(score)
+            if 0 <= original_doc_idx < num_original_docs:
+                doc_scores[original_doc_idx].append(score)
 
     # Aggregate scores
     aggregated_results = []
