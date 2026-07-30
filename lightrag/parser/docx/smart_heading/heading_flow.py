@@ -1831,6 +1831,7 @@ def merge_split_headings(
     decisions: list[HeadingDecision],
     records: Sequence[Any],
     *,
+    strong_body: Callable[[str], str | None] | None = None,
     warnings: dict | None = None,
 ) -> list[HeadingDecision]:
     """Re-join headings the author split for line-spacing looks.
@@ -1840,7 +1841,35 @@ def merge_split_headings(
     numbered heading may only START a merge (never be absorbed); the merged
     text (soft-break lines + paragraph splits) is capped at 4 lines.
     Returns the compacted decision list (absorbed members removed).
+
+    Two strong-body gates keep a merge from destroying a real heading. They
+    exist because this pass sits BETWEEN candidate admission and
+    :func:`demote_strong_body_headings`, and admission DEFERS the strong-body
+    check for clause-class numbered candidates (see ``EARLY_STRONG_BODY_KEYS``)
+    — so a candidate whose body verdict is still pending can reach this pass:
+
+    - a ``cur`` that already reads as body may not absorb anything: re-joining
+      "a heading the author split for looks" is meaningless for a line that is
+      a full sentence, and absorbing a neighbour would hide that neighbour's
+      text inside a paragraph the sweep is about to demote;
+    - once the window holds (or is about to take) a member carrying a physical
+      outline level, every further join is rejected when the JOINED text reads
+      as body. The flag is STICKY on purpose: the window grows up to
+      ``_MERGE_MAX_LINES`` members, so an outline member absorbed early must
+      keep protecting the window when a later, outline-free member is what
+      finally pushes the join over the body threshold. Committing such a merge
+      would let the sweep undo it and strand the outline member without a
+      decision — an invariant-I2 violation that costs the WHOLE document its
+      smart output (see :func:`_register_merge_members`).
+
+    The joined-text gate is verdict-identical to the sweep's own test: same
+    predicate, same ``(text, outline_level)`` arguments, and nothing mutates
+    either between the two calls. It is scoped to outline-carrying windows
+    deliberately — an unconditional version would break the useful case where
+    two body-ish lines are only long enough to be demoted TOGETHER (each would
+    then survive alone as a spurious heading).
     """
+    strong_body = strong_body or guardrails.strong_body_reason
     out: list[HeadingDecision] = []
     pos = 0
     while pos < len(decisions):
@@ -1849,8 +1878,16 @@ def merge_split_headings(
             out.append(cur)
             pos += 1
             continue
+        owner_reason, _owner_spared = _strong_body_with_outline_context(
+            cur.text, cur.outline_level, strong_body
+        )
+        if owner_reason is not None:
+            out.append(cur)  # a body line absorbs nothing
+            pos += 1
+            continue
         lines = cur.text.count("\n") + 1
         merged_members = [cur.record_index]
+        absorbed_outline = False  # sticky: a baseline heading is in the window
         k = pos + 1
         while k < len(decisions):
             nxt = decisions[k]
@@ -1868,7 +1905,18 @@ def merge_split_headings(
             nxt_lines = nxt.text.count("\n") + 1
             if lines + nxt_lines > _MERGE_MAX_LINES:
                 break
-            cur.text = _join_heading_texts(cur.text, nxt.text)
+            joined = _join_heading_texts(cur.text, nxt.text)
+            # Outer guard: an outline-free window never pays for this extra
+            # NLP judgment.
+            if absorbed_outline or nxt.outline_level is not None:
+                joined_reason, _joined_spared = _strong_body_with_outline_context(
+                    joined, cur.outline_level, strong_body
+                )
+                if joined_reason is not None:
+                    break
+            cur.text = joined
+            if nxt.outline_level is not None:
+                absorbed_outline = True
             lines += nxt_lines
             merged_members.append(nxt.record_index)
             cur.note("heading_merge")
@@ -1882,6 +1930,69 @@ def merge_split_headings(
         out.append(cur)
         pos = k if k > pos + 1 else pos + 1
     return out
+
+
+def _register_merge_members(
+    decisions: dict[int, HeadingDecision],
+    d: HeadingDecision,
+    records: Sequence[Any],
+    warnings: dict,
+) -> None:
+    """Register the absorbed members of a merged heading — three cases.
+
+    - the merged heading SURVIVED → an ``absorbed`` sentinel per member, so the
+      assembler skips its standalone row (its text is already inside the
+      heading);
+    - the merge was UNDONE by a later stage (the post-merge strong-body sweep or
+      clamping) and the member carries NO physical outline → the joined text is
+      never rendered, so the member emits its own paragraph text. Record that
+      with an AUDIT-ONLY ``merge_unwound`` decision: ``absorbed`` and
+      ``use_raw_text`` both stay off, which is the same assembler path an
+      absent decision takes, so the output is byte-identical — the row only
+      replaces an anonymous gap with a traceable one. Invariant I2 never
+      inspects a non-outline record, so retention semantics are untouched;
+    - the merge was UNDONE and the member IS a baseline (outlineLvl) heading →
+      write NOTHING, deliberately. The member must not be silently
+      re-classified as body: leaving the gap is what makes I2 trip and hand the
+      document to the baseline assembler, which still emits that paragraph AS a
+      heading. Whitelisting a demotion rule here would suppress the fallback
+      and genuinely lose the heading boundary.
+
+    The strong-body gates in :func:`merge_split_headings` close the direct
+    sweep route into the third case. What remains is the sweep's
+    ``subtree_demoted`` cascade (a NUMBERED merge owner inside a demoted
+    parent's subtree) and :func:`clamp_deep_levels` (level > 9); both are
+    warned about so the event is diagnosable instead of mysterious.
+
+    A member's own decision is NOT restored as a heading: its level is the
+    product of the whole per-sub-document pipeline (series alignment,
+    anchoring, gap closing, nesting, clamping — all cross-paragraph set
+    operations), so re-inserting one after the fact cannot be shown coherent.
+    Likewise the surviving owner keeps the JOINED text in ``d.text`` after an
+    undone merge; that value only feeds the audit summary (output reads
+    ``rec.text``), and restoring it would mean teaching the merge about
+    downstream demotion.
+    """
+    for m in d.member_indices[1:]:
+        if d.is_heading:
+            member = HeadingDecision(record_index=m, text="", absorbed=True)
+            member.note("merged_absorbed")
+            decisions[m] = member
+            continue
+        if records[m].outline_level is not None:
+            warnings["smart_merge_outline_stranded"] = (
+                warnings.get("smart_merge_outline_stranded", 0) + 1
+            )
+            logger.warning(
+                "[smart_heading] I2: outline paragraph %d stranded by an undone "
+                "heading merge — deferring to the baseline fallback",
+                m,
+            )
+            continue  # no decision on purpose: the I2 fallback keeps the heading
+        member = HeadingDecision(record_index=m, text=records[m].text)
+        member.note("merge_unwound")
+        warnings["smart_merge_unwound"] = warnings.get("smart_merge_unwound", 0) + 1
+        decisions[m] = member
 
 
 def demote_strong_body_headings(
@@ -3097,7 +3208,9 @@ def run_smart_heading(
         backfill_top_level(ds, warnings=warnings)
         align_numbering_series(ds)
         anchor_outline_levels(ds, warnings=warnings)
-        ds = merge_split_headings(ds, records, warnings=warnings)
+        ds = merge_split_headings(
+            ds, records, strong_body=strong_body, warnings=warnings
+        )
         demote_strong_body_headings(ds, strong_body=strong_body, warnings=warnings)
         skeleton_audit = correct_numbering_skeleton(ds, warnings=warnings)
         if skeleton_audit:
@@ -3122,17 +3235,8 @@ def run_smart_heading(
         sub_audit["headings"] = sum(1 for d in ds if d.is_heading)
         for d in ds:
             decisions[d.record_index] = d
-            # Absorbed merge members: mark trailing member records so the
-            # assembler skips their standalone output — but ONLY while the
-            # merged heading survives. If the post-merge sweep or clamping
-            # demoted it, the joined text is never rendered, so the members
-            # must fall back to emitting their own paragraph text; otherwise
-            # their content vanishes and I1 trips a whole-document fallback.
-            if d.member_indices and not d.is_title_block and d.is_heading:
-                for m in d.member_indices[1:]:
-                    absorbed = HeadingDecision(record_index=m, text="", absorbed=True)
-                    absorbed.note("merged_absorbed")
-                    decisions[m] = absorbed
+            if d.member_indices and not d.is_title_block:
+                _register_merge_members(decisions, d, records, warnings)
         # I2 audit trail for recognition-time outline demotions:
         # merged in AFTER the candidate loop so they never reach leveling /
         # anchoring, yet appear in the final decision map + audit ledger.
