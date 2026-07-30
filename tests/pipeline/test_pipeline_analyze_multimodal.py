@@ -833,6 +833,162 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
         await rag.finalize_storages()
 
 
+def _write_equation_fixture(tmp_path: Path, latex: str) -> tuple[str, dict, Path]:
+    """Write a minimal equation sidecar fixture and return (doc_id, parsed_data, path)."""
+    parsed_dir = tmp_path / "parsed"
+    parsed_dir.mkdir()
+    blocks_path = parsed_dir / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+        encoding="utf-8",
+    )
+    equations_path = parsed_dir / "doc.equations.json"
+    equations_path.write_text(
+        json.dumps(
+            {
+                "equations": {
+                    "eq-001": {
+                        "id": "eq-001",
+                        "blockid": "blk-1",
+                        "heading": "",
+                        "parent_headings": [],
+                        "format": "latex",
+                        "content": latex,
+                        "caption": "",
+                        "footnotes": [],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return "doc-1", {"blocks_path": str(blocks_path)}, equations_path
+
+
+@pytest.mark.asyncio
+async def test_equation_omitted_field_falls_back_to_sidecar_latex(
+    tmp_path, caplog, _propagate_lightrag_logger
+):
+    """Regression #3502: when the model omits the `equation` field entirely,
+    the analysis must fall back to the sidecar's authoritative LaTeX instead
+    of aborting the whole document — and must say so in the log, since the
+    fallback silently trades the prompt-mandated normalization for source
+    LaTeX and no conformance retry fires any more."""
+    extract_log: list[dict] = []
+
+    async def extract_func(prompt, **kwargs):
+        extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Model returns valid name/description but omits `equation` entirely.
+        return json.dumps(
+            {
+                "name": "sample-quantile",
+                "description": "Defines the p-th sample quantile.",
+            }
+        )
+
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_vlm_mock([]),
+        extract_func=extract_func,
+    )
+    await rag.initialize_storages()
+    try:
+        sidecar_latex = r"x_p = \left\{ \begin{array}{ll} x_{(k)} & \text{if } p = k \end{array} \right."
+        doc_id, parsed_data, equations_path = _write_equation_fixture(
+            tmp_path, sidecar_latex
+        )
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="e",
+            )
+        assert len(extract_log) == 1
+        payload = json.loads(equations_path.read_text(encoding="utf-8"))
+        result = payload["equations"]["eq-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "sample-quantile"
+        # The equation field must be recovered from the sidecar LaTeX.
+        assert result["equation"] == sidecar_latex
+        # Operators must be able to see that their model returns off-schema
+        # JSON: the fallback is the only remaining signal (the JSON
+        # conformance retry no longer fires for this response).
+        assert [
+            r
+            for r in caplog.records
+            if "equation/eq-001" in r.getMessage()
+            and "unnormalized source LaTeX" in r.getMessage()
+        ]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_equation_equ_alias_accepted(
+    tmp_path, caplog, _propagate_lightrag_logger
+):
+    """Regression #3502: when the model returns the equation under a
+    semantically equivalent key such as `equ`, it must be accepted (and
+    logged — an accepted alias shadows the sidecar's authoritative LaTeX)."""
+    extract_log: list[dict] = []
+
+    async def extract_func(prompt, **kwargs):
+        extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Model returns the equation under the alias key `equ`.
+        return json.dumps(
+            {
+                "name": "sample-quantile",
+                "description": "Defines the p-th sample quantile.",
+                "equ": r"x_p = x_{(k)}",
+            }
+        )
+
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_vlm_mock([]),
+        extract_func=extract_func,
+    )
+    await rag.initialize_storages()
+    try:
+        sidecar_latex = r"x_p = \left\{ \begin{array}{ll} x_{(k)} \end{array} \right."
+        doc_id, parsed_data, equations_path = _write_equation_fixture(
+            tmp_path, sidecar_latex
+        )
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="lightrag"):
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="e",
+            )
+        assert len(extract_log) == 1
+        payload = json.loads(equations_path.read_text(encoding="utf-8"))
+        result = payload["equations"]["eq-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        # The `equ` alias value is used (preferred over the sidecar fallback).
+        assert result["equation"] == r"x_p = x_{(k)}"
+        assert [
+            r
+            for r in caplog.records
+            if "equation/eq-001" in r.getMessage()
+            and "off-schema key 'equ'" in r.getMessage()
+        ]
+        # The sidecar fallback must NOT be reported when the alias supplied a
+        # usable body.
+        assert not [
+            r for r in caplog.records if "unnormalized source LaTeX" in r.getMessage()
+        ]
+    finally:
+        await rag.finalize_storages()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response",

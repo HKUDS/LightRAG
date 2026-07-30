@@ -6184,7 +6184,10 @@ class _PipelineMixin:
                 }
 
             def _validate_text_analysis(
-                kind: str, item_id: str, parsed: dict[str, Any]
+                kind: str,
+                item_id: str,
+                parsed: dict[str, Any],
+                equation_fallback: str | None = None,
             ) -> dict[str, str]:
                 prefix = f"{kind}/{item_id}"
                 result_obj = {
@@ -6192,9 +6195,56 @@ class _PipelineMixin:
                     "description": _required_json_string(parsed, prefix, "description"),
                 }
                 if kind == "equation":
-                    result_obj["equation"] = _required_json_string(
-                        parsed, prefix, "equation"
-                    )
+                    # ``equation`` is the one deterministic analysis field: the
+                    # equations sidecar already carries the parser's
+                    # authoritative LaTeX.  An otherwise valid response (name +
+                    # description) must therefore not fail a whole document
+                    # just because the model renamed or dropped that one field
+                    # (#3502).  Resolution order:
+                    #   1. ``equation`` — the schema field, normalized as the
+                    #      equation_analysis prompt requires (delimiters and
+                    #      ``\tag{...}`` stripped, align→aligned, Markdown /
+                    #      Unicode math converted to LaTeX).
+                    #   2. ``equ`` — off-schema key observed in the wild, also
+                    #      model-normalized.  Kept deliberately narrow to keys
+                    #      actually seen, because any key accepted here
+                    #      shadows the sidecar fallback below.
+                    #   3. sidecar source LaTeX — NOT normalized (may still
+                    #      carry ``\tag{...}``, ``align``, Unicode math), but
+                    #      preserving it beats failing the document.
+                    equation_value = ""
+                    equation_key = ""
+                    for candidate_key in ("equation", "equ"):
+                        candidate = parsed.get(candidate_key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            equation_value = candidate.strip()
+                            equation_key = candidate_key
+                            break
+                    if equation_value:
+                        if equation_key != "equation":
+                            logger.warning(
+                                f"[analyze_multimodal] {prefix}: model returned "
+                                f"the equation under off-schema key "
+                                f"'{equation_key}'; accepting it as 'equation'"
+                            )
+                        result_obj["equation"] = equation_value
+                    elif equation_fallback and equation_fallback.strip():
+                        logger.warning(
+                            f"[analyze_multimodal] {prefix}: model response "
+                            f"missing valid 'equation'; using unnormalized "
+                            f"source LaTeX from the equation sidecar"
+                        )
+                        result_obj["equation"] = equation_fallback.strip()
+                    else:
+                        # Defensive only: ``_analyze_text_modality`` rejects an
+                        # equation item with empty sidecar content before any
+                        # analysis call, so the live path always has a fallback.
+                        # Reuse the standard validator so a future caller that
+                        # omits ``equation_fallback`` still fails with the
+                        # canonical conformance error (and gets the retry).
+                        result_obj["equation"] = _required_json_string(
+                            parsed, prefix, "equation"
+                        )
                 return result_obj
 
             async def _run_json_conformance_retry(
@@ -6669,7 +6719,12 @@ class _PipelineMixin:
                     f"{kind}/{item_id}",
                     cached,
                     _call_extract_once,
-                    lambda parsed: _validate_text_analysis(kind, item_id, parsed),
+                    lambda parsed: _validate_text_analysis(
+                        kind,
+                        item_id,
+                        parsed,
+                        equation_fallback=content_text if kind == "equation" else None,
+                    ),
                 )
                 result_obj: dict[str, Any] = {
                     "name": analysis_fields["name"],
