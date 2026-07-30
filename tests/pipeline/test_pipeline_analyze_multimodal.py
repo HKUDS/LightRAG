@@ -833,6 +833,131 @@ async def test_table_routes_to_extract_role_not_vlm(tmp_path):
         await rag.finalize_storages()
 
 
+def _write_equation_fixture(tmp_path: Path, latex: str) -> tuple[str, dict, Path]:
+    """Write a minimal equation sidecar fixture and return (doc_id, parsed_data, path)."""
+    parsed_dir = tmp_path / "parsed"
+    parsed_dir.mkdir()
+    blocks_path = parsed_dir / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_id": "doc-1"}) + "\n",
+        encoding="utf-8",
+    )
+    equations_path = parsed_dir / "doc.equations.json"
+    equations_path.write_text(
+        json.dumps(
+            {
+                "equations": {
+                    "eq-001": {
+                        "id": "eq-001",
+                        "blockid": "blk-1",
+                        "heading": "",
+                        "parent_headings": [],
+                        "format": "latex",
+                        "content": latex,
+                        "caption": "",
+                        "footnotes": [],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return "doc-1", {"blocks_path": str(blocks_path)}, equations_path
+
+
+@pytest.mark.asyncio
+async def test_equation_omitted_field_falls_back_to_sidecar_latex(tmp_path):
+    """Regression #3502: when the model omits the `equation` field entirely,
+    the analysis must fall back to the sidecar's authoritative LaTeX instead
+    of aborting the whole document."""
+    extract_log: list[dict] = []
+
+    async def extract_func(prompt, **kwargs):
+        extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Model returns valid name/description but omits `equation` entirely.
+        return json.dumps(
+            {
+                "name": "sample-quantile",
+                "description": "Defines the p-th sample quantile.",
+            }
+        )
+
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_vlm_mock([]),
+        extract_func=extract_func,
+    )
+    await rag.initialize_storages()
+    try:
+        sidecar_latex = r"x_p = \left\{ \begin{array}{ll} x_{(k)} & \text{if } p = k \end{array} \right."
+        doc_id, parsed_data, equations_path = _write_equation_fixture(
+            tmp_path, sidecar_latex
+        )
+
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="e",
+        )
+        assert len(extract_log) == 1
+        payload = json.loads(equations_path.read_text(encoding="utf-8"))
+        result = payload["equations"]["eq-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        assert result["name"] == "sample-quantile"
+        # The equation field must be recovered from the sidecar LaTeX.
+        assert result["equation"] == sidecar_latex
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_equation_equ_alias_accepted(tmp_path):
+    """Regression #3502: when the model returns the equation under a
+    semantically equivalent key such as `equ`, it must be accepted."""
+    extract_log: list[dict] = []
+
+    async def extract_func(prompt, **kwargs):
+        extract_log.append({"prompt": prompt, "kwargs": dict(kwargs)})
+        # Model returns the equation under the alias key `equ`.
+        return json.dumps(
+            {
+                "name": "sample-quantile",
+                "description": "Defines the p-th sample quantile.",
+                "equ": r"x_p = x_{(k)}",
+            }
+        )
+
+    rag = _build_rag(
+        tmp_path,
+        vlm_process_enable=True,
+        vlm_func=_make_vlm_mock([]),
+        extract_func=extract_func,
+    )
+    await rag.initialize_storages()
+    try:
+        sidecar_latex = r"x_p = \left\{ \begin{array}{ll} x_{(k)} \end{array} \right."
+        doc_id, parsed_data, equations_path = _write_equation_fixture(
+            tmp_path, sidecar_latex
+        )
+
+        await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="e",
+        )
+        assert len(extract_log) == 1
+        payload = json.loads(equations_path.read_text(encoding="utf-8"))
+        result = payload["equations"]["eq-001"]["llm_analyze_result"]
+        assert result["status"] == "success"
+        # The `equ` alias value is used (preferred over the sidecar fallback).
+        assert result["equation"] == r"x_p = x_{(k)}"
+    finally:
+        await rag.finalize_storages()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response",

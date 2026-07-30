@@ -6184,7 +6184,10 @@ class _PipelineMixin:
                 }
 
             def _validate_text_analysis(
-                kind: str, item_id: str, parsed: dict[str, Any]
+                kind: str,
+                item_id: str,
+                parsed: dict[str, Any],
+                equation_fallback: str | None = None,
             ) -> dict[str, str]:
                 prefix = f"{kind}/{item_id}"
                 result_obj = {
@@ -6192,9 +6195,20 @@ class _PipelineMixin:
                     "description": _required_json_string(parsed, prefix, "description"),
                 }
                 if kind == "equation":
-                    result_obj["equation"] = _required_json_string(
-                        parsed, prefix, "equation"
-                    )
+                    # The model may return the equation under a semantically
+                    # equivalent key such as "equ", or omit it entirely. The
+                    # sidecar already holds the authoritative LaTeX, so fall
+                    # back to it rather than aborting the whole document
+                    # (#3502).
+                    equation_value = parsed.get("equation") or parsed.get("equ")
+                    if isinstance(equation_value, str) and equation_value.strip():
+                        result_obj["equation"] = equation_value.strip()
+                    elif equation_fallback and equation_fallback.strip():
+                        result_obj["equation"] = equation_fallback.strip()
+                    else:
+                        raise _MMJSONConformanceError(
+                            f"{prefix}: missing or invalid field 'equation'"
+                        )
                 return result_obj
 
             async def _run_json_conformance_retry(
@@ -6669,7 +6683,12 @@ class _PipelineMixin:
                     f"{kind}/{item_id}",
                     cached,
                     _call_extract_once,
-                    lambda parsed: _validate_text_analysis(kind, item_id, parsed),
+                    lambda parsed: _validate_text_analysis(
+                        kind,
+                        item_id,
+                        parsed,
+                        equation_fallback=content_text if kind == "equation" else None,
+                    ),
                 )
                 result_obj: dict[str, Any] = {
                     "name": analysis_fields["name"],
