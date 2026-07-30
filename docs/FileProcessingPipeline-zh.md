@@ -172,12 +172,12 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 | --- | --- | --- |
 | `legacy` | 旧版提取方式，在加入流水线前集中提取内容 | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
 | `native` | 内置智能结构化内容抽取器 | `docx` `md` `textpack` |
-| `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
+| `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp`（可扩展，见 `MINERU_ADDITIONAL_SUFFIXES`） |
 | `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp`（可扩展，见 `DOCLING_ADDITIONAL_SUFFIXES`） |
 
 `mineru` 和 `docling` 是外部内容提取引擎，启用相关规则前必须先把服务跑起来，再在 LightRAG 配置对应 endpoint/token。
 
-`docling` 一行是**基线**格式集。Docling 的其余输入格式（`doc` / `xls` / `ppt`、ODF、EPUB、AsciiDoc、LaTeX、CSV 等）依赖 docling-serve 侧安装的可选组件 —— 例如旧版 Office 格式需要 LibreOffice —— 因此不全局对外声明。请用 `DOCLING_ADDITIONAL_SUFFIXES` 声明你的部署实际装了哪些（见下文*使用 Docling 文件解析引擎*），再用 `LIGHTRAG_PARSER` 规则或文件名 hint 把这些后缀路由到 docling。
+两个外部引擎上表列的都是**基线**格式集 —— 即引擎开箱即可处理的格式。它们其余的输入格式（旧版 Office `doc` / `xls` / `ppt`，docling 还有 ODF、EPUB、AsciiDoc、LaTeX、CSV 等）取决于**服务侧而非 LightRAG 侧**安装的组件 —— 旧版 Office 转换需要服务侧装有 LibreOffice —— MinerU 还额外取决于当前的 `MINERU_API_MODE`。因此这些格式不全局对外声明：请用 `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` 声明你自己的部署实际能处理哪些（见下文各引擎小节，以及 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) 里的 MinerU / Docling 配置块），再用 `LIGHTRAG_PARSER` 规则或文件名 hint 把这些后缀路由过去 —— 只声明后缀并不会让裸 `x.doc` 变成可上传。
 
 LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
