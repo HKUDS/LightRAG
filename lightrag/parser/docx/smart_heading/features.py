@@ -10,9 +10,9 @@ Two layers:
   consumes directly and must not change).
 - :func:`extract_paragraph_physical_features` computes per-paragraph signals
   from the live lxml element: the character-weighted dominant font size on the
-  0.5pt grid, whole-paragraph bold, resolved alignment, explicit page-break
-  evidence, and TOC structural evidence (field instructions / ``_Toc``
-  bookmark links).
+  0.5pt grid, whole-paragraph bold, resolved alignment, leading whitespace
+  padding, explicit page-break evidence, and TOC structural evidence (field
+  instructions / ``_Toc`` bookmark links).
 
 Font sizes are stored in half-points exactly as OOXML does and only converted
 to pt at the edge, so the 0.5pt grid comparison stays exact (no float
@@ -44,6 +44,35 @@ def _w(tag: str) -> str:
 _PRUNE_SUBTREE_TAGS = frozenset(
     {_w("drawing"), _w("pict"), _w("object"), _w("txbxContent")}
 )
+
+#: Tracked-change / comment subtrees that are NOT part of the final revised
+#: document, so nothing inside them is visible to the reader. MUST mirror
+#: ``parse_document._SKIP_PARAGRAPH_TAGS`` — the body text extractor drops
+#: exactly these, and a paragraph-geometry scan that disagreed would let content
+#: the user already deleted change how the visible text is classified
+#: (``test_revision_skip_matches_body_parser`` pins the two together).
+#: ``w:ins`` / ``w:moveTo`` are deliberately absent: inserted and moved-in
+#: content IS visible, and is reached by ordinary recursion.
+_SKIP_REVISION_SUBTREES = frozenset(
+    f"{{{W_NS}}}{tag}"
+    for tag in (
+        "del",
+        "moveFrom",
+        "commentRangeStart",
+        "commentRangeEnd",
+        "commentReference",
+        "annotationRef",
+    )
+)
+
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+#: OMML equation roots. Read ONLY by :func:`leading_nontext_content` — never
+#: pruned from the feature walk, which must keep descending exactly as before
+#: (pruning here would change the size/bold statistics of every equation
+#: paragraph). Their text lives in ``m:t``, so they contribute nothing to
+#: ``run_features`` either way.
+_OMML_TAGS = frozenset({f"{{{M_NS}}}oMath", f"{{{M_NS}}}oMathPara"})
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +335,11 @@ class ParagraphPhysicalFeatures:
     is_toc_field: bool
     is_toc_link: bool
     size_trace_failed: bool  # no run had a resolvable size (CB5 input)
+    #: Net leading whitespace of the FIRST line, in CJK em (see
+    #: :func:`leading_pad_em`). 0.0 for the overwhelming majority of
+    #: paragraphs; a large value on a ``w:jc=center`` paragraph means the line
+    #: is not visually centered (``guardrails.is_visually_centered``).
+    leading_pad_em: float = 0.0
     style_id: str | None = None  # paragraph pStyle id
     run_features: list[RunFeature] = field(default_factory=list)
 
@@ -391,6 +425,200 @@ def _run_visible_text(run) -> str:
         elif tag == _w("tab"):
             parts.append("\t")
     return "".join(parts)
+
+
+#: Width of each whitespace variant in CJK em (one ideograph = 1.0 em) — the
+#: unit :func:`leading_pad_em` reports and ``guardrails.CENTER_MAX_LEADING_PAD_EM``
+#: budgets against. Absolute points are deliberately never involved: the
+#: question is "how many character widths of padding", which is font-size
+#: independent. Anything whitespace-ish NOT listed falls back to
+#: ``_PAD_EM_FALLBACK`` (never 0.0 — an unknown space still occupies space, and
+#: silently measuring it as zero would let one exotic variant defeat the rule).
+#: Keys stay ``\uXXXX`` escapes, never literal characters: most of these render
+#: identically to a plain space (or not at all), so a literal table could not be
+#: read or reviewed, and an editor's whitespace normalization could rewrite it.
+_PAD_EM_WIDTHS = {
+    " ": 0.5,  # SPACE — half an em beside a CJK glyph (英文空格)
+    " ": 0.5,  # NO-BREAK SPACE — WPS/Word 公文 padding (不换行空格)
+    "　": 1.0,  # IDEOGRAPHIC SPACE — one full em (中文全角空格)
+    " ": 0.5,  # EN QUAD
+    " ": 1.0,  # EM QUAD
+    " ": 0.5,  # EN SPACE
+    " ": 1.0,  # EM SPACE
+    " ": 1 / 3,  # THREE-PER-EM SPACE
+    " ": 0.25,  # FOUR-PER-EM SPACE
+    " ": 1 / 6,  # SIX-PER-EM SPACE
+    " ": 0.5,  # FIGURE SPACE — one digit wide
+    " ": 0.25,  # PUNCTUATION SPACE
+    " ": 0.2,  # THIN SPACE
+    " ": 0.1,  # HAIR SPACE
+    " ": 0.2,  # NARROW NO-BREAK SPACE
+    " ": 0.25,  # MEDIUM MATHEMATICAL SPACE
+    " ": 0.5,  # OGHAM SPACE MARK
+    # Zero-width invisibles: no width, but they MUST be listed — see
+    # _PAD_SCAN_EXTRA below.
+    "​": 0.0,  # ZERO WIDTH SPACE
+    "‌": 0.0,  # ZERO WIDTH NON-JOINER
+    "‍": 0.0,  # ZERO WIDTH JOINER
+    "⁠": 0.0,  # WORD JOINER
+    "﻿": 0.0,  # ZERO WIDTH NO-BREAK SPACE (BOM)
+    "\t": 2.0,  # TAB — true width depends on tab stops; 2 em matches the
+    # Word/WPS default 0.74cm stop at 小四 body size.
+}
+
+#: Table entries ``str.isspace()`` reports False for — the zero-width
+#: invisibles. The pad scan must still step OVER them: a stray ZWSP/BOM ahead of
+#: the real padding would otherwise terminate the scan at 0.0 and hide the
+#: offset entirely. DERIVED from the table rather than listed again, so adding a
+#: non-isspace entry above cannot forget to extend the scan.
+_PAD_SCAN_EXTRA = frozenset(ch for ch in _PAD_EM_WIDTHS if not ch.isspace())
+
+#: Width charged to a whitespace character absent from ``_PAD_EM_WIDTHS``.
+_PAD_EM_FALLBACK = 0.5
+
+
+def _occupies_no_width(ch: str) -> bool:
+    """True for a character that contributes no visible glyph to a line.
+
+    THE single definition of "not a visible character" for the centered-pad
+    rule, shared by :func:`_pad_run_em` (what the scan may step over) and
+    :func:`_has_visible_char` (what ends the scan). Splitting the two is a live
+    bug source: ``str.strip()`` does NOT remove the ``_PAD_SCAN_EXTRA``
+    zero-width characters, so a ``strip()``-based "is there text here" test
+    reads a lone ZWSP as visible text while the pad scan steps straight over
+    it — two paragraphs that look identical on screen then classify
+    differently.
+    """
+    return ch.isspace() or ch in _PAD_SCAN_EXTRA
+
+
+def _has_visible_char(text: str) -> bool:
+    """True when ``text`` holds at least one width-occupying character."""
+    return any(not _occupies_no_width(ch) for ch in text)
+
+
+def _pad_run_em(text: str) -> float:
+    """Total em width of ``text``'s leading whitespace run."""
+    total = 0.0
+    for ch in text:
+        if not _occupies_no_width(ch):
+            break
+        total += _PAD_EM_WIDTHS.get(ch, _PAD_EM_FALLBACK)
+    return total
+
+
+def _visible_first_line(para_element) -> tuple[bool, str]:
+    """``(non-text content leads, text of the first visible line)``.
+
+    ONE strictly-document-order scan carrying the paragraph geometry the
+    centered-pad rule needs, under the SAME visibility semantics as
+    ``parse_document.extract_paragraph_content``:
+
+    - ``_SKIP_REVISION_SUBTREES`` (``w:del`` / ``w:moveFrom`` / comment markers)
+      are skipped whole. Content the author deleted is not on the page, so it can
+      neither supply padding nor mask the real leading content.
+    - a drawing / picture / OLE object / OMML equation reached before the first
+      visible character sets the flag (see :func:`leading_pad_em`);
+    - ``w:t`` text and ``w:tab`` build the line; a soft ``w:br`` ends it (page /
+      column breaks are invisible and ignored).
+
+    Why this does NOT read ``run_features``: that list is built by the feature
+    walk, which has no revision filtering and maps every ``w:tab`` it meets —
+    including a DELETED one — to ``"\\t"``. A deleted tab would then measure as
+    padding the reader cannot see. Adding revision filtering to the feature walk
+    instead would change its page-break and TOC-field evidence (a break or field
+    code inside a deleted subtree), which is unrelated pre-existing behavior.
+    """
+    parts: list[str] = []
+    nontext_leads = False
+    line_done = False
+
+    def visit(node) -> None:
+        nonlocal nontext_leads, line_done
+        tag = node.tag
+        if tag in _SKIP_REVISION_SUBTREES:
+            return
+        if tag in _PRUNE_SUBTREE_TAGS or tag in _OMML_TAGS:
+            if not _has_visible_char("".join(parts)):
+                nontext_leads = True
+            return
+        if tag == _w("t"):
+            parts.append(node.text or "")
+            return
+        if tag == _w("tab"):
+            parts.append("\t")
+            return
+        if tag == _w("br"):
+            # Only a soft (text-wrapping) break ends the line; page / column
+            # breaks occupy no width and do not split the rendered line here.
+            if node.get(_w("type")) in (None, "textWrapping"):
+                line_done = True
+            return
+        for child in node:
+            visit(child)
+            if line_done:
+                return
+
+    for child in para_element:
+        if child.tag == _w("pPr"):
+            continue
+        visit(child)
+        if line_done:
+            break
+    return nontext_leads, "".join(parts)
+
+
+def leading_nontext_content(para_element) -> bool:
+    """True when non-``w:t`` content precedes the paragraph's first visible char.
+
+    Diagnostic accessor over :func:`_visible_first_line`; see
+    :func:`leading_pad_em` for what the flag means and why it exists.
+    """
+    return _visible_first_line(para_element)[0]
+
+
+def leading_pad_em(para_element) -> float:
+    """Net leading whitespace of the FIRST visible line, in CJK em.
+
+    Word centers a line INCLUDING its leading whitespace, so a centered
+    paragraph padded with spaces renders with its visible text pushed right by
+    HALF this value — the 空格排版落款/署名 shape, visually right-aligned while
+    ``w:jc`` still says ``center``.
+
+    TRAILING whitespace of the same line is subtracted: symmetric padding
+    (``"   标题   "``) leaves the text centered and must not be flagged. The
+    result is signed, and only the positive direction is meaningful — a
+    trailing-heavier line is left to render however Word renders it (Word
+    generally drops trailing whitespace at a line end, so no rightward shift
+    is claimed for it).
+
+    Only the first line is measured, matching
+    :func:`first_line_size_half_points`: the padding of a soft-break
+    continuation line says nothing about the heading line's alignment.
+
+    Reports 0.0 — "no measurable pad" — when non-text content LEADS the line
+    (:func:`_visible_first_line`). A drawing / OLE object / OMML equation renders
+    as a placeholder token but carries no ``w:t``, so whitespace that merely
+    FOLLOWS it would read as leading padding. The shape that hits is a centered
+    formula line, ``<equation>…</equation>\\t\\t（3）``, whose two layout tabs
+    separate the formula from its number: measured naively it lands at exactly
+    4.0 em and loses the centered channel for a reason that has nothing to do
+    with padding. Reporting 0.0 keeps the do-no-harm direction — the rule only
+    ever fires on evidence it actually holds.
+
+    Both the pad and that flag come from ONE scan over the live element, with
+    the body extractor's revision semantics. Splitting them across two inputs is
+    what produced the two mirror-image defects this signature replaces: a
+    DELETED drawing masked a real 14.5em signature pad (flag said "non-text
+    leads" while the body text showed only the padded signature), and DELETED
+    tabs manufactured a 4.0em pad on a genuinely centered line (they reached
+    ``run_features`` because the feature walk maps every ``w:tab`` regardless of
+    revision context). Either way invisible content decided the verdict.
+    """
+    nontext_leads, first_line = _visible_first_line(para_element)
+    if nontext_leads:
+        return 0.0
+    return _pad_run_em(first_line) - _pad_run_em(first_line[::-1])
 
 
 def dominant_size_half_points(
@@ -598,6 +826,7 @@ def extract_paragraph_physical_features(
         is_toc_field=is_toc_field,
         is_toc_link=is_toc_link,
         size_trace_failed=size_trace_failed,
+        leading_pad_em=leading_pad_em(para_element),
         style_id=para_style_id,
         run_features=run_features,
     )
