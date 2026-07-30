@@ -228,7 +228,6 @@ _MINERU_SUFFIXES = frozenset(
     {
         "pdf",
         "docx",
-        "ppt",
         "pptx",
         "xlsx",
         "png",
