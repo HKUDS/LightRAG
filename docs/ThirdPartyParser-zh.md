@@ -144,7 +144,8 @@ register_parser(ParserSpec(
 |---|---|---|
 | `engine_name` | ✓ | 注册表键,也是 `--engine` / 文件名 hint / `LIGHTRAG_PARSER` 里的引擎名。**与已有名字相同会覆盖原注册**(包括内置引擎)——除非有意替换实现,请勿与 `native/legacy/mineru/docling` 撞名。 |
 | `impl` | ✓ | `"module:Class"` 字符串。注册表只在文档实际解析时才 import 它,**注册阶段绝不能提前 import 实现**(保持能力查询 import-cheap,这是注册表的设计不变量)。 |
-| `suffixes` | ✓ | 该引擎能处理的扩展名(小写无点)。用于路由校验与 worker 端后缀守门。 |
+| `suffixes` | ✓ | 该引擎能处理的扩展名(小写无点)。用于路由校验与 worker 端后缀守门。允许传普通 `set`,赋值时会被冻结。若填了 `extra_suffixes_env`,读取该字段返回的是声明集**并上**该变量的后缀,因此使用方无需知道存在部署级覆盖。 |
+| `extra_suffixes_env` | | 一个环境变量名,其逗号分隔的后缀会扩展 `suffixes`(如 docling 的 `DOCLING_ADDITIONAL_SUFFIXES`)。适用于真实格式覆盖面取决于**服务侧而非 LightRAG 侧**可选组件的引擎 —— 在 `suffixes` 里声明恒定可用的基线,其余交给各部署自行开启。每次读取时实时解析(绝不在注册时烘焙),因此写在父进程环境或 `.env` 里都生效。取值格式非法时服务拒绝启动。 |
 | `queue_group` | | 并发池分组,默认 `"native"`(共享 native 池)。独立池填唯一组名。 |
 | `concurrency` | | 该组 worker 数(组的唯一 owner 才需要填)。环境变量覆盖由**注册方在注册时自行烘焙**(如上例 `int(os.getenv(...))`),注册值即权威值。 |
 | `endpoint_configured` / `endpoint_requirement` | | 零参闭包(只读 env、不发网络)。前者返回该引擎依赖的外部服务是否已配置;后者返回缺失时提示用户的配置项名。本地引擎不用填(默认恒可用)。 |
