@@ -23,6 +23,8 @@ from docx.shared import Pt
 from lightrag.parser.docx.smart_heading.features import (
     StyleAttributes,
     extract_paragraph_physical_features,
+    leading_nontext_content,
+    leading_pad_em,
     parse_styles_attributes,
 )
 
@@ -520,6 +522,380 @@ def test_read_pass_populates_smart_features(tmp_path) -> None:
     # The label is resolver-synthesized — visible XML text excludes it, so
     # full_text_raw keeps it (assembly input) while char stats never saw it.
     assert numbered.full_text_raw == "1. List entry"
+
+
+def _pad_para(*run_texts: str):
+    """Paragraph built from run texts, for the pad geometry tests.
+
+    python-docx maps ``"\\t"`` to ``w:tab`` and ``"\\n"`` to ``w:br`` inside the
+    run, and marks whitespace-edged runs ``xml:space="preserve"`` — i.e. exactly
+    the elements a real padded paragraph carries.
+    """
+    doc = Document()
+    para = doc.add_paragraph()
+    for text in run_texts:
+        para.add_run(text).font.size = Pt(12)
+    return para._p
+
+
+@pytest.mark.parametrize(
+    ("pad", "expected"),
+    [
+        ("", 0.0),
+        (" " * 4, 2.0),  # SPACE: half an em each
+        ("　" * 3, 3.0),  # 全角空格 (IDEOGRAPHIC SPACE): one em each
+        (" " * 6, 3.0),  # 不换行空格 (NO-BREAK SPACE)
+        ("\t\t", 4.0),  # TAB: two em each
+        ("  ", 1.5),  # EM SPACE + EN SPACE
+        (" " * 5, 1.0),  # THIN SPACE
+        # Mixed variants add up; a zero-width char must not terminate the scan.
+        ("​ 　﻿  ", 2.5),
+        # A whitespace variant missing from the width table still charges the
+        # 0.5em fallback rather than measuring as zero (LINE SEPARATOR).
+        (" " * 2, 1.0),
+    ],
+)
+def test_leading_pad_em_measures_whitespace_variants(pad, expected) -> None:
+    assert leading_pad_em(_pad_para(pad, "署名")) == pytest.approx(expected)
+
+
+def test_leading_pad_em_subtracts_trailing_pad() -> None:
+    """Symmetric padding leaves the text centered — it must not count."""
+    assert leading_pad_em(_pad_para("      ", "标题", "      ")) == pytest.approx(0.0)
+    # Leading-heavier: only the excess counts.
+    assert leading_pad_em(_pad_para("          ", "标题", "    ")) == pytest.approx(3.0)
+    # Trailing-heavier goes negative and so can never trip the center rule.
+    assert leading_pad_em(_pad_para("  ", "标题", "          ")) < 0
+
+
+def test_leading_pad_em_measures_only_the_first_line() -> None:
+    """A soft break ends the measured line: continuation padding is irrelevant
+    to whether the FIRST line is centered."""
+    assert leading_pad_em(_pad_para("      ", "标题\n                续行")) == (
+        pytest.approx(3.0)
+    )
+    # Padding that only appears after the break contributes nothing.
+    assert leading_pad_em(_pad_para("标题\n", "                续行")) == (
+        pytest.approx(0.0)
+    )
+
+
+@pytest.mark.parametrize(
+    "tag,same_run,expected",
+    [
+        ("w:drawing", False, True),
+        ("w:drawing", True, True),  # the per-run text_seen regression
+        ("m:oMath", False, True),
+        ("m:oMath", True, True),
+        ("w:pict", True, True),
+        ("w:object", True, True),
+    ],
+)
+def test_leading_nontext_content_is_order_anchored(tag, same_run, expected) -> None:
+    """Element order decides, not which run the placeholder happens to live in."""
+    doc = Document()
+    para = _formula_line_paragraph(doc, tag, same_run=same_run)
+    assert leading_nontext_content(para._p) is expected
+
+
+def test_leading_nontext_content_false_when_text_comes_first() -> None:
+    doc = Document()
+    para = doc.add_paragraph()
+    run = para.add_run("标题")
+    run._r.append(OxmlElement("w:drawing"))
+    assert leading_nontext_content(para._p) is False
+    # A whitespace-only run ahead of the placeholder is not "visible text", so
+    # the placeholder still leads.
+    doc2 = Document()
+    para2 = doc2.add_paragraph()
+    para2.add_run("   ")
+    para2.add_run()._r.append(OxmlElement("w:drawing"))
+    assert leading_nontext_content(para2._p) is True
+
+
+def test_leading_nontext_content_ignores_paragraph_properties() -> None:
+    """``w:pPr`` holds formatting, never content — it must not be scanned."""
+    doc = Document()
+    para = doc.add_paragraph()
+    para.add_run("标题")
+    ppr = para._p.get_or_add_pPr()
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    ppr.append(jc)
+    assert leading_nontext_content(para._p) is False
+
+
+def test_leading_pad_em_ignores_tabs_after_leading_nontext_content() -> None:
+    """Layout tabs that FOLLOW a drawing/equation are not leading padding.
+
+    Without the placeholder the very same tabs ARE a 4.0em pad, so the contrast
+    isolates the flag: the tabs of a centered formula line
+    ``<equation>…</equation>\\t\\t（3）`` separate the formula from its number.
+    """
+    assert leading_pad_em(_pad_para("\t\t（3）")) == pytest.approx(4.0)
+    doc = Document()
+    para = _formula_line_paragraph(doc, "w:drawing", same_run=True)
+    assert leading_pad_em(para._p) == 0.0
+
+
+#: Every zero-width character the pad scan steps over. ``str.strip()`` removes
+#: NONE of them, which is exactly why "is there text here" must not use strip().
+ZERO_WIDTH_CHARS = ["​", "‌", "‍", "⁠", "﻿"]
+
+
+def _formula_line_paragraph(doc, tag: str, *, same_run: bool):
+    """A centered ``<placeholder>\\t\\t（3）`` line — the formula-number layout.
+
+    ``same_run=True`` puts the placeholder, both tabs and the text in ONE
+    ``w:r``, which is equally legal OOXML and is the ordering that defeats a
+    per-run ``text_seen`` flag.
+    """
+    para = doc.add_paragraph()
+    if same_run:
+        run = para.add_run("\t\t（3）")
+        run._r.insert(0, OxmlElement(tag))  # placeholder FIRST inside the run
+    else:
+        para.add_run()._r.append(OxmlElement(tag))
+        run = para.add_run("\t\t（3）")
+    run.font.size = Pt(12)
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    para._p.get_or_add_pPr().append(jc)
+    return para
+
+
+def _first_record_pad(doc, tmp_path) -> tuple:
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+
+    path = _save(doc, tmp_path)
+    records = _read_document_records(
+        Document(str(path)),
+        NumberingResolver(str(path)),
+        parse_styles_outline_levels(str(path)),
+        None,
+        {},
+        style_attributes=parse_styles_attributes(str(path)),
+    )
+    return records[0].alignment, records[0].leading_pad_em
+
+
+@pytest.mark.parametrize("tag", ["w:drawing", "m:oMath"])
+@pytest.mark.parametrize("same_run", [False, True], ids=["own_run", "same_run"])
+def test_centered_formula_line_keeps_a_zero_pad(tag, same_run, tmp_path) -> None:
+    """A centered line opening with a drawing / OMML equation followed by layout
+    tabs reports NO pad, so it keeps the centered channel.
+
+    ``same_run`` is the regression case: the feature walk's ``text_seen``
+    advances for the WHOLE run before it descends into that run's children, so
+    a same-run placeholder is visited with text already "seen" and its trailing
+    tabs measured 4.0em — landing exactly on the centered-pad budget.
+    """
+    doc = Document()
+    _formula_line_paragraph(doc, tag, same_run=same_run)
+    assert _first_record_pad(doc, tmp_path) == ("center", 0.0)
+
+
+def _zero_width_formula_paragraph(doc, tag: str, prefix: str):
+    """``<w:t>{prefix}</w:t><placeholder/><w:tab/><w:tab/><w:t>（3）</w:t>``, one run.
+
+    The paste-artifact shape: an invisible character sits ahead of the real
+    leading content (web/PDF copy-paste), so a ``strip()``-based visibility test
+    would stop the scan on it and never see the placeholder.
+    """
+    para = doc.add_paragraph()
+    run = para.add_run("\t\t（3）")
+    run._r.insert(0, OxmlElement(tag))
+    zw = OxmlElement("w:t")
+    zw.text = prefix
+    run._r.insert(0, zw)
+    run.font.size = Pt(12)
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    para._p.get_or_add_pPr().append(jc)
+    return para
+
+
+@pytest.mark.parametrize(
+    "zero_width", ZERO_WIDTH_CHARS, ids=lambda c: f"U+{ord(c):04X}"
+)
+@pytest.mark.parametrize("tag", ["w:drawing", "m:oMath"])
+def test_zero_width_prefix_does_not_hide_leading_placeholder(
+    zero_width, tag, tmp_path
+) -> None:
+    """ZWSP → drawing/OMML → tabs → text: the invisible prefix must not read as
+    "text came first".
+
+    ``str.strip()`` leaves every one of these characters standing, so a
+    strip()-based test would return early and the two layout tabs would measure
+    4.0em — landing exactly on the centered-pad budget. Two paragraphs that look
+    identical on screen would then classify differently, which is the symptom
+    users actually hit (these characters arrive via web/PDF copy-paste).
+    """
+    doc = Document()
+    para = _zero_width_formula_paragraph(doc, tag, zero_width)
+    assert leading_nontext_content(para._p) is True
+    assert _first_record_pad(doc, tmp_path) == ("center", 0.0)
+
+
+def test_zero_width_before_a_real_char_still_ends_the_scan(tmp_path) -> None:
+    """Control: only the INVISIBLE part is stepped over. A real glyph ahead of
+    the placeholder means text genuinely came first."""
+    doc = Document()
+    para = _zero_width_formula_paragraph(doc, "w:drawing", "​标")
+    assert leading_nontext_content(para._p) is False
+
+
+@pytest.mark.parametrize("ch", [*ZERO_WIDTH_CHARS, " ", "　", " ", "\t"])
+def test_visible_char_and_pad_scan_share_one_definition(ch) -> None:
+    """The invariant behind the bug: anything the pad scan steps over must NOT
+    count as a visible character, and vice versa. One predicate, both sides."""
+    from lightrag.parser.docx.smart_heading.features import (
+        _has_visible_char,
+        _pad_run_em,
+    )
+
+    run = ch * 3
+    assert _has_visible_char(run) is False  # no visible char anywhere…
+    # …so the pad scan consumes the whole run and reaches the real text after it.
+    assert _pad_run_em(run + "标题") == pytest.approx(_pad_run_em(run))
+    assert _has_visible_char(run + "标题") is True
+
+
+def _revision_wrapped(tag: str, *children):
+    """``<{tag}><w:r>{children}</w:r></{tag}>`` — a tracked-change subtree."""
+    wrapper = OxmlElement(tag)
+    run = OxmlElement("w:r")
+    for child in children:
+        run.append(child)
+    wrapper.append(run)
+    return wrapper
+
+
+def _para_with_revision(rev_tag: str, rev_children, tail_text: str):
+    doc = Document()
+    para = doc.add_paragraph()
+    para._p.append(_revision_wrapped(rev_tag, *rev_children))
+    para.add_run(tail_text).font.size = Pt(12)
+    return para._p
+
+
+@pytest.mark.parametrize("rev_tag", ["w:del", "w:moveFrom"])
+def test_deleted_placeholder_does_not_mask_a_real_pad(rev_tag, tmp_path) -> None:
+    """A DELETED drawing is not on the page, so it cannot make a space-padded
+    落款 look centered.
+
+    The body extractor drops ``w:del``/``w:moveFrom`` subtrees, so what the
+    reader sees here is only the 29-space signature — a 14.5em pad. Reading the
+    deleted drawing as "non-text content leads" would zero the measurement and
+    hand the signature back to the solo-centered channel.
+    """
+    para = _para_with_revision(
+        rev_tag, [OxmlElement("w:drawing")], " " * 29 + "某某市科学技术局"
+    )
+    assert leading_nontext_content(para) is False
+    assert leading_pad_em(para) == pytest.approx(14.5)
+
+
+@pytest.mark.parametrize("rev_tag", ["w:del", "w:moveFrom"])
+def test_deleted_tabs_do_not_manufacture_a_pad(rev_tag) -> None:
+    """The mirror case: DELETED tabs must not pad a genuinely centered line.
+
+    ``_run_visible_text`` maps every ``w:tab`` to ``"\\t"`` regardless of
+    revision context, so measuring from ``run_features`` counted these two and
+    produced a 4.0em pad on a line the reader sees perfectly centered.
+    """
+    para = _para_with_revision(
+        rev_tag, [OxmlElement("w:tab"), OxmlElement("w:tab")], "编制说明"
+    )
+    assert leading_pad_em(para) == 0.0
+
+
+@pytest.mark.parametrize("rev_tag", ["w:ins", "w:moveTo"])
+def test_inserted_content_stays_visible(rev_tag) -> None:
+    """``w:ins``/``w:moveTo`` are the CURRENT text — they must keep counting."""
+    inserted_placeholder = _para_with_revision(
+        rev_tag, [OxmlElement("w:drawing")], "\t\t（3）"
+    )
+    assert leading_nontext_content(inserted_placeholder) is True
+    assert leading_pad_em(inserted_placeholder) == 0.0
+
+    doc = Document()
+    para = doc.add_paragraph()
+    wrapper = OxmlElement(rev_tag)
+    run = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = " " * 29
+    run.append(t)
+    wrapper.append(run)
+    para._p.append(wrapper)
+    para.add_run("某某市科学技术局").font.size = Pt(12)
+    assert leading_pad_em(para._p) == pytest.approx(14.5)
+
+
+def test_revision_skip_matches_body_parser() -> None:
+    """The geometry scan and the body text extractor must agree on what is
+    visible — a divergence is exactly how deleted content changes a verdict."""
+    from lightrag.parser.docx.parse_document import _SKIP_PARAGRAPH_TAGS
+    from lightrag.parser.docx.smart_heading.features import _SKIP_REVISION_SUBTREES
+
+    local_names = {tag.split("}")[-1] for tag in _SKIP_REVISION_SUBTREES}
+    assert local_names == set(_SKIP_PARAGRAPH_TAGS)
+
+
+def test_pad_is_measured_when_content_follows_the_text(tmp_path) -> None:
+    """Reverse order — text first, placeholder after — is a REAL padded line:
+    the guard must not swallow it (the ordering has to be honoured, not the
+    mere presence of a placeholder)."""
+    doc = Document()
+    para = doc.add_paragraph()
+    run = para.add_run("      标题")
+    run.font.size = Pt(12)
+    run._r.append(OxmlElement("w:drawing"))  # placeholder AFTER the text
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    para._p.get_or_add_pPr().append(jc)
+    assert _first_record_pad(doc, tmp_path) == ("center", pytest.approx(3.0))
+
+
+def test_leading_pad_em_wired_onto_record_and_features(tmp_path) -> None:
+    """The pad survives to the record even though ``text`` is stripped."""
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+
+    doc = Document()
+    para = doc.add_paragraph()
+    para.add_run(" " * 29)  # python-docx marks this run xml:space="preserve"
+    para.add_run("某某市科学技术局")
+    for run in para.runs:
+        run.font.size = Pt(16)
+    ppr = para._p.get_or_add_pPr()
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    ppr.append(jc)
+
+    path = _save(doc, tmp_path)
+    doc2 = Document(str(path))
+    records = _read_document_records(
+        doc2,
+        NumberingResolver(str(path)),
+        parse_styles_outline_levels(str(path)),
+        None,
+        {},
+        style_attributes=parse_styles_attributes(str(path)),
+    )
+
+    rec = records[0]
+    assert rec.alignment == "center"
+    assert rec.text == "某某市科学技术局"  # stripped — the pad is gone from text
+    assert rec.leading_pad_em == pytest.approx(14.5)
 
 
 def test_read_pass_smart_off_skips_features(tmp_path) -> None:

@@ -41,12 +41,19 @@ def _p(
     center: bool = False,
     outline: int | None = None,
     page_break: bool = False,
+    pad: str = "",
 ):
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Pt
 
     para = doc.add_paragraph()
+    if pad:
+        # Leading whitespace in its OWN run (python-docx sets
+        # xml:space="preserve" for it), matching how WPS/Word write the
+        # 空格排版 shape: the pad and the text are separate runs.
+        pad_run = para.add_run(pad)
+        pad_run.font.size = Pt(size)
     run = para.add_run(text)
     if page_break:
         # explicit page break at the start of the run (before the text)
@@ -95,6 +102,32 @@ def _build_redhead():
     _body_filler(doc, 6)
     _p(doc, "（一）突出重点任务", size=12.0, bold=True)
     _body_filler(doc, 5)
+    return doc
+
+
+def _build_signature_pad():
+    """Controlled contrast for the space-padded 落款 rule.
+
+    Both centered lines sit at the body size (12pt), are equally short and
+    equally free of body signals — the ONLY difference is that 某某市科学技术局
+    carries a wide leading space pad, the 公文 author's way of parking a
+    signature at the bottom right of a centered paragraph. Body paragraphs
+    separate the centered lines so neither joins the other's centered run (the
+    anti-poetry cap must not be what decides this test).
+    """
+    from docx import Document
+
+    doc = Document()
+    _p(doc, "关于开展某某专项工作的函", size=18.0, center=True)
+    _body_filler(doc, 6, prefix="缘由")
+    _p(doc, "一、工作安排", size=12.0)
+    _body_filler(doc, 6, prefix="安排")
+    _p(doc, "编制说明", size=12.0, center=True)  # genuinely centered heading
+    _body_filler(doc, 6, prefix="说明")
+    _p(doc, "二、联系方式", size=12.0)
+    _body_filler(doc, 6, prefix="联系")
+    _p(doc, "某某市科学技术局", size=12.0, center=True, pad=" " * 29)
+    _p(doc, "2026年7月31日", size=12.0, center=True, pad=" " * 30)
     return doc
 
 
@@ -229,6 +262,7 @@ SCENARIOS = {
     "oversize_outline": _build_oversize_outline,
     "demoted_parent": _build_demoted_parent,
     "demoted_parent_survivor": _build_demoted_parent_survivor,
+    "signature_pad": _build_signature_pad,
 }
 
 
@@ -515,6 +549,51 @@ def test_spliced_articles_only_opening_line_is_title_block(monkeypatch) -> None:
     assert second["level"] == 1
     assert metadata["first_heading"] == "数字化转型研究综述"
     assert metadata["doc_title"] == "数字化转型研究综述"
+
+
+def test_space_padded_centered_signature_is_not_a_heading(monkeypatch) -> None:
+    """A 落款 the author positioned by padding a centered paragraph with spaces
+    is not a heading, while an unpadded centered line at the same size is.
+
+    Fix-proof: 某某市科学技术局 is centered, at FS_base, short, and free of
+    numbering / strong-body / caption / date signals, so before
+    ``is_visually_centered`` the solo centered channel promoted it — the
+    difference from 编制说明 is the leading pad and nothing else.
+    """
+    responses = {
+        "关于开展某某专项工作的函": {
+            "is_title_block": True,
+            "main_title": "关于开展某某专项工作的函",
+        }
+    }
+    blocks, warnings, metadata = _extract(
+        "signature_pad", _make_llm(responses), monkeypatch
+    )
+    headings = {b["heading"] for b in blocks}
+    assert "某某市科学技术局" not in headings
+    assert "2026年7月31日" not in headings
+    # The unpadded centered line at the SAME size still takes the channel —
+    # this rule narrows the centered channel, it does not close it.
+    assert "编制说明" in headings
+    # Both padded lines are reported; the count is over centered paragraphs the
+    # pad disqualified, not only those that would otherwise have been promoted.
+    assert warnings.get("smart_center_pad_offset") == 2
+    # Nothing is dropped: the signature and date land as body text.
+    body = "\n".join(b["content"] for b in blocks)
+    assert "某某市科学技术局" in body
+    assert "2026年7月31日" in body
+    assert "smart_fallback_baseline" not in warnings
+    assert metadata["doc_title"] == "关于开展某某专项工作的函"
+    # The disqualified paragraphs match no rule afterwards and so leave NO
+    # decision — the audit row is their only trace. Record order, and only
+    # ints/floats/strs, so the artifact stays deterministic across runs.
+    events = [
+        e
+        for e in metadata["smart_audit"]["rule_events"]
+        if e["rule"] == "center_pad_offset"
+    ]
+    assert [e["index"] for e in events] == sorted(e["index"] for e in events)
+    assert [e["pad_em"] for e in events] == [14.5, 15.0]
 
 
 # ---------------------------------------------------------------------------
