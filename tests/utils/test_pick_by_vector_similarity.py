@@ -6,11 +6,12 @@ WEIGHT retrieval method, while emitting a diagnostic warning that includes
 counts and a sample of missing chunk IDs.
 """
 
-import logging
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
+from lightrag.utils import logger as utils_logger
 from lightrag.utils import pick_by_vector_similarity
 
 pytestmark = pytest.mark.offline
@@ -27,7 +28,7 @@ class _StubChunksVDB:
         return {cid: self._vectors[cid] for cid in ids if cid in self._vectors}
 
 
-async def test_partial_missing_vectors_falls_back_and_warns(caplog):
+async def test_partial_missing_vectors_falls_back_and_warns():
     query_embedding = np.array([1.0, 0.0, 0.0])
     entity_info = [{"sorted_chunks": ["c0", "c1", "c2"]}]
     # c2 has no stored vector; the function should not rank the partial set.
@@ -38,7 +39,7 @@ async def test_partial_missing_vectors_falls_back_and_warns(caplog):
         }
     )
 
-    with caplog.at_level(logging.WARNING):
+    with patch.object(utils_logger, "warning") as mock_warning:
         selected = await pick_by_vector_similarity(
             query="q",
             text_chunks_storage=None,
@@ -51,21 +52,21 @@ async def test_partial_missing_vectors_falls_back_and_warns(caplog):
 
     assert selected == []
 
-    warning_record = next(
-        (r for r in caplog.records if "data inconsistency detected" in r.message), None
-    )
-    assert warning_record is not None, "Expected a data-inconsistency warning"
-    assert "expected 3" in warning_record.message
-    assert "retrieved 2" in warning_record.message
-    assert "missing 1" in warning_record.message
-    assert "'c2'" in warning_record.message
+    # The lightrag logger has propagate=False, so inspect the logger call directly.
+    assert mock_warning.call_count == 1
+    fmt, expected, retrieved, missing, sample = mock_warning.call_args.args
+    assert "data inconsistency detected" in fmt
+    assert expected == 3
+    assert retrieved == 2
+    assert missing == 1
+    assert "c2" in str(sample)
 
 
-async def test_no_vectors_at_all_returns_empty(caplog):
+async def test_no_vectors_at_all_returns_empty():
     entity_info = [{"sorted_chunks": ["c0", "c1"]}]
     vdb = _StubChunksVDB({})
 
-    with caplog.at_level(logging.WARNING):
+    with patch.object(utils_logger, "warning") as mock_warning:
         selected = await pick_by_vector_similarity(
             query="q",
             text_chunks_storage=None,
@@ -78,7 +79,8 @@ async def test_no_vectors_at_all_returns_empty(caplog):
 
     assert selected == []
     assert any(
-        "no vectors retrieved from chunks_vdb" in r.message for r in caplog.records
+        "no vectors retrieved from chunks_vdb" in call.args[0]
+        for call in mock_warning.call_args_list
     )
 
 
