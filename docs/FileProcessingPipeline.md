@@ -172,10 +172,12 @@ Currently supported engine parameters (canonical / alias):
 | --- | --- | --- |
 | `legacy` | Legacy extraction; content is centrally extracted before joining the pipeline | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
 | `native` | Built-in intelligent structured content extractor | `docx` `md` `textpack` |
-| `mineru` | External MinerU content extraction engine | `pdf` `docx` `pptx` `xls` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` |
-| `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` |
+| `mineru` | External MinerU content extraction engine | `pdf` `docx` `pptx` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` (extensible, see `MINERU_ADDITIONAL_SUFFIXES`) |
+| `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` (extensible, see `DOCLING_ADDITIONAL_SUFFIXES`) |
 
 `mineru` and `docling` are external content extraction engines; before enabling related rules, the services must be running first, and the corresponding endpoint/token must be configured in LightRAG.
+
+For both external engines the row above is the **baseline** set — what the engine handles out of the box. Their remaining input formats (legacy Office `doc` / `xls` / `ppt`, and for docling also ODF, EPUB, AsciiDoc, LaTeX, CSV, …) depend on components installed on the *service* side rather than in LightRAG — legacy Office conversion requires LibreOffice there — and for MinerU also on the active `MINERU_API_MODE`. They are therefore not advertised globally: declare what your own deployment can actually handle with `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` (see each engine's section below and the MinerU / Docling blocks in [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example)), then route those suffixes with a `LIGHTRAG_PARSER` rule or a per-file hint — declaring a suffix alone does not make a bare `x.doc` uploadable.
 
 LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
 
@@ -384,6 +386,18 @@ DOCLING_ENDPOINT=http://localhost:5001
 | `DOCLING_DO_FORMULA_ENRICHMENT` | `false` | Whether to recognize equations in the document and output them in LaTeX format; before enabling, ensure that Docling has downloaded the equation recognition model on the backend (see explanation below) |
 
 When `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` are not configured, they are equivalent to `auto`; when `DOCLING_OCR_LANG` is not configured, no language list is passed to docling-serve, and the OCR engine uses its own default. The parse cache signature is computed from these effective parameters, so "not configured" and "explicitly set to the default value" do not invalidate the cache.
+
+Optional input formats (1 env):
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `DOCLING_ADDITIONAL_SUFFIXES` | (empty) | Comma-separated suffixes this deployment's docling-serve can handle on top of the baseline set in §2.4, e.g. `doc,ppt,xls`. Docling's legacy Office support requires LibreOffice on the docling-serve side, so these formats are opted in per deployment instead of being advertised globally |
+
+Notes on `DOCLING_ADDITIONAL_SUFFIXES`:
+
+- Bare lowercase suffixes separated by `,`; a leading dot and surrounding whitespace are tolerated (` .DOC ` = `doc`). Anything else (`*.doc` written out of glob habit, or a `;`-separated list) is rejected at startup rather than silently ignored.
+- It only makes the suffix **routable to docling**; it does not by itself make a bare `x.doc` uploadable. Pair it with a routing rule (`LIGHTRAG_PARSER=doc:docling`) or a per-file hint (`x.[docling].doc`) — otherwise such files still fall through to the default `legacy` engine and are rejected as an unsupported suffix. Conversely, a rule like `doc:docling` without this env fails startup validation, since `doc` is not among docling's capabilities.
+- Read live from the environment, so it takes effect whether it comes from the parent shell or from `.env`.
 
 Two polling-budget envs (docling-serve uses server-side long-poll; the client does not sleep extra):
 

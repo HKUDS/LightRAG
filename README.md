@@ -133,12 +133,6 @@ uv tool install "lightrag-hku[api]"
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-### Build front-end artifacts
-cd lightrag_webui
-bun install --frozen-lockfile
-bun run build
-cd ..
-
 # Setup env file
 # Obtain the env.example file by downloading it from the GitHub repository root
 # or by copying it from a local source checkout.

@@ -258,6 +258,22 @@ class TestAggregateChunkScores:
         # Should fall back to max
         assert aggregated[0]["relevance_score"] == 0.8
 
+    def test_out_of_bounds_doc_index_ignored(self):
+        """Test that out-of-bounds original document indices in doc_indices do not raise KeyError."""
+        chunk_results = [
+            {"index": 0, "relevance_score": 0.9},
+            {"index": 1, "relevance_score": 0.8},
+        ]
+        doc_indices = [0, 5]
+        num_original_docs = 2
+
+        aggregated = aggregate_chunk_scores(
+            chunk_results, doc_indices, num_original_docs, aggregation="max"
+        )
+
+        assert len(aggregated) == 1
+        assert aggregated[0] == {"index": 0, "relevance_score": 0.9}
+
 
 @pytest.mark.offline
 class TestTopNWithChunking:

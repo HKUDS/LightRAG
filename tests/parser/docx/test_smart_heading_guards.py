@@ -473,6 +473,65 @@ def test_is_symbolic_line(text: str, expected: bool) -> None:
     assert is_symbolic_line(text) is expected
 
 
+def _centered(pad_em: float, alignment: str | None = "center"):
+    from lightrag.parser.docx.parse_document import ParagraphRecord
+
+    return ParagraphRecord(
+        kind="para",
+        text="某某市科学技术局",
+        alignment=alignment,
+        leading_pad_em=pad_em,
+    )
+
+
+@pytest.mark.parametrize(
+    "alignment,pad_relative_to_budget,expected",
+    [
+        ("center", -4.0, True),  # the ordinary centered title (pad 0 territory)
+        ("center", -0.1, True),  # padded, but still inside the budget
+        ("center", 0.0, False),  # at the budget: no longer visually centered
+        ("center", +10.0, False),  # the 空格排版 signature, far past it
+        ("both", +10.0, False),  # justified: never centered, pad irrelevant
+        ("left", -4.0, False),
+        (None, -4.0, False),  # no w:jc anywhere in the cascade
+    ],
+)
+def test_is_visually_centered(alignment, pad_relative_to_budget, expected) -> None:
+    """``w:jc=center`` plus a wide leading space pad renders right-of-center —
+    the 落款/署名 shape — so it must not count as centered.
+
+    Pads are expressed RELATIVE to the budget so tuning
+    ``CENTER_MAX_LEADING_PAD_EM`` does not invalidate the cases.
+    """
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    pad = guardrails.CENTER_MAX_LEADING_PAD_EM + pad_relative_to_budget
+    rec = _centered(pad, alignment)
+    assert guardrails.is_visually_centered(rec) is expected
+
+
+def test_trailing_heavier_pad_stays_centered() -> None:
+    """A negative net pad (more trailing than leading whitespace) can never
+    trip the rule: Word drops trailing whitespace at a line end, so no
+    rightward shift is claimed for it."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    assert guardrails.is_visually_centered(_centered(-20.0)) is True
+
+
+def test_center_pad_budget_is_one_live_constant(monkeypatch) -> None:
+    """The threshold is a single named constant read at call time, so tuning it
+    needs no other edit."""
+    from lightrag.parser.docx.smart_heading import guardrails
+
+    rec = _centered(guardrails.CENTER_MAX_LEADING_PAD_EM + 1.0)
+    assert guardrails.is_visually_centered(rec) is False
+    monkeypatch.setattr(
+        guardrails, "CENTER_MAX_LEADING_PAD_EM", rec.leading_pad_em + 1.0
+    )
+    assert guardrails.is_visually_centered(rec) is True
+
+
 # ---------------------------------------------------------------------------
 # G12-1 judgment layer: missing spaCy/model hard-fails with guidance
 # ---------------------------------------------------------------------------
