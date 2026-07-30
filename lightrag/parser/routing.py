@@ -35,6 +35,7 @@ from lightrag.parser.registry import (
     PARSER_ENGINE_REUSE,
     engine_endpoint_configured,
     engine_endpoint_requirement,
+    malformed_env_suffixes,
     supported_parser_engines,
     suffix_capabilities,
 )
@@ -979,8 +980,33 @@ def _rule_engine_and_options(engine_hint: str) -> tuple[str, str]:
     return normalize_parser_engine(head), tail.strip()
 
 
+def validate_parser_suffix_env_vars() -> None:
+    """Fail fast on malformed entries in a spec's ``extra_suffixes_env`` list.
+
+    An entry that is not a bare lowercase-alphanumeric suffix — ``*.doc`` out
+    of glob habit, or a semicolon-separated list — can never equal a real
+    ``Path.suffix``, so admitting it would do nothing while leaving the
+    operator's intent (route ``.doc`` to docling) unmet and undiagnosed. Rejecting
+    it at startup mirrors the strictness ``LIGHTRAG_PARSER`` already gets.
+    """
+    errors = [
+        f"{env_name} has malformed entries: "
+        + ", ".join(repr(token) for token in tokens)
+        + "; use bare lowercase suffixes separated by ',' (e.g. 'doc,ppt,xls')"
+        for env_name, tokens in sorted(malformed_env_suffixes().items())
+    ]
+    if errors:
+        raise ParserRoutingConfigError("; ".join(errors))
+
+
 def validate_parser_routing_config(parser_rules: str | None = None) -> None:
-    """Validate LIGHTRAG_PARSER syntax and required external parser endpoints."""
+    """Validate LIGHTRAG_PARSER syntax and required external parser endpoints.
+
+    Deployment suffix extensions are checked first: they feed engine capability
+    (``suffix_capabilities``), so a malformed list must be reported as such
+    rather than as a downstream "rule does not match any supported suffix".
+    """
+    validate_parser_suffix_env_vars()
     rules = parser_rules_from_env() if parser_rules is None else parser_rules.strip()
     if not rules:
         return

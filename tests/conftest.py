@@ -39,6 +39,12 @@ def _hermetic_mineru_env(monkeypatch):
     ``test_invalid_when_local_parser_options_change`` toggles each option
     and expects the change to invalidate a bundle recorded with defaults).
 
+    ``DOCLING_ADDITIONAL_SUFFIXES`` is cleared because it is a live engine
+    *capability* knob (``ParserSpec.extra_suffixes_env``): a developer ``.env``
+    that opts in e.g. ``doc,ppt,xls`` widens ``suffix_capabilities("docling")``
+    and the upload allowlist derived from it, so baseline suffix assertions
+    would silently pass or fail depending on the developer's own deployment.
+
     ``DOCX_SMART_HEADING`` is pinned to ``"false"`` (not merely deleted):
     it is a live-env parser-routing knob (``routing.smart_heading_default_enabled``),
     so a developer ``.env`` that sets ``DOCX_SMART_HEADING=true`` seeds
@@ -68,6 +74,7 @@ def _hermetic_mineru_env(monkeypatch):
     monkeypatch.delenv("MINERU_LOCAL_START_PAGE_ID", raising=False)
     monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
     monkeypatch.delenv("DOCLING_ENDPOINT", raising=False)
+    monkeypatch.delenv("DOCLING_ADDITIONAL_SUFFIXES", raising=False)
     monkeypatch.setenv("DOCX_SMART_HEADING", "false")
 
 
