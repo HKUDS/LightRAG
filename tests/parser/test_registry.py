@@ -70,19 +70,26 @@ def test_mineru_additional_suffixes_are_routable(monkeypatch):
     ``MINERU_LOCAL_ENDPOINT`` is set because ``available_engine_suffixes`` gates
     on ``_mineru_endpoint_configured()``, which is mode-dependent.
     """
+    from lightrag.parser.routing import (
+        ParserRoutingConfigError,
+        validate_parser_routing_config,
+    )
+
     monkeypatch.setenv("MINERU_API_MODE", "local")
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://mineru.test:8000")
-    monkeypatch.setenv("MINERU_ADDITIONAL_SUFFIXES", " .DOC , xls")
+    assert "ppt" not in registry.suffix_capabilities("mineru")
+    with pytest.raises(ParserRoutingConfigError, match="ppt:mineru"):
+        validate_parser_routing_config("ppt:mineru")
 
-    expected = {"doc", "xls"}
+    monkeypatch.setenv("MINERU_ADDITIONAL_SUFFIXES", " .DOC , xls, ppt")
+
+    expected = {"doc", "xls", "ppt"}
     assert expected <= registry.parser_specs_snapshot()["mineru"].suffixes
     assert expected <= registry.suffix_capabilities("mineru")
     assert expected <= registry.available_engine_suffixes()
 
-    # The startup validator accepts a rule that only these suffixes make valid.
-    from lightrag.parser.routing import validate_parser_routing_config
-
-    validate_parser_routing_config("doc:mineru;xls:mineru")
+    # The startup validator accepts rules that only these suffixes make valid.
+    validate_parser_routing_config("doc:mineru;xls:mineru;ppt:mineru")
 
 
 def test_engine_suffix_env_vars_do_not_cross_talk(monkeypatch):
