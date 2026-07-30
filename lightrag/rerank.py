@@ -148,10 +148,15 @@ def aggregate_chunk_scores(
     Returns:
         List of results for original documents [{"index": doc_idx, "relevance_score": score}, ...]
     """
+    if not chunk_results or doc_indices is None:
+        return []
+
     # Group scores by original document index
     doc_scores: Dict[int, List[float]] = {i: [] for i in range(num_original_docs)}
 
     for result in chunk_results:
+        if not isinstance(result, dict):
+            continue
         chunk_idx = result.get("index")
         score = result.get("relevance_score")
 
@@ -365,6 +370,9 @@ async def generic_rerank_api(
             standardized_results = [
                 {"index": result["index"], "relevance_score": result["relevance_score"]}
                 for result in results
+                if isinstance(result, dict)
+                and result.get("index") is not None
+                and result.get("relevance_score") is not None
             ]
 
             # Aggregate chunk scores back to original documents if chunking was enabled

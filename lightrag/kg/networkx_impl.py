@@ -326,8 +326,15 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             edges: List of (source_id, target_id, edge_data) tuples.
         """
+        if not edges:
+            return
         graph = await self._get_graph()
-        for src, tgt, edge_data in edges:
+        for item in edges:
+            if not isinstance(item, (tuple, list)) or len(item) < 3:
+                continue
+            src, tgt, edge_data = item[0], item[1], item[2]
+            if not isinstance(edge_data, dict):
+                edge_data = {}
             graph.add_edge(src, tgt, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
@@ -366,9 +373,11 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             nodes: List of node IDs to be deleted
         """
+        if not nodes:
+            return
         graph = await self._get_graph()
         for node in nodes:
-            if graph.has_node(node):
+            if node is not None and graph.has_node(node):
                 graph.remove_node(node)
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
@@ -385,9 +394,14 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
         """
+        if not edges:
+            return
         graph = await self._get_graph()
-        for source, target in edges:
-            if graph.has_edge(source, target):
+        for item in edges:
+            if not isinstance(item, (tuple, list)) or len(item) < 2:
+                continue
+            source, target = item[0], item[1]
+            if source is not None and target is not None and graph.has_edge(source, target):
                 graph.remove_edge(source, target)
 
     async def get_all_labels(self) -> list[str]:

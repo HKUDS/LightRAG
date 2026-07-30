@@ -189,10 +189,10 @@ def _get_relationship_vdb_timeout_seconds(global_config: dict[str, Any]) -> floa
 
 
 def _format_relation_edge_label(edge_key: tuple[str, str] | list[str]) -> str:
-    if isinstance(edge_key, tuple):
-        left, right = edge_key
-    else:
-        left, right = edge_key[0], edge_key[1]
+    if not edge_key or not isinstance(edge_key, (tuple, list)):
+        return "N/A->N/A"
+    left = edge_key[0] if len(edge_key) > 0 and edge_key[0] is not None else "N/A"
+    right = edge_key[1] if len(edge_key) > 1 and edge_key[1] is not None else "N/A"
     return f"{left}->{right}"
 
 
@@ -592,8 +592,16 @@ def _handle_single_entity_extraction(
     timestamp: int,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
-        if len(record_attributes) > 1 and "entity" in record_attributes[0]:
+    if (
+        len(record_attributes) != 4
+        or not isinstance(record_attributes[0], str)
+        or "entity" not in record_attributes[0]
+    ):
+        if (
+            len(record_attributes) > 1
+            and isinstance(record_attributes[0], str)
+            and "entity" in record_attributes[0]
+        ):
             logger.warning(
                 f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 fields on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
@@ -680,9 +688,15 @@ def _handle_single_relationship_extraction(
     file_path: str = "unknown_source",
 ):
     if (
-        len(record_attributes) != 5 or "relation" not in record_attributes[0]
+        len(record_attributes) != 5
+        or not isinstance(record_attributes[0], str)
+        or "relation" not in record_attributes[0]
     ):  # treat "relationship" and "relation" interchangeable
-        if len(record_attributes) > 1 and "relation" in record_attributes[0]:
+        if (
+            len(record_attributes) > 1
+            and isinstance(record_attributes[0], str)
+            and "relation" in record_attributes[0]
+        ):
             logger.warning(
                 f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on RELATION `{record_attributes[1]}`~`{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )

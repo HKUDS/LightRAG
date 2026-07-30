@@ -4428,13 +4428,14 @@ def pick_by_weighted_polling(
     """
     if not entities_or_relations:
         return []
-    if max_related_chunks <= 0:
+    entities_or_relations = [e for e in entities_or_relations if isinstance(e, dict)]
+    if not entities_or_relations or max_related_chunks <= 0:
         return []
 
     n = len(entities_or_relations)
     if n == 1:
         # Only one entity/relation, return its first max_related_chunks text chunks
-        entity_chunks = entities_or_relations[0].get("sorted_chunks", [])
+        entity_chunks = entities_or_relations[0].get("sorted_chunks") or []
         return entity_chunks[:max_related_chunks]
 
     # Calculate expected text chunk count for each position (linear decrease)
@@ -4453,7 +4454,7 @@ def pick_by_weighted_polling(
     total_remaining = 0  # Accumulate remaining quotas
 
     for i, entity_rel in enumerate(entities_or_relations):
-        entity_chunks = entity_rel.get("sorted_chunks", [])
+        entity_chunks = entity_rel.get("sorted_chunks") or []
         expected = expected_counts[i]
 
         # Actual allocatable count
@@ -4472,7 +4473,7 @@ def pick_by_weighted_polling(
 
         # Scan entities one by one, allocate one chunk when finding unused chunks
         for i, entity_rel in enumerate(entities_or_relations):
-            entity_chunks = entity_rel.get("sorted_chunks", [])
+            entity_chunks = entity_rel.get("sorted_chunks") or []
 
             # Check if there are still unused chunks
             if used_counts[i] < len(entity_chunks):
@@ -4525,7 +4526,9 @@ async def pick_by_vector_similarity(
     # Collect all unique chunk IDs from entity info
     all_chunk_ids = set()
     for i, entity in enumerate(entity_info):
-        chunk_ids = entity.get("sorted_chunks", [])
+        if not isinstance(entity, dict):
+            continue
+        chunk_ids = entity.get("sorted_chunks") or []
         all_chunk_ids.update(chunk_ids)
 
     if not all_chunk_ids:
@@ -5374,7 +5377,9 @@ def generate_reference_list_from_chunks(
     """
     if not chunks:
         return [], []
-
+    chunks = [c for c in chunks if isinstance(c, dict)]
+    if not chunks:
+        return [], []
     # 1. Extract all valid file_paths and count their occurrences
     file_path_counts = {}
     for chunk in chunks:
