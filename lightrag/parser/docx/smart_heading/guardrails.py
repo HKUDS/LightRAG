@@ -506,6 +506,45 @@ def is_document_date(text: str) -> bool:
     )
 
 
+#: Net leading whitespace (in CJK em — see ``features.leading_pad_em``) a
+#: ``w:jc=center`` paragraph may carry and still count as visually centered.
+#: Word centers the line INCLUDING its leading padding, so the visible text is
+#: pushed right by HALF this budget: at 4.0 em the text sits ~2 characters right
+#: of true center, which still reads as centered; the 落款 shape this guards
+#: against overshoots by an order of magnitude (the observed 公函 signature line
+#: pads 29 spaces = 14.5 em, i.e. ~7 characters of shift).
+#:
+#: Measured over 32 documents / 243 centered paragraphs (real 公文 corpus plus
+#: every golden fixture): 240 paragraphs pad 0.0 em, one 1.0 em, and the two
+#: signature lines this rule targets 14.5/15.0 em — so any threshold in
+#: (1.0, 14.5] is equivalent on that corpus and 4.0 sits deliberately near the
+#: conservative end. Tune here.
+CENTER_MAX_LEADING_PAD_EM = 4.0
+
+
+def is_visually_centered(rec: Any) -> bool:
+    """True when ``rec`` is centered AND renders that way.
+
+    ``w:jc=center`` alone is not enough. 公文 authors routinely produce a
+    右下角落款/署名 by centering a paragraph and then padding it with a run of
+    spaces, which shifts the visible text right while the alignment attribute
+    still says "center". Such a line is shape-identical to a real same-size
+    centered title, so the solo centered-heading channel promoted it — the
+    residue documented on ``heading_flow.gate_candidates``' centered channel.
+
+    Drop-in replacement for ``rec.alignment == "center"``, and BOTH consumers
+    must use it: the candidate gate (admission) and the leveling band split
+    (``centered_plain`` vs ``uncentered_plain``). Using it in only one place
+    splits the definition of "centered" between the two.
+
+    Losing centeredness is NOT a veto: outline / numbering / font-size / bold
+    paths stay open, exactly as for the anti-poetry run cap.
+    """
+    if rec.alignment != "center":
+        return False
+    return rec.leading_pad_em < CENTER_MAX_LEADING_PAD_EM
+
+
 def is_symbolic_line(text: str) -> bool:
     """True when the line carries no letter at all — page numbers (``- 1 -``),
     separators (``***`` / ``——``), bare figures. Positive detection: look for
