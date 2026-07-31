@@ -499,16 +499,37 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 ストレージを扱うツールはサーバーと同じように `.env` と環境変数を読み込むため、プロジェクトルートから同一の設定で実行してください。いくつかのツールはストレージをその場で書き換えます。サーバー（および他の書き込み側）を先に停止する必要があるかは各ガイドを確認してください。`rebuild_vdb` は停止が必須です。
 
-| ツール | 実行方法 | 内容 | ガイド |
-|---|---|---|---|
-| `rebuild_vdb.py` | `lightrag-rebuild-vdb` | すべてのベクトルストレージを破棄し、権威データ（グラフのノード／エッジ、`text_chunks` KV ストア）から再構築します。ベクトル書き込み失敗後の復旧、および embedding モデルや次元数を変更した後の再構築に使用します。読み取り専用の整合性チェックモードもあります。 | [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md) |
-| `clean_llm_query_cache.py` | `lightrag-clean-llmqc` | クエリモードの LLM キャッシュ（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`）を削除し、コストの高い抽出キャッシュは保持します。 | [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md) |
-| `migrate_llm_cache.py` | `python -m lightrag.tools.migrate_llm_cache` | default モードのキャッシュ（抽出・要約・マルチモーダル解析）を KV ストレージバックエンド間で移行し、workspace の分離を保ちます。 | [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md) |
-| `kg_integrity_repair.py` | `python -m lightrag.tools.kg_integrity_repair [--apply]` | グラフ全体を監査し、`full_entities` / `full_relations` の復旧アンカーから参照されていない寄与を検出、帰属不能な孤立オブジェクトを報告し、必要に応じてアンカーを補完して削除・再処理から再発見できるようにします。 | [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md) |
-| `source_conflict_repair.py` | `python -m lightrag.tools.source_conflict_repair list` / `... repair` | 同一の正規 source key を主張するドキュメントを一覧表示し、運用者が選ばなかった候補を重複としてマークします。ツールが勝者を自動で決めることはなく、内容を削除することもありません。 | [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md) |
-| `download_cache.py` | `lightrag-download-cache [--spacy --spacy-install]` | オフラインデプロイおよび docx の `smart_heading` エンジンパラメータに必要な tiktoken エンコーディングとバージョン固定済み spaCy モデルを事前ダウンロードします。 | [OfflineDeployment.md](./docs/OfflineDeployment.md) |
-| `hash_password.py` | `lightrag-hash-password [--username USER]` | `AUTH_ACCOUNTS` にそのまま貼り付けられる bcrypt 値を生成します。 | [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) |
-| `check_initialization.py` | `python -m lightrag.tools.check_initialization --demo` | SDK 用の診断ツール：`LightRAG` インスタンスが完全に初期化されているかを検証し、よくある「`await rag.initialize_storages()` の呼び忘れ」を検出します。 | [ProgramingWithCore.md](./docs/ProgramingWithCore.md) |
+**`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
+
+すべてのベクトルストレージを破棄し、権威データ（グラフのノード／エッジ、`text_chunks` KV ストア）から再構築します。ベクトル書き込み失敗後の復旧、および embedding モデルや次元数を変更した後の再構築に使用します。読み取り専用の整合性チェックモードもあります。
+
+**`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
+
+クエリモードの LLM キャッシュ（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`）を削除し、コストの高い抽出キャッシュは保持します。
+
+**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+default モードのキャッシュ（抽出・要約・マルチモーダル解析）を KV ストレージバックエンド間で移行し、workspace の分離を保ちます。
+
+**`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
+
+グラフ全体を監査し、`full_entities` / `full_relations` の復旧アンカーから参照されていない寄与を検出、帰属不能な孤立オブジェクトを報告し、必要に応じてアンカーを補完して削除・再処理から再発見できるようにします。
+
+**`source_conflict_repair.py`** — `python -m lightrag.tools.source_conflict_repair list` / `... repair` — [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md)
+
+同一の正規 source key を主張するドキュメントを一覧表示し、運用者が選ばなかった候補を重複としてマークします。ツールが勝者を自動で決めることはなく、内容を削除することもありません。
+
+**`download_cache.py`** — `lightrag-download-cache [--spacy --spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
+
+オフラインデプロイおよび docx の `smart_heading` エンジンパラメータに必要な tiktoken エンコーディングとバージョン固定済み spaCy モデルを事前ダウンロードします。
+
+**`hash_password.py`** — `lightrag-hash-password [--username USER]` — [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md)
+
+`AUTH_ACCOUNTS` にそのまま貼り付けられる bcrypt 値を生成します。
+
+**`check_initialization.py`** — `python -m lightrag.tools.check_initialization --demo` — [ProgramingWithCore.md](./docs/ProgramingWithCore.md)
+
+SDK 用の診断ツール：`LightRAG` インスタンスが完全に初期化されているかを検証し、よくある「`await rag.initialize_storages()` の呼び忘れ」を検出します。
 
 ## 🔗 関連プロジェクト
 

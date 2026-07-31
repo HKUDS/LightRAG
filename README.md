@@ -499,16 +499,37 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 Storage-facing tools read `.env` and environment variables exactly like the server does, so run them from the project root with the same configuration. Several of them rewrite storage in place — check the linked guide for whether the server (and any other writer) has to be stopped first; `rebuild_vdb` requires it.
 
-| Tool | Invocation | What it does | Guide |
-|---|---|---|---|
-| `rebuild_vdb.py` | `lightrag-rebuild-vdb` | Drops and rebuilds every vector storage from its authoritative source (graph nodes/edges and the `text_chunks` KV store). The recovery path after a failed vector write, and after changing the embedding model or dimension. Also offers a read-only consistency check. | [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md) |
-| `clean_llm_query_cache.py` | `lightrag-clean-llmqc` | Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) while preserving the expensive extraction cache. | [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md) |
-| `migrate_llm_cache.py` | `python -m lightrag.tools.migrate_llm_cache` | Migrates default-mode caches (extraction, summary, multimodal analysis) between KV storage backends, preserving workspace isolation. | [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md) |
-| `kg_integrity_repair.py` | `python -m lightrag.tools.kg_integrity_repair [--apply]` | Audits the whole graph for contributions missing from the `full_entities` / `full_relations` recovery anchors, reports irrecoverable orphans, and optionally repairs the anchors so delete/retry can discover them again. | [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md) |
-| `source_conflict_repair.py` | `python -m lightrag.tools.source_conflict_repair list` / `... repair` | Lists documents that claim the same canonical source key, and demotes the candidates the operator did not choose to duplicates. It never picks a winner on its own and never deletes content. | [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md) |
-| `download_cache.py` | `lightrag-download-cache [--spacy --spacy-install]` | Pre-downloads the tiktoken encodings and the pinned spaCy models required for offline deployment and the docx `smart_heading` engine parameter. | [OfflineDeployment.md](./docs/OfflineDeployment.md) |
-| `hash_password.py` | `lightrag-hash-password [--username USER]` | Generates a bcrypt value ready to paste into `AUTH_ACCOUNTS`. | [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) |
-| `check_initialization.py` | `python -m lightrag.tools.check_initialization --demo` | SDK diagnostic: verifies that a `LightRAG` instance is fully initialized, catching the common "forgot `await rag.initialize_storages()`" mistake. | [ProgramingWithCore.md](./docs/ProgramingWithCore.md) |
+**`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
+
+Drops and rebuilds every vector storage from its authoritative source (graph nodes/edges and the `text_chunks` KV store). The recovery path after a failed vector write, and after changing the embedding model or dimension. Also offers a read-only consistency check.
+
+**`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
+
+Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) while preserving the expensive extraction cache.
+
+**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+
+Migrates default-mode caches (extraction, summary, multimodal analysis) between KV storage backends, preserving workspace isolation.
+
+**`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
+
+Audits the whole graph for contributions missing from the `full_entities` / `full_relations` recovery anchors, reports irrecoverable orphans, and optionally repairs the anchors so delete/retry can discover them again.
+
+**`source_conflict_repair.py`** — `python -m lightrag.tools.source_conflict_repair list` / `... repair` — [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md)
+
+Lists documents that claim the same canonical source key, and demotes the candidates the operator did not choose to duplicates. It never picks a winner on its own and never deletes content.
+
+**`download_cache.py`** — `lightrag-download-cache [--spacy --spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
+
+Pre-downloads the tiktoken encodings and the pinned spaCy models required for offline deployment and the docx `smart_heading` engine parameter.
+
+**`hash_password.py`** — `lightrag-hash-password [--username USER]` — [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md)
+
+Generates a bcrypt value ready to paste into `AUTH_ACCOUNTS`.
+
+**`check_initialization.py`** — `python -m lightrag.tools.check_initialization --demo` — [ProgramingWithCore.md](./docs/ProgramingWithCore.md)
+
+SDK diagnostic: verifies that a `LightRAG` instance is fully initialized, catching the common "forgot `await rag.initialize_storages()`" mistake.
 
 ## 🔗 Related Projects
 
