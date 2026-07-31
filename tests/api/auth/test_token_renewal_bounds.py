@@ -1,9 +1,16 @@
-"""Regression tests for GHSA-3wg5-5w54-3rfm.
+"""Token auto-renewal: GHSA-3wg5-5w54-3rfm regressions, plus the renewal decision.
 
-Unlike ``test_token_auto_renewal.py``, which re-implements the renewal algorithm
-against a local dict, every test here drives the REAL
-``get_combined_auth_dependency`` / ``AuthHandler.validate_token`` and asserts on
-the real ``lightrag.api.utils_api._token_renewal_cache``.
+Every test here drives the REAL ``get_combined_auth_dependency`` /
+``AuthHandler.validate_token`` and asserts on the real
+``lightrag.api.utils_api._token_renewal_cache``.
+
+This file replaces ``test_token_auto_renewal.py``, which imported none of the
+production code: it declared its own ``_token_renewal_cache = {}``, re-derived
+the renewal arithmetic inside each test, and asserted on values it had just
+written to a ``Mock`` -- so it stayed green throughout the defect below, and one
+of its cases (``test_token_renewal_disabled``) asserted on a header dict nothing
+had ever written to and could not fail at all. ``TestRenewalDecision`` at the
+bottom re-covers the branches it named, against the real dependency.
 
 The defect had three parts, all reachable by an attacker holding no credential in
 any profile that runs on the default guest-mode JWT secret:
@@ -510,3 +517,104 @@ class TestRenewalStillWorks:
         assert response.status_code == 200
         assert "X-New-Token" not in response.headers
         assert utils_api._token_renewal_cache == {}
+
+
+@pytest.mark.offline
+class TestRenewalDecision:
+    """When renewal fires, driven through the real dependency.
+
+    These re-cover the branches ``test_token_auto_renewal.py`` named but never
+    reached. Rather than pinning the exact threshold instant -- ``exp`` is minted
+    relative to a clock that moves between mint and check, so an at-the-boundary
+    assertion is inherently flaky -- each case sits clearly on one side of it.
+    """
+
+    def _get(
+        self,
+        monkeypatch,
+        *,
+        expire_hours,
+        role="guest",
+        username="guest",
+        auth_configured=False,
+    ):
+        client = _client(monkeypatch, auth_configured=auth_configured, api_key=None)
+        token = auth_handler.create_token(
+            username=username, role=role, custom_expire_hours=expire_hours
+        )
+        return client.get("/documents", headers=_bearer(token))
+
+    def test_renews_below_threshold(self, monkeypatch):
+        """11h left of a nominal 24h token is under the 50% mark."""
+        response = self._get(monkeypatch, expire_hours=11)
+
+        assert response.status_code == 200
+        assert response.headers.get("X-New-Token")
+
+    def test_does_not_renew_above_threshold(self, monkeypatch):
+        """13h left is over the mark, so nothing is issued and nothing recorded."""
+        response = self._get(monkeypatch, expire_hours=13)
+
+        assert response.status_code == 200
+        assert "X-New-Token" not in response.headers
+        assert utils_api._token_renewal_cache == {}
+
+    def test_disabled_globally(self, monkeypatch):
+        """TOKEN_AUTO_RENEW=false suppresses renewal even deep inside the window."""
+        monkeypatch.setattr(config_module.global_args, "token_auto_renew", False)
+
+        response = self._get(monkeypatch, expire_hours=1)
+
+        assert response.status_code == 200
+        assert "X-New-Token" not in response.headers
+        assert utils_api._token_renewal_cache == {}
+
+    def test_role_selects_which_expiry_budget_applies(self, monkeypatch):
+        """The threshold is a fraction of the role's OWN configured lifetime.
+
+        Constructed so the two branches disagree: with guest_expire_hours=2 and
+        expire_hours=24, a token 3h from expiry is above the guest threshold (1h)
+        but below the user one (12h). A guest token must therefore NOT renew --
+        reading the wrong budget here would renew it.
+        """
+        monkeypatch.setattr(auth_handler, "guest_expire_hours", 2)
+        monkeypatch.setattr(auth_handler, "expire_hours", 24)
+
+        guest = self._get(monkeypatch, expire_hours=3, role="guest")
+        assert "X-New-Token" not in guest.headers
+
+        # Same token lifetime, non-guest role: now under the 12h mark, so it renews.
+        # Needs the password profile, since that is where a user token authenticates.
+        user = self._get(
+            monkeypatch,
+            expire_hours=3,
+            role="user",
+            username="realuser",
+            auth_configured=True,
+        )
+        assert user.headers.get("X-New-Token")
+
+    def test_rate_limit_allows_renewal_after_the_interval(self, monkeypatch):
+        """The 60s interval is a delay, not a permanent block.
+
+        The prior timestamp is pre-seeded rather than waited out; that is state
+        setup, not a re-implementation of the decision under test.
+        """
+        utils_api._token_renewal_cache["guest"] = (
+            time.time() - utils_api._RENEWAL_MIN_INTERVAL - 1
+        )
+
+        response = self._get(monkeypatch, expire_hours=1)
+
+        assert response.headers.get("X-New-Token")
+
+    def test_rate_limits_are_per_subject(self, monkeypatch):
+        """One subject's recent renewal must not suppress another's."""
+        client = _client(monkeypatch, auth_configured=False, api_key=None)
+
+        first = client.get("/documents", headers=_bearer(_near_expiry_token("alice")))
+        second = client.get("/documents", headers=_bearer(_near_expiry_token("bob")))
+
+        assert first.headers.get("X-New-Token")
+        assert second.headers.get("X-New-Token")
+        assert set(utils_api._token_renewal_cache) == {"alice", "bob"}
