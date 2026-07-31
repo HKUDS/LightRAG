@@ -498,7 +498,17 @@ class FixedTokenChunkParams(_OverlapChunkParams):
 
 
 class RecursiveCharacterChunkParams(_OverlapChunkParams):
-    separators: Optional[list[str]] = None
+    # Caller-supplied separators are safe from ReDoS — ``is_separator_regex`` is
+    # not exposed on this model and defaults to False, so every candidate goes
+    # through ``re.escape`` (lightrag/chunker/recursive_character.py:226,235)
+    # and matches in linear time. What is NOT bounded by that is the *number*
+    # of candidates: the splitter walks the list per recursion level, so cost
+    # grows as ``len(separators) x len(text)``, and unlike V the R chunker runs
+    # synchronously on the event loop. With ``MAX_REQUEST_BODY_BYTES=0`` (the
+    # default) both factors come from the same request, so cap the list here.
+    # The built-in cascade is 9 entries (``DEFAULT_R_SEPARATORS``); 64 leaves
+    # ample room for a multi-language cascade while removing the amplification.
+    separators: Optional[list[str]] = Field(default=None, max_length=64)
 
 
 class ParagraphSemanticChunkParams(_OverlapChunkParams):
@@ -522,23 +532,21 @@ class SemanticVectorChunkParams(_StrictChunkParams):
     # normalizing ints to float). Locked by tests in test_document_routes_chunking.
     breakpoint_threshold_amount: Optional[float] = None
     buffer_size: Optional[int] = Field(default=None, ge=1)
-    sentence_split_regex: Optional[str] = None
-
-    @field_validator("sentence_split_regex")
-    @classmethod
-    def _valid_sentence_split_regex(cls, v: Optional[str]) -> Optional[str]:
-        # The value is fed to LangChain's SemanticChunker and compiled during
-        # split_text. A malformed pattern (e.g. "(") would only blow up in the
-        # background, so compile it here to reject synchronously (HTTP 422).
-        if v is None:
-            return v
-        try:
-            re.compile(v)
-        except re.error as exc:
-            raise ValueError(
-                f"sentence_split_regex is not a valid regular expression: {exc}"
-            ) from exc
-        return v
+    # ``sentence_split_regex`` is deliberately NOT exposed here. The value
+    # reaches ``re.split`` in lightrag/chunker/semantic_vector.py against text
+    # from the same request, and ``re.compile`` only validates syntax, not
+    # running time: a syntactically valid pattern such as ``(a+)+$`` backtracks
+    # exponentially. CPython's regex engine holds the GIL for the whole match,
+    # so the ``asyncio.to_thread`` hop in the chunker does not keep the event
+    # loop alive either — one request froze the worker process, including
+    # /health, until restart (GHSA-32jh-39m7-8x84, CWE-1333).
+    #
+    # The pattern is operator-tunable via the ``CHUNK_V_SENTENCE_SPLIT_REGEX``
+    # env var (see lightrag/parser/routing.py), which comes from the trusted
+    # deployment rather than from a request body. ``extra="forbid"`` on
+    # ``_StrictChunkParams`` turns any request still carrying the key into a
+    # 422. Do not re-add it: bounding this safely needs process isolation with
+    # a timeout, not a stricter pattern filter.
 
     @field_validator("breakpoint_threshold_amount", mode="before")
     @classmethod

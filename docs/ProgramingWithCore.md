@@ -130,6 +130,8 @@ Compact `chunker` shape:
     "breakpoint_threshold_type": "percentile",
     "breakpoint_threshold_amount": null,
     "buffer_size": 1,
+    // env/SDK only (CHUNK_V_SENTENCE_SPLIT_REGEX); the REST chunking.params
+    // object rejects this key with 422 — see GHSA-32jh-39m7-8x84 (ReDoS)
     "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"
   },
   "paragraph_semantic": {
@@ -216,6 +218,8 @@ rag.addon_params["chunker"]["recursive_character"]["separators"] = [
 ```
 
 Nested `chunker` edits are read when future documents are enqueued. Documents already enqueued keep their persisted `chunk_options` snapshot.
+
+`semantic_vector.sentence_split_regex` is the one exception: it is re-read from `addon_params` (seeded by `CHUNK_V_SENTENCE_SPLIT_REGEX`) on **every** processing run, and any value inside a persisted `chunk_options` snapshot is discarded and logged at WARNING. This also applies to an explicit `chunk_options=` passed to `apipeline_enqueue_documents` — a per-document splitter pattern is not supported. The pattern is applied by `re.split` to the document body while CPython holds the GIL, so an untrusted one can freeze the whole worker process; see [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84).
 
 ### Notes and Precedence
 

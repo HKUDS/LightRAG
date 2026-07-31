@@ -38,7 +38,10 @@ from lightrag.constants import (
 )
 from lightrag import pipeline_metrics
 from lightrag.exceptions import StorageCapabilityError
-from lightrag.parser.routing import canonicalize_parser_hinted_basename
+from lightrag.parser.routing import (
+    canonicalize_parser_hinted_basename,
+    default_chunker_config,
+)
 from lightrag.utils import (
     compute_mdhash_id,
     get_content_summary,
@@ -49,6 +52,80 @@ from lightrag.utils import (
 
 PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
 SIDECAR_LOCATION_UNKNOWN = "unknown_source"
+
+
+def apply_trusted_sentence_split_regex(
+    v_opts: dict[str, Any],
+    addon_params: Any,
+    *,
+    doc_id: str | None = None,
+) -> dict[str, Any]:
+    """Force ``sentence_split_regex`` to the live, operator-controlled value.
+
+    ``v_opts`` comes from the per-doc ``chunk_options`` snapshot persisted in
+    ``full_docs``. Every other chunker parameter deliberately wins from that
+    snapshot so a document re-processes reproducibly across env changes; this
+    one key is the exception, and is re-read live from
+    ``addon_params['chunker']['semantic_vector']`` (seeded by
+    ``CHUNK_V_SENTENCE_SPLIT_REGEX``) on every run.
+
+    The reason is that the value is splatted into ``re.split`` against the
+    document body. A backtracking pattern such as ``(a+)+$`` runs for
+    exponential time, and CPython's regex engine holds the GIL throughout, so
+    the semantic-vector chunker's ``asyncio.to_thread`` hop does not keep the
+    event loop alive — the worker process stops serving every endpoint until
+    it is restarted (GHSA-32jh-39m7-8x84, CWE-1333).
+
+    ``chunk_options`` is snapshotted at ENQUEUE time, before chunking runs, so
+    a build that still accepted the field on ``/documents/text`` persisted the
+    attacker's pattern to storage *and* left the document in ``PROCESSING``
+    when the worker froze. ``PROCESSING`` is an auto-resume status, so without
+    this scrub an upgraded server would reload the stored pattern and freeze
+    again on every restart — a boot loop that restarting cannot clear.
+    Rejecting the field at the request model only protects new requests; this
+    is what disarms snapshots already on disk.
+
+    The replacement is unconditional, so provenance never has to be
+    reconstructed — which also means a *legitimate* per-document pattern
+    handed to ``apipeline_enqueue_documents(chunk_options=…)`` by an SDK caller
+    is discarded the same way. That is intended: the only supported way to
+    change the splitter is ``addon_params['chunker']['semantic_vector']`` /
+    ``CHUNK_V_SENTENCE_SPLIT_REGEX``. Because the loss is silent from the
+    caller's side, every discard of a *differing* snapshot value is logged at
+    WARNING with the doc id.
+
+    This is the single point where the guarantee is enforced: the ``"V"``
+    dispatch in :meth:`_PipelineMixin.process_single_document` is currently the
+    only consumer of ``chunk_options['semantic_vector']``. Any new consumer
+    MUST route through this helper — the poisoned value is left in place in
+    ``full_docs`` (inert, not rewritten), so an unscrubbed read would revive it.
+
+    Returns a new dict; ``v_opts`` is not mutated.
+    """
+    sanitized = {k: v for k, v in v_opts.items() if k != "sentence_split_regex"}
+    chunker_cfg = (addon_params or {}).get("chunker") or default_chunker_config()
+    live_regex = (chunker_cfg.get("semantic_vector") or {}).get("sentence_split_regex")
+    if live_regex:
+        sanitized["sentence_split_regex"] = live_regex
+
+    snapshot_regex = v_opts.get("sentence_split_regex")
+    if snapshot_regex is not None and snapshot_regex != live_regex:
+        # Audit line for a decision with consequences: either a pre-fix build
+        # persisted an attacker pattern (the case this helper exists for), or
+        # an SDK caller's per-doc value is being dropped. The pattern is
+        # untrusted text, so log a bounded repr rather than the raw string.
+        shown = repr(snapshot_regex)
+        if len(shown) > 120:
+            shown = shown[:117] + "..."
+        logger.warning(
+            "Discarded persisted sentence_split_regex %s for doc %s; using the "
+            "operator-configured pattern instead (GHSA-32jh-39m7-8x84). Set "
+            "CHUNK_V_SENTENCE_SPLIT_REGEX or addon_params['chunker']"
+            "['semantic_vector'] to change the V sentence splitter.",
+            shown,
+            doc_id or "<unknown>",
+        )
+    return sanitized
 
 
 def build_chunks_dict_from_chunking_result(

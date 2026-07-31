@@ -625,6 +625,8 @@ Three layers of semantic guarantee:
     "breakpoint_threshold_amount": null,                      // null = LangChain default
     "buffer_size": 1,
     "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"      // default regex handles both English and Chinese sentence-ending punctuation
+                                                              // env/SDK only (CHUNK_V_SENTENCE_SPLIT_REGEX); the REST `chunking.params`
+                                                              // object rejects this key with 422 — see GHSA-32jh-39m7-8x84 (ReDoS)
   },
   "paragraph_semantic": {                                     // P-specific
     "chunk_token_size": 2000,                                 // when omitted, resolves from CHUNK_P_SIZE or DEFAULT_CHUNK_P_SIZE (2000);

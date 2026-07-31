@@ -113,6 +113,7 @@ from lightrag.utils_pipeline import (
     # and the parser CLI / base archive path patch them there.
     archive_docx_source_after_full_docs_sync,  # noqa: F401
     parsed_artifact_dir_for,  # noqa: F401
+    apply_trusted_sentence_split_regex,
     archive_source_after_full_docs_sync,
     build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
@@ -649,7 +650,12 @@ class _PipelineMixin:
                 :meth:`LightRAG.ainsert` — should call
                 :func:`resolve_chunk_options` themselves and pass the
                 result here; this function is intentionally chunker-
-                config agnostic.  See
+                config agnostic.  One key is NOT honored from the
+                snapshot: ``semantic_vector.sentence_split_regex`` is
+                re-read live from ``addon_params`` at process time and a
+                snapshot value is discarded (logged at WARNING) — see
+                :func:`lightrag.utils_pipeline.apply_trusted_sentence_split_regex`
+                and GHSA-32jh-39m7-8x84.  See
                 ``docs/FileProcessingConfiguration-zh.md`` for the schema.
             admission_token: the pending-enqueue reservation the caller already
                 holds (endpoints reserve one before reading the request body).
@@ -4823,6 +4829,14 @@ class _PipelineMixin:
                         v_opts = dict(chunk_opts.get("semantic_vector") or {})
                         v_chunk_size = int(
                             v_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
+                        # ``sentence_split_regex`` is the one key that does NOT
+                        # win from the per-doc snapshot: it is re-read live from
+                        # the operator-controlled config so a pattern persisted
+                        # by a pre-fix build cannot freeze this worker on resume
+                        # (GHSA-32jh-39m7-8x84). See the helper's docstring.
+                        v_opts = apply_trusted_sentence_split_regex(
+                            v_opts, self.addon_params, doc_id=doc_id
                         )
                         chunk_opts_str = _format_chunking_params(v_chunk_size, v_opts)
                         logger.info(f"Chunking V: {chunk_opts_str}, doc_id: {doc_id}")
