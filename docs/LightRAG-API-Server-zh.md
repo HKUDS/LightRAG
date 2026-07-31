@@ -222,7 +222,7 @@ lightrag-gunicorn --workers 4
 
 ### 路径前缀和多站点 WebUI
 
-当一台主机通过反向代理承载多个 LightRAG 实例，并由代理剥离站点前缀后再转发给后端时，请设置 `LIGHTRAG_API_PREFIX` 或 `--api-prefix`：
+当一台主机通过反向代理承载多个 LightRAG 实例时，请设置 `LIGHTRAG_API_PREFIX` 或 `--api-prefix`。两种转发方式都可用：代理既可以在转发给后端之前剥离站点前缀，也可以原样转发。
 
 ```bash
 LIGHTRAG_API_PREFIX=/site01
@@ -230,6 +230,8 @@ lightrag-server --port 9621
 ```
 
 后端会把该值作为 FastAPI 的 `root_path`，并把同一个运行时前缀注入 WebUI。WebUI 在服务端内部始终挂载到 `/webui`，因此同一份前端构建产物可以服务任意前缀。完整的 Nginx、Docker 和 Kubernetes 示例请参阅 [Single-Server Multi-Site Deployment](./MultiSiteDeployment.md)。
+
+> **`WHITELIST_PATHS` 不带前缀书写。** 它的条目是内部路由路径，与路由声明时完全一致。匹配前会先剥离挂载前缀，两种转发方式下都是如此。因此在 `LIGHTRAG_API_PREFIX=/site01` 下，出厂默认的 `WHITELIST_PATHS=/health,/api/*` 本身就是正确的，会豁免浏览器所见的 `/site01/health`。若按浏览器可见形式书写（`WHITELIST_PATHS=/site01/health`），则匹配不到任何路径，反而会让这些路径要求认证。
 
 ### 使用 Docker 启动 LightRAG 服务器
 
@@ -625,6 +627,8 @@ WHITELIST_PATHS=/health,/api/*
 ```
 
 > 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
+>
+> **条目是内部路由路径，永远不带前缀。** `/*` 后缀按路径分段边界匹配，因此 `/api/*` 只覆盖 `/api` 及 `/api/` 之下的路径，不会覆盖别的。如果设置了 `LIGHTRAG_API_PREFIX`，这里**不要**包含它：匹配前会先剥离该前缀，所以 `WHITELIST_PATHS=/health` 会豁免 `/site01/health`，而 `WHITELIST_PATHS=/site01/health` 什么都豁免不了。参见[路径前缀和多站点 WebUI](#路径前缀和多站点-webui)。
 
 API Key使用的请求头是 `X-API-Key` 。以下是使用API访问LightRAG Server的一个例子：
 

@@ -88,6 +88,18 @@ After setting `LIGHTRAG_API_PREFIX=/site01`, the backend resolves all routes cor
 
 A small ASGI middleware in `create_app` prepends `root_path` to `scope["path"]` whenever the path does not already include it, so plain Routes and Mount sub-apps (the WebUI's `StaticFiles`) both resolve identically in either mode. You do not need to standardize on one — both coexist on the same backend without configuration toggles.
 
+### `WHITELIST_PATHS` is written without the prefix
+
+Every path the server compares against configuration — `WHITELIST_PATHS` above all — is matched **after** the mount prefix is removed, identically in both forwarding modes. Entries are the internal route paths, exactly as the routes are declared:
+
+```bash
+LIGHTRAG_API_PREFIX=/site01
+WHITELIST_PATHS=/health,/api/*        # correct: exempts /site01/health and /site01/api/chat
+# WHITELIST_PATHS=/site01/health      # WRONG: matches nothing, /site01/health then needs auth
+```
+
+So the shipped default needs no change when you add a prefix: `/health` keeps answering unauthenticated liveness probes, and `/api/*` keeps exempting the Ollama-compatible routes — and only those. A `/*` entry matches on path-segment boundaries, so `/api/*` never spills onto a sibling route that merely starts with the same characters.
+
 ---
 
 ## End-to-end example: two sites behind one nginx
