@@ -168,6 +168,7 @@ def _fmt_resolver(num_fmt: str, lvl_text: str = "（%1）") -> NumberingResolver
     r.last_abstract_id = None
     r.last_style_id = None
     r.unsupported_formats = set()
+    r.out_of_range_formats = set()
     r._warnings = None
     return r
 
@@ -255,3 +256,57 @@ def test_unknown_format_degrades_to_decimal_but_is_reported() -> None:
     assert _label(r, 3) == "（3）"
     assert r.unsupported_formats == {"koreanCounting", "thaiCounting"}
     assert warnings == {"numbering_unsupported_formats": 2}
+    # An unmapped format is NOT also reported as out-of-range: the two branches
+    # are mutually exclusive (no converter at all vs. a converter with a domain).
+    assert r.out_of_range_formats == set()
+
+
+@pytest.mark.parametrize("num_fmt", _COUNTING_FORMATS)
+def test_counting_family_past_its_domain_is_recorded(num_fmt) -> None:
+    """``_to_chinese`` renders 1-99 and degrades to the decimal string above it.
+
+    That degradation is legible (nobody reads `（100）` as a Chinese numeral, unlike
+    `（1）` passing for `（一）`), so it is not corrected here — the families do NOT
+    share one rendering past 99 and no corpus document reaches it. It IS recorded,
+    so a real document that gets there becomes findable evidence.
+    """
+    warnings: dict = {}
+    r = _fmt_resolver(num_fmt)
+    r._warnings = warnings
+    assert _label(r, 99) == "（九十九）"  # in domain: nothing recorded
+    assert warnings == {}
+    assert r.out_of_range_formats == set()
+
+    assert _label(r, 100) == "（100）"  # out of domain: decimal, but noisy
+    assert r.out_of_range_formats == {num_fmt}
+    assert warnings == {"numbering_out_of_range_formats": 1}
+    # Re-hitting the same format neither re-warns nor double-counts.
+    assert _label(r, 101) == "（101）"
+    assert warnings == {"numbering_out_of_range_formats": 1}
+    # The format stays supported — nothing lands in the unsupported ledger.
+    assert r.unsupported_formats == set()
+
+
+def test_out_of_range_counts_distinct_formats() -> None:
+    """The counter is the number of DISTINCT formats, like its unsupported twin."""
+    warnings: dict = {}
+    r = _fmt_resolver("chineseCounting")
+    r._warnings = warnings
+    assert _label(r, 100) == "（100）"
+    r.abstract_nums["10"][0]["numFmt"] = "japaneseCounting"
+    assert _label(r, 100) == "（100）"
+    assert r.out_of_range_formats == {"chineseCounting", "japaneseCounting"}
+    assert warnings == {"numbering_out_of_range_formats": 2}
+
+
+def test_ideograph_digital_has_no_domain_limit() -> None:
+    """``ideographDigital`` renders every count digit-by-digit, so it must NOT be
+    in the limited-domain table: 100 is a correct 一〇〇, not a degraded label."""
+    warnings: dict = {}
+    r = _fmt_resolver("ideographDigital", "%1")
+    r._warnings = warnings
+    assert _label(r, 100) == "一〇〇"
+    assert _label(r, 1000) == "一〇〇〇"
+    assert r.out_of_range_formats == set()
+    assert warnings == {}
+    assert "ideographDigital" not in NumberingResolver.LIMITED_DOMAIN_FORMATS

@@ -49,6 +49,24 @@ class NumberingResolver:
         "none": lambda n: "",
     }
 
+    #: numFmt -> the largest count its converter actually renders. Above the
+    #: limit the label degrades to the decimal string, which is legible and
+    #: obviously not a Chinese numeral (unlike the silent decimal default for an
+    #: UNMAPPED numFmt, where `（1）` passes for `（一）`). The counting families
+    #: all share ``_to_chinese``'s 1-99 domain, but they do NOT share a single
+    #: rendering above it: per [MS-DOCX] "numFmt Extensions" chineseCounting /
+    #: taiwaneseCounting switch to a U+25CB digit-by-digit form at 100 (一○○)
+    #: while chineseCountingThousand keeps counting (一百) — three renderings, no
+    #: corpus document that reaches any of them, so none is implemented. This
+    #: table exists to make the event FINDABLE: a real document that gets there
+    #: is the evidence needed to implement the right one.
+    LIMITED_DOMAIN_FORMATS = {
+        "chineseCounting": 99,
+        "chineseCountingThousand": 99,
+        "japaneseCounting": 99,
+        "taiwaneseCounting": 99,
+    }
+
     def __init__(self, docx_path: str, *, warnings: Dict | None = None):
         self.abstract_nums: Dict[str, dict] = {}  # abstractNumId -> level definitions
         # abstractNumId -> {styleId -> ilvl}: per-level w:pStyle links. Word ties
@@ -76,6 +94,10 @@ class NumberingResolver:
         # decimal — but never silently: a wrong-looking-yet-plausible label is
         # harder to notice than an outright error.
         self.unsupported_formats: set[str] = set()
+        # numFmt values that ARE implemented but were asked for a count outside
+        # their converter's domain (see LIMITED_DOMAIN_FORMATS), collected the
+        # first time each is hit.
+        self.out_of_range_formats: set[str] = set()
         self._warnings = warnings
         self._parse_numbering_xml(docx_path)
         self._parse_styles_xml(docx_path)
@@ -95,6 +117,30 @@ class NumberingResolver:
         if self._warnings is not None:
             self._warnings["numbering_unsupported_formats"] = len(
                 self.unsupported_formats
+            )
+
+    def _note_out_of_range(self, num_fmt: str, count: int) -> None:
+        """Record a count a SUPPORTED numFmt cannot render, once per numFmt.
+
+        Same contract as :meth:`_note_unsupported_format`: must never raise
+        (the callers swallow exceptions, so a raise here would be invisible),
+        and the label still renders — as decimal — rather than failing the
+        document.
+        """
+        limit = self.LIMITED_DOMAIN_FORMATS.get(num_fmt)
+        if limit is None or count <= limit or num_fmt in self.out_of_range_formats:
+            return
+        self.out_of_range_formats.add(num_fmt)
+        logger.warning(
+            "Numbering format '%s' cannot render count %d (supported up to %d); "
+            "those labels fall back to decimal",
+            num_fmt,
+            count,
+            limit,
+        )
+        if self._warnings is not None:
+            self._warnings["numbering_out_of_range_formats"] = len(
+                self.out_of_range_formats
             )
 
     def _parse_numbering_xml(self, docx_path: str):
@@ -476,6 +522,8 @@ class NumberingResolver:
                     if converter is None:
                         self._note_unsupported_format(num_fmt)
                         converter = str
+                    else:
+                        self._note_out_of_range(num_fmt, count)
                     formatted = converter(count)
                     result = result.replace(f"%{i + 1}", formatted)
 
