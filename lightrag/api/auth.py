@@ -72,20 +72,42 @@ class AuthHandler:
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
         invalid_accounts = []
+        oversized_username_lengths = []
         if auth_accounts:
             for account in auth_accounts.split(","):
                 try:
                     username, password = account.split(":", 1)
                     if not username or not password:
                         raise ValueError
-                    self.accounts[username] = password
                 except ValueError:
                     invalid_accounts.append(account)
+                    continue
+                if len(username) > MAX_TOKEN_SUBJECT_LENGTH:
+                    # Rejected at configuration time, not at login. create_token
+                    # signs the username into the "sub" claim and validate_token
+                    # caps that claim at the same bound, so accepting the account
+                    # here would let it authenticate at /login and then fail every
+                    # subsequent request with 401 -- an unusable account and a
+                    # baffling symptom. Both ends of the claim share one constant.
+                    oversized_username_lengths.append(len(username))
+                    continue
+                self.accounts[username] = password
         if invalid_accounts:
             invalid_entries = ", ".join(invalid_accounts)
             logger.error(f"Invalid account format in AUTH_ACCOUNTS: {invalid_entries}")
             raise ValueError(
                 "AUTH_ACCOUNTS must use comma-separated user:password pairs."
+            )
+        if oversized_username_lengths:
+            # Only the lengths are logged: the offending entry carries a password.
+            logger.error(
+                f"AUTH_ACCOUNTS contains {len(oversized_username_lengths)} username(s) "
+                f"longer than {MAX_TOKEN_SUBJECT_LENGTH} characters "
+                f"(lengths: {oversized_username_lengths})"
+            )
+            raise ValueError(
+                "AUTH_ACCOUNTS usernames must be at most "
+                f"{MAX_TOKEN_SUBJECT_LENGTH} characters."
             )
 
     def verify_password(self, username: str, plain_password: str) -> bool:

@@ -19,6 +19,7 @@ import importlib
 import logging
 import sys
 import time
+from types import SimpleNamespace
 
 import jwt
 import pytest
@@ -87,6 +88,28 @@ def _near_expiry_token(username: str, role: str = "guest") -> str:
 
 def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _handler_with_accounts(monkeypatch, auth_accounts: str):
+    """Build a fresh AuthHandler over a chosen AUTH_ACCOUNTS string.
+
+    ``auth.py`` imported ``global_args`` by value, so the module attribute is what
+    ``AuthHandler.__init__`` reads. Patching it beats reloading the module, which
+    would hand out a second ``auth_handler`` identity to everything that already
+    captured the first one.
+    """
+    monkeypatch.setattr(
+        _auth,
+        "global_args",
+        SimpleNamespace(
+            auth_accounts=auth_accounts,
+            token_secret="test-jwt-secret",
+            jwt_algorithm="HS256",
+            token_expire_hours=48,
+            guest_token_expire_hours=24,
+        ),
+    )
+    return _auth.AuthHandler()
 
 
 @pytest.mark.offline
@@ -200,6 +223,155 @@ class TestSubjectClaimBounds:
             auth_handler.validate_token(token)
 
         assert getattr(excinfo.value, "status_code", None) == 401
+
+
+@pytest.mark.offline
+class TestConfiguredAccountsRespectTheSameBound:
+    """The claim cap must be shared with account config, not only enforced on read.
+
+    ``validate_token`` capping ``sub`` is only sound if nothing can mint a token
+    above that cap. ``AUTH_ACCOUNTS`` accepted any non-empty username, so a
+    257-character account could authenticate at /login, receive a token, and then
+    be rejected on every subsequent request -- an account that is configured,
+    logs in, and cannot be used.
+    """
+
+    def test_oversized_configured_username_is_refused_at_startup(self, monkeypatch):
+        """Fail fast with an actionable message instead of at first API call."""
+        with pytest.raises(ValueError, match="at most"):
+            _handler_with_accounts(
+                monkeypatch, f"{'u' * (_auth.MAX_TOKEN_SUBJECT_LENGTH + 1)}:secret"
+            )
+
+    def test_oversized_username_error_does_not_log_the_password(
+        self, monkeypatch, caplog
+    ):
+        """The rejected entry carries a password, so only lengths may be logged."""
+        lightrag_logger = logging.getLogger("lightrag")
+        monkeypatch.setattr(lightrag_logger, "propagate", True)
+        username = "u" * (_auth.MAX_TOKEN_SUBJECT_LENGTH + 1)
+
+        with caplog.at_level(logging.ERROR, logger="lightrag"):
+            with pytest.raises(ValueError):
+                _handler_with_accounts(monkeypatch, f"{username}:sup3r-s3cret-pw")
+
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "sup3r-s3cret-pw" not in logged
+        assert username not in logged
+        assert str(len(username)) in logged
+
+    @pytest.mark.parametrize("length", [1, 64, 256, 257, 1000])
+    def test_accepted_account_always_yields_a_usable_token(self, monkeypatch, length):
+        """The invariant itself: whatever is accepted must be able to log in AND work.
+
+        Pre-fix the 257 and 1000 cases broke it -- the handler accepted the
+        account, ``create_token`` signed the username into ``sub``, and
+        ``validate_token`` then rejected that very token with 401.
+
+        Deliberately expressed as an implication rather than pinned to the current
+        cap: an account refused at configuration time satisfies it vacuously, so
+        this stays meaningful whatever MAX_TOKEN_SUBJECT_LENGTH is set to.
+        """
+        username = "u" * length
+        try:
+            handler = _handler_with_accounts(monkeypatch, f"{username}:secret")
+        except ValueError:
+            return  # Refused up front; there is no unusable account to speak of.
+
+        assert handler.verify_password(username, "secret")
+        token = handler.create_token(username=username, role="user")
+
+        assert handler.validate_token(token)["username"] == username
+
+    def test_login_then_request_succeeds_for_a_long_username(self, monkeypatch):
+        """Same invariant driven through the real dependency, not just the handler."""
+        username = "u" * _auth.MAX_TOKEN_SUBJECT_LENGTH
+        handler = _handler_with_accounts(monkeypatch, f"{username}:secret")
+        # The dependency reads the module-level singleton, so point it at ours.
+        monkeypatch.setattr(utils_api, "auth_handler", handler)
+        monkeypatch.setattr(_auth, "auth_handler", handler)
+        client = _client(monkeypatch, auth_configured=True, api_key=None)
+
+        token = handler.create_token(username=username, role="user")
+        response = client.get("/documents", headers=_bearer(token))
+
+        assert response.status_code == 200
+
+    def test_valid_accounts_are_still_accepted(self, monkeypatch):
+        """The new rejection must not swallow ordinary configurations."""
+        handler = _handler_with_accounts(monkeypatch, "admin:pw1,alice:pw2")
+
+        assert set(handler.accounts) == {"admin", "alice"}
+
+    def test_malformed_entry_still_reports_the_original_error(self, monkeypatch):
+        """The pre-existing format check keeps priority over the new one."""
+        with pytest.raises(ValueError, match="user:password pairs"):
+            _handler_with_accounts(monkeypatch, "no-colon-here")
+
+
+@pytest.mark.offline
+class TestApiKeyExitStillRenews:
+    """A request the API key authenticated must still get its token refreshed.
+
+    The WebUI sends Authorization and X-API-Key together, and /auth-status hands
+    out a guest token whenever AUTH_ACCOUNTS is unset -- which includes the
+    API-key-only profile. That guest token authenticates nothing there (it falls
+    through to the mandatory API key check), but it is still validated at step 2,
+    so once it expires every request 401s until the client re-fetches it. Moving
+    renewal off the pre-authorization path must not take this exit with it.
+    """
+
+    def test_api_key_plus_guest_token_renews(self, monkeypatch):
+        client = _client(monkeypatch, auth_configured=False, api_key=API_KEY)
+
+        response = client.get(
+            "/documents",
+            headers={**_bearer(_near_expiry_token("guest")), "X-API-Key": API_KEY},
+        )
+
+        assert response.status_code == 200
+        assert response.headers.get("X-New-Token")
+        assert set(utils_api._token_renewal_cache) == {"guest"}
+
+    def test_expired_token_rejects_even_with_a_correct_api_key(self, monkeypatch):
+        """Why the renewal exit is load-bearing, not a nicety.
+
+        Step 2 validates any presented token before the API key is ever examined,
+        so an expired one 401s the request outright. That is pre-existing behavior;
+        it is the reason a lapsed guest token must not be allowed to happen.
+        """
+        client = _client(monkeypatch, auth_configured=False, api_key=API_KEY)
+        expired = auth_handler.create_token(
+            username="guest", role="guest", custom_expire_hours=-1
+        )
+
+        response = client.get(
+            "/documents", headers={**_bearer(expired), "X-API-Key": API_KEY}
+        )
+
+        assert response.status_code == 401
+
+    def test_api_key_without_token_renews_nothing(self, monkeypatch):
+        """No token presented means there is nothing to refresh, and no write."""
+        client = _client(monkeypatch, auth_configured=False, api_key=API_KEY)
+
+        response = client.get("/documents", headers={"X-API-Key": API_KEY})
+
+        assert response.status_code == 200
+        assert "X-New-Token" not in response.headers
+        assert utils_api._token_renewal_cache == {}
+
+    def test_wrong_api_key_with_valid_token_still_writes_nothing(self, monkeypatch):
+        """The step 4 exit is reached only on a correct key -- the fix must hold."""
+        client = _client(monkeypatch, auth_configured=False, api_key=API_KEY)
+
+        response = client.get(
+            "/documents",
+            headers={**_bearer(_near_expiry_token("alice")), "X-API-Key": "wrong"},
+        )
+
+        assert response.status_code == 403
+        assert utils_api._token_renewal_cache == {}
 
 
 @pytest.mark.offline

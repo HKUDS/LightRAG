@@ -351,15 +351,19 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             return  # Whitelist path, allow access
 
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
+        # Kept in scope for step 4: in API-key-only mode a valid guest token
+        # authenticates nothing and falls through to the API key check, which is
+        # the only exit that can still renew it.
+        token_info = None
         if token:
             try:
                 token_info = auth_handler.validate_token(token)
 
-                # Auto-renewal deliberately runs AFTER the authorization decision
-                # below, at the two exits that actually accept the token. It writes
-                # process-wide state keyed on the "sub" claim, so running it here
-                # let an unauthenticated caller grow that state on requests the
-                # server rejects (GHSA-3wg5-5w54-3rfm).
+                # Auto-renewal deliberately runs AFTER the authorization decision,
+                # at each exit that accepts the request (below, and the API key
+                # check in step 4). It writes process-wide state keyed on the "sub"
+                # claim, so running it here let an unauthenticated caller grow that
+                # state on requests the server rejects (GHSA-3wg5-5w54-3rfm).
 
                 # A token only authenticates when it matches the configured auth mode:
                 #   - password auth (AUTH_ACCOUNTS set): accept non-guest user tokens
@@ -404,6 +408,16 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             and api_key_header_value
             and api_key_header_value == api_key
         ):
+            # The API key authenticated this request. If the caller ALSO presented
+            # a valid token, renew it here. The WebUI sends Authorization and
+            # X-API-Key together, and in API-key-only mode its guest token
+            # authenticates nothing (see step 2), so this is the only exit that can
+            # keep it fresh -- letting it lapse makes step 2 reject every request
+            # with 401 until the client notices and re-fetches /auth-status.
+            # Still strictly post-authorization, so no unauthenticated caller
+            # reaches the bookkeeping (GHSA-3wg5-5w54-3rfm).
+            if token_info is not None:
+                _renew_token_if_needed(path, response, token_info)
             return  # API key validation successful
 
         ### Authentication failed ####
