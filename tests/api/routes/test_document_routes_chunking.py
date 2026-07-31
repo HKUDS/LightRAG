@@ -136,6 +136,13 @@ _ALL_STRATEGY_KEYS = {
             "strategy": "semantic_vector",
             "params": {"sentence_split_regex": "(a+)+$"},
         },
+        {
+            # An over-long separator cascade is uncapped work on the event loop
+            # (R chunking is synchronous), not a ReDoS — see the comment on
+            # RecursiveCharacterChunkParams.separators.
+            "strategy": "recursive_character",
+            "params": {"separators": [f"@@{i}@@" for i in range(65)]},
+        },
         # cross-field
         {
             "strategy": "fixed_token",
@@ -311,6 +318,17 @@ def test_resolve_merges_strategy_params():
     _, chunk_options = _resolve_text_chunking(cfg, _stub_rag())
     assert chunk_options["recursive_character"]["separators"] == ["A", "B"]
     assert chunk_options["recursive_character"]["chunk_overlap_token_size"] == 0
+
+
+def test_chunking_config_accepts_a_separator_cascade_at_the_cap():
+    # The cap exists to bound ``len(separators) x len(text)`` work on the event
+    # loop, not to restrict real cascades: the built-in one is 9 entries, and a
+    # list right at the limit must still be accepted.
+    cascade = [f"sep{i}" for i in range(64)]
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "recursive_character", "params": {"separators": cascade}}
+    )
+    assert cfg.params["separators"] == cascade
 
 
 def test_resolve_size_overrides_env_for_recursive(monkeypatch):

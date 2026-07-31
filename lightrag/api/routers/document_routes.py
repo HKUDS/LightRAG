@@ -498,7 +498,17 @@ class FixedTokenChunkParams(_OverlapChunkParams):
 
 
 class RecursiveCharacterChunkParams(_OverlapChunkParams):
-    separators: Optional[list[str]] = None
+    # Caller-supplied separators are safe from ReDoS — ``is_separator_regex`` is
+    # not exposed on this model and defaults to False, so every candidate goes
+    # through ``re.escape`` (lightrag/chunker/recursive_character.py:226,235)
+    # and matches in linear time. What is NOT bounded by that is the *number*
+    # of candidates: the splitter walks the list per recursion level, so cost
+    # grows as ``len(separators) x len(text)``, and unlike V the R chunker runs
+    # synchronously on the event loop. With ``MAX_REQUEST_BODY_BYTES=0`` (the
+    # default) both factors come from the same request, so cap the list here.
+    # The built-in cascade is 9 entries (``DEFAULT_R_SEPARATORS``); 64 leaves
+    # ample room for a multi-language cascade while removing the amplification.
+    separators: Optional[list[str]] = Field(default=None, max_length=64)
 
 
 class ParagraphSemanticChunkParams(_OverlapChunkParams):
