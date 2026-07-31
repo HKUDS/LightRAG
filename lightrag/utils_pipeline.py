@@ -51,6 +51,49 @@ PLACEHOLDER_DOCUMENT_SOURCES = {"", "no-file-path", "unknown_source"}
 SIDECAR_LOCATION_UNKNOWN = "unknown_source"
 
 
+def apply_trusted_sentence_split_regex(
+    v_opts: dict[str, Any],
+    addon_params: Any,
+) -> dict[str, Any]:
+    """Force ``sentence_split_regex`` to the live, operator-controlled value.
+
+    ``v_opts`` comes from the per-doc ``chunk_options`` snapshot persisted in
+    ``full_docs``. Every other chunker parameter deliberately wins from that
+    snapshot so a document re-processes reproducibly across env changes; this
+    one key is the exception, and is re-read live from
+    ``addon_params['chunker']['semantic_vector']`` (seeded by
+    ``CHUNK_V_SENTENCE_SPLIT_REGEX``) on every run.
+
+    The reason is that the value is splatted into ``re.split`` against the
+    document body. A backtracking pattern such as ``(a+)+$`` runs for
+    exponential time, and CPython's regex engine holds the GIL throughout, so
+    the semantic-vector chunker's ``asyncio.to_thread`` hop does not keep the
+    event loop alive — the worker process stops serving every endpoint until
+    it is restarted (GHSA-32jh-39m7-8x84, CWE-1333).
+
+    ``chunk_options`` is snapshotted at ENQUEUE time, before chunking runs, so
+    a build that still accepted the field on ``/documents/text`` persisted the
+    attacker's pattern to storage *and* left the document in ``PROCESSING``
+    when the worker froze. ``PROCESSING`` is an auto-resume status, so without
+    this scrub an upgraded server would reload the stored pattern and freeze
+    again on every restart — a boot loop that restarting cannot clear.
+    Rejecting the field at the request model only protects new requests; this
+    is what disarms snapshots already on disk.
+
+    Returns a new dict; ``v_opts`` is not mutated.
+    """
+    sanitized = {k: v for k, v in v_opts.items() if k != "sentence_split_regex"}
+    # Local import: lightrag.parser.routing imports from this module's package
+    # at runtime, and a module-level import here would close the cycle.
+    from lightrag.parser.routing import default_chunker_config
+
+    chunker_cfg = (addon_params or {}).get("chunker") or default_chunker_config()
+    live_regex = (chunker_cfg.get("semantic_vector") or {}).get("sentence_split_regex")
+    if live_regex:
+        sanitized["sentence_split_regex"] = live_regex
+    return sanitized
+
+
 def build_chunks_dict_from_chunking_result(
     chunking_result: list[dict[str, Any]],
     *,

@@ -113,6 +113,7 @@ from lightrag.utils_pipeline import (
     # and the parser CLI / base archive path patch them there.
     archive_docx_source_after_full_docs_sync,  # noqa: F401
     parsed_artifact_dir_for,  # noqa: F401
+    apply_trusted_sentence_split_regex,
     archive_source_after_full_docs_sync,
     build_chunks_dict_from_chunking_result,
     chunk_fields_from_status_doc,
@@ -4823,6 +4824,14 @@ class _PipelineMixin:
                         v_opts = dict(chunk_opts.get("semantic_vector") or {})
                         v_chunk_size = int(
                             v_opts.pop("chunk_token_size", resolved_chunk_size)
+                        )
+                        # ``sentence_split_regex`` is the one key that does NOT
+                        # win from the per-doc snapshot: it is re-read live from
+                        # the operator-controlled config so a pattern persisted
+                        # by a pre-fix build cannot freeze this worker on resume
+                        # (GHSA-32jh-39m7-8x84). See the helper's docstring.
+                        v_opts = apply_trusted_sentence_split_regex(
+                            v_opts, self.addon_params
                         )
                         chunk_opts_str = _format_chunking_params(v_chunk_size, v_opts)
                         logger.info(f"Chunking V: {chunk_opts_str}, doc_id: {doc_id}")
