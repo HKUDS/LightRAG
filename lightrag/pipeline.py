@@ -5425,12 +5425,11 @@ class _PipelineMixin:
         # so a crash here left the row advertising them. Retiring the journal
         # in the SAME write is what keeps the two consistent — a surviving
         # ``completed`` journal would later collide with the next purge's
-        # operation id. kg_write_state is deliberately left alone: this
-        # document HAS written to the graph, and re-stamping ``pre_graph``
-        # would let a future purge skip the graph entirely.
+        # operation id. kg_write_state is deliberately left untouched: it is
+        # monotonic, and this run's own merge will advance it if it gets that
+        # far.
         await self._clear_kg_purge_journal(
             doc_id,
-            write_state=KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
             extra_fields={"chunks_list": [], "chunks_count": 0},
         )
         status_doc.chunks_list = []

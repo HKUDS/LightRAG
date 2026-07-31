@@ -23,14 +23,20 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
+import lightrag.pipeline as pipeline_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.constants import (
     KG_PURGE_METADATA_KEY,
     KG_PURGE_PHASE_COMPLETED,
+    KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.tools.kg_integrity_repair import audit_kg_integrity
 from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
+
+from .conftest import request_failed_retry
 
 pytestmark = pytest.mark.offline
 
@@ -459,6 +465,57 @@ async def test_reprocess_refuses_when_anchors_lost(tmp_path):
         assert all(
             chunk is not None for chunk in await rag.text_chunks.get_by_ids(chunk_ids)
         )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_resume_purge_does_not_falsely_mark_a_pre_graph_document(tmp_path):
+    """The resume purge must not advance ``kg_write_state``.
+
+    A document that failed before merge is ``pre_graph`` and owns chunks but no
+    graph objects. Its resume purge is allowed precisely BY that marker, so if
+    retiring the journal also stamped ``graph_mutation_started``, a second
+    pre-merge failure would leave a document demanding anchors it can never
+    have — neither reprocessable nor deletable. The marker is monotonic and
+    only the anchor-durable hook advances it.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = compute_mdhash_id("pg.txt", prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            "pre graph doc", ids=[doc_id], file_paths=["pg.txt"]
+        )
+
+        # Fail during merge so chunks are written but the marker is still
+        # pre_graph (Phase 0's anchor-durable hook never runs).
+        async def boom(**kwargs):
+            raise RuntimeError("merge boom")
+
+        original_merge = pipeline_module.merge_nodes_and_edges
+        pipeline_module.merge_nodes_and_edges = boom
+        try:
+            await rag.apipeline_process_enqueue_documents()
+        finally:
+            pipeline_module.merge_nodes_and_edges = original_merge
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["metadata"][KG_WRITE_STATE_METADATA_KEY] == KG_WRITE_STATE_PRE_GRAPH
+        assert await rag.full_entities.get_by_id(doc_id) is None
+
+        # The resume purge is permitted by the marker, and must leave it alone.
+        await request_failed_retry(rag)
+        await rag.apipeline_process_enqueue_documents()
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert KG_PURGE_METADATA_KEY not in row["metadata"]
+        # A completed run advanced it legitimately; what must never happen is
+        # the marker moving on while the anchors are still absent.
+        if row["metadata"].get(KG_WRITE_STATE_METADATA_KEY) == (
+            KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+        ):
+            assert await rag.full_entities.get_by_id(doc_id) is not None
+            assert await rag.full_relations.get_by_id(doc_id) is not None
     finally:
         await rag.finalize_storages()
 

@@ -91,7 +91,6 @@ from lightrag.constants import (
     KG_PURGE_PHASE_DERIVED_COMMITTED,
     KG_PURGE_PHASE_PREPARED,
     KG_PURGE_SCHEMA_VERSION,
-    KG_WRITE_STATE_METADATA_KEY,
     KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.utils import get_env_value
@@ -4373,10 +4372,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         self,
         doc_id: str,
         *,
-        write_state: str | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> None:
-        """Retire a completed purge journal, optionally resetting write state.
+        """Retire a completed purge journal.
 
         Used by callers that KEEP the ``doc_status`` row after a purge (the
         pipeline's stale-extraction reset). A caller that deletes the row
@@ -4388,6 +4386,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         ``chunks_list`` / ``chunks_count`` and the journal retirement land
         atomically — a crash between them would leave the document pointing at
         chunks this purge already deleted.
+
+        Deliberately does NOT touch ``kg_write_state``. That marker is
+        monotonic, and ``_mark_graph_mutation_started`` is its only writer, so
+        neither direction is safe to guess here: forcing
+        ``graph_mutation_started`` would make a document that provably never
+        merged start demanding anchors it will never have (a false refusal that
+        leaves it neither reprocessable nor deletable), while clearing it would
+        discard the proof a still-pre-graph document depends on.
         """
         status_doc = await self.doc_status.get_by_id(doc_id)
         if status_doc is None:
@@ -4395,10 +4401,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         metadata = doc_status_field(status_doc, "metadata", {})
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
         metadata.pop(KG_PURGE_METADATA_KEY, None)
-        if write_state is None:
-            metadata.pop(KG_WRITE_STATE_METADATA_KEY, None)
-        else:
-            metadata[KG_WRITE_STATE_METADATA_KEY] = write_state
         fields: dict[str, Any] = {"metadata": metadata}
         if extra_fields:
             fields.update(extra_fields)
