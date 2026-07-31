@@ -99,6 +99,24 @@ def test_entries_are_matched_against_the_route_path(patterns):
     assert _utils_api.path_is_whitelisted(_scope("/documents", "/api/v1")) is False
 
 
+def test_prefix_entries_match_on_segment_boundaries(patterns):
+    """A ``/*`` entry exempts the prefix and what is under it, nothing else.
+
+    Bare ``startswith`` widened every prefix entry past the segment the operator
+    wrote: ``/graph/*`` also exempted ``GET /graphs``, a real route in this
+    codebase, and ``/api/*`` would exempt any future ``/apikeys``.
+    """
+    patterns(["/graph/*"])
+
+    assert _utils_api.path_is_whitelisted(_scope("/graph")) is True
+    assert _utils_api.path_is_whitelisted(_scope("/graph/label/list")) is True
+    assert _utils_api.path_is_whitelisted(_scope("/graphs")) is False
+
+    patterns(["/api/*"])
+    assert _utils_api.path_is_whitelisted(_scope("/api/tags")) is True
+    assert _utils_api.path_is_whitelisted(_scope("/apikeys")) is False
+
+
 def test_mount_prefix_falls_back_to_the_explicit_argument(patterns):
     """Callers whose scope was not built by FastAPI (hand-rolled ASGI scopes)
     pass the prefix explicitly."""

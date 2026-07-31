@@ -311,12 +311,19 @@ def path_is_whitelisted(scope: Mapping[str, Any], *, mount_prefix: str = "") -> 
     ``request.url.path`` against them made the shipped default ``/health,/api/*``
     exempt *every* route as soon as the mount prefix itself started with
     ``/api`` — the whole API, unauthenticated, including ``DELETE /documents``.
+
+    A ``/*`` entry matches on path-segment boundaries only, so ``/api/*`` exempts
+    ``/api`` and everything under ``/api/`` but not a sibling route that merely
+    starts with those characters (``/graph/*`` must not exempt ``/graphs``). The
+    catch-all ``/*`` compiles to an empty prefix and still matches everything,
+    since every path starts with ``/``.
     """
     route = get_route_path(scope, mount_prefix)
     for pattern, is_prefix in whitelist_patterns:
-        if (is_prefix and route.startswith(pattern)) or (
-            not is_prefix and route == pattern
-        ):
+        if is_prefix:
+            if route == pattern or route.startswith(pattern + "/"):
+                return True
+        elif route == pattern:
             return True
     return False
 
