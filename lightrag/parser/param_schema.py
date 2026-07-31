@@ -504,6 +504,13 @@ def parse_engine_params(
     errors)``; aliases are normalised to canonical and values are coerced to
     their declared type (so ``force_ocr`` is a real ``bool``).  A list-type
     ``page_range`` collects repeated keys and joins them with ``,``.
+
+    A boolean parameter may be written bare as a flag — ``native(smart_heading)``
+    is shorthand for ``native(smart_heading=true)`` (same rule as the chunk
+    params in :func:`parse_chunk_params`).  Non-boolean parameters still require
+    the explicit ``key=value`` form.  The stored ``parse_engine`` field is always
+    re-encoded canonically (``smart_heading=true``), so the shorthand is an input
+    convenience only and never changes a cache signature.
     """
     by_name = _ENGINE_PARAM_BY_NAME.get(engine)
     if by_name is None:
@@ -521,9 +528,24 @@ def parse_engine_params(
         if not segment:
             errors.append(f"{label}: empty parameter")
             continue
-        if "=" not in segment:
-            if _PAGE_SEGMENT_RE.match(segment) and (
-                "page_range" in by_name or "pr" in by_name
+        if "=" in segment:
+            key, _, value = segment.partition("=")
+            key = key.strip()
+            value = value.strip()
+            flag_form = False
+        else:
+            # Bare flag form, e.g. ``smart_heading``.  Only valid for boolean
+            # parameters, where it is shorthand for ``smart_heading=true``.
+            key = segment
+            value = ""
+            flag_form = True
+
+        spec = by_name.get(key)
+        if spec is None:
+            if (
+                flag_form
+                and _PAGE_SEGMENT_RE.match(segment)
+                and ("page_range" in by_name or "pr" in by_name)
             ):
                 errors.append(
                     f"{label}: page lists must repeat the key, e.g. "
@@ -532,21 +554,18 @@ def parse_engine_params(
                 )
             else:
                 errors.append(
-                    f"{label}: parameter {segment!r} must be written as "
-                    "'key=value' (flag parameters are not supported yet)"
+                    f"{label}: unknown parameter {key!r} for engine {engine!r}; "
+                    f"supported parameters: {supported_engine_param_names(engine)}"
                 )
             continue
-        key, _, value = segment.partition("=")
-        key = key.strip()
-        value = value.strip()
-
-        spec = by_name.get(key)
-        if spec is None:
-            errors.append(
-                f"{label}: unknown parameter {key!r} for engine {engine!r}; "
-                f"supported parameters: {supported_engine_param_names(engine)}"
-            )
-            continue
+        if flag_form:
+            if spec.kind != "bool":
+                errors.append(
+                    f"{label}: parameter {spec.canonical!r} must be written as "
+                    "'key=value'; only boolean flags may be written bare"
+                )
+                continue
+            value = "true"  # bare boolean flag means True
         if any(ch in _VALUE_FORBIDDEN for ch in value):
             errors.append(
                 f"{label}: value for {spec.canonical!r} may not contain any of "

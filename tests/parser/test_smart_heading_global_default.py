@@ -185,6 +185,15 @@ def test_startup_check_rule_triggers(monkeypatch) -> None:
         )
 
 
+def test_startup_check_bare_flag_rule_triggers(monkeypatch) -> None:
+    # The bare-flag shorthand ``native(smart_heading)`` must reach the same
+    # startup fail-fast as the explicit ``smart_heading=true`` form, otherwise
+    # the shorthand would silently skip the spaCy model check.
+    monkeypatch.setattr(nlp, "missing_spacy_models", lambda: ["zh_core_web_sm"])
+    with pytest.raises(nlp.SmartHeadingNLPError, match="zh_core_web_sm"):
+        validate_smart_heading_dependencies(parser_rules="docx:native(smart_heading)")
+
+
 def test_startup_check_non_docx_rule_does_not_trigger(monkeypatch) -> None:
     # smart_heading only takes effect on .docx (markdown warn-and-ignores it),
     # so a non-docx rule must not force the spaCy models at startup.

@@ -148,6 +148,7 @@ Parameters may also be attached to the **engine token** to override an external 
 ```text
 paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # filename hint
 scan.[docling(force_ocr=true)].pdf
+report.[native(smart_heading)].docx                                      # bare boolean flag
 LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # rule
 ```
 
@@ -158,11 +159,13 @@ Currently supported engine parameters (canonical / alias):
 | `mineru` | `page_range` | `pr` | list | One or more page ranges; **see the list note below** |
 | `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
 | `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
-| `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false`; may be written bare: `docling(ocr)` means `docling(force_ocr=true)` |
+| `native` | `smart_heading` | — | bool | Opt-in docx smart heading discovery (see [§2.4](#using-the-native-file-parsing-engine)); may be written bare (`native(smart_heading)` means `=true`); the markdown path warns and ignores it |
 
 - **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
 - **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
-- Only `mineru` and `docling` accept engine parameters; attaching one to `legacy`/`native` is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
+- **A boolean engine parameter may be written bare as a flag** to keep rules and filenames short: `native(smart_heading)` means `native(smart_heading=true)`, and `docling(ocr)` means `docling(force_ocr=true)`. Only booleans may be bare (`mineru(language)` is a friendly error), and the persisted `parse_engine` is always re-encoded in the canonical `key=value` form (`native(smart_heading=true)`), so the shorthand never changes a cache signature. To turn a boolean off you still write it explicitly (`native(smart_heading=false)`).
+- Engine parameters are only accepted by engines that declare them (`mineru` / `docling` / `native`); attaching a parameter to `legacy`, or an unknown parameter to any engine, is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
 - Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
 - `parse_engine` is stored in hint syntax (e.g. `mineru(page_range=1-3)`) and shown in `doc_status` metadata so you can see the parse parameters a document used.
 
@@ -183,7 +186,7 @@ LightRAG caches the parsing results of the `mineru` and `docling` engines locall
 
 #### Using the Native File Parsing Engine
 
-`native` is LightRAG's built-in structured content extractor that runs **fully locally**: it does not depend on external services such as MinerU / Docling, the extraction stage never calls a VLM, and it works out of the box with no deployment. Its runtime dependencies are only `python-docx` + `defusedxml` (required); the markdown path additionally relies on the **optional** `cairosvg` for SVG rasterization (when missing, the SVG is skipped with a warning and the rest of the content is unaffected). Enabling the opt-in `smart_heading` engine parameter for docx additionally requires the pinned `zh_core_web_sm` / `en_core_web_sm` spaCy models (the `spacy` runtime ships with the `api` extra; install the models with `lightrag-download-cache --spacy --spacy-install` — the main Docker image already bundles them); deployments that never enable it need no models, and the smart_heading path also calls the EXTRACT-role LLM during parsing. Setting the `DOCX_SMART_HEADING=true` env var enables smart_heading by default for `.docx` files that resolve to the native engine — an explicit `native(smart_heading=false)` rule/hint opts a file back out — and makes the server verify the spaCy models at startup (fail fast instead of failing on the first parse); the same startup check triggers when a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)`. The default applies at upload time only: already-ingested documents keep their persisted engine parameters on re-parse.
+`native` is LightRAG's built-in structured content extractor that runs **fully locally**: it does not depend on external services such as MinerU / Docling, the extraction stage never calls a VLM, and it works out of the box with no deployment. Its runtime dependencies are only `python-docx` + `defusedxml` (required); the markdown path additionally relies on the **optional** `cairosvg` for SVG rasterization (when missing, the SVG is skipped with a warning and the rest of the content is unaffected). Enabling the opt-in `smart_heading` engine parameter for docx additionally requires the pinned `zh_core_web_sm` / `en_core_web_sm` spaCy models (the `spacy` runtime ships with the `api` extra; install the models with `lightrag-download-cache --spacy --spacy-install` — the main Docker image already bundles them); deployments that never enable it need no models, and the smart_heading path also calls the EXTRACT-role LLM during parsing. Setting the `DOCX_SMART_HEADING=true` env var enables smart_heading by default for `.docx` files that resolve to the native engine — an explicit `native(smart_heading=false)` rule/hint opts a file back out — and makes the server verify the spaCy models at startup (fail fast instead of failing on the first parse); the same startup check triggers when a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)` (or its flag shorthand `native(smart_heading)`). The default applies at upload time only: already-ingested documents keep their persisted engine parameters on re-parse.
 
 Supported extensions: `docx` / `md` / `textpack`. How to enable:
 

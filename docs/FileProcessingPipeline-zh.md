@@ -148,6 +148,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 ```text
 paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # 文件名 hint
 scan.[docling(force_ocr=true)].pdf
+report.[native(smart_heading)].docx                                      # 布尔参数的省值写法
 LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规则
 ```
 
@@ -158,11 +159,13 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 | `mineru` | `page_range` | `pr` | 列表 | 一个或多个页码范围；**见下方列表说明** |
 | `mineru` | `language` | — | str | OCR / 模型语言（如 `en`、`ch`） |
 | `mineru` | `local_parse_method` | `local_pm` | 枚举 | `auto` / `txt` / `ocr`（local 模式） |
-| `docling` | `force_ocr` | `ocr` | bool | `true` / `false` |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false`；可省值裸写，`docling(ocr)` 等价于 `docling(force_ocr=true)` |
+| `native` | `smart_heading` | — | bool | 可选开启的 docx 智能标题识别（见 [§2.4](#使用-native-文件解析引擎)）；可省值裸写，`native(smart_heading)` 等价于 `=true`；markdown 路径会告警并忽略 |
 
 - **`page_range` 可写多个页码段——每段都单独写一个 `page_range=...`。** 括号 `(...)` 内逗号只分隔参数，因此多段页码要写成 `page_range=1-3,page_range=5,page_range=7-9`，不要写成环境变量里的单串形式 `MINERU_PAGE_RANGES="1-3,5,7-9"`。**多段** `page_range` 需要 `MINERU_API_MODE=official`；`local` 模式只接受单页/单段（如 `page_range=1-3`）。
 - **`local_parse_method` 仅限 local 模式。** 它只影响本地 MinerU 请求，因此在 `MINERU_API_MODE=official` 下会被**拒绝**（official API 既不发送它、也不计入缓存键——接受它将静默无效）。
-- 只有 `mineru` 与 `docling` 接受引擎参数；把参数加到 `legacy`/`native` 会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
+- **布尔型引擎参数可以省略取值、写成裸开关**，用于缩短规则与文件名：`native(smart_heading)` 等价于 `native(smart_heading=true)`，`docling(ocr)` 等价于 `docling(force_ocr=true)`。只有布尔参数可以这样写（`mineru(language)` 会友好报错）；持久化的 `parse_engine` 始终按全称 `key=value` 重新编码（`native(smart_heading=true)`），因此省值写法不会改变缓存签名。关闭布尔参数仍需显式写出（`native(smart_heading=false)`）。
+- 引擎参数只被声明了参数的引擎接受（`mineru` / `docling` / `native`）；给 `legacy` 附加参数、或给任一引擎附加未知参数，都会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
 - 合并优先级：引擎参数按**最终引擎**解析——当文件名 hint 选中了另一个可用引擎时，规则的引擎参数会被丢弃。
 - `parse_engine` 以 hint 语法存储（如 `mineru(page_range=1-3)`），并展示在 `doc_status` metadata 中，便于查看文档当时使用的解析参数。
 
@@ -183,7 +186,7 @@ LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重�
 
 #### 使用 Native 文件解析引擎
 
-`native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。为 docx 启用可选的 `smart_heading` 引擎参数时，额外需要钉定版本的 `zh_core_web_sm` / `en_core_web_sm` spaCy 模型（`spacy` 运行时已随 `api` extra 一并安装，模型用 `lightrag-download-cache --spacy --spacy-install` 安装——Docker 主镜像已内置）；从不启用该参数的部署无需模型，另外 smart_heading 路径会在解析阶段调用 EXTRACT 角色 LLM。设置环境变量 `DOCX_SMART_HEADING=true` 后，路由到 native 引擎的 `.docx` 文件默认启用 smart_heading——单个文件/规则可用显式 `native(smart_heading=false)` 关闭——同时服务器会在启动时校验 spaCy 模型并 fail-fast（而不是等到首次解析才报错）；`LIGHTRAG_PARSER` 规则中携带 `native(smart_heading=true)` 时同样触发启动校验。该默认值仅作用于新上传：已入库文档重解析时沿用其持久化的引擎参数。
+`native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。为 docx 启用可选的 `smart_heading` 引擎参数时，额外需要钉定版本的 `zh_core_web_sm` / `en_core_web_sm` spaCy 模型（`spacy` 运行时已随 `api` extra 一并安装，模型用 `lightrag-download-cache --spacy --spacy-install` 安装——Docker 主镜像已内置）；从不启用该参数的部署无需模型，另外 smart_heading 路径会在解析阶段调用 EXTRACT 角色 LLM。设置环境变量 `DOCX_SMART_HEADING=true` 后，路由到 native 引擎的 `.docx` 文件默认启用 smart_heading——单个文件/规则可用显式 `native(smart_heading=false)` 关闭——同时服务器会在启动时校验 spaCy 模型并 fail-fast（而不是等到首次解析才报错）；`LIGHTRAG_PARSER` 规则中携带 `native(smart_heading=true)`（或其省值写法 `native(smart_heading)`）时同样触发启动校验。该默认值仅作用于新上传：已入库文档重解析时沿用其持久化的引擎参数。
 
 支持后缀：`docx` / `md` / `textpack`。启用方式：
 
