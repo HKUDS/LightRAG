@@ -31,6 +31,8 @@ from lightrag.constants import (
     DUPLICATE_DEMOTION_METADATA_KEYS,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_LIGHTRAG,
+    KG_PURGE_METADATA_KEY,
+    KG_WRITE_STATE_METADATA_KEY,
     LIGHTRAG_DOC_CONTENT_PREFIX,
     PARSED_DIR_NAME,
     PARSER_ENGINE_LEGACY,
@@ -379,6 +381,15 @@ _DOC_STATUS_METADATA_CARRY_OVER_KEYS: tuple[str, ...] = (
     # in-flight/failed ainsert_custom_chunks operation. Must survive every
     # status transition until the operation commits or is rolled back.
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    # KG write-progress marker and whole-document purge journal (issue #3400
+    # fail-closed purge). Both are load-bearing recovery state, not display
+    # fields: ``kg_write_state`` is the proof that lets a purge clean up an
+    # anchor-less document that never reached the graph, and ``kg_purge`` is
+    # what distinguishes "anchors already deleted by a purge that got that far"
+    # from "anchors were never there". Dropping either on a transition turns a
+    # resumable purge into a permanent fail-closed refusal.
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_PURGE_METADATA_KEY,
     # Duplicate demotion. ``metadata.is_duplicate`` is not a display field: it is
     # the ONLY thing that makes a row ineligible as a primary candidate for its
     # canonical source (``_basename_of`` returns None for it), so an operator's
@@ -431,6 +442,54 @@ def doc_status_custom_chunk_patch(status_doc: Any) -> dict[str, Any] | None:
     return journal if isinstance(journal, dict) else None
 
 
+def make_kg_purge_operation_id(doc_key: str, chunk_ids: list[str]) -> str:
+    """Deterministic operation id for one whole-document purge (issue #3400).
+
+    Identifies "the same logical purge" across retries so a resumed run can
+    trust the journaled phase. Derived from the document key plus its chunk-id
+    SET (sorted and de-duplicated, unlike
+    :func:`make_custom_chunk_operation_id` which pins an ordered list): a purge
+    assembles ``chunk_ids`` from ``chunks_list`` unioned with a custom-chunk
+    journal, so the order is an assembly artifact while the set is the thing
+    that determines what gets deleted. Length-prefixed like
+    :func:`make_custom_chunk_id` so a caller-supplied ``doc_id`` cannot collide
+    with another document's chunk-id list.
+    """
+    joined = "|".join(sorted(set(chunk_ids)))
+    return compute_mdhash_id(f"{len(doc_key)}:{doc_key}:{joined}", prefix="purge-")
+
+
+def doc_status_kg_write_state(status_doc: Any) -> str | None:
+    """Return how far this document's KG write progressed, if recorded.
+
+    ``None`` means UNKNOWN — either a pre-#3416 document or one already
+    PROCESSED (which clears the marker because its anchors are the proof).
+    A fail-closed purge treats UNKNOWN as "may have touched the graph".
+    """
+    if status_doc is None:
+        return None
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return None
+    state = raw_metadata.get(KG_WRITE_STATE_METADATA_KEY)
+    return state if isinstance(state, str) and state else None
+
+
+def doc_status_kg_purge_journal(status_doc: Any) -> dict[str, Any] | None:
+    """Return the whole-document purge journal from a doc-status record, if any.
+
+    Accepts either a ``DocProcessingStatus`` object or a raw storage dict.
+    Returns ``None`` when no purge is in flight (the normal case).
+    """
+    if status_doc is None:
+        return None
+    raw_metadata = doc_status_field(status_doc, "metadata", {})
+    if not isinstance(raw_metadata, dict):
+        return None
+    journal = raw_metadata.get(KG_PURGE_METADATA_KEY)
+    return journal if isinstance(journal, dict) else None
+
+
 def doc_status_metadata_carry_over(status_doc: Any) -> dict[str, Any]:
     """Return the subset of ``status_doc.metadata`` to preserve across upserts.
 
@@ -457,16 +516,26 @@ def doc_status_transition_metadata(
     status_doc: Any,
     *,
     extra: dict[str, Any] | None = None,
+    drop: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build a doc_status ``metadata`` payload that preserves carry-over fields.
 
     Use at every state-transition upsert site so the user's
     ``process_options`` (and any future long-lived metadata fields) survive
     PENDING → PARSING → ANALYZING → PROCESSING → PROCESSED / FAILED.
+
+    ``drop`` removes keys AFTER carry-over and ``extra`` are applied, which is
+    the only way to retire a carried-over key: passing it in ``extra`` with a
+    ``None``/empty value would persist that value rather than remove the key,
+    and omitting it just lets carry-over put it back. Used to clear the
+    ``kg_write_state`` / ``kg_purge`` recovery markers at PROCESSED, where the
+    document's recovery anchors take over as the proof.
     """
     payload = doc_status_metadata_carry_over(status_doc)
     if extra:
         payload.update(extra)
+    for key in drop:
+        payload.pop(key, None)
     return payload
 
 
@@ -485,6 +554,14 @@ _DOC_STATUS_METADATA_DIRECTIVE_KEYS: tuple[str, ...] = (
     # journal must survive — stripping it would orphan the operation's staged
     # data with no recovery anchor (issue #3400).
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
+    # A FAILED→PENDING reset is exactly the case that must not strip these: the
+    # retry re-runs extraction, and if a previous attempt's purge is half-done
+    # (anchors deleted, journal at ``anchors_pending``) the journal is the only
+    # thing keeping that purge resumable rather than permanently refused. The
+    # write-state marker rides along for the same reason — the reset leaves the
+    # document PENDING, i.e. still pre-graph.
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_PURGE_METADATA_KEY,
     # A demotion is an operator decision, not a per-attempt result: the manual
     # FAILED→PENDING retry must not undo it. A demoted row keeps its content and
     # its FAILED status, so it is reset like any other failed document — and

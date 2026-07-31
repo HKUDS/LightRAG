@@ -24,6 +24,7 @@ from typing import (
     Callable,
     Coroutine,
     Iterator,
+    NoReturn,
     TypeVar,
     cast,
     final,
@@ -84,6 +85,14 @@ from lightrag.constants import (
     DEFAULT_PIPELINE_REQUIRE_STRICT_STORAGE_READS,
     DEFAULT_MAX_PENDING_DOCUMENTS,
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
+    KG_PURGE_METADATA_KEY,
+    KG_PURGE_PHASE_ANCHORS_PENDING,
+    KG_PURGE_PHASE_COMPLETED,
+    KG_PURGE_PHASE_DERIVED_COMMITTED,
+    KG_PURGE_PHASE_PREPARED,
+    KG_PURGE_SCHEMA_VERSION,
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.utils import get_env_value
 from lightrag.parser.routing import _chunk_env_int
@@ -140,13 +149,21 @@ from lightrag.utils_pipeline import (
     KG_RECOVERY_WARNINGS_METADATA_KEY,
     compute_text_content_hash,
     doc_status_custom_chunk_patch,
+    doc_status_field,
+    doc_status_kg_purge_journal,
+    doc_status_kg_write_state,
     enforce_strict_storage_capabilities,
     make_custom_chunk_id,
     make_custom_chunk_operation_id,
+    make_kg_purge_operation_id,
     normalize_document_file_path,
 )
 from lightrag.constants import GRAPH_FIELD_SEP
-from lightrag.exceptions import IndexFlushError
+from lightrag.exceptions import (
+    IndexFlushError,
+    KGPurgeOperationConflictError,
+    RecoveryAnchorMissingError,
+)
 from lightrag.utils import (
     Tokenizer,
     TiktokenTokenizer,
@@ -191,6 +208,48 @@ from lightrag.storage_migrations import _StorageMigrationMixin
 load_dotenv(dotenv_path=".env", override=False)
 
 _SyncResultT = TypeVar("_SyncResultT")
+
+# Ordered purge journal phases (issue #3400). Index = how much destructive work
+# is already persisted, so a resumed purge can skip exactly that much:
+#   prepared          — proof verified, journal durable, NOTHING deleted yet
+#   derived_committed — graph/vector/tracking contributions repaired or removed
+#   anchors_pending   — chunks deleted too; only the anchor rows remain
+#   completed         — anchors deleted; the caller's finalization is all that's left
+# Only phases at/after ``derived_committed`` are proof in their own right: they
+# are the ones that may legitimately have removed the anchors.
+_KG_PURGE_PHASE_ORDER: tuple[str, ...] = (
+    KG_PURGE_PHASE_PREPARED,
+    KG_PURGE_PHASE_DERIVED_COMMITTED,
+    KG_PURGE_PHASE_ANCHORS_PENDING,
+    KG_PURGE_PHASE_COMPLETED,
+)
+_KG_PURGE_RESUMABLE_PHASES: frozenset[str] = frozenset(_KG_PURGE_PHASE_ORDER)
+
+
+@dataclass(frozen=True)
+class _PurgeRecoveryProof:
+    """Why a whole-document purge is (or is not) allowed to delete anything.
+
+    See :py:meth:`LightRAG._resolve_purge_recovery_proof`. ``proof_kind`` is
+    ``None`` exactly when no proof applies, in which case ``missing_reason``
+    carries the :class:`~lightrag.exceptions.RecoveryAnchorMissingError` reason
+    to raise with.
+    """
+
+    proof_kind: Literal["anchors", "pre_graph", "journal"] | None
+    operation_id: str
+    journal_phase: str | None = None
+    write_state: str | None = None
+    missing_namespaces: tuple[str, ...] = ()
+    missing_reason: str | None = None
+
+    def phase_at_least(self, phase: str) -> bool:
+        """True when the journal records ``phase`` or a later one."""
+        if self.journal_phase is None:
+            return False
+        return _KG_PURGE_PHASE_ORDER.index(
+            self.journal_phase
+        ) >= _KG_PURGE_PHASE_ORDER.index(phase)
 
 
 def _run_sync(
@@ -3996,6 +4055,257 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             pipeline_status_lock=pipeline_status_lock,
         )
 
+    async def _resolve_purge_recovery_proof(
+        self,
+        doc_id: str,
+        chunk_ids: list[str],
+    ) -> _PurgeRecoveryProof:
+        """Decide whether a whole-document purge is allowed to delete anything.
+
+        Fail-closed precondition for issue #3400. A purge discovers what a
+        document contributed to the shared graph from its write-ahead anchors;
+        without them the reverse lookup (graph ``source_id`` → ``text_chunks``
+        → ``full_doc_id``) is impossible once the chunks are gone. So rather
+        than treating absent anchors as "no contributions" — which silently
+        skipped graph cleanup and stranded unattributable entities — this
+        resolves one of three PROOFS, or reports that none applies:
+
+        * ``anchors`` — both anchor rows are present and structurally usable.
+          Presence is the test, never list truthiness: a row holding an empty
+          list is a valid proof (a document that extracted no entities), and
+          conflating the two is the original bug.
+        * ``pre_graph`` — persisted ``kg_write_state`` says the document never
+          reached its first graph mutation, so there is provably nothing in the
+          graph to find. The caller may clean up staged chunks with an
+          explicitly empty candidate set.
+        * ``journal`` — a ``kg_purge`` journal from a previous attempt records a
+          phase past the point where the anchors were legitimately deleted.
+          Without this, purge's own last step (deleting the anchors) would make
+          every subsequent retry refuse forever.
+
+        Never raises for a missing proof — returns it as
+        :attr:`_PurgeRecoveryProof.missing_reason` so the caller raises after
+        it has assembled a full, actionable message. A ``doc_status`` read
+        failure DOES propagate: an unknown state must not be read as an absent
+        journal (that would re-run a purge whose anchors are already gone).
+        """
+        status_doc = await self.doc_status.get_by_id(doc_id)
+        journal = doc_status_kg_purge_journal(status_doc)
+        write_state = doc_status_kg_write_state(status_doc)
+        operation_id = make_kg_purge_operation_id(doc_id, chunk_ids)
+
+        journal_phase: str | None = None
+        if journal is not None:
+            journal_operation_id = journal.get("operation_id")
+            if (
+                not isinstance(journal_operation_id, str)
+                or journal_operation_id != operation_id
+            ):
+                raise KGPurgeOperationConflictError(
+                    f"Document {doc_id} carries a KG purge journal for a different "
+                    f"operation (journal={journal_operation_id!r}, "
+                    f"requested={operation_id!r}); the document's chunk set changed "
+                    f"since that purge started. Resolve with "
+                    f"audit_kg_integrity(..., apply=True) before retrying.",
+                    doc_id=doc_id,
+                    journal_operation_id=(
+                        journal_operation_id
+                        if isinstance(journal_operation_id, str)
+                        else ""
+                    ),
+                    requested_operation_id=operation_id,
+                )
+            phase = journal.get("phase")
+            if phase in _KG_PURGE_RESUMABLE_PHASES:
+                journal_phase = phase
+
+        # A journal past ``prepared`` is itself the proof: the anchors may
+        # already be gone precisely BECAUSE a previous attempt got that far.
+        if journal_phase is not None and journal_phase != KG_PURGE_PHASE_PREPARED:
+            return _PurgeRecoveryProof(
+                proof_kind="journal",
+                operation_id=operation_id,
+                journal_phase=journal_phase,
+                write_state=write_state,
+            )
+
+        missing_namespaces: list[str] = []
+        entities_row = await self.full_entities.get_by_id(doc_id)
+        if not isinstance(entities_row, dict) or not isinstance(
+            entities_row.get("entity_names"), list
+        ):
+            missing_namespaces.append("full_entities")
+        relations_row = await self.full_relations.get_by_id(doc_id)
+        if not isinstance(relations_row, dict) or not isinstance(
+            relations_row.get("relation_pairs"), list
+        ):
+            missing_namespaces.append("full_relations")
+
+        if not missing_namespaces:
+            # Anchors name KG objects but the document owns no chunks to
+            # attribute them to. Classification subtracts this document's
+            # chunk ids from each object's sources, so an empty chunk set
+            # classifies every object as "keep" and then the anchors are
+            # deleted anyway — the same orphan outcome fail-closed exists to
+            # prevent. Empty anchors with no chunks is fine: nothing to strand.
+            if not chunk_ids and (
+                entities_row["entity_names"] or relations_row["relation_pairs"]
+            ):
+                return _PurgeRecoveryProof(
+                    proof_kind=None,
+                    operation_id=operation_id,
+                    journal_phase=journal_phase,
+                    write_state=write_state,
+                    missing_reason=RecoveryAnchorMissingError.REASON_CHUNKLESS_CONTRIBUTIONS,
+                )
+            return _PurgeRecoveryProof(
+                proof_kind="anchors",
+                operation_id=operation_id,
+                journal_phase=journal_phase,
+                write_state=write_state,
+            )
+
+        if write_state == KG_WRITE_STATE_PRE_GRAPH:
+            return _PurgeRecoveryProof(
+                proof_kind="pre_graph",
+                operation_id=operation_id,
+                journal_phase=journal_phase,
+                write_state=write_state,
+                missing_namespaces=tuple(missing_namespaces),
+            )
+
+        return _PurgeRecoveryProof(
+            proof_kind=None,
+            operation_id=operation_id,
+            journal_phase=journal_phase,
+            write_state=write_state,
+            missing_namespaces=tuple(missing_namespaces),
+            missing_reason=RecoveryAnchorMissingError.REASON_MISSING_ANCHOR_ROWS,
+        )
+
+    @staticmethod
+    def _raise_missing_recovery_proof(
+        doc_id: str, proof: _PurgeRecoveryProof
+    ) -> NoReturn:
+        """Turn an unproven purge into an actionable, client-safe refusal.
+
+        Split out so the purge primitive and the delete path raise identical
+        messages, and so the remedy (the offline audit tool) is named exactly
+        once.
+        """
+        remedy = (
+            "Nothing was deleted. Rebuild the recovery anchors with "
+            "audit_kg_integrity(..., apply=True) "
+            "(python -m lightrag.tools.kg_integrity_repair), then retry."
+        )
+        if (
+            proof.missing_reason
+            == RecoveryAnchorMissingError.REASON_CHUNKLESS_CONTRIBUTIONS
+        ):
+            message = (
+                f"Refusing to purge document {doc_id}: its recovery anchors name "
+                f"knowledge-graph objects, but the document owns no chunks to "
+                f"attribute them to, so those objects cannot be classified and "
+                f"would be orphaned. {remedy}"
+            )
+        else:
+            missing = (
+                ", ".join(proof.missing_namespaces) or "full_entities, full_relations"
+            )
+            message = (
+                f"Refusing to purge document {doc_id}: recovery anchor row(s) "
+                f"missing or unusable ({missing}) and the document may already "
+                f"have written to the knowledge graph "
+                f"(kg_write_state={proof.write_state or 'unknown'}). Purging now "
+                f"would delete its chunks while leaving unattributable graph "
+                f"objects behind. {remedy}"
+            )
+        raise RecoveryAnchorMissingError(
+            message,
+            doc_id=doc_id,
+            reason=proof.missing_reason
+            or RecoveryAnchorMissingError.REASON_MISSING_ANCHOR_ROWS,
+            missing_namespaces=proof.missing_namespaces,
+        )
+
+    async def _write_kg_purge_phase(
+        self,
+        doc_id: str,
+        phase: str,
+        *,
+        operation_id: str,
+        chunk_count: int,
+    ) -> None:
+        """Persist (and flush) the purge journal's phase for ``doc_id``.
+
+        ``metadata`` is an opaque replace-on-write blob in every backend, so
+        this is a read-modify-write of that one field via the targeted
+        ``update_doc_status_fields`` primitive — never a whole-record upsert,
+        which would drag ``chunks_list`` through memory.
+
+        Flushed before returning: a journal that is only in memory proves
+        nothing about what is already deleted on disk.
+        """
+        status_doc = await self.doc_status.get_by_id(doc_id)
+        if status_doc is None:
+            # No doc_status row: nothing to journal against, and the caller's
+            # finalization (which deletes that row) is what the journal exists
+            # to protect. Purge remains correct — it just cannot resume.
+            logger.warning(
+                f"[purge] {doc_id}: no doc_status record; skipping purge journal "
+                f"phase '{phase}' (this purge will not be resumable)"
+            )
+            return
+        metadata = doc_status_field(status_doc, "metadata", {})
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata[KG_PURGE_METADATA_KEY] = {
+            "schema_version": KG_PURGE_SCHEMA_VERSION,
+            "operation_id": operation_id,
+            "phase": phase,
+            "chunk_count": chunk_count,
+            "updated_at": int(time.time()),
+        }
+        await self.doc_status.update_doc_status_fields(
+            doc_id, {"metadata": metadata}, missing_ok=True
+        )
+        await self._flush_storages([self.doc_status])
+
+    async def _clear_kg_purge_journal(
+        self,
+        doc_id: str,
+        *,
+        write_state: str | None = None,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> None:
+        """Retire a completed purge journal, optionally resetting write state.
+
+        Used by callers that KEEP the ``doc_status`` row after a purge (the
+        pipeline's stale-extraction reset). A caller that deletes the row
+        instead — ``adelete_by_doc_id`` — must NOT call this: the ``completed``
+        journal is what keeps its own post-purge finalization retryable, and it
+        disappears with the row.
+
+        ``extra_fields`` rides in the same targeted write so the reset of
+        ``chunks_list`` / ``chunks_count`` and the journal retirement land
+        atomically — a crash between them would leave the document pointing at
+        chunks this purge already deleted.
+        """
+        status_doc = await self.doc_status.get_by_id(doc_id)
+        if status_doc is None:
+            return
+        metadata = doc_status_field(status_doc, "metadata", {})
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata.pop(KG_PURGE_METADATA_KEY, None)
+        if write_state is None:
+            metadata.pop(KG_WRITE_STATE_METADATA_KEY, None)
+        else:
+            metadata[KG_WRITE_STATE_METADATA_KEY] = write_state
+        fields: dict[str, Any] = {"metadata": metadata}
+        if extra_fields:
+            fields.update(extra_fields)
+        await self.doc_status.update_doc_status_fields(doc_id, fields, missing_ok=True)
+        await self._flush_storages([self.doc_status])
+
     async def _purge_kg_contributions(
         self,
         doc_id: str,
@@ -4056,19 +4366,195 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             - Pipeline busy-flag — assumes the caller already holds the
               pipeline (i.e. this runs inside a pipeline run).
 
-        Idempotent: passing an empty ``chunk_ids`` returns immediately
-        without touching storage; repeating a partially-failed purge
-        converges (absent objects are skipped, remaining ones are cleaned).
+        Idempotent and RESUMABLE. In whole-document (anchor-driven) mode this
+        additionally journals its progress to
+        ``doc_status.metadata.kg_purge`` and refuses to start without a
+        recovery proof — see :py:meth:`_resolve_purge_recovery_proof`. The
+        journal is what makes fail-closed safe to combine with step 8: once
+        the anchors are gone, only the journal can tell a retry that they were
+        deleted legitimately rather than never written. A resumed purge skips
+        exactly the phases already persisted, so it never re-runs the
+        LLM-cache-backed rebuild. Repeating a partially-failed purge converges
+        (absent objects are skipped, remaining ones are cleaned).
+
+        Explicit-candidate mode (custom-chunk patch rollback) is NOT journaled
+        and skips the proof: its caller's own operation journal already names
+        the complete candidate superset, and an empty ``chunk_ids`` returns
+        immediately without touching storage.
         """
-        if not chunk_ids:
+        # Anchor-driven whole-document purge: the only mode that both needs a
+        # recovery proof (it discovers candidates FROM the anchors) and deletes
+        # the anchors at the end (so it needs a journal to stay retryable).
+        journaled = (
+            candidate_entities is None
+            and candidate_relations is None
+            and not patch_only
+        )
+
+        proof: _PurgeRecoveryProof | None = None
+        if journaled:
+            proof = await self._resolve_purge_recovery_proof(doc_id, chunk_ids)
+            if proof.phase_at_least(KG_PURGE_PHASE_COMPLETED):
+                logger.info(
+                    f"[purge] {doc_id}: journal reports this purge already "
+                    f"completed; nothing left to delete"
+                )
+                return KGRebuildReport()
+            if proof.proof_kind is None:
+                self._raise_missing_recovery_proof(doc_id, proof)
+            if proof.proof_kind == "pre_graph":
+                # Provably nothing in the graph to find, so force an EXPLICIT
+                # empty candidate set: the derived pass then performs no graph
+                # reads or writes at all, instead of inferring "no candidates"
+                # from anchors it could not read (the original bug).
+                logger.warning(
+                    f"[purge] {doc_id}: recovery anchor row(s) missing "
+                    f"({', '.join(proof.missing_namespaces)}), but kg_write_state "
+                    f"proves no graph mutation started; cleaning up staged "
+                    f"chunks only"
+                )
+                candidate_entities = []
+                candidate_relations = []
+            if proof.journal_phase is None:
+                # Journal BEFORE the first destructive write. A crash between
+                # here and step 8 is then distinguishable from a document that
+                # never had anchors at all.
+                await self._write_kg_purge_phase(
+                    doc_id,
+                    KG_PURGE_PHASE_PREPARED,
+                    operation_id=proof.operation_id,
+                    chunk_count=len(chunk_ids),
+                )
+        elif not chunk_ids:
             return KGRebuildReport()
 
+        rebuild_report = KGRebuildReport()
+
+        # ---- Steps 1-6: repair or remove every derived contribution ----
+        if proof is None or not proof.phase_at_least(KG_PURGE_PHASE_DERIVED_COMMITTED):
+            rebuild_report = await self._purge_derived_kg_contributions(
+                doc_id,
+                chunk_ids,
+                candidate_entities=candidate_entities,
+                candidate_relations=candidate_relations,
+                rebuild_policy=rebuild_policy,
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+            if journaled and proof is not None:
+                await self._write_kg_purge_phase(
+                    doc_id,
+                    KG_PURGE_PHASE_DERIVED_COMMITTED,
+                    operation_id=proof.operation_id,
+                    chunk_count=len(chunk_ids),
+                )
+        else:
+            logger.info(
+                f"[purge] {doc_id}: resuming at phase "
+                f"'{proof.journal_phase}'; derived contributions already clean"
+            )
+
+        # ---- 7. Delete chunks themselves ----
+        if chunk_ids and (
+            proof is None or not proof.phase_at_least(KG_PURGE_PHASE_ANCHORS_PENDING)
+        ):
+            # Deleted only AFTER every derived graph/vector/tracking contribution
+            # has been repaired or removed AND flushed (issue #3400: unsafe
+            # destructive ordering). A failure before this point leaves the
+            # chunks in place, so graph objects never reference deleted chunks.
+            try:
+                await self.chunks_vdb.delete(chunk_ids)
+                await self.text_chunks.delete(chunk_ids)
+                await self._flush_storages([self.chunks_vdb, self.text_chunks])
+                async with pipeline_status_lock:
+                    log_message = f"[purge] {doc_id}: deleted {len(chunk_ids)} chunk(s) from storage"
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    append_pipeline_history(pipeline_status, log_message)
+            except Exception as e:
+                logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
+                raise Exception(f"Failed to delete document chunks: {e}") from e
+
+        # Chunk deletion is confirmed durable: the anchors may now go. This
+        # phase is the one that keeps step 8 retryable — without it, a failure
+        # after the first anchor delete would make every retry see "anchors
+        # missing" and refuse forever.
+        if (
+            journaled
+            and proof is not None
+            and not proof.phase_at_least(KG_PURGE_PHASE_ANCHORS_PENDING)
+        ):
+            await self._write_kg_purge_phase(
+                doc_id,
+                KG_PURGE_PHASE_ANCHORS_PENDING,
+                operation_id=proof.operation_id,
+                chunk_count=len(chunk_ids),
+            )
+
+        # ---- 8. Delete per-doc full_entities / full_relations index rows ----
+        # LAST, so every intermediate purge failure keeps the recovery
+        # anchors and stays retryable. Patch-only rollback keeps the base
+        # document's recovery rows: the document still owns its previously
+        # committed contributions.
+        if not patch_only:
+            try:
+                await self.full_entities.delete([doc_id])
+                await self.full_relations.delete([doc_id])
+                await self._flush_storages([self.full_entities, self.full_relations])
+            except Exception as e:
+                logger.error(
+                    f"[purge] Failed to delete full_entities/full_relations rows for {doc_id}: {e}"
+                )
+                raise Exception(
+                    f"Failed to delete from full_entities/full_relations: {e}"
+                ) from e
+
+        if journaled and proof is not None:
+            # The caller finalizes from here (doc_status / full_docs / LLM
+            # cache). The journal stays until the caller either retires it
+            # (_clear_kg_purge_journal) or deletes the doc_status row, so a
+            # finalization failure retries as a no-op purge instead of
+            # tripping the missing-anchor refusal.
+            await self._write_kg_purge_phase(
+                doc_id,
+                KG_PURGE_PHASE_COMPLETED,
+                operation_id=proof.operation_id,
+                chunk_count=len(chunk_ids),
+            )
+
+        return rebuild_report
+
+    async def _purge_derived_kg_contributions(
+        self,
+        doc_id: str,
+        chunk_ids: list[str],
+        *,
+        candidate_entities: list[str] | None,
+        candidate_relations: list[tuple[str, str]] | None,
+        rebuild_policy: Literal["best_effort", "rollback"],
+        pipeline_status: dict,
+        pipeline_status_lock: Any,
+    ) -> KGRebuildReport:
+        """Steps 1-6 of :py:meth:`_purge_kg_contributions`.
+
+        Repairs or removes every DERIVED contribution of ``chunk_ids`` —
+        graph nodes/edges, entity/relation vectors, chunk tracking — and
+        flushes, leaving the chunks themselves and the recovery anchors in
+        place. Split out so a resumed purge whose journal already records
+        ``derived_committed`` can skip it wholesale: it is the expensive part
+        (candidate re-analysis plus an LLM-cache-backed rebuild).
+
+        Candidates are a recovery SUPERSET: an explicit ``[]`` means "provably
+        nothing to clean" (the caller established that), while ``None`` means
+        "resolve from this document's anchor rows". The caller is responsible
+        for having proven that the anchors are readable — passing ``None`` with
+        absent anchors is exactly the silent-skip bug of issue #3400.
+        """
         rebuild_report = KGRebuildReport()
 
         # Set view for membership/intersection checks below (chunk_ids stays a list
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
         chunk_ids_set = set(chunk_ids)
-
         # ---- 1. Analyze affected entities/relations from the candidate set ----
         entities_to_delete: set[str] = set()
         entities_to_rebuild: dict[str, list[str]] = {}
@@ -4427,44 +4913,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             except Exception as e:
                 logger.error(f"[purge] Failed to persist rebuilt knowledge: {e}")
                 raise Exception(f"Failed to persist rebuilt knowledge: {e}") from e
-
-        # ---- 7. Delete chunks themselves ----
-        # Deleted only AFTER every derived graph/vector/tracking contribution
-        # has been repaired or removed AND flushed (issue #3400: unsafe
-        # destructive ordering). A failure before this point leaves the
-        # chunks in place, so graph objects never reference deleted chunks.
-        try:
-            await self.chunks_vdb.delete(chunk_ids)
-            await self.text_chunks.delete(chunk_ids)
-            await self._flush_storages([self.chunks_vdb, self.text_chunks])
-            async with pipeline_status_lock:
-                log_message = (
-                    f"[purge] {doc_id}: deleted {len(chunk_ids)} chunk(s) from storage"
-                )
-                logger.info(log_message)
-                pipeline_status["latest_message"] = log_message
-                append_pipeline_history(pipeline_status, log_message)
-        except Exception as e:
-            logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
-            raise Exception(f"Failed to delete document chunks: {e}") from e
-
-        # ---- 8. Delete per-doc full_entities / full_relations index rows ----
-        # LAST, so every intermediate purge failure keeps the recovery
-        # anchors and stays retryable. Patch-only rollback keeps the base
-        # document's recovery rows: the document still owns its previously
-        # committed contributions.
-        if not patch_only:
-            try:
-                await self.full_entities.delete([doc_id])
-                await self.full_relations.delete([doc_id])
-                await self._flush_storages([self.full_entities, self.full_relations])
-            except Exception as e:
-                logger.error(
-                    f"[purge] Failed to delete full_entities/full_relations rows for {doc_id}: {e}"
-                )
-                raise Exception(
-                    f"Failed to delete from full_entities/full_relations: {e}"
-                ) from e
 
         return rebuild_report
 
