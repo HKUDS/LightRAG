@@ -1826,6 +1826,46 @@ def anchor_outline_levels(
 
 _MERGE_MAX_LINES = 4
 
+#: How much heavier than the merge owner its members must COLLECTIVELY be for
+#: the owner's own physical outline to arm the joined-text gate. Both sides of
+#: the comparison are fixed points — the owner's ORIGINAL weight and the running
+#: total of everything absorbed — never the accumulated join: comparing each
+#: member against a window that already swallowed the previous ones makes the
+#: criterion path-dependent and monotonically harder to meet, so members that
+#: individually stay under the ratio can still swamp the owner together (14 +
+#: 20 + 60 + 100 clears a 180 cap while every successive 2x check passes).
+#: Calibrated against the two measured shapes (weighted en-equivalent chars,
+#: cap 180):
+#:   - 【政策内容】 (14) absorbing a 312-char citation — ratio 22: the join reads
+#:     as body entirely because of the NEIGHBOUR, and committing it costs a real
+#:     baseline heading its identity;
+#:   - _Medical Graph RAG.docx's author line (96) absorbing its affiliation line
+#:     (103) — ratio 1.07: two comparably meaty lines that only cross the body
+#:     threshold TOGETHER, exactly the merge-then-demote-together case the gate
+#:     must not break (that .docx marks the author list as outlineLvl=1, so the
+#:     outline evidence itself is dirty and cannot be trusted on its own).
+#: 2.0 sits in the wide gap between them. Raising it toward 22 or lowering it
+#: toward 1.07 narrows one of those margins — do not tune without re-running the
+#: corpus A/B.
+_MERGE_OUTLINE_OWNER_OUTWEIGH_RATIO = 2.0
+
+
+def _members_outweigh_owner(owner_weight: int, absorbed_weight: int) -> bool:
+    """Have the absorbed members collectively swamped the merge owner?
+
+    ``owner_weight`` is the owner's ORIGINAL weighted length and
+    ``absorbed_weight`` the running total of every member taken so far,
+    including the one under consideration. True means whatever makes the joined
+    text read as body comes from the MEMBERS, not from the owner — so a merge
+    that the sweep would then demote trades a real heading for a body paragraph.
+
+    Monotonic in ``absorbed_weight``, hence sticky by construction: once the
+    members outweigh the owner they cannot un-outweigh it later in the window.
+    """
+    if owner_weight <= 0:
+        return False
+    return absorbed_weight >= _MERGE_OUTLINE_OWNER_OUTWEIGH_RATIO * owner_weight
+
 
 def merge_split_headings(
     decisions: list[HeadingDecision],
@@ -1860,7 +1900,20 @@ def merge_split_headings(
       finally pushes the join over the body threshold. Committing such a merge
       would let the sweep undo it and strand the outline member without a
       decision — an invariant-I2 violation that costs the WHOLE document its
-      smart output (see :func:`_register_merge_members`).
+      smart output (see :func:`_register_merge_members`);
+    - the same gate arms when the OWNER is the one carrying the outline and the
+      members COLLECTIVELY outweigh it (:func:`_members_outweigh_owner`, fed the
+      owner's original weight and the running member total — never the
+      accumulated join, which would let members that each stay under the ratio
+      swamp the owner together). This mirror image
+      fails differently and more quietly: the owner is what the sweep demotes,
+      and ``strong_body_demoted`` IS whitelisted by
+      :func:`guardrails.verify_baseline_heading_retention`, so I2 does NOT trip
+      and no fallback rescues the document — a real baseline heading just
+      becomes body. Owner outline alone is NOT enough to arm it: a .docx that
+      marks a 96-char author list as ``outlineLvl=1`` is dirty evidence, and the
+      merge-then-demote-together outcome is right there. The weight ratio is
+      what separates the two.
 
     The joined-text gate is verdict-identical to the sweep's own test: same
     predicate, same ``(text, outline_level)`` arguments, and nothing mutates
@@ -1888,6 +1941,8 @@ def merge_split_headings(
         lines = cur.text.count("\n") + 1
         merged_members = [cur.record_index]
         absorbed_outline = False  # sticky: a baseline heading is in the window
+        owner_weight = guardrails.weighted_char_length(cur.text.strip())
+        absorbed_weight = 0  # running total of the members taken so far
         k = pos + 1
         while k < len(decisions):
             nxt = decisions[k]
@@ -1906,9 +1961,17 @@ def merge_split_headings(
             if lines + nxt_lines > _MERGE_MAX_LINES:
                 break
             joined = _join_heading_texts(cur.text, nxt.text)
-            # Outer guard: an outline-free window never pays for this extra
-            # NLP judgment.
-            if absorbed_outline or nxt.outline_level is not None:
+            absorbed_weight += guardrails.weighted_char_length(nxt.text.strip())
+            # Outer guard: a window with no outline at stake never pays for this
+            # extra NLP judgment.
+            if (
+                absorbed_outline
+                or nxt.outline_level is not None
+                or (
+                    cur.outline_level is not None
+                    and _members_outweigh_owner(owner_weight, absorbed_weight)
+                )
+            ):
                 joined_reason, _joined_spared = _strong_body_with_outline_context(
                     joined, cur.outline_level, strong_body
                 )
@@ -1964,6 +2027,16 @@ def _register_merge_members(
     parent's subtree) and :func:`clamp_deep_levels` (level > 9); both are
     warned about so the event is diagnosable instead of mysterious.
 
+    Separately, an undone merge whose OWNER carries a physical outline is
+    counted as ``smart_merge_outline_owner_demoted``. That case does not violate
+    I2 — the owner holds a whitelisted ``strong_body_demoted`` /
+    ``clamp_gt9_demoted`` tag, so nothing trips and no fallback runs — which is
+    exactly why it needs its own counter: the heading is gone and the only other
+    trace is an aggregate ``smart_strong_body_demotions`` that cannot be
+    attributed to a merge. The weight-ratio gate in
+    :func:`merge_split_headings` closes the direct route here too; the residual
+    routes are the same cascade and clamp.
+
     A member's own decision is NOT restored as a heading: its level is the
     product of the whole per-sub-document pipeline (series alignment,
     anchoring, gap closing, nesting, clamping — all cross-paragraph set
@@ -1973,6 +2046,16 @@ def _register_merge_members(
     ``rec.text``), and restoring it would mean teaching the merge about
     downstream demotion.
     """
+    if not d.is_heading and records[d.record_index].outline_level is not None:
+        warnings["smart_merge_outline_owner_demoted"] = (
+            warnings.get("smart_merge_outline_owner_demoted", 0) + 1
+        )
+        logger.warning(
+            "[smart_heading] outline paragraph %d lost its heading identity as "
+            "the owner of an undone heading merge; I2 does not cover this case "
+            "(the demotion rule is whitelisted), so nothing else reports it",
+            d.record_index,
+        )
     for m in d.member_indices[1:]:
         if d.is_heading:
             member = HeadingDecision(record_index=m, text="", absorbed=True)
