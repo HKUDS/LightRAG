@@ -903,6 +903,55 @@ class DeleteDocRequest(BaseModel):
         return validated_ids
 
 
+class MoveDocRequest(BaseModel):
+    doc_ids: List[str] = Field(..., description="The IDs of the documents to move.")
+    target_folder: str = Field(
+        default="",
+        description=(
+            "Target folder path encoded with '/' separators (e.g. 'A/B'). "
+            "Empty string means the root folder. The webui computes the new "
+            "file_path (folder prefix + original basename) and passes it here; "
+            "the backend stays folder-encoding agnostic."
+        ),
+    )
+    rename_on_conflict: bool = Field(
+        default=True,
+        description=(
+            "When a document's basename already exists in the target folder, "
+            "append a numeric suffix (e.g. 'report (1).pdf') instead of "
+            "skipping it. Has no effect when False — conflicting docs are skipped."
+        ),
+    )
+
+    @field_validator("doc_ids", mode="after")
+    @classmethod
+    def validate_doc_ids(cls, doc_ids: List[str]) -> List[str]:
+        if not doc_ids:
+            raise ValueError("Document IDs list cannot be empty")
+
+        validated_ids = []
+        for doc_id in doc_ids:
+            if not doc_id or not doc_id.strip():
+                raise ValueError("Document ID cannot be empty")
+            validated_ids.append(doc_id.strip())
+
+        # Check for duplicates
+        if len(validated_ids) != len(set(validated_ids)):
+            raise ValueError("Document IDs must be unique")
+
+        return validated_ids
+
+
+class MoveDocByIdResponse(BaseModel):
+    """Response model for the batch document move operation."""
+
+    status: Literal["move_started", "busy"] = Field(
+        description="Status of the move operation"
+    )
+    message: str = Field(description="Message describing the operation result")
+    doc_ids: str = Field(description="The IDs of the documents to move")
+
+
 # doc_status.metadata keys that are internal pipeline bookkeeping and must
 # never reach the frontend. smartheading_llm_cache_ids is a deletion-time
 # LLM-cache purge list (written by the parse pipeline at pipeline.py:1748,
@@ -4149,6 +4198,297 @@ async def background_delete_documents(
                 logger.error(f"Error processing pending documents after deletion: {e}")
 
 
+# Folder-encoding separator shared with the webui (src/lib/folderEncoding.ts).
+# A document's folder path is encoded into its stored file_path using a
+# double-underscore separator, e.g. folder "A/B" -> "A__B__basename".
+_MOVE_FOLDER_SEPARATOR = "__"
+
+
+def _encode_folder_prefix(folder_path: str) -> str:
+    """Encode a '/' separated folder path into the file_path prefix.
+
+    Mirrors webui ``encodeFolderPrefix``: returns '' for root, otherwise
+    "<seg>__<seg>__" (trailing separator included).
+    """
+    p = re.sub(r"^/+|/+$", "", (folder_path or "").strip())
+    p = re.sub(r"/+", "/", p)
+    if not p:
+        return ""
+    return p.split("/").join(_MOVE_FOLDER_SEPARATOR) + _MOVE_FOLDER_SEPARATOR
+
+
+def _doc_basename(file_path: str) -> str:
+    """Return the on-disk basename (folder prefix stripped) of a stored file_path."""
+    raw = (file_path or "").split("/").pop() or ""
+    if _MOVE_FOLDER_SEPARATOR not in raw:
+        return raw
+    segments = raw.split(_MOVE_FOLDER_SEPARATOR)
+    return segments.pop() or raw
+
+
+def _conflict_free_basename(
+    basename: str, occupied: set[str], rename_on_conflict: bool
+) -> str | None:
+    """Return a basename not in ``occupied``, or None when it must be skipped.
+
+    When ``rename_on_conflict`` is True, appends " (1)", " (2)", ... before the
+    extension until free. When False, a collision yields None (caller skips).
+    """
+    if basename not in occupied:
+        return basename
+    if not rename_on_conflict:
+        return None
+    stem, dot, ext = basename.rpartition(".")
+    suffix = f".{ext}" if dot else ""
+    base_stem = stem or basename
+    idx = 1
+    while True:
+        candidate = f"{base_stem} ({idx}){suffix}"
+        if candidate not in occupied:
+            return candidate
+        idx += 1
+
+
+async def background_move_documents(
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    doc_ids: List[str],
+    target_folder: str,
+    rename_on_conflict: bool = True,
+    token: str | None = None,
+):
+    """Background task to move multiple documents into a target folder.
+
+    Moving only rewrites each document's stored ``file_path`` (folder prefix
+    swap + best-effort physical file rename). The document id, chunks, vectors
+    and graph data are untouched — no re-indexing is required.
+    """
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        get_pipeline_ingress,
+        release_owned_reservation,
+    )
+
+    total_docs = len(doc_ids)
+    successful_moves: List[str] = []
+    skipped_moves: List[str] = []
+    failed_moves: List[str] = []
+    pipeline_status = None
+    pipeline_status_lock = None
+
+    try:
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+
+        async with pipeline_status_lock:
+            pipeline_status.update(
+                {
+                    "job_name": f"Moving {total_docs} Documents",
+                    "job_start": datetime.now().isoformat(),
+                    "docs": total_docs,
+                    "batchs": total_docs,
+                    "cur_batch": 0,
+                    "latest_message": "Starting document move process",
+                }
+            )
+            pipeline_status["history_messages"][:] = [
+                "Starting document move process"
+            ]
+
+        target_prefix = _encode_folder_prefix(target_folder)
+        # Basenames already present in the target folder (detect collisions).
+        occupied_basenames: set[str] = set()
+
+        for i, doc_id in enumerate(doc_ids, 1):
+            async with pipeline_status_lock:
+                if pipeline_status.get("cancellation_requested", False):
+                    cancel_msg = (
+                        f"Move cancelled by user at document {i}/{total_docs}. "
+                        f"{len(successful_moves)} moved, "
+                        f"{total_docs - i + 1} remaining."
+                    )
+                    logger.info(cancel_msg)
+                    pipeline_status["latest_message"] = cancel_msg
+                    append_pipeline_history(pipeline_status, cancel_msg)
+                    skipped_moves.extend(doc_ids[i - 1 :])
+                    break
+
+                start_msg = f"Moving document {i}/{total_docs}: {doc_id}"
+                logger.info(start_msg)
+                pipeline_status.update({"cur_batch": i, "latest_message": start_msg})
+                append_pipeline_history(pipeline_status, start_msg)
+
+            try:
+                existing = await rag.get_by_id(doc_id)
+                if existing is None:
+                    failed_moves.append(doc_id)
+                    error_msg = f"Document not found: {doc_id}"
+                    logger.warning(error_msg)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = error_msg
+                        append_pipeline_history(pipeline_status, error_msg)
+                    continue
+
+                old_file_path = existing.get("file_path") or ""
+                basename = _doc_basename(old_file_path)
+                if not basename:
+                    failed_moves.append(doc_id)
+                    error_msg = (
+                        f"Cannot move document with empty file_path: {doc_id}"
+                    )
+                    logger.warning(error_msg)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = error_msg
+                        append_pipeline_history(pipeline_status, error_msg)
+                    continue
+
+                new_basename = _conflict_free_basename(
+                    basename, occupied_basenames, rename_on_conflict
+                )
+                if new_basename is None:
+                    skipped_moves.append(doc_id)
+                    skip_msg = (
+                        f"Skipped (name exists in target folder): "
+                        f"{doc_id}[{basename}]"
+                    )
+                    logger.info(skip_msg)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = skip_msg
+                        append_pipeline_history(pipeline_status, skip_msg)
+                    continue
+
+                new_file_path = f"{target_prefix}{new_basename}"
+
+                # Rewrite the stored file_path. update_doc_status_fields keeps
+                # every secondary index (incl. the source multimap) consistent
+                # and leaves chunks/vectors/graph untouched.
+                await rag.update_doc_status_fields(
+                    doc_id, {"file_path": new_file_path}
+                )
+
+                # Best-effort physical rename in INPUT_DIR and __parsed__ dir.
+                _rename_physical_file(
+                    doc_manager.input_dir, old_file_path, new_file_path
+                )
+
+                occupied_basenames.add(new_basename)
+                successful_moves.append(doc_id)
+                success_msg = (
+                    f"Document moved {i}/{total_docs}: {doc_id}[{old_file_path}]"
+                    f" -> {new_file_path}"
+                )
+                logger.info(success_msg)
+                async with pipeline_status_lock:
+                    append_pipeline_history(pipeline_status, success_msg)
+
+            except Exception as e:
+                failed_moves.append(doc_id)
+                error_msg = (
+                    f"Error moving document {i}/{total_docs}: "
+                    f"{doc_id} - {str(e)}"
+                )
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = error_msg
+                    append_pipeline_history(pipeline_status, error_msg)
+
+    except Exception as e:
+        error_msg = f"Critical error during batch move: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                append_pipeline_history(pipeline_status, error_msg)
+    finally:
+        try:
+            move_exit_ingress = await get_pipeline_ingress(rag.workspace)
+        except Exception:
+            move_exit_ingress = None
+
+        def _move_release(status):
+            completion_msg = (
+                f"Move completed: {len(successful_moves)} successful, "
+                f"{len(skipped_moves)} skipped, {len(failed_moves)} failed"
+            )
+            status.update(
+                {
+                    "busy": False,
+                    "destructive_busy": False,
+                    "busy_owner": None,
+                    "operation_record": None,
+                    "cancellation_requested": False,
+                    "latest_message": completion_msg,
+                }
+            )
+            append_pipeline_history(status, completion_msg)
+            if move_exit_ingress is None:
+                return False
+            try:
+                return bool(move_exit_ingress.has_work())
+            except Exception:
+                return False
+
+        await release_owned_reservation(
+            rag.workspace,
+            owner_key="busy_owner",
+            token=token,
+            action=_move_release,
+        )
+
+
+def _rename_physical_file(
+    input_dir: Path, old_file_path: str, new_file_path: str
+) -> None:
+    """Best-effort rename of a document's physical file across INPUT_DIR and the
+    parsed-artifact directory. Failures are logged, not raised — the stored
+    file_path is the source of truth for the UI; a missing/renamed blob only
+    affects re-parsing, never the graph.
+    """
+    if not old_file_path or old_file_path == UNKNOWN_FILE_SOURCE:
+        return
+    old_name = Path(old_file_path).name
+    new_name = Path(new_file_path).name
+    if old_name == new_name:
+        return
+
+    for candidate_dir in (input_dir, input_dir / PARSED_DIR_NAME):
+        try:
+            candidates = list(candidate_dir.iterdir())
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.warning(f"Failed to scan {candidate_dir}: {e}")
+            continue
+
+        in_parsed_dir = candidate_dir.name == PARSED_DIR_NAME
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            canonical_old = canonicalize_archived_file_variant_basename(
+                old_name, strip_archive_suffix=in_parsed_dir
+            )
+            canonical_candidate = canonicalize_archived_file_variant_basename(
+                candidate.name, strip_archive_suffix=in_parsed_dir
+            )
+            if canonical_candidate != canonical_old:
+                continue
+            safe = validate_file_path_security(candidate.name, candidate_dir)
+            if safe is None:
+                continue
+            target = safe.with_name(new_name)
+            try:
+                safe.rename(target)
+                logger.info(f"Renamed physical file {safe} -> {target}")
+            except Exception as e:
+                logger.warning(f"Failed to rename {safe}: {e}")
+
+
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
@@ -6114,6 +6454,104 @@ def create_document_routes(
             # not yet assigned) or before hand-off: release is owner-checked +
             # idempotent, so it frees the slot we took and is a no-op if we never
             # acquired (or the start helper's backstop already released it).
+            if not handed_off:
+                await _release_destructive_busy(rag, destructive_token)
+
+    @router.post(
+        "/move",
+        response_model=MoveDocByIdResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Move documents into a target folder by rewriting their file_path.",
+    )
+    async def move_documents(
+        move_request: MoveDocRequest,
+        managed_tasks: set = Depends(get_managed_background_tasks),
+    ) -> MoveDocByIdResponse:
+        """
+        Move documents into a target folder without re-indexing them.
+
+        Moving only rewrites each document's stored ``file_path`` (the folder
+        prefix is swapped to the target) and best-effort renames the physical
+        file on disk. Document ids, chunks, vectors and graph data are
+        untouched — the knowledge graph keyed by ``doc_id`` is unaffected, so no
+        re-processing is needed.
+
+        The webui computes the target ``file_path`` encoding (the double-
+        underscore folder prefix); the backend stays folder-encoding agnostic
+        and treats ``target_folder`` as a plain '/' separated path.
+
+        **Concurrency Constraint:**
+        - Same as delete: atomically reserves the destructive slot (``busy=True``
+          and ``destructive_busy=True``) synchronously before returning
+          ``move_started``, refusing with ``status="busy"`` when busy / scanning /
+          pending enqueue.
+
+        Args:
+            move_request (MoveDocRequest): The request containing the document IDs,
+                the target folder and the rename-on-conflict flag.
+            managed_tasks: injected managed background-task set.
+
+        Returns:
+            MoveDocByIdResponse:
+                - status="move_started": The move has been initiated in the background.
+                - status="busy": Another writer holds the pipeline; nothing scheduled.
+        """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
+        doc_ids = move_request.doc_ids
+
+        destructive_token = uuid4().hex
+
+        async def _move_work(started):
+            started.set()
+            await background_move_documents(
+                rag,
+                doc_manager,
+                doc_ids,
+                move_request.target_folder,
+                move_request.rename_on_conflict,
+                destructive_token,
+            )
+
+        async def _move_backstop():
+            await _release_destructive_busy(rag, destructive_token)
+
+        handed_off = False
+        try:
+            acquired, reason = await _acquire_destructive_busy(
+                rag,
+                destructive_token,
+                kind="move",
+                operation_record={"kind": "move", "doc_ids": doc_ids},
+            )
+            if not acquired:
+                return MoveDocByIdResponse(
+                    status="busy",
+                    message=reason or "Cannot move documents while pipeline is busy",
+                    doc_ids=", ".join(doc_ids),
+                )
+
+            await start_reserved_background_task(
+                managed_tasks, work=_move_work, backstop_release=_move_backstop
+            )
+            handed_off = True
+
+            return MoveDocByIdResponse(
+                status="move_started",
+                message=(
+                    f"Moving {len(doc_ids)} documents to folder "
+                    f"'{move_request.target_folder or '(root)'}' has been initiated. "
+                    f"Processing will continue in background."
+                ),
+                doc_ids=", ".join(doc_ids),
+            )
+
+        except Exception as e:
+            error_msg = f"Error initiating document move for {move_request.doc_ids}: {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+        finally:
             if not handed_off:
                 await _release_destructive_busy(rag, destructive_token)
 
