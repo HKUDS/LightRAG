@@ -157,6 +157,55 @@ def test_document_arriving_mid_batch_is_fed_without_waiting(tmp_path):
     asyncio.run(_run())
 
 
+def test_sequential_upload_wakeups_do_not_strand_later_files(tmp_path):
+    """End-to-end reproduction of the WebUI multi-file upload path: the dialog
+    uploads files ONE AT A TIME, and each ``/upload`` background task runs
+    ``apipeline_enqueue_documents`` followed by
+    ``apipeline_process_enqueue_documents``.  Every one of those process calls
+    after the first is refused (busy) and arms the auto-rescan flag, so the
+    feeder must keep routing anyway.
+
+    Fix-proof: with the old bare-flag yield the feeder died on file B's refused
+    wake-up and C stayed PENDING in the mailbox until A's batch finished — this
+    times out, because A is deliberately blocked."""
+
+    async def _run():
+        extract = _MarkerExtract()
+        extract.block_marker = "AAAA"
+        rag = await _build_rag(tmp_path, extract, max_parallel_insert=3)
+        try:
+            await rag.apipeline_enqueue_documents(input="AAAA body", file_paths="a.txt")
+            a_id = compute_mdhash_id("a.txt", prefix="doc-")
+
+            proc = asyncio.create_task(rag.apipeline_process_enqueue_documents())
+            await asyncio.wait_for(extract.started.wait(), timeout=5)  # A blocked
+
+            # Uploads B then C, exactly as pipeline_index_file drives them.
+            for name, body in (("b.txt", "BBBB"), ("c.txt", "CCCC")):
+                await rag.apipeline_enqueue_documents(
+                    input=f"{body} body", file_paths=name
+                )
+                await rag.apipeline_process_enqueue_documents()  # refused: busy
+
+            # Both fed into A's running batch while A is still stuck.
+            for name in ("b.txt", "c.txt"):
+                await _wait_status(
+                    rag, compute_mdhash_id(name, prefix="doc-"), "processed"
+                )
+            assert _status_text(await rag.doc_status.get_by_id(a_id)) != "processed"
+
+            extract.release.set()
+            await asyncio.wait_for(proc, timeout=10)
+            assert _status_text(await rag.doc_status.get_by_id(a_id)) == "processed"
+            assert extract.calls["BBBB"] == 1
+            assert extract.calls["CCCC"] == 1
+        finally:
+            extract.release.set()
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
 def test_feeder_deduplicates_inflight_document_message(tmp_path):
     """A document message that echoes an id already inflight (the initial batch
     doc, or one the feeder already routed) is dropped, not re-routed — the doc
@@ -341,12 +390,13 @@ def test_feeder_teardown_republishes_undrained_messages(tmp_path):
 
 
 def test_feeder_arms_auto_rescan_and_republishes_on_skip(tmp_path):
-    """Finding: a SKIP (full_docs not yet visible) must not be able to starve
-    under a sustained stream that never otherwise reaches a boundary. Skipping B
-    arms the auto-rescan recovery flag (so the supervisor's rescan will pick it
-    up) and, because the flag is now dirty, the feeder yields to the boundary;
-    the feeder-lifetime deferred set re-publishes B on the way out. The feeder
-    only PEEKS auto-rescan — it stays pending for the supervisor to consume."""
+    """Finding: a SKIP (full_docs not yet visible) must not be lost. Skipping B
+    arms the auto-rescan recovery flag (so the supervisor's boundary rescan
+    picks it up) and B goes into the feeder-lifetime deferred set, which is
+    re-published on ANY exit — here the batch teardown's cancel (see
+    ``_run_pipeline_batch``). The feeder only PEEKS auto-rescan; with paging on
+    it does NOT yield on it (the epoch cap bounds the batch instead), so the
+    skip costs nothing to the docs it can still route."""
 
     async def _run():
         rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
@@ -368,9 +418,15 @@ def test_feeder_arms_auto_rescan_and_republishes_on_skip(tmp_path):
             rag.full_docs.get_by_id = not_visible
 
             ctx = _make_feeder_ctx()
-            # Returns on its own: the skip arms auto-rescan, the next top-of-drain
-            # check sees the dirty flag and yields.
-            await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
+            feeder = asyncio.create_task(rag._pipeline_feeder(ctx, ingress))
+
+            async def _armed():
+                while not ingress.counts()["auto_rescan_pending"]:
+                    await asyncio.sleep(0.02)
+
+            await asyncio.wait_for(_armed(), timeout=3)  # skip armed the flag
+            feeder.cancel()  # batch teardown
+            await asyncio.gather(feeder, return_exceptions=True)
 
             assert ctx.parse_queues["native"].qsize() == 0  # nothing routed
             assert (
@@ -384,32 +440,80 @@ def test_feeder_arms_auto_rescan_and_republishes_on_skip(tmp_path):
     asyncio.run(_run())
 
 
-def test_feeder_yields_when_auto_rescan_pending(tmp_path):
-    """Finding: a document-channel overflow drops notifications and sets
-    auto_rescan_pending — the recovery signal for those dropped PENDING docs.
-    The feeder must yield on it so the batch reaches a boundary where the
-    supervisor consumes the flag and rescans; otherwise a sustained stream
-    starves the dropped docs. Fix-proof: without the auto check the feeder
-    would drain the (non-PENDING) notifications and then block forever."""
+def test_feeder_keeps_routing_while_auto_rescan_pending(tmp_path):
+    """Finding: with paging on, a dirty auto-rescan flag must NOT stop the
+    feeder. Every per-file ``/upload`` calls
+    apipeline_process_enqueue_documents after its enqueue, each such call is
+    refused while a batch runs, and each refusal arms the flag
+    (acquire_processing_reservation) — so yielding on the bare flag disabled the
+    feeder for the rest of the batch from the second uploaded file on. Yielding
+    also buys no earlier boundary: a parked feeder holds no unfinished queue
+    item, and the epoch cap is what bounds admissions.
+
+    Fix-proof: with the old bare-flag check the feeder returns at the top having
+    routed nothing, so the wait below times out."""
 
     async def _run():
         rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
         try:
+            await rag.apipeline_enqueue_documents(input="BODYB", file_paths="b.txt")
+            b_id = compute_mdhash_id("b.txt", prefix="doc-")
+
             ingress = await get_pipeline_ingress(rag.workspace)
-            for i in range(10):
-                ingress.put_document(
-                    PipelineIngressMessage(kind="document", doc_id=f"doc-{i}")
-                )
-            ingress.request_auto_rescan()  # stand in for the overflow signal
+            ingress.drain_documents()
+            ingress.consume_auto_rescan()  # clear any flag from enqueue
+            ingress.request_auto_rescan()  # stand in for a busy-refused wake-up
+            ingress.put_document(PipelineIngressMessage(kind="document", doc_id=b_id))
+
+            ctx = _make_feeder_ctx()
+            feeder = asyncio.create_task(rag._pipeline_feeder(ctx, ingress))
+            try:
+
+                async def _routed():
+                    while ctx.parse_queues["native"].qsize() == 0:
+                        await asyncio.sleep(0.02)
+
+                await asyncio.wait_for(_routed(), timeout=3)
+                assert b_id in ctx.inflight_doc_ids
+                # The flag still reaches the supervisor: it is only peeked.
+                assert ingress.counts()["auto_rescan_pending"] is True
+            finally:
+                feeder.cancel()
+                await asyncio.gather(feeder, return_exceptions=True)
+        finally:
+            await rag.finalize_storages()
+
+    asyncio.run(_run())
+
+
+def test_feeder_yields_on_auto_rescan_when_paging_disabled(tmp_path):
+    """With PIPELINE_SCHEDULING_PAGE_SIZE=0 nothing caps this epoch's
+    admissions, so a sustained stream could keep the feeder admitting forever
+    and the boundary rescan would never run. There the dirty flag still yields
+    immediately, leaving the queued notification untouched for the next epoch.
+
+    Fix-proof: without the auto check the feeder parks on the document channel
+    and the wait below times out."""
+
+    async def _run():
+        rag = await _build_rag(tmp_path, _MarkerExtract(), max_parallel_insert=1)
+        try:
+            rag.pipeline_scheduling_page_size = 0  # paging disabled
+            await rag.apipeline_enqueue_documents(input="BODYB", file_paths="b.txt")
+            b_id = compute_mdhash_id("b.txt", prefix="doc-")
+
+            ingress = await get_pipeline_ingress(rag.workspace)
+            ingress.drain_documents()
+            ingress.consume_auto_rescan()
+            ingress.put_document(PipelineIngressMessage(kind="document", doc_id=b_id))
+            ingress.request_auto_rescan()
 
             ctx = _make_feeder_ctx()
             await asyncio.wait_for(rag._pipeline_feeder(ctx, ingress), timeout=3)
 
-            # Yielded at the top before draining; the flag is left for the
-            # supervisor (the feeder only peeks it).
-            assert ctx.parse_queues["native"].qsize() == 0
+            assert ctx.parse_queues["native"].qsize() == 0  # yielded at the top
             assert ingress.counts()["auto_rescan_pending"] is True
-            assert ingress.has_work()  # the notifications are untouched
+            assert {m.doc_id for m in ingress.drain_documents()} == {b_id}
         finally:
             await rag.finalize_storages()
 
