@@ -130,6 +130,8 @@ Compact `chunker` shape:
     "breakpoint_threshold_type": "percentile",
     "breakpoint_threshold_amount": null,
     "buffer_size": 1,
+    // env/SDK only (CHUNK_V_SENTENCE_SPLIT_REGEX); the REST chunking.params
+    // object rejects this key with 422 — see GHSA-32jh-39m7-8x84 (ReDoS)
     "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"
   },
   "paragraph_semantic": {

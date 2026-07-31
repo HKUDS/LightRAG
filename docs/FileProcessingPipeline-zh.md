@@ -625,6 +625,8 @@ P 的内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比�
     "breakpoint_threshold_amount": null,                      // null = LangChain 默认
     "buffer_size": 1,
     "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"      // 默认正则兼容中英文句末标点
+                                                              // 仅可通过 env/SDK 配置（CHUNK_V_SENTENCE_SPLIT_REGEX）；REST 的
+                                                              // `chunking.params` 传入该键会返回 422 —— 见 GHSA-32jh-39m7-8x84（ReDoS）
   },
   "paragraph_semantic": {                                     // P 专属
     "chunk_token_size": 2000,                                 // 不写则按 CHUNK_P_SIZE 或 DEFAULT_CHUNK_P_SIZE（2000）解析；

@@ -38,6 +38,7 @@ _resolve_text_chunking = _dr._resolve_text_chunking
 create_document_routes = _dr.create_document_routes
 
 from lightrag.constants import (  # noqa: E402
+    DEFAULT_SENTENCE_SPLIT_REGEX,
     PROCESS_OPTION_CHUNK_FIXED,
     PROCESS_OPTION_CHUNK_PARAGRAH,
     PROCESS_OPTION_CHUNK_RECURSIVE,
@@ -120,9 +121,20 @@ _ALL_STRATEGY_KEYS = {
             },
         },
         {
-            # malformed regex must be compiled/rejected at parse time
+            # sentence_split_regex is env-only (GHSA-32jh-39m7-8x84): every
+            # form of it is rejected by extra="forbid", malformed ...
             "strategy": "semantic_vector",
             "params": {"sentence_split_regex": "("},
+        },
+        {
+            # ... well-formed ...
+            "strategy": "semantic_vector",
+            "params": {"sentence_split_regex": r"(?<=[.?!])\s+"},
+        },
+        {
+            # ... and catastrophically backtracking alike.
+            "strategy": "semantic_vector",
+            "params": {"sentence_split_regex": "(a+)+$"},
         },
         # cross-field
         {
@@ -195,14 +207,24 @@ def test_chunking_config_accepts_int_amount_widened_to_float():
     assert cfg_json.params == {"breakpoint_threshold_amount": 95.0}
 
 
-def test_chunking_config_accepts_valid_sentence_split_regex():
-    cfg = TextChunkingConfig.model_validate(
-        {
-            "strategy": "semantic_vector",
-            "params": {"sentence_split_regex": r"(?<=[.?!])\s+"},
-        }
-    )
-    assert cfg.params == {"sentence_split_regex": r"(?<=[.?!])\s+"}
+def test_chunking_config_rejects_sentence_split_regex():
+    # GHSA-32jh-39m7-8x84: the pattern is applied to request-supplied text by
+    # re.split, and re.compile bounds syntax but not running time. The knob is
+    # env-only now (CHUNK_V_SENTENCE_SPLIT_REGEX), so the rejection must be
+    # unconditional — not a filter that lets "safe-looking" patterns through.
+    # The default pattern itself is used here precisely because it is benign:
+    # if even this one is refused, no request-supplied pattern can reach the
+    # chunker.
+    with pytest.raises(ValidationError) as excinfo:
+        TextChunkingConfig.model_validate(
+            {
+                "strategy": "semantic_vector",
+                "params": {"sentence_split_regex": DEFAULT_SENTENCE_SPLIT_REGEX},
+            }
+        )
+    # extra="forbid" is what enforces this; assert the mechanism so a future
+    # refactor that re-adds the field as Optional[str] fails loudly here.
+    assert excinfo.value.errors()[0]["type"] == "extra_forbidden"
 
 
 def test_chunking_config_drops_explicit_null():
@@ -302,6 +324,25 @@ def test_resolve_size_overrides_env_for_recursive(monkeypatch):
     _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
     # API value wins over the env-derived sub-dict value.
     assert chunk_options["recursive_character"]["chunk_token_size"] == 1234
+
+
+def test_resolve_sentence_split_regex_comes_from_env_only(monkeypatch):
+    # The counterpart to the API-side removal (GHSA-32jh-39m7-8x84): dropping
+    # the request field must not cost the operator the knob. The env value has
+    # to survive into the resolved V sub-dict, and — since no request can carry
+    # the key any more — it is by construction the only value the chunker can
+    # ever see.
+    custom = r"(?<=[.!?])\s+"
+    monkeypatch.setenv("CHUNK_V_SENTENCE_SPLIT_REGEX", custom)
+    addon = {"chunker": default_chunker_config()}
+    assert addon["chunker"]["semantic_vector"]["sentence_split_regex"] == custom
+    cfg = TextChunkingConfig.model_validate(
+        {"strategy": "semantic_vector", "params": {"buffer_size": 2}}
+    )
+    _, chunk_options = _resolve_text_chunking(cfg, _stub_rag(addon))
+    assert chunk_options["semantic_vector"]["sentence_split_regex"] == custom
+    # The unrelated param in the same request still merges normally.
+    assert chunk_options["semantic_vector"]["buffer_size"] == 2
 
 
 def test_resolve_split_by_character_only_false_overrides_env(monkeypatch):
@@ -751,23 +792,38 @@ def test_insert_text_rejects_amount_over_100_inheriting_percentile_type(monkeypa
     assert captured == {}
 
 
-def test_insert_text_rejects_malformed_sentence_split_regex(monkeypatch):
-    # Malformed regex must 422 at request parse time, before scheduling.
+@pytest.mark.parametrize("endpoint", ["/documents/text", "/documents/texts"])
+def test_insert_text_rejects_redos_sentence_split_regex(monkeypatch, endpoint):
+    """GHSA-32jh-39m7-8x84 regression: the ReDoS payload must never be scheduled.
+
+    ``(a+)+$`` against the body text backtracks exponentially, and CPython's
+    regex engine holds the GIL throughout, so reaching the chunker at all
+    freezes the whole worker process — the ``asyncio.to_thread`` hop does not
+    isolate it. The request therefore has to die during parsing: a 422 alone is
+    not enough, ``captured == {}`` (no background task scheduled) is the
+    property that actually closes the hole.
+
+    Both endpoints share ``TextChunkingConfig``, so both are covered here.
+    """
     client, captured = _make_client(monkeypatch)
-    resp = client.post(
-        "/documents/text",
-        headers=_HEADERS,
-        json={
-            "text": "hello",
-            "file_source": "a.md",
-            "chunking": {
-                "strategy": "semantic_vector",
-                "params": {"sentence_split_regex": "("},
-            },
-        },
+    chunking = {
+        "strategy": "semantic_vector",
+        "params": {"sentence_split_regex": "(a+)+$"},
+    }
+    payload = (
+        {"text": "a" * 40 + "!", "file_source": "a.md", "chunking": chunking}
+        if endpoint == "/documents/text"
+        else {
+            "texts": ["a" * 40 + "!"],
+            "file_sources": ["a.md"],
+            "chunking": chunking,
+        }
     )
+    resp = client.post(endpoint, headers=_HEADERS, json=payload)
     assert resp.status_code == 422
     assert captured == {}
+    # The 422 must name the offending key so callers can find the env knob.
+    assert "sentence_split_regex" in str(resp.json()["detail"])
 
 
 def test_insert_text_drops_explicit_null_param(monkeypatch):
