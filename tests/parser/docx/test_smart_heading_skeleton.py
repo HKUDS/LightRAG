@@ -306,6 +306,43 @@ def test_comparably_weighted_outline_owner_still_merges() -> None:
     assert not out[0].is_heading  # …and demoted TOGETHER, which is the point
 
 
+def test_outline_owner_gate_counts_members_cumulatively() -> None:
+    """The owner gate weighs the members COLLECTIVELY against the owner's
+    ORIGINAL weight, not each member against the accumulated join.
+
+    Judging against the accumulated join makes the criterion path-dependent and
+    monotonically harder to meet: 15 + 21 + 60 + 102 clears the 180 cap while
+    every successive 2x check passes (the window weighs 15, 36, then 96), so all
+    four merge, the sweep demotes the outlined owner, and — the demotion rule
+    being whitelisted — I2 stays green and the heading is silently gone.
+    """
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    # weighted_char_length counts a CJK char as 3, so N chars weigh 3N.
+    texts = ["文" * 5, "文" * 7, "文" * 20, "文" * 34]  # 15 / 21 / 60 / 102
+    records = [ParagraphRecord(kind="para", text=texts[0], outline_level=0)] + [
+        ParagraphRecord(kind="para", text=t) for t in texts[1:]
+    ]
+    ds = [_d(texts[0], 1, idx=0, outline=0)] + [
+        _d(t, 1, idx=i) for i, t in enumerate(texts[1:], start=1)
+    ]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_weighted_strong_body, warnings=warnings
+    )
+    # The first two members stay under the cumulative ratio and merge; the 102
+    # one takes the running total to 183 (> 2x15), arming the gate on a join
+    # that weighs 198 > 180.
+    assert out[0].member_indices == (0, 1, 2)
+    assert [d.record_index for d in out] == [0, 3]
+
+    demote_strong_body_headings(out, strong_body=_weighted_strong_body, warnings={})
+    assert out[0].is_heading  # the outlined owner keeps its heading identity
+    assert verify_baseline_heading_retention(records, out) == []
+
+
 def test_demoted_outline_owner_is_counted() -> None:
     """An undone merge whose OWNER carries an outline is invisible to I2 (its
     demotion rule is whitelisted) and indistinguishable from any other

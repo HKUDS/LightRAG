@@ -1826,9 +1826,16 @@ def anchor_outline_levels(
 
 _MERGE_MAX_LINES = 4
 
-#: How much heavier than the merge owner a member must be for the owner's own
-#: physical outline to arm the joined-text gate. Calibrated against the two
-#: measured shapes (weighted en-equivalent chars, cap 180):
+#: How much heavier than the merge owner its members must COLLECTIVELY be for
+#: the owner's own physical outline to arm the joined-text gate. Both sides of
+#: the comparison are fixed points — the owner's ORIGINAL weight and the running
+#: total of everything absorbed — never the accumulated join: comparing each
+#: member against a window that already swallowed the previous ones makes the
+#: criterion path-dependent and monotonically harder to meet, so members that
+#: individually stay under the ratio can still swamp the owner together (14 +
+#: 20 + 60 + 100 clears a 180 cap while every successive 2x check passes).
+#: Calibrated against the two measured shapes (weighted en-equivalent chars,
+#: cap 180):
 #:   - 【政策内容】 (14) absorbing a 312-char citation — ratio 22: the join reads
 #:     as body entirely because of the NEIGHBOUR, and committing it costs a real
 #:     baseline heading its identity;
@@ -1843,23 +1850,21 @@ _MERGE_MAX_LINES = 4
 _MERGE_OUTLINE_OWNER_OUTWEIGH_RATIO = 2.0
 
 
-def _outline_owner_outweighed(cur: HeadingDecision, nxt: HeadingDecision) -> bool:
-    """Does ``cur`` carry a physical outline that ``nxt`` would swamp?
+def _members_outweigh_owner(owner_weight: int, absorbed_weight: int) -> bool:
+    """Have the absorbed members collectively swamped the merge owner?
 
-    True when the owner has an ``outlineLvl`` and the candidate member weighs at
-    least :data:`_MERGE_OUTLINE_OWNER_OUTWEIGH_RATIO` times as much: whatever
-    makes the joined text read as body then comes from the MEMBER, not from the
-    owner, so the merge would trade a real heading for a body paragraph. The
-    comparison is against ``cur.text`` as accumulated so far (the window may
-    already hold earlier members), which is the text the verdict applies to.
+    ``owner_weight`` is the owner's ORIGINAL weighted length and
+    ``absorbed_weight`` the running total of every member taken so far,
+    including the one under consideration. True means whatever makes the joined
+    text read as body comes from the MEMBERS, not from the owner — so a merge
+    that the sweep would then demote trades a real heading for a body paragraph.
+
+    Monotonic in ``absorbed_weight``, hence sticky by construction: once the
+    members outweigh the owner they cannot un-outweigh it later in the window.
     """
-    if cur.outline_level is None:
-        return False
-    owner_weight = guardrails.weighted_char_length(cur.text.strip())
     if owner_weight <= 0:
         return False
-    member_weight = guardrails.weighted_char_length(nxt.text.strip())
-    return member_weight >= _MERGE_OUTLINE_OWNER_OUTWEIGH_RATIO * owner_weight
+    return absorbed_weight >= _MERGE_OUTLINE_OWNER_OUTWEIGH_RATIO * owner_weight
 
 
 def merge_split_headings(
@@ -1897,7 +1902,10 @@ def merge_split_headings(
       decision — an invariant-I2 violation that costs the WHOLE document its
       smart output (see :func:`_register_merge_members`);
     - the same gate arms when the OWNER is the one carrying the outline and the
-      member outweighs it (:func:`_outline_owner_outweighed`). This mirror image
+      members COLLECTIVELY outweigh it (:func:`_members_outweigh_owner`, fed the
+      owner's original weight and the running member total — never the
+      accumulated join, which would let members that each stay under the ratio
+      swamp the owner together). This mirror image
       fails differently and more quietly: the owner is what the sweep demotes,
       and ``strong_body_demoted`` IS whitelisted by
       :func:`guardrails.verify_baseline_heading_retention`, so I2 does NOT trip
@@ -1933,6 +1941,8 @@ def merge_split_headings(
         lines = cur.text.count("\n") + 1
         merged_members = [cur.record_index]
         absorbed_outline = False  # sticky: a baseline heading is in the window
+        owner_weight = guardrails.weighted_char_length(cur.text.strip())
+        absorbed_weight = 0  # running total of the members taken so far
         k = pos + 1
         while k < len(decisions):
             nxt = decisions[k]
@@ -1951,12 +1961,16 @@ def merge_split_headings(
             if lines + nxt_lines > _MERGE_MAX_LINES:
                 break
             joined = _join_heading_texts(cur.text, nxt.text)
+            absorbed_weight += guardrails.weighted_char_length(nxt.text.strip())
             # Outer guard: a window with no outline at stake never pays for this
             # extra NLP judgment.
             if (
                 absorbed_outline
                 or nxt.outline_level is not None
-                or _outline_owner_outweighed(cur, nxt)
+                or (
+                    cur.outline_level is not None
+                    and _members_outweigh_owner(owner_weight, absorbed_weight)
+                )
             ):
                 joined_reason, _joined_spared = _strong_body_with_outline_context(
                     joined, cur.outline_level, strong_body
