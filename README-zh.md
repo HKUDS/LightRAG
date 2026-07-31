@@ -446,6 +446,70 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 |**总体**|45.2%|**54.8%**|48.0%|**52.0%**|47.2%|**52.8%**|**50.4%**|49.6%|
 
 
+## 📚 文档与工具清单
+
+### 参考文档（`docs/`）
+
+下表优先给出中文版链接；同目录下的同名 `*.md` 为对应的英文原版。
+
+**部署与安装**
+
+| 文档 | 内容 |
+|---|---|
+| [InteractiveSetup.md](./docs/InteractiveSetup.md) | `make env-*` 安装向导：生成 `.env` 以及由向导管理的 `docker-compose.final.yml` |
+| [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose 部署、镜像版本差异，以及用 Cosign 验证官方 GHCR 镜像 |
+| [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | 在 Apple 原生 `container` 运行时上运行 Postgres / Neo4j / Milvus 存储栈（Apple Silicon，无需 Docker Desktop） |
+| [OfflineDeployment.md](./docs/OfflineDeployment.md) | 离线/内网环境部署：预装依赖、tiktoken 缓存与 spaCy 模型 |
+| [MultiSiteDeployment.md](./docs/MultiSiteDeployment.md) | 单机反向代理后运行多个相互隔离的实例，共用一份 WebUI 构建产物（`LIGHTRAG_API_PREFIX`） |
+| [FrontendBuildGuide.md](./docs/FrontendBuildGuide.md) | WebUI 的构建与分发方式（Bun / Node），以及哪些安装场景需要自行构建 |
+
+**服务器与 API**
+
+| 文档 | 内容 |
+|---|---|
+| [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md) | 服务器完整指南：启动、配置、认证、REST 接口与 WebUI 使用 |
+
+**文档处理**
+
+| 文档 | 内容 |
+|---|---|
+| [FileProcessingPipeline-zh.md](./docs/FileProcessingPipeline-zh.md) | 流水线规格说明：`LIGHTRAG_PARSER` 路由规则、各引擎参数、多模态分析、文档状态生命周期 |
+| [ParagraphSemanticChunking-zh.md](./docs/ParagraphSemanticChunking-zh.md) | `Paragraph semantic (P)` 分块策略：对齐标题/段落/表格边界、参考文献丢弃 |
+| [LightRAGSidecarFormat-zh.md](./docs/LightRAGSidecarFormat-zh.md) | sidecar（`*.parsed/`）交换格式规范，所有支持多模态的解析引擎都必须遵循 |
+| [ThirdPartyParser-zh.md](./docs/ThirdPartyParser-zh.md) | 开发并注册自定义 parser 引擎 |
+| [ParserDebugCLI-zh.md](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` —— 脱离服务器离线解析单个文件并查看结果 |
+
+**模型与存储**
+
+| 文档 | 内容 |
+|---|---|
+| [RoleSpecificLLMConfiguration-zh.md](./docs/RoleSpecificLLMConfiguration-zh.md) | 按角色（`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`）配置 LLM 与 VLM |
+| [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | 查询/文档非对称 embedding（`EMBEDDING_ASYMMETRIC`）与各模型的前缀 |
+| [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | 通过 `vector_db_storage_cls_kwargs` 调整 Milvus 索引参数 |
+
+**SDK 与开发**
+
+| 文档 | 内容 |
+|---|---|
+| [ProgramingWithCore.md](./docs/ProgramingWithCore.md) | 以 Python SDK 方式使用 LightRAG，包含未通过 REST 暴露的功能 |
+| [Reproduce.md](./docs/Reproduce.md) | 复现论文中的评测结果 |
+| [UV_LOCK_GUIDE.md](./docs/UV_LOCK_GUIDE.md) | 何时以及如何更新 `uv.lock` |
+
+### 运维工具（`lightrag/tools/`）
+
+涉及存储的工具与服务器一样读取 `.env` 和环境变量，请在项目根目录下、使用同一套配置运行。其中若干工具会原地改写存储——是否必须先停掉服务器（以及其它写入方）请查看对应指南，`rebuild_vdb` 必须先停。
+
+| 工具 | 调用方式 | 作用 | 指南 |
+|---|---|---|---|
+| `rebuild_vdb.py` | `lightrag-rebuild-vdb` | 丢弃并从权威数据源（图节点/边、`text_chunks` KV 存储）重建全部向量存储。用于向量写入失败后的恢复，以及更换 embedding 模型或维度之后的重建；另提供只读的一致性检查模式。 | [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md) |
+| `clean_llm_query_cache.py` | `lightrag-clean-llmqc` | 删除查询模式的 LLM 缓存条目（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`），同时保留成本高昂的抽取缓存。 | [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md) |
+| `migrate_llm_cache.py` | `python -m lightrag.tools.migrate_llm_cache` | 在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析），并保持 workspace 隔离。 | [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md) |
+| `kg_integrity_repair.py` | `python -m lightrag.tools.kg_integrity_repair [--apply]` | 全图审计，找出未被 `full_entities` / `full_relations` 恢复锚点引用的图数据，报告无法归属的孤儿对象，并可选地补齐锚点，使删除/重试流程重新能够发现它们。 | [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md) |
+| `source_conflict_repair.py` | `python -m lightrag.tools.source_conflict_repair list` / `... repair` | 列出争用同一个规范 source key 的文档，并把运维人员未选中的候选降级为重复项。工具本身从不自行裁定胜者，也从不删除内容。 | [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md) |
+| `download_cache.py` | `lightrag-download-cache [--spacy --spacy-install]` | 预先下载离线部署及 docx `smart_heading` 引擎参数所需的 tiktoken 编码与钉版 spaCy 模型。 | [OfflineDeployment.md](./docs/OfflineDeployment.md) |
+| `hash_password.py` | `lightrag-hash-password [--username USER]` | 生成可直接粘贴进 `AUTH_ACCOUNTS` 的 bcrypt 口令值。 | [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md) |
+| `check_initialization.py` | `python -m lightrag.tools.check_initialization --demo` | SDK 诊断工具：校验 `LightRAG` 实例是否已完整初始化，用于排查最常见的「忘记 `await rag.initialize_storages()`」问题。 | [ProgramingWithCore.md](./docs/ProgramingWithCore.md) |
+
 ## 🔗 相关项目
 
 *生态与扩展*

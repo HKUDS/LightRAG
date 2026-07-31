@@ -446,6 +446,70 @@ LightRAG consistently outperforms NaiveRAG, RQ-RAG, HyDE, and GraphRAG across ag
 |**Overall**|45.2%|**54.8%**|48.0%|**52.0%**|47.2%|**52.8%**|**50.4%**|49.6%|
 
 
+## 📚 Documentation and Tools
+
+### Reference Documentation (`docs/`)
+
+Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same folder.
+
+**Deployment and Setup**
+
+| Document | What it covers |
+|---|---|
+| [InteractiveSetup.md](./docs/InteractiveSetup.md) | The `make env-*` setup wizard: generating `.env` and the wizard-managed `docker-compose.final.yml` |
+| [DockerDeployment.md](./docs/DockerDeployment.md) | Docker / Docker Compose deployment, image variants, and Cosign verification of the official GHCR images |
+| [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Running the Postgres / Neo4j / Milvus storage stack on Apple's native `container` runtime (Apple Silicon, no Docker Desktop) |
+| [OfflineDeployment.md](./docs/OfflineDeployment.md) | Air-gapped installs: pre-installing dependencies, the tiktoken cache, and the spaCy models |
+| [MultiSiteDeployment.md](./docs/MultiSiteDeployment.md) | Several isolated instances behind one reverse proxy, sharing a single WebUI build (`LIGHTRAG_API_PREFIX`) |
+| [FrontendBuildGuide.md](./docs/FrontendBuildGuide.md) | How the WebUI is built and shipped (Bun / Node), and which install scenarios require a build |
+
+**Server and API**
+
+| Document | What it covers |
+|---|---|
+| [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) 🇨🇳 | The complete server guide: startup, configuration, authentication, REST endpoints, and WebUI usage |
+
+**Document Processing**
+
+| Document | What it covers |
+|---|---|
+| [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) 🇨🇳 | Pipeline specification: `LIGHTRAG_PARSER` routing rules, per-engine parameters, multimodal analysis, document status lifecycle |
+| [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) 🇨🇳 | The `Paragraph semantic (P)` chunking strategy: heading/paragraph/table-aware boundaries, reference dropping |
+| [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) 🇨🇳 | The sidecar (`*.parsed/`) interchange format every multimodal-capable parser engine must emit |
+| [ThirdPartyParser.md](./docs/ThirdPartyParser.md) 🇨🇳 | Developing and registering your own parser engine |
+| [ParserDebugCLI.md](./docs/ParserDebugCLI.md) 🇨🇳 | `python -m lightrag.parser.cli` — parse a single file offline and inspect the result without a server |
+
+**Models and Storage**
+
+| Document | What it covers |
+|---|---|
+| [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) 🇨🇳 | Per-role (`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`) LLM and VLM configuration |
+| [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | Query/document asymmetric embedding (`EMBEDDING_ASYMMETRIC`) and per-model prefixes |
+| [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | Tuning Milvus index parameters through `vector_db_storage_cls_kwargs` |
+
+**SDK and Development**
+
+| Document | What it covers |
+|---|---|
+| [ProgramingWithCore.md](./docs/ProgramingWithCore.md) | Using LightRAG as a Python SDK, including features that are not exposed over REST |
+| [Reproduce.md](./docs/Reproduce.md) | Reproducing the evaluation results reported in the paper |
+| [UV_LOCK_GUIDE.md](./docs/UV_LOCK_GUIDE.md) | When and how to update `uv.lock` |
+
+### Maintenance Tools (`lightrag/tools/`)
+
+Storage-facing tools read `.env` and environment variables exactly like the server does, so run them from the project root with the same configuration. Several of them rewrite storage in place — check the linked guide for whether the server (and any other writer) has to be stopped first; `rebuild_vdb` requires it.
+
+| Tool | Invocation | What it does | Guide |
+|---|---|---|---|
+| `rebuild_vdb.py` | `lightrag-rebuild-vdb` | Drops and rebuilds every vector storage from its authoritative source (graph nodes/edges and the `text_chunks` KV store). The recovery path after a failed vector write, and after changing the embedding model or dimension. Also offers a read-only consistency check. | [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md) |
+| `clean_llm_query_cache.py` | `lightrag-clean-llmqc` | Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) while preserving the expensive extraction cache. | [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md) |
+| `migrate_llm_cache.py` | `python -m lightrag.tools.migrate_llm_cache` | Migrates default-mode caches (extraction, summary, multimodal analysis) between KV storage backends, preserving workspace isolation. | [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md) |
+| `kg_integrity_repair.py` | `python -m lightrag.tools.kg_integrity_repair [--apply]` | Audits the whole graph for contributions missing from the `full_entities` / `full_relations` recovery anchors, reports irrecoverable orphans, and optionally repairs the anchors so delete/retry can discover them again. | [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md) |
+| `source_conflict_repair.py` | `python -m lightrag.tools.source_conflict_repair list` / `... repair` | Lists documents that claim the same canonical source key, and demotes the candidates the operator did not choose to duplicates. It never picks a winner on its own and never deletes content. | [README_SOURCE_CONFLICT_REPAIR.md](./lightrag/tools/README_SOURCE_CONFLICT_REPAIR.md) |
+| `download_cache.py` | `lightrag-download-cache [--spacy --spacy-install]` | Pre-downloads the tiktoken encodings and the pinned spaCy models required for offline deployment and the docx `smart_heading` engine parameter. | [OfflineDeployment.md](./docs/OfflineDeployment.md) |
+| `hash_password.py` | `lightrag-hash-password [--username USER]` | Generates a bcrypt value ready to paste into `AUTH_ACCOUNTS`. | [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) |
+| `check_initialization.py` | `python -m lightrag.tools.check_initialization --demo` | SDK diagnostic: verifies that a `LightRAG` instance is fully initialized, catching the common "forgot `await rag.initialize_storages()`" mistake. | [ProgramingWithCore.md](./docs/ProgramingWithCore.md) |
+
 ## 🔗 Related Projects
 
 *Ecosystem & Extensions*
