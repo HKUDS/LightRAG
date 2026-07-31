@@ -418,9 +418,109 @@ def test_flatten_heading_line_unicode_breaks() -> None:
     assert flatten_heading_line("\n \n") == ""
 
 
+def test_title_verdict_overlap_dedup_main_title_locates() -> None:
+    """Fix proof: a cover whose two title lines SHARE a boundary word makes
+    verbatim concatenation read ``…运维项目项目方案``, so the LLM answers the
+    natural de-duplicated ``…运维项目方案``. Every character still comes from
+    the window in window order, so locate-back accepts it (assembled tier)
+    instead of hard-failing the whole document as a hallucination."""
+    records = [
+        _para("广州市节能中心", size=24.0),
+        _para("2027-2028年信息化运维项目", size=24.0),
+        _para("项目方案", size=24.0),
+        _para("正文开始。", size=12.0),
+    ]
+    warnings: dict = {}
+    decision = _judge_with(
+        {
+            "is_title_block": True,
+            "main_title": "2027-2028年信息化运维项目方案",
+            "publisher": "广州市节能中心",
+        },
+        records=records,
+        candidate=TitleBlockCandidate(start=0, end=3, single=False, trigger="t"),
+        warnings=warnings,
+    )
+    assert decision.main_title == "2027-2028年信息化运维项目方案"
+    # Relaxation is accepted but never silent.
+    assert warnings["title_block_locate_relaxed"] == 1
+
+
+def test_title_verdict_punctuation_and_case_normalized_locates() -> None:
+    """An LLM tidying the source punctuation (full-width → half-width, em dash
+    → hyphen) or Latin case is editorial polish, not invention: locate-back
+    matches on the folded form and counts ONE relaxation for the verdict."""
+    records = [
+        _para("某某平台（2026年修订）", size=22.0),
+        _para("Q1—Q2 ROADMAP", size=16.0),
+        _para("国某发〔2026〕12号", size=12.0),
+        _para("正文开始。", size=12.0),
+    ]
+    warnings: dict = {}
+    decision = _judge_with(
+        {
+            "is_title_block": True,
+            "main_title": "某某平台(2026年修订)",
+            "sub_title": "Q1-Q2 Roadmap",
+            "doc_number": "国某发[2026]12号",
+        },
+        records=records,
+        candidate=TitleBlockCandidate(start=0, end=3, single=False, trigger="t"),
+        warnings=warnings,
+    )
+    assert decision.main_title == "某某平台(2026年修订)"
+    assert decision.sub_title == "Q1-Q2 Roadmap"
+    assert decision.doc_number == "国某发[2026]12号"
+    assert warnings["title_block_locate_relaxed"] == 1
+
+
+def test_title_verdict_exact_match_records_no_relaxation() -> None:
+    """Stability: a verbatim answer still takes the exact tier, so the audit
+    counter stays clean and a drifting model remains visible."""
+    warnings: dict = {}
+    _judge_with(
+        {"is_title_block": True, "main_title": "中华人民共和国某某管理办法"},
+        warnings=warnings,
+    )
+    assert "title_block_locate_relaxed" not in warnings
+
+
 def test_title_verdict_hallucinated_title_hard_fails() -> None:
     with pytest.raises(TitleBlockLLMError, match="cannot be located"):
         _judge_with({"is_title_block": True, "main_title": "完全虚构的标题"})
+
+
+def test_title_verdict_stitched_from_stray_chars_hard_fails() -> None:
+    """The relaxed tiers must not become a licence to invent: a title whose
+    characters all appear in the window but only as scattered SINGLE chars
+    cannot be assembled (each fragment must clear the minimum length), so it
+    is still rejected."""
+    records = [
+        _para("中某人办法某某共和国管理", size=22.0),
+        _para("正文开始。", size=12.0),
+    ]
+    with pytest.raises(TitleBlockLLMError, match="cannot be located"):
+        _judge_with(
+            {"is_title_block": True, "main_title": "中共某国某人管某某某和办"},
+            records=records,
+            candidate=TitleBlockCandidate(start=0, end=1, single=False, trigger="t"),
+        )
+
+
+def test_title_verdict_out_of_order_fragments_hard_fail() -> None:
+    """Assembly is order-preserving: the same two window fragments in REVERSE
+    source order are not the document's title."""
+    records = [
+        _para("信息化运维项目", size=22.0),
+        _para("广州市节能中心", size=22.0),
+        _para("正文开始。", size=12.0),
+    ]
+    with pytest.raises(TitleBlockLLMError, match="cannot be located"):
+        _judge_with(
+            {"is_title_block": True, "main_title": "广州市节能中心信息化运维项目"},
+            records=records,
+            candidate=TitleBlockCandidate(start=0, end=2, single=False, trigger="t"),
+        )
 
 
 def test_invalid_json_hard_fails() -> None:

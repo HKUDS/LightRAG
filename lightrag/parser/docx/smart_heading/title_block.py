@@ -7,8 +7,14 @@ synchronous judge callable; this module never touches asyncio) then confirms
 and decomposes each candidate.
 
 LLM output is STRICTLY validated: the main/sub title must be locatable in
-the window text (concatenation allowed), and paragraphs carrying a physical
-outline level are never demoted by an LLM "body" vote (invariant I2). A
+the window text, and paragraphs carrying a physical outline level are never
+demoted by an LLM "body" vote (invariant I2). Locate-back rejects INVENTED
+text, not editorial polish — beyond a literal substring it accepts a
+concatenation of consecutive paragraphs, punctuation/width/case
+normalization, and a few long window fragments reassembled in source order
+(the overlap-dedup case where two cover lines share a boundary word); see
+:func:`_locate`, whose relaxed hits are counted in the
+``title_block_locate_relaxed`` parse warning. A
 non-title verdict's headings/body partition must be well-formed; a MALFORMED
 partition (missing/null field, out-of-range index, a duplicate within a list,
 or the same index voted both heading and body) raises
@@ -28,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -101,6 +108,82 @@ def _estimate_tokens(text: str) -> int:
 def _canon(text: str) -> str:
     """Whitespace-free canonical form for locate-back comparisons."""
     return re.sub(r"\s+", "", text or "")
+
+
+#: Locate-back tiers, tightest first — see :func:`_locate`.
+_LOCATE_EXACT = "exact"
+_LOCATE_FOLDED = "folded"
+_LOCATE_ASSEMBLED = "assembled"
+
+#: Assembled tier bounds. Few fragments, each long enough to be evidence on
+#: its own: the observed real case needs exactly two (a whole title line plus
+#: the non-overlapping tail of the next), and a third covers a title split
+#: across three cover lines. Every fragment must clear
+#: ``_LOCATE_MIN_PIECE_WEIGHTED`` en-equivalent chars (2 CJK / 4 ASCII), which
+#: is what keeps an invented title from being stitched together out of stray
+#: single characters.
+_LOCATE_MAX_PIECES = 3
+_LOCATE_MIN_PIECE_WEIGHTED = 4
+#: Backstop on the assembler's search (see :func:`_assemble_from_window`).
+_LOCATE_ASSEMBLE_STEPS = 20000
+
+
+def _fold(text: str) -> str:
+    """Punctuation/width/case-insensitive form of an already-canon string.
+
+    NFKC unifies full-width and half-width forms (``ＡＢ`` → ``AB``, ``：`` →
+    ``:``), every punctuation/symbol character is dropped so an added,
+    removed, or swapped separator cannot break the match (``2027-2028`` vs
+    ``2027—2028``, ``（2026年修订）`` vs ``(2026年修订)``), and case folds for
+    Latin text. NFKC can re-introduce whitespace (``\\u00a0`` → space), so
+    whitespace is stripped here too rather than relying on the caller.
+    """
+    folded = []
+    for ch in unicodedata.normalize("NFKC", text or ""):
+        if ch.isspace():
+            continue
+        if unicodedata.category(ch)[0] in ("P", "S"):
+            continue
+        folded.append(ch)
+    return "".join(folded).casefold()
+
+
+def _assemble_from_window(answer: str, window: str) -> bool:
+    """True when ``answer`` is a concatenation of at most
+    :data:`_LOCATE_MAX_PIECES` ``window`` fragments taken in source order.
+
+    Both arguments must already be :func:`_fold`-ed. Fragments may not
+    overlap and may not go backwards (each search resumes after the previous
+    fragment), so the answer's characters are the window's characters in the
+    window's own order — the property the hallucination guard actually
+    protects. Longest-fragment-first with backtracking, bounded by
+    :data:`_LOCATE_ASSEMBLE_STEPS` probes; exhausting the budget reports
+    "not located" (the strict, safe direction).
+    """
+    budget = [_LOCATE_ASSEMBLE_STEPS]
+
+    def walk(start: int, from_pos: int, pieces_left: int) -> bool:
+        if start == len(answer):
+            return True
+        if pieces_left == 0:
+            return False
+        # Longest first: the real split is one long fragment plus a short
+        # remainder, and a long first fragment prunes the search hardest.
+        for end in range(len(answer), start, -1):
+            piece = answer[start:end]
+            if guardrails.weighted_char_length(piece) < _LOCATE_MIN_PIECE_WEIGHTED:
+                break  # every shorter prefix is shorter still
+            pos = window.find(piece, from_pos)
+            while pos != -1:
+                if budget[0] <= 0:
+                    return False
+                budget[0] -= 1
+                if walk(end, pos + len(piece), pieces_left - 1):
+                    return True
+                pos = window.find(piece, pos + 1)
+        return False
+
+    return walk(0, 0, _LOCATE_MAX_PIECES)
 
 
 def _is_cjk_char(ch: str) -> bool:
@@ -1349,11 +1432,50 @@ def _parse_llm_json(raw: str) -> dict:
     return data
 
 
-def _locate(text: str | None, window_canon: str) -> bool:
+def _locate(text: str | None, window_canon: str) -> str | None:
+    """Locate an LLM title field back in the window; ``None`` = not located.
+
+    Returns the LOOSEST tier that matched, so the caller can audit how far the
+    answer drifted from the source text:
+
+    - ``exact`` — the whitespace-free text is a literal window substring
+      (also the answer for an absent field: nothing to locate).
+    - ``folded`` — matches once both sides drop punctuation/symbols and fold
+      case + full/half-width forms (:func:`_fold`). An LLM normalizing
+      ``（2026年修订）`` to ``(2026年修订)``, ``：`` to ``:``, or an em dash to a
+      hyphen is editorial polish, not invention.
+    - ``assembled`` — matches as at most :data:`_LOCATE_MAX_PIECES` window
+      fragments in source order, each at least
+      :data:`_LOCATE_MIN_PIECE_WEIGHTED` weighted chars
+      (:func:`_assemble_from_window`). This is the overlap-dedup case: a cover
+      splitting the title as ``…信息化运维项目`` / ``项目方案`` makes verbatim
+      concatenation read ``…运维项目项目方案``, and the LLM answers the natural
+      ``…运维项目方案`` — every character still comes from the window, in
+      order.
+
+    The guard's job is to reject INVENTED text, not to demand a byte-exact
+    echo: a hard failure fails the whole document, so a title the LLM merely
+    tidied must not be treated as a hallucination. Fragments must stay long
+    and few, so an invented title cannot be assembled character-by-character
+    out of the window.
+    """
     if text is None:
-        return True
+        return _LOCATE_EXACT
     canon = _canon(text)
-    return bool(canon) and canon in window_canon
+    if not canon:
+        return None
+    if canon in window_canon:
+        return _LOCATE_EXACT
+    folded = _fold(canon)
+    folded_window = _fold(window_canon)
+    if not folded:
+        # Punctuation-only field: nothing left to anchor on — never located.
+        return None
+    if folded in folded_window:
+        return _LOCATE_FOLDED
+    if _assemble_from_window(folded, folded_window):
+        return _LOCATE_ASSEMBLED
+    return None
 
 
 def judge_title_block(
@@ -1491,16 +1613,35 @@ def judge_title_block(
             publisher = _opt_str("publisher")
             date = _opt_str("date")
             locate_scope = window_canon
+        relaxed: list[str] = []
         for label, value in (
             ("main_title", main_title),
             ("sub_title", sub_title),
             ("doc_number", doc_number),
         ):
-            if not _locate(value, locate_scope):
+            mode = _locate(value, locate_scope)
+            if mode is None:
                 raise TitleBlockLLMError(
                     f"title-block {label} {value!r} cannot be located in the "
                     "candidate window (LLM hallucination guard)"
                 )
+            if mode != _LOCATE_EXACT:
+                relaxed.append(f"{label}={mode}")
+        if relaxed:
+            # Accepted, but the answer is NOT a verbatim echo of the source —
+            # the field the document carries downstream is the LLM's edit.
+            # Audited so a drifting model is visible without reading logs.
+            if warnings is not None:
+                warnings["title_block_locate_relaxed"] = (
+                    warnings.get("title_block_locate_relaxed", 0) + 1
+                )
+            logger.info(
+                "[smart_heading] title-block field(s) located only after "
+                "relaxation in candidate [%d, %d): %s",
+                candidate.start,
+                candidate.end,
+                ", ".join(relaxed),
+            )
         return TitleBlockDecision(
             candidate=candidate,
             is_title_block=True,
