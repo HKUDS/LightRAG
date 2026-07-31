@@ -54,7 +54,7 @@ def _normalize_rerank_result(
 
     try:
         score = float(result.get("relevance_score"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None, "invalid relevance score"
     if not isfinite(score):
         return None, "non-finite relevance score"

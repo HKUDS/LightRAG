@@ -323,6 +323,7 @@ class TestMalformedProviderResults:
                     {"index": 0},
                     {"index": True, "relevance_score": 0.9},
                     {"index": 3, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 10**10000},
                     {"index": 0, "relevance_score": "0.8"},
                     {"index": 1, "relevance_score": 0.6},
                 ]
