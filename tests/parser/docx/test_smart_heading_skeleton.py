@@ -225,6 +225,113 @@ def test_absorbed_outline_keeps_guarding_later_outline_free_joins() -> None:
     assert verify_baseline_heading_retention(records, list(decisions.values())) == []
 
 
+def _weighted_strong_body(text: str) -> str | None:
+    """Stub mirroring the real predicate's LENGTH rule only (cap 180
+    en-equivalent chars), so a test can place two lines on either side of the
+    threshold the way a real document does."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        heading_max_chars,
+        weighted_char_length,
+    )
+
+    stripped = text.strip()
+    if weighted_char_length(stripped) > heading_max_chars():
+        return "strong_body_length"
+    return None
+
+
+def test_outline_owner_is_not_swamped_by_a_much_heavier_member() -> None:
+    """The MIRROR of 1a-ii: the outline is on the OWNER, not on the member.
+
+    This direction fails more quietly than the member one. The sweep demotes the
+    OWNER, which then carries a whitelisted ``strong_body_demoted`` tag, so I2
+    stays green (asserted below) and no fallback rescues the document — the
+    baseline heading simply becomes body. The member outweighs the owner 22:1
+    here, so the join reads as body entirely because of the member.
+    """
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    citation = "（2）《某某部关于印发某某规定的通知》（某部联企业〔2011〕300号）等文件规定的内容在此展开叙述。"
+    records = [
+        ParagraphRecord(kind="para", text="【政策内容】", outline_level=0),
+        ParagraphRecord(kind="para", text=citation),
+    ]
+    ds = [_d("【政策内容】", 1, idx=0, outline=0), _d(citation, 1, idx=1)]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_stub_strong_body, warnings=warnings
+    )
+    assert len(out) == 2  # no merge: the member would swamp the outline owner
+    assert "smart_heading_merges" not in warnings
+
+    demote_strong_body_headings(out, strong_body=_stub_strong_body, warnings=warnings)
+    assert out[0].is_heading  # 【政策内容】 keeps its heading identity
+    assert out[0].text == "【政策内容】"
+    # I2 is NOT the safety net in this direction — it passes either way.
+    assert verify_baseline_heading_retention(records, out) == []
+
+
+def test_comparably_weighted_outline_owner_still_merges() -> None:
+    """The owner gate is scoped by WEIGHT, not by the mere presence of an
+    outline level — seeding it from ``cur.outline_level is not None`` regresses
+    _Medical Graph RAG.docx, whose author line is marked ``outlineLvl=1``.
+
+    Two comparably heavy lines (ratio 1.07) cross the body threshold only
+    TOGETHER; blocking the merge resurrects both as spurious headings instead of
+    letting the sweep demote the join. Sizes here mirror that document: 96 and
+    103 weighted chars against a 180 cap.
+    """
+    owner_text = (
+        "Author One1, Author Two1, Author Three1, Author Four1, Author Five2,"
+        " Author Six3, Author Seven1,"
+    )
+    member_text = (
+        "1University of Somewhere, 2Institute of Something Else, 3The"
+        " University of Anotherplace, Department of Examples,"
+    )
+    records = [
+        ParagraphRecord(kind="para", text=owner_text, outline_level=1),
+        ParagraphRecord(kind="para", text=member_text),
+    ]
+    ds = [_d(owner_text, 2, idx=0, outline=1), _d(member_text, 2, idx=1)]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_weighted_strong_body, warnings=warnings
+    )
+    assert len(out) == 1  # merged, exactly as before the owner gate
+    assert warnings["smart_heading_merges"] == 1
+    demote_strong_body_headings(out, strong_body=_weighted_strong_body, warnings={})
+    assert not out[0].is_heading  # …and demoted TOGETHER, which is the point
+
+
+def test_demoted_outline_owner_is_counted() -> None:
+    """An undone merge whose OWNER carries an outline is invisible to I2 (its
+    demotion rule is whitelisted) and indistinguishable from any other
+    strong-body demotion in the aggregate counter — so it gets its own."""
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    records = [
+        ParagraphRecord(kind="para", text="【政策内容】", outline_level=0),
+        ParagraphRecord(kind="para", text="被吞掉的正文续句。"),
+    ]
+    owner = _d("【政策内容】被吞掉的正文续句。", 1, idx=0, outline=0)
+    owner.member_indices = (0, 1)
+    owner.is_heading = False  # the sweep undid the merge
+    owner.note("strong_body_demoted")  # …with a rule I2 whitelists
+    decisions = {0: owner}
+    warnings: dict = {}
+    _register_merge_members(decisions, owner, records, warnings)
+
+    assert warnings.get("smart_merge_outline_owner_demoted") == 1
+    assert warnings.get("smart_merge_unwound") == 1  # the non-outline member
+    # The counter exists precisely BECAUSE nothing else reports this:
+    assert verify_baseline_heading_retention(records, list(decisions.values())) == []
+
+
 def test_stranded_outline_member_keeps_the_i2_fallback() -> None:
     """1b outline branch: an undone merge must NOT silently re-classify a
     baseline heading as body. No decision is written, so I2 still trips and the
