@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from math import isfinite
 import os
 import aiohttp
 from typing import Any, List, Dict, Optional, Tuple
@@ -29,6 +31,35 @@ DEFAULT_RERANK_MAX_TOKENS_PER_DOC = 4096
 # payload and the number of scores to aggregate. Configured values below this are
 # accepted but warned about at startup rather than silently degrading query latency.
 MIN_PRACTICAL_RERANK_MAX_TOKENS = 64
+
+
+def _normalize_rerank_result(
+    result: Any, max_index: int
+) -> tuple[dict[str, int | float] | None, str | None]:
+    """Validate one provider result and return the public rerank shape.
+
+    Providers and compatible proxies occasionally return mixed ``results`` lists.
+    Keeping the validation here lets the HTTP boundary and chunk aggregation reject
+    the same malformed entries without leaking invalid indices or non-finite scores
+    into callers.
+    """
+    if not isinstance(result, dict):
+        return None, "not an object"
+
+    index = result.get("index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        return None, "invalid index"
+    if not 0 <= index < max_index:
+        return None, "index out of range"
+
+    try:
+        score = float(result.get("relevance_score"))
+    except (TypeError, ValueError):
+        return None, "invalid relevance score"
+    if not isfinite(score):
+        return None, "non-finite relevance score"
+
+    return {"index": index, "relevance_score": score}, None
 
 
 def chunk_documents_for_rerank(
@@ -148,29 +179,26 @@ def aggregate_chunk_scores(
     Returns:
         List of results for original documents [{"index": doc_idx, "relevance_score": score}, ...]
     """
+    if not chunk_results or not doc_indices:
+        return []
+
     # Group scores by original document index
     doc_scores: Dict[int, List[float]] = {i: [] for i in range(num_original_docs)}
 
     for result in chunk_results:
-        chunk_idx = result.get("index")
-        score = result.get("relevance_score")
+        normalized_result, _ = _normalize_rerank_result(result, len(doc_indices))
+        if normalized_result is None:
+            continue
 
+        chunk_idx = normalized_result["index"]
+        score = normalized_result["relevance_score"]
+
+        original_doc_idx = doc_indices[chunk_idx]
         if (
-            chunk_idx is not None
-            and isinstance(chunk_idx, int)
-            and 0 <= chunk_idx < len(doc_indices)
+            isinstance(original_doc_idx, int)
+            and 0 <= original_doc_idx < num_original_docs
         ):
-            original_doc_idx = doc_indices[chunk_idx]
-            if (
-                isinstance(original_doc_idx, int)
-                and 0 <= original_doc_idx < num_original_docs
-                and score is not None
-            ):
-                try:
-                    score_val = float(score)
-                    doc_scores[original_doc_idx].append(score_val)
-                except (TypeError, ValueError):
-                    pass
+            doc_scores[original_doc_idx].append(score)
     # Aggregate scores
     aggregated_results = []
     for doc_idx, scores in doc_scores.items():
@@ -369,11 +397,33 @@ async def generic_rerank_api(
                 logger.warning("Rerank API returned empty results")
                 return []
 
-            # Standardize return format
-            standardized_results = [
-                {"index": result["index"], "relevance_score": result["relevance_score"]}
-                for result in results
-            ]
+            # Standardize valid provider results and report malformed entries as one
+            # bounded summary rather than failing the entire user query.
+            invalid_results = Counter()
+            standardized_results = []
+            for result in results:
+                normalized_result, invalid_reason = _normalize_rerank_result(
+                    result, len(documents)
+                )
+                if normalized_result is None:
+                    invalid_results[invalid_reason] += 1
+                    continue
+                standardized_results.append(normalized_result)
+
+            if invalid_results:
+                invalid_summary = ", ".join(
+                    f"{reason}={count}"
+                    for reason, count in sorted(invalid_results.items())
+                )
+                logger.warning(
+                    "Discarded %s malformed rerank result(s): %s",
+                    sum(invalid_results.values()),
+                    invalid_summary,
+                )
+
+            if not standardized_results:
+                logger.warning("Rerank API returned no usable results")
+                return []
 
             # Aggregate chunk scores back to original documents if chunking was enabled
             if enable_chunking and doc_indices:
