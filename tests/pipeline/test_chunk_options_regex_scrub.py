@@ -60,7 +60,9 @@ def test_live_env_regex_wins_over_snapshot_even_when_benign():
 def test_missing_live_value_omits_the_key_entirely():
     # With nothing configured the key must be absent, so the chunker applies its
     # own default — never the persisted pattern.
-    out = apply_trusted_sentence_split_regex({"sentence_split_regex": REDOS}, _addon(None))
+    out = apply_trusted_sentence_split_regex(
+        {"sentence_split_regex": REDOS}, _addon(None)
+    )
     assert "sentence_split_regex" not in out
 
 
