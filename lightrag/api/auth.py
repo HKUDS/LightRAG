@@ -32,6 +32,14 @@ _DUMMY_VERIFY_SPEC = (
 )
 
 
+# Upper bound on the JWT "sub" (username) claim accepted by validate_token.
+# Deliberately generous: real subjects are either the literal "guest" or a key
+# of AUTH_ACCOUNTS, both far shorter. The bound exists so an attacker-forged
+# claim cannot be used as an arbitrarily large payload downstream -- see the
+# comment in validate_token.
+MAX_TOKEN_SUBJECT_LENGTH = 256
+
+
 class TokenPayload(BaseModel):
     sub: str  # Username
     exp: datetime  # Expiration time
@@ -171,8 +179,43 @@ class AuthHandler:
                     detail="Insecure JWT algorithm configuration",
                 )
             payload = jwt.decode(token, self.secret, algorithms=allowed_algorithms)
-            expire_timestamp = payload["exp"]
-            expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
+
+            # Claim validation. In any profile that runs on DEFAULT_TOKEN_SECRET
+            # (no AUTH_ACCOUNTS, see __init__) the whole payload is attacker-
+            # forgeable, so every claim read below is untrusted input. This method
+            # is the single choke point all authenticated paths pass through, so
+            # bounding the claims here lets callers treat "username" as a short,
+            # well-typed string. A malformed claim is an invalid token, not a
+            # server error: the previous bare payload["sub"] / payload["exp"]
+            # raised KeyError, which jwt.PyJWTError does not cover, so a
+            # signature-valid token missing either claim surfaced as HTTP 500.
+            username = payload.get("sub")
+            if not isinstance(username, str) or not username:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+            if len(username) > MAX_TOKEN_SUBJECT_LENGTH:
+                # Bounds every downstream use of the claim at once: the renewal
+                # cache key, the renewal log line, and the cost of re-signing it.
+                # Without this an attacker mints a ~100 KB "sub" per request
+                # (CWE-770 / CWE-117, GHSA-3wg5-5w54-3rfm).
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+
+            expire_timestamp = payload.get("exp")
+            if expire_timestamp is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+            try:
+                # jwt.decode already rejects a non-numeric "exp", but a numeric
+                # one far outside the datetime range reaches here intact.
+                expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
 
             if datetime.now(timezone.utc) > expire_time:
                 raise HTTPException(
@@ -181,7 +224,7 @@ class AuthHandler:
 
             # Return complete payload instead of just username
             return {
-                "username": payload["sub"],
+                "username": username,
                 "role": payload.get("role", "user"),
                 "metadata": payload.get("metadata", {}),
                 "exp": expire_time,

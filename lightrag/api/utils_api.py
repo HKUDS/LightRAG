@@ -4,6 +4,7 @@ Utility functions for the LightRAG API.
 
 import os
 import argparse
+from collections import OrderedDict
 from typing import Optional, List, Tuple
 import sys
 import time
@@ -19,6 +20,7 @@ from lightrag.api.runtime_validation import validate_runtime_target_from_env_fil
 from fastapi import HTTPException, Security, Request, Response, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
+from ..utils import safe_log_value
 from .auth import auth_handler
 from .config import ollama_server_infos, global_args, get_env_value
 
@@ -60,8 +62,24 @@ def internal_server_error(exc: Exception) -> HTTPException:
 # ========== Token Renewal Rate Limiting ==========
 # Cache to track last renewal time per user (username as key)
 # Format: {username: last_renewal_timestamp}
-_token_renewal_cache: dict[str, float] = {}
+#
+# Bounded on purpose (CWE-770, GHSA-3wg5-5w54-3rfm). The key is the JWT "sub"
+# claim, which is attacker-chosen in any profile running on the default
+# guest-mode JWT secret, so an unbounded dict here is a memory-exhaustion
+# primitive. Three independent bounds now apply: the claim itself is capped at
+# MAX_TOKEN_SUBJECT_LENGTH by AuthHandler.validate_token, only authenticated
+# requests reach _record_token_renewal (see _renew_token_if_needed), and the
+# table is bounded below.
+#
+# Note the contrast with LoginRateLimiter, the sibling control on this same
+# request path: it must never evict a live record, because evicting an active
+# lockout would clear it. Here a "live" entry only suppresses an early renewal,
+# so evicting one costs a single extra token mint and carries no security
+# consequence. The cap can therefore be enforced unconditionally, which is what
+# keeps the table genuinely bounded instead of merely capped-then-full.
+_token_renewal_cache: "OrderedDict[str, float]" = OrderedDict()
 _RENEWAL_MIN_INTERVAL = 60  # Minimum 60 seconds between renewals for same user
+_MAX_TRACKED_RENEWALS = 10_000  # Hard ceiling on distinct tracked usernames
 
 # ========== Token Renewal Path Exclusions ==========
 # Paths that should NOT trigger token auto-renewal
@@ -73,6 +91,118 @@ _TOKEN_RENEWAL_SKIP_PATHS = [
     "/documents/paginated",
     "/documents/pipeline_status",
 ]
+
+
+def _record_token_renewal(username: str, renewed_at: float) -> None:
+    """Record a renewal timestamp, keeping ``_token_renewal_cache`` bounded.
+
+    Insertion order is maintained as time order, so the oldest entries sit at the
+    head: entries older than ``_RENEWAL_MIN_INTERVAL`` can no longer influence any
+    decision and are dropped, then ``_MAX_TRACKED_RENEWALS`` is enforced as a hard
+    ceiling. Both passes are amortized O(1). See the declaration for why evicting
+    a still-live entry is safe here.
+    """
+    # Purge dead entries from the head. A backwards clock step (time.time() is not
+    # monotonic) makes the delta negative and simply stops the purge early; the
+    # hard ceiling below is the backstop.
+    while _token_renewal_cache:
+        oldest_username, oldest_at = next(iter(_token_renewal_cache.items()))
+        if renewed_at - oldest_at < _RENEWAL_MIN_INTERVAL:
+            break
+        del _token_renewal_cache[oldest_username]
+
+    # Re-insert at the tail so insertion order stays time order even when a
+    # username is refreshed.
+    _token_renewal_cache.pop(username, None)
+    _token_renewal_cache[username] = renewed_at
+
+    while len(_token_renewal_cache) > _MAX_TRACKED_RENEWALS:
+        _token_renewal_cache.popitem(last=False)
+
+
+def _renew_token_if_needed(path: str, response: Response, token_info: dict) -> None:
+    """Attach a refreshed token via the ``X-New-Token`` header when near expiry.
+
+    Callers MUST invoke this only after the request has actually authenticated.
+    This bookkeeping writes process-wide server-side state keyed on the JWT "sub"
+    claim; running it on a request that is about to be rejected let an
+    unauthenticated caller grow ``_token_renewal_cache`` and forge log lines on
+    every 403 (GHSA-3wg5-5w54-3rfm). Keeping the call at the authenticated exits
+    of ``combined_dependency`` -- rather than next to token validation -- is what
+    makes that unreachable, so do not hoist it back up.
+    """
+    from lightrag.api.config import global_args
+    from datetime import datetime, timezone
+
+    if not global_args.token_auto_renew:
+        return
+
+    # Check if current path should skip token renewal
+    skip_renewal = any(
+        path == skip_path or path.startswith(skip_path + "/")
+        for skip_path in _TOKEN_RENEWAL_SKIP_PATHS
+    )
+    if skip_renewal:
+        logger.debug(f"Token auto-renewal skipped for path: {safe_log_value(path)}")
+        return
+
+    try:
+        expire_time = token_info.get("exp")
+        if not expire_time:
+            return
+
+        # Calculate remaining time ratio
+        now = datetime.now(timezone.utc)
+        remaining_seconds = (expire_time - now).total_seconds()
+
+        # Get original token expiration duration
+        role = token_info.get("role", "user")
+        total_hours = (
+            auth_handler.guest_expire_hours
+            if role == "guest"
+            else auth_handler.expire_hours
+        )
+        total_seconds = total_hours * 3600
+
+        # Issue new token if remaining time < threshold
+        if remaining_seconds >= total_seconds * global_args.token_renew_threshold:
+            return
+
+        # ========== Rate Limiting Check ==========
+        username = token_info["username"]
+        current_time = time.time()
+        last_renewal = _token_renewal_cache.get(username, 0)
+        time_since_last_renewal = current_time - last_renewal
+
+        # Only renew if enough time has passed since last renewal
+        if time_since_last_renewal < _RENEWAL_MIN_INTERVAL:
+            logger.debug(
+                f"Token renewal skipped for {safe_log_value(username)} "
+                f"(rate limit: last renewal {time_since_last_renewal:.0f}s ago)"
+            )
+            return
+
+        new_token = auth_handler.create_token(
+            username=username,
+            role=role,
+            metadata=token_info.get("metadata", {}),
+        )
+        # Return new token via response header
+        response.headers["X-New-Token"] = new_token
+
+        # Update renewal cache
+        _record_token_renewal(username, current_time)
+
+        # Optional: log renewal. The claim is bounded by validate_token but still
+        # caller-supplied, so it goes through safe_log_value -- a raw CR/LF in it
+        # forged whole log records (CWE-117).
+        logger.info(
+            f"Token auto-renewed for user {safe_log_value(username)} "
+            f"(role: {safe_log_value(role)}, remaining: {remaining_seconds:.0f}s)"
+        )
+    except Exception as e:
+        # Renewal failure should not affect normal request, just log
+        logger.warning(f"Token auto-renew failed: {e}")
 
 
 def check_env_file():
@@ -225,78 +355,11 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             try:
                 token_info = auth_handler.validate_token(token)
 
-                # ========== Token Auto-Renewal Logic ==========
-                from lightrag.api.config import global_args
-                from datetime import datetime, timezone
-
-                if global_args.token_auto_renew:
-                    # Check if current path should skip token renewal
-                    skip_renewal = any(
-                        path == skip_path or path.startswith(skip_path + "/")
-                        for skip_path in _TOKEN_RENEWAL_SKIP_PATHS
-                    )
-
-                    if skip_renewal:
-                        logger.debug(f"Token auto-renewal skipped for path: {path}")
-                    else:
-                        try:
-                            expire_time = token_info.get("exp")
-                            if expire_time:
-                                # Calculate remaining time ratio
-                                now = datetime.now(timezone.utc)
-                                remaining_seconds = (expire_time - now).total_seconds()
-
-                                # Get original token expiration duration
-                                role = token_info.get("role", "user")
-                                total_hours = (
-                                    auth_handler.guest_expire_hours
-                                    if role == "guest"
-                                    else auth_handler.expire_hours
-                                )
-                                total_seconds = total_hours * 3600
-
-                                # Issue new token if remaining time < threshold
-                                if (
-                                    remaining_seconds
-                                    < total_seconds * global_args.token_renew_threshold
-                                ):
-                                    # ========== Rate Limiting Check ==========
-                                    username = token_info["username"]
-                                    current_time = time.time()
-                                    last_renewal = _token_renewal_cache.get(username, 0)
-                                    time_since_last_renewal = (
-                                        current_time - last_renewal
-                                    )
-
-                                    # Only renew if enough time has passed since last renewal
-                                    if time_since_last_renewal >= _RENEWAL_MIN_INTERVAL:
-                                        new_token = auth_handler.create_token(
-                                            username=username,
-                                            role=role,
-                                            metadata=token_info.get("metadata", {}),
-                                        )
-                                        # Return new token via response header
-                                        response.headers["X-New-Token"] = new_token
-
-                                        # Update renewal cache
-                                        _token_renewal_cache[username] = current_time
-
-                                        # Optional: log renewal
-                                        logger.info(
-                                            f"Token auto-renewed for user {username} "
-                                            f"(role: {role}, remaining: {remaining_seconds:.0f}s)"
-                                        )
-                                    else:
-                                        # Log skip due to rate limit
-                                        logger.debug(
-                                            f"Token renewal skipped for {username} "
-                                            f"(rate limit: last renewal {time_since_last_renewal:.0f}s ago)"
-                                        )
-                                    # ========== End of Rate Limiting Check ==========
-                        except Exception as e:
-                            # Renewal failure should not affect normal request, just log
-                            logger.warning(f"Token auto-renew failed: {e}")
-                # ========== End of Token Auto-Renewal Logic ==========
+                # Auto-renewal deliberately runs AFTER the authorization decision
+                # below, at the two exits that actually accept the token. It writes
+                # process-wide state keyed on the "sub" claim, so running it here
+                # let an unauthenticated caller grow that state on requests the
+                # server rejects (GHSA-3wg5-5w54-3rfm).
 
                 # A token only authenticates when it matches the configured auth mode:
                 #   - password auth (AUTH_ACCOUNTS set): accept non-guest user tokens
@@ -309,11 +372,15 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 # through so the API key stays mandatory in that mode.
                 if not auth_configured and token_info.get("role") == "guest":
                     if not api_key_configured:
+                        _renew_token_if_needed(path, response, token_info)
                         return
                     # API-key-only mode: ignore the guest token; the X-API-Key check
-                    # below is the sole authority. Fall through (no return, no raise).
+                    # below is the sole authority. Fall through (no return, no raise)
+                    # and, critically, without renewal bookkeeping: this token did
+                    # not authenticate anything.
                 elif auth_configured and token_info.get("role") != "guest":
                     # Accept non-guest token if password auth is configured
+                    _renew_token_if_needed(path, response, token_info)
                     return
                 else:
                     # Token present but not valid for the configured auth mode.
