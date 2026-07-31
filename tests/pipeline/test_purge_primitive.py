@@ -74,8 +74,8 @@ class _DocStatus(_KV):
         self.data[doc_id] = {**existing, **fields}
 
     def journal(self, doc_id: str = "d1") -> dict | None:
-        return (self.data.get(doc_id) or {}).get("metadata", {}).get(
-            KG_PURGE_METADATA_KEY
+        return (
+            (self.data.get(doc_id) or {}).get("metadata", {}).get(KG_PURGE_METADATA_KEY)
         )
 
 
