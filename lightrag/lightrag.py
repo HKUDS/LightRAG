@@ -226,6 +226,25 @@ _KG_PURGE_PHASE_ORDER: tuple[str, ...] = (
 _KG_PURGE_RESUMABLE_PHASES: frozenset[str] = frozenset(_KG_PURGE_PHASE_ORDER)
 
 
+class _PurgeStageError(Exception):
+    """A purge step failed, tagged with which step it was.
+
+    ``adelete_by_doc_id`` records the failing step in
+    ``doc_status.metadata.deletion_failure_stage`` so an operator can see how
+    far a failed deletion got. Now that the delete path delegates its KG
+    cleanup to the purge primitive, the stage has to travel with the exception
+    instead of being tracked by the caller — carried as an attribute rather
+    than parsed back out of the message, which callers must not depend on.
+
+    Subclasses ``Exception`` and keeps the historical ``Failed to ...`` message
+    text, so existing callers and tests that match on either are unaffected.
+    """
+
+    def __init__(self, message: str, *, stage: str) -> None:
+        super().__init__(message)
+        self.purge_stage = stage
+
+
 @dataclass(frozen=True)
 class _PurgeRecoveryProof:
     """Why a whole-document purge is (or is not) allowed to delete anything.
@@ -242,6 +261,15 @@ class _PurgeRecoveryProof:
     write_state: str | None = None
     missing_namespaces: tuple[str, ...] = ()
     missing_reason: str | None = None
+    # Candidates anchored ONLY in an unfinished custom-chunk patch journal.
+    # Patch-mode merges deliberately skip the write-ahead anchor prewrite (the
+    # journal is that operation's anchor) and union into the base document's
+    # anchor rows only at commit — so until then these graph objects exist
+    # while no anchor row names them. Whole-document purge must union them in,
+    # or deleting the document removes the staged chunks and leaves those
+    # objects orphaned.
+    patch_candidate_entities: tuple[str, ...] = ()
+    patch_candidate_relations: tuple[tuple[str, str], ...] = ()
 
     def phase_at_least(self, phase: str) -> bool:
         """True when the journal records ``phase`` or a later one."""
@@ -3854,8 +3882,19 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         error_message: str | None = None,
         failed: bool,
     ) -> dict[str, Any]:
-        """Persist deletion retry metadata and return the updated status record."""
-        metadata = doc_status_data.get("metadata", {})
+        """Persist deletion retry metadata and return the updated status record.
+
+        Re-reads the record first, and writes only the fields it changes. The
+        caller's ``doc_status_data`` is a snapshot taken before deletion began,
+        and the purge that runs in between writes its journal into
+        ``metadata`` through a targeted update — so upserting the whole stale
+        snapshot would silently clobber that journal, which is precisely what
+        keeps the retry from being refused for missing recovery anchors
+        (issue #3400).
+        """
+        current = await self.doc_status.get_by_id(doc_id)
+        base_record = current if isinstance(current, dict) else doc_status_data
+        metadata = base_record.get("metadata", {})
         if not isinstance(metadata, dict):
             metadata = {}
 
@@ -3879,15 +3918,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             updated_metadata.pop("deletion_failed", None)
             updated_metadata.pop("deletion_failure_stage", None)
 
-        updated_status_data = {
-            **doc_status_data,
+        changed_fields = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "metadata": updated_metadata,
             "error_msg": error_message if failed else "",
         }
 
-        await self.doc_status.upsert({doc_id: updated_status_data})
-        return updated_status_data
+        # Targeted update, and ``missing_ok`` so a record a concurrent delete
+        # already removed is not resurrected as a zombie by this write.
+        await self.doc_status.update_doc_status_fields(
+            doc_id, changed_fields, missing_ok=True
+        )
+        return {**base_record, **changed_fields}
 
     async def _get_existing_llm_cache_ids(self, cache_ids: list[str]) -> list[str]:
         """Return cache IDs that still exist in cache storage.
@@ -4055,6 +4097,37 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             pipeline_status_lock=pipeline_status_lock,
         )
 
+    @staticmethod
+    def _patch_journal_candidates(
+        status_doc: Any,
+    ) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+        """Candidates anchored only in an in-flight custom-chunk patch journal.
+
+        A patch-mode merge passes no anchor storages — the journal IS that
+        operation's recovery anchor — and its candidates are unioned into the
+        base document's ``full_entities`` / ``full_relations`` rows only at
+        commit. So between a failed patch and its rollback, these graph objects
+        exist while no anchor row names them, and a whole-document purge that
+        consulted the anchors alone would delete the staged chunks and leave
+        the objects behind.
+        """
+        journal = doc_status_custom_chunk_patch(status_doc)
+        if journal is None:
+            return (), ()
+        entities = tuple(
+            name
+            for name in (journal.get("entity_names") or [])
+            if isinstance(name, str) and name
+        )
+        relations = tuple(
+            (pair[0], pair[1])
+            for pair in (journal.get("relation_pairs") or [])
+            if isinstance(pair, (list, tuple))
+            and len(pair) == 2
+            and all(isinstance(end, str) and end for end in pair)
+        )
+        return entities, relations
+
     async def _resolve_purge_recovery_proof(
         self,
         doc_id: str,
@@ -4093,14 +4166,29 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         journal = doc_status_kg_purge_journal(status_doc)
         write_state = doc_status_kg_write_state(status_doc)
         operation_id = make_kg_purge_operation_id(doc_id, chunk_ids)
+        patch_entities, patch_relations = self._patch_journal_candidates(status_doc)
 
         journal_phase: str | None = None
         if journal is not None:
             journal_operation_id = journal.get("operation_id")
-            if (
+            mismatched = (
                 not isinstance(journal_operation_id, str)
                 or journal_operation_id != operation_id
-            ):
+            )
+            if mismatched and journal.get("phase") == KG_PURGE_PHASE_COMPLETED:
+                # A ``completed`` journal describes a FINISHED purge, so it
+                # holds no resume information worth protecting — and its
+                # retirement is a separate write that a crash can skip. Treat a
+                # stale one as ignorable rather than a conflict, or a document
+                # re-purged with a different chunk set would be refused forever
+                # over bookkeeping that no longer means anything.
+                logger.info(
+                    f"[purge] {doc_id}: ignoring a stale completed purge journal "
+                    f"for operation {journal_operation_id!r} (now purging "
+                    f"{operation_id!r})"
+                )
+                journal = None
+            elif mismatched:
                 raise KGPurgeOperationConflictError(
                     f"Document {doc_id} carries a KG purge journal for a different "
                     f"operation (journal={journal_operation_id!r}, "
@@ -4115,9 +4203,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     ),
                     requested_operation_id=operation_id,
                 )
-            phase = journal.get("phase")
-            if phase in _KG_PURGE_RESUMABLE_PHASES:
-                journal_phase = phase
+            if journal is not None:
+                phase = journal.get("phase")
+                if phase in _KG_PURGE_RESUMABLE_PHASES:
+                    journal_phase = phase
 
         # A journal past ``prepared`` is itself the proof: the anchors may
         # already be gone precisely BECAUSE a previous attempt got that far.
@@ -4127,6 +4216,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 operation_id=operation_id,
                 journal_phase=journal_phase,
                 write_state=write_state,
+                patch_candidate_entities=patch_entities,
+                patch_candidate_relations=patch_relations,
             )
 
         missing_namespaces: list[str] = []
@@ -4157,12 +4248,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     journal_phase=journal_phase,
                     write_state=write_state,
                     missing_reason=RecoveryAnchorMissingError.REASON_CHUNKLESS_CONTRIBUTIONS,
+                    patch_candidate_entities=patch_entities,
+                    patch_candidate_relations=patch_relations,
                 )
             return _PurgeRecoveryProof(
                 proof_kind="anchors",
                 operation_id=operation_id,
                 journal_phase=journal_phase,
                 write_state=write_state,
+                patch_candidate_entities=patch_entities,
+                patch_candidate_relations=patch_relations,
             )
 
         if write_state == KG_WRITE_STATE_PRE_GRAPH:
@@ -4172,6 +4267,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 journal_phase=journal_phase,
                 write_state=write_state,
                 missing_namespaces=tuple(missing_namespaces),
+                patch_candidate_entities=patch_entities,
+                patch_candidate_relations=patch_relations,
             )
 
         return _PurgeRecoveryProof(
@@ -4181,6 +4278,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             write_state=write_state,
             missing_namespaces=tuple(missing_namespaces),
             missing_reason=RecoveryAnchorMissingError.REASON_MISSING_ANCHOR_ROWS,
+            patch_candidate_entities=patch_entities,
+            patch_candidate_relations=patch_relations,
         )
 
     @staticmethod
@@ -4403,15 +4502,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             if proof.proof_kind is None:
                 self._raise_missing_recovery_proof(doc_id, proof)
             if proof.proof_kind == "pre_graph":
-                # Provably nothing in the graph to find, so force an EXPLICIT
-                # empty candidate set: the derived pass then performs no graph
-                # reads or writes at all, instead of inferring "no candidates"
-                # from anchors it could not read (the original bug).
+                # The document's OWN merge provably never ran, so force an
+                # EXPLICIT empty candidate set rather than inferring "no
+                # candidates" from anchors that could not be read (the original
+                # bug). The patch-journal extras still apply below: a patch-mode
+                # merge mutates the graph without writing anchors, so those are
+                # the one kind of contribution a pre-graph document can have.
                 logger.warning(
                     f"[purge] {doc_id}: recovery anchor row(s) missing "
                     f"({', '.join(proof.missing_namespaces)}), but kg_write_state "
-                    f"proves no graph mutation started; cleaning up staged "
-                    f"chunks only"
+                    f"proves the document's own merge never started; cleaning up "
+                    f"staged chunks"
+                    + (
+                        f" and {len(proof.patch_candidate_entities)} journal-anchored "
+                        f"candidate(s)"
+                        if proof.patch_candidate_entities
+                        else " only"
+                    )
                 )
                 candidate_entities = []
                 candidate_relations = []
@@ -4437,6 +4544,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 chunk_ids,
                 candidate_entities=candidate_entities,
                 candidate_relations=candidate_relations,
+                extra_candidate_entities=(
+                    proof.patch_candidate_entities if proof is not None else ()
+                ),
+                extra_candidate_relations=(
+                    proof.patch_candidate_relations if proof is not None else ()
+                ),
                 rebuild_policy=rebuild_policy,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
@@ -4473,7 +4586,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     append_pipeline_history(pipeline_status, log_message)
             except Exception as e:
                 logger.error(f"[purge] Failed to delete chunks for {doc_id}: {e}")
-                raise Exception(f"Failed to delete document chunks: {e}") from e
+                raise _PurgeStageError(
+                    f"Failed to delete document chunks: {e}", stage="delete_chunks"
+                ) from e
 
         # Chunk deletion is confirmed durable: the anchors may now go. This
         # phase is the one that keeps step 8 retryable — without it, a failure
@@ -4505,8 +4620,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(
                     f"[purge] Failed to delete full_entities/full_relations rows for {doc_id}: {e}"
                 )
-                raise Exception(
-                    f"Failed to delete from full_entities/full_relations: {e}"
+                raise _PurgeStageError(
+                    f"Failed to delete from full_entities/full_relations: {e}",
+                    stage="delete_doc_graph_metadata",
                 ) from e
 
         if journaled and proof is not None:
@@ -4531,6 +4647,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         *,
         candidate_entities: list[str] | None,
         candidate_relations: list[tuple[str, str]] | None,
+        extra_candidate_entities: tuple[str, ...] = (),
+        extra_candidate_relations: tuple[tuple[str, str], ...] = (),
         rebuild_policy: Literal["best_effort", "rollback"],
         pipeline_status: dict,
         pipeline_status_lock: Any,
@@ -4549,6 +4667,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         "resolve from this document's anchor rows". The caller is responsible
         for having proven that the anchors are readable — passing ``None`` with
         absent anchors is exactly the silent-skip bug of issue #3400.
+
+        ``extra_candidate_*`` are unioned in after that resolution, for objects
+        the anchor rows cannot name yet (an in-flight custom-chunk patch
+        journal). They are additive only, so they can never mask a missing
+        anchor: an empty union with absent anchors still resolves to nothing.
         """
         rebuild_report = KGRebuildReport()
 
@@ -4578,6 +4701,24 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     if doc_relations_data and "relation_pairs" in doc_relations_data
                     else []
                 )
+
+            # Union the anchor-independent extras (order-preserving dedup).
+            if extra_candidate_entities:
+                merged_entities = list(candidate_entities)
+                seen_names = set(merged_entities)
+                for name in extra_candidate_entities:
+                    if name not in seen_names:
+                        seen_names.add(name)
+                        merged_entities.append(name)
+                candidate_entities = merged_entities
+            if extra_candidate_relations:
+                merged_relations = list(candidate_relations)
+                seen_pairs = {tuple(pair) for pair in merged_relations}
+                for pair in extra_candidate_relations:
+                    if tuple(pair) not in seen_pairs:
+                        seen_pairs.add(tuple(pair))
+                        merged_relations.append(pair)
+                candidate_relations = merged_relations
 
             affected_nodes: list[dict[str, Any]] = []
             affected_edges: list[dict[str, Any]] = []
@@ -4616,7 +4757,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.error(
                 f"[purge] Failed to analyze affected graph elements for {doc_id}: {e}"
             )
-            raise Exception(f"Failed to analyze graph dependencies: {e}") from e
+            raise _PurgeStageError(
+                f"Failed to analyze graph dependencies: {e}",
+                stage="analyze_graph_dependencies",
+            ) from e
 
         # ---- 2. Classify entities/relations into delete vs rebuild ----
         try:
@@ -4773,7 +4917,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             logger.error(
                 f"[purge] Failed to process graph analysis results for {doc_id}: {e}"
             )
-            raise Exception(f"Failed to process graph dependencies: {e}") from e
+            raise _PurgeStageError(
+                f"Failed to process graph dependencies: {e}",
+                stage="update_chunk_tracking",
+            ) from e
 
         # ---- 3. Delete relationships with no remaining sources ----
         if relationships_to_delete:
@@ -4808,7 +4955,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(
                     f"[purge] Failed to delete relationships for {doc_id}: {e}"
                 )
-                raise Exception(f"Failed to delete relationships: {e}") from e
+                raise _PurgeStageError(
+                    f"Failed to delete relationships: {e}",
+                    stage="delete_relationships",
+                ) from e
 
         # ---- 4. Delete entities with no remaining sources ----
         if entities_to_delete:
@@ -4869,7 +5019,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     append_pipeline_history(pipeline_status, log_message)
             except Exception as e:
                 logger.error(f"[purge] Failed to delete entities for {doc_id}: {e}")
-                raise Exception(f"Failed to delete entities: {e}") from e
+                raise _PurgeStageError(
+                    f"Failed to delete entities: {e}", stage="delete_entities"
+                ) from e
 
         # ---- 5. Persist pre-rebuild changes ----
         # Use plain _insert_done (no discard-on-failure): the pending buffer
@@ -4880,7 +5032,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             await self._insert_done()
         except Exception as e:
             logger.error(f"[purge] Failed to persist pre-rebuild changes: {e}")
-            raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
+            raise _PurgeStageError(
+                f"Failed to persist pre-rebuild changes: {e}",
+                stage="persist_pre_rebuild_changes",
+            ) from e
 
         # ---- 6. Rebuild entities/relations that still have remaining sources ----
         if entities_to_rebuild or relationships_to_rebuild:
@@ -4902,7 +5057,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
-                raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
+                raise _PurgeStageError(
+                    f"Failed to rebuild knowledge graph: {e}",
+                    stage="rebuild_knowledge_graph",
+                ) from e
 
             # Persist the rebuilt graph/vector/tracking state before the
             # source chunks disappear — a crash after this flush leaves a
@@ -4912,7 +5070,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 await self._insert_done()
             except Exception as e:
                 logger.error(f"[purge] Failed to persist rebuilt knowledge: {e}")
-                raise Exception(f"Failed to persist rebuilt knowledge: {e}") from e
+                raise _PurgeStageError(
+                    f"Failed to persist rebuilt knowledge: {e}",
+                    stage="persist_rebuilt_knowledge",
+                ) from e
 
         return rebuild_report
 
@@ -5152,10 +5313,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     + journal_chunk_ids
                 )
             )
-            chunk_ids_set = set(chunk_ids)
 
             if not chunk_ids:
                 logger.warning(f"No chunks found for document {doc_id}")
+
+                # Fail closed before touching anything (issue #3400). This
+                # branch used to delete doc_status + full_docs and report
+                # success WITHOUT looking at the graph at all — so a document
+                # whose anchors still named live entities was reported deleted
+                # while those entities stayed behind, now unattributable
+                # (removing doc_status is what breaks the provenance chain).
+                #
+                # Run the same primitive as the chunk-backed path: with an
+                # empty chunk set it refuses exactly that case, and otherwise
+                # cleans up a genuinely empty stub — including its two empty
+                # anchor rows, which this branch used to leave behind keyed to
+                # a document that no longer exists.
+                try:
+                    deletion_stage = "validate_recovery_anchors"
+                    await self._purge_kg_contributions(
+                        doc_id,
+                        chunk_ids,
+                        pipeline_status=pipeline_status,
+                        pipeline_status_lock=pipeline_status_lock,
+                    )
+                except _PurgeStageError as purge_error:
+                    deletion_stage = purge_error.purge_stage
+                    raise
+
                 # Mark that deletion operations have started
                 deletion_operations_started = True
 
@@ -5302,459 +5487,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 else:
                     logger.info("No LLM cache entries found for document %s", doc_id)
 
-            # 4. Analyze entities and relationships that will be affected
-            entities_to_delete = set()
-            entities_to_rebuild = {}  # entity_name -> remaining chunk id list
-            relationships_to_delete = set()
-            relationships_to_rebuild = {}  # (src, tgt) -> remaining chunk id list
-            entity_chunk_updates: dict[str, list[str]] = {}
-            relation_chunk_updates: dict[tuple[str, str], list[str]] = {}
-
+            # 4. Purge every KG contribution of this document, then its chunks.
+            #
+            # Delegated to the shared primitive rather than reimplemented here
+            # (issue #3400). Two things follow from that:
+            #
+            #  * The primitive refuses to start without a recovery proof, so a
+            #    document whose anchors were lost fails closed with a 409
+            #    instead of silently skipping graph cleanup and orphaning its
+            #    entities. Candidates anchored ONLY in an unfinished
+            #    custom-chunk patch journal are covered too — the primitive
+            #    reads that journal itself and unions them in, since a
+            #    patch-mode merge writes no anchor rows of its own — and this
+            #    path already merged the journal's staged chunk ids into
+            #    ``chunk_ids`` above.
+            #  * Destructive ordering is the primitive's (correct) one. The
+            #    inline implementation this replaces deleted the chunks BEFORE
+            #    repairing the graph, which is the window where a mid-delete
+            #    failure left graph objects pointing at chunks that no longer
+            #    existed.
+            #
+            # The failing step travels on the exception as ``purge_stage`` so
+            # ``deletion_failure_stage`` keeps reporting the same granularity
+            # it always did.
             try:
-                deletion_stage = "analyze_graph_dependencies"
-                # Get affected entities and relations from full_entities and full_relations storage
-                doc_entities_data = await self.full_entities.get_by_id(doc_id)
-                doc_relations_data = await self.full_relations.get_by_id(doc_id)
-
-                # Candidate discovery must also cover journal-only candidates
-                # (issue #3400 Phase 3): a failed custom-chunk patch may have
-                # written graph/vector/tracking objects whose anchors live
-                # ONLY in the doc's custom_chunk_patch journal — patch mode
-                # unions them into full_entities/full_relations at commit.
-                # Without this union, deleting the document would remove the
-                # staged chunks (added to chunk_ids above) while never
-                # visiting those graph objects, leaving orphans behind.
-                entity_names = list((doc_entities_data or {}).get("entity_names") or [])
-                relation_pairs = [
-                    list(pair)
-                    for pair in ((doc_relations_data or {}).get("relation_pairs") or [])
-                ]
-                if isinstance(journal, dict):
-                    seen_names = set(entity_names)
-                    for name in journal.get("entity_names") or []:
-                        if isinstance(name, str) and name and name not in seen_names:
-                            seen_names.add(name)
-                            entity_names.append(name)
-                    seen_pairs = {tuple(pair) for pair in relation_pairs}
-                    for pair in journal.get("relation_pairs") or []:
-                        if (
-                            isinstance(pair, (list, tuple))
-                            and len(pair) == 2
-                            and tuple(pair) not in seen_pairs
-                        ):
-                            seen_pairs.add(tuple(pair))
-                            relation_pairs.append(list(pair))
-
-                affected_nodes = []
-                affected_edges = []
-
-                # Get entity data from graph storage (candidates are a
-                # recovery superset; absent nodes are skipped below)
-                if entity_names:
-                    # get_nodes_batch returns dict[str, dict], need to convert to list[dict]
-                    nodes_dict = await self.chunk_entity_relation_graph.get_nodes_batch(
-                        entity_names
-                    )
-                    for entity_name in entity_names:
-                        node_data = nodes_dict.get(entity_name)
-                        if node_data:
-                            # Ensure compatibility with existing logic that expects "id" field
-                            if "id" not in node_data:
-                                node_data["id"] = entity_name
-                            affected_nodes.append(node_data)
-
-                # Get relation data from graph storage using the candidate pairs
-                if relation_pairs:
-                    edge_pairs_dicts = [
-                        {"src": pair[0], "tgt": pair[1]} for pair in relation_pairs
-                    ]
-                    # get_edges_batch returns dict[tuple[str, str], dict], need to convert to list[dict]
-                    edges_dict = await self.chunk_entity_relation_graph.get_edges_batch(
-                        edge_pairs_dicts
-                    )
-
-                    for pair in relation_pairs:
-                        src, tgt = pair[0], pair[1]
-                        edge_key = (src, tgt)
-                        edge_data = edges_dict.get(edge_key)
-                        if edge_data:
-                            # Ensure compatibility with existing logic that expects "source" and "target" fields
-                            if "source" not in edge_data:
-                                edge_data["source"] = src
-                            if "target" not in edge_data:
-                                edge_data["target"] = tgt
-                            affected_edges.append(edge_data)
-
-            except Exception as e:
-                logger.error(f"Failed to analyze affected graph elements: {e}")
-                raise Exception(f"Failed to analyze graph dependencies: {e}") from e
-
-            try:
-                # Process entities
-                for node_data in affected_nodes:
-                    node_label = node_data.get("entity_id")
-                    if not node_label:
-                        continue
-
-                    existing_sources: list[str] = []
-                    graph_sources: list[str] = []
-                    if self.entity_chunks:
-                        stored_chunks = await self.entity_chunks.get_by_id(node_label)
-                        if stored_chunks and isinstance(stored_chunks, dict):
-                            existing_sources = [
-                                chunk_id
-                                for chunk_id in stored_chunks.get("chunk_ids", [])
-                                if chunk_id
-                            ]
-
-                    if node_data.get("source_id"):
-                        graph_sources = [
-                            chunk_id
-                            for chunk_id in node_data["source_id"].split(
-                                GRAPH_FIELD_SEP
-                            )
-                            if chunk_id
-                        ]
-
-                    if not existing_sources:
-                        existing_sources = graph_sources
-
-                    if not existing_sources:
-                        # No chunk references means this entity should be deleted
-                        entities_to_delete.add(node_label)
-                        entity_chunk_updates[node_label] = []
-                        continue
-
-                    remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
-                    # `existing_sources` comes from chunk-tracking storage when available, but
-                    # graph `source_id` can still be stale after a failed prior delete. If the
-                    # graph still references any chunk being deleted in this attempt, force a
-                    # rebuild/delete so the graph metadata gets synchronized instead of being
-                    # left untouched with orphaned source references.
-                    graph_references_deleted_chunks = bool(
-                        graph_sources and set(graph_sources) & chunk_ids_set
-                    )
-
-                    if not remaining_sources:
-                        entities_to_delete.add(node_label)
-                        entity_chunk_updates[node_label] = []
-                    elif (
-                        remaining_sources != existing_sources
-                        or graph_references_deleted_chunks
-                    ):
-                        entities_to_rebuild[node_label] = remaining_sources
-                        entity_chunk_updates[node_label] = remaining_sources
-                    else:
-                        logger.info(f"Untouch entity: {node_label}")
-
-                async with pipeline_status_lock:
-                    log_message = f"Found {len(entities_to_rebuild)} affected entities"
-                    logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    append_pipeline_history(pipeline_status, log_message)
-
-                # Process relationships
-                for edge_data in affected_edges:
-                    # source target is not in normalize order in graph db property
-                    src = edge_data.get("source")
-                    tgt = edge_data.get("target")
-
-                    if not src or not tgt or "source_id" not in edge_data:
-                        continue
-
-                    edge_tuple = tuple(sorted((src, tgt)))
-                    if (
-                        edge_tuple in relationships_to_delete
-                        or edge_tuple in relationships_to_rebuild
-                    ):
-                        continue
-
-                    existing_sources: list[str] = []
-                    graph_sources: list[str] = []
-                    if self.relation_chunks:
-                        storage_key = make_relation_chunk_key(src, tgt)
-                        stored_chunks = await self.relation_chunks.get_by_id(
-                            storage_key
-                        )
-                        if stored_chunks and isinstance(stored_chunks, dict):
-                            existing_sources = [
-                                chunk_id
-                                for chunk_id in stored_chunks.get("chunk_ids", [])
-                                if chunk_id
-                            ]
-
-                    if edge_data.get("source_id"):
-                        graph_sources = [
-                            chunk_id
-                            for chunk_id in edge_data["source_id"].split(
-                                GRAPH_FIELD_SEP
-                            )
-                            if chunk_id
-                        ]
-
-                    if not existing_sources:
-                        existing_sources = graph_sources
-
-                    if not existing_sources:
-                        # No chunk references means this relationship should be deleted
-                        relationships_to_delete.add(edge_tuple)
-                        relation_chunk_updates[edge_tuple] = []
-                        continue
-
-                    remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
-                    # Same as the entity path above: even when relation chunk-tracking is already
-                    # correct, the graph edge may still carry a stale `source_id` that mentions a
-                    # chunk deleted in this attempt. Treat that as an affected relation so retry
-                    # deletion can repair the graph metadata rather than skipping it as "untouched".
-                    graph_references_deleted_chunks = bool(
-                        graph_sources and set(graph_sources) & chunk_ids_set
-                    )
-
-                    if not remaining_sources:
-                        relationships_to_delete.add(edge_tuple)
-                        relation_chunk_updates[edge_tuple] = []
-                    elif (
-                        remaining_sources != existing_sources
-                        or graph_references_deleted_chunks
-                    ):
-                        relationships_to_rebuild[edge_tuple] = remaining_sources
-                        relation_chunk_updates[edge_tuple] = remaining_sources
-                    else:
-                        logger.info(f"Untouch relation: {edge_tuple}")
-
-                async with pipeline_status_lock:
-                    log_message = (
-                        f"Found {len(relationships_to_rebuild)} affected relations"
-                    )
-                    logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    append_pipeline_history(pipeline_status, log_message)
-
-                current_time = int(time.time())
-                deletion_stage = "update_chunk_tracking"
-
-                if entity_chunk_updates and self.entity_chunks:
-                    entity_upsert_payload = {}
-                    for entity_name, remaining in entity_chunk_updates.items():
-                        if not remaining:
-                            # Empty entities are deleted alongside graph nodes later
-                            continue
-                        entity_upsert_payload[entity_name] = {
-                            "chunk_ids": remaining,
-                            "count": len(remaining),
-                            "updated_at": current_time,
-                        }
-                    if entity_upsert_payload:
-                        await self.entity_chunks.upsert(entity_upsert_payload)
-
-                if relation_chunk_updates and self.relation_chunks:
-                    relation_upsert_payload = {}
-                    for edge_tuple, remaining in relation_chunk_updates.items():
-                        if not remaining:
-                            # Empty relations are deleted alongside graph edges later
-                            continue
-                        storage_key = make_relation_chunk_key(*edge_tuple)
-                        relation_upsert_payload[storage_key] = {
-                            "chunk_ids": remaining,
-                            "count": len(remaining),
-                            "updated_at": current_time,
-                        }
-
-                    if relation_upsert_payload:
-                        await self.relation_chunks.upsert(relation_upsert_payload)
-
-            except Exception as e:
-                logger.error(f"Failed to process graph analysis results: {e}")
-                raise Exception(f"Failed to process graph dependencies: {e}") from e
-
-            # Data integrity is ensured by allowing only one process to hold pipeline at a time（no graph db lock is needed anymore)
-
-            # 5. Delete chunks from storage
-            if chunk_ids:
-                try:
-                    deletion_stage = "delete_chunks"
-                    await self.chunks_vdb.delete(chunk_ids)
-                    await self.text_chunks.delete(chunk_ids)
-
-                    async with pipeline_status_lock:
-                        log_message = (
-                            f"Successfully deleted {len(chunk_ids)} chunks from storage"
-                        )
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        append_pipeline_history(pipeline_status, log_message)
-
-                except Exception as e:
-                    logger.error(f"Failed to delete chunks: {e}")
-                    raise Exception(f"Failed to delete document chunks: {e}") from e
-
-            # 6. Delete relationships that have no remaining sources
-            if relationships_to_delete:
-                try:
-                    deletion_stage = "delete_relationships"
-                    # Delete from relation vdb
-                    rel_ids_to_delete = []
-                    for src, tgt in relationships_to_delete:
-                        rel_ids_to_delete.extend(
-                            [
-                                compute_mdhash_id(src + tgt, prefix="rel-"),
-                                compute_mdhash_id(tgt + src, prefix="rel-"),
-                            ]
-                        )
-                    await self.relationships_vdb.delete(rel_ids_to_delete)
-
-                    # Delete from graph
-                    await self.chunk_entity_relation_graph.remove_edges(
-                        list(relationships_to_delete)
-                    )
-
-                    # Delete from relation_chunks storage
-                    if self.relation_chunks:
-                        relation_storage_keys = [
-                            make_relation_chunk_key(src, tgt)
-                            for src, tgt in relationships_to_delete
-                        ]
-                        await self.relation_chunks.delete(relation_storage_keys)
-
-                    async with pipeline_status_lock:
-                        log_message = f"Successfully deleted {len(relationships_to_delete)} relations"
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        append_pipeline_history(pipeline_status, log_message)
-
-                except Exception as e:
-                    logger.error(f"Failed to delete relationships: {e}")
-                    raise Exception(f"Failed to delete relationships: {e}") from e
-
-            # 7. Delete entities that have no remaining sources
-            if entities_to_delete:
-                try:
-                    deletion_stage = "delete_entities"
-                    # Batch get all edges for entities to avoid N+1 query problem
-                    nodes_edges_dict = (
-                        await self.chunk_entity_relation_graph.get_nodes_edges_batch(
-                            list(entities_to_delete)
-                        )
-                    )
-
-                    # Debug: Check and log all edges before deleting nodes
-                    edges_to_delete = set()
-                    edges_still_exist = 0
-
-                    for entity, edges in nodes_edges_dict.items():
-                        if edges:
-                            for src, tgt in edges:
-                                # Normalize edge representation (sorted for consistency)
-                                edge_tuple = tuple(sorted((src, tgt)))
-                                edges_to_delete.add(edge_tuple)
-
-                                if (
-                                    src in entities_to_delete
-                                    and tgt in entities_to_delete
-                                ):
-                                    logger.warning(
-                                        f"Edge still exists: {src} <-> {tgt}"
-                                    )
-                                elif src in entities_to_delete:
-                                    logger.warning(
-                                        f"Edge still exists: {src} --> {tgt}"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"Edge still exists: {src} <-- {tgt}"
-                                    )
-                            edges_still_exist += 1
-
-                    if edges_still_exist:
-                        logger.warning(
-                            f"⚠️ {edges_still_exist} entities still has edges before deletion"
-                        )
-
-                    # Clean residual edges from VDB and storage before deleting nodes
-                    if edges_to_delete:
-                        # Delete from relationships_vdb
-                        rel_ids_to_delete = []
-                        for src, tgt in edges_to_delete:
-                            rel_ids_to_delete.extend(
-                                [
-                                    compute_mdhash_id(src + tgt, prefix="rel-"),
-                                    compute_mdhash_id(tgt + src, prefix="rel-"),
-                                ]
-                            )
-                        await self.relationships_vdb.delete(rel_ids_to_delete)
-
-                        # Delete from relation_chunks storage
-                        if self.relation_chunks:
-                            relation_storage_keys = [
-                                make_relation_chunk_key(src, tgt)
-                                for src, tgt in edges_to_delete
-                            ]
-                            await self.relation_chunks.delete(relation_storage_keys)
-
-                        logger.info(
-                            f"Cleaned {len(edges_to_delete)} residual edges from VDB and chunk-tracking storage"
-                        )
-
-                    # Delete from graph (edges will be auto-deleted with nodes)
-                    await self.chunk_entity_relation_graph.remove_nodes(
-                        list(entities_to_delete)
-                    )
-
-                    # Delete from vector vdb
-                    entity_vdb_ids = [
-                        compute_mdhash_id(entity, prefix="ent-")
-                        for entity in entities_to_delete
-                    ]
-                    await self.entities_vdb.delete(entity_vdb_ids)
-
-                    # Delete from entity_chunks storage
-                    if self.entity_chunks:
-                        await self.entity_chunks.delete(list(entities_to_delete))
-
-                    async with pipeline_status_lock:
-                        log_message = (
-                            f"Successfully deleted {len(entities_to_delete)} entities"
-                        )
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        append_pipeline_history(pipeline_status, log_message)
-
-                except Exception as e:
-                    logger.error(f"Failed to delete entities: {e}")
-                    raise Exception(f"Failed to delete entities: {e}") from e
-
-            # Persist changes to graph database before entity and relationship rebuild
-            # Plain _insert_done: pending DELETES must be retained for retry on
-            # failure, not discarded (see _insert_done_with_cleanup docstring).
-            try:
-                deletion_stage = "persist_pre_rebuild_changes"
-                await self._insert_done()
-            except Exception as e:
-                logger.error(f"Failed to persist pre-rebuild changes: {e}")
-                raise Exception(f"Failed to persist pre-rebuild changes: {e}") from e
-
-            # 8. Rebuild entities and relationships from remaining chunks
-            if entities_to_rebuild or relationships_to_rebuild:
-                try:
-                    deletion_stage = "rebuild_knowledge_graph"
-                    await rebuild_knowledge_from_chunks(
-                        entities_to_rebuild=entities_to_rebuild,
-                        relationships_to_rebuild=relationships_to_rebuild,
-                        knowledge_graph_inst=self.chunk_entity_relation_graph,
-                        entities_vdb=self.entities_vdb,
-                        relationships_vdb=self.relationships_vdb,
-                        text_chunks_storage=self.text_chunks,
-                        llm_response_cache=self.llm_response_cache,
-                        global_config=self._build_global_config(),
-                        pipeline_status=pipeline_status,
-                        pipeline_status_lock=pipeline_status_lock,
-                        entity_chunks_storage=self.entity_chunks,
-                        relation_chunks_storage=self.relation_chunks,
-                    )
-
-                except Exception as e:
-                    logger.error(f"Failed to rebuild knowledge from chunks: {e}")
-                    raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
+                deletion_stage = "validate_recovery_anchors"
+                await self._purge_kg_contributions(
+                    doc_id,
+                    chunk_ids,
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+            except _PurgeStageError as purge_error:
+                deletion_stage = purge_error.purge_stage
+                raise
 
             # 9. Delete LLM cache while the document status still exists so a failure
             # remains retryable via the same doc_id.
@@ -5802,16 +5568,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         append_pipeline_history(pipeline_status, log_message)
                     raise Exception(log_message) from cache_delete_error
 
-            # 10. Delete from full_entities and full_relations storage
-            try:
-                deletion_stage = "delete_doc_graph_metadata"
-                await self.full_entities.delete([doc_id])
-                await self.full_relations.delete([doc_id])
-            except Exception as e:
-                logger.error(f"Failed to delete from full_entities/full_relations: {e}")
-                raise Exception(
-                    f"Failed to delete from full_entities/full_relations: {e}"
-                ) from e
+            # 10. (The recovery anchor rows were deleted by the purge above —
+            # LAST within that operation, and only once its journal recorded
+            # that the chunks were gone. Deleting them again here would be
+            # redundant, and doing it BEFORE the LLM cache step, as this
+            # function used to, removed the retry's recovery proof while work
+            # remained.)
 
             # 11. Delete original document and status.
             # doc_status is deleted first so that if full_docs.delete fails, a retry
@@ -5832,6 +5594,40 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 doc_id=doc_id,
                 message=log_message,
                 status_code=200,
+                file_path=file_path,
+            )
+
+        except (RecoveryAnchorMissingError, KGPurgeOperationConflictError) as e:
+            # A refused PRECONDITION, not a failed deletion: the purge raised
+            # before its first write, so nothing was deleted and the document
+            # is exactly as it was. Surfaced as 409 rather than 500 because
+            # retrying unchanged will refuse again — the operator has to run
+            # the integrity audit first. The message is written to be
+            # client-safe and names that remedy.
+            original_exception = e
+            error_message = str(e)
+            logger.error(f"Refusing to delete document {doc_id}: {e}")
+            try:
+                if doc_status_data is not None:
+                    doc_status_data = await self._update_delete_retry_state(
+                        doc_id,
+                        doc_status_data,
+                        deletion_stage="validate_recovery_anchors",
+                        doc_llm_cache_ids=doc_llm_cache_ids,
+                        error_message=error_message,
+                        failed=True,
+                    )
+            except Exception as status_update_error:
+                logger.error(
+                    "Failed to record recovery-anchor refusal for document %s: %s",
+                    doc_id,
+                    status_update_error,
+                )
+            return DeletionResult(
+                status="fail",
+                doc_id=doc_id,
+                message=error_message,
+                status_code=409,
                 file_path=file_path,
             )
 
