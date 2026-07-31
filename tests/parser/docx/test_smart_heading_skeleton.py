@@ -7,6 +7,7 @@ import pytest
 from lightrag.parser.docx.parse_document import ParagraphRecord
 from lightrag.parser.docx.smart_heading.heading_flow import (
     HeadingDecision,
+    _register_merge_members,
     align_numbering_series,
     clamp_deep_levels,
     correct_numbering_skeleton,
@@ -70,7 +71,9 @@ def test_adjacent_same_level_headings_merge_across_one_blank() -> None:
         _d("正文块", 3, idx=4),
     ]
     warnings: dict = {}
-    out = merge_split_headings(ds, records, warnings=warnings)
+    out = merge_split_headings(
+        ds, records, strong_body=_stub_strong_body, warnings=warnings
+    )
     texts = [d.text for d in out]
     assert "中华人民共和国某某管理办法" in texts  # CJK join, no space
     assert "一、总则" in texts
@@ -83,7 +86,7 @@ def test_merge_respects_four_line_cap() -> None:
     """G8-3: a 5-line "heading" chain stops merging at 4 lines."""
     records = _records(5)
     ds = [_d(f"标题行{i}", 2, idx=i) for i in range(5)]
-    out = merge_split_headings(ds, records, warnings={})
+    out = merge_split_headings(ds, records, strong_body=_stub_strong_body, warnings={})
     assert [d.text.count("\n") + d.text.count("标题行") for d in out]
     first = out[0]
     assert first.text.count("标题行") == 4  # capped at 4 lines
@@ -98,7 +101,7 @@ def test_merge_requires_same_size_and_level() -> None:
         _d("同层同字号甲", 3, idx=2, size=14.0),
         _d("同层同字号乙", 3, idx=3, size=14.0),
     ]
-    out = merge_split_headings(ds, records, warnings={})
+    out = merge_split_headings(ds, records, strong_body=_stub_strong_body, warnings={})
     assert [d.text for d in out][:2] == ["大字号行", "小字号行"]
     assert any(d.text == "同层同字号甲同层同字号乙" for d in out)
 
@@ -110,9 +113,180 @@ def test_softbreak_lines_count_toward_cap() -> None:
         _d("第一行\n第二行\n第三行", 2, idx=0),  # 3 lines
         _d("第四行", 2, idx=1),
     ]
-    out = merge_split_headings(ds, records, warnings={})
+    out = merge_split_headings(ds, records, strong_body=_stub_strong_body, warnings={})
     assert len(out) == 1
     assert out[0].text == "第一行\n第二行\n第三行第四行"
+
+
+# ---------------------------------------------------------------------------
+# merge strong-body gates (a body line must never swallow a heading)
+# ---------------------------------------------------------------------------
+
+
+def test_strong_body_owner_absorbs_nothing() -> None:
+    """1a-i: a candidate that already reads as body absorbs no neighbour.
+
+    Reproduces test21: a citation line admitted via ``base_series`` (its
+    strong-body check is deferred to the post-merge sweep) sat next to an
+    outlineLvl heading and swallowed it.
+    """
+    records = _records(2)
+    ds = [
+        _d(
+            "（2）《某某部关于印发某某规定的通知》（某部联企业〔2011〕300号）。",
+            1,
+            idx=0,
+        ),
+        _d("【政策内容】", 1, idx=1, outline=0),
+    ]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_stub_strong_body, warnings=warnings
+    )
+    assert len(out) == 2  # no merge happened
+    assert out[0].member_indices == ()
+    assert out[1].text == "【政策内容】"
+    assert out[1].outline_level == 0
+    assert "smart_heading_merges" not in warnings
+
+
+def test_outline_member_not_absorbed_into_a_body_shaped_join() -> None:
+    """1a-ii: the joined text is judged when the member carries an outline."""
+    records = _records(2)
+    ds = [
+        _d("上半句在此，", 1, idx=0),  # clean on its own
+        _d("下半句让合并后带上句号。", 1, idx=1, outline=0),
+    ]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_stub_strong_body, warnings=warnings
+    )
+    assert len(out) == 2  # joined text reads as body → no merge
+    assert "smart_heading_merges" not in warnings
+
+
+def test_body_shaped_join_still_merges_without_an_outline_member() -> None:
+    """1a-ii is scoped: an outline-FREE window keeps the merge-then-demote
+    behaviour that lets two body-ish lines be demoted together (removing the
+    scope would resurrect them as two spurious headings)."""
+    records = _records(2)
+    ds = [
+        _d("上半句在此，", 1, idx=0),
+        _d("下半句让合并后带上句号。", 1, idx=1),  # no outline level
+    ]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_stub_strong_body, warnings=warnings
+    )
+    assert len(out) == 1  # merged, exactly as before this change
+    assert warnings["smart_heading_merges"] == 1
+
+
+def test_absorbed_outline_keeps_guarding_later_outline_free_joins() -> None:
+    """1a-ii is STICKY: the window may grow to _MERGE_MAX_LINES members, so an
+    outline member absorbed early must keep protecting the window when a
+    LATER, outline-free member is what pushes the join over the body
+    threshold.
+
+    Non-sticky logic (judging only the current ``nxt``) absorbs all three, the
+    sweep then demotes the merged heading, and the outline member at index 1 is
+    left with no decision — an I2 violation costing the whole document.
+    """
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    records = [
+        ParagraphRecord(kind="para", text="第一段"),
+        ParagraphRecord(kind="para", text="第二段", outline_level=0),
+        ParagraphRecord(kind="para", text="第三段让整体带上句号。"),
+    ]
+    ds = [
+        _d("第一段", 1, idx=0),
+        _d("第二段", 1, idx=1, outline=0),
+        _d("第三段让整体带上句号。", 1, idx=2),
+    ]
+    warnings: dict = {}
+    out = merge_split_headings(
+        ds, records, strong_body=_stub_strong_body, warnings=warnings
+    )
+    assert out[0].member_indices == (0, 1)  # outline member absorbed
+    assert out[0].text == "第一段第二段"  # third member rejected
+    assert [d.record_index for d in out] == [0, 2]
+    demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings={})
+    assert out[0].is_heading  # the join stayed heading-shaped
+
+    decisions: dict[int, HeadingDecision] = {}
+    for d in out:
+        decisions[d.record_index] = d
+        if d.member_indices and not d.is_title_block:
+            _register_merge_members(decisions, d, records, warnings)
+    assert "merged_absorbed" in decisions[1].rule_trail
+    assert verify_baseline_heading_retention(records, list(decisions.values())) == []
+
+
+def test_stranded_outline_member_keeps_the_i2_fallback() -> None:
+    """1b outline branch: an undone merge must NOT silently re-classify a
+    baseline heading as body. No decision is written, so I2 still trips and the
+    baseline assembler — which splits on outlineLvl — keeps emitting it as a
+    heading. Writing a whitelisted ``merge_unwound`` row here would suppress
+    the fallback and genuinely lose the heading boundary.
+    """
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    records = [
+        ParagraphRecord(kind="para", text="归属方"),
+        ParagraphRecord(kind="para", text="【政策内容】", outline_level=0),
+    ]
+    owner = _d("归属方【政策内容】", 1, idx=0)
+    owner.member_indices = (0, 1)
+    owner.is_heading = False  # a later stage undid the merge
+    decisions = {0: owner}
+    warnings: dict = {}
+    _register_merge_members(decisions, owner, records, warnings)
+
+    assert 1 not in decisions  # deliberately no decision
+    assert warnings == {"smart_merge_outline_stranded": 1}
+    assert verify_baseline_heading_retention(records, list(decisions.values())) == [1]
+
+
+def test_merge_unwound_is_not_an_i2_demotion_rule() -> None:
+    """Guard against a future "tidy-up" that whitelists ``merge_unwound``:
+    doing so turns the outline branch above into a silent heading loss."""
+    import inspect
+
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        verify_baseline_heading_retention,
+    )
+
+    default = (
+        inspect.signature(verify_baseline_heading_retention)
+        .parameters["demotion_rules"]
+        .default
+    )
+    assert "merge_unwound" not in default
+    assert "merged_absorbed" in default  # the surviving-merge tag stays legal
+
+
+def test_clamped_merge_also_reaches_the_member_branches() -> None:
+    """The undone-merge branches are not strong-body specific: clamping a
+    level>9 merged heading lands on them too."""
+    records = [
+        ParagraphRecord(kind="para", text="很深的标题"),
+        ParagraphRecord(kind="para", text="第二行"),
+    ]
+    owner = _d("很深的标题第二行", 12, idx=0)
+    owner.member_indices = (0, 1)
+    clamp_deep_levels([owner], warnings={})
+    assert not owner.is_heading  # clamp demoted it
+
+    decisions = {0: owner}
+    warnings: dict = {}
+    _register_merge_members(decisions, owner, records, warnings)
+    assert "merge_unwound" in decisions[1].rule_trail
+    assert warnings == {"smart_merge_unwound": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -359,12 +533,20 @@ def test_merged_then_demoted_heading_keeps_member_text() -> None:
 
     The absorbed-member markers are only laid
     down while the merged heading survives; once demoted, the members fall
-    back to their own paragraph rows, so I1 passes (no content loss)."""
+    back to their own paragraph rows, so I1 passes (no content loss).
+
+    This is the NON-outline branch of ``_register_merge_members``: the member
+    gets an audit-only ``merge_unwound`` row whose assembler path is identical
+    to having no decision at all.
+    """
     from lightrag.parser.docx.parse_document import _assemble_blocks_smart
     from lightrag.parser.docx.smart_heading.guardrails import (
         verify_content_preservation,
     )
-    from lightrag.parser.docx.smart_heading.heading_flow import SmartHeadingResult
+    from lightrag.parser.docx.smart_heading.heading_flow import (
+        SmartHeadingResult,
+        _register_merge_members,
+    )
 
     records = [
         ParagraphRecord(
@@ -395,16 +577,25 @@ def test_merged_then_demoted_heading_keeps_member_text() -> None:
             font_size_pt=14.0,
         ),
     ]
-    ds = merge_split_headings(ds, records, warnings={})
+    ds = merge_split_headings(ds, records, strong_body=_stub_strong_body, warnings={})
     demote_strong_body_headings(ds, strong_body=_stub_strong_body, warnings={})
 
-    # Reproduce run_smart_heading's absorbed-sentinel bookkeeping.
+    # Same member bookkeeping run_smart_heading performs — the production
+    # helper, not a copy of it.
     decisions: dict[int, HeadingDecision] = {}
+    member_warnings: dict = {}
     for d in ds:
         decisions[d.record_index] = d
-        if d.member_indices and not d.is_title_block and d.is_heading:
-            for m in d.member_indices[1:]:
-                decisions[m] = HeadingDecision(record_index=m, text="", absorbed=True)
+        if d.member_indices and not d.is_title_block:
+            _register_merge_members(decisions, d, records, member_warnings)
+
+    assert not ds[0].is_heading  # the sweep demoted the merged heading
+    unwound = decisions[1]
+    assert "merge_unwound" in unwound.rule_trail
+    assert unwound.absorbed is False  # must NOT suppress its own row
+    assert unwound.use_raw_text is False  # same assembler path as no decision
+    assert member_warnings == {"smart_merge_unwound": 1}
+
     result = SmartHeadingResult(
         decisions=decisions, toc_indices=set(), doc_title=None, audit={}
     )

@@ -1,10 +1,17 @@
-"""Unit tests for NumberingResolver ilvl resolution.
+"""Unit tests for NumberingResolver ilvl resolution and numFmt rendering.
 
 Covers the ilvl-resolution priority when a paragraph's numPr omits w:ilvl:
 (a) explicit ilvl inherited through the style basedOn chain, (b) the
 abstractNum per-level w:pStyle link, (c) default 0, plus the two direct-numPr
 edge cases: (d) direct numId without ilvl still borrows the chain ilvl, and
 (e) an explicit direct ilvl=0 is preserved (NOT treated as missing).
+
+Also covers numFmt rendering: the CJK counting families, the digit-by-digit
+``ideographDigital`` family (which must NOT reuse the counting converter), and
+the unknown-format diagnostic. These stay at unit level deliberately — the
+resolver is the single chokepoint for every label the parser emits, and an
+end-to-end fixture would mean hand-crafting a numbering.xml into a .docx zip
+for no extra coverage of this logic.
 
 The resolution logic is exercised directly on hand-built dicts + <w:p>
 elements — no numbering.xml crafting — so the tests target the merge/fallback
@@ -13,6 +20,7 @@ behaviour rather than the XML parsers.
 
 from __future__ import annotations
 
+import pytest
 from lxml import etree
 
 from lightrag.parser.docx.numbering_resolver import NumberingResolver
@@ -137,3 +145,113 @@ def test_resolve_ilvl_by_pstyle_walks_basedon_ancestors() -> None:
     assert r._resolve_ilvl_by_pstyle("100", "Child") == 3
     # no link for H4 → None
     assert r._resolve_ilvl_by_pstyle("100", "H4") is None
+
+
+# ---------------------------------------------------------------------------
+# numFmt rendering
+# ---------------------------------------------------------------------------
+
+
+def _fmt_resolver(num_fmt: str, lvl_text: str = "（%1）") -> NumberingResolver:
+    """A resolver whose single abstract level uses ``num_fmt``."""
+    r = NumberingResolver.__new__(NumberingResolver)
+    r.abstract_nums = {
+        "10": {0: {"start": 1, "numFmt": num_fmt, "lvlText": lvl_text, "isLgl": False}}
+    }
+    r.abstract_pstyle = {}
+    r.num_to_abstract = {"100": "10"}
+    r.counters = {}
+    r.start_overrides = {}
+    r.style_numpr = {}
+    r.style_based_on = {}
+    r.last_numId = None
+    r.last_abstract_id = None
+    r.last_style_id = None
+    r.unsupported_formats = set()
+    r._warnings = None
+    return r
+
+
+def _label(r: NumberingResolver, count: int) -> str:
+    r.counters["100"] = {0: count}
+    return r._format_label("100", 0, r.abstract_nums["10"])
+
+
+# The counting families all render 一/二/十/十一/… — [MS-DOCX] gives
+# japaneseCounting as 一,二,三 and chineseCounting / taiwaneseCounting as
+# 一 (1) / 十 (10). Chinese-locale Word writes 一二三 auto-numbering as
+# japaneseCounting, the value that made test21 emit （1） instead of （一）.
+_COUNTING_FORMATS = (
+    "japaneseCounting",
+    "chineseCounting",
+    "taiwaneseCounting",
+    "chineseCountingThousand",
+)
+
+
+def test_japanese_counting_renders_chinese_numerals() -> None:
+    """Regression: `numFmt="japaneseCounting"` + `lvlText="（%1）"` used to fall
+    through to the decimal default and emit （1） where Word shows （一）."""
+    r = _fmt_resolver("japaneseCounting")
+    assert _label(r, 1) == "（一）"
+    assert _label(r, 2) == "（二）"
+    assert _label(r, 11) == "（十一）"
+    assert r.unsupported_formats == set()
+
+
+@pytest.mark.parametrize("num_fmt", _COUNTING_FORMATS)
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [(1, "一"), (2, "二"), (10, "十"), (11, "十一"), (20, "二十"), (99, "九十九")],
+)
+def test_counting_families_are_positional(num_fmt, count, expected) -> None:
+    """10 must render 十, not 一〇: only values past 9 tell a positional counting
+    system apart from the digit-by-digit ideograph one."""
+    assert _label(_fmt_resolver(num_fmt, "%1"), count) == expected
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        (1, "一"),
+        (10, "一〇"),
+        (11, "一一"),
+        (20, "二〇"),
+        (99, "九九"),
+        (100, "一〇〇"),
+    ],
+)
+def test_ideograph_digital_is_digit_by_digit(count, expected) -> None:
+    """``ideographDigital`` is NOT a counting system: per [MS-DOCX] 1/10/100 are
+    U+4E00 / U+4E00U+3007 / U+4E00U+3007U+3007 (一 / 一〇 / 一〇〇)."""
+    assert _label(_fmt_resolver("ideographDigital", "%1"), count) == expected
+
+
+def test_ideograph_digital_does_not_reuse_the_counting_converter() -> None:
+    """Pins the two families apart, so ideographDigital cannot be "simplified"
+    into the counting table: they only diverge from 10 upward."""
+    assert NumberingResolver._to_ideograph_digital(10) == "一〇"
+    assert NumberingResolver._to_chinese(10) == "十"
+    assert NumberingResolver._to_ideograph_digital(10) != NumberingResolver._to_chinese(
+        10
+    )
+
+
+def test_unknown_format_degrades_to_decimal_but_is_reported() -> None:
+    """An unknown numFmt is a legitimate OOXML value we do not implement, so the
+    label still degrades to decimal — but it is recorded instead of silently
+    producing a plausible-looking wrong label."""
+    warnings: dict = {}
+    r = _fmt_resolver("koreanCounting")
+    r._warnings = warnings
+    assert _label(r, 1) == "（1）"
+    assert r.unsupported_formats == {"koreanCounting"}
+    assert warnings == {"numbering_unsupported_formats": 1}
+    # Re-hitting the same format neither re-warns nor double-counts.
+    assert _label(r, 2) == "（2）"
+    assert warnings == {"numbering_unsupported_formats": 1}
+    # A second unknown format bumps the count to the number of DISTINCT values.
+    r.abstract_nums["10"][0]["numFmt"] = "thaiCounting"
+    assert _label(r, 3) == "（3）"
+    assert r.unsupported_formats == {"koreanCounting", "thaiCounting"}
+    assert warnings == {"numbering_unsupported_formats": 2}
