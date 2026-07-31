@@ -22,7 +22,12 @@ from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from ..utils import safe_log_value
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args, get_env_value
+from .config import (
+    ollama_server_infos,
+    global_args,
+    get_env_value,
+    normalize_api_prefix,
+)
 
 logger = logging.getLogger("lightrag")
 
@@ -766,19 +771,33 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     Or restrict access by binding to loopback only: HOST=127.0.0.1
     """)
 
-    # When authentication IS configured but the server is exposed on a
-    # non-loopback address, warn that the default whitelist still exempts the
+    # When authentication IS configured but the server is reachable from a
+    # network, warn that the default whitelist still exempts the
     # Ollama-compatible /api/* routes (kept open for Ollama-client compatibility).
     # Those routes invoke the LLM and read the knowledge base, so they stay
     # public unless the operator narrows WHITELIST_PATHS (e.g. to /health).
+    #
+    # A configured LIGHTRAG_API_PREFIX counts as reachable regardless of the bind
+    # address: the prefix exists to be served behind a reverse proxy, so the
+    # canonical multi-site deployment (proxy on the public interface, backend on
+    # loopback) is exposed while a loopback-only test on the bind address is not.
+    # The prefix is normalized first, because LIGHTRAG_API_PREFIX=/ means "no
+    # prefix" and must not read as a proxied deployment.
     if args.key or args.auth_accounts:
         loopback_hosts = {"127.0.0.1", "::1", "localhost"}
         ollama_open = whitelist_exposes_api_routes(args.whitelist_paths)
-        if args.host not in loopback_hosts and ollama_open:
+        behind_proxy = bool(normalize_api_prefix(getattr(args, "api_prefix", None)))
+        reachable = args.host not in loopback_hosts or behind_proxy
+        if reachable and ollama_open:
+            where = (
+                f"behind the '{args.api_prefix}' reverse-proxy prefix"
+                if behind_proxy
+                else f"on '{args.host}'"
+            )
             ASCIIColors.yellow("\n⚠️  Security Warning:")
             ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
     /api/* routes (/api/chat, /api/generate, ...) from authentication, so they
-    remain publicly accessible on '{args.host}' even though auth is enabled.
+    remain publicly accessible {where} even though auth is enabled.
     These routes invoke the LLM and read your knowledge base. If you do not need
     open Ollama access, set WHITELIST_PATHS=/health to require authentication.
     """)
