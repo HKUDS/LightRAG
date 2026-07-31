@@ -52,8 +52,12 @@ def _normalize_rerank_result(
     if not 0 <= index < max_index:
         return None, "index out of range"
 
+    score_value = result.get("relevance_score")
+    if isinstance(score_value, bool):
+        return None, "invalid relevance score"
+
     try:
-        score = float(result.get("relevance_score"))
+        score = float(score_value)
     except (TypeError, ValueError, OverflowError):
         return None, "invalid relevance score"
     if not isfinite(score):
