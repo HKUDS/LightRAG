@@ -152,14 +152,25 @@ def aggregate_chunk_scores(
     doc_scores: Dict[int, List[float]] = {i: [] for i in range(num_original_docs)}
 
     for result in chunk_results:
-        chunk_idx = result["index"]
-        score = result["relevance_score"]
+        chunk_idx = result.get("index")
+        score = result.get("relevance_score")
 
-        if 0 <= chunk_idx < len(doc_indices):
+        if (
+            chunk_idx is not None
+            and isinstance(chunk_idx, int)
+            and 0 <= chunk_idx < len(doc_indices)
+        ):
             original_doc_idx = doc_indices[chunk_idx]
-            if 0 <= original_doc_idx < num_original_docs:
-                doc_scores[original_doc_idx].append(score)
-
+            if (
+                isinstance(original_doc_idx, int)
+                and 0 <= original_doc_idx < num_original_docs
+                and score is not None
+            ):
+                try:
+                    score_val = float(score)
+                    doc_scores[original_doc_idx].append(score_val)
+                except (TypeError, ValueError):
+                    pass
     # Aggregate scores
     aggregated_results = []
     for doc_idx, scores in doc_scores.items():
