@@ -650,7 +650,12 @@ class _PipelineMixin:
                 :meth:`LightRAG.ainsert` — should call
                 :func:`resolve_chunk_options` themselves and pass the
                 result here; this function is intentionally chunker-
-                config agnostic.  See
+                config agnostic.  One key is NOT honored from the
+                snapshot: ``semantic_vector.sentence_split_regex`` is
+                re-read live from ``addon_params`` at process time and a
+                snapshot value is discarded (logged at WARNING) — see
+                :func:`lightrag.utils_pipeline.apply_trusted_sentence_split_regex`
+                and GHSA-32jh-39m7-8x84.  See
                 ``docs/FileProcessingConfiguration-zh.md`` for the schema.
             admission_token: the pending-enqueue reservation the caller already
                 holds (endpoints reserve one before reading the request body).
@@ -4831,7 +4836,7 @@ class _PipelineMixin:
                         # by a pre-fix build cannot freeze this worker on resume
                         # (GHSA-32jh-39m7-8x84). See the helper's docstring.
                         v_opts = apply_trusted_sentence_split_regex(
-                            v_opts, self.addon_params
+                            v_opts, self.addon_params, doc_id=doc_id
                         )
                         chunk_opts_str = _format_chunking_params(v_chunk_size, v_opts)
                         logger.info(f"Chunking V: {chunk_opts_str}, doc_id: {doc_id}")
