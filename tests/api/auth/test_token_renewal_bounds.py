@@ -618,3 +618,61 @@ class TestRenewalDecision:
         assert first.headers.get("X-New-Token")
         assert second.headers.get("X-New-Token")
         assert set(utils_api._token_renewal_cache) == {"alice", "bob"}
+
+
+@pytest.mark.offline
+class TestRenewalSkipUnderApiPrefix:
+    """``_TOKEN_RENEWAL_SKIP_PATHS`` is a list of route paths too.
+
+    It shares the path input with the whitelist check, so it shared that bug: the
+    dependency passed ``request.url.path``, which still carries the mount prefix,
+    and under ``LIGHTRAG_API_PREFIX`` no skip entry matched. The frequently-polled
+    endpoints the list exists to protect went back to minting a token on every
+    poll.
+
+    A local app is built here instead of reusing ``_client``: that helper mounts a
+    bare ``FastAPI()`` with only ``GET /documents`` and no ``root_path``, so a
+    request to ``/api/v1/documents/paginated`` would 404 without ever running the
+    dependency -- and an assertion that no ``X-New-Token`` came back would pass
+    for the wrong reason.
+    """
+
+    @staticmethod
+    def _client(monkeypatch, api_prefix: str) -> TestClient:
+        monkeypatch.setattr(utils_api, "auth_configured", False)
+        server = importlib.import_module("lightrag.api.lightrag_server")
+
+        dependency = utils_api.get_combined_auth_dependency(None)
+        app = FastAPI(root_path=api_prefix or None)
+        if api_prefix:
+            app.add_middleware(server._RootPathNormalizationMiddleware)
+
+        # In the skip list, and its sibling that is not.
+        @app.get("/documents/paginated", dependencies=[Depends(dependency)])
+        async def paginated():
+            return {"documents": []}
+
+        @app.get("/documents", dependencies=[Depends(dependency)])
+        async def documents():
+            return {"ok": True}
+
+        return TestClient(app)
+
+    @pytest.mark.parametrize("mode", ["verbatim", "strip"])
+    def test_skip_list_still_applies_under_a_mount_prefix(self, monkeypatch, mode):
+        client = self._client(monkeypatch, "/api/v1")
+        token = _near_expiry_token("guest")
+        prefix = "" if mode == "strip" else "/api/v1"
+
+        skipped = client.get(f"{prefix}/documents/paginated", headers=_bearer(token))
+        renewed = client.get(f"{prefix}/documents", headers=_bearer(token))
+
+        # The route ran: a 404 here would mean the dependency never executed and
+        # the header assertions below would prove nothing.
+        assert skipped.status_code == 200
+        assert renewed.status_code == 200
+
+        assert skipped.headers.get("X-New-Token") is None
+        # Positive control: renewal is genuinely enabled in this app, so the
+        # missing header above is the skip list working, not renewal being off.
+        assert renewed.headers.get("X-New-Token")

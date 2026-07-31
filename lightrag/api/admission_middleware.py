@@ -37,7 +37,7 @@ from fastapi import HTTPException
 from lightrag.utils import logger
 
 from .admission import AdmissionTicket, publish_admission_ticket
-from .utils_api import credentials_accepted, path_is_whitelisted
+from .utils_api import credentials_accepted, get_route_path, path_is_whitelisted
 
 # Ingestion routes that accept a body and create documents. ``/documents/scan``
 # is absent on purpose: it takes no body and is exempt from capacity by design
@@ -163,10 +163,7 @@ class AdmissionMiddleware:
     def _is_admission_path(self, scope: dict[str, Any]) -> bool:
         if scope.get("method") != "POST":
             return False
-        path = scope.get("path") or ""
-        if self._api_prefix and path.startswith(self._api_prefix):
-            path = path[len(self._api_prefix) :] or "/"
-        return path in ADMISSION_PATHS
+        return get_route_path(scope, self._api_prefix) in ADMISSION_PATHS
 
     def _resolve_rag(self) -> Optional[Any]:
         try:
@@ -208,8 +205,9 @@ class AdmissionMiddleware:
 
         ticket: Optional[AdmissionTicket] = None
         if rag is not None and _admission_capacity(rag) > 0:
-            path = scope.get("path") or ""
-            if not path_is_whitelisted(path) and not credentials_accepted(
+            if not path_is_whitelisted(
+                scope, mount_prefix=self._api_prefix
+            ) and not credentials_accepted(
                 token=_bearer_token(scope),
                 api_key_header_value=_header(scope, b"x-api-key"),
                 api_key=self._api_key,
