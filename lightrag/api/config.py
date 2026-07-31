@@ -313,6 +313,30 @@ def get_binding_env_value(env_key: str, default: str) -> str:
     return normalize_binding_name(get_env_value(env_key, default)) or default
 
 
+def normalize_api_prefix(value: str | None) -> str:
+    """Canonicalize an API prefix before handing it to FastAPI's ``root_path``.
+
+    Strips surrounding whitespace, ensures a leading slash, drops a trailing
+    slash, and treats empty/"/" as "no prefix". Raw CLI/env input like
+    ``"site01"`` or ``"/site01/"`` would otherwise feed an invalid form to
+    FastAPI and to the WebUI prefix injection.
+
+    Lives here rather than beside its consumer in ``lightrag_server`` because
+    more than one layer has to answer "is there actually a mount prefix?" --
+    ``create_app`` and the startup security banner -- and they must answer it
+    identically. Reading the raw value instead makes ``LIGHTRAG_API_PREFIX=/``
+    look like a prefixed deployment when it is not.
+    """
+    if value is None:
+        return ""
+    value = value.strip()
+    if not value or value == "/":
+        return ""
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/")
+
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback

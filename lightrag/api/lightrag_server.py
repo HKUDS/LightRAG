@@ -39,6 +39,7 @@ from lightrag.api.utils_api import (
 from lightrag.api.admission_middleware import AdmissionMiddleware
 from .config import (
     global_args,
+    normalize_api_prefix,
     update_uvicorn_mode_config,
     get_default_host,
     resolve_asymmetric_embedding_opt_in,
@@ -396,24 +397,6 @@ def _inject_swagger_theme(html: str, theme: str) -> str:
 # and matches how LightRAG is deployed in practice. See
 # docs/MultiSiteDeployment.md.
 WEBUI_PATH = "/webui"
-
-
-def _normalize_api_prefix(value: str | None) -> str:
-    """Canonicalize an API prefix before handing it to FastAPI's ``root_path``.
-
-    Strips surrounding whitespace, ensures a leading slash, drops a trailing
-    slash, and treats empty/"/" as "no prefix". Raw CLI/env input like
-    ``"site01"`` or ``"/site01/"`` would otherwise feed an invalid form to
-    FastAPI and to the WebUI prefix injection.
-    """
-    if value is None:
-        return ""
-    value = value.strip()
-    if not value or value == "/":
-        return ""
-    if not value.startswith("/"):
-        value = "/" + value
-    return value.rstrip("/")
 
 
 class _RootPathNormalizationMiddleware:
@@ -1414,7 +1397,7 @@ def create_app(args):
 
     # The WebUI mount path is fixed at "/webui" — see
     # docs/MultiSiteDeployment.md for the rationale.
-    api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
+    api_prefix = normalize_api_prefix(getattr(args, "api_prefix", None))
     webui_path = WEBUI_PATH
 
     app_kwargs = {

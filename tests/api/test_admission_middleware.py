@@ -329,6 +329,41 @@ async def test_api_prefix_is_stripped_before_matching():
     assert downstream.calls == 0
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/documents/upload",  # verbatim forwarding
+        "/documents/upload",  # nginx stripped the prefix
+    ],
+)
+async def test_mount_prefix_never_collapses_the_pre_auth_check(monkeypatch, path):
+    """The pre-auth check uses the same matcher as the route, so it inherited the
+    same defect: with the shipped default whitelist and a mount prefix starting
+    with ``/api``, every path matched the bare ``/api`` prefix entry and the
+    unauthenticated request was waved straight through to the body.
+
+    Both forwarding forms are covered because this middleware sits outside
+    ``_RootPathNormalizationMiddleware``: with a proxy that strips the prefix it
+    sees a bare path while ``root_path`` is already set.
+    """
+    monkeypatch.setattr(_utils_api, "auth_configured", True)
+    monkeypatch.setattr(
+        _utils_api, "whitelist_patterns", [("/health", False), ("/api", True)]
+    )
+    rag = await _rag(capacity=10)
+    downstream = _Downstream()
+    recorder = _Recorder()
+
+    scope = _scope(path=path)
+    scope["root_path"] = "/api/v1"
+    await _mw(rag, downstream, api_key="secret")(scope, recorder.receive, recorder.send)
+
+    assert recorder.status == 401
+    assert downstream.calls == 0
+    assert recorder.receives == 0  # refused before the body, as always
+    assert await _tokens(rag) == {}
+
+
 async def test_disabled_capacity_is_a_pure_passthrough():
     rag = await _rag(capacity=0, active=10_000)
     downstream = _Downstream()

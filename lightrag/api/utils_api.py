@@ -5,7 +5,7 @@ Utility functions for the LightRAG API.
 import os
 import argparse
 from collections import OrderedDict
-from typing import Optional, List, Tuple
+from typing import Any, Mapping, Optional, List, Tuple
 import sys
 import time
 import uuid
@@ -22,7 +22,12 @@ from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from ..utils import safe_log_value
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args, get_env_value
+from .config import (
+    ollama_server_infos,
+    global_args,
+    get_env_value,
+    normalize_api_prefix,
+)
 
 logger = logging.getLogger("lightrag")
 
@@ -252,19 +257,78 @@ for path in whitelist_paths:
 auth_configured = bool(auth_handler.accounts)
 
 
-def path_is_whitelisted(path: str) -> bool:
-    """Whether ``WHITELIST_PATHS`` exempts ``path`` from authentication.
+def get_route_path(scope: Mapping[str, Any], mount_prefix: str = "") -> str:
+    """The route path a matcher must compare against: ``scope["path"]`` minus the
+    ASGI mount prefix.
+
+    In canonical ASGI form ``scope["path"]`` *includes* ``root_path``, so a
+    request routed to ``/documents`` on a server mounted at ``/site01`` carries
+    ``path == "/site01/documents"``. Anything comparing against configured route
+    paths (``WHITELIST_PATHS``, ``ADMISSION_PATHS``,
+    ``_TOKEN_RENEWAL_SKIP_PATHS``) must subtract the prefix first, or it compares
+    two different kinds of path.
+
+    ``root_path`` is authoritative when present: ``FastAPI.__call__`` writes it
+    from ``app.root_path`` before the middleware stack runs, so every layer sees
+    it. ``mount_prefix`` is the fallback for callers whose scope was not built by
+    FastAPI (hand-rolled ASGI scopes in tests, for instance).
+
+    The subtraction is deliberately guarded rather than an unconditional slice,
+    because the two callers do not see the same scope shape. The admission
+    middleware runs *outside* ``_RootPathNormalizationMiddleware`` (that ordering
+    is intentional, so CORS can wrap its refusals), so in a proxy-strip
+    deployment it sees a bare ``/documents/upload`` while ``root_path`` is
+    already ``/site01``. An unguarded ``path[len(prefix):]`` would silently
+    mangle that into ``ments``.
+
+    Mirrors ``starlette._utils.get_route_path`` — inlined rather than imported
+    because that module is private — with one documented divergence: an
+    exact-prefix hit returns ``"/"`` where Starlette returns ``""``. Configured
+    paths are always written with a leading slash, so ``"/"`` is the normal form
+    the matchers here expect.
+    """
+    path = scope.get("path") or ""
+    prefix = (scope.get("root_path") or mount_prefix or "").rstrip("/")
+    if not prefix or not path.startswith(prefix):
+        return path
+    remainder = path[len(prefix) :]
+    if not remainder:
+        return "/"
+    if remainder.startswith("/"):
+        return remainder
+    # Mid-segment collision (prefix ``/api`` against path ``/apikeys``): the
+    # prefix is not actually a path-segment prefix here, so nothing is removed.
+    return path
+
+
+def path_is_whitelisted(scope: Mapping[str, Any], *, mount_prefix: str = "") -> bool:
+    """Whether ``WHITELIST_PATHS`` exempts this request from authentication.
 
     Shared so every layer that has to answer "may this request skip auth?" uses
     one matcher: the enforcing route dependency
     (:func:`get_combined_auth_dependency`) and the pure-ASGI admission
     middleware, which must pre-authenticate before reading a request body and
     would otherwise 401 a path the route itself lets through (LR2 §9.3).
+
+    Takes the ASGI scope, not a path string, so the mount-prefix normalization
+    cannot be forgotten at a call site. ``WHITELIST_PATHS`` entries are route
+    paths written without ``LIGHTRAG_API_PREFIX``; matching the raw
+    ``request.url.path`` against them made the shipped default ``/health,/api/*``
+    exempt *every* route as soon as the mount prefix itself started with
+    ``/api`` — the whole API, unauthenticated, including ``DELETE /documents``.
+
+    A ``/*`` entry matches on path-segment boundaries only, so ``/api/*`` exempts
+    ``/api`` and everything under ``/api/`` but not a sibling route that merely
+    starts with those characters (``/graph/*`` must not exempt ``/graphs``). The
+    catch-all ``/*`` compiles to an empty prefix and still matches everything,
+    since every path starts with ``/``.
     """
+    route = get_route_path(scope, mount_prefix)
     for pattern, is_prefix in whitelist_patterns:
-        if (is_prefix and path.startswith(pattern)) or (
-            not is_prefix and path == pattern
-        ):
+        if is_prefix:
+            if route == pattern or route.startswith(pattern + "/"):
+                return True
+        elif route == pattern:
             return True
     return False
 
@@ -345,9 +409,12 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         if api_key_header is None
         else Security(api_key_header),
     ):
-        # 1. Check if path is in whitelist
-        path = request.url.path
-        if path_is_whitelisted(path):
+        # 1. Check if path is in whitelist.
+        # The route path, not request.url.path: the latter still carries the
+        # mount prefix (see get_route_path), and both the whitelist and the
+        # renewal skip list below are written as unprefixed route paths.
+        path = get_route_path(request.scope)
+        if path_is_whitelisted(request.scope):
             return  # Whitelist path, allow access
 
         # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
@@ -704,19 +771,33 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     Or restrict access by binding to loopback only: HOST=127.0.0.1
     """)
 
-    # When authentication IS configured but the server is exposed on a
-    # non-loopback address, warn that the default whitelist still exempts the
+    # When authentication IS configured but the server is reachable from a
+    # network, warn that the default whitelist still exempts the
     # Ollama-compatible /api/* routes (kept open for Ollama-client compatibility).
     # Those routes invoke the LLM and read the knowledge base, so they stay
     # public unless the operator narrows WHITELIST_PATHS (e.g. to /health).
+    #
+    # A configured LIGHTRAG_API_PREFIX counts as reachable regardless of the bind
+    # address: the prefix exists to be served behind a reverse proxy, so the
+    # canonical multi-site deployment (proxy on the public interface, backend on
+    # loopback) is exposed while a loopback-only test on the bind address is not.
+    # The prefix is normalized first, because LIGHTRAG_API_PREFIX=/ means "no
+    # prefix" and must not read as a proxied deployment.
     if args.key or args.auth_accounts:
         loopback_hosts = {"127.0.0.1", "::1", "localhost"}
         ollama_open = whitelist_exposes_api_routes(args.whitelist_paths)
-        if args.host not in loopback_hosts and ollama_open:
+        behind_proxy = bool(normalize_api_prefix(getattr(args, "api_prefix", None)))
+        reachable = args.host not in loopback_hosts or behind_proxy
+        if reachable and ollama_open:
+            where = (
+                f"behind the '{args.api_prefix}' reverse-proxy prefix"
+                if behind_proxy
+                else f"on '{args.host}'"
+            )
             ASCIIColors.yellow("\n⚠️  Security Warning:")
             ASCIIColors.white(f"""    WHITELIST_PATHS ('{args.whitelist_paths}') exempts the Ollama-compatible
     /api/* routes (/api/chat, /api/generate, ...) from authentication, so they
-    remain publicly accessible on '{args.host}' even though auth is enabled.
+    remain publicly accessible {where} even though auth is enabled.
     These routes invoke the LLM and read your knowledge base. If you do not need
     open Ollama access, set WHITELIST_PATHS=/health to require authentication.
     """)

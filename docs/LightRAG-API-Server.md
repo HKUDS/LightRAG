@@ -222,7 +222,7 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 ### Path Prefix and Multi-Site WebUI
 
-Set `LIGHTRAG_API_PREFIX` or `--api-prefix` when one host serves multiple LightRAG instances behind a reverse proxy that strips a site prefix before forwarding to the backend:
+Set `LIGHTRAG_API_PREFIX` or `--api-prefix` when one host serves multiple LightRAG instances behind a reverse proxy. Either forwarding style works: the proxy may strip the site prefix before forwarding to the backend, or forward the request unchanged.
 
 ```bash
 LIGHTRAG_API_PREFIX=/site01
@@ -230,6 +230,8 @@ lightrag-server --port 9621
 ```
 
 The backend passes this value to FastAPI as `root_path` and injects the same runtime prefix into the WebUI. The WebUI is always mounted at `/webui` inside the server, so one frontend build can serve any prefix. See [Single-Server Multi-Site Deployment](./MultiSiteDeployment.md) for full Nginx, Docker, and Kubernetes examples.
+
+> **`WHITELIST_PATHS` is written without the prefix.** Its entries are internal route paths, exactly as the routes are declared. The mount prefix is removed before matching, in both forwarding styles, so with `LIGHTRAG_API_PREFIX=/site01` the shipped default `WHITELIST_PATHS=/health,/api/*` is already correct and exempts `/site01/health` as the browser sees it. Writing the browser-visible form (`WHITELIST_PATHS=/site01/health`) matches nothing and makes those paths require authentication.
 
 ### Launching LightRAG Server with Docker
 
@@ -639,6 +641,8 @@ WHITELIST_PATHS=/health,/api/*
 ```
 
 > Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
+>
+> **Entries are internal route paths, never prefixed.** A `/*` suffix matches on path-segment boundaries, so `/api/*` covers `/api` and everything under `/api/` and nothing else. If `LIGHTRAG_API_PREFIX` is set, do **not** include it here: the prefix is removed before matching, so `WHITELIST_PATHS=/health` exempts `/site01/health` and `WHITELIST_PATHS=/site01/health` exempts nothing. See [Path Prefix and Multi-Site WebUI](#path-prefix-and-multi-site-webui).
 
 The API key is passed using the request header `X-API-Key`. Below is an example of accessing the LightRAG Server via API:
 
