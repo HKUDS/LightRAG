@@ -44,3 +44,43 @@ python -m lightrag.tools.kg_integrity_repair --verbose   # per-doc details
 
 Run it while the server is stopped (or the workspace is otherwise idle):
 the audit reads a moving target if ingestion runs concurrently.
+
+## This tool is now the required remedy, not just a diagnostic
+
+Purge and deletion **fail closed** when a document has no recovery proof.
+Previously, absent anchor rows were read as "this document contributed
+nothing", so graph cleanup was silently skipped while the chunks were deleted
+anyway — which destroyed the provenance chain (`source_id` → `text_chunks` →
+`full_doc_id`) that this tool needs, turning repairable data into permanent
+orphans. So instead, the operation now refuses before deleting anything:
+
+```
+RecoveryAnchorMissingError: Refusing to purge document doc-…: recovery anchor
+row(s) missing or unusable (full_entities, full_relations) …
+```
+
+Over the API this surfaces as **HTTP 409** with no data removed. Retrying
+unchanged will refuse again — run `--apply` first, then retry.
+
+A purge is allowed to proceed when any one of these holds:
+
+| Proof | Meaning |
+| --- | --- |
+| Both anchor rows present | The normal case. Presence is the test, **not** whether the lists are non-empty: a row holding an empty list is a document that extracted no entities, and is a perfectly good proof. |
+| `doc_status.metadata.kg_write_state == pre_graph` | Stamped at enqueue and advanced only once the anchors are durable, so it proves the document never reached its first graph mutation. Staged chunks are cleaned up with no graph access at all. |
+| `doc_status.metadata.kg_purge` past `prepared` | A previous purge attempt got far enough to have deleted the anchors itself. Without this, purge's own last step would make every retry refuse forever. |
+
+Two states therefore need this tool:
+
+- documents ingested **before** #3416 landed the write-ahead anchors;
+- documents written through direct KG paths such as `ainsert_custom_kg`,
+  which are documented as sitting outside the document-level guarantee.
+
+Note that `--apply` reports what it found under `missing_entity_anchors` /
+`missing_relation_anchors` (the diagnosis) and what it rebuilt under
+`repaired_docs` (the action) — the first two are not emptied by a repair.
+
+Anything listed under `orphan_entities` / `orphan_relations` cannot be
+repaired by this tool: its source chunks are already gone, so no owning
+document is determinable. Those need external provenance, a re-ingest, or
+manual deletion.

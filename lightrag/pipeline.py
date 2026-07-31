@@ -5221,7 +5221,7 @@ class _PipelineMixin:
                             total_files=ctx.total_files,
                             file_path=file_path,
                             on_anchors_durable=partial(
-                                self._mark_graph_mutation_started, doc_id
+                                self._mark_graph_mutation_started, doc_id, status_doc
                             ),
                         )
 
@@ -5436,7 +5436,9 @@ class _PipelineMixin:
         status_doc.chunks_list = []
         status_doc.chunks_count = 0
 
-    async def _mark_graph_mutation_started(self, doc_id: str) -> None:
+    async def _mark_graph_mutation_started(
+        self, doc_id: str, status_doc: DocProcessingStatus | None = None
+    ) -> None:
         """Advance ``kg_write_state`` past the point of no return.
 
         Awaited by ``merge_nodes_and_edges`` in the single window where "this
@@ -5449,17 +5451,33 @@ class _PipelineMixin:
         ``graph_mutation_started``, and no path writes ``pre_graph`` back.
         Raising aborts the merge before any mutation, which is the safe
         direction: the anchors are already durable.
+
+        ``status_doc`` is the caller's in-memory snapshot, and updating it is
+        NOT optional bookkeeping: every later transition upsert rebuilds
+        ``metadata`` from that object via ``doc_status_transition_metadata``, so
+        leaving it stale makes the PROCESSED write carry ``pre_graph`` forward
+        and silently revert this marker. A PROCESSED document would then claim
+        it never touched the graph — reinstating exactly the silent-skip the
+        marker exists to prevent.
         """
-        status_doc = await self.doc_status.get_by_id(doc_id)
-        if status_doc is None:
+        stored = await self.doc_status.get_by_id(doc_id)
+        if stored is None:
             return
-        raw_metadata = doc_status_field(status_doc, "metadata", {})
+        raw_metadata = doc_status_field(stored, "metadata", {})
         metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         metadata[KG_WRITE_STATE_METADATA_KEY] = KG_WRITE_STATE_GRAPH_MUTATION_STARTED
         await self.doc_status.update_doc_status_fields(
             doc_id, {"metadata": metadata}, missing_ok=True
         )
         await self._flush_storages([self.doc_status])
+        if status_doc is not None:
+            in_memory = getattr(status_doc, "metadata", None)
+            if isinstance(in_memory, dict):
+                in_memory[KG_WRITE_STATE_METADATA_KEY] = (
+                    KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+                )
+            else:
+                status_doc.metadata = dict(metadata)
 
     # ============================================================
     # doc_status state-machine helpers (shared by all layers)

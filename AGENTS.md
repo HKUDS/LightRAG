@@ -83,6 +83,26 @@ The contract permits **concurrent enqueue + processing**: a freshly-uploaded doc
 
 For the rest — write ordering of `full_docs` vs `doc_status`, the workspace-scoped `enqueue_serialize` lock around dedup-and-upsert, and the `from_scan=True` bypass — see the docstrings on `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` in `lightrag/pipeline.py`.
 
+### Purge recovery contract
+
+The KG is shared across documents, so "what did this document contribute?" can only be answered from the per-document **write-ahead recovery anchors** (`full_entities` / `full_relations`, written and flushed in `merge_nodes_and_edges` Phase 0 *before* the first graph mutation). The reverse lookup — graph `source_id` → `text_chunks` → `full_doc_id` — is not a fallback, because purge deletes those chunks.
+
+`_purge_kg_contributions` therefore **fails closed** (`RecoveryAnchorMissingError`, surfaced as HTTP 409, nothing deleted) unless one of three proofs holds. Treating absent anchors as an empty candidate list was issue #3400's silent-skip defect: graph cleanup was skipped while the chunks went anyway, stranding unattributable entities that `audit_kg_integrity` can only report as unrecoverable orphans.
+
+| Proof | Established by |
+|---|---|
+| `anchors` | Both anchor ROWS present and structurally usable. **Row presence is the test, never list truthiness** — an empty row is a document that extracted no entities, and conflating the two is the original bug. |
+| `pre_graph` | `doc_status.metadata.kg_write_state`. Stamped `pre_graph` at enqueue so every pre-merge failure state inherits it by carry-over; advanced to `graph_mutation_started` only by `merge_nodes_and_edges`' `on_anchors_durable` hook. **Monotonic** — nothing writes it back, because re-stamping `pre_graph` on reprocess would let the resume purge skip and orphan the previous run's contributions. Absent means UNKNOWN (pre-#3416), which fails closed. |
+| `journal` | `doc_status.metadata.kg_purge` at a phase past `prepared`, i.e. a previous attempt got far enough to have deleted the anchors itself. |
+
+Anchor-driven whole-document purge is **journaled and resumable** through four ordered phases — `prepared` → `derived_committed` → `anchors_pending` → `completed` — keyed by an operation id over the document key plus its chunk SET. The journal is *required by* fail-closed rather than an optimisation: purge's last step deletes the anchors, so without it any later failure would make every retry refuse forever. A resumed purge skips exactly the phases already persisted (so it never re-runs the LLM-cache-backed rebuild); an in-flight journal for a different operation is refused (`KGPurgeOperationConflictError`), while a stale `completed` one is ignored as dead bookkeeping.
+
+Both metadata keys are in the `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` **and** `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` whitelists in `lightrag/utils_pipeline.py`; dropping either at a transition or a FAILED→PENDING reset turns a resumable purge into a permanent refusal. Retiring one requires `doc_status_transition_metadata(..., drop=...)` — passing it via `extra` would persist the value, and omitting it lets carry-over restore it.
+
+Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback — is neither journaled nor proof-checked, because its own operation journal already names the complete candidate superset; the primitive reads that journal to union in candidates no anchor row can name yet.
+
+The offline remedy for a document with no proof is `audit_kg_integrity(..., apply=True)` (`lightrag/tools/kg_integrity_repair.py`), which rebuilds the anchors from surviving chunk provenance.
+
 ### Query Modes
 
 - **local**: Context-dependent retrieval focused on specific entities
