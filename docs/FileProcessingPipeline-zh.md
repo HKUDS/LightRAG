@@ -484,7 +484,7 @@ Bundle 缓存 3 个 env：
 
 ### 3.6 解析缓存与强制重解析
 
-`native`、`mineru`、`docling` 三个引擎各自在解析产物旁保留一份原始产物缓存，这样重新解析未变更的文件时不必重复昂贵的工作——一次外部服务往返，或一轮 markdown 外链图片下载。目录布局与失效规则见 §6.3 与 §6.4；配置时需要知道的是：
+`native`、`mineru`、`docling` 三个引擎各自在解析产物旁保留一份原始产物缓存，这样重新解析未变更的文件时不必重复昂贵的工作——一次外部服务往返，或一轮 markdown 外链图片下载。目录布局与失效规则见 §6.3；配置时需要知道的是：
 
 | 引擎 | 缓存目录 | 内容 | 强制重解析 |
 | --- | --- | --- | --- |
@@ -725,93 +725,68 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 - 扫描或解析过程中发现内容 hash 重复时，该输入文件同样会移动到 `__parsed__`；本次 `doc_status` 保留为 `FAILED duplicate` 以便追踪。
 - 移动文件只作用于当前输入文件，不会覆盖或移动既有文档源文件。若目标目录已存在同名文件，系统会自动追加 `_001`、`_002` 等编号，例如 `report.pdf` 会依次归档为 `report_001.pdf`、`report_002.pdf`。若分析结果目录名已被普通文件占用，也会追加编号，例如 `report.docx.parsed_001/`。
 
-### 6.3 MinerU 原始产物目录 `<base>.mineru_raw/`
+### 6.3 原始产物包（`<base>.*_raw/`）
 
-`mineru` 引擎在解析过程中会把 MinerU 服务返回的完整产物（`content_list.json` + 可选的 `full.md` / `middle.json` / `layout.pdf` / `images/` 等）落到 `__parsed__/<规范文件名>.mineru_raw/` 目录下，并写入 `_manifest.json` 作为完整性校验文件。
+有三个引擎会在 `<规范文件名>.parsed/` 旁保留一份原始产物包，使得重新解析未变更的文件时不必重复该引擎那一步昂贵的工作。三者遵循同一套设计：产物目录里存放原始产物，外加一个 `_manifest.json`，它同时充当原子成功标记与缓存键。
 
-设计目的：
+| 产物包 | 由谁写出 | 避免的昂贵步骤 | 内容 |
+| --- | --- | --- | --- |
+| `<base>.native_raw/` | `native`（markdown / textpack 路径） | 下载并栅格化外部 `http(s)` 图片 | 每张缓存图片一个文件，名为 `sha256(url)[:16]`，存放栅格化之后的字节 |
+| `<base>.mineru_raw/` | `mineru` | 与 MinerU 服务的上传 / 轮询 / 下载往返 | `content_list.json`，以及可选的 `full.md` / `middle.json` / `layout.pdf` / `images/` |
+| `<base>.docling_raw/` | `docling` | 与 docling-serve 的上传 / 轮询 / 下载往返 | `<base>.json`（DoclingDocument，含 `pages[].image` base64）、供人工查看的 `<base>.md`、以及被 `pictures[*].image.uri` 引用的 `artifacts/image_*.png` |
 
-- **避免重复上传**。再次解析同一文件时，先用源文件的内容 hash + 文件大小校验 `_manifest.json`，命中即跳过 MinerU 服务调用，直接从本地 `content_list.json` 走 adapter → SidecarWriter 流程。
-- **保留诊断信息**。MinerU 解析出错或者下游 sidecar 字段异常时，可以直接到 `*.mineru_raw/` 比对原始 content_list 与图片资源。
-- **支持对象溯源**。MinerU 生成的 `drawings.json` / `tables.json` / `equations.json` 会在 `self_ref` 中保存 `content_list.json#/N`，用于回查对应的 MinerU 原始对象及其 `page_idx` / `bbox` 等定位信息。
-- **上传文件名去 hint**。源文件名包含 `[mineru-...]` / `[-iet]` 等处理 hint 时，调用 MinerU API 使用去 hint 后的规范文件名，避免 MinerU 返回的 raw bundle 内部文件名携带 hint。
+产物包是 `.parsed/` 的**兄弟目录**而非子目录，因此能在每次重新抽取前的目录清空中存活下来。
 
-生命周期：
+设计目标：
 
-| 操作 | 行为 |
-|---|---|
-| 首次解析 | 下载所有产物 → 原子写入 `_manifest.json`。 |
-| 重复解析（cache 命中） | 不调用 MinerU 服务；不重写产物；走 adapter+Writer 重生成 sidecar（适用于 adapter 升级场景）。 |
-| 重复解析（cache miss） | 清空目录内所有文件后重新下载并写入 manifest。 |
-| `DELETE /documents` 且 `delete_file=True` | `*.parsed/` 与 `*.mineru_raw/` 与原始文件一并删除。 |
-| `DELETE /documents` 且 `delete_file=False` | 保留所有产物，仅删 doc_status 与 KG 数据。 |
-| `clear_documents` / `__parsed__` 整体清理 | 自然一并清除。 |
-| scan 周期 | 不主动 GC 孤儿 `*.mineru_raw/`（用户显式删除时才清，避免误删调试现场）。 |
+- **避免重复那一步昂贵的工作。** 重新解析时先用源文件的 hash 与大小校验 `_manifest.json`；命中则完全跳过网络工作，直接把已存产物送进 adapter 与 sidecar writer。
+- **保留诊断材料。** 当引擎解析有误、或下游 sidecar 字段异常时，产物包就是与"引擎实际返回了什么"对照的地方。
+- **支持对象溯源**（外部引擎）。由 MinerU 产出的 `drawings.json` / `tables.json` / `equations.json` 会在 `self_ref` 里记录 `content_list.json#/N`，可据此回查对应的 MinerU 原始对象及其 `page_idx` / `bbox`。
+- **上传文件名去 hint**（MinerU）。当源文件名带有 `[mineru-...]` / `[-iet]` 之类处理 hint 时，调用 MinerU API 使用的是规范化后的文件名，避免带 hint 的文件名出现在返回的产物包里。
 
-强制重新解析（绕过 cache）：设置 `LIGHTRAG_FORCE_REPARSE_MINERU=true`。
-
-并发安全：LightRAG 强制要求同一 workspace 下 `canonical_basename` 唯一（上传/入队时返回 HTTP 409），加上流水线对单个文档的串行化处理，因此 `*.mineru_raw/` 不会出现并发写入冲突，无需额外锁。
-
-`_manifest.json` 失效条件（任一触发即 cache miss）：
-
-- 源文件大小或 sha256 与 manifest 记录不符；
-- `MINERU_ENGINE_VERSION` 环境变量与 manifest 记录的 `engine_version` 都非空且不一致；
-- 当前 `MINERU_API_MODE` 与 manifest 记录的 `api_mode` 都非空且不一致；
-- 当前 mode 对应 endpoint（`MINERU_OFFICIAL_ENDPOINT` / `MINERU_LOCAL_ENDPOINT`）与 manifest 记录的 `endpoint_signature` 都非空且不一致；
-- `content_list.json` 大小或 sha256 与 manifest 不符；
-- 任一记录的非关键文件（图片、`middle.json` 等）大小与 manifest 不符。
-
-> 关于 `engine_version` / `endpoint_signature` 的"任一侧为空即跳过"语义：当 manifest 写入时该字段为空（例如首次解析时未配置 `MINERU_ENGINE_VERSION`），或当前环境变量未设置时，该项不参与失效判断。如果首次解析时未设置版本环境变量，事后再补上并不会自动让历史缓存失效——这类场景需要手动设置 `LIGHTRAG_FORCE_REPARSE_MINERU=true` 触发重新解析。
-
-### 6.4 Docling 原始产物目录 `<base>.docling_raw/`
-
-`docling` 引擎在解析过程中会把 docling-serve 返回的 zip 产物（DoclingDocument JSON、Markdown 和引用图片）解压到 `__parsed__/<规范文件名>.docling_raw/` 目录下，并写入 `_manifest.json` 作为完整性校验文件。IR builder 在二次解析时会读取该目录的 `.json` 文件喂给 `DoclingIRBuilder`，不再走 docling-serve 服务。
-
-目录布局：
+Docling 产物包目录结构：
 
 ```text
 __parsed__/<base>.docling_raw/
 ├── _manifest.json
 ├── <base>.json        # DoclingDocument JSON（含 pages[].image base64）
-├── <base>.md          # Markdown 形态，供人工检查
+├── <base>.md          # Markdown 形式，供人工查看
 └── artifacts/
-    └── image_*.png    # pictures[*].image.uri 指向的图片资源
+    └── image_*.png    # 被 pictures[*].image.uri 引用的图片资源
 ```
 
-设计目的：
-
-- **避免重复上传/转换**。再次解析同一文件时，先用源文件 hash + 文件大小校验 `_manifest.json`，命中即跳过对 docling-serve 的上传 / 轮询 / 下载，直接从本地 `.json` 走 DoclingIRBuilder → SidecarWriter 流程。
-- **保留诊断信息**。docling-serve 解析出错或下游 sidecar 字段异常时，可以直接到 `*.docling_raw/` 比对原始 DoclingDocument JSON、Markdown 与 `artifacts/` 图片。
-
-生命周期：
+生命周期，三个产物包完全一致：
 
 | 操作 | 行为 |
 |---|---|
-| 首次解析 | `POST /v1/convert/file/async` 上传 → 长轮询 `/v1/status/poll/{task_id}?wait=N` → `GET /v1/result/{task_id}` 下载 zip → 安全解压（拒绝绝对路径与 `..`）→ 原子写入 `_manifest.json`。 |
-| 重复解析（cache 命中） | 不调用 docling-serve；不重写产物；走 adapter+Writer 重生成 sidecar（适用于 adapter 升级场景）。 |
-| 重复解析（cache miss） | 清空目录内所有文件后重新上传 / 下载 / 写入 manifest。 |
-| `DELETE /documents` 且 `delete_file=True` | `*.parsed/` 与 `*.docling_raw/` 与原始文件一并删除。 |
-| `DELETE /documents` 且 `delete_file=False` | 保留所有产物，仅删 doc_status 与 KG 数据。 |
-| `clear_documents` / `__parsed__` 整体清理 | 自然一并清除。 |
-| scan 周期 | 不主动 GC 孤儿 `*.docling_raw/`（用户显式删除时才清，避免误删调试现场）。 |
+| 首次解析 | 取回产物，然后原子写入 `_manifest.json`。docling 的取回过程是 `POST /v1/convert/file/async` → 长轮询 `/v1/status/poll/{task_id}?wait=N` → `GET /v1/result/{task_id}` → 安全解压 zip（拒绝绝对路径与 `..`）。 |
+| 重新解析（缓存命中） | 不调用外部服务，不重写产物；仅重跑 adapter + writer 重新生成 sidecar（这正是 adapter 升级代价很低的原因）。 |
+| 重新解析（缓存未命中） | 清空目录，重新取回并写 manifest。 |
+| `DELETE /documents` 且 `delete_file=True` | `*.parsed/`、原始产物包、源文件一并删除。 |
+| `DELETE /documents` 且 `delete_file=False` | 保留全部产物，仅删除 doc_status 与 KG 数据。 |
+| `clear_documents` / 整体清空 `__parsed__` | 随之一并清除。 |
+| scan 周期 | **不会**回收孤立的产物包——只有用户显式删除时才移除，避免误扫掉调试现场。 |
 
-强制重新解析（绕过 cache）：设置 `LIGHTRAG_FORCE_REPARSE_DOCLING=true`。
+强制重解析（完全绕过缓存）：`LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING`（§3.6）。
 
-并发安全：与 MinerU 路径一致 —— LightRAG 强制要求同一 workspace 下 `canonical_basename` 唯一（上传 / 入队时返回 HTTP 409），加上流水线对单个文档的串行化处理，因此 `*.docling_raw/` 不会出现并发写入冲突，无需额外锁。
+并发安全：LightRAG 强制同一 workspace 内 `canonical_basename` 唯一（upload / enqueue 时返回 HTTP 409），加上流水线对每个文档的串行处理，任何产物包都不会被并发写入，无需额外加锁。
 
-`_manifest.json` 失效条件（任一触发即 cache miss）：
+#### manifest 失效条件
 
-- 源文件大小或 sha256 与 manifest 记录不符；
-- `DOCLING_ENDPOINT` 与 manifest 记录的 `endpoint_signature` 不一致；
-- `DOCLING_ENGINE_VERSION` 设置且与 manifest 记录的 `engine_version` 不一致；
-- `options_signature` 不一致 —— 任一 OCR / 公式 / pipeline 字段变化都会触发，覆盖范围包括：
-  - 可调 env：`DOCLING_DO_OCR` / `DOCLING_FORCE_OCR` / `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` / `DOCLING_OCR_LANG` / `DOCLING_DO_FORMULA_ENRICHMENT`；
-  - 固化常量：`pipeline` / `target_type` / `to_formats` / `image_export_mode`（写入 signature 是为了防止未来值变更后老 bundle 被误复用）；
-- 主 JSON 缺失、大小或 sha256 不一致；
-- `artifacts/` 内任一图片缺失或大小不一致；
-- `LIGHTRAG_FORCE_REPARSE_DOCLING=true`。
+以下任一项不匹配即缓存未命中。三个产物包共有的：
 
-> `engine_version` / `endpoint_signature` 的"任一侧为空即跳过"语义与 MinerU §6.3 一致：manifest 写入时该字段为空（首次未配置 `DOCLING_ENGINE_VERSION`）或当前环境变量未设置时，该项不参与失效判断；事后补上版本号不会自动让历史缓存失效，需要 `LIGHTRAG_FORCE_REPARSE_DOCLING=true` 触发。
+- 源文件大小或 sha256 与 manifest 不符；
+- 记录在案的产物缺失，或其大小 / sha256 与 manifest 不符。
+
+在此之上各引擎特有的条件：
+
+| 引擎 | 额外的失效条件 |
+| --- | --- |
+| `native` | 下载参数签名变化——即 §3.3 的大小 / SVG 像素 / CIDR 相关选项 |
+| `mineru` | `MINERU_ENGINE_VERSION` 与记录的 `engine_version` 不一致；`MINERU_API_MODE` 与记录的 `api_mode` 不一致；当前模式对应的端点（`MINERU_OFFICIAL_ENDPOINT` / `MINERU_LOCAL_ENDPOINT`）与记录的 `endpoint_signature` 不一致；`content_list.json` 大小或 sha256 不符；任一记录在案的非关键文件（图片、`middle.json` 等）大小不符 |
+| `docling` | `DOCLING_ENDPOINT` 与记录的 `endpoint_signature` 不一致；已设置 `DOCLING_ENGINE_VERSION` 且与记录的 `engine_version` 不一致；`options_signature` 不一致——它既覆盖可调环境变量（`DOCLING_DO_OCR` / `DOCLING_FORCE_OCR` / `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` / `DOCLING_OCR_LANG` / `DOCLING_DO_FORMULA_ENRICHMENT`），**也**覆盖硬编码常量 `pipeline` / `target_type` / `to_formats` / `image_export_mode`，把它们写进签名是为了将来改动这些值时不会悄悄复用旧产物包；主 JSON 缺失或大小 / sha256 不符；`artifacts/` 中任一图片缺失或大小不符 |
+
+> **"任一侧为空即跳过"** 适用于两个外部引擎的 `engine_version` 与 `endpoint_signature`。若写 manifest 时该字段为空（例如首次解析时未配置 `MINERU_ENGINE_VERSION`），或当前环境变量未设置，则跳过该项检查。因此，在产物包已经存在**之后**才设置版本号变量，并不会追溯性地让它失效——这种情况需要用对应的 `LIGHTRAG_FORCE_REPARSE_*` 标志。
 
 ## 7. 文档重复判定规则
 
@@ -1116,7 +1091,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 所有接口都返回 `503` | `recovery_required` 栅栏已升起（§8.7） | 按该节给出的恢复顺序处理 |
 | `/documents/scan` 返回 `scanning_skipped_pipeline_busy` | 流水线正忙或正在扫描、有上传在途、或有手动重试排队中（§8.2） | 等待空闲；`POST /documents/reprocess_failed` 是卡住的重试请求的一键恢复 |
 | 改了引擎或选项，输出却没变 | 引擎与 `process_options` 在入队时就冻结进 doc_status 记录。自动续跑与 `/documents/reprocess_failed` 都沿用存量值；改 `LIGHTRAG_PARSER` 或 hint 只对新上传生效（§9.3） | 删除该文档（勾选"同时删除文件"）后重新上传 |
-| 修好了外部引擎的服务配置，它却一直返回旧结果 | 命中了原始产物包缓存（§6.3、§6.4） | 打开对应的 `LIGHTRAG_FORCE_REPARSE_*`（§3.6），或删除文档时勾选"同时删除文件" |
+| 修好了外部引擎的服务配置，它却一直返回旧结果 | 命中了原始产物包缓存（§6.3） | 打开对应的 `LIGHTRAG_FORCE_REPARSE_*`（§3.6），或删除文档时勾选"同时删除文件" |
 | 扫描版 PDF 报 "extracted no usable text" | `legacy` 读不了没有文本层的 PDF（§3.2） | 改路由到开启 OCR 的 `mineru` 或 `docling` |
 | MinerU 拒绝多段页码范围 | 多段范围只有 `official` 模式支持，`local` 只接受单页或一个简单区间（§2.7） | `local` 下改用单个区间，或切换模式 |
 | 启动时报缺少 spaCy 模型 | `DOCX_SMART_HEADING=true` 或规则里带 `native(smart_heading=true)` 触发了启动期快速失败检查（§3.3） | 执行 `lightrag-download-cache --spacy --spacy-install`，或改用已内置模型的主 Docker 镜像 |
@@ -1229,7 +1204,7 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 | native docx smart_heading | `DOCX_SMART_HEADING`、`DOCX_SMART_*` 调优项 | §3.3 与 `env.example` 的 smart_heading 注释块 |
 | MinerU | `MINERU_*` | §3.4 |
 | Docling | `DOCLING_*` | §3.5 |
-| 解析缓存 | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`、`{MINERU,DOCLING}_ENGINE_VERSION` | §3.6、§6.3、§6.4 |
+| 解析缓存 | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`、`{MINERU,DOCLING}_ENGINE_VERSION` | §3.6、§6.3 |
 | 目录 | `INPUT_DIR`、`WORKING_DIR`、`SCAN_SPOOL_DIR` | §6、§7.1 |
 | 并发 | `MAX_PARALLEL_*`、`QUEUE_SIZE_*` | §8.9 |
 | 准入与限制 | `MAX_UPLOAD_SIZE`、`MAX_REQUEST_BODY_BYTES`、`MAX_TEXTS_PER_REQUEST`、`MAX_PENDING_DOCUMENTS`、`PIPELINE_*`、`MAX_UNACKED_MANUAL_RETRIES`、`SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |
