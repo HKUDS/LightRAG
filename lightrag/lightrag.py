@@ -4192,8 +4192,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     f"Document {doc_id} carries a KG purge journal for a different "
                     f"operation (journal={journal_operation_id!r}, "
                     f"requested={operation_id!r}); the document's chunk set changed "
-                    f"since that purge started. Resolve with "
-                    f"audit_kg_integrity(..., apply=True) before retrying.",
+                    f"since that purge started. Retry the operation that wrote the "
+                    f"journal (its chunk set is unchanged, so its purge resumes), "
+                    f"or resolve with audit_kg_integrity(..., apply=True) before "
+                    f"retrying this one.",
                     doc_id=doc_id,
                     journal_operation_id=(
                         journal_operation_id
