@@ -470,6 +470,113 @@ async def test_no_chunks_with_empty_anchors_cleans_up_the_stub():
 
 
 # --------------------------------------------------------------------------
+# Proof: nothing attribution-bearing would be deleted
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_scope_needs_no_proof():
+    """No chunks and no populated anchors: nothing to prove.
+
+    Fail-closed exists to stop a purge destroying the chunk rows and anchor
+    rows that are the only record of what a document contributed. An operation
+    that removes neither cannot strand anything, whatever the document's
+    history — so a legacy row enqueued before ``kg_write_state`` existed, still
+    holding no chunks, deletes without a scan or an audit.
+    """
+    graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1"])})
+    rag = _make_rag(
+        graph=graph,
+        full_entities=_KV({}),
+        full_relations=_KV({}),
+        doc_status=_DocStatus({DOC: _status_row()}),  # no marker, no journal
+    )
+
+    await _purge(rag, [])
+
+    # Nothing was destroyed, and the unrelated graph node is untouched.
+    assert graph.reads == []
+    assert graph.removed_nodes == []
+    assert rag.chunks_vdb.deleted == []
+    assert rag.text_chunks.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_empty_scope_does_not_extend_to_a_document_with_chunks():
+    """The moment there are chunks to delete, the proof is required again.
+
+    This is the original defect's exact shape: chunks would go while the graph
+    was skipped, destroying the provenance that makes the survivors
+    attributable.
+    """
+    rag = _make_rag(
+        graph=_Graph(nodes={"ALICE": _node("ALICE", ["c1"])}),
+        full_entities=_KV({}),
+        full_relations=_KV({}),
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
+    )
+
+    with pytest.raises(RecoveryAnchorMissingError):
+        await _purge(rag, ["c1"])
+
+    _assert_nothing_deleted(rag)
+
+
+@pytest.mark.asyncio
+async def test_empty_scope_does_not_extend_to_a_populated_surviving_anchor():
+    """One anchor row missing, the other naming objects, and no chunks.
+
+    Deleting the surviving row would destroy the only record of what those
+    objects belong to, so this is a destructive operation and still needs a
+    proof — the empty-scope reasoning does not reach it.
+    """
+    rag = _make_rag(
+        graph=_Graph(nodes={"ALICE": _node("ALICE", ["c1"])}),
+        full_entities=_KV({DOC: {"entity_names": ["ALICE"], "count": 1}}),
+        full_relations=_KV({}),  # missing
+    )
+
+    with pytest.raises(RecoveryAnchorMissingError) as excinfo:
+        await _purge(rag, [])
+
+    assert excinfo.value.missing_namespaces == ("full_relations",)
+    _assert_nothing_deleted(rag)
+
+
+@pytest.mark.asyncio
+async def test_a_false_pre_graph_marker_would_reproduce_the_original_defect():
+    """Why ``kg_write_state`` must never be inferred from observable state.
+
+    ``pre_graph`` asserts "this document never touched the graph", which
+    licenses deleting its chunks while skipping the graph entirely. That is
+    sound only because the marker is written ONCE, at enqueue, when it is
+    necessarily true — never derived from a document that already has history.
+
+    This test pins what an inferred marker would cost: a backfill keying off a
+    momentarily-empty ``chunks_list`` would stamp a document that does own
+    graph objects, and the stamp is durable, so the damage lands later when the
+    chunks reappear. The empty-scope proof above is safe precisely because it
+    is re-evaluated against live state on every call and grants nothing beyond
+    it.
+    """
+    graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1"])})
+    rag = _make_rag(
+        graph=graph,
+        full_entities=_KV({}),
+        full_relations=_KV({}),
+        entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
+        doc_status=_DocStatus({DOC: _status_row(write_state=KG_WRITE_STATE_PRE_GRAPH)}),
+    )
+
+    await _purge(rag, ["c1"])
+
+    # Chunks gone, entity still there: an orphan nothing can attribute.
+    assert rag.chunks_vdb.deleted == ["c1"]
+    assert graph.removed_nodes == []
+    assert graph.nodes["ALICE"] is not None
+
+
+# --------------------------------------------------------------------------
 # Explicit candidates bypass the proof entirely
 # --------------------------------------------------------------------------
 

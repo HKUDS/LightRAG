@@ -62,13 +62,18 @@ row(s) missing or unusable (full_entities, full_relations) …
 Over the API this surfaces as **HTTP 409** with no data removed. Retrying
 unchanged will refuse again — run `--apply` first, then retry.
 
-A purge is allowed to proceed when any one of these holds:
+The rule is narrower than "every purge needs a proof". What must never happen
+is deleting something that *carries* attribution — a chunk row, or an anchor
+row that names objects — while leaving those objects in the graph. A purge that
+removes no such carrier cannot strand anything, so it needs no proof. Otherwise
+one of these must hold:
 
 | Proof | Meaning |
 | --- | --- |
 | Both anchor rows present | The normal case. Presence is the test, **not** whether the lists are non-empty: a row holding an empty list is a document that extracted no entities, and is a perfectly good proof. |
 | `doc_status.metadata.kg_write_state == pre_graph` | Stamped at enqueue and advanced only once the anchors are durable, so it proves the document never reached its first graph mutation. Staged chunks are cleaned up with no graph access at all. |
 | `doc_status.metadata.kg_purge` past `prepared` | A previous purge attempt got far enough to have deleted the anchors itself. Without this, purge's own last step would make every retry refuse forever. |
+| No chunks and no populated anchor row | Nothing that carries attribution would be deleted. This is what lets a document that was queued before the `kg_write_state` marker existed, and never processed, be deleted directly — no scan, no audit. |
 
 Three states therefore need this tool:
 

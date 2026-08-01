@@ -500,6 +500,41 @@ async def test_reprocess_refuses_when_anchors_lost(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "legacy", [False, True], ids=["with_marker", "legacy_no_marker"]
+)
+async def test_pending_document_deletes_directly_without_a_scan(tmp_path, legacy):
+    """Deleting a queued document must not require a scan, an audit, or a run.
+
+    A new PENDING row carries ``kg_write_state=pre_graph`` from enqueue. One
+    that was already queued when this change was deployed has no marker at all,
+    and is covered instead by the empty-scope rule: with no chunks and no
+    populated anchors, the delete removes nothing that carries attribution, so
+    there is no damage for a proof to guard against.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = compute_mdhash_id("p.txt", prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            "pending body", ids=[doc_id], file_paths=["p.txt"]
+        )
+        if legacy:
+            await _strip_write_state(rag, doc_id)
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["status"] == DocStatus.PENDING
+        assert not row.get("chunks_list")
+
+        result = await rag.adelete_by_doc_id(doc_id)
+
+        assert result.status == "success", result.message
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_skip_kg_document_deletes_without_anchors(tmp_path):
     """``skip_kg`` produces a document with legitimately NO anchor rows.
 

@@ -254,7 +254,7 @@ class _PurgeRecoveryProof:
     to raise with.
     """
 
-    proof_kind: Literal["anchors", "pre_graph", "journal"] | None
+    proof_kind: Literal["anchors", "pre_graph", "journal", "empty_scope"] | None
     operation_id: str
     journal_phase: str | None = None
     write_state: str | None = None
@@ -4270,6 +4270,43 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 patch_candidate_relations=patch_relations,
             )
 
+        # Nothing that CARRIES attribution would be deleted, so there is no
+        # damage for a proof to guard against. Fail-closed exists to stop a
+        # purge from destroying the chunk rows and anchor rows that are the
+        # only record of what a document contributed; an operation that
+        # removes neither cannot strand anything, whatever the document's
+        # history. Reached only when at least one anchor row is absent (the
+        # both-present case returned above), so this covers exactly the
+        # documents no proof can be produced for: a legacy row enqueued before
+        # ``kg_write_state`` existed, still holding no chunks.
+        #
+        # Deliberately NOT generalised into a persisted marker. A stored
+        # ``pre_graph`` says "this document never touched the graph", which
+        # licenses deleting its chunks while skipping the graph — so inferring
+        # one from observable state would turn a transient inconsistency (a
+        # chunks_list that is momentarily empty) into a durable licence to
+        # reproduce issue #3400 the moment the chunks reappear. This decision
+        # is re-evaluated against live state on every call and grants nothing
+        # beyond the call, which is why it is safe where a backfill is not.
+        if (
+            not chunk_ids
+            and not (
+                isinstance(entities_row, dict) and entities_row.get("entity_names")
+            )
+            and not (
+                isinstance(relations_row, dict) and relations_row.get("relation_pairs")
+            )
+        ):
+            return _PurgeRecoveryProof(
+                proof_kind="empty_scope",
+                operation_id=operation_id,
+                journal_phase=journal_phase,
+                write_state=write_state,
+                missing_namespaces=tuple(missing_namespaces),
+                patch_candidate_entities=patch_entities,
+                patch_candidate_relations=patch_relations,
+            )
+
         return _PurgeRecoveryProof(
             proof_kind=None,
             operation_id=operation_id,
@@ -4521,6 +4558,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         if proof.patch_candidate_entities
                         else " only"
                     )
+                )
+                candidate_entities = []
+                candidate_relations = []
+            elif proof.proof_kind == "empty_scope":
+                # Nothing attribution-bearing is being deleted (no chunks, no
+                # anchor row that names anything), so there is nothing for the
+                # derived pass to do and no reason to read the graph.
+                logger.info(
+                    f"[purge] {doc_id}: no chunks and no populated recovery "
+                    f"anchors, so nothing that carries attribution would be "
+                    f"deleted; removing the empty record"
                 )
                 candidate_entities = []
                 candidate_relations = []
