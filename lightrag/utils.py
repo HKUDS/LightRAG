@@ -667,10 +667,25 @@ class EmbeddingFunc:
         if args and isinstance(args[0], (list, tuple)):
             expected_vectors = len(args[0])
             if actual_vectors != expected_vectors:
-                raise ValueError(
-                    f"Vector count mismatch: "
-                    f"expected {expected_vectors} vectors but got {actual_vectors} vectors (from embedding result)."
-                )
+                # Handle vector count doubling from multimodal/mineru pipelines
+                if actual_vectors == 2 * expected_vectors:
+                    logger.warning(
+                        f"Vector count doubling detected "
+                        f"({actual_vectors} vs {expected_vectors}). "
+                        f"Slicing result to match input."
+                    )
+                    # Reshape if it's a 2D array, slice to expected count
+                    if len(result.shape) > 1:
+                        result = result[:expected_vectors]
+                    else:
+                        new_size = expected_vectors * expected_dim
+                        result = result[:new_size]
+                else:
+                    raise ValueError(
+                        f"Vector count mismatch: "
+                        f"expected {expected_vectors} vectors but got "
+                        f"{actual_vectors} vectors (from embedding result)."
+                    )
 
         return result
 
