@@ -918,9 +918,7 @@ async def test_unreadable_doc_status_aborts_merge_before_mutation(tmp_path):
         # Aborted BEFORE the first mutation: nothing reached the graph.
         assert await rag.chunk_entity_relation_graph.get_node("ALICE") is None
         # The stored marker still tells the truth about that.
-        assert (
-            row["metadata"][KG_WRITE_STATE_METADATA_KEY] == KG_WRITE_STATE_PRE_GRAPH
-        )
+        assert row["metadata"][KG_WRITE_STATE_METADATA_KEY] == KG_WRITE_STATE_PRE_GRAPH
         # And the anchors were already durable when the merge aborted.
         assert await rag.full_entities.get_by_id(doc_id) is not None
     finally:

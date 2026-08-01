@@ -515,9 +515,7 @@ async def require_doc_status_record(
     """
     strict = getattr(doc_status, "supports_strict_point_reads", False)
     record = await (
-        doc_status.get_by_id_strict(doc_id)
-        if strict
-        else doc_status.get_by_id(doc_id)
+        doc_status.get_by_id_strict(doc_id) if strict else doc_status.get_by_id(doc_id)
     )
     if record is None:
         raise StorageRecordNotFoundError(
