@@ -376,7 +376,7 @@ Internally the implementation also uses temporary fields like `paragraphs`, `con
 | `CHUNK_P_OVERLAP_SIZE` | Unset (inherits `CHUNK_OVERLAP_SIZE`) | P-specific overlap; affects only long-body fallback within one content line and the table bridge budget, and does **not** make table row-level slices overlap each other |
 | `CHUNK_OVERLAP_SIZE` / `LightRAG(chunk_overlap_token_size=…)` | `100` | Global fallback when no P-specific overlap is set |
 
-For config syntax, the precedence chain, runtime overrides via `addon_params["chunker"]`, etc., see [FileProcessingConfiguration-zh.md](FileProcessingConfiguration-zh.md) §3.
+For config syntax, the precedence chain, runtime overrides via `addon_params["chunker"]`, etc., see [FileProcessingPipeline.md](./FileProcessingPipeline.md).
 
 `P` is a chunking option orthogonal to the engine (`suffix:engine-options`) and can combine with any sidecar-producing engine. A typical `LIGHTRAG_PARSER` setup enabling P:
 

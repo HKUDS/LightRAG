@@ -661,7 +661,7 @@ class _PipelineMixin:
                 snapshot value is discarded (logged at WARNING) — see
                 :func:`lightrag.utils_pipeline.apply_trusted_sentence_split_regex`
                 and GHSA-32jh-39m7-8x84.  See
-                ``docs/FileProcessingConfiguration-zh.md`` for the schema.
+                ``docs/FileProcessingPipeline.md`` for the schema.
             admission_token: the pending-enqueue reservation the caller already
                 holds (endpoints reserve one before reading the request body).
                 With ``MAX_PENDING_DOCUMENTS > 0`` the admission guard

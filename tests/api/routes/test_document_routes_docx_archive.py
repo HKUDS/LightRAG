@@ -3068,7 +3068,7 @@ async def test_parse_native_archives_docx_after_full_docs_sync(tmp_path, monkeyp
     assert (parsed_artifact_dir / "parsed-after-sync.blocks.jsonl").is_file()
     assert rag.full_docs.data["doc-test"]["parse_engine"] == "native"
     assert rag.full_docs.data["doc-test"]["parse_format"] == "lightrag"
-    # Per docs/FileProcessingConfiguration-zh.md, content uses the {{LRdoc}}
+    # Per docs/FileProcessingPipeline.md, content uses the {{LRdoc}}
     # marker plus a leading-text summary derived from merged blocks.
     assert rag.full_docs.data["doc-test"]["content"].startswith("{{LRdoc}}")
 

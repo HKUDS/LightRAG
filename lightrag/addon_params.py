@@ -33,7 +33,7 @@ def _emit_deprecated_addon_warnings(params: Mapping[str, Any]) -> None:
             logger.warning(
                 f"addon_params['{key}'] is deprecated and ignored; per-document "
                 f"behaviour is now controlled by filename-hint process_options "
-                f"(see docs/FileProcessingConfiguration-zh.md)."
+                f"(see docs/FileProcessingPipeline.md)."
             )
             _warned_deprecated_keys.add(key)
 

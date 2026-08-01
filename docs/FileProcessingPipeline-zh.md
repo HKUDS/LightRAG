@@ -8,7 +8,7 @@
 
 LightRAG Server引入了一个文件处理的中间格式： `LightRAG Document` 。该格式支持表格和图片等多模态数据，同时包含文章的章节段落元数据，方便日后进行内容溯源。
 
-本文以 **LightRAG Server** 的部署与使用视角组织：先给出快速开始可直接套用的配置，再展开内容抽取与分块的配置语法、存储 / 目录布局、去重、并发以及续跑规则。直接通过 Python 代码调用 `LightRAG` 类的开发者请翻到[第八章 Python SDK 调用](#八、Python SDK 调用)。
+本文以 **LightRAG Server** 的部署与使用视角组织：先给出快速开始可直接套用的配置，再展开内容抽取与分块的配置语法、存储 / 目录布局、去重、并发以及续跑规则。直接通过 Python 代码调用 `LightRAG` 类的开发者请翻到[第八章 Python SDK 调用](#八python-sdk-调用)。
 
 ## 一、快速开始
 
@@ -981,7 +981,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
           └─ parse_queues[<第三方组>] ─► [自定义并发池]  ──┘   ← 按 ParserSpec.queue_group 动态创建
 ```
 
-解析队列**按注册表的 `ParserSpec.queue_group` 动态创建**（每批取一次注册表快照）：内置 native/mineru/docling 各占一组，legacy 共享 native 池（本地、无网络），第三方引擎可声明独立组与自定义并发数（见 `docs/ThirdPartyParser-zh.md`）。入队时 `resolve_stored_document_parser_engine` 根据每个文档的 `parser_engine`（来自 `LIGHTRAG_PARSER` 默认值或文件 hint）把它放入对应解析队列；各解析队列**完全互不阻塞**——mineru 占满不会拖慢 docling 或 native。解析完成后统一进入 `q_analyze`（多模态分析），再进入 `q_process`（实体/关系抽取 + 入库）。
+解析队列**按注册表的 `ParserSpec.queue_group` 动态创建**（每批取一次注册表快照）：内置 native/mineru/docling 各占一组，legacy 共享 native 池（本地、无网络），第三方引擎可声明独立组与自定义并发数（见 [ThirdPartyParser-zh.md](./ThirdPartyParser-zh.md)）。入队时 `resolve_stored_document_parser_engine` 根据每个文档的 `parser_engine`（来自 `LIGHTRAG_PARSER` 默认值或文件 hint）把它放入对应解析队列；各解析队列**完全互不阻塞**——mineru 占满不会拖慢 docling 或 native。解析完成后统一进入 `q_analyze`（多模态分析），再进入 `q_process`（实体/关系抽取 + 入库）。
 
 | 环境变量 | 默认值 | 作用 | 调优建议 |
 | --- | --- | --- | --- |
@@ -1115,5 +1115,23 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 
 旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与 §五 / §六 的规则相冲突，已整段移除。替代路径：
 
-- 自动续跑：scan 按 §6.4 的分类规则处理同名文件（归档 / 续跑 / 删 stub 后重入队），由 §七 续跑规则在处理循环里统一接管。
+- 自动续跑：scan 按 §5.1 的分类规则处理同名文件（归档 / 续跑 / 删 stub 后重入队），由 §七 续跑规则在处理循环里统一接管。
 - 强制刷新：先调 `/documents/{doc_id}` 删旧文档，再上传同名新文件。
+
+## 附录 A：从旧版升级的注意事项
+
+### A.1 多模态全局开关已被文件级选项取代
+
+`addon_params["enable_multimodal_pipeline"]` 已废弃。多模态分析现在按文档、通过 `i` / `t` / `e` 处理选项选择（§2.5），既可在 `LIGHTRAG_PARSER` 中作为规则默认值设置（§2.2），也可通过文件名 hint 指定（§2.3）。不再存在"全部分析"式的全局开关，因为一篇文档实际含有哪些模态由解析引擎决定、以 sidecar 是否存在来表达，而不是由配置决定。
+
+迁移方式：把原来的全局开关换成路由规则上对应的字母，例如 `LIGHTRAG_PARSER=*:native-iteP,*:legacy-R`。注意 `VLM_PROCESS_ENABLE` 是一个正交的独立开关：它只闸控**图片**分析（表格与公式由 `EXTRACT` 角色分析）；若启用了 `i` 而 VLM 不可用，通过前置过滤的图片会让该文档失败，而不是被跳过。
+
+升级前已入库的文档，其 `process_options` 在入队时就已冻结在 `doc_status` 记录里；改规则或改 hint 都不会追溯修改它们。要让已有文档按新选项重跑，只能删除后重新上传（§7.3）。
+
+### A.2 不主动开启则行为不变
+
+不配置 `LIGHTRAG_PARSER` 时，所有扩展名仍然走 `legacy` 内容抽取器与旧的分块行为，与升级前完全一致。新引擎与新分块策略都是 opt-in 的；§一 给出了三套可直接套用的预设。
+
+### A.3 已移除的 SDK 入参
+
+`apipeline_enqueue_documents(reprocess_existing_non_processed=...)` 已移除，替代路径见 §8.6。

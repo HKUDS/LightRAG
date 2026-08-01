@@ -260,7 +260,7 @@ FULL_DOCS_FORMAT_PENDING_PARSE = (
     "pending_parse"  # file saved but not yet parsed; parse_native will read from disk
 )
 # Marker prefix for full_docs.content when format=lightrag.
-# Per docs/FileProcessingConfiguration-zh.md, the content is "{{LRdoc}}" + a
+# Per docs/FileProcessingPipeline.md, the content is "{{LRdoc}}" + a
 # leading summary of the parsed document so paginated APIs can show a real
 # preview without loading the full LightRAG Document file.
 LIGHTRAG_DOC_CONTENT_PREFIX = "{{LRdoc}}"
@@ -344,7 +344,7 @@ PARSED_ARTIFACT_DIR_SUFFIXES: tuple[str, ...] = (
 )
 
 # Per-file processing options carried by filename hints / LIGHTRAG_PARSER rules.
-# See docs/FileProcessingConfiguration-zh.md for the full specification.
+# See docs/FileProcessingPipeline.md for the full specification.
 PROCESS_OPTION_IMAGES = "i"  # Enable VLM analysis for drawings/images
 PROCESS_OPTION_TABLES = "t"  # Enable VLM analysis for tables
 PROCESS_OPTION_EQUATIONS = "e"  # Enable VLM analysis for equations

@@ -3258,7 +3258,7 @@ def test_parse_mineru_to_lightrag_document(tmp_path, monkeypatch):
 
         full_doc = await rag.full_docs.get_by_id("doc-1")
         assert full_doc["parse_format"] == "lightrag"
-        # Per docs/FileProcessingConfiguration-zh.md spec, ``content`` is now
+        # Per docs/FileProcessingPipeline.md spec, ``content`` is now
         # ``{{LRdoc}}`` followed by a leading-text summary of the document.
         assert full_doc["content"].startswith("{{LRdoc}}")
         assert full_doc["sidecar_location"].startswith("file://")

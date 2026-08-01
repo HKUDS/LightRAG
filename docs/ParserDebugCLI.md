@@ -101,7 +101,7 @@ The `mineru` / `docling` engines call external services when the **cache misses*
 - **MinerU**: `MINERU_API_MODE` (`local` / `official`), `MINERU_API_TOKEN`, `MINERU_LOCAL_ENDPOINT` or `MINERU_OFFICIAL_ENDPOINT`, optional `MINERU_ENGINE_VERSION` / `MINERU_MODEL_VERSION` / `MINERU_POLL_INTERVAL_SECONDS` / `MINERU_MAX_POLLS`.
 - **Docling**: `DOCLING_ENDPOINT`, optional `DOCLING_ENGINE_VERSION` / `DOCLING_DO_OCR` / `DOCLING_FORCE_OCR` / `DOCLING_OCR_ENGINE` / `DOCLING_OCR_PRESET` / `DOCLING_OCR_LANG` / `DOCLING_DO_FORMULA_ENRICHMENT` / `DOCLING_POLL_INTERVAL_SECONDS` / `DOCLING_MAX_POLLS`.
 
-See [FileProcessingConfiguration.md](./FileProcessingConfiguration.md) for details.
+See [FileProcessingPipeline.md](./FileProcessingPipeline.md) for details.
 
 When the **cache is hit** (the raw directory already exists and is non-empty, and `--force-reparse` is not passed), no external service environment variables are needed — this can be used to offline-reproduce parsing output.
 

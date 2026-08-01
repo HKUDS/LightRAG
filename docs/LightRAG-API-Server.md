@@ -824,10 +824,9 @@ For cross-provider rules, provider-specific options such as `QUERY_OPENAI_LLM_RE
 
 ### Multimodal Analysis Configuration
 
-The parser can produce sidecars for drawings/images, tables, and equations. VLM analysis only runs when both conditions are true:
+The parser can produce sidecars for drawings/images, tables, and equations. Analysis of a modality requires the document's `process_options` to contain the matching flag — `i` for images, `t` for tables, `e` for equations — and the corresponding sidecar to exist.
 
-- The document's `process_options` contains the matching modality flag: `i` for images, `t` for tables, or `e` for equations.
-- `VLM_PROCESS_ENABLE=true` and the effective VLM binding supports image input.
+`VLM_PROCESS_ENABLE` gates **images only**. Tables and equations are analyzed by the `EXTRACT` role and run regardless of this switch, so `*:native-teP` works without any VLM configured. With `i` enabled and the VLM unavailable, an image that survives the pre-filters (file present, raster format, both sides at least `VLM_MIN_IMAGE_PIXEL`) **fails the document** rather than being skipped — it lands in `FAILED` with `error_msg` "VLM analysis required but VLM role is not available".
 
 Current vision-capable providers are `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`; `lollms` is rejected for VLM use. Typical configuration:
 

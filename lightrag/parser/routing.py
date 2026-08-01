@@ -647,7 +647,7 @@ def _parse_chunk_param_texts(
 def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:
     """Decompose a bracket-hint inner string into ``(engine, options)``.
 
-    Format rules (see docs/FileProcessingPipeline-zh.md):
+    Format rules (see docs/FileProcessingPipeline.md):
         - ``ENGINE-OPTIONS``: first ``-``-separated segment is the engine
           candidate; the remainder is the options string.
         - ``ENGINE``: matches a supported engine name as a whole.

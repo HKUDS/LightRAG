@@ -758,9 +758,13 @@ def parse_args() -> argparse.Namespace:
                     f"but required env vars are missing: {', '.join(missing)}"
                 )
 
-    # VLM multimodal master switch — when off, the pipeline emits a warning
-    # and skips every i/t/e item without touching the VLM. When on, the
-    # effective VLM binding must support image inputs.
+    # VLM multimodal master switch. It gates IMAGE (`i`) analysis only —
+    # table and equation items are analyzed by the EXTRACT role and ignore
+    # it. When off, a document carrying `i` does not skip its images: the
+    # first one that survives _analyze_drawing's pre-filters raises and the
+    # document lands in FAILED. When on, the effective VLM binding must
+    # accept image inputs; lollms is the only binding this server offers
+    # whose complete_if_cache rejects image_inputs outright.
     args.vlm_process_enable = get_env_value("VLM_PROCESS_ENABLE", False, bool)
     if args.vlm_process_enable:
         effective_vlm_binding = (
