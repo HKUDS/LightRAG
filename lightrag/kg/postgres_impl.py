@@ -8597,15 +8597,22 @@ class PGGraphStorage(BaseGraphStorage):
             if result.get("properties"):
                 node_dict = result["properties"]
 
-                # Process string result, parse it to JSON dictionary
+                # Process string result, parse it to JSON dictionary.
+                # Complete-or-raise: enumeration feeds whole-graph consumers
+                # (storage migration, VDB rebuild, KG integrity audit) that
+                # treat the result as the full graph. Silently dropping an
+                # unparsable node would let the audit certify its owning
+                # document as contribution-free — a false recovery proof.
                 if isinstance(node_dict, str):
                     try:
                         node_dict = json.loads(node_dict)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"[{self.workspace}] Failed to parse node string: {node_dict}"
-                        )
-                        continue
+                    except json.JSONDecodeError as e:
+                        raise PGGraphQueryException(
+                            {
+                                "message": f"Corrupt node properties in graph {self.graph_name}: {e}",
+                                "details": node_dict[:200],
+                            }
+                        ) from e
 
                 # Add node id (entity_id) to the dictionary for easier access
                 node_dict["id"] = node_dict.get("entity_id")
@@ -8638,15 +8645,21 @@ class PGGraphStorage(BaseGraphStorage):
         for result in results:
             edge_properties = result["properties"]
 
-            # Process string result, parse it to JSON dictionary
+            # Process string result, parse it to JSON dictionary.
+            # Complete-or-raise, same as get_all_nodes: blanking the
+            # properties would keep the edge row but silently drop its
+            # source_id attribution, which whole-graph consumers (KG
+            # integrity audit) rely on to attribute the edge to a document.
             if isinstance(edge_properties, str):
                 try:
                     edge_properties = json.loads(edge_properties)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"[{self.workspace}] Failed to parse edge properties string: {edge_properties}"
-                    )
-                    edge_properties = {}
+                except json.JSONDecodeError as e:
+                    raise PGGraphQueryException(
+                        {
+                            "message": f"Corrupt edge properties in graph {self.graph_name}: {e}",
+                            "details": edge_properties[:200],
+                        }
+                    ) from e
 
             edge_properties["source"] = result["source"]
             edge_properties["target"] = result["target"]
