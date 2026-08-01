@@ -134,6 +134,7 @@ from lightrag.utils_pipeline import (
     doc_status_metadata_has_attempt_fields,
     doc_status_reset_metadata,
     read_source_file_basename,
+    require_doc_status_record,
     resolve_existing_doc_source,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
@@ -5458,16 +5459,25 @@ class _PipelineMixin:
         and silently revert this marker. A PROCESSED document would then claim
         it never touched the graph — reinstating exactly the silent-skip the
         marker exists to prevent.
+
+        Raises when the row cannot be read (strict where the backend supports
+        it), has vanished, or the update fails. The document is mid-merge
+        under the pipeline reservation, so the row is guaranteed to exist —
+        an unreadable row is the read failing, not the document being gone.
+        Returning silently instead would let the merge proceed with the
+        stored marker still ``pre_graph``: the graph gets written, and if the
+        anchors are later lost, that stale marker is a false proof licensing
+        a purge to skip graph cleanup — the exact defect of issue #3400.
         """
-        stored = await self.doc_status.get_by_id(doc_id)
-        if stored is None:
-            return
+        stored = await require_doc_status_record(
+            self.doc_status, doc_id, purpose="advance kg_write_state"
+        )
         raw_metadata = doc_status_field(stored, "metadata", {})
         metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         metadata[KG_WRITE_STATE_METADATA_KEY] = KG_WRITE_STATE_GRAPH_MUTATION_STARTED
-        await self.doc_status.update_doc_status_fields(
-            doc_id, {"metadata": metadata}, missing_ok=True
-        )
+        # missing_ok=False: the row vanishing between the read above and this
+        # write must abort the merge too, not silently skip the marker.
+        await self.doc_status.update_doc_status_fields(doc_id, {"metadata": metadata})
         await self._flush_storages([self.doc_status])
         if status_doc is not None:
             in_memory = getattr(status_doc, "metadata", None)

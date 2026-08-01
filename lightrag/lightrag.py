@@ -156,6 +156,7 @@ from lightrag.utils_pipeline import (
     make_custom_chunk_operation_id,
     make_kg_purge_operation_id,
     normalize_document_file_path,
+    require_doc_status_record,
 )
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.exceptions import (
@@ -3890,9 +3891,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         snapshot would silently clobber that journal, which is precisely what
         keeps the retry from being refused for missing recovery anchors
         (issue #3400).
+
+        For the same reason the re-read must never silently fall back to that
+        snapshot. Strict where the backend supports it, so a read failure
+        raises (every caller wraps this in its own try/except and settles for
+        logging). A ``None`` — confirmed absent under strict reads, ambiguous
+        otherwise — skips the write entirely: rebuilding ``metadata`` from the
+        pre-deletion snapshot when the row is actually alive (a masked read
+        failure) would erase the journal, and an unrecorded retry state is
+        recoverable while a clobbered journal is a permanent 409. Retry-state
+        metadata is diagnostics; the journal is load-bearing.
         """
-        current = await self.doc_status.get_by_id(doc_id)
-        base_record = current if isinstance(current, dict) else doc_status_data
+        strict_reads = getattr(self.doc_status, "supports_strict_point_reads", False)
+        current = await (
+            self.doc_status.get_by_id_strict(doc_id)
+            if strict_reads
+            else self.doc_status.get_by_id(doc_id)
+        )
+        if not isinstance(current, dict):
+            logger.warning(
+                "Skipping deletion retry-state write for document %s: its "
+                "doc_status row is %s",
+                doc_id,
+                "confirmed absent" if strict_reads else "absent or unreadable",
+            )
+            return doc_status_data
+        base_record = current
         metadata = base_record.get("metadata", {})
         if not isinstance(metadata, dict):
             metadata = {}
@@ -4161,7 +4185,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         failure DOES propagate: an unknown state must not be read as an absent
         journal (that would re-run a purge whose anchors are already gone).
         """
-        status_doc = await self.doc_status.get_by_id(doc_id)
+        # Strict-where-supported, honoring the docstring's "a read failure
+        # DOES propagate": a plain get_by_id may present backend trouble as
+        # None, which would silently discard an in-flight journal — the one
+        # record distinguishing "anchors legitimately deleted" from "never
+        # written". A None from the strict read is CONFIRMED absence, which
+        # stays a legal input: every derived proof reads as unknown and the
+        # resolution below fails closed with the actionable 409.
+        strict_status_reads = getattr(
+            self.doc_status, "supports_strict_point_reads", False
+        )
+        status_doc = await (
+            self.doc_status.get_by_id_strict(doc_id)
+            if strict_status_reads
+            else self.doc_status.get_by_id(doc_id)
+        )
         journal = doc_status_kg_purge_journal(status_doc)
         write_state = doc_status_kg_write_state(status_doc)
         operation_id = make_kg_purge_operation_id(doc_id, chunk_ids)
@@ -4382,17 +4420,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Flushed before returning: a journal that is only in memory proves
         nothing about what is already deleted on disk.
+
+        Raises when the row cannot be read (strict where the backend supports
+        it) or has vanished. Every call site runs while the row is guaranteed
+        to exist — ``adelete_by_doc_id`` read it before starting, and the
+        caller's finalization (which deletes it) comes only after the purge —
+        so an unreadable row must abort the purge rather than skip the
+        journal: a destructive purge that runs unjournaled loses the only
+        record that lets a retry survive its own anchor deletion (step 8), and
+        the failure mode it creates — anchors gone, journal absent — is a
+        permanent fail-closed refusal.
         """
-        status_doc = await self.doc_status.get_by_id(doc_id)
-        if status_doc is None:
-            # No doc_status row: nothing to journal against, and the caller's
-            # finalization (which deletes that row) is what the journal exists
-            # to protect. Purge remains correct — it just cannot resume.
-            logger.warning(
-                f"[purge] {doc_id}: no doc_status record; skipping purge journal "
-                f"phase '{phase}' (this purge will not be resumable)"
-            )
-            return
+        status_doc = await require_doc_status_record(
+            self.doc_status, doc_id, purpose=f"journal purge phase '{phase}'"
+        )
         metadata = doc_status_field(status_doc, "metadata", {})
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
         metadata[KG_PURGE_METADATA_KEY] = {
@@ -4402,9 +4443,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             "chunk_count": chunk_count,
             "updated_at": int(time.time()),
         }
-        await self.doc_status.update_doc_status_fields(
-            doc_id, {"metadata": metadata}, missing_ok=True
-        )
+        # missing_ok=False: the row vanishing between the read above and this
+        # write is the same unjournaled-purge hazard, not a tolerable race.
+        await self.doc_status.update_doc_status_fields(doc_id, {"metadata": metadata})
         await self._flush_storages([self.doc_status])
 
     async def _clear_kg_purge_journal(
@@ -4433,17 +4474,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         merged start demanding anchors it will never have (a false refusal that
         leaves it neither reprocessable nor deletable), while clearing it would
         discard the proof a still-pre-graph document depends on.
+
+        Raises when the row cannot be read or has vanished, same as
+        :py:meth:`_write_kg_purge_phase`: the one caller runs mid-pipeline
+        with the row guaranteed present, and skipping silently would leave
+        the stored ``chunks_list`` pointing at chunks the purge just deleted.
         """
-        status_doc = await self.doc_status.get_by_id(doc_id)
-        if status_doc is None:
-            return
+        status_doc = await require_doc_status_record(
+            self.doc_status, doc_id, purpose="retire the purge journal"
+        )
         metadata = doc_status_field(status_doc, "metadata", {})
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
         metadata.pop(KG_PURGE_METADATA_KEY, None)
         fields: dict[str, Any] = {"metadata": metadata}
         if extra_fields:
             fields.update(extra_fields)
-        await self.doc_status.update_doc_status_fields(doc_id, fields, missing_ok=True)
+        await self.doc_status.update_doc_status_fields(doc_id, fields)
         await self._flush_storages([self.doc_status])
 
     async def _purge_kg_contributions(

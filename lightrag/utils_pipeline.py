@@ -39,7 +39,7 @@ from lightrag.constants import (
     PARSER_ENGINE_NATIVE,
 )
 from lightrag import pipeline_metrics
-from lightrag.exceptions import StorageCapabilityError
+from lightrag.exceptions import StorageCapabilityError, StorageRecordNotFoundError
 from lightrag.parser.routing import (
     canonicalize_parser_hinted_basename,
     default_chunker_config,
@@ -489,6 +489,43 @@ def doc_status_kg_purge_journal(status_doc: Any) -> dict[str, Any] | None:
         return None
     journal = raw_metadata.get(KG_PURGE_METADATA_KEY)
     return journal if isinstance(journal, dict) else None
+
+
+async def require_doc_status_record(
+    doc_status: Any, doc_id: str, *, purpose: str
+) -> dict[str, Any]:
+    """Point-read a doc_status row that a load-bearing metadata write needs.
+
+    For writers of KG recovery state (``kg_write_state``, ``kg_purge``): they
+    read the row only to rebuild the opaque ``metadata`` blob around the key
+    they change, and every one of them runs while the row is guaranteed to
+    exist (mid-merge under the pipeline reservation, mid-purge before the
+    caller's finalization). ``None`` is therefore never a state to proceed
+    past — it is the read failing to prove the state the write depends on.
+
+    Strict where the backend supports it, so a transport/index failure raises
+    with its real cause instead of masquerading as an absent row (a plain
+    ``get_by_id`` may treat backend trouble as a best-effort miss). Whatever
+    the read path, ``None`` raises ``StorageRecordNotFoundError``: proceeding
+    silently is how the marker stays ``pre_graph`` while the graph is written,
+    or how a destructive purge runs unjournaled — both of which manufacture
+    exactly the unprovable states issue #3400's fail-closed contract exists to
+    prevent. Callers abort instead: an aborted merge (anchors already durable)
+    or an aborted purge (nothing deleted yet) is always the safe direction.
+    """
+    strict = getattr(doc_status, "supports_strict_point_reads", False)
+    record = await (
+        doc_status.get_by_id_strict(doc_id)
+        if strict
+        else doc_status.get_by_id(doc_id)
+    )
+    if record is None:
+        raise StorageRecordNotFoundError(
+            f"doc_status record for {doc_id} is "
+            f"{'confirmed absent' if strict else 'absent or unreadable'} "
+            f"while trying to {purpose}; refusing to proceed without it"
+        )
+    return record
 
 
 def doc_status_metadata_carry_over(status_doc: Any) -> dict[str, Any]:

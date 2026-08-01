@@ -880,3 +880,151 @@ async def test_anchorless_certification_reads_doc_status_strictly(tmp_path):
             await audit_kg_integrity(rag)
     finally:
         await rag.finalize_storages()
+
+
+def _returns_none(*_args, **_kwargs):
+    async def _none(*_a, **_k):
+        return None
+
+    return _none
+
+
+@pytest.mark.asyncio
+async def test_unreadable_doc_status_aborts_merge_before_mutation(tmp_path):
+    """A masked doc_status read must abort the merge, not skip the marker.
+
+    Some backends can present backend trouble as ``None`` on a plain point
+    read (OpenSearch reads a not-ready index as a best-effort miss). If the
+    ``kg_write_state`` writer treats that as "nothing to update" and returns,
+    the merge proceeds and writes the graph while the STORED marker still
+    says ``pre_graph`` — a false proof that later licenses a purge to skip
+    graph cleanup if the anchors are lost (the exact #3400 defect). The safe
+    direction is to abort: the anchors are already durable at that point.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        rag.doc_status.get_by_id_strict = _returns_none()
+
+        doc_id = compute_mdhash_id("d.txt", prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            "alice works at acme", ids=[doc_id], file_paths=["d.txt"]
+        )
+        await rag.apipeline_process_enqueue_documents()
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        status = row.get("status")
+        status_text = status.value if isinstance(status, DocStatus) else str(status)
+        assert status_text == DocStatus.FAILED.value, row
+        # Aborted BEFORE the first mutation: nothing reached the graph.
+        assert await rag.chunk_entity_relation_graph.get_node("ALICE") is None
+        # The stored marker still tells the truth about that.
+        assert (
+            row["metadata"][KG_WRITE_STATE_METADATA_KEY] == KG_WRITE_STATE_PRE_GRAPH
+        )
+        # And the anchors were already durable when the merge aborted.
+        assert await rag.full_entities.get_by_id(doc_id) is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_purge_read_failure_refuses_before_deleting_anything(tmp_path):
+    """A doc_status read error during purge must propagate, not delete on.
+
+    The proof resolution promises that a read failure propagates; on a
+    backend with strict point reads a transport error must therefore surface
+    as a refused deletion with nothing removed — never as "no journal, no
+    write state" silently resolved from a failed read.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest(rag)
+        chunks = (await rag.doc_status.get_by_id(doc_id))["chunks_list"]
+
+        async def broken(*_a, **_k):
+            raise RuntimeError("simulated doc_status transport error")
+
+        rag.doc_status.get_by_id_strict = broken
+
+        result = await rag.adelete_by_doc_id(doc_id)
+
+        assert result.status == "fail"
+        assert await rag.text_chunks.get_by_id(chunks[0]) is not None
+        assert await rag.chunk_entity_relation_graph.get_node("ALICE") is not None
+        assert await rag.full_entities.get_by_id(doc_id) is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_unjournalable_purge_refuses_before_deleting_anything(tmp_path):
+    """If the journal cannot be anchored to the row, the purge must not run.
+
+    A ``None`` that slips past the proof resolution (confirmed-absent is a
+    legal input there) must still stop the purge at the journal write: a
+    destructive purge that runs unjournaled loses the one record that lets a
+    retry survive its own anchor deletion, stranding the document in a
+    permanent missing-anchor refusal.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest(rag)
+        chunks = (await rag.doc_status.get_by_id(doc_id))["chunks_list"]
+
+        rag.doc_status.get_by_id_strict = _returns_none()
+
+        result = await rag.adelete_by_doc_id(doc_id)
+
+        assert result.status == "fail"
+        # The refusal happened before the first destructive write.
+        assert await rag.text_chunks.get_by_id(chunks[0]) is not None
+        assert await rag.chunk_entity_relation_graph.get_node("ALICE") is not None
+        assert await rag.full_entities.get_by_id(doc_id) is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_retry_state_write_never_clobbers_the_journal(tmp_path):
+    """An unreadable re-read must skip the retry-state write, not fall back.
+
+    The caller's snapshot predates the purge, so rebuilding ``metadata`` from
+    it when the fresh read comes back ``None`` (a masked read failure on the
+    OpenSearch-style best-effort path) erases the purge journal the row has
+    since acquired — turning a retryable half-done purge into a permanent
+    missing-anchor 409. Retry-state metadata is diagnostics and may go
+    unrecorded; the journal is load-bearing and may not be lost.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest(rag)
+
+        # Snapshot taken BEFORE the journal exists (what adelete holds).
+        snapshot = dict(await rag.doc_status.get_by_id(doc_id))
+
+        journal = {"operation_id": "purge-test", "phase": "anchors_pending"}
+        row = await rag.doc_status.get_by_id(doc_id)
+        await rag.doc_status.update_doc_status_fields(
+            doc_id,
+            {"metadata": {**row["metadata"], KG_PURGE_METADATA_KEY: journal}},
+        )
+
+        # Both read paths go dark; the native field update still works.
+        rag.doc_status.get_by_id = _returns_none()
+        rag.doc_status.get_by_id_strict = _returns_none()
+
+        returned = await rag._update_delete_retry_state(
+            doc_id,
+            snapshot,
+            deletion_stage="delete_llm_cache",
+            doc_llm_cache_ids=[],
+            error_message="boom",
+            failed=True,
+        )
+
+        del rag.doc_status.get_by_id, rag.doc_status.get_by_id_strict
+        stored = await rag.doc_status.get_by_id(doc_id)
+        assert stored["metadata"][KG_PURGE_METADATA_KEY] == journal
+        assert returned is snapshot
+    finally:
+        await rag.finalize_storages()
