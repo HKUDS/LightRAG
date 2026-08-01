@@ -474,6 +474,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 | ドキュメント | 内容 |
 |---|---|
 | [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) 🇨🇳 | パイプライン仕様：`LIGHTRAG_PARSER` のルーティング規則、エンジン別パラメータ、マルチモーダル解析、ドキュメント状態のライフサイクル |
+| [ParserServiceDeployment.md](./docs/ParserServiceDeployment.md) 🇨🇳 | 外部解析サービス MinerU / docling-serve の自前ホスティング（Docker、GPU、モデル重み） |
 | [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) 🇨🇳 | `Paragraph semantic (P)` チャンク戦略：見出し／段落／表の境界に合わせた分割、参考文献の除外 |
 | [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) 🇨🇳 | マルチモーダル対応パーサーエンジンが必ず出力すべき sidecar（`*.parsed/`）交換フォーマットの仕様 |
 | [ThirdPartyParser.md](./docs/ThirdPartyParser.md) 🇨🇳 | 独自パーサーエンジンの開発と登録 |

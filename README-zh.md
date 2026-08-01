@@ -474,6 +474,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 | 文档 | 内容 |
 |---|---|
 | [FileProcessingPipeline-zh.md](./docs/FileProcessingPipeline-zh.md) | 流水线规格说明：`LIGHTRAG_PARSER` 路由规则、各引擎参数、多模态分析、文档状态生命周期 |
+| [ParserServiceDeployment-zh.md](./docs/ParserServiceDeployment-zh.md) | 自行搭建 MinerU 与 docling-serve 外部解析服务（Docker、GPU、模型权重） |
 | [ParagraphSemanticChunking-zh.md](./docs/ParagraphSemanticChunking-zh.md) | `Paragraph semantic (P)` 分块策略：对齐标题/段落/表格边界、参考文献丢弃 |
 | [LightRAGSidecarFormat-zh.md](./docs/LightRAGSidecarFormat-zh.md) | sidecar（`*.parsed/`）交换格式规范，所有支持多模态的解析引擎都必须遵循 |
 | [ThirdPartyParser-zh.md](./docs/ThirdPartyParser-zh.md) | 开发并注册自定义 parser 引擎 |
