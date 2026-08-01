@@ -494,7 +494,7 @@ This enables LightRAG to recognize equations in documents via the local docling-
 
 ### 2.5 File Processing Options
 
-Processing options control the behavior of a single file with respect to multimodal analysis, knowledge graph construction, and text chunking. All options are optional; defaults are shown in the table below. At most one chunking method (F/R/V/P) is specified per file; the other options can be combined arbitrarily.
+Processing options control, on a per-file basis, the behavior with respect to multimodal analysis, knowledge graph construction, and text chunking. They can be set as per-rule defaults in `LIGHTRAG_PARSER` (see [§2.2](#22-default-rules-lightrag_parser)) or overridden for an individual file via a filename hint (see [§2.3](#23-single-file-override-filename-hints)). All options are optional; defaults are shown in the table below. At most one chunking method (F/R/V/P) is specified per file; the other options can be combined arbitrarily.
 
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
