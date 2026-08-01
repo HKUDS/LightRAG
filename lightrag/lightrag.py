@@ -1225,11 +1225,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
         if self.summary_context_size > self.max_total_tokens:
             logger.warning(
-                f"summary_context_size({self.summary_context_size}) should no greater than max_total_tokens({self.max_total_tokens})"
+                f"summary_context_size({self.summary_context_size}) should not be greater than max_total_tokens({self.max_total_tokens})"
             )
         if self.summary_length_recommended > self.summary_max_tokens:
             logger.warning(
-                f"max_total_tokens({self.summary_max_tokens}) should greater than summary_length_recommended({self.summary_length_recommended})"
+                f"summary_max_tokens({self.summary_max_tokens}) should be greater than summary_length_recommended({self.summary_length_recommended})"
             )
 
         if self.rerank_model_func is not None:
