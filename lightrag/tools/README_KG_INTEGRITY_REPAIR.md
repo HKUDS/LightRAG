@@ -102,6 +102,28 @@ Absence is only ever concluded from the completed scan. A document that does
 own graph objects is repaired with its real names instead; blanking it would
 manufacture a false proof and license the exact deletion this work prevents.
 
+### What the certification assumes of the storage backends
+
+"Proven empty" is only as strong as the enumeration it is concluded from, so
+both reads are held to a complete-or-raise contract and the audit **fails
+loudly instead of certifying on a partial view**:
+
+- the `doc_status` enumeration uses `strict=True`, so a transport or
+  deserialization failure raises rather than silently narrowing the set of
+  documents being certified;
+- the graph scan relies on `get_all_nodes()` / `get_all_edges()` never
+  silently truncating. All shipped graph backends satisfy this (errors
+  propagate; there is no result cap). Corrupt AGE properties raise a
+  `PGGraphQueryException` rather than dropping the node or blanking the
+  edge's `source_id` — a dropped node is an attribution the scan never sees,
+  which is exactly how a contributing document could be falsely certified.
+
+One sharp edge remains: a graph backend whose indices/collections are missing
+(e.g. deleted out-of-band) reads as an **empty graph**, not as an error. The
+audit cannot distinguish that from a workspace that truly owns no graph data —
+one more reason to run it only while the server is stopped and the workspace
+is healthy, as stated at the top.
+
 Note that `--apply` reports what it found under `missing_entity_anchors` /
 `missing_relation_anchors` (the diagnosis) and what it wrote under
 `repaired_docs` (the action) — the first two are not emptied by a repair.

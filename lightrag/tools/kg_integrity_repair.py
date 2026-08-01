@@ -173,7 +173,9 @@ async def audit_kg_integrity(
     # completed scan above is what makes this a positive statement rather than
     # an absence of evidence: every graph object was visited and none was
     # attributed to these documents.
-    anchorless_docs = await _find_anchorless_docs(rag, doc_entities, doc_relations)
+    anchorless_docs = await _find_anchorless_docs(
+        rag, doc_entities, doc_relations, batch_size
+    )
 
     repaired_docs: list[str] = []
     if apply and (missing_entity_anchors or missing_relation_anchors):
@@ -218,6 +220,7 @@ async def _find_anchorless_docs(
     rag,
     doc_entities: dict[str, set[str]],
     doc_relations: dict[str, set[tuple[str, str]]],
+    batch_size: int,
 ) -> list[str]:
     """Documents proven to own nothing in the graph and holding no anchor rows.
 
@@ -226,29 +229,38 @@ async def _find_anchorless_docs(
     empty rows for it would be harmless in itself (merge Phase 0 overwrites
     them unconditionally), reporting it as anchorless would be misleading — it
     is unfinished, not empty.
+
+    The doc_status enumeration is strict (complete-or-raise) and failures
+    propagate. This function's answer is a PROOF of absence, and a
+    best-effort read that silently dropped rows would narrow it: every
+    dropped row is a document the audit was asked to certify and quietly
+    did not. An empty result must mean "no such documents", never "the scan
+    did not run" — so the audit fails loudly rather than reporting a
+    certainty it does not have.
     """
-    try:
-        rows = await rag.doc_status.get_docs_by_statuses(
-            [DocStatus.PROCESSED, DocStatus.FAILED]
-        )
-    except Exception as e:  # pragma: no cover - backend/transport dependent
-        logger.warning(
-            f"[kg-integrity] Could not enumerate doc_status to certify "
-            f"anchorless documents: {e}"
-        )
-        return []
+    rows = await rag.doc_status.get_docs_by_statuses(
+        [DocStatus.PROCESSED, DocStatus.FAILED], strict=True
+    )
+
+    candidates = [
+        doc_id
+        for doc_id in sorted(rows)
+        if doc_id not in doc_entities and doc_id not in doc_relations
+    ]
 
     anchorless: list[str] = []
-    for doc_id in sorted(rows):
-        if doc_id in doc_entities or doc_id in doc_relations:
-            continue
-        entities_row = await rag.full_entities.get_by_id(doc_id)
-        relations_row = await rag.full_relations.get_by_id(doc_id)
-        # Row PRESENCE is the test, matching the purge contract: a present but
-        # empty row already is a valid proof and needs no repair.
-        if isinstance(entities_row, dict) and isinstance(relations_row, dict):
-            continue
-        anchorless.append(doc_id)
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start : start + batch_size]
+        entity_rows = await rag.full_entities.get_by_ids(batch)
+        relation_rows = await rag.full_relations.get_by_ids(batch)
+        for doc_id, entities_row, relations_row in zip(
+            batch, entity_rows, relation_rows
+        ):
+            # Row PRESENCE is the test, matching the purge contract: a present
+            # but empty row already is a valid proof and needs no repair.
+            if isinstance(entities_row, dict) and isinstance(relations_row, dict):
+                continue
+            anchorless.append(doc_id)
     return anchorless
 
 

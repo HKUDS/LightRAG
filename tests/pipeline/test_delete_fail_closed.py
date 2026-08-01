@@ -843,3 +843,40 @@ async def test_reprocess_clears_stale_chunk_list_after_purge(tmp_path):
         assert first_chunks
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_anchorless_certification_reads_doc_status_strictly(tmp_path):
+    """The certification is a proof of absence, so its enumeration must be
+    complete-or-raise.
+
+    A best-effort read that dropped rows would silently narrow what was
+    certified, and a failure swallowed into an empty list would be
+    indistinguishable from "no anchorless documents exist" — the audit would
+    report a certainty it does not have. So the read passes ``strict=True``
+    and an enumeration failure propagates out of the audit instead of being
+    absorbed.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        await _ingest_skip_kg(rag)
+
+        seen_strict: list[bool] = []
+        original = rag.doc_status.get_docs_by_statuses
+
+        async def spy(statuses, strict=False):
+            seen_strict.append(strict)
+            return await original(statuses, strict=strict)
+
+        rag.doc_status.get_docs_by_statuses = spy
+        await audit_kg_integrity(rag)
+        assert seen_strict == [True]
+
+        async def broken(statuses, strict=False):
+            raise RuntimeError("doc_status backend unavailable")
+
+        rag.doc_status.get_docs_by_statuses = broken
+        with pytest.raises(RuntimeError, match="doc_status backend unavailable"):
+            await audit_kg_integrity(rag)
+    finally:
+        await rag.finalize_storages()
