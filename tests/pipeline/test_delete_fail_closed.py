@@ -534,6 +534,101 @@ async def test_pending_document_deletes_directly_without_a_scan(tmp_path, legacy
         await rag.finalize_storages()
 
 
+def _wire_empty_extraction(rag: LightRAG, per_chunk: bool) -> None:
+    """Extraction runs normally but yields nothing — no entities, no relations.
+
+    Distinct from ``skip_kg``: the merge IS called here, so Phase 0 runs and
+    writes both anchor rows (empty). ``per_chunk`` picks between the two shapes
+    a driver can return — one empty result per chunk, or no results at all.
+    """
+
+    async def fake_extract(chunks, *args, **kwargs):
+        return [({}, {}) for _ in chunks] if per_chunk else []
+
+    rag._process_extract_entities = fake_extract
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "per_chunk", [True, False], ids=["per_chunk_empty", "no_results"]
+)
+async def test_zero_entity_extraction_deletes_normally(tmp_path, per_chunk):
+    """A document the extractor found nothing in deletes like any other.
+
+    This is the case the whole fix turns on. Extraction ran, so merge ran, so
+    Phase 0 wrote both anchor rows — holding empty lists. Row PRESENCE is the
+    proof; the emptiness of the lists is a fact about the document, not a
+    missing anchor. Conflating the two is precisely the defect: the old code
+    resolved both to ``[]`` and could not tell "extracted nothing" from
+    "anchors lost", so it skipped graph cleanup for both.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        _wire_empty_extraction(rag, per_chunk)
+        doc_id = compute_mdhash_id("e.txt", prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            "nothing extractable here", ids=[doc_id], file_paths=["e.txt"]
+        )
+        await rag.apipeline_process_enqueue_documents()
+
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["status"] == DocStatus.PROCESSED
+        chunk_ids = list(row.get("chunks_list") or [])
+        assert chunk_ids, "the document still has chunks for naive/mix retrieval"
+        # Both rows present and empty, and the merge did run.
+        assert (await rag.full_entities.get_by_id(doc_id))["entity_names"] == []
+        assert (await rag.full_relations.get_by_id(doc_id))["relation_pairs"] == []
+        assert row["metadata"][KG_WRITE_STATE_METADATA_KEY] == (
+            KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+        )
+
+        result = await rag.adelete_by_doc_id(doc_id)
+
+        assert result.status == "success", result.message
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert all(
+            chunk is None for chunk in await rag.text_chunks.get_by_ids(chunk_ids)
+        )
+        assert await rag.full_entities.get_by_id(doc_id) is None
+        assert await rag.full_relations.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_legacy_zero_entity_document_is_recoverable_via_audit(tmp_path):
+    """The same document from before the anchors existed.
+
+    It has chunks, so the empty-scope rule does not reach it, and no marker, so
+    it fails closed — correctly, because nothing in the hot path can tell it
+    apart from a document whose anchors were lost. The audit settles it the
+    same way it settles ``skip_kg``: the completed graph scan proves it owns
+    nothing.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        _wire_empty_extraction(rag, per_chunk=True)
+        doc_id = compute_mdhash_id("e.txt", prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            "nothing extractable here", ids=[doc_id], file_paths=["e.txt"]
+        )
+        await rag.apipeline_process_enqueue_documents()
+        await _drop_anchors(rag, doc_id)
+        await _strip_write_state(rag, doc_id)
+
+        assert (await rag.adelete_by_doc_id(doc_id)).status_code == 409
+
+        report = await audit_kg_integrity(rag, apply=True)
+        assert report["anchorless_docs"] == [doc_id]
+
+        result = await rag.adelete_by_doc_id(doc_id)
+        assert result.status == "success", result.message
+        assert await rag.doc_status.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
 @pytest.mark.asyncio
 async def test_skip_kg_document_deletes_without_anchors(tmp_path):
     """``skip_kg`` produces a document with legitimately NO anchor rows.
