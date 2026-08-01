@@ -279,6 +279,34 @@ PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued_
 # include its staged chunk IDs. Lives here (not utils_pipeline) so that
 # base.py can derive the scheduling projection without an import cycle.
 CUSTOM_CHUNK_PATCH_METADATA_KEY = "custom_chunk_patch"
+# Reserved doc_status.metadata key recording how far this document's KG write
+# has progressed (issue #3400 fail-closed purge). Stamped ``pre_graph`` when the
+# document enters PROCESSING and promoted to ``graph_mutation_started`` only
+# once the write-ahead recovery anchors are durable — i.e. the value answers
+# "could this document have touched the graph?" without reading the graph.
+# ``pre_graph`` is therefore a valid RECOVERY PROOF on its own: a purge may
+# clean up staged chunks even with no anchor rows, because no graph mutation
+# can have happened yet. MONOTONIC and never cleared: a PROCESSED document
+# keeps ``graph_mutation_started`` (its anchors serve as the proof from then
+# on). Absent means UNKNOWN — a pre-#3416 document, which fails closed.
+KG_WRITE_STATE_METADATA_KEY = "kg_write_state"
+KG_WRITE_STATE_PRE_GRAPH = "pre_graph"
+KG_WRITE_STATE_GRAPH_MUTATION_STARTED = "graph_mutation_started"
+# Reserved doc_status.metadata key holding the whole-document purge journal
+# (issue #3400 fail-closed purge). Required BY fail-closed, not merely nice to
+# have: purge's last step deletes the recovery anchors, so without a journal a
+# failure in any later step (LLM cache, full_docs) would make the retry see
+# "anchors missing" and refuse forever. The journal distinguishes "anchors were
+# legitimately deleted by a purge that got this far" from "anchors were never
+# there". Phases are ordered — each is written only after the work it names has
+# been persisted, so a crash resumes at the recorded phase instead of redoing
+# the expensive candidate re-analysis and LLM-cache-backed rebuild.
+KG_PURGE_METADATA_KEY = "kg_purge"
+KG_PURGE_PHASE_PREPARED = "prepared"  # proof verified; nothing deleted yet
+KG_PURGE_PHASE_DERIVED_COMMITTED = "derived_committed"  # graph/vdb/tracking clean
+KG_PURGE_PHASE_ANCHORS_PENDING = "anchors_pending"  # chunks gone; anchors may go
+KG_PURGE_PHASE_COMPLETED = "completed"  # anchors gone; caller finalizes
+KG_PURGE_SCHEMA_VERSION = 1
 # doc_status.metadata keys that record a DEMOTION: this row is not the primary
 # claimant of its canonical source. ``is_duplicate`` is what every backend's
 # primary-candidate predicate keys off (``_basename_of`` returns None for it),

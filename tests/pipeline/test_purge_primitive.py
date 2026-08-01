@@ -21,7 +21,8 @@ import pytest
 import lightrag.operate as operate_module
 
 from lightrag import LightRAG
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.constants import GRAPH_FIELD_SEP, KG_PURGE_METADATA_KEY
+from lightrag.exceptions import StorageRecordNotFoundError
 from lightrag.utils import compute_mdhash_id, make_relation_chunk_key
 
 
@@ -55,6 +56,27 @@ class _KV:
 
     async def index_done_callback(self):
         pass
+
+
+class _DocStatus(_KV):
+    """Minimal ``doc_status`` double: enough for the purge journal writes.
+
+    Whole-document purge is journaled (issue #3400 fail-closed purge), so the
+    primitive now reads and writes ``doc_status.metadata`` around its phases.
+    """
+
+    async def update_doc_status_fields(self, doc_id, fields, *, missing_ok=False):
+        existing = self.data.get(doc_id)
+        if existing is None:
+            if missing_ok:
+                return
+            raise StorageRecordNotFoundError(doc_id)
+        self.data[doc_id] = {**existing, **fields}
+
+    def journal(self, doc_id: str = "d1") -> dict | None:
+        return (
+            (self.data.get(doc_id) or {}).get("metadata", {}).get(KG_PURGE_METADATA_KEY)
+        )
 
 
 class _Vdb:
@@ -154,9 +176,15 @@ def _make_rag(
     relation_chunks: _KV | None = None,
     text_chunks: _KV | None = None,
     llm_cache: _KV | None = None,
+    doc_status: _DocStatus | None = None,
 ) -> LightRAG:
     rag = LightRAG.__new__(LightRAG)
     rag.chunk_entity_relation_graph = graph
+    # Default: a plain doc_status row with no purge journal and no recorded
+    # kg_write_state — i.e. the recovery proof must come from the anchor rows.
+    rag.doc_status = (
+        doc_status if doc_status is not None else _DocStatus({"d1": {"metadata": {}}})
+    )
     rag.full_entities = full_entities if full_entities is not None else _KV()
     rag.full_relations = full_relations if full_relations is not None else _KV()
     rag.entity_chunks = entity_chunks if entity_chunks is not None else _KV()
@@ -293,12 +321,23 @@ async def test_absent_candidates_are_idempotent_noops():
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_empty_chunk_ids_returns_without_touching_storage():
+    """Explicit-candidate (patch rollback) mode keeps the historical early-out.
+
+    Whole-document mode no longer short-circuits on an empty chunk set — it
+    must still resolve a recovery proof, because "no chunks" plus non-empty
+    anchors is itself an unpurgeable state (see the fail-closed suite).
+    """
     graph = _Graph(nodes={"ALICE": _node("ALICE", ["c1"])})
     rag = _make_rag(graph=graph)
     status, lock = _status()
 
     await rag._purge_kg_contributions(
-        "d1", [], pipeline_status=status, pipeline_status_lock=lock
+        "d1",
+        [],
+        candidate_entities=[],
+        candidate_relations=[],
+        pipeline_status=status,
+        pipeline_status_lock=lock,
     )
 
     assert graph.removed_nodes == []
@@ -377,6 +416,9 @@ async def test_graph_delete_failure_keeps_chunks_and_anchors():
     rag = _make_rag(
         graph=graph,
         full_entities=_KV({"d1": {"entity_names": ["ALICE"], "count": 1}}),
+        # Both anchor rows, as real ingestion always writes them (empty rows
+        # included) — a whole-document purge needs both present as its proof.
+        full_relations=_KV({"d1": {"relation_pairs": [], "count": 0}}),
         entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
     )
     status, lock = _status()
@@ -401,6 +443,7 @@ async def test_chunk_delete_failure_keeps_recovery_rows(monkeypatch):
     rag = _make_rag(
         graph=graph,
         full_entities=_KV({"d1": {"entity_names": ["ALICE"], "count": 1}}),
+        full_relations=_KV({"d1": {"relation_pairs": [], "count": 0}}),
         entity_chunks=_KV({"ALICE": {"chunk_ids": ["c1"]}}),
     )
 

@@ -161,13 +161,18 @@ async def _merge(chunk_results, order: _OrderLog, **overrides):
         _MemVdb(),
         _MemVdb(),
         _cfg(),
-        full_entities_storage=stores["full_entities"],
-        full_relations_storage=stores["full_relations"],
+        full_entities_storage=(
+            None if overrides.get("no_anchor_storage") else stores["full_entities"]
+        ),
+        full_relations_storage=(
+            None if overrides.get("no_anchor_storage") else stores["full_relations"]
+        ),
         doc_id="d1",
         pipeline_status={"history_messages": []},
         pipeline_status_lock=asyncio.Lock(),
         entity_chunks_storage=stores["entity_chunks"],
         relation_chunks_storage=stores["relation_chunks"],
+        on_anchors_durable=overrides.get("on_anchors_durable"),
     )
     return graph, stores
 
@@ -277,3 +282,88 @@ async def test_anchor_flush_failure_aborts_merge_before_mutation():
             graph=graph,
         )
     assert graph.nodes == {} and graph.edges == {}
+
+
+# ---------------------------------------------------------------------------
+# on_anchors_durable: the hook the fail-closed purge contract depends on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_on_anchors_durable_runs_after_flush_before_first_mutation():
+    """The hook fires in the one instant where "this document has never
+    touched the graph" stops being true — after both anchors are durable, and
+    before anything is merged. The pipeline persists ``kg_write_state`` there,
+    which is what lets a purge distinguish a document that never reached the
+    graph from one whose anchors were lost.
+    """
+    order = _OrderLog()
+
+    async def hook():
+        order.add("hook")
+
+    graph, _ = await _merge(_chunk_results(), order, on_anchors_durable=hook)
+
+    hook_idx = order.first("hook")
+    assert hook_idx >= 0, "hook never ran"
+    for prefix in ("full_entities.flush", "full_relations.flush"):
+        assert 0 <= order.first(prefix) < hook_idx, (
+            f"{prefix} must be durable before the hook: {order.events}"
+        )
+    first_mutation = min(
+        i
+        for i in (order.first("graph.upsert_node"), order.first("graph.upsert_edge"))
+        if i >= 0
+    )
+    assert hook_idx < first_mutation, (
+        f"hook (at {hook_idx}) must precede the first graph mutation "
+        f"(at {first_mutation}): {order.events}"
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_on_anchors_durable_failure_aborts_merge_before_mutation():
+    """If the marker cannot be persisted the merge must not proceed.
+
+    Merging anyway would leave a document that HAS graph contributions while
+    still claiming ``pre_graph``, and a later purge would trust that claim and
+    skip the graph — the silent-skip this whole mechanism exists to prevent.
+    """
+    order = _OrderLog()
+
+    async def boom():
+        order.add("hook")
+        raise RuntimeError("write-state boom")
+
+    graph = _MemGraph(order)
+    with pytest.raises(RuntimeError, match="write-state boom"):
+        await _merge(_chunk_results(), order, graph=graph, on_anchors_durable=boom)
+
+    assert graph.nodes == {} and graph.edges == {}
+    # The anchors stay: aborting with them in place is the safe direction, and
+    # keeps the document discoverable for a retry.
+    assert order.first("full_entities.upsert") >= 0
+    assert order.first("full_relations.flush") >= 0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_on_anchors_durable_skipped_without_anchor_storages():
+    """Patch-mode merges pass no anchor storages — their operation journal is
+    the recovery proof — so there is no anchors-durable moment to report."""
+    order = _OrderLog()
+    calls: list[str] = []
+
+    async def hook():
+        calls.append("hook")
+
+    await _merge(
+        _chunk_results(),
+        order,
+        no_anchor_storage=True,
+        on_anchors_durable=hook,
+    )
+
+    assert calls == []

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import DocStatus
 from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_WRITE_STATE_PRE_GRAPH,
     PARSED_DIR_NAME,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
@@ -388,6 +391,15 @@ def test_carry_over_keys_grouped_by_stage():
         # operation; must survive every status transition until commit or
         # rollback.
         "custom_chunk_patch",
+        # KG write-progress marker and whole-document purge journal (issue
+        # #3400) — also NOT stage fields, so they join the non-stage tail.
+        # ``kg_write_state`` is the proof that lets a purge clean up a document
+        # that never reached the graph; ``kg_purge`` is what distinguishes
+        # anchors deleted by a purge that got that far from anchors that were
+        # never written. Dropping either at a transition turns a resumable
+        # purge into a permanent fail-closed refusal.
+        "kg_write_state",
+        "kg_purge",
         # Duplicate demotion — NOT stage fields, so they sit after the stage
         # groups and do not disturb the dialog's timeline. ``is_duplicate`` is
         # the predicate every backend uses to exclude a row from its canonical
@@ -732,11 +744,46 @@ def test_apipeline_enqueue_persists_process_options(tmp_path):
     asyncio.run(_run())
 
 
+async def _seed_pre_graph_doc_status(rag: LightRAG, doc_id: str) -> None:
+    """Seed a doc_status row that proves the document never reached the graph.
+
+    Mirrors what enqueue stamps on every new row (``kg_write_state=pre_graph``)
+    and what carry-over preserves until the anchors are written. Whole-document
+    purge needs one of its recovery proofs before it will delete anything
+    (issue #3400), and this is the proof a pre-merge document has.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    await rag.doc_status.upsert(
+        {
+            doc_id: {
+                "status": DocStatus.PROCESSING,
+                "content_summary": "pre-graph doc",
+                "content_length": 13,
+                "chunks_count": 0,
+                "chunks_list": [],
+                "created_at": now,
+                "updated_at": now,
+                "file_path": f"{doc_id}.txt",
+                "track_id": f"track-{doc_id}",
+                "error_msg": "",
+                "metadata": {
+                    KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_PRE_GRAPH,
+                },
+            }
+        }
+    )
+
+
 @pytest.mark.offline
 def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
     """``_purge_doc_chunks_and_kg`` with an empty chunk_ids list must be a
     no-op so callers (including the resume branch) can invoke it
     unconditionally without first checking for non-empty chunks_list.
+
+    Whole-document purge still resolves a recovery proof first (issue #3400),
+    so the document carries the ``kg_write_state`` marker every enqueued
+    document is born with. That proves it never reached a graph mutation, which
+    is what makes the call safe rather than merely quiet.
     """
 
     async def _run():
@@ -748,6 +795,7 @@ def test_purge_doc_chunks_and_kg_is_noop_for_empty_chunks(tmp_path):
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
+            await _seed_pre_graph_doc_status(rag, "doc-empty")
             pipeline_status = await get_namespace_data(
                 "pipeline_status", workspace=rag.workspace
             )
@@ -782,6 +830,12 @@ def test_purge_doc_chunks_and_kg_clears_chunks_for_unknown_doc(tmp_path):
     the chunks from chunks_vdb / text_chunks without raising.  This
     exercises the resume path for documents whose previous run was
     interrupted between chunking and entity extraction.
+
+    That interruption window is exactly what ``kg_write_state=pre_graph``
+    records (issue #3400): no anchors exist because merge never ran, and the
+    marker is the proof that lets purge clean up the staged chunks instead of
+    refusing for want of anchors. Without it, absent anchors are
+    indistinguishable from anchors that were lost.
     """
 
     async def _run():
@@ -793,6 +847,7 @@ def test_purge_doc_chunks_and_kg_clears_chunks_for_unknown_doc(tmp_path):
         rag = _new_rag(tmp_path)
         await rag.initialize_storages()
         try:
+            await _seed_pre_graph_doc_status(rag, "doc-X")
             # Seed text_chunks + chunks_vdb with two stale chunks.
             await rag.text_chunks.upsert(
                 {

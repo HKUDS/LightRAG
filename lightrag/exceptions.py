@@ -256,6 +256,99 @@ class SourceConflictPrimaryUnusableError(ValueError):
         self.holder_doc_id = holder_doc_id
 
 
+class RecoveryAnchorMissingError(RuntimeError):
+    """A destructive KG purge has no recovery proof, so it refused to start.
+
+    Issue #3400: a whole-document purge discovers what a document contributed
+    to the shared knowledge graph from its write-ahead recovery anchors
+    (``full_entities`` / ``full_relations``). Without them the reverse lookup
+    is impossible — it runs graph ``source_id`` → ``text_chunks`` →
+    ``full_doc_id``, and purge deletes those chunks. Treating absent anchors as
+    "no contributions" silently skipped graph cleanup while still deleting the
+    chunks, stranding live-but-unattributable entities that no tool can ever
+    reclaim (``audit_kg_integrity`` can only report them as unrecoverable
+    orphans).
+
+    So purge fails closed instead, and this exception guarantees **nothing was
+    deleted**: it is raised before the first write. Two distinct reasons, and a
+    caller that renders one message for both tells the operator something false
+    about their data — so the reason travels as :attr:`reason` rather than only
+    inside the message text:
+
+    * ``REASON_MISSING_ANCHOR_ROWS`` — one or both anchor rows are absent (see
+      :attr:`missing_namespaces`) or structurally unusable, and no other proof
+      applies. Note that a row that EXISTS and holds an empty list is a valid
+      proof: a document that extracted no entities is a normal outcome, which
+      is why the check is row presence, never list truthiness;
+    * ``REASON_CHUNKLESS_CONTRIBUTIONS`` — the anchors exist and name KG
+      objects, but the document owns no chunks to attribute them to. Purge
+      classifies candidates by subtracting the document's chunk ids from each
+      object's sources, so an empty chunk set would classify every object as
+      "keep" and then delete the anchors anyway — the same orphan outcome.
+
+    Remedy in both cases: run ``audit_kg_integrity(..., apply=True)``
+    (``lightrag.tools.kg_integrity_repair``), which rebuilds anchor rows from
+    the still-present ``text_chunks`` provenance, then retry the operation.
+    Callers surface this as a conflict (HTTP 409), never a 500: the request was
+    refused on a precondition, and retrying it unchanged will refuse again.
+    """
+
+    REASON_MISSING_ANCHOR_ROWS = "missing_anchor_rows"
+    REASON_CHUNKLESS_CONTRIBUTIONS = "chunkless_contributions"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        doc_id: str,
+        reason: str,
+        missing_namespaces: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.doc_id = doc_id
+        self.reason = reason
+        # Set for REASON_MISSING_ANCHOR_ROWS: which anchor rows were absent,
+        # so the operator can tell a half-deleted purge from a never-anchored
+        # document without querying storage themselves.
+        self.missing_namespaces = missing_namespaces
+
+
+class KGPurgeOperationConflictError(RuntimeError):
+    """A resumed purge does not match the journal already on the document.
+
+    Issue #3400: a whole-document purge journals its progress in
+    ``doc_status.metadata.kg_purge`` so a retry can resume instead of redoing
+    the expensive candidate re-analysis and rebuild — and so it can tell
+    "anchors were legitimately deleted by a purge that got that far" from
+    "anchors were never there".
+
+    Resuming is only sound when the retry targets the SAME logical operation.
+    The journal therefore carries an operation id derived from the document key
+    plus its chunk-id set (:func:`~lightrag.utils_pipeline.make_kg_purge_operation_id`),
+    and a mismatch means the document's chunk set changed since the journal was
+    written — so the journal's recorded phase describes work on a different set
+    and resuming from it would skip cleanup for the chunks that differ.
+
+    Raised before the first write, so nothing was deleted. Callers surface it
+    as a conflict (HTTP 409). Remedy: run ``audit_kg_integrity`` to establish
+    the document's true state; the stale journal is cleared when the document's
+    purge completes or its ``doc_status`` row is deleted.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        doc_id: str,
+        journal_operation_id: str,
+        requested_operation_id: str,
+    ) -> None:
+        super().__init__(message)
+        self.doc_id = doc_id
+        self.journal_operation_id = journal_operation_id
+        self.requested_operation_id = requested_operation_id
+
+
 class StorageRecordNotFoundError(KeyError):
     """A targeted doc_status field update referenced a non-existent record.
 

@@ -25,7 +25,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,10 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_LIGHTRAG,
     FULL_DOCS_FORMAT_PENDING_PARSE,
     FULL_DOCS_FORMAT_RAW,
+    KG_PURGE_METADATA_KEY,
+    KG_WRITE_STATE_GRAPH_MUTATION_STARTED,
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_WRITE_STATE_PRE_GRAPH,
     PARSED_DIR_NAME,
 )
 from lightrag.exceptions import (
@@ -130,6 +134,7 @@ from lightrag.utils_pipeline import (
     doc_status_metadata_has_attempt_fields,
     doc_status_reset_metadata,
     read_source_file_basename,
+    require_doc_status_record,
     resolve_existing_doc_source,
     resolve_doc_file_path,
     resolve_doc_status_parse_engine,
@@ -1038,7 +1043,22 @@ class _PipelineMixin:
             }
             if content_data.get("content_hash"):
                 base["content_hash"] = content_data["content_hash"]
-            metadata: dict[str, Any] = {}
+            # Stamp the KG write-progress marker at BIRTH (issue #3400
+            # fail-closed purge). A brand-new row provably owns nothing in the
+            # graph, and every pre-merge state a document can fail in —
+            # PENDING, PARSING, ANALYZING, PROCESSING-before-merge — inherits
+            # that fact by carry-over. This is what lets deletion clean up a
+            # parse-stage failure that never got as far as writing recovery
+            # anchors, instead of refusing it for lack of proof.
+            #
+            # The marker is MONOTONIC: only ``on_anchors_durable`` advances it
+            # to ``graph_mutation_started``, and nothing ever writes it back.
+            # Re-stamping ``pre_graph`` at the start of a reprocess would be a
+            # lie about the PREVIOUS run's contributions — the resume purge
+            # would then skip the graph and orphan them.
+            metadata: dict[str, Any] = {
+                KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_PRE_GRAPH,
+            }
             options_str = content_data.get("process_options") or ""
             if options_str:
                 # Mirror process_options into doc_status.metadata so admin UIs
@@ -5201,6 +5221,9 @@ class _PipelineMixin:
                             current_file_number=current_file_number,
                             total_files=ctx.total_files,
                             file_path=file_path,
+                            on_anchors_durable=partial(
+                                self._mark_graph_mutation_started, doc_id, status_doc
+                            ),
                         )
 
                     # If another in-flight document already triggered an abort
@@ -5245,6 +5268,16 @@ class _PipelineMixin:
                             "process_end_time": process_end_time,
                             **extraction_meta,
                         },
+                        # A PROCESSED document has no purge in flight by
+                        # definition, so retire any journal that a resume purge
+                        # left behind. Belt-and-braces next to
+                        # _clear_kg_purge_journal: a surviving ``completed``
+                        # journal would name a stale operation id and collide
+                        # with the next purge of this document.
+                        # kg_write_state is deliberately NOT dropped — it is
+                        # monotonic history, and the anchors written during this
+                        # run are the proof from here on.
+                        metadata_drop=(KG_PURGE_METADATA_KEY,),
                     )
 
                     async with ctx.pipeline_status_lock:
@@ -5386,8 +5419,74 @@ class _PipelineMixin:
         # The status_doc carries chunks_list / chunks_count from the prior
         # run; clear them so subsequent state-machine upserts don't write
         # back stale IDs.
+        #
+        # Persist that reset together with retiring the purge journal, in one
+        # targeted write (issue #3400). In-memory-only was not enough: the
+        # stored chunks_list kept pointing at chunks this purge just deleted,
+        # so a crash here left the row advertising them. Retiring the journal
+        # in the SAME write is what keeps the two consistent — a surviving
+        # ``completed`` journal would later collide with the next purge's
+        # operation id. kg_write_state is deliberately left untouched: it is
+        # monotonic, and this run's own merge will advance it if it gets that
+        # far.
+        await self._clear_kg_purge_journal(
+            doc_id,
+            extra_fields={"chunks_list": [], "chunks_count": 0},
+        )
         status_doc.chunks_list = []
         status_doc.chunks_count = 0
+
+    async def _mark_graph_mutation_started(
+        self, doc_id: str, status_doc: DocProcessingStatus | None = None
+    ) -> None:
+        """Advance ``kg_write_state`` past the point of no return.
+
+        Awaited by ``merge_nodes_and_edges`` in the single window where "this
+        document has never touched the graph" stops being true: after both
+        recovery anchors are flushed, before the first mutation. From here on a
+        purge may no longer assume there is nothing in the graph to find, so it
+        demands the anchors (or a purge journal) as proof.
+
+        Monotonic by construction — this is the only writer that sets
+        ``graph_mutation_started``, and no path writes ``pre_graph`` back.
+        Raising aborts the merge before any mutation, which is the safe
+        direction: the anchors are already durable.
+
+        ``status_doc`` is the caller's in-memory snapshot, and updating it is
+        NOT optional bookkeeping: every later transition upsert rebuilds
+        ``metadata`` from that object via ``doc_status_transition_metadata``, so
+        leaving it stale makes the PROCESSED write carry ``pre_graph`` forward
+        and silently revert this marker. A PROCESSED document would then claim
+        it never touched the graph — reinstating exactly the silent-skip the
+        marker exists to prevent.
+
+        Raises when the row cannot be read (strict where the backend supports
+        it), has vanished, or the update fails. The document is mid-merge
+        under the pipeline reservation, so the row is guaranteed to exist —
+        an unreadable row is the read failing, not the document being gone.
+        Returning silently instead would let the merge proceed with the
+        stored marker still ``pre_graph``: the graph gets written, and if the
+        anchors are later lost, that stale marker is a false proof licensing
+        a purge to skip graph cleanup — the exact defect of issue #3400.
+        """
+        stored = await require_doc_status_record(
+            self.doc_status, doc_id, purpose="advance kg_write_state"
+        )
+        raw_metadata = doc_status_field(stored, "metadata", {})
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        metadata[KG_WRITE_STATE_METADATA_KEY] = KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+        # missing_ok=False: the row vanishing between the read above and this
+        # write must abort the merge too, not silently skip the marker.
+        await self.doc_status.update_doc_status_fields(doc_id, {"metadata": metadata})
+        await self._flush_storages([self.doc_status])
+        if status_doc is not None:
+            in_memory = getattr(status_doc, "metadata", None)
+            if isinstance(in_memory, dict):
+                in_memory[KG_WRITE_STATE_METADATA_KEY] = (
+                    KG_WRITE_STATE_GRAPH_MUTATION_STARTED
+                )
+            else:
+                status_doc.metadata = dict(metadata)
 
     # ============================================================
     # doc_status state-machine helpers (shared by all layers)
@@ -5403,6 +5502,7 @@ class _PipelineMixin:
         ctx: "_BatchRunContext",
         extra_fields: dict[str, Any] | None = None,
         metadata_extra: dict[str, Any] | None = None,
+        metadata_drop: tuple[str, ...] = (),
     ) -> None:
         """Single source of truth for doc_status state-transition upserts.
 
@@ -5411,6 +5511,8 @@ class _PipelineMixin:
         ``chunks_count`` / ``chunks_list`` / ``error_msg``; ``metadata_extra``
         is forwarded to ``doc_status_transition_metadata`` so carry-over
         fields (e.g. ``process_options``) survive every state change.
+        ``metadata_drop`` is forwarded as its ``drop`` argument — the only way
+        to retire a carried-over metadata key at a transition.
 
         Owner-checked (LR2 §7.7 items 3/4/7): every worker status write verifies
         its run still owns ``busy`` immediately before writing, and a run whose
@@ -5440,7 +5542,7 @@ class _PipelineMixin:
             "track_id": status_doc.track_id,
             "content_hash": status_doc.content_hash,
             "metadata": doc_status_transition_metadata(
-                status_doc, extra=metadata_extra
+                status_doc, extra=metadata_extra, drop=metadata_drop
             ),
         }
         if extra_fields:

@@ -42,6 +42,7 @@ import asyncio
 import os
 from typing import Any
 
+from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import logger
 
@@ -82,7 +83,24 @@ async def audit_kg_integrity(
       the document's anchor row;
     - ``orphan_entities`` / ``orphan_relations``: contributions with no
       resolvable source chunk (reported, never modified);
+    - ``anchorless_docs``: documents with no anchor rows that own nothing in
+      the graph — see below;
     - ``repaired_docs``: doc ids whose anchors were updated (``apply=True``).
+
+    **Certifying absence.** A document can legitimately own nothing in the
+    graph — ``skip_kg`` (``process_options`` ``'!'``) skips extraction and the
+    merge entirely, so no anchor rows are ever written. Since #3400 a purge
+    needs a positive recovery proof, and for such a document written before
+    the ``kg_write_state`` marker existed there is none: it has no anchors, and
+    it never appears in the graph scan above, so anchor repair has nothing to
+    rebuild from and the document would be permanently undeletable.
+
+    This audit is the one place that CAN settle it. It enumerates the whole
+    graph — something the hot paths deliberately never do — so a document
+    absent from both ``doc_entities`` and ``doc_relations`` is not merely
+    unproven but *proven empty*. With ``apply=True`` those documents get
+    written empty anchor rows, which is simply the truth about them and
+    restores the normal ``anchors`` proof.
     """
     graph = rag.chunk_entity_relation_graph
 
@@ -151,6 +169,14 @@ async def audit_kg_integrity(
         if missing:
             missing_relation_anchors[doc_id] = [list(p) for p in missing]
 
+    # Documents that own nothing in the graph AND carry no anchor rows. The
+    # completed scan above is what makes this a positive statement rather than
+    # an absence of evidence: every graph object was visited and none was
+    # attributed to these documents.
+    anchorless_docs = await _find_anchorless_docs(
+        rag, doc_entities, doc_relations, batch_size
+    )
+
     repaired_docs: list[str] = []
     if apply and (missing_entity_anchors or missing_relation_anchors):
         for doc_id in sorted(
@@ -166,6 +192,18 @@ async def audit_kg_integrity(
             f"[kg-integrity] Repaired recovery anchors for {len(repaired_docs)} document(s)"
         )
 
+    if apply and anchorless_docs:
+        # Empty rows, written through the same union helper: it upserts both
+        # namespaces, so a document with no contributions ends up with the
+        # present-and-empty pair that IS the normal proof for one.
+        for doc_id in anchorless_docs:
+            await rag._union_doc_recovery_anchors(doc_id, [], [])
+            repaired_docs.append(doc_id)
+        logger.info(
+            f"[kg-integrity] Wrote empty recovery anchors for "
+            f"{len(anchorless_docs)} document(s) with no graph contributions"
+        )
+
     return {
         "entities_total": len(node_sources),
         "relations_total": len(edge_sources),
@@ -173,8 +211,57 @@ async def audit_kg_integrity(
         "missing_relation_anchors": missing_relation_anchors,
         "orphan_entities": sorted(orphan_entities),
         "orphan_relations": sorted(orphan_relations),
-        "repaired_docs": repaired_docs,
+        "anchorless_docs": anchorless_docs,
+        "repaired_docs": sorted(set(repaired_docs)),
     }
+
+
+async def _find_anchorless_docs(
+    rag,
+    doc_entities: dict[str, set[str]],
+    doc_relations: dict[str, set[tuple[str, str]]],
+    batch_size: int,
+) -> list[str]:
+    """Documents proven to own nothing in the graph and holding no anchor rows.
+
+    Only documents in a TERMINAL state are considered. A document still moving
+    through the pipeline may be about to write its anchors, and while writing
+    empty rows for it would be harmless in itself (merge Phase 0 overwrites
+    them unconditionally), reporting it as anchorless would be misleading — it
+    is unfinished, not empty.
+
+    The doc_status enumeration is strict (complete-or-raise) and failures
+    propagate. This function's answer is a PROOF of absence, and a
+    best-effort read that silently dropped rows would narrow it: every
+    dropped row is a document the audit was asked to certify and quietly
+    did not. An empty result must mean "no such documents", never "the scan
+    did not run" — so the audit fails loudly rather than reporting a
+    certainty it does not have.
+    """
+    rows = await rag.doc_status.get_docs_by_statuses(
+        [DocStatus.PROCESSED, DocStatus.FAILED], strict=True
+    )
+
+    candidates = [
+        doc_id
+        for doc_id in sorted(rows)
+        if doc_id not in doc_entities and doc_id not in doc_relations
+    ]
+
+    anchorless: list[str] = []
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start : start + batch_size]
+        entity_rows = await rag.full_entities.get_by_ids(batch)
+        relation_rows = await rag.full_relations.get_by_ids(batch)
+        for doc_id, entities_row, relations_row in zip(
+            batch, entity_rows, relation_rows
+        ):
+            # Row PRESENCE is the test, matching the purge contract: a present
+            # but empty row already is a valid proof and needs no repair.
+            if isinstance(entities_row, dict) and isinstance(relations_row, dict):
+                continue
+            anchorless.append(doc_id)
+    return anchorless
 
 
 def _print_report(report: dict[str, Any], verbose: bool) -> None:

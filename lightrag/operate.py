@@ -3236,6 +3236,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
+    on_anchors_durable: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Merge extracted entities/relations into the KG behind write-ahead anchors.
 
@@ -3265,6 +3266,16 @@ async def merge_nodes_and_edges(
         current_file_number: Current file number for logging
         total_files: Total files for logging
         file_path: File path for logging
+        on_anchors_durable: Optional async hook awaited exactly once, after
+            both Phase 0 anchors are flushed and before the first graph
+            mutation. Lets the caller persist "this document may have touched
+            the graph from here on" (``doc_status.metadata.kg_write_state``)
+            in the one window where that statement flips, so a fail-closed
+            purge can distinguish a document that never reached the graph from
+            one whose anchors were lost. A raise propagates and aborts the
+            merge before any mutation. Not called when the anchor storages or
+            ``doc_id`` are absent (patch-mode merges, which carry their own
+            operation journal as the recovery proof).
     """
 
     # Check for cancellation at the start of merge
@@ -3351,6 +3362,12 @@ async def merge_nodes_and_edges(
                     storage_inst, "namespace", ""
                 )
                 raise IndexFlushError(type(storage_inst).__name__, namespace, e) from e
+
+        # Anchors are durable: this is the last instant at which "no graph
+        # mutation has happened" is still true. A raise here aborts the merge
+        # with the anchors already in place — the safe direction.
+        if on_anchors_durable is not None:
+            await on_anchors_durable()
 
     # Get max async tasks limit from global_config for semaphore control
     graph_max_async = global_config.get("llm_model_max_async", 4) * 2
