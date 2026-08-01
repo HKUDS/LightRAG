@@ -8,21 +8,23 @@ Starting from version v1.5.0 (currently on the dev branch), LightRAG's file proc
 
 LightRAG Server introduces an intermediate file-processing format: `LightRAG Document`. This format supports multimodal data such as tables and images, and also includes the document's section/paragraph metadata, which is convenient for content traceability later.
 
-This document is organized from the perspective of **LightRAG Server** deployment and use: the quick-start configuration that can be applied directly is given first, followed by configuration syntax for content extraction and chunking, storage / directory layout, deduplication, concurrency, and resume rules. Developers who call the `LightRAG` class directly via Python should jump to [Chapter 9: Python SDK Invocation](#9-python-sdk-invocation).
+This document is organized from the perspective of **LightRAG Server** deployment and use: the quick-start configuration that can be applied directly is given first, followed by configuration syntax for content extraction and chunking, storage / directory layout, deduplication, concurrency, and resume rules. Developers who call the `LightRAG` class directly via Python should jump to [Chapter 11: Python SDK Invocation](#11-python-sdk-invocation).
 
 ## Table of Contents
 
 - [1. Quick Start](#1-quick-start)
 - [2. Processing Options and Configuration Syntax](#2-processing-options-and-configuration-syntax)
 - [3. File Parsing Engines](#3-file-parsing-engines)
-- [4. Chunker Parameter Configuration (chunk_options)](#4-chunker-parameter-configuration-chunk_options)
-- [5. Storage and Directory Layout](#5-storage-and-directory-layout)
-- [6. Document Duplicate Detection Rules](#6-document-duplicate-detection-rules)
-- [7. Pipeline Concurrency and Reentry Constraints](#7-pipeline-concurrency-and-reentry-constraints)
-- [8. Pipeline Resume Rules at Startup](#8-pipeline-resume-rules-at-startup)
-- [9. Python SDK Invocation](#9-python-sdk-invocation)
+- [4. Multimodal Analysis (VLM)](#4-multimodal-analysis-vlm)
+- [5. Chunker Parameter Configuration (chunk_options)](#5-chunker-parameter-configuration-chunk_options)
+- [6. Storage and Directory Layout](#6-storage-and-directory-layout)
+- [7. Document Duplicate Detection Rules](#7-document-duplicate-detection-rules)
+- [8. Pipeline Concurrency and Reentry Constraints](#8-pipeline-concurrency-and-reentry-constraints)
+- [9. Pipeline Resume Rules at Startup](#9-pipeline-resume-rules-at-startup)
+- [10. Troubleshooting](#10-troubleshooting)
+- [11. Python SDK Invocation](#11-python-sdk-invocation)
 - [Appendix A. Notes on Upgrading from Legacy](#appendix-a-notes-on-upgrading-from-legacy)
-
+- [Appendix B. Environment Variable Quick Reference](#appendix-b-environment-variable-quick-reference)
 ## 1. Quick Start
 
 ### 1.1 Keep the legacy file-processing behavior
@@ -54,6 +56,60 @@ MINERU_LOCAL_ENDPOINT=http://localhost:8000
 ```
 
 > `P` is LightRAG's native chunking strategy; see [Paragraph Semantic Chunking](ParagraphSemanticChunking.md) for details. For VLM configuration, see [Role-based LLM/VLM Configuration Guide](RoleSpecificLLMConfiguration.md).
+
+
+### 1.4 Reading a preset
+
+Each comma-separated item of `LIGHTRAG_PARSER` is one routing rule, matched against the file extension from left to right; the first usable rule wins. Taking `*:native-iteP,*:legacy-R` apart:
+
+```
+*  :  native  -  iteP
+│     │          │
+│     │          └─ processing options: i/t/e enable image, table and equation
+│     │             analysis; P selects the paragraph-semantic chunker
+│     └─ content extraction engine
+└─ extension the rule applies to; `*` matches any
+```
+
+So the first rule says "parse anything with `native`, analyze all three modalities, chunk with `P`", and the second says "anything the first rule cannot handle falls back to `legacy` with `R` chunking". A rule is skipped when the engine does not support that extension, or when an external engine has no endpoint configured — which is exactly how `*:native-iteP` ends up handling only `docx` / `md` / `textpack` while everything else drops through to `legacy`.
+
+The full grammar is in §2.3, the option letters in §2.1, and the engines in §3.
+
+### 1.5 First run: ingest one document and verify it worked
+
+A dependency-free smoke test — one `.docx`, no MinerU, no docling, no VLM:
+
+```bash
+LIGHTRAG_PARSER=*:native-teP,*:legacy-R
+```
+
+**1. Check the routing before spending a parse.** A malformed `LIGHTRAG_PARSER` already fails startup (§2.8). Once the server is up, `GET /documents/supported_file_types` returns the extension allowlist and the engine-to-suffix mapping **as the server actually resolved them**, which answers "did my rule take effect" without ingesting anything.
+
+**2. Get the file in.** Either `POST /documents/upload` (the file is stored under `INPUT_DIR` and the response carries a `track_id`), or drop files into `INPUT_DIR` and call `POST /documents/scan`. To try different settings on a single file without touching `.env`, rename it with a hint: `report.[native-teP].docx` (§2.5).
+
+**3. Watch it.** `GET /documents/track_status/{track_id}` for that upload, `GET /documents/pipeline_status` for the live log, `GET /documents/status_counts` for the batch view. The status ladder is `PENDING → PARSING → ANALYZING → PROCESSING → PROCESSED`.
+
+**4. Find the artifacts.** Everything lands under `INPUT_DIR/__parsed__/` (§6.2). For `report.[native-teP].docx`:
+
+```
+__parsed__/report.[native-teP].docx   # archived original, hint preserved
+__parsed__/report.docx.parsed/        # canonical name, hint stripped
+    report.blocks.jsonl               # first line is meta, the rest are blocks
+    report.tables.json                # only if the document has tables
+    report.equations.json             # only if the document has equations
+    report.blocks.assets/             # exported images
+```
+
+**5. Verify the parse**, in this order:
+
+1. The first line of `*.blocks.jsonl` is a `meta` record.
+2. Content lines carry a sensible heading structure — this is what `P` splits on.
+3. The sidecars you expected exist. A missing one means the document has no such content, or the engine does not emit it (`legacy` emits none at all — §3.2).
+4. Each sidecar item you enabled analysis for carries `"llm_analyze_result": {"status": "success"}`. A `skipped` or `failure` here is the answer to "why is my image/table missing from the knowledge graph" (§4.3).
+
+**6. Verify chunking and ingest.** `chunks_count` in `GET /documents/paginated` shows the chunk count; the doc-status record's `metadata.parse_engine` and `metadata.process_options` show **which engine and options actually ran**, which is the fastest way to catch a hint that was silently invalidated (§2.8).
+
+**If it failed:** the source file **stays in `INPUT_DIR`**, so you can fix the configuration and scan again. `error_msg` on the doc-status record is the diagnosis; §10 maps the common ones. Note that both the engine and the processing options are frozen at enqueue time — changing `LIGHTRAG_PARSER` or a hint does not affect an existing record, so re-running with different settings means deleting the document and uploading it again (§9.3). To reproduce a parse offline without the server, use `python -m lightrag.parser.cli` ([ParserDebugCLI.md](./ParserDebugCLI.md)).
 
 ## 2. Processing Options and Configuration Syntax
 
@@ -177,7 +233,7 @@ Currently supported parameters (canonical name / short alias):
 | `chunk_overlap_token_size` | `chunk_ol` | F / R / P | int (≥ 0) | Overlap between chunks (V has no overlap) |
 | `drop_references` | `drop_rf` | P | bool | Drop matching reference blocks before chunking, e.g. `paper.[-P(drop_rf=true)].pdf`. As a boolean it may be written bare: `paper.[-P(drop_rf)].pdf` means `drop_rf=true` |
 
-- `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §4) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
+- `process_options` stays a pure selector string; each parameter is applied to that strategy's `chunk_options` (see §5) while the strategy's other env-derived parameters are kept. Aliases are normalized to their canonical name internally.
 - Merge priority: the selector still follows "a non-empty filename-hint options string wholesale-overrides the rule options"; parameters overlay **per strategy** — rule parameters first, then filename-hint parameters (filename wins on a shared key).
 - Validation is strict both at startup (`LIGHTRAG_PARSER`) and at upload (filename hint): an unknown parameter, a wrong type, an out-of-range value, or a parameter on a strategy that does not support it (e.g. `chunk_ol` on `V`) all raise a friendly error.
 
@@ -202,7 +258,7 @@ Currently supported engine parameters (canonical / alias):
 | `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
 | `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
 | `docling` | `force_ocr` | `ocr` | bool | `true` / `false`; may be written bare: `docling(ocr)` means `docling(force_ocr=true)` |
-| `native` | `smart_heading` | — | bool | Opt-in docx smart heading discovery (see [§3.2](#32-using-the-native-file-parsing-engine)); may be written bare (`native(smart_heading)` means `=true`); the markdown path warns and ignores it |
+| `native` | `smart_heading` | — | bool | Opt-in docx smart heading discovery (see [§3.3](#33-using-the-native-file-parsing-engine)); may be written bare (`native(smart_heading)` means `=true`); the markdown path warns and ignores it |
 
 - **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
 - **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
@@ -240,7 +296,16 @@ For both external engines the row above is the **baseline** set — what the eng
 
 LightRAG caches the parsing results of the `mineru` and `docling` engines locally. Re-uploading the same file usually does not trigger the engine to re-parse the document. To delete the parse cache, you must click the "also delete file" option in the delete-file dialog of the document management interface. Modifying the endpoint addresses and effective extraction parameters of the `mineru` / `docling` engines will also invalidate the cache, causing the engine to re-parse the file content on the next upload of the same file.
 
-### 3.2 Using the Native File Parsing Engine
+### 3.2 Using the legacy Content Extractor
+
+`legacy` is the fallback engine for every extension except `.textpack`, which the routing layer always sends to `native`. It is also what you get with `LIGHTRAG_PARSER` unset. It extracts plain text only, which has four consequences worth knowing before you route anything to it:
+
+- **It never writes sidecars.** Its output is `parse_format=raw`, so there is no `drawings.json` / `tables.json` / `equations.json` for the analyze stage to read. The `i` / `t` / `e` options therefore do nothing on a legacy-parsed document, and `P` degrades to `R` because there is no heading structure to split on (§2.8).
+- **It has no raw cache directory**, so `LIGHTRAG_FORCE_REPARSE_*` does not apply to it (§3.6).
+- **Its only configuration knob is `PDF_DECRYPT_PASSWORD`**, the password used to open protected PDFs.
+- **A scanned PDF with no text layer fails hard** rather than producing an empty document. Route such files to `mineru` or `docling`, which can OCR them.
+
+### 3.3 Using the Native File Parsing Engine
 
 `native` is LightRAG's built-in structured content extractor that runs **fully locally**: it does not depend on external services such as MinerU / Docling, the extraction stage never calls a VLM, and it works out of the box with no deployment. Its runtime dependencies are only `python-docx` + `defusedxml` (required); the markdown path additionally relies on the **optional** `cairosvg` for SVG rasterization (when missing, the SVG is skipped with a warning and the rest of the content is unaffected). Enabling the opt-in `smart_heading` engine parameter for docx additionally requires the pinned `zh_core_web_sm` / `en_core_web_sm` spaCy models (the `spacy` runtime ships with the `api` extra; install the models with `lightrag-download-cache --spacy --spacy-install` — the main Docker image already bundles them); deployments that never enable it need no models, and the smart_heading path also calls the EXTRACT-role LLM during parsing. Setting the `DOCX_SMART_HEADING=true` env var enables smart_heading by default for `.docx` files that resolve to the native engine — an explicit `native(smart_heading=false)` rule/hint opts a file back out — and makes the server verify the spaCy models at startup (fail fast instead of failing on the first parse); the same startup check triggers when a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)` (or its flag shorthand `native(smart_heading)`). The default applies at upload time only: already-ingested documents keep their persisted engine parameters on re-parse.
 
@@ -251,7 +316,7 @@ Supported extensions: `docx` / `md` / `textpack`. How to enable:
 
 #### docx Extraction Capabilities
 
-`native` parses OOXML directly and recognizes the following structures, writing them to the corresponding sidecars (whether a sidecar is produced depends on the document's actual content; see [§5.2](#52-__parsed__-directory-structure)):
+`native` parses OOXML directly and recognizes the following structures, writing them to the corresponding sidecars (whether a sidecar is produced depends on the document's actual content; see [§6.2](#62-__parsed__-directory-structure)):
 
 | Element | Extraction behavior | Sidecar |
 | --- | --- | --- |
@@ -304,7 +369,7 @@ The remaining download / size / SSRF variables (`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOU
 
 Downloaded external images are cached in `<file>.native_raw/` (beside `.parsed/`, analogous to `.mineru_raw`/`.docling_raw`), reused directly when re-parsing the same unchanged file instead of going back over the network; the cache is invalidated when the source content or the size / SVG-pixel / CIDR options above change. When the document is deleted (with "also delete file" checked in the delete dialog), this cache directory is removed together with `.parsed/`.
 
-### 3.3 Using the MinerU File Parsing Engine
+### 3.4 Using the MinerU File Parsing Engine
 
 The LightRAG document processing pipeline supports MinerU as a document parser and offers two MinerU access modes:
 
@@ -323,11 +388,49 @@ MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://<your_mineru_local_server_ip>:8000
 ```
 
-For the remaining detailed MinerU configuration, refer to the MinerU section of the environment variable example file [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) at the repository root. The `official` and `local` modes each have different environment variable configurations; read the instructions in the example file carefully.
+Shared parameters, honoured in both modes:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `MINERU_LANGUAGE` | `ch` | OCR / parsing language |
+| `MINERU_ENABLE_TABLE` | `true` | Table recognition. **This decides whether `tables.json` is written at all** — one stage earlier than the `t` option of §2.1, which only decides whether an existing sidecar is analyzed |
+| `MINERU_ENABLE_FORMULA` | `true` | Formula recognition; same relationship to the `e` option |
+| `MINERU_PAGE_RANGES` | (empty) | Page range. `official` forwards it verbatim and accepts `1-3,5,7-9`; `local` accepts only a single page or one simple range, and a comma list is rejected at startup |
+| `MINERU_ADDITIONAL_SUFFIXES` | (empty) | Extensions this deployment can handle beyond the baseline in §3.1 — see the note there on why declaring one is not enough on its own |
+
+`local` mode only:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `MINERU_LOCAL_ENDPOINT` | `http://127.0.0.1:8000` | mineru-api / mineru-router base URL |
+| `MINERU_LOCAL_BACKEND` | `hybrid-auto-engine` | Which backend handles the parse: `hybrid-auto-engine` (pipeline + VLM, needs a GPU and the matching inference engine), `pipeline` (CPU-friendly, no VLM step), or `vlm-auto-engine` |
+| `MINERU_LOCAL_PARSE_METHOD` | `auto` | `auto` / `txt` / `ocr` for the pipeline component. **Pure VLM backends ignore it** — the model handles layout and OCR natively |
+| `MINERU_LOCAL_IMAGE_ANALYSIS` | `false` | MinerU's *own* VLM pass for captions and footnotes — see §4.7, it is not related to the `i` option. The `pipeline` backend silently drops the flag |
+| `MINERU_LOCAL_START_PAGE_ID` | `0` | First page to parse |
+| `MINERU_LOCAL_END_PAGE_ID` | `99999` | Last page to parse |
+
+`official` mode only:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `MINERU_API_TOKEN` | — | API key from the MinerU website; required |
+| `MINERU_OFFICIAL_ENDPOINT` | `https://mineru.net` | Service endpoint |
+| `MINERU_MODEL_VERSION` | `vlm` | Model version requested from the cloud service |
+| `MINERU_IS_OCR` | `false` | Cloud-side OCR toggle |
+
+Polling budget and cache:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `MINERU_POLL_INTERVAL_SECONDS` | `2` | Interval between task-status polls |
+| `MINERU_MAX_POLLS` | `600` | Maximum polls before giving up; the default budget is about 20 minutes |
+| `MINERU_ENGINE_VERSION` | (empty) | Recorded in the raw-bundle manifest; a mismatch invalidates the cache. Empty skips the check (§6.3) |
+| `LIGHTRAG_FORCE_REPARSE_MINERU` | `false` | Bypass the raw cache and re-upload on every parse (§3.6) |
+| `MINERU_BBOX_ATTRIBUTES` | `{"origin":"LEFTTOP","max":1000}` | Coordinate system recorded in the sidecar meta. Note the default differs from `DOCLING_BBOX_ATTRIBUTES` |
 
 > **Local deployment of the MinerU service** (Docker image build, vLLM preload, title-level correction) is described in [ParserServiceDeployment.md §1](./ParserServiceDeployment.md#1-local-deployment-of-the-mineru-service).
 
-### 3.4 Using the Docling File Parsing Engine
+### 3.5 Using the Docling File Parsing Engine
 
 The `docling` content extraction engine requires an external [docling-serve](https://github.com/DS4SD/docling-serve) service (v1 async API). Minimal configuration:
 
@@ -379,9 +482,91 @@ Three bundle-cache envs:
 
 > **Local deployment of docling-serve**, including downloading the equation-recognition model required by `DOCLING_DO_FORMULA_ENRICHMENT`, is described in [ParserServiceDeployment.md §2](./ParserServiceDeployment.md#2-local-deployment-of-docling-serve-latex-equation-recognition).
 
-## 4. Chunker Parameter Configuration (chunk_options)
+### 3.6 Parse Cache and Forced Re-parse
 
-### 4.1 Responsibilities of process_options vs chunk_options
+The `native`, `mineru` and `docling` engines each keep a raw-artifact cache next to the parsed output, so re-parsing an unchanged file does not repeat the expensive work — a network round trip to an external service, or an image download for markdown. Layout and invalidation rules are in §6.3 and §6.4; what matters when configuring is:
+
+| Engine | Cache directory | What it holds | Force re-parse |
+| --- | --- | --- | --- |
+| `native` | `<base>.native_raw/` | external images downloaded by the markdown / textpack path | `LIGHTRAG_FORCE_REPARSE_NATIVE=true` |
+| `mineru` | `<base>.mineru_raw/` | the artifact bundle returned by the MinerU service | `LIGHTRAG_FORCE_REPARSE_MINERU=true` |
+| `docling` | `<base>.docling_raw/` | the artifact bundle returned by docling-serve | `LIGHTRAG_FORCE_REPARSE_DOCLING=true` |
+| `legacy` | — | no cache | not applicable |
+
+Each bundle records the engine version and the effective parameter signature in its manifest, so changing the endpoint, an extraction parameter, or `MINERU_ENGINE_VERSION` / `DOCLING_ENGINE_VERSION` invalidates the cache on its own. The force flags exist for the case the manifest cannot detect: the *service* changed while its version string did not. Deleting a document with "also delete file" removes the cache directory along with `.parsed/`.
+
+## 4. Multimodal Analysis (VLM)
+
+### 4.1 What this stage does
+
+Parsing writes sidecars; the ANALYZING stage reads them, sends each item to a model, and writes the result back into the item as `llm_analyze_result`; the PROCESS stage then builds multimodal chunks from those sidecars. Two consequences follow from that ordering:
+
+- **Analysis is re-runnable without re-parsing.** The extraction stage is unaffected by `i` / `t` / `e` — the engine writes whatever the document contains — so enabling a modality later completes the VLM work without touching the original file (§9.3).
+- **A modality with no sidecar is silently a no-op**, logged at INFO level. That is not an error; it means the document has no such content, or the engine does not emit it.
+
+### 4.2 What each option actually requires
+
+`VLM_PROCESS_ENABLE` is often read as a master switch over all three modalities. It is not — it gates images only:
+
+| Option | Analyzed by | Requires `VLM_PROCESS_ENABLE` | Sidecar read |
+| --- | --- | --- | --- |
+| `i` images | VLM role | **Yes** | `*.drawings.json` |
+| `t` tables | EXTRACT role | No | `*.tables.json` |
+| `e` equations | EXTRACT role | No | `*.equations.json` |
+
+This is why the recommended preset `*:native-teP` works with no VLM configured at all. Whether a sidecar exists in the first place also depends on the engine: `MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA` for MinerU, `DOCLING_DO_FORMULA_ENRICHMENT` for docling, and `legacy` emits none.
+
+### 4.3 Failure versus skip
+
+Everything in this section applies **only to a document whose `process_options` include `i`**. A document without `i` never enters image analysis at all, so it processes normally no matter how many images it carries and no matter how `VLM_PROCESS_ENABLE` is set.
+
+For a document that does have `i`, each image runs a filter chain, and **the VLM gate sits in the middle of it**. Everything before the gate is a skip that leaves the document healthy; the gate itself fails the whole document:
+
+| Order | Condition | Outcome |
+| :-: | --- | --- |
+| 1 | image file not found | item `skipped`, document continues |
+| 2 | not a supported raster format (emf / wmf / svg …) | item `skipped`, document continues |
+| 3 | either side smaller than `VLM_MIN_IMAGE_PIXEL` (64) | item `skipped`, document continues |
+| 4 | **VLM gate**: `VLM_PROCESS_ENABLE=false` or no VLM role | **document FAILED** — `error_msg` reads "VLM analysis required but VLM role is not available" |
+| 5 | image file is empty | document FAILED |
+| 6 | larger than `VLM_MAX_IMAGE_BYTES` (5 MB) | item `skipped` — note this check is **after** the gate, so an oversized image does not escape step 4 |
+
+For the text modalities: a **table** item with empty content is recorded as `skipped` with a warning and never reaches format validation; only a table item that *has* content fails the document when its `format` is missing or invalid, which indicates a corrupt sidecar. An **equation** item with empty content fails the document directly.
+
+### 4.4 Token budgets
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MAX_EXTRACT_INPUT_TOKENS` | `20480` | total input budget for one extraction / analysis prompt |
+| `SURROUNDING_LEADING_MAX_TOKENS` | `2000` | per-half cap on the text injected *before* the item |
+| `SURROUNDING_TRAILING_MAX_TOKENS` | `2000` | per-half cap on the text injected *after* the item |
+| `MM_EXTRACT_CONTENT_MIN_TOKENS` | `100` | floor reserved for the item's own content |
+
+The surrounding budgets are subtracted from the total, so setting them too high starves the item itself. When that happens the server warns at startup and names the variable to raise; either raise `MAX_EXTRACT_INPUT_TOKENS` or lower the surrounding pair.
+
+### 4.5 Image limits and throughput
+
+`VLM_MAX_IMAGE_BYTES` (default 5 MB) and `VLM_MIN_IMAGE_PIXEL` (default 64) bound what is worth sending: the lower bound exists to skip icons and separator rules rather than pay for a VLM call on them. Analyze-stage concurrency is `MAX_PARALLEL_ANALYZE` (§8.9), which is independent of the parse and insert stages.
+
+### 4.6 Model configuration lives elsewhere
+
+`VLM_PROCESS_ENABLE` is the pipeline switch and belongs here. *Which* model serves the VLM role — `VLM_LLM_MODEL`, `VLM_LLM_BINDING`, `VLM_LLM_BINDING_HOST`, `VLM_LLM_BINDING_API_KEY`, `VLM_MAX_ASYNC_LLM`, `VLM_LLM_TIMEOUT` — plus the list of vision-capable providers is owned by [Role-based LLM/VLM Configuration Guide](RoleSpecificLLMConfiguration.md) and is deliberately not repeated here.
+
+### 4.7 Not the same thing: `MINERU_LOCAL_IMAGE_ANALYSIS`
+
+MinerU has a VLM pass of its own, enabled by `MINERU_LOCAL_IMAGE_ANALYSIS`. It runs **at parse time on the MinerU host**, improves captions and footnotes inside MinerU's own output, costs GPU on that machine, and is ignored by the `pipeline` backend. It is unrelated to the `i` option and to `VLM_PROCESS_ENABLE`.
+
+### 4.8 A safe order to switch things on
+
+1. Start with `te`. It needs only the EXTRACT role — no new infrastructure, no new failure mode.
+2. Confirm the sidecar items carry `llm_analyze_result.status == "success"`.
+3. Then add `i` **together with** `VLM_PROCESS_ENABLE=true` and a vision-capable binding.
+
+Doing step 3 in two halves is what produces the failure in §4.3 step 4. And because processing options are frozen at enqueue, a document that already failed that way cannot be rescued by editing configuration and retrying: `/documents/reprocess_failed` re-runs it with the same `i`. Either make the VLM available and retry, or delete the document and upload it again without `i`.
+
+## 5. Chunker Parameter Configuration (chunk_options)
+
+### 5.1 Responsibilities of process_options vs chunk_options
 
 `process_options` selects **which** chunking strategy (F/R/V/P), while `chunk_options` decides **which parameters** that chunker uses. The two responsibilities are orthogonal: the former is a single-character selector, the latter is a structured dictionary.
 
@@ -400,11 +585,11 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (dispatched b
 ```
 
 - **env vars** are loaded into `addon_params["chunker"]` during the `LightRAG.__init__` stage (strategy-specific env is read by `default_chunker_config()`, then `_apply_chunk_size_overlay` fills in legacy env as a fallback).
-- **`addon_params["chunker"]`** is an `ObservableAddonParams` field; for Server deployments, you only need env / restart for the new values to take effect. To change it at runtime within the Python process (without restarting) and to do per-file overrides, see [Chapter 9: Python SDK Invocation](#9-python-sdk-invocation).
-- **`full_docs.chunk_options`** is frozen at `apipeline_enqueue_documents` enqueue time: by default it is assembled by `resolve_chunk_options(self.addon_params, ...)` on the spot; if the caller passes a `chunk_options` argument, it is persisted as-is (SDK usage, see §9.4).
+- **`addon_params["chunker"]`** is an `ObservableAddonParams` field; for Server deployments, you only need env / restart for the new values to take effect. To change it at runtime within the Python process (without restarting) and to do per-file overrides, see [Chapter 11: Python SDK Invocation](#11-python-sdk-invocation).
+- **`full_docs.chunk_options`** is frozen at `apipeline_enqueue_documents` enqueue time: by default it is assembled by `resolve_chunk_options(self.addon_params, ...)` on the spot; if the caller passes a `chunk_options` argument, it is persisted as-is (SDK usage, see §11.4).
 - **The chunker invocation** takes the corresponding sub-dictionary from `full_docs.chunk_options` and dispatches to F/R/V/P by the `process_options.chunking` selector.
 
-### 4.2 Environment Variables
+### 5.2 Environment Variables
 
 All variables in the table below are read into `addon_params["chunker"]` once when `LightRAG` is instantiated: strategy-specific env is read by `default_chunker_config()`, while legacy env (`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`) is filled in by `_apply_chunk_size_overlay` into slots that neither strategy env nor legacy constructor fields filled. After modifying env, the service must be restarted (or a new `LightRAG` instance created) for it to take effect; documents already enqueued hold the frozen snapshot and are unaffected.
 
@@ -429,26 +614,26 @@ All variables in the table below are read into `addon_params["chunker"]` once wh
 
 P's internal ratio constants are algorithmic scales and are automatically derived in proportion to `chunk_token_size`. P always uses an independent `chunk_token_size` decoupled from the global chain — even when `CHUNK_P_SIZE` is unset, P falls back to `DEFAULT_CHUNK_P_SIZE` (2000) rather than the global `CHUNK_SIZE`, because paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together. Use `CHUNK_P_SIZE` to override that default per deployment. `CHUNK_P_OVERLAP_SIZE` only affects P's internal plain-text fallback and table bridging context; it does not let table row-level slices overlap each other. `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` work differently — when unset they DO fall back to the top-level `chunk_token_size` (F is the default global window, R prefers a smaller target to better split sentences, while V — as an advisory ceiling — typically wants to be enlarged to reduce over-splitting).
 
-### 4.3 Priority Chain
+### 5.3 Priority Chain
 
 The final value of each chunking slot is resolved by a specificity-ordered chain (high → low):
 
-1. **`addon_params["chunker"]` explicit value** — field values explicitly written at construction time or set at runtime via the SDK path (see §9.3). Server-only deployments usually don't hit this tier. Most direct; wins everything.
+1. **`addon_params["chunker"]` explicit value** — field values explicitly written at construction time or set at runtime via the SDK path (see §11.3). Server-only deployments usually don't hit this tier. Most direct; wins everything.
 2. **Strategy-specific env** — `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` (per-strategy `chunk_token_size`), `CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE` (overlap), `CHUNK_P_SIZE` (P-specific). When the corresponding size env is unset, F/R/V inherit the top-level `chunk_token_size`. Filled only when the slot is not already occupied by ①.
-3. **Legacy constructor fields** — `LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)`; only effective on the SDK path, see §9.2. Strategy-agnostic, "coarse-grained default", fills only the slots still empty.
+3. **Legacy constructor fields** — `LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)`; only effective on the SDK path, see §11.2. Strategy-agnostic, "coarse-grained default", fills only the slots still empty.
 4. **Legacy env** — `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`. Final fallback.
 
 Example: `CHUNK_R_OVERLAP_SIZE=42` + `LightRAG(chunk_overlap_token_size=2)` → R sub-dictionary `chunk_overlap_token_size=42` (strategy env wins), F / P sub-dictionary `chunk_overlap_token_size=2` (no F / P-specific env; the legacy constructor field is filled in).
 
-**Special case for P's `chunk_token_size`**: the P `chunk_token_size` slot does NOT walk the full four-tier chain. When ① is not explicitly provided, it resolves directly via `CHUNK_P_SIZE` env > `DEFAULT_CHUNK_P_SIZE` (2000), **skipping** ③ legacy constructor field `LightRAG(chunk_token_size=…)` and ④ legacy env `CHUNK_SIZE`. See the `CHUNK_P_SIZE` row in §4.2 for the rationale.
+**Special case for P's `chunk_token_size`**: the P `chunk_token_size` slot does NOT walk the full four-tier chain. When ① is not explicitly provided, it resolves directly via `CHUNK_P_SIZE` env > `DEFAULT_CHUNK_P_SIZE` (2000), **skipping** ③ legacy constructor field `LightRAG(chunk_token_size=…)` and ④ legacy env `CHUNK_SIZE`. See the `CHUNK_P_SIZE` row in §5.2 for the rationale.
 
 Three layers of semantic guarantee:
 
 1. **Reproducibility**: change env, restart — old documents still chunk by the snapshot from the moment they were enqueued; results unchanged.
 2. **Resume consistency**: resume branch B (content already extracted, redo chunking by current `process_options`) also reads `full_docs.chunk_options`, preventing env drift from breaking consistency.
-3. **Per-file personalization**: callers can pass different `chunk_options` for each file (typical usage: a management UI configures separators or V threshold individually for a certain file). These are the input semantics on the SDK path; see §9.4.
+3. **Per-file personalization**: callers can pass different `chunk_options` for each file (typical usage: a management UI configures separators or V threshold individually for a certain file). These are the input semantics on the SDK path; see §11.4.
 
-### 4.4 Field Structure
+### 5.4 Field Structure
 
 `addon_params["chunker"]` (instance field) keeps the sub-dictionaries of all four strategies as the runtime baseline; `full_docs[doc_id]["chunk_options"]` is a **slim snapshot** — at enqueue time, only the strategy sub-dictionary selected by `process_options` is kept (default F), and the parameters of other strategies are discarded, because the processing stage will not read them. When re-parsing, `process_options` and `chunk_options` are rewritten together, avoiding residue of old-strategy parameters.
 
@@ -499,13 +684,13 @@ Three layers of semantic guarantee:
 
 selector → sub-dictionary mapping: F → `fixed_token`, R → `recursive_character`, V → `semantic_vector`, P → `paragraph_semantic`; without a selector, F is the default. Each sub-dictionary corresponds one-to-one with the keyword-only parameters of the corresponding chunker function; when adding new parameters, no dispatcher change is needed, just add a kwarg to the chunker function.
 
-### 4.5 Backward Compatibility for Missing Fields
+### 5.5 Backward Compatibility for Missing Fields
 
 Old documents at enqueue time don't yet have the `chunk_options` field; during chunking, the dispatcher calls `resolve_chunk_options(self.addon_params, process_options=…)` per the current `process_options` to fall back to a slim snapshot. After upgrading, it is recommended to run a reprocess once to give old documents a slim `chunk_options` snapshot (aligned with the current `process_options`).
 
-## 5. Storage and Directory Layout
+## 6. Storage and Directory Layout
 
-### 5.1 `full_docs` Fields
+### 6.1 `full_docs` Fields
 
 File enqueue and extraction results are written into `full_docs`:
 
@@ -520,14 +705,14 @@ File enqueue and extraction results are written into `full_docs`:
 | `lightrag_document_path` | When `parse_format=lightrag`, saves the path to the structured LightRAG Document; new records prefer to save the path relative to `INPUT_DIR`, e.g., `__parsed__/report.docx.parsed/report.blocks.jsonl`. Note that the subdirectories and the blocks filename in the path both use the canonicalized basename (without hint). |
 | `parse_engine` | The engine that actually completed extraction: `legacy`, `native`, `mineru`, `docling`. For files awaiting extraction, can also temporarily store the target engine. |
 | `process_options` | The original processing options string recorded at enqueue time (without engine name and the separator `-`), e.g., `"iet"`, `"R!"`, `""`. Downstream stages take this field as the authoritative source for deciding whether to enable image / table / equation analysis (`i/t/e`), whether to disable knowledge graph construction (`!`), and the chunking method (`F/R/V/P`). An empty string is equivalent to all defaults. |
-| `chunk_options` | The **frozen** snapshot of chunker parameters at enqueue time (slim dictionary: only the strategy sub-dictionary selected by `process_options` is retained, others discarded). Passed in by the SDK-path caller or assembled by `resolve_chunk_options(self.addon_params, process_options=…)` from instance fields (containing env defaults) as a fallback (see §4.1). `process_options` chooses which chunking strategy (F/R/V/P); `chunk_options` decides which parameters that chunker uses. The downstream `process_single_document` reads strategy-specific kwargs from this field before chunking; persistence guarantees that old documents behave reproducibly across env changes, resumes, and restarts. Rewritten together with `process_options` when re-parsing. |
+| `chunk_options` | The **frozen** snapshot of chunker parameters at enqueue time (slim dictionary: only the strategy sub-dictionary selected by `process_options` is retained, others discarded). Passed in by the SDK-path caller or assembled by `resolve_chunk_options(self.addon_params, process_options=…)` from instance fields (containing env defaults) as a fallback (see §5.1). `process_options` chooses which chunking strategy (F/R/V/P); `chunk_options` decides which parameters that chunker uses. The downstream `process_single_document` reads strategy-specific kwargs from this field before chunking; persistence guarantees that old documents behave reproducibly across env changes, resumes, and restarts. Rewritten together with `process_options` when re-parsing. |
 
 `pending_parse` indicates the file has been enqueued but extraction is not yet complete. After successful extraction, it is rewritten to `raw` or `lightrag`, and `content_hash` is filled in. On extraction failure, `pending_parse` and the empty `content` are kept, making subsequent troubleshooting and retry easier.
 
 > The original `file_path` (with hint), `canonical_basename`, and `content_hash` are also synchronized into `doc_status`, serving as the deduplication index sources for `get_doc_by_file_basename` / `get_doc_by_content_hash`. `get_doc_by_file_basename` internally canonicalizes the input through `canonicalize_parser_hinted_basename` before comparing against `canonical_basename`, so `abc.docx` and `abc.[native-iet].docx` always hit the same document.
 > `process_options` is also mirrored into `doc_status.metadata["process_options"]`, making it convenient for the management UI to directly display the current file's processing policy.
 
-### 5.2 `__parsed__` Directory Structure
+### 6.2 `__parsed__` Directory Structure
 
 `__parsed__` is the archival and analysis-result directory next to the input directory. It both stores already-processed original documents and the `LightRAG Document` (lightrag format) files and image assets produced by structured parsing.
 
@@ -540,7 +725,7 @@ File enqueue and extraction results are written into `full_docs`:
 - When duplicate content hashes are found during scanning or parsing, the input file is likewise moved to `__parsed__`; this `doc_status` entry is kept as `FAILED duplicate` for tracking.
 - File moves only act on the current input file and do not overwrite or move existing document source files. If a file with the same name already exists at the destination, the system automatically appends `_001`, `_002`, etc., e.g., `report.pdf` is archived as `report_001.pdf`, `report_002.pdf`. If the analysis result directory name is already taken by a regular file, a number is also appended, e.g., `report.docx.parsed_001/`.
 
-### 5.3 MinerU Raw Artifacts Directory `<base>.mineru_raw/`
+### 6.3 MinerU Raw Artifacts Directory `<base>.mineru_raw/`
 
 The `mineru` engine writes the complete artifacts returned by the MinerU service (`content_list.json` + optional `full.md` / `middle.json` / `layout.pdf` / `images/`, etc.) into the `__parsed__/<canonical filename>.mineru_raw/` directory during parsing, and writes `_manifest.json` as the integrity validation file.
 
@@ -578,7 +763,7 @@ Concurrency safety: LightRAG mandates `canonical_basename` uniqueness within the
 
 > About the "either side empty → skip" semantics of `engine_version` / `endpoint_signature`: when the field was empty at manifest-write time (e.g., `MINERU_ENGINE_VERSION` was not configured at first parse), or when the current environment variable is not set, the check is skipped for that item. If the version env was not set at first parse, setting it later does not automatically invalidate the historical cache — this scenario requires manually setting `LIGHTRAG_FORCE_REPARSE_MINERU=true` to trigger re-parsing.
 
-### 5.4 Docling Raw Artifacts Directory `<base>.docling_raw/`
+### 6.4 Docling Raw Artifacts Directory `<base>.docling_raw/`
 
 The `docling` engine extracts the zip artifact returned by docling-serve (DoclingDocument JSON, Markdown, and referenced images) into the `__parsed__/<canonical filename>.docling_raw/` directory during parsing, and writes `_manifest.json` as the integrity validation file. On a subsequent parse, the IR builder reads the `.json` file in that directory and feeds it to `DoclingIRBuilder`, no longer calling docling-serve.
 
@@ -626,13 +811,13 @@ Concurrency safety: identical to the MinerU path — LightRAG mandates `canonica
 - Any image in `artifacts/` missing or size mismatch;
 - `LIGHTRAG_FORCE_REPARSE_DOCLING=true`.
 
-> The "either side empty → skip" semantics of `engine_version` / `endpoint_signature` is the same as MinerU §5.3: when the field was empty at manifest-write time (first parse without `DOCLING_ENGINE_VERSION` configured) or when the current environment variable is not set, the check is skipped for that item; adding the version number later does not automatically invalidate the historical cache; `LIGHTRAG_FORCE_REPARSE_DOCLING=true` is needed to trigger.
+> The "either side empty → skip" semantics of `engine_version` / `endpoint_signature` is the same as MinerU §6.3: when the field was empty at manifest-write time (first parse without `DOCLING_ENGINE_VERSION` configured) or when the current environment variable is not set, the check is skipped for that item; adding the version number later does not automatically invalidate the historical cache; `LIGHTRAG_FORCE_REPARSE_DOCLING=true` is needed to trigger.
 
-## 6. Document Duplicate Detection Rules
+## 7. Document Duplicate Detection Rules
 
 File upload, file-parse enqueue, and the text APIs check duplicates against two gates: "filename + content hash". Hitting either is considered a duplicate, and a `FAILED` record is written without overwriting the existing `full_docs`. `/documents/scan` directory scanning uses the same set of indexes, but in order to facilitate automatic retry of unfinished files, it has separate archive and re-process rules for duplicate filenames.
 
-### 6.1 Filename (basename) Deduplication
+### 7.1 Filename (basename) Deduplication
 
 - The granularity of the check is basename, excluding directory path and workspace path. For example, `/data/a.pdf`, `inputs/a.pdf`, and `a.pdf` are all considered the same filename `a.pdf`.
 - Filename deduplication uses `canonical_basename` as the index: the supported-engine processing hint at the end of the filename is stripped before comparison, so `abc.docx`, `abc.[native].docx`, and `abc.[native-iet].docx` are considered the same name. Unsupported hints are not stripped; e.g., `abc.[draft].docx` is still treated by its original filename.
@@ -670,12 +855,12 @@ File upload, file-parse enqueue, and the text APIs check duplicates against two 
 - For ordinary upload and core enqueue APIs, a file with the same name — even if its content has changed — must have its old document record deleted before re-upload or re-enqueue; the automatic recoveries above (`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`) only apply to the directory-scan path.
 - Filesystem time is only a pre-persistence scan priority. The spool emits candidates globally oldest first; each sequential enqueue then stamps `doc_status.created_at=now()` at the actual first write. Once a file has entered doc_status, only the ordinary immutable `(created_at, id)` scheduling key matters and its filesystem mtime is discarded. An unreadable mtime sorts after every readable timestamp but does not lose the candidate; the enqueue path handles a vanished/unreadable file normally.
 - The text APIs must provide a valid `file_source`, and duplicates are checked by the basename of `file_source`; lacking a valid `file_source` returns 400 directly.
-- When the SDK path calls `insert` / `ainsert` / `apipeline_enqueue_documents` without `file_paths`, that is allowed; related behavior is detailed in §9.4. Such documents without a source have `file_path` saved as `unknown_source`.
+- When the SDK path calls `insert` / `ainsert` / `apipeline_enqueue_documents` without `file_paths`, that is allowed; related behavior is detailed in §11.4. Such documents without a source have `file_path` saved as `unknown_source`.
 - Empty strings, `no-file-path`, and `unknown_source` are all considered unknown sources; they do not block new source-less text from being enqueued, nor do they deduplicate each other as same-named files.
 
 The storage backend provides basename direct lookup via `get_doc_by_file_basename`, internally comparing against the `canonical_basename` field (the input parameter is first canonicalized through `canonicalize_parser_hinted_basename`). `JsonDocStatusStorage` already implements an in-memory traversal; other backends currently fall back to the default implementation (scanning all states and comparing `canonical_basename`), to be augmented with native indexes in subsequent PRs.
 
-### 6.2 Content Hash Deduplication
+### 7.2 Content Hash Deduplication
 
 - Documents with different filenames but identical extracted content are also considered duplicates. The hash here is the content hash of the final text or LightRAG Document obtained by the configured extraction engine; it is not the hash of the original file bytes.
 - `full_docs` and `doc_status` write or fill in the `content_hash` field according to the content format:
@@ -690,25 +875,25 @@ The storage backend provides basename direct lookup via `get_doc_by_file_basenam
 
 > Within an enqueue batch (the same `apipeline_enqueue_documents` call), basename and content_hash dedup are also performed; on hit, subsequent entries are written as `FAILED` directly and marked with `existing_status=batch_duplicate`. Basename dedup only applies to valid filenames; `unknown_source`, `no-file-path`, and empty sources only participate in content-hash dedup.
 >
-> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§7.8 enqueue serialization lock (preventing concurrent dedup leakage)](#78-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
+> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§8.8 enqueue serialization lock (preventing concurrent dedup leakage)](#88-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
 
-## 7. Pipeline Concurrency and Reentry Constraints
+## 8. Pipeline Concurrency and Reentry Constraints
 
 To prevent `scan` / `upload` / `insert` from overwriting `doc_status` / `full_docs` records of an in-flight pipeline, all write entry points coordinate via the `pipeline_status` shared dictionary. The `pipeline_status_lock` per workspace ensures that all transitions in the table below are completed atomically within the lock.
 
-### 7.1 `pipeline_status` Fields
+### 8.1 `pipeline_status` Fields
 
 | Field | Semantics |
 | --- | --- |
 | `busy` | Generic pipeline-busy flag. Both the processing loop and destructive jobs (clear/delete) set it. **`busy=True` (processing loop) alone does not block enqueue** — the loop pulls a `doc_status` snapshot per batch; work arriving mid-run is picked up via the workspace ingress mailbox (in-batch feeder + batch-boundary quiescence decision). |
-| `destructive_busy` | A destructive subset of `busy`: `/documents/clear` or `/documents/{doc_id}` (delete) is dropping storages / removing source files. Both reservation and the enqueue last-line guard reject — a concurrent enqueue would write to storage being torn down, and accepted documents would be silently lost. The processing loop does not set this field. |
+| `destructive_busy` | A destructive subset of `busy`: `/documents/clear` or `/documents/delete_document` is dropping storages / removing source files. Both reservation and the enqueue last-line guard reject — a concurrent enqueue would write to storage being torn down, and accepted documents would be silently lost. The processing loop does not set this field. |
 | `scanning` | The `/documents/scan` background task is running (entire lifecycle: classification stage + processing stage). Only the `/scan` endpoint uses it to reject overlapping scans; it does **not** itself block upload/insert. |
 | `scanning_exclusive` | An exclusive subset of `scanning`: True only during scan's **classification phase** — run_scanning_process is reading doc_status to classify (already processed / resume / delete stub / archive) and cannot interleave with concurrent writers. Both reservation and the enqueue last-line guard reject. After classification, the flag is cleared immediately, and concurrent uploads are allowed once scan enters the processing phase. |
 | `pending_enqueues` | The number of upload/insert calls that have passed `_reserve_enqueue_slot` but whose bg task has not completed. Used only by the scan endpoint — to decide whether to take the exclusive lock. The bg task releases the slot in `finally`. |
 
 Wake-up signals live **outside** `pipeline_status`, in the workspace **pipeline ingress mailbox** (`lightrag/kg/pipeline_ingress.py`, three channels: per-doc document messages / auto-rescan dirty flag / sticky manual retry requests). Enqueue publishes document messages under `pipeline_status_lock` after writing `doc_status`; a busy-refused processing request arms the auto-rescan flag inside the reservation's critical section; the running loop consumes these signals mid-batch (in-batch feeder) and at every batch boundary (atomic quiescence decision, which releases `busy` in the same critical section when all channels are empty). `doc_status` remains the source of truth — a dropped notification is recovered by the next run's initial strict scan.
 
-### 7.2 Entry Point Behavior
+### 8.2 Entry Point Behavior
 
 | Entry point | Condition | Behavior |
 | --- | --- | --- |
@@ -723,7 +908,7 @@ Wake-up signals live **outside** `pipeline_status`, in the workspace **pipeline 
 
 `from_scan=True` is a bypass for scan's own background-task enqueue: scan already holds the `scanning` flag, so it must be allowed to enqueue the files it has scanned.
 
-### 7.3 Why `busy` no longer blocks enqueue
+### 8.3 Why `busy` no longer blocks enqueue
 
 In the old version, `busy=True` always rejected any new enqueue, on the reasoning that "modifying `doc_status` would interleave with the pipeline worker thread." However, in practice:
 
@@ -733,13 +918,13 @@ In the old version, `busy=True` always rejected any new enqueue, on the reasonin
 
 With this mechanism enabled in the new contract, **users can continue to upload new documents during long batch processing**, and the bg task, after writing `doc_status`, will be automatically picked up by the running loop.
 
-### 7.4 Why scan is still the exclusive writer
+### 8.4 Why scan is still the exclusive writer
 
-scan not only enqueues the new files it finds, but also reads `doc_status` to decide what to do with each file (archive a `PROCESSED` one, keep a resume candidate, delete a stale stub and re-enqueue, …; the seven exits are listed in [§6.1](#61-filename-basename-deduplication)).
+scan not only enqueues the new files it finds, but also reads `doc_status` to decide what to do with each file (archive a `PROCESSED` one, keep a resume candidate, delete a stale stub and re-enqueue, …; the seven exits are listed in [§7.1](#71-filename-basename-deduplication)).
 
 These "read–decide–write" combinations cannot interleave with other writers; otherwise classification decisions would be based on a stale view. So the classification stage must be exclusive (`scanning_exclusive`), and the scan endpoint rejects when any of `busy` / `scanning` / `pending_enqueues>0` / an exclusive-reset freeze (`manual_freeze_requested`) / an earlier unserved manual retry request holds — the last one keeps a scan from jumping ahead of a queued manual retry.
 
-### 7.5 Strict name precheck (upload path)
+### 8.5 Strict name precheck (upload path)
 
 After upload passes the reservation but before saving the file, a two-pass check is required:
 
@@ -748,9 +933,9 @@ After upload passes the reservation but before saving the file, a two-pass check
 
 Both pass → save the file → schedule the bg task → bg task calls `apipeline_enqueue_documents` to write the store + calls `apipeline_process_enqueue_documents` to trigger processing.
 
-> The old version once allowed upload to silently write a FAILED duplicate entry when a same-name record existed; the new rule is fail-fast, leaving no duplicate traces in doc_status. To replace a same-name document, call the `/documents/{doc_id}` delete API first.
+> The old version once allowed upload to silently write a FAILED duplicate entry when a same-name record existed; the new rule is fail-fast, leaving no duplicate traces in doc_status. To replace a same-name document, call the `/documents/delete_document` API first.
 
-### 7.6 Coordination of Multiple Concurrent Reservations
+### 8.6 Coordination of Multiple Concurrent Reservations
 
 When two uploads arrive simultaneously (scan cannot acquire exclusivity at this time):
 
@@ -764,14 +949,14 @@ When two uploads arrive simultaneously (scan cannot acquire exclusivity at this 
 
 No bg task will be falsely rejected due to busy — because enqueue no longer checks busy; the processing loop will not process the same document twice — in-batch admission dedups against the routing/inflight registries, and the auto-rescan flag is consumed exactly once per quiescence decision.
 
-### 7.7 The `recovery_required` Fence
+### 8.7 The `recovery_required` Fence
 
 Some failures leave the workspace in a state where continuing would be a guess. Rather than pick one, the pipeline sets a `recovery_required` fence: **every** mutation (upload / text / scan / manual retry / delete / clear) is then refused with **HTTP 503** until an operator clears it. The fence is set in three situations:
 
 1. **A worker died mid `custom_chunks` / `delete` / `clear`.** Those operations may have half-committed, so their reservation is not simply re-run. (A dead `processing` / `scan` owner is re-runnable and is reclaimed silently instead — no fence.)
 2. **A manual retry's drain cannot reach idle.** `/documents/reprocess_failed` drains the pipeline to idle before its exclusive `FAILED → PENDING` reset, and two things stop that drain: active documents that keep coming back unchanged (re-checking could only spin), and active documents the drain can never advance at all — rows holding an **unfinished custom-chunk operation**, which only `/documents/scan`'s rollback resolves. Either way the reset does not run, the retry request is left un-acknowledged (so its one attempt per document is still owed), and the fence message carries a bounded sample of the blocking document ids. `recovery_kind` distinguishes them: `manual_drain_stalled` and `manual_drain_blocked`.
 
-   (`/documents/scan` does not perform this drain — see §7.4: it is granted its reservation only while the pipeline is idle and holds `scanning_exclusive` across classification, and its reset starts no worker, so remaining `PENDING` rows are inert rather than producers.)
+   (`/documents/scan` does not perform this drain — see §8.4: it is granted its reservation only while the pipeline is idle and holds `scanning_exclusive` across classification, and its reset starts no worker, so remaining `PENDING` rows are inert rather than producers.)
 3. **A reservation holder cannot be adjudicated.** Reclaiming a reservation requires proving its owning process is dead. A holder record with no process identity can never be proven either way, so its reservation is left untouched (never reclaimed on a guess) and the fence provides the way out.
 
 `GET /documents/pipeline_status` reports a sanitized projection — `recovery_required` (bool), `recovery_kind` (the coarse cause) and `recovery_message` (the same text the 503 carries, including the bounded blocker sample where the cause provides one). The raw fence record is never exposed: it sits alongside owner records carrying PIDs and reservation tokens, and a token authorizes releasing a reservation.
@@ -782,7 +967,7 @@ Clear the fence with:
 POST /documents/recovery/force_reset
 ```
 
-This is an **unsafe manual override** — it does not repair anything. Besides the fence it also **cancels the workspace's queued manual retry requests**, and that is required rather than incidental: a queued request makes `/documents/scan` refuse its reservation (a scan runs its own exclusive `FAILED` reset and may not jump the manual FIFO, §7.4), so clearing only the fence would leave the recovery path just as blocked. The response reports `cancelled_manual_retries`. No document is lost — failed documents stay `FAILED` and are retried by the next request or by the scan's own reset.
+This is an **unsafe manual override** — it does not repair anything. Besides the fence it also **cancels the workspace's queued manual retry requests**, and that is required rather than incidental: a queued request makes `/documents/scan` refuse its reservation (a scan runs its own exclusive `FAILED` reset and may not jump the manual FIFO, §8.4), so clearing only the fence would leave the recovery path just as blocked. The response reports `cancelled_manual_retries`. No document is lost — failed documents stay `FAILED` and are retried by the next request or by the scan's own reset.
 
 Because both halves are required, the call is **all-or-nothing**: if the queued retries cannot be cancelled it returns **503** with the fence untouched, so a retry can complete the recovery instead of the API reporting one that did not happen.
 
@@ -796,7 +981,7 @@ Recovery order:
 
 Restarting the whole service also clears the fence and the queued requests, since both are runtime coordination state and neither is persisted.
 
-### 7.8 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
+### 8.8 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
 
 Inside `apipeline_enqueue_documents`, "read doc_status to dedupe → write `full_docs` / `doc_status`" runs serially under the workspace-level `enqueue_serialize` lock. Reason: now that concurrent enqueue is allowed during the busy/scan-processing phases, two enqueues with identical content but different filenames (typical scenario: a scan-processing-phase enqueue and an upload arriving together) would, without the lock, race as follows —
 
@@ -816,7 +1001,7 @@ With the serialization lock, the second enqueue's dedup read is guaranteed to se
 
 The lock does **not** cover the ingress document publish (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
 
-### 7.9 Pipeline Concurrency Parameters
+### 8.9 Pipeline Concurrency Parameters
 
 The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
 
@@ -855,13 +1040,34 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 - Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
 - Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).
 
-## 8. Pipeline Resume Rules at Startup
+### 8.10 Admission and Request Limits
+
+Before a document reaches any of the machinery above, the server can refuse it outright. These are the variables behind an upload that is rejected rather than queued:
+
+| Variable | Default | Refusal |
+| --- | --- | --- |
+| `MAX_UPLOAD_SIZE` | `104857600` (100 MB) | `413` — single uploaded file too large |
+| `MAX_REQUEST_BODY_BYTES` | `0` (disabled) | `413` — raw request body too large, checked independently of the above |
+| `MAX_TEXTS_PER_REQUEST` | `0` (disabled) | `413` — too many texts in one `/documents/texts` call |
+| `MAX_PENDING_DOCUMENTS` | `0` (disabled) | `429` — too many documents already PENDING / PARSING / ANALYZING / PROCESSING |
+
+Their full semantics, including how `MAX_UPLOAD_SIZE` interacts with a reverse proxy's own body limit, are documented in [LightRAG Server](./LightRAG-API-Server.md).
+
+Three further knobs belong to the pipeline itself rather than to request admission:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PIPELINE_SCHEDULING_PAGE_SIZE` | `500` | keyset page size for the doc-status backlog sweep; `0` disables paging |
+| `PIPELINE_REQUIRE_STRICT_STORAGE_READS` | `false` | refuse to start when the doc-status backend cannot serve strict reads. This is what decides whether the `STALE_STUB` exit in §7.1 can act at all — without a reliable point read, nothing is deleted |
+| `MAX_UNACKED_MANUAL_RETRIES` | `64` | per-workspace ceiling on published-but-unacknowledged manual retry requests (§8.7) |
+
+## 9. Pipeline Resume Rules at Startup
 
 Each time `apipeline_process_enqueue_documents` starts up, it pulls all documents in `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` to continue processing. The resume path **branches by "whether content has been extracted"**, ensuring that any document, regardless of its previous progress, has an idempotent result when resumed under the current `process_options`.
 
 The resume rule only applies to documents whose `doc_id` already exists in `doc_status`. New files joining the queue require the file dedup logic in "Concurrency and Reentry Constraints", to avoid new files squeezing out the records of files whose content has already been successfully extracted.
 
-### 8.1 Determining "Content Has Been Extracted"
+### 9.1 Determining "Content Has Been Extracted"
 
 Read `full_docs[doc_id]`:
 
@@ -871,11 +1077,11 @@ Read `full_docs[doc_id]`:
 | `raw` and `content` is non-empty | ✅ extracted |
 | Other (including `pending_parse`, missing record) | ❌ not extracted |
 
-### 8.2 Branch A: Not Extracted
+### 9.2 Branch A: Not Extracted
 
 Go through the full pipeline (registry-dispatched parsing `get_parser(engine).parse(...)` → `analyze_multimodal` → chunking → entity extraction), with each stage's behavior determined by `full_docs.process_options`. This is the normal flow of a "first-time enqueue".
 
-### 8.3 Branch B: Already Extracted
+### 9.3 Branch B: Already Extracted
 
 **Always skip parsing** (do not call `parse_*` again), restart from the ANALYZING stage, clear old chunks / entities, and redo per the current `process_options`:
 
@@ -889,11 +1095,37 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 
 > This rule guarantees: when users change `i/t/e` and re-upload the same-named document (delete the old doc first, then upload the file with the new hint), multimodal analysis is incrementally filled in; when changing `F/R/V/P`, chunks and graph are rebuilt; when changing `!`, KG construction is stopped or restored. Engine changes are considered a "major change", uniformly handled by delete + re-upload, not implicitly happening on the resume path.
 
-## 9. Python SDK Invocation
+## 10. Troubleshooting
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| Upload rejected as an unsupported type | The extension is not in the live allowlist. Declaring `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` alone does not make a bare `x.doc` uploadable (§3.1) | Add a routing rule or a per-file hint; confirm with `GET /documents/supported_file_types` |
+| Server refuses to start after editing `LIGHTRAG_PARSER` | Startup validation is strict: unknown engine, malformed syntax, external engine without an endpoint, or a bad engine / chunk parameter (§2.6, §2.7, §2.8) | Read the startup error — it names the offending rule |
+| A rule seems ignored; everything is parsed by `legacy` | The engine failed a usability check and the rule was skipped: either it does not support that extension, or its endpoint / token is unset (§2.8) | Configure the endpoint, or route the extension to an engine that supports it |
+| A filename hint is ignored and a warning is logged | Illegal characters inside the brackets, or the options-only form written without its leading hyphen (§2.5) | Use `[-OPTIONS]`, e.g. `report.[-teP].docx` |
+| `i` / `t` / `e` enabled but nothing was analyzed | The sidecar does not exist — the document has no such content, or the engine does not emit it (`MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`, `DOCLING_DO_FORMULA_ENRICHMENT`; `legacy` emits none) | Look for the INFO line naming the empty sidecar, and inspect `*.parsed/` (§4.2) |
+| Document FAILED with "VLM analysis required but VLM role is not available" | `i` is enabled and an image passed the pre-filters while no VLM is configured (§4.3) | Set `VLM_PROCESS_ENABLE=true` with a vision-capable binding, **or** delete the document and re-upload it with `te` — retrying will not drop `i` |
+| Some images are analyzed, others silently are not | Non-raster format, below `VLM_MIN_IMAGE_PIXEL`, or above `VLM_MAX_IMAGE_BYTES` (§4.3) | Read the item's `llm_analyze_result` message; raise the byte cap if the image is legitimate |
+| Multimodal items fail on a token budget | The surrounding budgets leave too little for the item itself (§4.4) | Raise `MAX_EXTRACT_INPUT_TOKENS`, or lower `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
+| `P` was requested but the chunks look like `R` output | No structured `LightRAG Document` was produced, so `P` degraded (§2.8, §3.2) | Route the file to `native` / `mineru` / `docling` instead of `legacy` |
+| Headings are wrong in a `.docx`, so `P` splits badly | The document's Word outline is unreliable | Try `native(smart_heading=true)` (§3.3) and iterate with the parser CLI |
+| Log notes that paragraphs lack `paraId` | Produced by LibreOffice / WPS / older Word (§3.3) | Informational. Re-save in Word 2013+ only if you need paragraph-level provenance |
+| Document is FAILED as a duplicate | Basename dedup (canonicalized, hint stripped) or content-hash dedup (§7.1, §7.2) | Delete the existing document first, or rename the new file |
+| Upload returns `409` | A document with the same canonical basename already exists in the input directory or in doc-status (§8.5) | Delete it via `POST /documents/delete_document`, then upload again |
+| Upload returns `413` or `429` | An admission limit was hit (§8.10) | See the limits table for which one |
+| Everything returns `503` | The `recovery_required` fence is up (§8.7) | Follow the recovery order documented in that section |
+| `/documents/scan` returns `scanning_skipped_pipeline_busy` | The pipeline is busy or scanning, uploads are in flight, or a manual retry is queued (§8.2) | Wait for idle; `POST /documents/reprocess_failed` is the single-call recovery for a stuck retry request |
+| Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Automatic resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§9.3) | Delete the document (with "also delete file") and upload it again |
+| An external engine keeps returning stale output after fixing its service config | The raw-artifact bundle cache was hit (§6.3, §6.4) | Set the matching `LIGHTRAG_FORCE_REPARSE_*` flag (§3.6), or delete the document with "also delete file" |
+| A scanned PDF fails with "extracted no usable text" | `legacy` cannot read a PDF with no text layer (§3.2) | Route it to `mineru` or `docling` with OCR enabled |
+| MinerU rejects a multi-segment page range | Multi-segment ranges require `official` mode; `local` accepts a single page or one simple range (§2.7) | Use a single range under `local`, or switch modes |
+| Startup fails asking for spaCy models | `DOCX_SMART_HEADING=true`, or a rule carrying `native(smart_heading=true)`, triggers a fail-fast model check (§3.3) | Run `lightrag-download-cache --spacy --spacy-install`, or use the main Docker image, which bundles them |
+
+## 11. Python SDK Invocation
 
 This chapter targets developers who **directly import the `LightRAG` class** for integration, covering runtime APIs, constructor parameters, and removed legacy interfaces that Server deployments don't use. Server users usually don't need to read this chapter.
 
-### 9.1 Audience
+### 11.1 Audience
 
 ```python
 from lightrag import LightRAG
@@ -904,15 +1136,15 @@ await rag.ainsert("text", file_paths="doc.pdf")
 
 The following behaviors of this invocation style differ from the Server path: you can change `addon_params["chunker"]` without restarting the process, you can pass per-file `chunk_options` into `apipeline_enqueue_documents`, and you can dynamically override the F strategy's pre-split parameters in an `ainsert` call.
 
-### 9.2 LightRAG Constructor Parameters
+### 11.2 LightRAG Constructor Parameters
 
-`LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)` is **tier 3** in §4.3's priority chain: "legacy constructor field". Strategy-agnostic and coarse-grained default, fills only slots still empty:
+`LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)` is **tier 3** in §5.3's priority chain: "legacy constructor field". Strategy-agnostic and coarse-grained default, fills only slots still empty:
 
-- Lower priority than `addon_params["chunker"]` explicit values (§9.3) and strategy-specific env (§4.2).
+- Lower priority than `addon_params["chunker"]` explicit values (§11.3) and strategy-specific env (§5.2).
 - Higher priority than the legacy env `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`.
 - The instance fields `self.chunk_token_size` / `self.chunk_overlap_token_size` are always back-filled to `int` after `__post_init__`, so legacy paths still reading these two fields (e.g., the `chunk_opts.get("chunk_token_size") or self.chunk_token_size` fallback in `pipeline.py`) continue to work.
 
-### 9.3 Modifying `addon_params["chunker"]` at Runtime
+### 11.3 Modifying `addon_params["chunker"]` at Runtime
 
 `addon_params["chunker"]` is an `ObservableAddonParams` field; it can be **modified at runtime**:
 
@@ -920,11 +1152,11 @@ The following behaviors of this invocation style differ from the Server path: yo
 rag.addon_params["chunker"]["recursive_character"]["separators"] = ["##", "\n", " "]
 ```
 
-After modification, **subsequent enqueues** get the new defaults; already-enqueued documents keep the snapshot from their enqueue moment (see the three layers of semantic guarantee in §4.3). This is tier 1 of §4.3's priority chain: "`addon_params["chunker"]` explicit value", winning everything.
+After modification, **subsequent enqueues** get the new defaults; already-enqueued documents keep the snapshot from their enqueue moment (see the three layers of semantic guarantee in §5.3). This is tier 1 of §5.3's priority chain: "`addon_params["chunker"]` explicit value", winning everything.
 
 Server deployments do not have this capability — after changing env, the service must be restarted for it to take effect.
 
-### 9.4 `apipeline_enqueue_documents(chunk_options=…)`
+### 11.4 `apipeline_enqueue_documents(chunk_options=…)`
 
 `apipeline_enqueue_documents` accepts an optional `chunk_options` argument. When the caller passes a `dict` / `list[dict]`, it is projected by the current document's `process_options` into a slim snapshot (keeping only the corresponding strategy sub-dictionary + top-level `chunk_token_size`) before being persisted to `full_docs[doc_id]["chunk_options"]`; when not passed, `resolve_chunk_options(self.addon_params, process_options=…)` assembles one on the spot. Callers can safely pass the full dictionary — the other strategies' sub-dictionaries will be discarded by the dispatcher and won't pollute the store.
 
@@ -946,9 +1178,9 @@ Typical scenarios for per-file personalization: a management UI configures separ
 
 **Compatibility for not passing `file_paths`**: the core APIs `insert` / `ainsert` / `apipeline_enqueue_documents` still support invocations without `file_paths`; the `file_path` of such documents is saved as `unknown_source`, does not participate in filename dedup, and the document ID continues to be generated from text content.
 
-For `apipeline_enqueue_documents`'s own concurrency constraints (last-line guard, `from_scan=True` bypass), see the entry-point behavior table in §7.2.
+For `apipeline_enqueue_documents`'s own concurrency constraints (last-line guard, `from_scan=True` bypass), see the entry-point behavior table in §8.2.
 
-### 9.5 `ainsert(split_by_character=…, split_by_character_only=…)`
+### 11.5 `ainsert(split_by_character=…, split_by_character_only=…)`
 
 `LightRAG.ainsert(split_by_character=…, split_by_character_only=…)` runtime parameters are overridden into `chunk_options.fixed_token` by `resolve_chunk_options` at enqueue time:
 
@@ -957,12 +1189,12 @@ For `apipeline_enqueue_documents`'s own concurrency constraints (last-line guard
 
 Only effective for the F strategy; other strategies' sub-dictionaries are unaffected.
 
-### 9.6 Removed SDK Parameter: `reprocess_existing_non_processed`
+### 11.6 Removed SDK Parameter: `reprocess_existing_non_processed`
 
-The legacy `apipeline_enqueue_documents` behavior of `reprocess_existing_non_processed=True` would directly delete non-PROCESSED old records and rebuild them during scan, which conflicts with the rules in §6 / §7; it has been entirely removed. Replacement paths:
+The legacy `apipeline_enqueue_documents` behavior of `reprocess_existing_non_processed=True` would directly delete non-PROCESSED old records and rebuild them during scan, which conflicts with the rules in §7 / §8; it has been entirely removed. Replacement paths:
 
-- Automatic resume: scan handles same-named files per the classification rules in §6.1 (archive / resume / delete stub then re-enqueue), uniformly picked up by the resume rules in §8 inside the processing loop.
-- Forced refresh: first call `/documents/{doc_id}` to delete the old document, then upload the same-named new file.
+- Automatic resume: scan handles same-named files per the classification rules in §7.1 (archive / resume / delete stub then re-enqueue), uniformly picked up by the resume rules in §9 inside the processing loop.
+- Forced refresh: first call `/documents/delete_document` to delete the old document, then upload the same-named new file.
 
 ## Appendix A. Notes on Upgrading from Legacy
 
@@ -972,7 +1204,7 @@ The legacy `apipeline_enqueue_documents` behavior of `reprocess_existing_non_pro
 
 Migration: replace the old global switch with the corresponding letters on your routing rules — for example `LIGHTRAG_PARSER=*:native-iteP,*:legacy-R`. Note that `VLM_PROCESS_ENABLE` is a separate, orthogonal switch: it gates **image** analysis only (tables and equations are analyzed by the `EXTRACT` role), and with `i` enabled but no VLM available an image that passes the pre-filters fails the document rather than being skipped.
 
-Documents ingested before the upgrade keep the `process_options` frozen into their `doc_status` record at enqueue time; changing rules or hints does not retroactively alter them. To re-process an existing document under new options, delete it and upload it again (§8.3).
+Documents ingested before the upgrade keep the `process_options` frozen into their `doc_status` record at enqueue time; changing rules or hints does not retroactively alter them. To re-process an existing document under new options, delete it and upload it again (§9.3).
 
 ### A.2 Behavior defaults are unchanged unless you opt in
 
@@ -980,4 +1212,26 @@ With `LIGHTRAG_PARSER` unset, every extension still routes to the `legacy` conte
 
 ### A.3 Removed SDK parameter
 
-`apipeline_enqueue_documents(reprocess_existing_non_processed=...)` has been removed; see §9.6 for the replacement paths.
+`apipeline_enqueue_documents(reprocess_existing_non_processed=...)` has been removed; see §11.6 for the replacement paths.
+
+## Appendix B. Environment Variable Quick Reference
+
+Where to find each family of file-processing variables. This is an index, not a duplicate: the authoritative per-variable comments live in [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example).
+
+| Family | Variables | Documented in |
+| --- | --- | --- |
+| Routing | `LIGHTRAG_PARSER` | §2.3, §2.4, §2.5 |
+| Chunking | `CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`, `CHUNK_{F,R,V,P}_*` | §5.2 |
+| Multimodal | `VLM_PROCESS_ENABLE`, `VLM_MAX_IMAGE_BYTES`, `VLM_MIN_IMAGE_PIXEL`, `MAX_EXTRACT_INPUT_TOKENS`, `SURROUNDING_*_MAX_TOKENS`, `MM_EXTRACT_CONTENT_MIN_TOKENS` | §4 |
+| VLM / role models | `VLM_LLM_*`, `VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration.md](RoleSpecificLLMConfiguration.md) |
+| legacy engine | `PDF_DECRYPT_PASSWORD` | §3.2 |
+| native engine | `NATIVE_MD_IMAGE_*` | §3.3 |
+| native docx smart_heading | `DOCX_SMART_HEADING`, `DOCX_SMART_*` tuning | §3.3 and the smart_heading block of `env.example` |
+| MinerU | `MINERU_*` | §3.4 |
+| Docling | `DOCLING_*` | §3.5 |
+| Parse cache | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`, `{MINERU,DOCLING}_ENGINE_VERSION` | §3.6, §6.3, §6.4 |
+| Directories | `INPUT_DIR`, `WORKING_DIR`, `SCAN_SPOOL_DIR` | §6, §7.1 |
+| Concurrency | `MAX_PARALLEL_*`, `QUEUE_SIZE_*` | §8.9 |
+| Admission and limits | `MAX_UPLOAD_SIZE`, `MAX_REQUEST_BODY_BYTES`, `MAX_TEXTS_PER_REQUEST`, `MAX_PENDING_DOCUMENTS`, `PIPELINE_*`, `MAX_UNACKED_MANUAL_RETRIES`, `SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |
+| Query-time (not chunking) | `ENABLE_CONTENT_HEADINGS` — appends each chunk's heading path when assembling the answer context; it does not change chunk boundaries or stored chunk text | [LightRAG Server](./LightRAG-API-Server.md) |
+| Offline / tokenizer | `TIKTOKEN_CACHE_DIR` | [OfflineDeployment.md](./OfflineDeployment.md) |

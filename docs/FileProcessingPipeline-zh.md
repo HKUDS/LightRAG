@@ -8,21 +8,23 @@
 
 LightRAG Server引入了一个文件处理的中间格式： `LightRAG Document` 。该格式支持表格和图片等多模态数据，同时包含文章的章节段落元数据，方便日后进行内容溯源。
 
-本文以 **LightRAG Server** 的部署与使用视角组织：先给出快速开始可直接套用的配置，再展开内容抽取与分块的配置语法、存储 / 目录布局、去重、并发以及续跑规则。直接通过 Python 代码调用 `LightRAG` 类的开发者请翻到[第九章 Python SDK 调用](#9-python-sdk-调用)。
+本文以 **LightRAG Server** 的部署与使用视角组织：先给出快速开始可直接套用的配置，再展开内容抽取与分块的配置语法、存储 / 目录布局、去重、并发以及续跑规则。直接通过 Python 代码调用 `LightRAG` 类的开发者请翻到[第十一章 Python SDK 调用](#11-python-sdk-调用)。
 
 ## 目录
 
 - [1. 快速开始](#1-快速开始)
 - [2. 处理选项与配置语法](#2-处理选项与配置语法)
 - [3. 文件解析引擎](#3-文件解析引擎)
-- [4. 分块器参数配置（chunk_options）](#4-分块器参数配置chunk_options)
-- [5. 存储与目录布局](#5-存储与目录布局)
-- [6. 文档重复判定规则](#6-文档重复判定规则)
-- [7. 流水线并发与重入约束](#7-流水线并发与重入约束)
-- [8. 流水线启动时的续跑规则](#8-流水线启动时的续跑规则)
-- [9. Python SDK 调用](#9-python-sdk-调用)
+- [4. 多模态分析（VLM）](#4-多模态分析vlm)
+- [5. 分块器参数配置（chunk_options）](#5-分块器参数配置chunk_options)
+- [6. 存储与目录布局](#6-存储与目录布局)
+- [7. 文档重复判定规则](#7-文档重复判定规则)
+- [8. 流水线并发与重入约束](#8-流水线并发与重入约束)
+- [9. 流水线启动时的续跑规则](#9-流水线启动时的续跑规则)
+- [10. 常见问题排查](#10-常见问题排查)
+- [11. Python SDK 调用](#11-python-sdk-调用)
 - [附录 A：从旧版升级的注意事项](#附录-a从旧版升级的注意事项)
-
+- [附录 B：环境变量速查](#附录-b环境变量速查)
 ## 1. 快速开始
 
 ### 1.1 保持旧版文件处理行为
@@ -54,6 +56,60 @@ MINERU_LOCAL_ENDPOINT=http://localhost:8000
 ```
 
 > `P`分块策略是LightRAG原生的分块策略，详情请参阅[Paragraph Semantic 分块策略](ParagraphSemanticChunking-zh.md)。VLM的配资请参阅[基于角色的 LLM/VLM 配置指南](RoleSpecificLLMConfiguration-zh.md)
+
+
+### 1.4 逐字段读懂一条预设
+
+`LIGHTRAG_PARSER` 用逗号分隔的每一项都是一条路由规则，按文件后缀从左到右匹配，第一条可用的规则胜出。把 `*:native-iteP,*:legacy-R` 拆开看：
+
+```
+*  :  native  -  iteP
+│     │          │
+│     │          └─ 处理选项：i/t/e 分别开启图片、表格、公式分析；
+│     │             P 选择段落语义分块器
+│     └─ 内容抽取引擎
+└─ 规则适用的后缀；`*` 匹配任意后缀
+```
+
+所以第一条规则的意思是"任何文件都交给 `native` 解析，三种模态全部分析，用 `P` 分块"，第二条是"第一条处理不了的，退回 `legacy` 并用 `R` 分块"。当引擎不支持该后缀、或外部引擎没有配置服务端点时，该规则会被跳过——这正是 `*:native-iteP` 实际只接管 `docx` / `md` / `textpack`、其余文件全部落到 `legacy` 的原因。
+
+完整语法见 §2.3，选项字母见 §2.1，各引擎见 §3。
+
+### 1.5 第一次运行：跑通一个文档并确认成功
+
+一条不依赖任何外部服务的冒烟路径——一个 `.docx`，不需要 MinerU、docling、VLM：
+
+```bash
+LIGHTRAG_PARSER=*:native-teP,*:legacy-R
+```
+
+**1. 先验证路由，别浪费一次解析。** 写错的 `LIGHTRAG_PARSER` 在启动时就会失败（§2.8）。服务起来后，`GET /documents/supported_file_types` 返回**服务端实际解析出的**后缀白名单与引擎-后缀映射，不入库一个文件就能确认规则是否生效。
+
+**2. 把文件送进来。** 要么 `POST /documents/upload`（文件存入 `INPUT_DIR`，响应带 `track_id`），要么把文件放进 `INPUT_DIR` 后调 `POST /documents/scan`。想对单个文件试不同配置又不改 `.env`，就用文件名 hint：`report.[native-teP].docx`（§2.5）。
+
+**3. 看进度。** `GET /documents/track_status/{track_id}` 看这次上传，`GET /documents/pipeline_status` 看实时日志，`GET /documents/status_counts` 看整批。状态阶梯是 `PENDING → PARSING → ANALYZING → PROCESSING → PROCESSED`。
+
+**4. 产物落在哪。** 全部在 `INPUT_DIR/__parsed__/` 下（§6.2）。以 `report.[native-teP].docx` 为例：
+
+```
+__parsed__/report.[native-teP].docx   # 归档的原件，保留 hint
+__parsed__/report.docx.parsed/        # 规范名，已剥掉 hint
+    report.blocks.jsonl               # 首行是 meta，其余是内容块
+    report.tables.json                # 仅当文档确实有表格
+    report.equations.json             # 仅当文档确实有公式
+    report.blocks.assets/             # 导出的图片
+```
+
+**5. 验证解析**，按这个顺序：
+
+1. `*.blocks.jsonl` 首行是 `meta` 记录。
+2. 内容行的标题结构合理——这正是 `P` 的切分依据。
+3. 你预期的 sidecar 存在。缺失意味着文档没有该类内容，或该引擎不产出它（`legacy` 一个都不产出，见 §3.2）。
+4. 你启用了分析的那些 sidecar item 带有 `"llm_analyze_result": {"status": "success"}`。这里是 `skipped` 或 `failure`，就是"为什么我的图片/表格没进知识图谱"的答案（§4.3）。
+
+**6. 验证分块与入库。** `GET /documents/paginated` 的 `chunks_count` 是分块数；doc_status 记录里的 `metadata.parse_engine` 与 `metadata.process_options` 表明**实际生效的**引擎和选项，这是发现"hint 被静默判为无效"最快的办法（§2.8）。
+
+**失败了怎么办：** 源文件**留在 `INPUT_DIR`**，改完配置可以重新扫描。doc_status 记录上的 `error_msg` 是诊断入口，§10 列出了常见的几种。注意引擎与处理选项都在入队时就已冻结——改 `LIGHTRAG_PARSER` 或改 hint 都不影响已有记录，要用新配置重跑就得删除文档后重新上传（§9.3）。想脱离服务器离线复现一次解析，用 `python -m lightrag.parser.cli`（[ParserDebugCLI-zh.md](./ParserDebugCLI-zh.md)）。
 
 ## 2. 处理选项与配置语法
 
@@ -177,7 +233,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 | `chunk_overlap_token_size` | `chunk_ol` | F / R / P | int（≥ 0） | 块间重叠（V 无重叠） |
 | `drop_references` | `drop_rf` | P | bool | 分块前丢弃匹配的参考文献块，如 `paper.[-P(drop_rf=true)].pdf`；布尔参数可省略取值，`paper.[-P(drop_rf)].pdf` 等价于 `drop_rf=true` |
 
-- `process_options` 仍是纯选择符字符串；每个参数会写入该策略的 `chunk_options`（见 §4），策略其它来自环境变量的参数保持不变。别名在内部统一归一化为全称。
+- `process_options` 仍是纯选择符字符串；每个参数会写入该策略的 `chunk_options`（见 §5），策略其它来自环境变量的参数保持不变。别名在内部统一归一化为全称。
 - 合并优先级：选择符仍遵循“文件名 hint 的非空选项整体覆盖规则选项”；参数按**同一策略**叠加——先规则参数，再文件名 hint 参数（同一键以文件名为准）。
 - 启动期（`LIGHTRAG_PARSER`）与上传期（文件名 hint）均严格校验：未知参数、类型错误、取值越界、把参数加到不支持的策略（如 `V` 上的 `chunk_ol`）都会给出友好报错。
 
@@ -202,7 +258,7 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 | `mineru` | `language` | — | str | OCR / 模型语言（如 `en`、`ch`） |
 | `mineru` | `local_parse_method` | `local_pm` | 枚举 | `auto` / `txt` / `ocr`（local 模式） |
 | `docling` | `force_ocr` | `ocr` | bool | `true` / `false`；可省值裸写，`docling(ocr)` 等价于 `docling(force_ocr=true)` |
-| `native` | `smart_heading` | — | bool | 可选开启的 docx 智能标题识别（见 [§3.2](#32-使用-native-文件解析引擎)）；可省值裸写，`native(smart_heading)` 等价于 `=true`；markdown 路径会告警并忽略 |
+| `native` | `smart_heading` | — | bool | 可选开启的 docx 智能标题识别（见 [§3.3](#33-使用-native-文件解析引擎)）；可省值裸写，`native(smart_heading)` 等价于 `=true`；markdown 路径会告警并忽略 |
 
 - **`page_range` 可写多个页码段——每段都单独写一个 `page_range=...`。** 括号 `(...)` 内逗号只分隔参数，因此多段页码要写成 `page_range=1-3,page_range=5,page_range=7-9`，不要写成环境变量里的单串形式 `MINERU_PAGE_RANGES="1-3,5,7-9"`。**多段** `page_range` 需要 `MINERU_API_MODE=official`；`local` 模式只接受单页/单段（如 `page_range=1-3`）。
 - **`local_parse_method` 仅限 local 模式。** 它只影响本地 MinerU 请求，因此在 `MINERU_API_MODE=official` 下会被**拒绝**（official API 既不发送它、也不计入缓存键——接受它将静默无效）。
@@ -240,7 +296,16 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 
 LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重复上传相同的文件通常不会重新调用引擎解析文档。如果需要删除解析缓存，必须在文档管理界面删除文件弹窗中点击“同时删除文件”选项。修改 `mineru` 和 `docling` 引擎的端点地址和有效提取参数也会导致缓存失效，下次上传相同文件的时候会重新调用引擎解析文件内容。
 
-### 3.2 使用 Native 文件解析引擎
+### 3.2 使用 legacy 内容抽取器
+
+`legacy` 是除 `.textpack`（路由层强制交给 `native`）之外所有后缀的兜底引擎，也是不配置 `LIGHTRAG_PARSER` 时的默认行为。它只抽取纯文本，由此带来四个在把文件路由给它之前值得先知道的后果：
+
+- **它永不产出 sidecar。** 输出是 `parse_format=raw`，不存在 `drawings.json` / `tables.json` / `equations.json` 供分析阶段读取。因此 `i` / `t` / `e` 选项对 legacy 解析的文档完全无效，`P` 也会因为没有标题结构可切而退化为 `R`（§2.8）。
+- **它没有原始缓存目录**，所以 `LIGHTRAG_FORCE_REPARSE_*` 对它不适用（§3.6）。
+- **它唯一的配置项是 `PDF_DECRYPT_PASSWORD`**，用于打开受密码保护的 PDF。
+- **无文本层的扫描版 PDF 会硬失败**，而不是产出一个空文档。这类文件应改路由到能做 OCR 的 `mineru` 或 `docling`。
+
+### 3.3 使用 Native 文件解析引擎
 
 `native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。为 docx 启用可选的 `smart_heading` 引擎参数时，额外需要钉定版本的 `zh_core_web_sm` / `en_core_web_sm` spaCy 模型（`spacy` 运行时已随 `api` extra 一并安装，模型用 `lightrag-download-cache --spacy --spacy-install` 安装——Docker 主镜像已内置）；从不启用该参数的部署无需模型，另外 smart_heading 路径会在解析阶段调用 EXTRACT 角色 LLM。设置环境变量 `DOCX_SMART_HEADING=true` 后，路由到 native 引擎的 `.docx` 文件默认启用 smart_heading——单个文件/规则可用显式 `native(smart_heading=false)` 关闭——同时服务器会在启动时校验 spaCy 模型并 fail-fast（而不是等到首次解析才报错）；`LIGHTRAG_PARSER` 规则中携带 `native(smart_heading=true)`（或其省值写法 `native(smart_heading)`）时同样触发启动校验。该默认值仅作用于新上传：已入库文档重解析时沿用其持久化的引擎参数。
 
@@ -251,7 +316,7 @@ LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重�
 
 #### docx 抽取能力
 
-native 直接解析 OOXML，能识别以下结构并写入对应 sidecar（sidecar 是否生成由文档实际内容决定，见 [§5.2](#52-__parsed__-目录结构)）：
+native 直接解析 OOXML，能识别以下结构并写入对应 sidecar（sidecar 是否生成由文档实际内容决定，见 [§6.2](#62-__parsed__-目录结构)）：
 
 | 元素 | 抽取行为 | 落盘 |
 | --- | --- | --- |
@@ -304,7 +369,7 @@ native 的所有 `NATIVE_*` 环境变量与 `.native_raw/` 缓存目录**仅作�
 
 下载的外链图片缓存到 `<文件>.native_raw/`（与 `.parsed/` 同级，类比 `.mineru_raw`/`.docling_raw`），重新解析同一未改动文件时直接复用、不再联网；源文件内容或上述大小 / SVG 像素 / CIDR 配置变化时缓存自动失效。删除文档（删除弹窗勾选「同时删除文件」）时该缓存目录会与 `.parsed/` 一并清理。
 
-### 3.3 使用 MinerU 文件解析引擎
+### 3.4 使用 MinerU 文件解析引擎
 
 LightRAG文档处理管线支持使用MinerU作为文件解析器。支持使用两种MinerU访问模式：
 
@@ -323,11 +388,49 @@ MINERU_API_MODE=local
 MINERU_LOCAL_ENDPOINT=http://<your_mineru_local_server_ip>:8000
 ```
 
-其余MinerU的详细配置请参考仓库根目录环境变量示例文件 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) 中的 MinerU 小节。针对 `official` 和 `local` 两种模式，分别有不同的环境变量配置。需要仔细阅读示例文件中的说明。
+两种模式都生效的共享参数：
+
+| 环境变量 | 缺省 | 含义 |
+| --- | --- | --- |
+| `MINERU_LANGUAGE` | `ch` | OCR / 解析语言 |
+| `MINERU_ENABLE_TABLE` | `true` | 表格识别。**它决定 `tables.json` 是否会被写出**——比 §2.1 的 `t` 选项早一个阶段，后者只决定已存在的 sidecar 是否被分析 |
+| `MINERU_ENABLE_FORMULA` | `true` | 公式识别；与 `e` 选项是同样的关系 |
+| `MINERU_PAGE_RANGES` | （空） | 页码范围。`official` 原样透传，支持 `1-3,5,7-9`；`local` 只接受单页或一个简单区间，逗号列表在启动期就会被拒绝 |
+| `MINERU_ADDITIONAL_SUFFIXES` | （空） | 本部署在 §3.1 基线之外还能处理的后缀——为什么只声明它还不够，见该节说明 |
+
+仅 `local` 模式：
+
+| 环境变量 | 缺省 | 含义 |
+| --- | --- | --- |
+| `MINERU_LOCAL_ENDPOINT` | `http://127.0.0.1:8000` | mineru-api / mineru-router 基础 URL |
+| `MINERU_LOCAL_BACKEND` | `hybrid-auto-engine` | 由哪个后端执行解析：`hybrid-auto-engine`（pipeline + VLM，需要 GPU 及配套推理引擎）、`pipeline`（对 CPU 友好，无 VLM 环节）、`vlm-auto-engine` |
+| `MINERU_LOCAL_PARSE_METHOD` | `auto` | pipeline 部分的解析策略：`auto` / `txt` / `ocr`。**纯 VLM 后端会忽略它**——版面与 OCR 由模型自身处理 |
+| `MINERU_LOCAL_IMAGE_ANALYSIS` | `false` | MinerU **自己的** VLM 轮次，用于 caption 与脚注——见 §4.7，它与 `i` 选项无关。`pipeline` 后端会静默丢弃该标志 |
+| `MINERU_LOCAL_START_PAGE_ID` | `0` | 起始页 |
+| `MINERU_LOCAL_END_PAGE_ID` | `99999` | 结束页 |
+
+仅 `official` 模式：
+
+| 环境变量 | 缺省 | 含义 |
+| --- | --- | --- |
+| `MINERU_API_TOKEN` | — | MinerU 官网申请的 API key，必填 |
+| `MINERU_OFFICIAL_ENDPOINT` | `https://mineru.net` | 服务端点 |
+| `MINERU_MODEL_VERSION` | `vlm` | 向云服务请求的模型版本 |
+| `MINERU_IS_OCR` | `false` | 云端 OCR 开关 |
+
+轮询预算与缓存：
+
+| 环境变量 | 缺省 | 含义 |
+| --- | --- | --- |
+| `MINERU_POLL_INTERVAL_SECONDS` | `2` | 任务状态轮询间隔 |
+| `MINERU_MAX_POLLS` | `600` | 放弃前的最大轮询次数；缺省预算约 20 分钟 |
+| `MINERU_ENGINE_VERSION` | （空） | 记入原始产物包 manifest，不一致即缓存失效；留空则跳过该检查（§6.3） |
+| `LIGHTRAG_FORCE_REPARSE_MINERU` | `false` | 绕过原始缓存，每次解析都重新上传（§3.6） |
+| `MINERU_BBOX_ATTRIBUTES` | `{"origin":"LEFTTOP","max":1000}` | 记入 sidecar meta 的坐标系。注意其缺省值与 `DOCLING_BBOX_ATTRIBUTES` 不同 |
 
 > **本地部署 MinerU 服务**（Docker 镜像构建、vLLM 预加载、标题层级修正）见 [ParserServiceDeployment-zh.md §1](./ParserServiceDeployment-zh.md#1-本地部署-mineru-服务)。
 
-### 3.4 使用 Docling 文件解析引擎
+### 3.5 使用 Docling 文件解析引擎
 
 `docling` 内容提取引擎需要外部的 [docling-serve](https://github.com/DS4SD/docling-serve) 服务（v1 异步 API）。最少配置：
 
@@ -379,9 +482,91 @@ Bundle 缓存 3 个 env：
 
 > **本地部署 docling-serve**（含 `DOCLING_DO_FORMULA_ENRICHMENT` 所需的公式识别模型下载）见 [ParserServiceDeployment-zh.md §2](./ParserServiceDeployment-zh.md#2-本地部署-docling-serve启用-latex-公式识别)。
 
-## 4. 分块器参数配置（chunk_options）
+### 3.6 解析缓存与强制重解析
 
-### 4.1 process_options vs chunk_options 的职责
+`native`、`mineru`、`docling` 三个引擎各自在解析产物旁保留一份原始产物缓存，这样重新解析未变更的文件时不必重复昂贵的工作——一次外部服务往返，或一轮 markdown 外链图片下载。目录布局与失效规则见 §6.3 与 §6.4；配置时需要知道的是：
+
+| 引擎 | 缓存目录 | 内容 | 强制重解析 |
+| --- | --- | --- | --- |
+| `native` | `<base>.native_raw/` | markdown / textpack 路径下载的外部图片 | `LIGHTRAG_FORCE_REPARSE_NATIVE=true` |
+| `mineru` | `<base>.mineru_raw/` | MinerU 服务返回的产物包 | `LIGHTRAG_FORCE_REPARSE_MINERU=true` |
+| `docling` | `<base>.docling_raw/` | docling-serve 返回的产物包 | `LIGHTRAG_FORCE_REPARSE_DOCLING=true` |
+| `legacy` | — | 无缓存 | 不适用 |
+
+每个产物包都在 manifest 里记录引擎版本与生效参数签名，所以改服务端点、改抽取参数、或改 `MINERU_ENGINE_VERSION` / `DOCLING_ENGINE_VERSION` 本身就会让缓存失效。强制标志是为 manifest 察觉不到的那种情况准备的：**服务**变了而它的版本串没变。删除文档时勾选"同时删除文件"会把缓存目录连同 `.parsed/` 一并移除。
+
+## 4. 多模态分析（VLM）
+
+### 4.1 这一阶段做什么
+
+解析阶段写 sidecar；ANALYZING 阶段读取它、把每个 item 送给模型、再把结果写回该 item 的 `llm_analyze_result`；随后 PROCESS 阶段据此构建多模态分块。这个顺序带来两个结论：
+
+- **分析可以不重新解析就重跑。** 抽取阶段不受 `i` / `t` / `e` 影响——引擎按文档实际内容产出 sidecar——所以事后再启用某个模态，只会补做 VLM 工作，不会重新碰原始文件（§9.3）。
+- **没有对应 sidecar 的模态是静默空操作**，仅记一条 INFO 日志。这不是错误，它意味着文档没有该类内容，或该引擎不产出它。
+
+### 4.2 每个选项实际需要什么
+
+`VLM_PROCESS_ENABLE` 常被读成三种模态的总开关。它不是——它只闸控图片：
+
+| 选项 | 分析角色 | 需要 `VLM_PROCESS_ENABLE` | 读取的 sidecar |
+| --- | --- | --- | --- |
+| `i` 图片 | VLM 角色 | **是** | `*.drawings.json` |
+| `t` 表格 | EXTRACT 角色 | 否 | `*.tables.json` |
+| `e` 公式 | EXTRACT 角色 | 否 | `*.equations.json` |
+
+这也是推荐预设 `*:native-teP` 在完全不配置 VLM 的情况下也能工作的原因。而 sidecar 是否存在还取决于引擎：MinerU 侧是 `MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`，docling 侧是 `DOCLING_DO_FORMULA_ENRICHMENT`，`legacy` 则一个都不产出。
+
+### 4.3 失败与跳过
+
+本节内容**仅适用于 `process_options` 含 `i` 的文档**。不含 `i` 的文档根本不会进入图片分析，因此无论它带多少张图片、无论 `VLM_PROCESS_ENABLE` 如何设置，都会正常处理完。
+
+对于确实含 `i` 的文档，每张图片要走一条过滤链，而 **VLM 闸门位于这条链的中间**。闸门之前的每一步都是跳过、文档安然无恙；闸门本身则让整个文档失败：
+
+| 顺序 | 条件 | 结局 |
+| :-: | --- | --- |
+| 1 | 图片文件不存在 | item `skipped`，文档继续 |
+| 2 | 不是受支持的栅格格式（emf / wmf / svg 等） | item `skipped`，文档继续 |
+| 3 | 任一边小于 `VLM_MIN_IMAGE_PIXEL`（64） | item `skipped`，文档继续 |
+| 4 | **VLM 闸门**：`VLM_PROCESS_ENABLE=false` 或没有 VLM 角色 | **文档 FAILED** —— `error_msg` 为 "VLM analysis required but VLM role is not available" |
+| 5 | 图片文件为空 | 文档 FAILED |
+| 6 | 超过 `VLM_MAX_IMAGE_BYTES`（5 MB） | item `skipped` —— 注意此检查**在闸门之后**，超大图并不能绕过第 4 步 |
+
+文本模态一侧：内容为空的**表格** item 会先被记为 `skipped` 并打 WARNING，**不会走到 format 校验**；只有**有内容**的表格 item，其 `format` 缺失或非法时才让文档失败，那意味着 sidecar 已损坏。内容为空的**公式** item 则直接让文档失败。
+
+### 4.4 token 预算
+
+| 变量 | 缺省 | 含义 |
+| --- | --- | --- |
+| `MAX_EXTRACT_INPUT_TOKENS` | `20480` | 单次抽取 / 分析提示词的输入总预算 |
+| `SURROUNDING_LEADING_MAX_TOKENS` | `2000` | 注入到 item **之前**的上下文的单侧上限 |
+| `SURROUNDING_TRAILING_MAX_TOKENS` | `2000` | 注入到 item **之后**的上下文的单侧上限 |
+| `MM_EXTRACT_CONTENT_MIN_TOKENS` | `100` | 为 item 自身内容保留的下限 |
+
+上下文预算从总预算里扣，设得过高会挤占 item 本身。发生时服务会在启动阶段告警并点名该调哪个变量：要么调高 `MAX_EXTRACT_INPUT_TOKENS`，要么调低这一对上下文上限。
+
+### 4.5 图片限制与吞吐
+
+`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.9），与解析、入库阶段互不影响。
+
+### 4.6 模型配置不在本章
+
+`VLM_PROCESS_ENABLE` 是流水线开关，归本章。**具体哪个模型**承担 VLM 角色——`VLM_LLM_MODEL`、`VLM_LLM_BINDING`、`VLM_LLM_BINDING_HOST`、`VLM_LLM_BINDING_API_KEY`、`VLM_MAX_ASYNC_LLM`、`VLM_LLM_TIMEOUT`——以及支持视觉输入的 provider 列表，归 [基于角色的 LLM/VLM 配置指南](RoleSpecificLLMConfiguration-zh.md)，本文刻意不重复，以免两处漂移。
+
+### 4.7 容易混淆的另一件事：`MINERU_LOCAL_IMAGE_ANALYSIS`
+
+MinerU 自己也有一轮 VLM，由 `MINERU_LOCAL_IMAGE_ANALYSIS` 开启。它在**解析期跑在 MinerU 主机上**，改善的是 MinerU 自身输出里的 caption 与脚注，消耗那台机器的 GPU，且被 `pipeline` backend 忽略。它与 `i` 选项、与 `VLM_PROCESS_ENABLE` 都无关。
+
+### 4.8 一个安全的启用顺序
+
+1. 先只开 `te`。它只需要 EXTRACT 角色——不引入新基础设施，也不引入新的失败模式。
+2. 确认 sidecar item 的 `llm_analyze_result.status == "success"`。
+3. 再把 `i` 与 `VLM_PROCESS_ENABLE=true` 以及一个支持视觉的 binding **一起**加上。
+
+把第 3 步拆成两半，就会撞上 §4.3 第 4 行那种失败。而且因为处理选项在入队时已冻结，已经这样失败的文档无法靠改配置重试救回来：`/documents/reprocess_failed` 会按原来的 `i` 重跑。要么把 VLM 配好再重试，要么删除该文档、以不带 `i` 的配置重新上传。
+
+## 5. 分块器参数配置（chunk_options）
+
+### 5.1 process_options vs chunk_options 的职责
 
 `process_options` 选**用哪种**分块策略（F/R/V/P），`chunk_options` 决定那一路分块器**用哪些参数**。两者职责正交：前者是单字符 selector，后者是结构化字典。
 
@@ -400,11 +585,11 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 ```
 
 - **env vars** 在 `LightRAG.__init__` 阶段（由 `default_chunker_config()` 读取 strategy 特定 env，再由 `_apply_chunk_size_overlay` 兜底 legacy env）灌进 `addon_params["chunker"]`。
-- **`addon_params["chunker"]`** 是 `ObservableAddonParams` 字段；Server 部署只需通过 env / 重启即可让新值生效。若需要在 Python 进程内运行时改它（不重启）以及 per-file 覆盖，请见[第九章 Python SDK 调用](#9-python-sdk-调用)。
-- **`full_docs.chunk_options`** 在 `apipeline_enqueue_documents` 入队时冻结：默认由 `resolve_chunk_options(self.addon_params, ...)` 现场拼装；若调用方传入 `chunk_options` 参数则原样持久化（SDK 用法，见 §9.4）。
+- **`addon_params["chunker"]`** 是 `ObservableAddonParams` 字段；Server 部署只需通过 env / 重启即可让新值生效。若需要在 Python 进程内运行时改它（不重启）以及 per-file 覆盖，请见[第十一章 Python SDK 调用](#11-python-sdk-调用)。
+- **`full_docs.chunk_options`** 在 `apipeline_enqueue_documents` 入队时冻结：默认由 `resolve_chunk_options(self.addon_params, ...)` 现场拼装；若调用方传入 `chunk_options` 参数则原样持久化（SDK 用法，见 §11.4）。
 - **分块器调用**从 `full_docs.chunk_options` 取对应子字典，按 `process_options.chunking` selector 派发到 F/R/V/P。
 
-### 4.2 环境变量
+### 5.2 环境变量
 
 下表所有变量在 `LightRAG` 实例化时一次性读入 `addon_params["chunker"]`：strategy 特定 env 由 `default_chunker_config()` 读取，legacy env (`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`) 由 `_apply_chunk_size_overlay` 在 strategy env 与 legacy 构造字段都没填的槽位上兜底。修改 env 后需要重启服务（或新建 `LightRAG` 实例）才生效；已入队的文档持有冻结快照不受影响。
 
@@ -429,26 +614,26 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 P 的内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比例推导。P 始终使用独立于全局链的 `chunk_token_size`——即使 `CHUNK_P_SIZE` 未设，P 也会回退到 `DEFAULT_CHUNK_P_SIZE`（2000）而**不**沿用全局 `CHUNK_SIZE`，因为段落语义合并需要比全局默认更大的上限才能将相关段落保留在一起。需要按部署调整时通过 `CHUNK_P_SIZE` 覆盖该默认。`CHUNK_P_OVERLAP_SIZE` 只影响 P 内部普通文本 fallback 与表格桥接上下文，不会让表格行级切片互相重叠。`CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` 行为不同——未设时**仍会**沿用顶层 `chunk_token_size`（F 即默认全局窗口，R 偏向较小目标利于句段切分，V 作为 advisory ceiling 通常希望放大以减少过度拆分）。
 
-### 4.3 优先级链
+### 5.3 优先级链
 
 每个分块槽位的最终值按 specificity-ordered 链解析（高 → 低）：
 
-1. **`addon_params["chunker"]` 显式值** —— 通过 SDK 路径运行时设置或在构造时显式写入的字段值（见 §9.3）。Server-only 部署通常不会出现这一档。最直接，赢一切。
+1. **`addon_params["chunker"]` 显式值** —— 通过 SDK 路径运行时设置或在构造时显式写入的字段值（见 §11.3）。Server-only 部署通常不会出现这一档。最直接，赢一切。
 2. **strategy 特定 env** —— 如 `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE`（各策略 `chunk_token_size`）、`CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE`（overlap）、`CHUNK_P_SIZE`（P 专属）。未设对应 size env 时，F/R/V 沿用顶层 `chunk_token_size`。仅当槽位未被 ① 显式占用时填入。
-3. **legacy 构造字段** —— `LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)`，仅 SDK 路径生效，详见 §9.2。strategy 无关，"粗粒度缺省"，只填仍空的槽位。
+3. **legacy 构造字段** —— `LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)`，仅 SDK 路径生效，详见 §11.2。strategy 无关，"粗粒度缺省"，只填仍空的槽位。
 4. **legacy env** —— `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`。最终回退。
 
 举例：`CHUNK_R_OVERLAP_SIZE=42` + `LightRAG(chunk_overlap_token_size=2)` → R 子字典 `chunk_overlap_token_size=42`（strategy env 胜出），F / P 子字典 `chunk_overlap_token_size=2`（无 F / P 特定 env，legacy 构造字段填入）。
 
-**P 的 `chunk_token_size` 特例**：P 的 `chunk_token_size` 槽位**不**走完整的四档链。当 ① 未显式提供时，直接按 `CHUNK_P_SIZE` env > `DEFAULT_CHUNK_P_SIZE`（2000）解析，**跳过** ③ legacy 构造字段 `LightRAG(chunk_token_size=…)` 与 ④ legacy env `CHUNK_SIZE`。理由参见 §4.2 `CHUNK_P_SIZE` 行。
+**P 的 `chunk_token_size` 特例**：P 的 `chunk_token_size` 槽位**不**走完整的四档链。当 ① 未显式提供时，直接按 `CHUNK_P_SIZE` env > `DEFAULT_CHUNK_P_SIZE`（2000）解析，**跳过** ③ legacy 构造字段 `LightRAG(chunk_token_size=…)` 与 ④ legacy env `CHUNK_SIZE`。理由参见 §5.2 `CHUNK_P_SIZE` 行。
 
 三层语义保证：
 
 1. **复现性**：env 改了，重启后老文档仍按入队那一刻的快照分块，结果不变。
 2. **续跑一致性**：续跑分支 B（内容已抽取，按当前 `process_options` 重做分块）读的也是 `full_docs.chunk_options`，避免 env 漂移破坏一致性。
-3. **per-file 个性化**：调用方可以为每个文件传不同的 `chunk_options`（典型用法：管理 UI 单独配置某个文件的 separators 或 V 阈值）。这是 SDK 路径的入参语义，详见 §9.4。
+3. **per-file 个性化**：调用方可以为每个文件传不同的 `chunk_options`（典型用法：管理 UI 单独配置某个文件的 separators 或 V 阈值）。这是 SDK 路径的入参语义，详见 §11.4。
 
-### 4.4 字段结构
+### 5.4 字段结构
 
 `addon_params["chunker"]`（实例字段）保留全部四种策略的子字典作为运行时基线；`full_docs[doc_id]["chunk_options"]` 是**精简快照**——入队时只保留 `process_options` 选中的那一路策略子字典（缺省 F），其它策略的参数会被丢弃，因为处理阶段不会读它们。重新解析时 `process_options` 与 `chunk_options` 一同改写，避免旧策略的参数残留。
 
@@ -499,13 +684,13 @@ P 的内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比�
 
 selector → 子字典映射：F → `fixed_token`，R → `recursive_character`，V → `semantic_vector`，P → `paragraph_semantic`；无 selector 默认 F。各子字典与对应分块器函数的 keyword-only 参数一一对应；新增参数时无需改 dispatcher，只在 chunker 函数添加 kwarg 即可。
 
-### 4.5 缺失兼容
+### 5.5 缺失兼容
 
 老文档入队时还没有 `chunk_options` 字段；分块时 dispatcher 会按当前 `process_options` 调用 `resolve_chunk_options(self.addon_params, process_options=…)` 兜底拼装一份精简快照。建议在升级后通过 reprocess 一次让老文档拿到精简的 `chunk_options` 快照（且与当前 `process_options` 对齐）。
 
-## 5. 存储与目录布局
+## 6. 存储与目录布局
 
-### 5.1 `full_docs` 字段
+### 6.1 `full_docs` 字段
 
 文件入队和抽取结果会写入 `full_docs`：
 
@@ -520,14 +705,14 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 | `lightrag_document_path` | `parse_format=lightrag` 时保存结构化 LightRAG Document 的路径；新记录优先保存为相对 `INPUT_DIR` 的路径，例如 `__parsed__/report.docx.parsed/report.blocks.jsonl`。注意路径中的子目录与 blocks 文件名都使用规范化 basename（不含 hint）。 |
 | `parse_engine` | 实际完成抽取的引擎：`legacy`, `native`, `mineru`, `docling`。对于待抽取文件，也可暂存目标引擎。 |
 | `process_options` | 入队时记录的原始处理选项串（不含引擎名和分隔 `-`），例如 `"iet"`、`"R!"`、`""`。下游各阶段以此字段为权威源，决定是否启用图像/表格/公式分析（`i/t/e`）、是否禁止知识图谱构建（`!`）以及分块方式（`F/R/V/P`）。空字符串等价于全部默认值。 |
-| `chunk_options` | 入队时**冻结**的分块器参数快照（精简字典：只保留 `process_options` 选中的那一路策略子字典，其它策略丢弃）。由 SDK 路径调用方传入或由 `resolve_chunk_options(self.addon_params, process_options=…)` 从实例字段（含 env 默认）兜底（见 §4.1）。`process_options` 选哪种分块策略（F/R/V/P），`chunk_options` 决定那一路分块器使用哪些参数。下游 `process_single_document` 在分块前从此字段读取专属 kwargs；持久化保证 env 变化、续跑、重启后老文档行为可复现。重新解析时与 `process_options` 一同改写。 |
+| `chunk_options` | 入队时**冻结**的分块器参数快照（精简字典：只保留 `process_options` 选中的那一路策略子字典，其它策略丢弃）。由 SDK 路径调用方传入或由 `resolve_chunk_options(self.addon_params, process_options=…)` 从实例字段（含 env 默认）兜底（见 §5.1）。`process_options` 选哪种分块策略（F/R/V/P），`chunk_options` 决定那一路分块器使用哪些参数。下游 `process_single_document` 在分块前从此字段读取专属 kwargs；持久化保证 env 变化、续跑、重启后老文档行为可复现。重新解析时与 `process_options` 一同改写。 |
 
 `pending_parse` 表示文件已经入队，但还没有完成抽取。抽取成功后会改写为 `raw` 或 `lightrag`，并补齐 `content_hash`。抽取失败时保留 `pending_parse` 和空 `content`，便于后续排查和重试。
 
 > `doc_status` 中也同步保存原始 `file_path`（含 hint）、`canonical_basename` 与 `content_hash`，作为 `get_doc_by_file_basename` / `get_doc_by_content_hash` 的查重索引来源。`get_doc_by_file_basename` 内部把传入参数先经 `canonicalize_parser_hinted_basename` 规范化后再与 `canonical_basename` 比对，因此 `abc.docx` 与 `abc.[native-iet].docx` 总是命中同一文档。
 > `process_options` 同时镜像写入 `doc_status.metadata["process_options"]`，便于管理 UI 直接展示当前文件的处理策略。
 
-### 5.2 `__parsed__` 目录结构
+### 6.2 `__parsed__` 目录结构
 
 `__parsed__` 是输入目录旁的归档与分析结果目录。它同时保存已经处理过的原始文档，以及结构化解析产生的 LightRAG Document （lightrag格式）的文件和图片等资源。
 
@@ -540,7 +725,7 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 - 扫描或解析过程中发现内容 hash 重复时，该输入文件同样会移动到 `__parsed__`；本次 `doc_status` 保留为 `FAILED duplicate` 以便追踪。
 - 移动文件只作用于当前输入文件，不会覆盖或移动既有文档源文件。若目标目录已存在同名文件，系统会自动追加 `_001`、`_002` 等编号，例如 `report.pdf` 会依次归档为 `report_001.pdf`、`report_002.pdf`。若分析结果目录名已被普通文件占用，也会追加编号，例如 `report.docx.parsed_001/`。
 
-### 5.3 MinerU 原始产物目录 `<base>.mineru_raw/`
+### 6.3 MinerU 原始产物目录 `<base>.mineru_raw/`
 
 `mineru` 引擎在解析过程中会把 MinerU 服务返回的完整产物（`content_list.json` + 可选的 `full.md` / `middle.json` / `layout.pdf` / `images/` 等）落到 `__parsed__/<规范文件名>.mineru_raw/` 目录下，并写入 `_manifest.json` 作为完整性校验文件。
 
@@ -578,7 +763,7 @@ selector → 子字典映射：F → `fixed_token`，R → `recursive_character`
 
 > 关于 `engine_version` / `endpoint_signature` 的"任一侧为空即跳过"语义：当 manifest 写入时该字段为空（例如首次解析时未配置 `MINERU_ENGINE_VERSION`），或当前环境变量未设置时，该项不参与失效判断。如果首次解析时未设置版本环境变量，事后再补上并不会自动让历史缓存失效——这类场景需要手动设置 `LIGHTRAG_FORCE_REPARSE_MINERU=true` 触发重新解析。
 
-### 5.4 Docling 原始产物目录 `<base>.docling_raw/`
+### 6.4 Docling 原始产物目录 `<base>.docling_raw/`
 
 `docling` 引擎在解析过程中会把 docling-serve 返回的 zip 产物（DoclingDocument JSON、Markdown 和引用图片）解压到 `__parsed__/<规范文件名>.docling_raw/` 目录下，并写入 `_manifest.json` 作为完整性校验文件。IR builder 在二次解析时会读取该目录的 `.json` 文件喂给 `DoclingIRBuilder`，不再走 docling-serve 服务。
 
@@ -626,13 +811,13 @@ __parsed__/<base>.docling_raw/
 - `artifacts/` 内任一图片缺失或大小不一致；
 - `LIGHTRAG_FORCE_REPARSE_DOCLING=true`。
 
-> `engine_version` / `endpoint_signature` 的"任一侧为空即跳过"语义与 MinerU §5.3 一致：manifest 写入时该字段为空（首次未配置 `DOCLING_ENGINE_VERSION`）或当前环境变量未设置时，该项不参与失效判断；事后补上版本号不会自动让历史缓存失效，需要 `LIGHTRAG_FORCE_REPARSE_DOCLING=true` 触发。
+> `engine_version` / `endpoint_signature` 的"任一侧为空即跳过"语义与 MinerU §6.3 一致：manifest 写入时该字段为空（首次未配置 `DOCLING_ENGINE_VERSION`）或当前环境变量未设置时，该项不参与失效判断；事后补上版本号不会自动让历史缓存失效，需要 `LIGHTRAG_FORCE_REPARSE_DOCLING=true` 触发。
 
-## 6. 文档重复判定规则
+## 7. 文档重复判定规则
 
 文件上传、文件解析入队和文本接口会按照「文件名 + 内容 hash」两道关卡判断是否重复，命中任一即视为重复并写入一条 `FAILED` 记录，不会覆盖已有的 `full_docs`。`/documents/scan` 目录扫描也使用同一套索引，但为了便于自动重试未完成文件，对文件名重复有单独的归档与重处理规则。
 
-### 6.1 文件名（basename）查重
+### 7.1 文件名（basename）查重
 
 - 判断粒度为 basename，不包含目录路径和 workspace 路径。例如 `/data/a.pdf`、`inputs/a.pdf` 和 `a.pdf` 都视为同一个文件名 `a.pdf`。
 - 文件名查重以 `canonical_basename` 为索引：将文件名末尾的支持引擎处理提示 hint 剥离后再比对，因此 `abc.docx`、`abc.[native].docx`、`abc.[native-iet].docx` 之间互相视为同名；不支持的 hint 不会被剥离，例如 `abc.[draft].docx` 仍按原文件名处理。
@@ -670,12 +855,12 @@ __parsed__/<base>.docling_raw/
 - 普通上传和核心入队 API 中，同名文件即使内容已经变化，也需要先删除旧文档记录后再重新上传或入队；上述自动恢复（`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`）仅用于目录扫描场景。
 - 文件系统时间只在持久化前充当扫描优先级：spool 按全局从旧到新吐出候选，随后逐条入队，并在真正首次落库时写 `doc_status.created_at=now()`。文件一旦进入 doc_status，调度只认普通的不可变 `(created_at, id)`，文件 mtime 随即丢弃。mtime 不可读的候选排在所有可读时间之后，但不会因此丢失；文件消失或不可读仍由入队路径正常报错。
 - 文本接口必须提供有效的 `file_source`，并按 `file_source` 的 basename 判断重复；缺少有效 `file_source` 时直接返回 400。
-- SDK 路径调用 `insert` / `ainsert` / `apipeline_enqueue_documents` 时不传 `file_paths` 是被允许的，相关行为详见 §9.4。这类无来源文档的 `file_path` 保存为 `unknown_source`。
+- SDK 路径调用 `insert` / `ainsert` / `apipeline_enqueue_documents` 时不传 `file_paths` 是被允许的，相关行为详见 §11.4。这类无来源文档的 `file_path` 保存为 `unknown_source`。
 - 空字符串、`no-file-path` 和 `unknown_source` 都会被视为未知来源；它们不会阻止新的无来源文本入队，也不会作为同名文件互相去重。
 
 存储后端通过 `get_doc_by_file_basename` 提供 basename 直查能力，内部按 `canonical_basename` 字段比对（传入参数会先经 `canonicalize_parser_hinted_basename` 规范化）。`JsonDocStatusStorage` 已经实现了内存级遍历；其它后端目前回落到默认实现（扫描全部状态后比对 `canonical_basename`），将在后续 PR 中补齐原生索引。
 
-### 6.2 内容 hash 查重
+### 7.2 内容 hash 查重
 
 - 文件名不同但抽取后的内容完全相同的文档同样视为重复。这里的 hash 是按配置的抽取引擎得到最终文本或 LightRAG Document 后计算的内容 hash，不是原始文件字节 hash。
 - `full_docs` 与 `doc_status` 会按内容格式写入或补齐 `content_hash` 字段：
@@ -690,25 +875,25 @@ __parsed__/<base>.docling_raw/
 
 > 入队批次内（同一次 `apipeline_enqueue_documents` 调用）也会做 basename 与 content_hash 去重，命中时把后续条目直接写为 `FAILED` 并标记 `existing_status=batch_duplicate`。其中 basename 去重只对有效文件名生效；`unknown_source`、`no-file-path` 和空来源只参与内容 hash 去重。
 >
-> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [§7.8 enqueue 串行锁（防并发去重穿透）](#78-enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
+> **跨调用并发去重**也由 workspace 级串行锁保证（详见 [§8.8 enqueue 串行锁（防并发去重穿透）](#88-enqueue-串行锁防并发去重穿透)）：两次相同内容、不同文件名的并发入队不会双双穿透 `content_hash` 检查。
 
-## 7. 流水线并发与重入约束
+## 8. 流水线并发与重入约束
 
 为防止 `scan` / `upload` / `insert` 与运行中的流水线相互覆盖 `doc_status` / `full_docs` 记录，所有写入入口在 `pipeline_status` 共享字典上协调。同一 workspace 下的 `pipeline_status_lock` 保证下表所有 transition 都在锁内原子完成。
 
-### 7.1 `pipeline_status` 字段
+### 8.1 `pipeline_status` 字段
 
 | 字段 | 语义 |
 | --- | --- |
 | `busy` | 流水线繁忙的笼统标志。处理循环和破坏性作业（clear/delete）都会设它。**仅有 `busy=True`（处理循环）不阻塞 enqueue**——循环按 batch 拉取 `doc_status` 快照处理，运行中到达的新工作经 workspace ingress mailbox 接入（批内 feeder + 批边界静默决策）。 |
-| `destructive_busy` | `busy` 的破坏性子集：`/documents/clear` 或 `/documents/{doc_id}`（删除）正在 drop 存储 / 删源文件。reservation 和 enqueue last-line guard 都会拒绝——并发 enqueue 会写入正被 drop 的存储，已接受的文档会静默丢失。处理循环不会设此字段。 |
+| `destructive_busy` | `busy` 的破坏性子集：`/documents/clear` 或 `/documents/delete_document`正在 drop 存储 / 删源文件。reservation 和 enqueue last-line guard 都会拒绝——并发 enqueue 会写入正被 drop 的存储，已接受的文档会静默丢失。处理循环不会设此字段。 |
 | `scanning` | `/documents/scan` 后台任务运行中（整个生命周期：分类阶段 + 处理阶段）。仅 `/scan` 端点用它拒绝重叠 scan，本身**不**阻塞 upload/insert。 |
 | `scanning_exclusive` | `scanning` 的独占子集：只在 scan 的**分类阶段**为 True——run_scanning_process 在读 doc_status 分类（已处理 / 续跑 / 删 stub / 归档），不能与并发写者交错。reservation 和 enqueue last-line guard 都会拒绝。分类完成后会立即清旗，scan 进入处理阶段后允许并发 upload。 |
 | `pending_enqueues` | 已通过 `_reserve_enqueue_slot` 但 bg task 未完成的 upload/insert 数。仅给 scan 端点参考——决定是否能拿独占。bg task 在 `finally` 里释放 slot。 |
 
 唤醒信号**不在** `pipeline_status` 里，而在 workspace 级 **pipeline ingress mailbox**（`lightrag/kg/pipeline_ingress.py`，三通道：逐文档 document 消息 / auto-rescan 脏标志 / sticky 人工重试请求）。enqueue 写完 `doc_status` 后在 `pipeline_status_lock` 下发布 document 消息；被 busy 拒绝的 processing 请求在 reservation 同一临界区内置 auto-rescan 标志；运行中的循环在批内（feeder）与每个批边界（原子静默决策，三通道全空时在同一临界区释放 `busy`）消费这些信号。`doc_status` 仍是事实来源——丢失的通知由下一次 run 的初始 strict 扫描兜底。
 
-### 7.2 入口行为
+### 8.2 入口行为
 
 | 入口 | 条件 | 行为 |
 | --- | --- | --- |
@@ -723,7 +908,7 @@ __parsed__/<base>.docling_raw/
 
 `from_scan=True` 是 scan 后台任务自身入队时的旁路：scan 已持有 `scanning` 旗标，必须允许它把扫到的文件入队。
 
-### 7.3 为什么 `busy` 不再阻塞 enqueue
+### 8.3 为什么 `busy` 不再阻塞 enqueue
 
 旧版本里 `busy=True` 一律拒绝任何新入队，理由是"修改 `doc_status` 会与流水线工作线程交错"。但实际上：
 
@@ -733,13 +918,13 @@ __parsed__/<base>.docling_raw/
 
 新契约把这个机制启用起来后，**用户在长批次处理过程中仍可继续上传新文档**，bg task 写完 `doc_status` 后由运行中的循环自动接管。
 
-### 7.4 为什么 scan 仍是独占写者
+### 8.4 为什么 scan 仍是独占写者
 
-scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每个文件去向（`PROCESSED` 归档、resume 保留、stale stub 删除重入队等，七类出口见 [§6.1](#61-文件名basename查重)）。
+scan 不仅 enqueue 自己扫到的新文件，还会读 `doc_status` 决定每个文件去向（`PROCESSED` 归档、resume 保留、stale stub 删除重入队等，七类出口见 [§7.1](#71-文件名basename查重)）。
 
 这些"读—决策—写"组合不能与其它写者交错，否则分类决策会基于过期视图。所以分类阶段必须独占（`scanning_exclusive`），且 scan 端点会在 `busy` / `scanning` / `pending_enqueues>0` / 独占 reset 冻结（`manual_freeze_requested`）/ 有更早未处理的人工重试请求 任一成立时拒绝——最后一条保证 scan 不会插队到人工重试请求之前。
 
-### 7.5 严格名字预检（upload 路径）
+### 8.5 严格名字预检（upload 路径）
 
 upload 通过 reservation 后、保存文件前必须双道检查：
 
@@ -748,9 +933,9 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 
 两道都过 → 保存文件 → schedule bg task → bg task 调 `apipeline_enqueue_documents` 写库 + 调 `apipeline_process_enqueue_documents` 触发处理。
 
-> 旧版本曾允许 upload 在已有同名记录时悄悄写入 FAILED 重复条目；新规则改为 fail-fast，不在 doc_status 留下任何重复痕迹。如需替换同名文档，请先调用 `/documents/{doc_id}` 的删除接口。
+> 旧版本曾允许 upload 在已有同名记录时悄悄写入 FAILED 重复条目；新规则改为 fail-fast，不在 doc_status 留下任何重复痕迹。如需替换同名文档，请先调用 `/documents/delete_document` 接口。
 
-### 7.6 多 reservation 并发的协调
+### 8.6 多 reservation 并发的协调
 
 两个 upload 同时进来时（scan 此时拿不到独占）：
 
@@ -764,14 +949,14 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 
 任何一个 bg task 都不会因为 busy 被误拒——因为 enqueue 不再检查 busy；处理循环也不会重复处理同一份文档——批内准入按 routing/inflight 登记去重，auto-rescan 标志每个静默决策恰好消费一次。
 
-### 7.7 `recovery_required` 栅栏
+### 8.7 `recovery_required` 栅栏
 
 有些故障会让 workspace 处于"继续下去只能靠猜"的状态。管线不做这种猜测，而是设置 `recovery_required` 栅栏：此后**所有**写操作（upload / text / scan / manual retry / delete / clear）一律返回 **HTTP 503**，直到运维显式解除。三种情况会设置它：
 
 1. **worker 在 `custom_chunks` / `delete` / `clear` 执行途中死亡。** 这些操作可能已经半提交，因此不能简单重跑。（`processing` / `scan` 的 owner 死亡是可重跑的，会被静默回收，不设栅栏。）
 2. **manual retry 的排空无法到达空闲。** `/documents/reprocess_failed` 会先把管线排空到空闲，再执行独占的 `FAILED → PENDING` 重置；有两种情况会卡住排空：同一批 active 文档反复回来且状态毫无变化（再重扫只会自旋），以及排空**根本无法推进**的 active 文档——持有**未完成 custom-chunk 操作**的行，只有 `/documents/scan` 的回滚能处理它们。两种情况下重置都不执行，重试请求保持未 ACK（那一次机会仍然欠着），栅栏消息带阻塞文档 ID 的**有界样本**。`recovery_kind` 区分二者：`manual_drain_stalled` 和 `manual_drain_blocked`。
 
-   （`/documents/scan` 不做这个排空——见 §7.4：它只在管线空闲时才获得 reservation，分类阶段持有 `scanning_exclusive`，且其重置不启动任何 worker，所以残留的 `PENDING` 行是惰性的，不是生产者。）
+   （`/documents/scan` 不做这个排空——见 §8.4：它只在管线空闲时才获得 reservation，分类阶段持有 `scanning_exclusive`，且其重置不启动任何 worker，所以残留的 `PENDING` 行是惰性的，不是生产者。）
 3. **reservation 持有者的生死无法判定。** 回收一个 reservation 必须先证明其所属进程已死亡。不带进程身份的持有者记录永远无法证明，因此它的 reservation 保持原样（绝不靠猜回收），由栅栏提供出口。
 
 `GET /documents/pipeline_status` 返回净化后的投影——`recovery_required`（布尔）、`recovery_kind`（粗粒度原因）和 `recovery_message`（与 503 相同的文案，某些原因还带有界的阻塞样本）。原始栅栏记录永不外露：它与携带 PID 和 reservation token 的 owner 记录并存，而 token 可以用来释放 reservation。
@@ -782,7 +967,7 @@ upload 通过 reservation 后、保存文件前必须双道检查：
 POST /documents/recovery/force_reset
 ```
 
-这是**不安全的人工覆盖**——它不修复任何东西。除栅栏之外，它还会**取消该 workspace 排队中的 manual retry 请求**，这一点是必需的而非附带：只要存在排队请求，`/documents/scan` 就会拒绝自己的 reservation（scan 自己要跑独占 `FAILED` 重置，不能跳 manual FIFO，见 §7.4），所以只清栅栏会让恢复路径照样被堵。响应里返回 `cancelled_manual_retries`。不会丢文档——失败文档仍是 `FAILED`，由下一次请求或 scan 自己的重置处理。
+这是**不安全的人工覆盖**——它不修复任何东西。除栅栏之外，它还会**取消该 workspace 排队中的 manual retry 请求**，这一点是必需的而非附带：只要存在排队请求，`/documents/scan` 就会拒绝自己的 reservation（scan 自己要跑独占 `FAILED` 重置，不能跳 manual FIFO，见 §8.4），所以只清栅栏会让恢复路径照样被堵。响应里返回 `cancelled_manual_retries`。不会丢文档——失败文档仍是 `FAILED`，由下一次请求或 scan 自己的重置处理。
 
 由于两半都是必需的，这个调用是**全有或全无**的：如果排队请求无法取消，接口返回 **503** 且栅栏保持不变——这样可以重试来完成恢复，而不是让 API 报告一次并未发生的恢复。
 
@@ -796,7 +981,7 @@ POST /documents/recovery/force_reset
 
 整体重启服务同样会清除栅栏和排队请求，二者都是运行时协调状态，都不做持久化。
 
-### 7.8 enqueue 串行锁（防并发去重穿透）
+### 8.8 enqueue 串行锁（防并发去重穿透）
 
 `apipeline_enqueue_documents` 内部"读 doc_status 做去重 → 写 `full_docs` / `doc_status`"这一段在 workspace 级 `enqueue_serialize` 锁内串行执行。原因：放开 busy/scan-processing 阶段允许并发 enqueue 之后，两次相同内容、不同文件名的入队（典型场景：scan 处理阶段的 enqueue 与 upload 同时进来）若在没有锁的情况下并发执行——
 
@@ -816,7 +1001,7 @@ POST /documents/recovery/force_reset
 
 锁**不**覆盖 ingress document 发布（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
 
-### 7.9 流水线并发参数
+### 8.9 流水线并发参数
 
 `pipeline_status` 相关的锁解决的是"谁能写"的正确性问题，本节这一组参数解决的是"同时跑几个 worker"的吞吐量问题。流水线分为 3 个阶段，每个阶段的 worker 池数量独立可调：
 
@@ -855,13 +1040,34 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 - 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
 - LLM 限流明显：先降 `MAX_PARALLEL_INSERT`（process 阶段每文档多次 LLM 调用），再降 `MAX_PARALLEL_ANALYZE`（VLM 是独立配额）。
 
-## 8. 流水线启动时的续跑规则
+### 8.10 准入与请求限制
+
+在文档触及上述任何机制之前，服务端就可能直接拒收。下面这些变量决定一次上传是被拒绝还是被排队：
+
+| 变量 | 缺省 | 拒绝方式 |
+| --- | --- | --- |
+| `MAX_UPLOAD_SIZE` | `104857600`（100 MB） | `413` —— 单个上传文件过大 |
+| `MAX_REQUEST_BODY_BYTES` | `0`（关闭） | `413` —— 原始请求体过大，与上一项各自独立判定 |
+| `MAX_TEXTS_PER_REQUEST` | `0`（关闭） | `413` —— 单次 `/documents/texts` 携带的文本条数过多 |
+| `MAX_PENDING_DOCUMENTS` | `0`（关闭） | `429` —— 处于 PENDING / PARSING / ANALYZING / PROCESSING 的文档已过多 |
+
+它们的完整语义（含 `MAX_UPLOAD_SIZE` 与反向代理自身请求体上限的关系）见 [LightRAG Server](./LightRAG-API-Server-zh.md)。
+
+另有三个属于流水线自身、而非请求准入的旋钮：
+
+| 变量 | 缺省 | 含义 |
+| --- | --- | --- |
+| `PIPELINE_SCHEDULING_PAGE_SIZE` | `500` | doc_status 积压扫描的 keyset 分页大小；`0` 关闭分页 |
+| `PIPELINE_REQUIRE_STRICT_STORAGE_READS` | `false` | doc_status 后端无法提供严格读时拒绝启动。它直接决定 §7.1 的 `STALE_STUB` 出口能否工作——没有可靠的点读，就什么都不会删 |
+| `MAX_UNACKED_MANUAL_RETRIES` | `64` | 每个 workspace 已发布但未确认的手动重试请求上限（§8.7） |
+
+## 9. 流水线启动时的续跑规则
 
 每次 `apipeline_process_enqueue_documents` 起步时，会拉取所有处于 `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` 状态的文档继续处理。续跑路径**根据"内容是否已抽取"分流**，保证同一个文档无论之前进度如何，按当前 `process_options` 续跑都有幂等结果。
 
 续跑规则只对 `doc_id` 已经存在于 `doc_status` 的文档生效。新文件入队需要"并发与重入约束"中的文件查重逻辑，避免新文件挤掉旧的已经成功提取内容的文件记录。
 
-### 8.1 判断"内容已抽取"
+### 9.1 判断"内容已抽取"
 
 读 `full_docs[doc_id]`：
 
@@ -871,11 +1077,11 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | `raw` 且 `content` 非空 | ✅ 已抽取 |
 | 其它（含 `pending_parse`、记录缺失） | ❌ 未抽取 |
 
-### 8.2 分支 A：未抽取
+### 9.2 分支 A：未抽取
 
 走完整流水线（注册表派发解析 `get_parser(engine).parse(...)` → `analyze_multimodal` → 分块 → 实体抽取），按 `full_docs.process_options` 决定每一阶段的行为。这是"首次入队"的常规流。
 
-### 8.3 分支 B：已抽取
+### 9.3 分支 B：已抽取
 
 **一律跳过解析**（不重新调 `parse_*`），从 ANALYZING 阶段重启，并清光旧 chunks / entities 后按当前 `process_options` 重做：
 
@@ -889,11 +1095,37 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 
 > 这条规则保证：用户改 `i/t/e` 重传同名文档（先删旧 doc 再上传带新 hint 的文件）时，多模态分析能增量补齐；改 `F/R/V/P` 时 chunks 与图谱重建；改 `!` 时停掉或恢复 KG 构建。引擎变更被视为"重大变更"，统一由 delete + 重传完成，不在续跑路径里隐式发生。
 
-## 9. Python SDK 调用
+## 10. 常见问题排查
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 上传被拒，提示不支持该类型 | 该后缀不在生效的白名单里。只声明 `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` 并不能让裸 `x.doc` 变成可上传（§3.1） | 补一条路由规则或文件名 hint；用 `GET /documents/supported_file_types` 确认 |
+| 改完 `LIGHTRAG_PARSER` 后服务起不来 | 启动校验是严格的：未知引擎、语法错误、外部引擎缺服务端点、引擎/分块参数非法（§2.6、§2.7、§2.8） | 读启动报错，它会指出是哪条规则 |
+| 规则像是被忽略，所有文件都走了 `legacy` | 引擎未通过可用性检查，该规则被跳过：要么不支持该后缀，要么服务端点/凭据未配置（§2.8） | 配置服务端点，或把该后缀路由给支持它的引擎 |
+| 文件名 hint 被忽略并打了告警 | 方括号内出现非法字符，或只写选项时漏了前导连字符（§2.5） | 使用 `[-OPTIONS]` 形式，例如 `report.[-teP].docx` |
+| 开了 `i` / `t` / `e` 却什么都没分析 | sidecar 不存在——文档没有该类内容，或引擎不产出它（`MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`、`DOCLING_DO_FORMULA_ENRICHMENT`；`legacy` 一个都不产出） | 查找那条指出 sidecar 为空的 INFO 日志，并检查 `*.parsed/`（§4.2） |
+| 文档 FAILED，报 "VLM analysis required but VLM role is not available" | 启用了 `i`，且有图片通过了前置过滤，而 VLM 未配置（§4.3） | 设 `VLM_PROCESS_ENABLE=true` 并配好支持视觉的 binding，**或者**删除该文档、改用 `te` 重新上传——直接重试不会去掉 `i` |
+| 部分图片被分析，另一些被静默跳过 | 非栅格格式、小于 `VLM_MIN_IMAGE_PIXEL`、或大于 `VLM_MAX_IMAGE_BYTES`（§4.3） | 看该 item 的 `llm_analyze_result` 消息；图片确实需要就调高字节上限 |
+| 多模态 item 因 token 预算失败 | 上下文预算挤占了 item 自身的空间（§4.4） | 调高 `MAX_EXTRACT_INPUT_TOKENS`，或调低 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
+| 指定了 `P`，分块结果却像 `R` | 没有产出结构化的 `LightRAG Document`，`P` 已退化（§2.8、§3.2） | 把文件路由给 `native` / `mineru` / `docling`，而不是 `legacy` |
+| `.docx` 标题识别不准，导致 `P` 切分很差 | 该文档的 Word 大纲不可靠 | 试试 `native(smart_heading=true)`（§3.3），配合 parser CLI 迭代 |
+| 日志提示部分段落缺少 `paraId` | 由 LibreOffice / WPS / 旧版 Word 产生（§3.3） | 仅提示性。只有确实需要段落级溯源时，才用 Word 2013+ 另存一次 |
+| 文档 FAILED 且标记为重复 | 文件名查重（规范化并剥掉 hint 后）或内容 hash 查重（§7.1、§7.2） | 先删除已有文档，或给新文件改名 |
+| 上传返回 `409` | 输入目录或 doc_status 里已存在同规范名的文档（§8.5） | 用 `POST /documents/delete_document` 删除后再上传 |
+| 上传返回 `413` 或 `429` | 触发了准入限制（§8.10） | 对照该节的限制表判断是哪一条 |
+| 所有接口都返回 `503` | `recovery_required` 栅栏已升起（§8.7） | 按该节给出的恢复顺序处理 |
+| `/documents/scan` 返回 `scanning_skipped_pipeline_busy` | 流水线正忙或正在扫描、有上传在途、或有手动重试排队中（§8.2） | 等待空闲；`POST /documents/reprocess_failed` 是卡住的重试请求的一键恢复 |
+| 改了引擎或选项，输出却没变 | 引擎与 `process_options` 在入队时就冻结进 doc_status 记录。自动续跑与 `/documents/reprocess_failed` 都沿用存量值；改 `LIGHTRAG_PARSER` 或 hint 只对新上传生效（§9.3） | 删除该文档（勾选"同时删除文件"）后重新上传 |
+| 修好了外部引擎的服务配置，它却一直返回旧结果 | 命中了原始产物包缓存（§6.3、§6.4） | 打开对应的 `LIGHTRAG_FORCE_REPARSE_*`（§3.6），或删除文档时勾选"同时删除文件" |
+| 扫描版 PDF 报 "extracted no usable text" | `legacy` 读不了没有文本层的 PDF（§3.2） | 改路由到开启 OCR 的 `mineru` 或 `docling` |
+| MinerU 拒绝多段页码范围 | 多段范围只有 `official` 模式支持，`local` 只接受单页或一个简单区间（§2.7） | `local` 下改用单个区间，或切换模式 |
+| 启动时报缺少 spaCy 模型 | `DOCX_SMART_HEADING=true` 或规则里带 `native(smart_heading=true)` 触发了启动期快速失败检查（§3.3） | 执行 `lightrag-download-cache --spacy --spacy-install`，或改用已内置模型的主 Docker 镜像 |
+
+## 11. Python SDK 调用
 
 本章针对**直接 import `LightRAG` 类**进行集成的开发者，覆盖 Server 部署不会用到的运行时 API、构造期参数和已移除的旧接口。Server 用户通常无须阅读本章。
 
-### 9.1 适用对象
+### 11.1 适用对象
 
 ```python
 from lightrag import LightRAG
@@ -904,15 +1136,15 @@ await rag.ainsert("text", file_paths="doc.pdf")
 
 这种调用方式以下行为与 Server 路径不同：可在不重启进程的情况下改 `addon_params["chunker"]`，可向 `apipeline_enqueue_documents` 传入 per-file `chunk_options`，可在 `ainsert` 调用时动态覆盖 F 策略的预切分参数。
 
-### 9.2 LightRAG 构造期参数
+### 11.2 LightRAG 构造期参数
 
-`LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)` 是 §4.3 优先级链中的**第 3 档**："legacy 构造字段"。strategy 无关、粗粒度缺省，只填仍空的槽位：
+`LightRAG(chunk_token_size=…, chunk_overlap_token_size=…)` 是 §5.3 优先级链中的**第 3 档**："legacy 构造字段"。strategy 无关、粗粒度缺省，只填仍空的槽位：
 
-- 优先级低于 `addon_params["chunker"]` 显式值（§9.3）和 strategy 特定 env（§4.2）。
+- 优先级低于 `addon_params["chunker"]` 显式值（§11.3）和 strategy 特定 env（§5.2）。
 - 优先级高于 legacy env `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`。
 - 实例字段 `self.chunk_token_size` / `self.chunk_overlap_token_size` 在 `__post_init__` 之后总会被回填为 `int`，方便仍读这两个字段的旧路径（如 `pipeline.py` 中 `chunk_opts.get("chunk_token_size") or self.chunk_token_size` 兜底）继续工作。
 
-### 9.3 运行时改 `addon_params["chunker"]`
+### 11.3 运行时改 `addon_params["chunker"]`
 
 `addon_params["chunker"]` 是 `ObservableAddonParams` 字段，可以**运行时改**：
 
@@ -920,11 +1152,11 @@ await rag.ainsert("text", file_paths="doc.pdf")
 rag.addon_params["chunker"]["recursive_character"]["separators"] = ["##", "\n", " "]
 ```
 
-改完后，**后续入队**的文档拿到新默认；已入队文档保留入队时的快照不变（参见 §4.3 三层语义保证）。这是 §4.3 优先级链的第 1 档："`addon_params["chunker"]` 显式值"，赢一切。
+改完后，**后续入队**的文档拿到新默认；已入队文档保留入队时的快照不变（参见 §5.3 三层语义保证）。这是 §5.3 优先级链的第 1 档："`addon_params["chunker"]` 显式值"，赢一切。
 
 Server 部署没有这个能力 —— 改 env 后必须重启服务才生效。
 
-### 9.4 `apipeline_enqueue_documents(chunk_options=…)`
+### 11.4 `apipeline_enqueue_documents(chunk_options=…)`
 
 `apipeline_enqueue_documents` 接受可选的 `chunk_options` 参数，调用方传入 `dict` / `list[dict]` 会按当前文档的 `process_options` 投影为精简快照（只保留对应策略子字典 + 顶层 `chunk_token_size`）后持久化到 `full_docs[doc_id]["chunk_options"]`；不传则由 `resolve_chunk_options(self.addon_params, process_options=…)` 现场拼装一份。调用方可以放心传入全量字典——其它策略子字典会被 dispatcher 丢弃，不会污染存储。
 
@@ -946,9 +1178,9 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 
 **不传 `file_paths` 的兼容**：核心 API `insert` / `ainsert` / `apipeline_enqueue_documents` 仍兼容未传 `file_paths` 的调用；这类文档的 `file_path` 会保存为 `unknown_source`，不会参与文件名查重，文档 ID 继续按文本内容生成。
 
-`apipeline_enqueue_documents` 自身的并发约束（last-line guard、`from_scan=True` 旁路）见 §7.2 入口行为表。
+`apipeline_enqueue_documents` 自身的并发约束（last-line guard、`from_scan=True` 旁路）见 §8.2 入口行为表。
 
-### 9.5 `ainsert(split_by_character=…, split_by_character_only=…)`
+### 11.5 `ainsert(split_by_character=…, split_by_character_only=…)`
 
 `LightRAG.ainsert(split_by_character=…, split_by_character_only=…)` 的运行时参数在入队时由 `resolve_chunk_options` 覆写到 `chunk_options.fixed_token`：
 
@@ -957,12 +1189,12 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 
 仅对 F 策略生效；其它策略的子字典不受影响。
 
-### 9.6 已移除的 SDK 入参：`reprocess_existing_non_processed`
+### 11.6 已移除的 SDK 入参：`reprocess_existing_non_processed`
 
-旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与 §6 / §7 的规则相冲突，已整段移除。替代路径：
+旧 `apipeline_enqueue_documents` 的 `reprocess_existing_non_processed=True` 行为会在 scan 时直接删除非 PROCESSED 的旧记录并重建，与 §7 / §8 的规则相冲突，已整段移除。替代路径：
 
-- 自动续跑：scan 按 §6.1 的分类规则处理同名文件（归档 / 续跑 / 删 stub 后重入队），由 §8 续跑规则在处理循环里统一接管。
-- 强制刷新：先调 `/documents/{doc_id}` 删旧文档，再上传同名新文件。
+- 自动续跑：scan 按 §7.1 的分类规则处理同名文件（归档 / 续跑 / 删 stub 后重入队），由 §9 续跑规则在处理循环里统一接管。
+- 强制刷新：先调 `/documents/delete_document` 删旧文档，再上传同名新文件。
 
 ## 附录 A：从旧版升级的注意事项
 
@@ -972,7 +1204,7 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 
 迁移方式：把原来的全局开关换成路由规则上对应的字母，例如 `LIGHTRAG_PARSER=*:native-iteP,*:legacy-R`。注意 `VLM_PROCESS_ENABLE` 是一个正交的独立开关：它只闸控**图片**分析（表格与公式由 `EXTRACT` 角色分析）；若启用了 `i` 而 VLM 不可用，通过前置过滤的图片会让该文档失败，而不是被跳过。
 
-升级前已入库的文档，其 `process_options` 在入队时就已冻结在 `doc_status` 记录里；改规则或改 hint 都不会追溯修改它们。要让已有文档按新选项重跑，只能删除后重新上传（§8.3）。
+升级前已入库的文档，其 `process_options` 在入队时就已冻结在 `doc_status` 记录里；改规则或改 hint 都不会追溯修改它们。要让已有文档按新选项重跑，只能删除后重新上传（§9.3）。
 
 ### A.2 不主动开启则行为不变
 
@@ -980,4 +1212,26 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 
 ### A.3 已移除的 SDK 入参
 
-`apipeline_enqueue_documents(reprocess_existing_non_processed=...)` 已移除，替代路径见 §9.6。
+`apipeline_enqueue_documents(reprocess_existing_non_processed=...)` 已移除，替代路径见 §11.6。
+
+## 附录 B：环境变量速查
+
+本表说明各类文件处理相关环境变量该去哪里查，是索引而非复述：逐个变量的权威说明在 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example) 的注释里。
+
+| 类别 | 变量 | 说明所在 |
+| --- | --- | --- |
+| 路由 | `LIGHTRAG_PARSER` | §2.3、§2.4、§2.5 |
+| 分块 | `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE`、`CHUNK_{F,R,V,P}_*` | §5.2 |
+| 多模态 | `VLM_PROCESS_ENABLE`、`VLM_MAX_IMAGE_BYTES`、`VLM_MIN_IMAGE_PIXEL`、`MAX_EXTRACT_INPUT_TOKENS`、`SURROUNDING_*_MAX_TOKENS`、`MM_EXTRACT_CONTENT_MIN_TOKENS` | §4 |
+| VLM / 角色模型 | `VLM_LLM_*`、`VLM_MAX_ASYNC_LLM` | [RoleSpecificLLMConfiguration-zh.md](RoleSpecificLLMConfiguration-zh.md) |
+| legacy 引擎 | `PDF_DECRYPT_PASSWORD` | §3.2 |
+| native 引擎 | `NATIVE_MD_IMAGE_*` | §3.3 |
+| native docx smart_heading | `DOCX_SMART_HEADING`、`DOCX_SMART_*` 调优项 | §3.3 与 `env.example` 的 smart_heading 注释块 |
+| MinerU | `MINERU_*` | §3.4 |
+| Docling | `DOCLING_*` | §3.5 |
+| 解析缓存 | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`、`{MINERU,DOCLING}_ENGINE_VERSION` | §3.6、§6.3、§6.4 |
+| 目录 | `INPUT_DIR`、`WORKING_DIR`、`SCAN_SPOOL_DIR` | §6、§7.1 |
+| 并发 | `MAX_PARALLEL_*`、`QUEUE_SIZE_*` | §8.9 |
+| 准入与限制 | `MAX_UPLOAD_SIZE`、`MAX_REQUEST_BODY_BYTES`、`MAX_TEXTS_PER_REQUEST`、`MAX_PENDING_DOCUMENTS`、`PIPELINE_*`、`MAX_UNACKED_MANUAL_RETRIES`、`SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |
+| 查询期（不影响分块） | `ENABLE_CONTENT_HEADINGS` —— 组装回答上下文时为每个分块追加其标题路径；它不改变分块边界，也不改变已存储的分块文本 | [LightRAG Server](./LightRAG-API-Server-zh.md) |
+| 离线 / 分词器 | `TIKTOKEN_CACHE_DIR` | [OfflineDeployment.md](./OfflineDeployment.md) |
