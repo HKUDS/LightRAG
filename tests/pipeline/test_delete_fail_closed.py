@@ -137,6 +137,36 @@ async def _ingest(rag: LightRAG, file_path: str = "d.txt") -> str:
     return doc_id
 
 
+async def _ingest_skip_kg(rag: LightRAG, file_path: str = "nokg.txt") -> str:
+    """Ingest with ``process_options='!'`` — extraction and merge are skipped.
+
+    This is a supported mode, and it is the case that produces a document with
+    legitimately NO anchor rows: merge never runs, so Phase 0 never writes them.
+    """
+    doc_id = compute_mdhash_id(file_path, prefix="doc-")
+    await rag.apipeline_enqueue_documents(
+        "text with no kg", ids=[doc_id], file_paths=[file_path], process_options="!"
+    )
+    await rag.apipeline_process_enqueue_documents()
+    row = await rag.doc_status.get_by_id(doc_id)
+    status = row.get("status")
+    status_text = status.value if isinstance(status, DocStatus) else str(status)
+    assert status_text == DocStatus.PROCESSED.value, row
+    assert row["metadata"]["skip_kg"] is True
+    assert await rag.full_entities.get_by_id(doc_id) is None
+    assert await rag.full_relations.get_by_id(doc_id) is None
+    return doc_id
+
+
+async def _strip_write_state(rag: LightRAG, doc_id: str) -> None:
+    """Simulate a document written before the ``kg_write_state`` marker existed."""
+    row = await rag.doc_status.get_by_id(doc_id)
+    metadata = dict(row.get("metadata") or {})
+    metadata.pop(KG_WRITE_STATE_METADATA_KEY, None)
+    await rag.doc_status.update_doc_status_fields(doc_id, {"metadata": metadata})
+    await rag.doc_status.index_done_callback()
+
+
 async def _drop_anchors(rag: LightRAG, doc_id: str) -> None:
     """Simulate the pre-#3416 / ainsert_custom_kg state: no recovery anchors."""
     await rag.full_entities.delete([doc_id])
@@ -465,6 +495,129 @@ async def test_reprocess_refuses_when_anchors_lost(tmp_path):
         assert all(
             chunk is not None for chunk in await rag.text_chunks.get_by_ids(chunk_ids)
         )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_skip_kg_document_deletes_without_anchors(tmp_path):
+    """``skip_kg`` produces a document with legitimately NO anchor rows.
+
+    Extraction and merge are skipped entirely, so Phase 0 never runs. The
+    enqueue-time ``kg_write_state=pre_graph`` marker is what carries the proof
+    instead — and it must survive to PROCESSED, which is why the PROCESSED
+    transition retires only the purge journal and not the marker.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest_skip_kg(rag)
+        row = await rag.doc_status.get_by_id(doc_id)
+        assert row["metadata"][KG_WRITE_STATE_METADATA_KEY] == KG_WRITE_STATE_PRE_GRAPH
+        chunk_ids = await _chunk_ids(rag, doc_id)
+        assert chunk_ids, "skip_kg still produces chunks for naive/mix retrieval"
+
+        result = await rag.adelete_by_doc_id(doc_id)
+
+        assert result.status == "success", result.message
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert all(
+            chunk is None for chunk in await rag.text_chunks.get_by_ids(chunk_ids)
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_legacy_skip_kg_document_is_recoverable_via_audit(tmp_path):
+    """A ``skip_kg`` document predating the marker must not be undeletable.
+
+    It has no anchors (merge never ran) and no marker (it did not exist yet),
+    so it fails closed — correctly, since nothing in the hot path can tell it
+    apart from a document whose anchors were lost. The audit is the one place
+    that CAN: it enumerates the entire graph, so a document appearing nowhere
+    in that scan is proven to own nothing, and empty anchor rows are simply the
+    truth about it.
+
+    Without this, the remedy the refusal message names would be a dead end for
+    this whole class of document: anchor repair has nothing to rebuild from, so
+    ``repaired_docs`` would come back empty and the retry would refuse again.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest_skip_kg(rag)
+        await _strip_write_state(rag, doc_id)
+
+        refused = await rag.adelete_by_doc_id(doc_id)
+        assert refused.status_code == 409
+
+        report = await audit_kg_integrity(rag, apply=True)
+        assert report["anchorless_docs"] == [doc_id]
+        assert doc_id in report["repaired_docs"]
+        # Present-and-empty: the normal `anchors` proof for a document that
+        # contributed nothing.
+        assert (await rag.full_entities.get_by_id(doc_id))["entity_names"] == []
+        assert (await rag.full_relations.get_by_id(doc_id))["relation_pairs"] == []
+
+        result = await rag.adelete_by_doc_id(doc_id)
+        assert result.status == "success", result.message
+        assert await rag.doc_status.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_never_certifies_a_document_that_owns_graph_objects(tmp_path):
+    """The safety property of the anchorless certification.
+
+    Writing empty anchors for a document that DOES own graph objects would
+    manufacture a false proof and hand purge a licence to delete the chunks
+    while skipping the graph — precisely the bug this work removes. Absence
+    must be established from the completed scan, never assumed from a missing
+    anchor row.
+    """
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        contributing = await _ingest(rag)  # owns ALICE, ACME and an edge
+        empty = await _ingest_skip_kg(rag)
+        await _drop_anchors(rag, contributing)
+        await _strip_write_state(rag, contributing)
+        await _strip_write_state(rag, empty)
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        # Only the genuinely empty one is certified empty.
+        assert report["anchorless_docs"] == [empty]
+        # The contributing one is repaired with its REAL names, not blanked.
+        assert set(report["missing_entity_anchors"][contributing]) == {"ALICE", "ACME"}
+        assert sorted(
+            (await rag.full_entities.get_by_id(contributing))["entity_names"]
+        ) == ["ACME", "ALICE"]
+        assert (await rag.full_relations.get_by_id(contributing))["relation_pairs"] == [
+            ["ACME", "ALICE"]
+        ]
+
+        # And deleting it now really does clean the graph.
+        assert (await rag.adelete_by_doc_id(contributing)).status == "success"
+        assert await rag.chunk_entity_relation_graph.get_node("ALICE") is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_audit_leaves_present_but_empty_anchor_rows_alone(tmp_path):
+    """Row presence is the test, so an already-empty pair needs no repair."""
+    rag = await _build_rag(tmp_path, f"dfc-{uuid4().hex[:8]}")
+    try:
+        doc_id = await _ingest_skip_kg(rag)
+        await rag.full_entities.upsert({doc_id: {"entity_names": [], "count": 0}})
+        await rag.full_relations.upsert({doc_id: {"relation_pairs": [], "count": 0}})
+        await rag.full_entities.index_done_callback()
+        await rag.full_relations.index_done_callback()
+
+        report = await audit_kg_integrity(rag, apply=True)
+
+        assert report["anchorless_docs"] == []
+        assert report["repaired_docs"] == []
     finally:
         await rag.finalize_storages()
 

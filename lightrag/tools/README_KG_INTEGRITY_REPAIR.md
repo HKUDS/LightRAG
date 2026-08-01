@@ -70,14 +70,35 @@ A purge is allowed to proceed when any one of these holds:
 | `doc_status.metadata.kg_write_state == pre_graph` | Stamped at enqueue and advanced only once the anchors are durable, so it proves the document never reached its first graph mutation. Staged chunks are cleaned up with no graph access at all. |
 | `doc_status.metadata.kg_purge` past `prepared` | A previous purge attempt got far enough to have deleted the anchors itself. Without this, purge's own last step would make every retry refuse forever. |
 
-Two states therefore need this tool:
+Three states therefore need this tool:
 
 - documents ingested **before** #3416 landed the write-ahead anchors;
 - documents written through direct KG paths such as `ainsert_custom_kg`,
-  which are documented as sitting outside the document-level guarantee.
+  which are documented as sitting outside the document-level guarantee;
+- documents ingested with `skip_kg` (`process_options` `'!'`) **before** the
+  `kg_write_state` marker existed — see below.
+
+### Documents that legitimately own nothing
+
+`skip_kg` skips extraction and the merge entirely, so no anchor rows are ever
+written. Documents ingested that way *after* this change carry
+`kg_write_state=pre_graph` from enqueue and delete normally. Older ones have
+neither anchors nor a marker, and anchor repair has nothing to rebuild from —
+they never appear in the graph scan, because they own nothing in it.
+
+The audit settles that case, and it is the only thing that can: it enumerates
+the **whole** graph, which the hot paths deliberately never do, so a document
+absent from that scan is not merely unproven but *proven empty*. Such
+documents are listed under `anchorless_docs`, and `--apply` gives them empty
+anchor rows — the present-and-empty pair that is the normal proof for a
+document with no contributions.
+
+Absence is only ever concluded from the completed scan. A document that does
+own graph objects is repaired with its real names instead; blanking it would
+manufacture a false proof and license the exact deletion this work prevents.
 
 Note that `--apply` reports what it found under `missing_entity_anchors` /
-`missing_relation_anchors` (the diagnosis) and what it rebuilt under
+`missing_relation_anchors` (the diagnosis) and what it wrote under
 `repaired_docs` (the action) — the first two are not emptied by a repair.
 
 Anything listed under `orphan_entities` / `orphan_relations` cannot be
