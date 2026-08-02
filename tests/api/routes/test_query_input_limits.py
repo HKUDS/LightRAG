@@ -13,7 +13,6 @@ before the handler — and therefore before any tokenizer or LLM call — runs.
 from __future__ import annotations
 
 import importlib
-import json
 import sys
 
 import pytest
@@ -29,7 +28,6 @@ sys.argv = _original_argv
 QueryRequest = _query_routes.QueryRequest
 
 from lightrag.constants import (  # noqa: E402
-    MAX_HISTORY_JSON_CHARS,
     MAX_KEYWORD_CHARS,
     MAX_KEYWORDS_PER_LIST,
     MAX_MESSAGE_CHARS,
@@ -88,31 +86,46 @@ def test_oversized_response_type_is_refused():
 
 
 # --------------------------------------------------------------------------- #
-# conversation_history — the bypass the per-content limit alone leaves open
+# conversation_history — per-field and aggregate input limits
 # --------------------------------------------------------------------------- #
 
 
-def test_payload_hidden_in_role_is_refused():
-    """The load-bearing case.
-
-    Every ``content`` here is tiny and every message is well formed, so a
-    validator that only measures ``content`` accepts the request and forwards
-    the whole dict to the LLM as history. The bound has to be on the serialized
-    whole, not on the fields we happened to enumerate.
-    """
-    history = [
-        {"role": "u" * (MAX_ROLE_CHARS + 1), "content": "hi"}
-        for _ in range(MAX_MESSAGES_PER_REQUEST)
-    ]
-    with pytest.raises(ValidationError):
+def test_oversized_history_role_is_refused():
+    """A role has its own size cap, so it cannot carry a large payload."""
+    history = [{"role": "u" * (MAX_ROLE_CHARS + 1), "content": "hi"}]
+    with pytest.raises(ValidationError, match="Each message 'role' must be at most"):
         _build(conversation_history=history)
 
 
-def test_payload_hidden_in_an_unenumerated_key_is_refused():
-    """Same bypass, one key over: extra keys are forwarded verbatim too."""
-    filler = "x" * (MAX_HISTORY_JSON_CHARS // 4)
-    history = [{"role": "user", "content": "hi", "metadata": filler} for _ in range(8)]
-    with pytest.raises(ValidationError, match="serializes to"):
+def test_unenumerated_history_fields_consume_aggregate_budget():
+    """Forwarded extras must share the query's one request budget.
+
+    Before this check, both the 64 Ki-character query and the approximately
+    64 Ki-character metadata payload fit their separate limits. Counting the
+    serialized history in the aggregate correctly refuses their combined input.
+    """
+    history = [
+        {
+            "role": "user",
+            "content": "hi",
+            "metadata": "x" * (MAX_REQUEST_TEXT_CHARS - MAX_QUERY_CHARS),
+        }
+    ]
+    with pytest.raises(ValidationError, match="total request text"):
+        _build(query="q" * MAX_QUERY_CHARS, conversation_history=history)
+
+
+def test_oversized_unenumerated_history_field_is_refused():
+    """History alone cannot exceed the aggregate budget through extra fields."""
+    history = [
+        {
+            "role": "user",
+            "content": "hi",
+            "metadata": "x" * (MAX_REQUEST_TEXT_CHARS // 4),
+        }
+        for _ in range(8)
+    ]
+    with pytest.raises(ValidationError, match="total request text"):
         _build(conversation_history=history)
 
 
@@ -156,7 +169,6 @@ def test_a_realistic_conversation_is_accepted():
         {"role": "user" if i % 2 == 0 else "assistant", "content": "hello there " * 20}
         for i in range(MAX_MESSAGES_PER_REQUEST)
     ]
-    assert len(json.dumps(history)) < MAX_HISTORY_JSON_CHARS
     request = _build(conversation_history=history)
     assert len(request.conversation_history) == MAX_MESSAGES_PER_REQUEST
 

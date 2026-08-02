@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from lightrag.constants import (
-    MAX_HISTORY_JSON_CHARS,
     MAX_KEYWORD_CHARS,
     MAX_KEYWORDS_PER_LIST,
     MAX_MESSAGE_CHARS,
@@ -191,35 +190,24 @@ class QueryRequest(BaseModel):
                     f"Each message 'content' must be at most {MAX_MESSAGE_CHARS} characters."
                 )
 
-        # The load-bearing bound. Every message dict is forwarded verbatim to the
-        # LLM as history, and the per-key checks above can only cover keys we
-        # thought of: a payload parked in 'role', or in an extra key that is
-        # neither validated nor stripped, would otherwise sail past a per-content
-        # limit. Measuring the serialized whole is independent of field names.
-        #
         # Extra keys stay allowed on purpose — clients following the OpenAI
-        # convention send 'name' or 'tool_call_id', and forbidding them would be
-        # a gratuitous break.
-        serialized = len(json.dumps(conversation_history, ensure_ascii=False))
-        if serialized > MAX_HISTORY_JSON_CHARS:
-            raise ValueError(
-                f"conversation_history serializes to {serialized} characters, "
-                f"over the {MAX_HISTORY_JSON_CHARS} character limit"
-            )
+        # convention send 'name' or 'tool_call_id'. The aggregate validator
+        # counts the serialized whole, so those fields consume request budget
+        # without being forbidden outright.
         return conversation_history
 
     @model_validator(mode="after")
     def bound_aggregate_text(self) -> "QueryRequest":
-        """Bound all model-facing text in one request.
+        """Bound all model-facing request input in one request.
 
         Per-field limits are not a bound on their own: the same payload is
-        trivially rebuilt out of fields that are each individually legal.
+        trivially rebuilt out of fields that are each individually legal. Every
+        history dict is forwarded verbatim, so count its serialized form rather
+        than only the ``content`` key.
         """
         total = len(self.query) + len(self.user_prompt or "")
         if self.conversation_history:
-            total += sum(
-                len(str(msg.get("content", ""))) for msg in self.conversation_history
-            )
+            total += len(json.dumps(self.conversation_history, ensure_ascii=False))
         if total > MAX_REQUEST_TEXT_CHARS:
             raise ValueError(
                 f"total request text is {total} characters, over the "
