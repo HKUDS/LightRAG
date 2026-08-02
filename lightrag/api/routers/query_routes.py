@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends
 from lightrag.base import QueryParam
+from lightrag.api.input_limits import count_conversation_input_chars
 from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from lightrag.constants import (
     MAX_KEYWORD_CHARS,
@@ -205,9 +206,11 @@ class QueryRequest(BaseModel):
         history dict is forwarded verbatim, so count its serialized form rather
         than only the ``content`` key.
         """
-        total = len(self.query) + len(self.user_prompt or "")
-        if self.conversation_history:
-            total += len(json.dumps(self.conversation_history, ensure_ascii=False))
+        total = count_conversation_input_chars(
+            self.query,
+            self.user_prompt,
+            self.conversation_history,
+        )
         if total > MAX_REQUEST_TEXT_CHARS:
             raise ValueError(
                 f"total request text is {total} characters, over the "

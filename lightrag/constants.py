@@ -489,10 +489,10 @@ MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 # tiny messages and one large message cost the same.
 MAX_QUERY_CHARS = 64 * 1024
 MAX_MESSAGE_CHARS = 32 * 1024
-# All model-facing request input, summed. Without this a per-message limit is
-# trivially rebuilt out of many messages. QueryRequest's conversation history is
-# measured as its serialized JSON so permitted extra fields cannot escape this
-# one budget.
+# All normalized model-facing request input, summed. Without this a per-message
+# limit is trivially rebuilt out of many messages. Both query surfaces measure
+# their history as serialized JSON so roles, structure, and permitted extra
+# fields cannot escape this one budget.
 MAX_REQUEST_TEXT_CHARS = 128 * 1024
 
 # Sanity guards, NOT security boundaries — the volume limits above already bound

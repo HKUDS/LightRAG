@@ -126,6 +126,69 @@ def test_many_legal_messages_cannot_rebuild_the_payload(client):
     assert response.status_code == 413
 
 
+def test_chat_history_structure_consumes_aggregate_budget(client):
+    """Chat history uses the same serialized representation as /query.
+
+    Four maximum-size contents exactly fill the old text-only budget. The
+    normalized history for the first three also contains roles and JSON
+    structure, so the unified budget must now reject the request before any
+    tokenizer or LLM work.
+    """
+    count = MAX_REQUEST_TEXT_CHARS // MAX_MESSAGE_CHARS
+    assert count * MAX_MESSAGE_CHARS == MAX_REQUEST_TEXT_CHARS
+    response = client.post(
+        "/api/chat",
+        json=_chat(
+            messages=[
+                {"role": "user", "content": "B" * MAX_MESSAGE_CHARS}
+                for _ in range(count)
+            ]
+        ),
+    )
+    assert response.status_code == 413
+
+
+def test_chat_forwards_history_shape_counted_by_the_budget(monkeypatch):
+    """The handler forwards the same normalized history the validator counts."""
+    captured = {}
+
+    async def _count_tokens(_text):
+        return 0
+
+    class _RecordingRAG(_ExplodingRAG):
+        async def aquery(self, query, *, param):
+            captured["query"] = query
+            captured["history"] = param.conversation_history
+            return "answer"
+
+    monkeypatch.setattr(_ollama_api, "aestimate_tokens", _count_tokens)
+    monkeypatch.setattr(_utils_api, "auth_configured", False)
+    app = FastAPI()
+    app.include_router(_ollama_api.OllamaAPI(_RecordingRAG()).router, prefix="/api")
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json=_chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "instructions",
+                    "images": ["ignored-image"],
+                },
+                {"role": "assistant", "content": "prior answer"},
+                {"role": "user", "content": "current question"},
+            ]
+        ),
+    )
+
+    assert response.status_code == 200
+    assert captured["query"] == "current question"
+    assert captured["history"] == [
+        {"role": "system", "content": "instructions"},
+        {"role": "assistant", "content": "prior answer"},
+    ]
+
+
 def test_too_many_messages_are_refused(client):
     response = client.post(
         "/api/chat",

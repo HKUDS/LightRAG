@@ -10,6 +10,7 @@ from enum import Enum
 from fastapi.responses import StreamingResponse
 import asyncio
 from lightrag import LightRAG, QueryParam
+from lightrag.api.input_limits import count_conversation_input_chars
 from lightrag.constants import (
     DEFAULT_QUERY_PRIORITY,
     MAX_IMAGES_PER_MESSAGE,
@@ -45,13 +46,8 @@ class PayloadTooLargeError(ValueError):
     """
 
 
-def _bound_total_text(*parts: Optional[str]) -> None:
-    """Refuse a request whose model-facing text exceeds the per-request budget.
-
-    Per-field limits alone are not a bound: the same payload is trivially
-    rebuilt out of many fields that are each individually legal.
-    """
-    total = sum(len(part) for part in parts if part)
+def _bound_input_chars(total: int) -> None:
+    """Reject an already-measured normalized model-input budget."""
     if total > MAX_REQUEST_TEXT_CHARS:
         raise PayloadTooLargeError(
             f"total request text is {total} characters, over the "
@@ -65,6 +61,21 @@ class OllamaMessage(BaseModel):
     images: Optional[List[str]] = Field(default=None, max_length=MAX_IMAGES_PER_MESSAGE)
 
 
+def _split_chat_messages(
+    messages: List[OllamaMessage],
+) -> tuple[str, list[dict[str, str]]]:
+    """Return the exact query/history split the chat handler forwards downstream."""
+    if not messages:
+        return "", []
+    return (
+        messages[-1].content,
+        [
+            {"role": message.role, "content": message.content}
+            for message in messages[:-1]
+        ],
+    )
+
+
 class OllamaChatRequest(BaseModel):
     model: str = Field(max_length=MAX_MODEL_NAME_CHARS)
     messages: List[OllamaMessage] = Field(max_length=MAX_MESSAGES_PER_REQUEST)
@@ -74,7 +85,11 @@ class OllamaChatRequest(BaseModel):
 
     @model_validator(mode="after")
     def _bound_aggregate_text(self) -> "OllamaChatRequest":
-        _bound_total_text(*(message.content for message in self.messages), self.system)
+        # The final message becomes the query; preceding messages become the
+        # history passed to the LLM. Count that exact normalized representation
+        # to match QueryRequest's aggregate budget.
+        query, history = _split_chat_messages(self.messages)
+        _bound_input_chars(count_conversation_input_chars(query, self.system, history))
         return self
 
 
@@ -94,7 +109,9 @@ class OllamaGenerateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _bound_aggregate_text(self) -> "OllamaGenerateRequest":
-        _bound_total_text(self.prompt, self.system)
+        _bound_input_chars(
+            count_conversation_input_chars(self.prompt, self.system, None)
+        )
         return self
 
 
@@ -603,12 +620,7 @@ class OllamaAPI:
                         status_code=400, detail="Last message must be from user role"
                     )
 
-                # Get the last message as query and previous messages as history
-                query = messages[-1].content
-                # Convert OllamaMessage objects to dictionaries
-                conversation_history = [
-                    {"role": msg.role, "content": msg.content} for msg in messages[:-1]
-                ]
+                query, conversation_history = _split_chat_messages(messages)
 
                 # Check for query prefix
                 cleaned_query, mode, only_need_context, user_prompt = parse_query_mode(
