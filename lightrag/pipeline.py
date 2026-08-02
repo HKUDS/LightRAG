@@ -3679,7 +3679,14 @@ class _PipelineMixin:
                     "doc_id": doc_id,
                 }
                 normalized_images = normalize_image_inputs([img_payload])
-                prompt = MULTIMODAL_PROMPTS["image_analysis"].format(
+                is_video_frame = (
+                    str(item.get("media_type") or "") == "video_contact_sheet"
+                    or str((item.get("extras") or {}).get("media_type") or "")
+                    == "video_contact_sheet"
+                )
+                analysis_kind = "video_frame" if is_video_frame else "drawing"
+                prompt_key = "video_frame_analysis" if is_video_frame else "image_analysis"
+                prompt = MULTIMODAL_PROMPTS[prompt_key].format(
                     language=language,
                     content="",
                     captions=_captions_value(item),
@@ -3696,7 +3703,7 @@ class _PipelineMixin:
                     serialize_llm_cache_identity(vlm_cache_identity),
                     _serialize_cache_variant({"type": "json_object"}),
                     _serialize_cache_variant(image_cache_metadata(normalized_images)),
-                    "drawing",
+                    analysis_kind,
                 )
                 cache_id = generate_cache_key("default", "analysis", args_hash)
                 cached = await handle_cache(

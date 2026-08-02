@@ -177,6 +177,19 @@ export type Message = {
   thinkingContent?: string
   displayContent?: string
   thinkingTime?: number | null
+  contentBlocks?: QueryContentBlock[]
+}
+
+export type QueryContentBlock = {
+  type: 'markdown' | 'image' | 'video_scene' | 'table' | 'equation' | string
+  asset_id?: string
+  caption?: string | null
+  scene_id?: string
+  start_ms?: number
+  end_ms?: number
+  frame_timestamps_ms?: number[]
+  manifest_ref?: string
+  [key: string]: unknown
 }
 
 export type QueryRequest = {
@@ -212,10 +225,14 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Ask the API to return multimodal evidence blocks for the answer. */
+  include_content_blocks?: boolean
 }
 
 export type QueryResponse = {
   response: string
+  content_blocks?: QueryContentBlock[] | null
+  references?: Record<string, any>[] | null
 }
 
 export type EntityUpdateResponse = {
@@ -651,6 +668,14 @@ export const queryText = async (
   return response.data
 }
 
+export const getAssetBlob = async (assetId: string): Promise<Blob> => {
+  const response = await axiosInstance.get(`/assets/${encodeURIComponent(assetId)}`, {
+    params: { variant: 'thumbnail' },
+    responseType: 'blob'
+  })
+  return response.data
+}
+
 /**
  * True when an error originates from the user aborting the request (Stop
  * button) rather than a real failure. Used to suppress error rendering and any
@@ -671,7 +696,8 @@ export const isUserAbortError = (
 async function _readNdjsonStream(
   response: Response,
   onChunk: (chunk: string) => void,
-  onError: ((error: string) => void) | undefined
+  onError: ((error: string) => void) | undefined,
+  onContext: ((blocks: QueryContentBlock[]) => void) | undefined
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
@@ -700,7 +726,11 @@ async function _readNdjsonStream(
           const parsed = JSON.parse(trimmed);
           if (parsed.response) {
             onChunk(parsed.response);
-          } else if (parsed.error) {
+          }
+          if (Array.isArray(parsed.content_blocks)) {
+            onContext?.(parsed.content_blocks)
+          }
+          if (parsed.error) {
             onError?.(parsed.error);
           }
           // references-only lines are silently consumed —
@@ -727,7 +757,11 @@ async function _readNdjsonStream(
       const parsed = JSON.parse(buffer);
       if (parsed.response) {
         onChunk(parsed.response);
-      } else if (parsed.error) {
+      }
+      if (Array.isArray(parsed.content_blocks)) {
+        onContext?.(parsed.content_blocks)
+      }
+      if (parsed.error) {
         onError?.(parsed.error);
       }
     } catch {
@@ -840,7 +874,8 @@ export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
   onError?: (error: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onContext?: (blocks: QueryContentBlock[]) => void
 ) => {
   const headers = _buildStreamHeaders();
 
@@ -919,7 +954,7 @@ export const queryTextStream = async (
     }
 
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
-    await _readNdjsonStream(activeResponse, onChunk, onError);
+    await _readNdjsonStream(activeResponse, onChunk, onError, onContext);
   } catch (error) {
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {

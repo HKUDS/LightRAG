@@ -57,6 +57,17 @@ class QueryEnricher:
         return self._block_pages.get(str(item.get("blockid") or ""))
 
     @staticmethod
+    def _video_fields(item: dict[str, Any]) -> dict[str, Any]:
+        extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
+        if str(extras.get("media_type") or item.get("media_type") or "") != "video_contact_sheet":
+            return {}
+        fields: dict[str, Any] = {"media_type": "video_contact_sheet"}
+        for key in ("scene_id", "start_ms", "end_ms", "frame_timestamps_ms", "manifest_ref"):
+            if key in extras:
+                fields[key] = extras[key]
+        return fields
+
+    @staticmethod
     def _chunk_document_id(chunk: dict[str, Any]) -> str | None:
         value = chunk.get("full_doc_id") or chunk.get("document_id")
         return str(value) if value else None
@@ -84,14 +95,20 @@ class QueryEnricher:
             if file_path:
                 result.setdefault("display_name", self._display_name(file_path))
             pages: list[int] = []
+            video_ranges: list[dict[str, Any]] = []
             for chunk in matching:
                 for match in _DRAWING_TAG_RE.finditer(str(chunk.get("content") or "")):
                     item = self._load_items().get(match.group(1))
                     page = self._page_for_item(item or {})
                     if page is not None:
                         pages.append(page)
+                    video = self._video_fields(item or {})
+                    if video:
+                        video_ranges.append(video)
             if pages:
                 result.setdefault("page", min(pages))
+            if video_ranges:
+                result.setdefault("video_scenes", video_ranges)
             enriched.append(result)
         return enriched
 
@@ -111,12 +128,22 @@ class QueryEnricher:
                 asset = self.catalog.by_drawing_id(drawing_id)
                 if asset is None:
                     continue
-                blocks.append({
-                    "type": "image",
-                    "asset_id": asset.asset_id,
-                    "caption": asset.caption,
-                    "page": asset.page,
-                })
+                item = items.get(drawing_id) or {}
+                video = self._video_fields(item)
+                if video:
+                    blocks.append({
+                        "type": "video_scene",
+                        "asset_id": asset.asset_id,
+                        "caption": asset.caption,
+                        **video,
+                    })
+                else:
+                    blocks.append({
+                        "type": "image",
+                        "asset_id": asset.asset_id,
+                        "caption": asset.caption,
+                        "page": asset.page,
+                    })
             for match in _TABLE_TAG_RE.finditer(content):
                 table_id = match.group(1)
                 if table_id in seen:

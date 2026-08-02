@@ -25,6 +25,7 @@ from lightrag.constants import (
     PARSER_ENGINE_LEGACY,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
+    PARSER_ENGINE_VIDEO,
 )
 
 if TYPE_CHECKING:
@@ -173,6 +174,7 @@ _DOCLING_SUFFIXES = frozenset(
         "bmp",
     }
 )
+_VIDEO_SUFFIXES = frozenset({"mp4", "mov", "mkv", "webm", "avi", "m4v"})
 
 
 _REGISTRY: dict[str, ParserSpec] = {
@@ -208,6 +210,14 @@ _REGISTRY: dict[str, ParserSpec] = {
         queue_group=PARSER_ENGINE_DOCLING,  # sized by max_parallel_parse_docling
         endpoint_configured=_env_endpoint_configured("DOCLING_ENDPOINT"),
         endpoint_requirement=lambda: "DOCLING_ENDPOINT",
+    ),
+    PARSER_ENGINE_VIDEO: ParserSpec(
+        engine_name=PARSER_ENGINE_VIDEO,
+        impl="lightrag.parser.video.parser:VideoParser",
+        suffixes=_VIDEO_SUFFIXES,
+        queue_group=PARSER_ENGINE_VIDEO,
+        endpoint_configured=_env_endpoint_configured("VIDEO_ASR_BINDING_HOST"),
+        endpoint_requirement=lambda: "VIDEO_ASR_BINDING_HOST",
     ),
     PARSER_ENGINE_REUSE: ParserSpec(
         engine_name=PARSER_ENGINE_REUSE,

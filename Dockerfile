@@ -112,7 +112,7 @@ ENV PROMPT_DIR=/app/data/prompts
 # chown -R /app MUST run after every data COPY above so the venv (pipmaster
 # installs packages at runtime), data dirs, and the tiktoken cache are writable.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
+    && apt-get install -y --no-install-recommends gosu ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 lightrag \
     && useradd -u 1000 -g lightrag -m -d /home/lightrag -s /usr/sbin/nologin lightrag \

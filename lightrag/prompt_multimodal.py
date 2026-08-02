@@ -164,6 +164,33 @@ Output:
 
 
 MULTIMODAL_PROMPTS[
+    "video_frame_analysis"
+] = """You are an expert video-scene analyst. Analyze the provided contact sheet from one bounded video scene and return one JSON object.
+
+Use the frames together: identify the stable event, important actions, people, objects, on-screen text, locations, and temporal changes visible across the scene. Do not invent details that are not visible. The time range in the additional context is a locator, not visual evidence.
+
+Return exactly one valid JSON object with these fields:
+- `name`: concise distinctive snake_case scene name (3–8 words)
+- `type`: one of Photo, Illustration, Screenshot, Icon, Chart, Table, Infographic, Flowchart, Chat Log, Wireframe, Texture, Other
+- `description`: precise natural-language description, no more than 500 words, written in {language}; include visible text and meaningful actions.
+
+Additional context:
+- Scene caption: {captions}
+- Footnotes: {footnotes}
+- Leading transcript/context:
+```
+{leading}
+```
+- Trailing transcript/context:
+```
+{trailing}
+```
+
+Output only JSON. Escape quotes, backslashes, and newlines correctly.
+"""
+
+
+MULTIMODAL_PROMPTS[
     "table_analysis"
 ] = """You are an expert table analyzer. The exact format of the table (HTML or a JSON 2-D array) is declared in the TABLE CONTENT section below. Analyze it and return a single JSON object describing its structure and content.
 

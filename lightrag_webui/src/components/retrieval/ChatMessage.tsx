@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
-import { Message } from '@/api/lightrag'
+import { getAssetBlob, Message, type QueryContentBlock } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 
@@ -43,6 +43,76 @@ export type MessageWithError = Message & {
    * Used to prevent red error text during streaming of incomplete LaTeX formulas.
    */
   latexRendered?: boolean
+}
+
+const formatVideoTime = (milliseconds?: number) => {
+  if (typeof milliseconds !== 'number' || !Number.isFinite(milliseconds)) return ''
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  return `${hours > 0 ? `${hours}:` : ''}${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+const QueryEvidence = ({ blocks }: { blocks?: QueryContentBlock[] }) => {
+  const mediaBlocks = (blocks || []).filter(
+    (block) => (block.type === 'video_scene' || block.type === 'image') && block.asset_id
+  )
+  if (!mediaBlocks.length) return null
+
+  return (
+    <div className="mt-3 border-t border-border/60 pt-3">
+      <div className="mb-2 text-xs font-medium text-muted-foreground">Evidence</div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {mediaBlocks.slice(0, 8).map((block, index) => (
+          <EvidenceCard key={`${block.asset_id}-${index}`} block={block} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const EvidenceCard = ({ block }: { block: QueryContentBlock }) => {
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    let objectUrl: string | null = null
+    if (!block.asset_id) return () => undefined
+    getAssetBlob(block.asset_id)
+      .then((blob) => {
+        if (!active) return
+        objectUrl = URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      })
+      .catch(() => {
+        if (active) setFailed(true)
+      })
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [block.asset_id])
+
+  const timeRange = block.type === 'video_scene'
+    ? `${formatVideoTime(block.start_ms)} – ${formatVideoTime(block.end_ms)}`
+    : ''
+  return (
+    <figure className="overflow-hidden rounded-md border border-border/60 bg-background">
+      {url ? (
+        <img src={url} alt={block.caption || 'Retrieved evidence'} className="w-full object-cover" />
+      ) : (
+        <div className="flex min-h-24 items-center justify-center text-xs text-muted-foreground">
+          {failed ? 'Evidence unavailable' : 'Loading evidence…'}
+        </div>
+      )}
+      <figcaption className="px-2 py-1.5 text-xs text-muted-foreground">
+        {timeRange && <span className="mr-2 font-medium">{timeRange}</span>}
+        {block.caption || 'Retrieved evidence'}
+      </figcaption>
+    </figure>
+  )
 }
 
 // Restore original component definition and export
@@ -269,6 +339,7 @@ export const ChatMessage = ({
           </div>
         </div>
       )}
+      {message.role === 'assistant' && <QueryEvidence blocks={message.contentBlocks} />}
       {/* User-terminated hint - response may be incomplete */}
       {message.isAborted && (
         <div className="mt-1 text-xs italic text-muted-foreground">

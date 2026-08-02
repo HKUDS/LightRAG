@@ -160,6 +160,7 @@ PARSER_ENGINE_LEGACY = "legacy"
 PARSER_ENGINE_NATIVE = "native"
 PARSER_ENGINE_MINERU = "mineru"
 PARSER_ENGINE_DOCLING = "docling"
+PARSER_ENGINE_VIDEO = "video"
 PARSED_DIR_NAME = "__parsed__"  # Dir for parsed files (renamed from __enqueued__)
 # Prefix marking a doc_status content_summary as GENERATED from a file
 # extraction error (enqueue-time error documents and parse-stage FAILED
@@ -234,6 +235,7 @@ DEFAULT_MAX_PARALLEL_ANALYZE = 5  # Multimodal analysis (VLM) concurrency
 DEFAULT_MAX_PARALLEL_PARSE_NATIVE = 5
 DEFAULT_MAX_PARALLEL_PARSE_MINERU = 2
 DEFAULT_MAX_PARALLEL_PARSE_DOCLING = 2
+DEFAULT_MAX_PARALLEL_PARSE_VIDEO = 1
 
 # Staged pipeline queue size defaults.
 DEFAULT_QUEUE_SIZE_PARSE = 20

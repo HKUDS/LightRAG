@@ -340,7 +340,8 @@ export default function RetrievalView() {
               isError: isError,
               mermaidRendered: assistantMessage.mermaidRendered,
               latexRendered: assistantMessage.latexRendered,
-              thinkingTime: assistantMessage.thinkingTime
+              thinkingTime: assistantMessage.thinkingTime,
+              contentBlocks: assistantMessage.contentBlocks
             })
           }
           return newMessages
@@ -382,7 +383,8 @@ export default function RetrievalView() {
             .slice(-effectiveHistoryTurns * 2)
             .map((m) => ({ role: m.role, content: m.content }))
           : [],
-        ...(modeOverride ? { mode: modeOverride } : {})
+        ...(modeOverride ? { mode: modeOverride } : {}),
+        include_content_blocks: true
       }
 
       try {
@@ -391,7 +393,15 @@ export default function RetrievalView() {
           let errorMessage = ''
           await queryTextStream(queryParams, updateAssistantMessage, (error) => {
             errorMessage += error
-          }, controller.signal)
+          }, controller.signal, (contentBlocks) => {
+            assistantMessage.contentBlocks = contentBlocks
+            setMessages((prev) => {
+              const next = [...prev]
+              const last = next[next.length - 1]
+              if (last?.id === assistantMessage.id) last.contentBlocks = contentBlocks
+              return next
+            })
+          })
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -400,6 +410,7 @@ export default function RetrievalView() {
           }
         } else {
           const response = await queryText(queryParams, controller.signal)
+          assistantMessage.contentBlocks = response.content_blocks || undefined
           updateAssistantMessage(response.response)
         }
       } catch (err) {

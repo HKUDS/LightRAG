@@ -231,7 +231,7 @@ export default function UploadDocumentsDialog({
         </DialogHeader>
         <FileUploader
           maxFileCount={Infinity}
-          maxSize={200 * 1024 * 1024}
+          maxSize={4 * 1024 * 1024 * 1024}
           description={t('documentPanel.uploadDocuments.fileTypes')}
           onUpload={handleDocumentsUpload}
           onReject={handleRejectedFiles}

@@ -85,7 +85,13 @@ export const supportedFileTypes = {
   'application/pdf': ['.pdf'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'video/mp4': ['.mp4'],
+  'video/quicktime': ['.mov'],
+  'video/x-matroska': ['.mkv'],
+  'video/webm': ['.webm'],
+  'video/x-msvideo': ['.avi'],
+  'video/x-m4v': ['.m4v']
 }
 
 export const SiteInfo = {
