@@ -182,6 +182,7 @@ from lightrag.utils import (
     make_relation_chunk_key,
     normalize_source_ids_limit_method,
     normalize_string_list,
+    run_in_chunking_executor,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -546,6 +547,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ] = field(default_factory=lambda: chunking_by_token_size)
     """
     Legacy chunking-function customization point. Synchronous or async.
+
+    **Where it runs.** A custom ``chunking_func`` is called on the event loop,
+    exactly as before. The built-in default is dispatched to a worker thread
+    instead, because chunking is CPU-bound and holding the loop for its duration
+    stops the server answering anything (GHSA-26pm-px5v-8c4w). The extension
+    point is deliberately excluded from that: "synchronous or async" is part of
+    its contract, so an implementation that touches the running loop when called
+    — a synchronous factory returning a Task, say — is supported and would fail
+    outright in a worker thread, while an ``async def`` would gain nothing from
+    the hop since its body runs on the loop regardless. A CPU-bound custom
+    chunker should therefore do its own ``asyncio.to_thread``.
 
     **When this function is actually invoked.** The chunker dispatch in
     ``_PipelineMixin.process_single_document`` is driven by the
@@ -2028,16 +2040,28 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # concurrently with these upserts can observe a
                     # not-yet-persisted chunk and silently drop the cache
                     # reference.
-                    inserting_chunks: dict[str, Any] = {
-                        chunk_id: {
-                            "content": content,
-                            "full_doc_id": doc_key,
-                            "tokens": len(self.tokenizer.encode(content)),
-                            "chunk_order_index": index,
-                            "file_path": file_path,
+                    # Off the loop: this shares ``self.tokenizer`` with the
+                    # chunking executor, and this entry point is gated by
+                    # neither max_parallel_insert nor the pipeline busy flag, so
+                    # nothing else keeps it from encoding concurrently with a
+                    # document being chunked.
+                    def _build_inserting_chunks() -> dict[str, Any]:
+                        return {
+                            chunk_id: {
+                                "content": content,
+                                "full_doc_id": doc_key,
+                                "tokens": len(self.tokenizer.encode(content)),
+                                "chunk_order_index": index,
+                                "file_path": file_path,
+                            }
+                            for index, (chunk_id, content, _) in enumerate(
+                                chunk_entries
+                            )
                         }
-                        for index, (chunk_id, content, _) in enumerate(chunk_entries)
-                    }
+
+                    inserting_chunks: dict[str, Any] = await run_in_chunking_executor(
+                        _build_inserting_chunks
+                    )
                     stage1_writes = [
                         self.chunks_vdb.upsert(inserting_chunks),
                         self.text_chunks.upsert(inserting_chunks),
@@ -3169,34 +3193,46 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Insert chunks into vector storage
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
-            for chunk_data in custom_kg.get("chunks", []):
-                chunk_content = sanitize_text_for_encoding(chunk_data["content"])
-                source_id = chunk_data["source_id"]
-                file_path = normalize_document_file_path(
-                    chunk_data.get("file_path", "custom_kg")
-                )
-                tokens = len(self.tokenizer.encode(chunk_content))
-                chunk_order_index = (
-                    0
-                    if "chunk_order_index" not in chunk_data.keys()
-                    else chunk_data["chunk_order_index"]
-                )
-                chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
 
-                chunk_entry = {
-                    "content": chunk_content,
-                    "source_id": source_id,
-                    "tokens": tokens,
-                    "chunk_order_index": chunk_order_index,
-                    "full_doc_id": full_doc_id
-                    if full_doc_id is not None
-                    else source_id,
-                    "file_path": file_path,
-                    "status": DocStatus.PROCESSED,
-                }
-                all_chunks_data[chunk_id] = chunk_entry
-                chunk_to_source_map[source_id] = chunk_id
-                update_storage = True
+            def _build_custom_kg_chunks() -> None:
+                """Encode and assemble every custom-KG chunk in one hop.
+
+                ``self.tokenizer`` is shared with the chunking executor, and
+                this entry point is gated by neither max_parallel_insert nor the
+                pipeline busy flag, so leaving the loop here would let it encode
+                concurrently with a document being chunked.
+                """
+                nonlocal update_storage
+                for chunk_data in custom_kg.get("chunks", []):
+                    chunk_content = sanitize_text_for_encoding(chunk_data["content"])
+                    source_id = chunk_data["source_id"]
+                    file_path = normalize_document_file_path(
+                        chunk_data.get("file_path", "custom_kg")
+                    )
+                    tokens = len(self.tokenizer.encode(chunk_content))
+                    chunk_order_index = (
+                        0
+                        if "chunk_order_index" not in chunk_data.keys()
+                        else chunk_data["chunk_order_index"]
+                    )
+                    chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
+
+                    chunk_entry = {
+                        "content": chunk_content,
+                        "source_id": source_id,
+                        "tokens": tokens,
+                        "chunk_order_index": chunk_order_index,
+                        "full_doc_id": full_doc_id
+                        if full_doc_id is not None
+                        else source_id,
+                        "file_path": file_path,
+                        "status": DocStatus.PROCESSED,
+                    }
+                    all_chunks_data[chunk_id] = chunk_entry
+                    chunk_to_source_map[source_id] = chunk_id
+                    update_storage = True
+
+            await run_in_chunking_executor(_build_custom_kg_chunks)
 
             if all_chunks_data:
                 await asyncio.gather(
