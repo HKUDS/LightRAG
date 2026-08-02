@@ -105,6 +105,7 @@ from lightrag.utils import (
     is_truncated_response,
     logger,
     repair_vlm_json_escape_damage_nested,
+    run_in_chunking_executor,
     sanitize_text_for_encoding,
     save_to_cache,
     serialize_llm_cache_identity,
@@ -4819,6 +4820,9 @@ class _PipelineMixin:
                         chunking_by_recursive_character,
                         chunking_by_semantic_vector,
                     )
+                    from lightrag.chunker.recursive_character import (
+                        normalize_r_separators,
+                    )
 
                     strategy = doc_process_opts.chunking
                     if strategy == "P":
@@ -4840,7 +4844,8 @@ class _PipelineMixin:
                         )
                         chunk_opts_str = _format_chunking_params(p_chunk_size, p_opts)
                         logger.info(f"Chunking P: {chunk_opts_str}, doc_id: {doc_id}")
-                        chunking_result = chunking_by_paragraph_semantic(
+                        chunking_result = await run_in_chunking_executor(
+                            chunking_by_paragraph_semantic,
                             self.tokenizer,
                             content,
                             p_chunk_size,
@@ -4860,9 +4865,37 @@ class _PipelineMixin:
                         r_chunk_size = int(
                             r_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
+                        # Bound the cascade BEFORE anything renders it. The
+                        # chunker normalizes again — it is the chokepoint for
+                        # callers that never reach this code — but by the time it
+                        # runs, ``_format_chunking_params`` has already
+                        # interpolated the raw list into a string that is logged
+                        # at INFO and persisted to
+                        # ``doc_status.metadata['chunk_opts']``. A snapshot
+                        # carrying one 10 MB separator therefore materialises a
+                        # ~10 MB parameter string on the event loop and pushes it
+                        # into doc_status, where it can exceed a backend's value
+                        # limit and leave the document permanently FAILED — even
+                        # though the cascade the chunker actually used was empty.
+                        # Normalizing here costs one length check per entry and
+                        # copies no separator content.
+                        if "separators" in r_opts:
+                            bounded_seps = normalize_r_separators(
+                                r_opts["separators"], context=f"doc_id={doc_id}"
+                            )
+                            if bounded_seps:
+                                r_opts["separators"] = bounded_seps
+                            else:
+                                # Empty means every entry was over-long. Drop the
+                                # key so the chunker takes its documented
+                                # ``separators=None`` path (LangChain's own
+                                # cascade) instead of warning about the same
+                                # emptiness a second time.
+                                r_opts.pop("separators")
                         chunk_opts_str = _format_chunking_params(r_chunk_size, r_opts)
                         logger.info(f"Chunking R: {chunk_opts_str}, doc_id: {doc_id}")
-                        chunking_result = chunking_by_recursive_character(
+                        chunking_result = await run_in_chunking_executor(
+                            chunking_by_recursive_character,
                             self.tokenizer,
                             content,
                             r_chunk_size,
@@ -4908,7 +4941,8 @@ class _PipelineMixin:
                         )
                         chunk_opts_str = _format_chunking_params(f_chunk_size, f_opts)
                         logger.info(f"Chunking F: {chunk_opts_str}, doc_id: {doc_id}")
-                        chunking_result = chunking_by_fixed_token(
+                        chunking_result = await run_in_chunking_executor(
+                            chunking_by_fixed_token,
                             self.tokenizer,
                             content,
                             f_chunk_size,
@@ -4954,9 +4988,10 @@ class _PipelineMixin:
                     # private ``_emit_source_span`` kwarg; a user-supplied
                     # ``chunking_func`` must not receive it.
                     legacy_kwargs = {}
-                    if self.chunking_func is chunking_by_token_size:
+                    is_builtin_chunker = self.chunking_func is chunking_by_token_size
+                    if is_builtin_chunker:
                         legacy_kwargs["_emit_source_span"] = True
-                    chunking_result = self.chunking_func(
+                    legacy_args = (
                         self.tokenizer,
                         content,
                         f_opts.get("split_by_character"),
@@ -4966,8 +5001,27 @@ class _PipelineMixin:
                             self.chunk_overlap_token_size,
                         ),
                         legacy_chunk_size,
-                        **legacy_kwargs,
                     )
+                    if is_builtin_chunker:
+                        chunking_result = await run_in_chunking_executor(
+                            self.chunking_func, *legacy_args, **legacy_kwargs
+                        )
+                    else:
+                        # A user-supplied ``chunking_func`` is documented as
+                        # "synchronous or async" and the awaitable it may return
+                        # is handled just below, so it is NOT safe to assume it
+                        # does not touch the running loop: a synchronous factory
+                        # that calls ``get_running_loop()`` or ``create_task()``
+                        # is a supported implementation and would fail outright
+                        # in a worker thread. For an ``async def`` the hop would
+                        # buy nothing anyway — the coroutine body still runs on
+                        # the loop. So the extension point keeps its existing
+                        # calling convention, and a CPU-bound custom chunker is
+                        # responsible for its own ``to_thread``; see the
+                        # ``chunking_func`` docstring.
+                        chunking_result = self.chunking_func(
+                            *legacy_args, **legacy_kwargs
+                        )
                 if inspect.isawaitable(chunking_result):
                     chunking_result = await chunking_result
 
@@ -5036,7 +5090,8 @@ class _PipelineMixin:
                     # left over from an earlier multimodal run. The builder's
                     # None branch is reserved for ad-hoc callers (unit tests)
                     # that intentionally want every modality considered.
-                    mm_chunks = self._build_mm_chunks_from_sidecars(
+                    mm_chunks = await run_in_chunking_executor(
+                        self._build_mm_chunks_from_sidecars,
                         doc_id=doc_id,
                         file_path=file_path,
                         blocks_path=blocks_path,
@@ -5055,7 +5110,8 @@ class _PipelineMixin:
                     and self.embedding_token_limit > 0
                 ):
                     original_chunk_count = len(chunking_result)
-                    chunking_result = enforce_chunk_token_limit_before_embedding(
+                    chunking_result = await run_in_chunking_executor(
+                        enforce_chunk_token_limit_before_embedding,
                         chunking_result=chunking_result,
                         tokenizer=self.tokenizer,
                         max_tokens=self.embedding_token_limit,
@@ -5101,7 +5157,18 @@ class _PipelineMixin:
                 if blocks_path and sidecar_backfill_eligible:
                     from lightrag.sidecar import backfill_chunk_sidecars
 
-                    backfill_chunk_sidecars(chunking_result, blocks_path)
+                    # Same reason as the chunkers themselves: this parses
+                    # blocks.jsonl and then walks every block for every chunk, so
+                    # it is O(chunks x blocks) of pure CPU plus synchronous file
+                    # I/O — seconds of frozen event loop on a document with many
+                    # chunks. It sits between chunking and the storage writes, so
+                    # leaving it inline would keep /health stalled over exactly
+                    # the window this work exists to free. One coarse submission,
+                    # not one per chunk: the executor has a single worker and the
+                    # backfill mutates ``chunking_result`` in place.
+                    await run_in_chunking_executor(
+                        backfill_chunk_sidecars, chunking_result, blocks_path
+                    )
 
                 chunks = build_chunks_dict_from_chunking_result(
                     chunking_result, doc_id=doc_id, file_path=file_path
@@ -6211,7 +6278,8 @@ class _PipelineMixin:
                     enrich_sidecars_with_surrounding,
                 )
 
-                enrich_counts = enrich_sidecars_with_surrounding(
+                enrich_counts = await run_in_chunking_executor(
+                    enrich_sidecars_with_surrounding,
                     blocks_path=str(block_file),
                     enabled_modalities=enabled_modalities,
                     tokenizer=tokenizer,
@@ -6750,8 +6818,18 @@ class _PipelineMixin:
                             frame_reserve=SAFETY_BUFFER,
                             content_min=content_min_tokens,
                         )
-                    total_tokens = len(tokenizer.encode(prompt))
-                    if max_extract_tokens > 0 and total_tokens > max_extract_tokens:
+
+                    # Everything from here to the post-trim guard is
+                    # tokenizer-bound and works on the same ``self.tokenizer``
+                    # the chunking executor uses, so it runs there in one hop
+                    # rather than on the event loop. MultimodalAnalysisError
+                    # propagates out of the executor unchanged.
+                    def _cap_extract_prompt(prompt: str) -> str:
+                        total_tokens = len(tokenizer.encode(prompt))
+                        if not (
+                            max_extract_tokens > 0 and total_tokens > max_extract_tokens
+                        ):
+                            return prompt
                         frame_tokens = len(tokenizer.encode(_render("")))
                         content_budget = (
                             max_extract_tokens - frame_tokens - SAFETY_BUFFER
@@ -6824,6 +6902,9 @@ class _PipelineMixin:
                                 f"MAX_EXTRACT_INPUT_TOKENS "
                                 f"({max_extract_tokens})"
                             )
+                        return prompt
+
+                    prompt = await run_in_chunking_executor(_cap_extract_prompt, prompt)
 
                 args_hash = compute_args_hash(
                     prompt,

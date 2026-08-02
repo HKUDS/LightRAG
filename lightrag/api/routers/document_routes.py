@@ -26,7 +26,17 @@ import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, NamedTuple, Optional, Any, Literal, Sequence
+from typing import (
+    Annotated,
+    Dict,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Any,
+    Literal,
+    Sequence,
+)
 from fastapi import (
     APIRouter,
     Depends,
@@ -37,7 +47,14 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from lightrag import LightRAG
 from lightrag.api.utils_api import internal_server_error
@@ -63,6 +80,8 @@ from lightrag.constants import (
     DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_PENDING_PARSE,
+    MAX_R_SEPARATOR_CHARS,
+    MAX_R_SEPARATORS,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
@@ -500,17 +519,21 @@ class FixedTokenChunkParams(_OverlapChunkParams):
 class RecursiveCharacterChunkParams(_OverlapChunkParams):
     # Caller-supplied separators are safe from ReDoS — ``is_separator_regex`` is
     # not exposed on this model and defaults to False, so every candidate goes
-    # through ``re.escape`` (lightrag/chunker/recursive_character.py:226,235)
-    # and matches in linear time. What is NOT bounded by that is the *number*
-    # of candidates: the splitter walks the list per recursion level, so cost
-    # grows as ``len(separators) x len(text)``, and unlike V the R chunker runs
-    # synchronously on the event loop. One request supplies both factors, and
-    # the body ceiling does not bound the product — the text-ingestion routes
-    # allow 50 MiB by default, and ``MAX_REQUEST_BODY_BYTES=0`` removes the
-    # ceiling entirely — so cap the list here.
-    # The built-in cascade is 9 entries (``DEFAULT_R_SEPARATORS``); 64 leaves
-    # ample room for a multi-language cascade while removing the amplification.
-    separators: Optional[list[str]] = Field(default=None, max_length=64)
+    # through ``re.escape`` and matches in linear time. What is NOT bounded by
+    # that is the *size* of the cascade: the splitter walks the list per
+    # recursion level, so cost grows as ``len(separators) x len(text)`` with
+    # both factors supplied by one request.
+    #
+    # This model is only the first of the two places that has to hold. The
+    # cascade also arrives from CHUNK_R_SEPARATORS, from addon_params, from
+    # direct SDK calls, and from per-doc snapshots persisted before this cap
+    # existed — none of which pass through here — so
+    # ``lightrag.chunker.recursive_character.normalize_r_separators`` bounds it
+    # again at the chunker, which is the one point all of them share. The
+    # constants are shared with it so the two can never drift.
+    separators: Optional[
+        list[Annotated[str, StringConstraints(max_length=MAX_R_SEPARATOR_CHARS)]]
+    ] = Field(default=None, max_length=MAX_R_SEPARATORS)
 
 
 class ParagraphSemanticChunkParams(_OverlapChunkParams):

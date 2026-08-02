@@ -2744,6 +2744,61 @@ def get_loop_semaphore(name: str, capacity: int) -> asyncio.Semaphore:
     return semaphore
 
 
+# ---------------------------------------------------------------------------
+# Chunking off the event loop
+# ---------------------------------------------------------------------------
+#
+# Chunking is CPU-bound in the document the caller supplied and, for the
+# recursive strategy, in the separator cascade supplied with it. Run inline in an
+# ``async def`` — which is what every branch except V did — it holds the only
+# thread serving HTTP for its whole duration, so one 414 KiB document made an
+# unrelated ``GET /health`` take 63 seconds (GHSA-26pm-px5v-8c4w).
+#
+# One worker. Chunking is serialized by the event loop as things stand — while
+# one document chunks, no other document's coroutine can run — so a single worker
+# preserves that concurrency exactly while freeing the loop, rather than
+# introducing parallelism this change has no reason to introduce.
+#
+# Invariants:
+#   * code running in here calls the SYNCHRONOUS tokenizer API. Awaiting an async
+#     helper from a worker thread would park it on the loop while the loop waits
+#     for the thread.
+#   * no nested submissions. One worker plus a held permit means a task that
+#     submits again deadlocks. Where a chunker calls another chunker (V's
+#     post-processing calls R), it calls it DIRECTLY — it is already in the pool.
+
+_CHUNKING_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_CHUNKING_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_chunking_executor() -> ThreadPoolExecutor:
+    """The process-wide single-worker pool used for chunking."""
+    global _CHUNKING_EXECUTOR
+    if _CHUNKING_EXECUTOR is None:
+        with _CHUNKING_EXECUTOR_GUARD:
+            if _CHUNKING_EXECUTOR is None:
+                _CHUNKING_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-chunking"
+                )
+    return _CHUNKING_EXECUTOR
+
+
+async def run_in_chunking_executor(fn: Callable[..., Any], *args: Any, **kwargs) -> Any:
+    """Run a synchronous, chunking-bound callable off the event loop.
+
+    Bounded like any other submission: the submitters include public SDK entry
+    points (``ainsert_custom_kg``, ``ainsert_custom_chunks``) gated by neither
+    ``max_parallel_insert`` nor the pipeline's busy flag, so "the pipeline limits
+    concurrency" is not a ceiling that actually holds here.
+    """
+    from lightrag.constants import CHUNKING_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("chunking", CHUNKING_SUBMIT_LIMIT)
+    return await bounded_submit(
+        get_chunking_executor(), semaphore, partial(fn, *args, **kwargs)
+    )
+
+
 class Tokenizer:
     """
     A wrapper around a tokenizer to provide a consistent interface for encoding and decoding.

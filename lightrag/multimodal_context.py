@@ -694,6 +694,8 @@ def load_chunk_separators() -> list[str]:
     JSON.  The returned list always has the empty-string sentinel
     dropped — char fallback is signalled separately by the caller.
     """
+    from lightrag.chunker.recursive_character import normalize_r_separators
+
     raw = os.getenv("CHUNK_R_SEPARATORS")
     separators: list[str]
     if raw:
@@ -707,7 +709,23 @@ def load_chunk_separators() -> list[str]:
             separators = list(DEFAULT_R_SEPARATORS)
     else:
         separators = list(DEFAULT_R_SEPARATORS)
-    return [s for s in separators if s]
+
+    # ``CHUNK_R_SEPARATORS`` reaches ``enrich_sidecars_with_surrounding``, which
+    # scans each block once per separator — the same amplification the request
+    # model was capped for, on a path that never touches
+    # ``chunking_by_recursive_character``. Bound it through the same normalizer.
+    bounded = normalize_r_separators(separators, context="load_chunk_separators")
+    result = [s for s in bounded if s]
+    if not result:
+        # Unlike the chunker, this function has no "splitter default" to fall back
+        # to — its callers expect a usable cascade — so it falls back the same way
+        # it already does for malformed env values.
+        logger.warning(
+            "[load_chunk_separators] no usable separators after bounding; "
+            "falling back to DEFAULT_R_SEPARATORS"
+        )
+        result = [s for s in DEFAULT_R_SEPARATORS if s]
+    return result
 
 
 def load_content_rows_by_blockid(blocks_path: str) -> dict[str, str]:
