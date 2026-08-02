@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from lightrag.constants import MAX_R_SEPARATOR_CHARS, MAX_R_SEPARATORS
@@ -35,6 +36,26 @@ except ImportError:
 
 
 _SpanPiece = tuple[str, int, int]
+
+
+@dataclass(frozen=True)
+class RSeparatorNormalization:
+    """The bounded R-separator cascade plus any correction that was needed.
+
+    The normalizer is deliberately silent: it is also the final safety boundary
+    for direct SDK calls and old persisted document snapshots, where a warning
+    per document would turn one historic bad configuration into a log storm.
+    Configuration ingress points inspect this result and emit a single warning
+    when they cache a corrected value.
+    """
+
+    separators: list[str] | None
+    dropped: int = 0
+    truncated_from: int | None = None
+
+    @property
+    def changed(self) -> bool:
+        return self.dropped > 0 or self.truncated_from is not None
 
 
 def _split_text_with_regex_spans(
@@ -208,12 +229,10 @@ def _merge_splits_with_spans(
     return docs
 
 
-def normalize_r_separators(
+def inspect_r_separators(
     separators: Sequence[str] | None,
-    *,
-    context: str = "",
-) -> list[str] | None:
-    """Bound a separator cascade, whatever supplied it.
+) -> RSeparatorNormalization:
+    """Bound a separator cascade and report whether it was corrected.
 
     ``None`` passes straight through: it is the documented way to ask
     :func:`chunking_by_recursive_character` for LangChain's own default cascade
@@ -222,19 +241,18 @@ def normalize_r_separators(
     here would change how a direct SDK caller's CJK text splits.
 
     Only bounding happens here. What to do about an empty result differs per
-    caller and is therefore the caller's decision.
+    caller and is therefore the caller's decision. This function does not log:
+    it runs in document-processing hot paths as well as at configuration ingress.
 
     Args:
         separators: cascade to bound, or ``None``.
-        context: label for the warnings, naming who supplied the cascade.
 
     Returns:
-        ``None`` if given ``None``; otherwise the bounded list, possibly empty.
+        The bounded cascade, possibly empty, and correction diagnostics.
     """
     if separators is None:
-        return None
+        return RSeparatorNormalization(None)
 
-    prefix = f"[{context}] " if context else ""
     bounded: list[str] = []
     dropped = 0
     for candidate in separators:
@@ -242,12 +260,7 @@ def normalize_r_separators(
             dropped += 1
             continue
         bounded.append(candidate)
-    if dropped:
-        logger.warning(
-            f"{prefix}dropped {dropped} separator(s) longer than "
-            f"{MAX_R_SEPARATOR_CHARS} characters"
-        )
-
+    truncated_from: int | None = None
     if len(bounded) > MAX_R_SEPARATORS:
         # Truncation must preserve a terminating sentinel. The empty string is
         # the char-level fallback: ``_split_text_with_spans`` takes the
@@ -261,13 +274,48 @@ def normalize_r_separators(
         truncated = [candidate for candidate in bounded[:keep] if candidate]
         if sentinel is not None:
             truncated.append(sentinel)
-        logger.warning(
-            f"{prefix}separator cascade of {len(bounded)} entries truncated to "
-            f"{len(truncated)} (limit {MAX_R_SEPARATORS})"
-        )
+        truncated_from = len(bounded)
         bounded = truncated
 
-    return bounded
+    return RSeparatorNormalization(
+        bounded, dropped=dropped, truncated_from=truncated_from
+    )
+
+
+def log_r_separator_normalization(
+    result: RSeparatorNormalization,
+    *,
+    context: str,
+) -> None:
+    """Log corrections made while caching a separator configuration.
+
+    Callers must invoke this only at a configuration ingress boundary. The
+    runtime normalizer intentionally remains silent so already-persisted bad
+    snapshots and direct SDK calls cannot emit one warning per document.
+    """
+    prefix = f"[{context}] " if context else ""
+    if result.dropped:
+        logger.warning(
+            f"{prefix}dropped {result.dropped} separator(s) longer than "
+            f"{MAX_R_SEPARATOR_CHARS} characters"
+        )
+    if result.truncated_from is not None:
+        logger.warning(
+            f"{prefix}separator cascade of {result.truncated_from} entries "
+            f"truncated to {len(result.separators or [])} "
+            f"(limit {MAX_R_SEPARATORS})"
+        )
+
+
+def normalize_r_separators(separators: Sequence[str] | None) -> list[str] | None:
+    """Return a bounded separator cascade without logging.
+
+    This is the runtime backstop shared by direct SDK calls and per-document
+    snapshots. Warnings belong to the configuration ingress points, which use
+    :func:`inspect_r_separators` plus :func:`log_r_separator_normalization`
+    instead — see :class:`RSeparatorNormalization`.
+    """
+    return inspect_r_separators(separators).separators
 
 
 def _split_text_with_spans(
@@ -403,7 +451,12 @@ def chunking_by_recursive_character(
         chunk_token_size: Hard target size for each chunk (tokens).
         chunk_overlap_token_size: Token overlap between adjacent chunks.
         separators: Cascade of split candidates. ``None`` defers to
-            LangChain's defaults: ``["\\n\\n", "\\n", " ", ""]``.
+            LangChain's defaults: ``["\\n\\n", "\\n", " ", ""]``. Entries over
+            :data:`~lightrag.constants.MAX_R_SEPARATOR_CHARS` are dropped and a
+            cascade over :data:`~lightrag.constants.MAX_R_SEPARATORS` is
+            truncated; if nothing survives, the call behaves as ``None``.
+            Bounding is silent — see :func:`inspect_r_separators` to obtain the
+            correction detail yourself.
 
     Returns:
         Ordered list of ``{"tokens", "content", "chunk_order_index"}``
@@ -421,9 +474,9 @@ def chunking_by_recursive_character(
     def length_function(text: str) -> int:
         return len(tokenizer.encode(text))
 
-    separators = normalize_r_separators(
-        separators, context="chunking_by_recursive_character"
-    )
+    # Final silent boundary for direct SDK calls and persisted snapshots that
+    # predate configuration-time normalization.
+    separators = normalize_r_separators(separators)
     if separators is not None and not separators:
         # Everything was dropped as over-long. Falling back to this function's own
         # default (LangChain's cascade) rather than to DEFAULT_R_SEPARATORS keeps
@@ -431,10 +484,16 @@ def chunking_by_recursive_character(
         # repo-wide cascade here would silently change how CJK text splits for a
         # caller who never asked for it. An empty list would be worse still —
         # ``_split_text_with_spans`` reads ``separators[-1]`` on its first line.
-        logger.warning(
-            "[chunking_by_recursive_character] every supplied separator was "
-            "dropped; falling back to the splitter's default cascade"
-        )
+        #
+        # No warning: this branch is reachable only from a direct SDK call. Every
+        # configured path resolves the same emptiness earlier — the env and
+        # addon_params ingress points report it once when they cache the value,
+        # and the pipeline drops the ``separators`` key from a stale snapshot
+        # before calling here, so this function receives ``None``. Warning here
+        # would therefore only fire per call, for one unchanging argument, which
+        # is exactly the amplification the ingress cache exists to remove. A
+        # caller that wants the diagnostic can ask for it: ``inspect_r_separators``
+        # returns the same correction detail without splitting anything.
         separators = None
 
     splitter_kwargs: dict[str, Any] = {

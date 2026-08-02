@@ -4865,12 +4865,12 @@ class _PipelineMixin:
                         r_chunk_size = int(
                             r_opts.pop("chunk_token_size", resolved_chunk_size)
                         )
-                        # Bound the cascade BEFORE anything renders it. The
-                        # chunker normalizes again — it is the chokepoint for
-                        # callers that never reach this code — but by the time it
-                        # runs, ``_format_chunking_params`` has already
-                        # interpolated the raw list into a string that is logged
-                        # at INFO and persisted to
+                        # Bound the cascade BEFORE anything renders it. Newly
+                        # configured values are normalized at their ingress
+                        # boundaries; this silent backstop protects direct SDK
+                        # snapshots and old persisted snapshots before
+                        # ``_format_chunking_params`` interpolates a raw list
+                        # into a string that is logged at INFO and persisted to
                         # ``doc_status.metadata['chunk_opts']``. A snapshot
                         # carrying one 10 MB separator therefore materialises a
                         # ~10 MB parameter string on the event loop and pushes it
@@ -4880,17 +4880,15 @@ class _PipelineMixin:
                         # Normalizing here costs one length check per entry and
                         # copies no separator content.
                         if "separators" in r_opts:
-                            bounded_seps = normalize_r_separators(
-                                r_opts["separators"], context=f"doc_id={doc_id}"
-                            )
+                            bounded_seps = normalize_r_separators(r_opts["separators"])
                             if bounded_seps:
                                 r_opts["separators"] = bounded_seps
                             else:
                                 # Empty means every entry was over-long. Drop the
                                 # key so the chunker takes its documented
                                 # ``separators=None`` path (LangChain's own
-                                # cascade) instead of warning about the same
-                                # emptiness a second time.
+                                # cascade) without producing a per-document
+                                # warning for the old bad snapshot.
                                 r_opts.pop("separators")
                         chunk_opts_str = _format_chunking_params(r_chunk_size, r_opts)
                         logger.info(f"Chunking R: {chunk_opts_str}, doc_id: {doc_id}")

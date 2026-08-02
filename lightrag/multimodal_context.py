@@ -67,6 +67,7 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
 from html import escape as html_escape
 from html import unescape as html_unescape
 from pathlib import Path
@@ -686,36 +687,25 @@ def _accumulate_text_trailing(
 # ---------------------------------------------------------------------------
 
 
-def load_chunk_separators() -> list[str]:
-    """Resolve the recursive-character separator cascade.
+@lru_cache(maxsize=32)
+def _cached_surrounding_chunk_separators(raw: str | None) -> tuple[str, ...]:
+    """Resolve and cache the usable surrounding-context separator cascade.
 
-    Reads ``CHUNK_R_SEPARATORS`` and falls back to
-    :data:`lightrag.constants.DEFAULT_R_SEPARATORS` on missing / invalid
-    JSON.  The returned list always has the empty-string sentinel
-    dropped — char fallback is signalled separately by the caller.
+    ``env_r_separators_for`` owns parsing, bounds, and the one-time correction
+    diagnostic. This companion cache owns the one-time diagnostic for the
+    surrounding-specific fallback when every configured separator was dropped.
+
+    ``raw`` is both the cache key and the value that gets parsed — reading the
+    environment a second time inside would let the cached entry be keyed on one
+    value and populated from another.
     """
-    from lightrag.chunker.recursive_character import normalize_r_separators
-
-    raw = os.getenv("CHUNK_R_SEPARATORS")
-    separators: list[str]
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
-                separators = parsed
-            else:
-                separators = list(DEFAULT_R_SEPARATORS)
-        except json.JSONDecodeError:
-            separators = list(DEFAULT_R_SEPARATORS)
-    else:
-        separators = list(DEFAULT_R_SEPARATORS)
+    from lightrag.parser.routing import env_r_separators_for
 
     # ``CHUNK_R_SEPARATORS`` reaches ``enrich_sidecars_with_surrounding``, which
-    # scans each block once per separator — the same amplification the request
-    # model was capped for, on a path that never touches
-    # ``chunking_by_recursive_character``. Bound it through the same normalizer.
-    bounded = normalize_r_separators(separators, context="load_chunk_separators")
-    result = [s for s in bounded if s]
+    # scans each block once per separator. Reuse the same bounded environment
+    # configuration as the R chunker; the empty sentinel remains deliberately
+    # absent because this caller signals char fallback separately.
+    result = [s for s in env_r_separators_for(raw) if s]
     if not result:
         # Unlike the chunker, this function has no "splitter default" to fall back
         # to — its callers expect a usable cascade — so it falls back the same way
@@ -725,7 +715,16 @@ def load_chunk_separators() -> list[str]:
             "falling back to DEFAULT_R_SEPARATORS"
         )
         result = [s for s in DEFAULT_R_SEPARATORS if s]
-    return result
+    return tuple(result)
+
+
+def load_chunk_separators() -> list[str]:
+    """Return cached separators for multimodal surrounding-context splitting.
+
+    The returned list always omits the empty-string sentinel — char fallback is
+    signalled separately by the caller.
+    """
+    return list(_cached_surrounding_chunk_separators(os.getenv("CHUNK_R_SEPARATORS")))
 
 
 def load_content_rows_by_blockid(blocks_path: str) -> dict[str, str]:
