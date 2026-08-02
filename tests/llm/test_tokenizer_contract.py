@@ -223,10 +223,14 @@ def test_concurrent_callers_are_not_serialized_by_the_wrapper():
 
 
 def test_build_global_config_hands_out_the_tokenizer_itself(tmp_path):
-    """``asdict`` would deep-copy it; ``_build_global_config`` restores it.
+    """``asdict`` deep-copies it; ``_build_global_config`` restores the original.
 
-    Consumers read ``global_config["tokenizer"]`` on every operation, so a copy
-    per operation is pure overhead once the contract is thread safety.
+    An identity guarantee, not a saving — the copy is still made and then
+    discarded, which is why the deep-copy requirement stays in the contract (see
+    ``test_a_lock_based_tokenizer_without_deepcopy_fails_at_construction``). What
+    it buys is that every consumer reading ``global_config["tokenizer"]`` holds
+    the same object as ``LightRAG.tokenizer``, instead of a per-operation copy
+    that no one can trace back — and which was never independent anyway.
     """
     tokenizer = Tokenizer("test-model", _PlainTokenizer())
     rag = _make_rag(tmp_path, tokenizer)
