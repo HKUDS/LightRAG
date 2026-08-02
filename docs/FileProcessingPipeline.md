@@ -83,7 +83,7 @@ A dependency-free smoke test — one `.docx`, no MinerU, no docling, no VLM:
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 ```
 
-**1. Check the routing before spending a parse.** A malformed `LIGHTRAG_PARSER` already fails startup (§2.8). Once the server is up, `GET /documents/supported_file_types` returns the extension allowlist and the engine-to-suffix mapping **as the server actually resolved them**, which answers "did my rule take effect" without ingesting anything.
+**1. Check the routing before spending a parse.** A malformed `LIGHTRAG_PARSER` already fails startup (§2.7). Once the server is up, `GET /documents/supported_file_types` returns the extension allowlist and the engine-to-suffix mapping **as the server actually resolved them**, which answers "did my rule take effect" without ingesting anything.
 
 **2. Get the file in.** Either `POST /documents/upload` (the file is stored under `INPUT_DIR` and the response carries a `track_id`), or drop files into `INPUT_DIR` and call `POST /documents/scan`. To try different settings on a single file without touching `.env`, rename it with a hint: `report.[native-teP].docx` (§2.5).
 
@@ -107,7 +107,7 @@ __parsed__/report.docx.parsed/        # canonical name, hint stripped
 3. The sidecars you expected exist. A missing one means the document has no such content, or the engine does not emit it (`legacy` emits none at all — §3.2).
 4. Each sidecar item you enabled analysis for carries `"llm_analyze_result": {"status": "success"}`. A `skipped` or `failure` here is the answer to "why is my image/table missing from the knowledge graph" (§4.3).
 
-**6. Verify chunking and ingest.** `chunks_count` in `GET /documents/paginated` shows the chunk count; the doc-status record's `metadata.parse_engine` and `metadata.process_options` show **which engine and options actually ran**, which is the fastest way to catch a hint that was silently invalidated (§2.8).
+**6. Verify chunking and ingest.** `chunks_count` in `GET /documents/paginated` shows the chunk count; the doc-status record's `metadata.parse_engine` and `metadata.process_options` show **which engine and options actually ran**, which is the fastest way to catch a hint that was silently invalidated (§2.7).
 
 **If it failed:** the source file **stays in `INPUT_DIR`**, so you can fix the configuration and scan again. `error_msg` on the doc-status record is the diagnosis; §10 maps the common ones. Note that both the engine and the processing options are frozen at enqueue time — changing `LIGHTRAG_PARSER` or a hint does not affect an existing record, so re-running with different settings means deleting the document and uploading it again (§9.3). To reproduce a parse offline without the server, use `python -m lightrag.parser.cli` ([ParserDebugCLI.md](./ParserDebugCLI.md)).
 
@@ -115,7 +115,7 @@ __parsed__/report.docx.parsed/        # canonical name, hint stripped
 
 LightRAG's file processing configuration is composed of two parts: the content extraction engine determines how the original file is parsed, and the processing options determine whether multimodal analysis is performed after parsing, which chunking method to use, and whether to build a knowledge graph. Typically, the environment variable `LIGHTRAG_PARSER` is first used to set default rules by file extension, and then a `[hint]` in the filename overrides individual files. Engine and options can be written in the same configuration fragment, for example `docx:native-iet` or `report.[native-R!].docx`.
 
-For backward compatibility, when the configuration is not modified, the upgraded file content extraction behavior remains the original `legacy` behavior. To enable the new content processing engines, configure as described in this section.
+For backward compatibility, when the configuration is not modified, the upgraded file content extraction behavior remains the original `legacy` behavior. To enable the new content processing engines, configure as described in this chapter; each engine's own capabilities and settings are in §3.
 
 ### 2.1 File Processing Options
 
@@ -159,7 +159,16 @@ filename.[-OPTIONS].ext
 
 - `LIGHTRAG_PARSER` is the default rule table, matched by file extension, e.g., `pdf:mineru`, `docx:native-iet`.
 - The `[hint]` in a filename is a single-file override rule, e.g., `paper.[mineru].pdf`, `memo.[native-R!].docx`.
-- `ENGINE` is the content extraction engine: `legacy`, `native`, `mineru`, or `docling`.
+- `ENGINE` is the content extraction engine. Which one you pick decides what the parse stage can produce at all:
+
+  | Engine | What it is | Reach for it when |
+  | --- | --- | --- |
+  | `legacy` | plain-text extraction, no sidecars | you want the pre-upgrade behavior, or the document is plain text anyway |
+  | `native` | built-in structured extractor, fully local, no external service | `docx` / `md` / `textpack`, and you want `P` chunking or modality analysis without deploying anything |
+  | `mineru` | external MinerU service | PDFs, scanned documents, and office / image formats that need layout and OCR |
+  | `docling` | external docling-serve | an alternative to MinerU; the only built-in path to LaTeX equations |
+
+  Only `native`, `mineru` and `docling` write sidecars, so only they can serve the `i` / `t` / `e` options and the `P` chunker. Per-engine capabilities, configuration and deployment are in [§3](#3-file-parsing-engines).
 - `OPTIONS` is a string combination of processing options, e.g., `iet`, `R!`, `P`. The options are ultimately written into `process_options` and read by subsequent pipeline stages.
 - The hyphen in `ENGINE-OPTIONS` is only used to separate the engine from the options; it is not part of the options themselves.
 - When only processing options are specified, it must be written as `[-OPTIONS]`, e.g., `[-!]`. `[abc]` without a hyphen is strictly interpreted as an engine name and will raise an error; it will not fall back to being interpreted as options.
@@ -239,35 +248,7 @@ Currently supported parameters (canonical name / short alias):
 
 > `drop_references` detection knobs `CHUNK_P_REFERENCES_TAIL_N` (default `0`: scan all content blocks; a positive value scans only the last N) / `CHUNK_P_REFERENCES_HEADINGS` (pipe-separated, default `References\|Bibliography\|参考文献`) are env-only and read live at run time. Global default can be set via env var `CHUNK_P_DROP_REFERENCES`.
 
-### 2.7 Attaching engine parameters
-
-Parameters may also be attached to the **engine token** to override an external engine's per-file behaviour. They are encoded into the persisted `parse_engine` field and feed both the engine request and its raw-bundle cache signature (so changing a parameter forces a re-parse rather than reusing a stale bundle).
-
-```text
-paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # filename hint
-scan.[docling(force_ocr=true)].pdf
-report.[native(smart_heading)].docx                                      # bare boolean flag
-LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # rule
-```
-
-Currently supported engine parameters (canonical / alias):
-
-| Engine | Parameter | Alias | Type | Notes |
-| --- | --- | --- | --- | --- |
-| `mineru` | `page_range` | `pr` | list | One or more page ranges; **see the list note below** |
-| `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
-| `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
-| `docling` | `force_ocr` | `ocr` | bool | `true` / `false`; may be written bare: `docling(ocr)` means `docling(force_ocr=true)` |
-| `native` | `smart_heading` | — | bool | Opt-in docx smart heading discovery (see [§3.3](#33-using-the-native-file-parsing-engine)); may be written bare (`native(smart_heading)` means `=true`); the markdown path warns and ignores it |
-
-- **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
-- **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
-- **A boolean engine parameter may be written bare as a flag** to keep rules and filenames short: `native(smart_heading)` means `native(smart_heading=true)`, and `docling(ocr)` means `docling(force_ocr=true)`. Only booleans may be bare (`mineru(language)` is a friendly error), and the persisted `parse_engine` is always re-encoded in the canonical `key=value` form (`native(smart_heading=true)`), so the shorthand never changes a cache signature. To turn a boolean off you still write it explicitly (`native(smart_heading=false)`).
-- Engine parameters are only accepted by engines that declare them (`mineru` / `docling` / `native`); attaching a parameter to `legacy`, or an unknown parameter to any engine, is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
-- Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
-- `parse_engine` is stored in hint syntax (e.g. `mineru(page_range=1-3)`) and shown in `doc_status` metadata so you can see the parse parameters a document used.
-
-### 2.8 Validation, Priority, and Fallback
+### 2.7 Validation, Priority, and Fallback
 
 - `LIGHTRAG_PARSER` is strictly validated at startup: unknown content extraction engines, malformed extension syntax, explicitly using an unsupported extension, external engines missing endpoint, and illegal characters in processing options all cause startup to fail.
 - **When a wildcard rule matches a certain extension**, the engine must pass two usability checks (see `parser_routing._engine_is_usable`): (a) the engine's capability table supports that extension; (b) if it is an external engine (`mineru` / `docling`), the corresponding endpoint/token environment variable is configured. If either check fails, the rule is skipped and the next rule is matched. For example, in `*:mineru;html:docling`: MinerU does not support the `html` extension (condition a fails), so `html` continues to match `docling`; if `MINERU_API_MODE=local` but `MINERU_LOCAL_ENDPOINT` is not set, all PDFs also skip `*:mineru` and fall to the next rule (condition b fails). This behavior applies to both `LIGHTRAG_PARSER` rule matching and filename hint engine selection.
@@ -300,8 +281,8 @@ LightRAG caches the parsing results of the `mineru` and `docling` engines locall
 
 `legacy` is the fallback engine for every extension except `.textpack`, which the routing layer always sends to `native`. It is also what you get with `LIGHTRAG_PARSER` unset. It extracts plain text only, which has four consequences worth knowing before you route anything to it:
 
-- **It never writes sidecars.** Its output is `parse_format=raw`, so there is no `drawings.json` / `tables.json` / `equations.json` for the analyze stage to read. The `i` / `t` / `e` options therefore do nothing on a legacy-parsed document, and `P` degrades to `R` because there is no heading structure to split on (§2.8).
-- **It has no raw cache directory**, so `LIGHTRAG_FORCE_REPARSE_*` does not apply to it (§3.6).
+- **It never writes sidecars.** Its output is `parse_format=raw`, so there is no `drawings.json` / `tables.json` / `equations.json` for the analyze stage to read. The `i` / `t` / `e` options therefore do nothing on a legacy-parsed document, and `P` degrades to `R` because there is no heading structure to split on (§2.7).
+- **It has no raw cache directory**, so `LIGHTRAG_FORCE_REPARSE_*` does not apply to it (§3.7).
 - **Its only configuration knob is `PDF_DECRYPT_PASSWORD`**, the password used to open protected PDFs.
 - **A scanned PDF with no text layer fails hard** rather than producing an empty document. Route such files to `mineru` or `docling`, which can OCR them.
 
@@ -425,7 +406,7 @@ Polling budget and cache:
 | `MINERU_POLL_INTERVAL_SECONDS` | `2` | Interval between task-status polls |
 | `MINERU_MAX_POLLS` | `600` | Maximum polls before giving up; the default budget is about 20 minutes |
 | `MINERU_ENGINE_VERSION` | (empty) | Recorded in the raw-bundle manifest; a mismatch invalidates the cache. Empty skips the check (§6.3) |
-| `LIGHTRAG_FORCE_REPARSE_MINERU` | `false` | Bypass the raw cache and re-upload on every parse (§3.6) |
+| `LIGHTRAG_FORCE_REPARSE_MINERU` | `false` | Bypass the raw cache and re-upload on every parse (§3.7) |
 | `MINERU_BBOX_ATTRIBUTES` | `{"origin":"LEFTTOP","max":1000}` | Coordinate system recorded in the sidecar meta. Note the default differs from `DOCLING_BBOX_ATTRIBUTES` |
 
 > **Local deployment of the MinerU service** (Docker image build, vLLM preload, title-level correction) is described in [ParserServiceDeployment.md §1](./ParserServiceDeployment.md#1-local-deployment-of-the-mineru-service).
@@ -482,7 +463,35 @@ Three bundle-cache envs:
 
 > **Local deployment of docling-serve**, including downloading the equation-recognition model required by `DOCLING_DO_FORMULA_ENRICHMENT`, is described in [ParserServiceDeployment.md §2](./ParserServiceDeployment.md#2-local-deployment-of-docling-serve-latex-equation-recognition).
 
-### 3.6 Parse Cache and Forced Re-parse
+### 3.6 Attaching engine parameters
+
+Parameters may also be attached to the **engine token** to override an external engine's per-file behaviour. They are encoded into the persisted `parse_engine` field and feed both the engine request and its raw-bundle cache signature (so changing a parameter forces a re-parse rather than reusing a stale bundle).
+
+```text
+paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # filename hint
+scan.[docling(force_ocr=true)].pdf
+report.[native(smart_heading)].docx                                      # bare boolean flag
+LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # rule
+```
+
+Currently supported engine parameters (canonical / alias):
+
+| Engine | Parameter | Alias | Type | Notes |
+| --- | --- | --- | --- | --- |
+| `mineru` | `page_range` | `pr` | list | One or more page ranges; **see the list note below** |
+| `mineru` | `language` | — | str | OCR / model language (e.g. `en`, `ch`) |
+| `mineru` | `local_parse_method` | `local_pm` | enum | `auto` / `txt` / `ocr` (local mode) |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false`; may be written bare: `docling(ocr)` means `docling(force_ocr=true)` |
+| `native` | `smart_heading` | — | bool | Opt-in docx smart heading discovery (see [§3.3](#33-using-the-native-file-parsing-engine)); may be written bare (`native(smart_heading)` means `=true`); the markdown path warns and ignores it |
+
+- **`page_range` may contain multiple page segments — write one `page_range=...` item per segment.** Inside `(...)` a comma only separates parameters, so a multi-segment list should be written as `page_range=1-3,page_range=5,page_range=7-9`, not as the env-var single-string form `MINERU_PAGE_RANGES="1-3,5,7-9"`. A **multi-segment** `page_range` requires `MINERU_API_MODE=official`; `local` mode accepts only a single page/range (for example, `page_range=1-3`).
+- **`local_parse_method` is local-only.** It only affects the local MinerU request, so it is **rejected** under `MINERU_API_MODE=official` (the official API neither sends it nor folds it into the cache key — accepting it would silently do nothing).
+- **A boolean engine parameter may be written bare as a flag** to keep rules and filenames short: `native(smart_heading)` means `native(smart_heading=true)`, and `docling(ocr)` means `docling(force_ocr=true)`. Only booleans may be bare (`mineru(language)` is a friendly error), and the persisted `parse_engine` is always re-encoded in the canonical `key=value` form (`native(smart_heading=true)`), so the shorthand never changes a cache signature. To turn a boolean off you still write it explicitly (`native(smart_heading=false)`).
+- Engine parameters are only accepted by engines that declare them (`mineru` / `docling` / `native`); attaching a parameter to `legacy`, or an unknown parameter to any engine, is a friendly error. Validation runs at startup (`LIGHTRAG_PARSER`) and at upload.
+- Merge priority: engine parameters resolve for the **final engine** — a rule's engine parameters are dropped when a filename hint selects a different (usable) engine.
+- `parse_engine` is stored in hint syntax (e.g. `mineru(page_range=1-3)`) and shown in `doc_status` metadata so you can see the parse parameters a document used.
+
+### 3.7 Parse Cache and Forced Re-parse
 
 The `native`, `mineru` and `docling` engines each keep a raw-artifact cache next to the parsed output, so re-parsing an unchanged file does not repeat the expensive work — a network round trip to an external service, or an image download for markdown. Layout and invalidation rules are in §6.3; what matters when configuring is:
 
@@ -767,7 +776,7 @@ Lifecycle, identical for all three bundles:
 | `clear_documents` / a full sweep of `__parsed__` | Naturally cleared together. |
 | scan cycle | Does **not** GC orphaned bundles — they are removed only on an explicit user deletion, so a debugging site is never swept away by accident. |
 
-Force re-parse (bypass the cache entirely): `LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING` (§3.6).
+Force re-parse (bypass the cache entirely): `LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING` (§3.7).
 
 Concurrency safety: LightRAG mandates `canonical_basename` uniqueness within a workspace (HTTP 409 on upload / enqueue), and the pipeline serializes work per document, so no bundle is ever written concurrently and no extra lock is needed.
 
@@ -1075,14 +1084,14 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | Symptom | Cause | What to do |
 | --- | --- | --- |
 | Upload rejected as an unsupported type | The extension is not in the live allowlist. Declaring `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` alone does not make a bare `x.doc` uploadable (§3.1) | Add a routing rule or a per-file hint; confirm with `GET /documents/supported_file_types` |
-| Server refuses to start after editing `LIGHTRAG_PARSER` | Startup validation is strict: unknown engine, malformed syntax, external engine without an endpoint, or a bad engine / chunk parameter (§2.6, §2.7, §2.8) | Read the startup error — it names the offending rule |
-| A rule seems ignored; everything is parsed by `legacy` | The engine failed a usability check and the rule was skipped: either it does not support that extension, or its endpoint / token is unset (§2.8) | Configure the endpoint, or route the extension to an engine that supports it |
+| Server refuses to start after editing `LIGHTRAG_PARSER` | Startup validation is strict: unknown engine, malformed syntax, external engine without an endpoint, or a bad engine / chunk parameter (§2.6, §2.7, §3.6) | Read the startup error — it names the offending rule |
+| A rule seems ignored; everything is parsed by `legacy` | The engine failed a usability check and the rule was skipped: either it does not support that extension, or its endpoint / token is unset (§2.7) | Configure the endpoint, or route the extension to an engine that supports it |
 | A filename hint is ignored and a warning is logged | Illegal characters inside the brackets, or the options-only form written without its leading hyphen (§2.5) | Use `[-OPTIONS]`, e.g. `report.[-teP].docx` |
 | `i` / `t` / `e` enabled but nothing was analyzed | The sidecar does not exist — the document has no such content, or the engine does not emit it (`MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`, `DOCLING_DO_FORMULA_ENRICHMENT`; `legacy` emits none) | Look for the INFO line naming the empty sidecar, and inspect `*.parsed/` (§4.2) |
 | Document FAILED with "VLM analysis required but VLM role is not available" | `i` is enabled and an image passed the pre-filters while no VLM is configured (§4.3) | Set `VLM_PROCESS_ENABLE=true` with a vision-capable binding, **or** delete the document and re-upload it with `te` — retrying will not drop `i` |
 | Some images are analyzed, others silently are not | Non-raster format, below `VLM_MIN_IMAGE_PIXEL`, or above `VLM_MAX_IMAGE_BYTES` (§4.3) | Read the item's `llm_analyze_result` message; raise the byte cap if the image is legitimate |
 | Multimodal items fail on a token budget | The surrounding budgets leave too little for the item itself (§4.4) | Raise `MAX_EXTRACT_INPUT_TOKENS`, or lower `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
-| `P` was requested but the chunks look like `R` output | No structured `LightRAG Document` was produced, so `P` degraded (§2.8, §3.2) | Route the file to `native` / `mineru` / `docling` instead of `legacy` |
+| `P` was requested but the chunks look like `R` output | No structured `LightRAG Document` was produced, so `P` degraded (§2.7, §3.2) | Route the file to `native` / `mineru` / `docling` instead of `legacy` |
 | Headings are wrong in a `.docx`, so `P` splits badly | The document's Word outline is unreliable | Try `native(smart_heading=true)` (§3.3) and iterate with the parser CLI |
 | Log notes that paragraphs lack `paraId` | Produced by LibreOffice / WPS / older Word (§3.3) | Informational. Re-save in Word 2013+ only if you need paragraph-level provenance |
 | Document is FAILED as a duplicate | Basename dedup (canonicalized, hint stripped) or content-hash dedup (§7.1, §7.2) | Delete the existing document first, or rename the new file |
@@ -1091,9 +1100,9 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | Everything returns `503` | The `recovery_required` fence is up (§8.7) | Follow the recovery order documented in that section |
 | `/documents/scan` returns `scanning_skipped_pipeline_busy` | The pipeline is busy or scanning, uploads are in flight, or a manual retry is queued (§8.2) | Wait for idle; `POST /documents/reprocess_failed` is the single-call recovery for a stuck retry request |
 | Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Automatic resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§9.3) | Delete the document (with "also delete file") and upload it again |
-| An external engine keeps returning stale output after fixing its service config | The raw-artifact bundle cache was hit (§6.3) | Set the matching `LIGHTRAG_FORCE_REPARSE_*` flag (§3.6), or delete the document with "also delete file" |
+| An external engine keeps returning stale output after fixing its service config | The raw-artifact bundle cache was hit (§6.3) | Set the matching `LIGHTRAG_FORCE_REPARSE_*` flag (§3.7), or delete the document with "also delete file" |
 | A scanned PDF fails with "extracted no usable text" | `legacy` cannot read a PDF with no text layer (§3.2) | Route it to `mineru` or `docling` with OCR enabled |
-| MinerU rejects a multi-segment page range | Multi-segment ranges require `official` mode; `local` accepts a single page or one simple range (§2.7) | Use a single range under `local`, or switch modes |
+| MinerU rejects a multi-segment page range | Multi-segment ranges require `official` mode; `local` accepts a single page or one simple range (§3.6) | Use a single range under `local`, or switch modes |
 | Startup fails asking for spaCy models | `DOCX_SMART_HEADING=true`, or a rule carrying `native(smart_heading=true)`, triggers a fail-fast model check (§3.3) | Run `lightrag-download-cache --spacy --spacy-install`, or use the main Docker image, which bundles them |
 
 ## 11. Python SDK Invocation
@@ -1204,7 +1213,7 @@ Where to find each family of file-processing variables. This is an index, not a 
 | native docx smart_heading | `DOCX_SMART_HEADING`, `DOCX_SMART_*` tuning | §3.3 and the smart_heading block of `env.example` |
 | MinerU | `MINERU_*` | §3.4 |
 | Docling | `DOCLING_*` | §3.5 |
-| Parse cache | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`, `{MINERU,DOCLING}_ENGINE_VERSION` | §3.6, §6.3 |
+| Parse cache | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`, `{MINERU,DOCLING}_ENGINE_VERSION` | §3.7, §6.3 |
 | Directories | `INPUT_DIR`, `WORKING_DIR`, `SCAN_SPOOL_DIR` | §6, §7.1 |
 | Concurrency | `MAX_PARALLEL_*`, `QUEUE_SIZE_*` | §8.9 |
 | Admission and limits | `MAX_UPLOAD_SIZE`, `MAX_REQUEST_BODY_BYTES`, `MAX_TEXTS_PER_REQUEST`, `MAX_PENDING_DOCUMENTS`, `PIPELINE_*`, `MAX_UNACKED_MANUAL_RETRIES`, `SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |

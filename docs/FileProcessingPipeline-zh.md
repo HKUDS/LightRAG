@@ -83,7 +83,7 @@ MINERU_LOCAL_ENDPOINT=http://localhost:8000
 LIGHTRAG_PARSER=*:native-teP,*:legacy-R
 ```
 
-**1. 先验证路由，别浪费一次解析。** 写错的 `LIGHTRAG_PARSER` 在启动时就会失败（§2.8）。服务起来后，`GET /documents/supported_file_types` 返回**服务端实际解析出的**后缀白名单与引擎-后缀映射，不入库一个文件就能确认规则是否生效。
+**1. 先验证路由，别浪费一次解析。** 写错的 `LIGHTRAG_PARSER` 在启动时就会失败（§2.7）。服务起来后，`GET /documents/supported_file_types` 返回**服务端实际解析出的**后缀白名单与引擎-后缀映射，不入库一个文件就能确认规则是否生效。
 
 **2. 把文件送进来。** 要么 `POST /documents/upload`（文件存入 `INPUT_DIR`，响应带 `track_id`），要么把文件放进 `INPUT_DIR` 后调 `POST /documents/scan`。想对单个文件试不同配置又不改 `.env`，就用文件名 hint：`report.[native-teP].docx`（§2.5）。
 
@@ -107,7 +107,7 @@ __parsed__/report.docx.parsed/        # 规范名，已剥掉 hint
 3. 你预期的 sidecar 存在。缺失意味着文档没有该类内容，或该引擎不产出它（`legacy` 一个都不产出，见 §3.2）。
 4. 你启用了分析的那些 sidecar item 带有 `"llm_analyze_result": {"status": "success"}`。这里是 `skipped` 或 `failure`，就是"为什么我的图片/表格没进知识图谱"的答案（§4.3）。
 
-**6. 验证分块与入库。** `GET /documents/paginated` 的 `chunks_count` 是分块数；doc_status 记录里的 `metadata.parse_engine` 与 `metadata.process_options` 表明**实际生效的**引擎和选项，这是发现"hint 被静默判为无效"最快的办法（§2.8）。
+**6. 验证分块与入库。** `GET /documents/paginated` 的 `chunks_count` 是分块数；doc_status 记录里的 `metadata.parse_engine` 与 `metadata.process_options` 表明**实际生效的**引擎和选项，这是发现"hint 被静默判为无效"最快的办法（§2.7）。
 
 **失败了怎么办：** 源文件**留在 `INPUT_DIR`**，改完配置可以重新扫描。doc_status 记录上的 `error_msg` 是诊断入口，§10 列出了常见的几种。注意引擎与处理选项都在入队时就已冻结——改 `LIGHTRAG_PARSER` 或改 hint 都不影响已有记录，要用新配置重跑就得删除文档后重新上传（§9.3）。想脱离服务器离线复现一次解析，用 `python -m lightrag.parser.cli`（[ParserDebugCLI-zh.md](./ParserDebugCLI-zh.md)）。
 
@@ -115,7 +115,7 @@ __parsed__/report.docx.parsed/        # 规范名，已剥掉 hint
 
 LightRAG 的文件处理配置由两部分合成：内容抽取引擎决定原始文件如何被解析，处理选项决定解析后是否执行多模态分析、使用哪种分块方式，以及是否构建知识图谱。通常先用环境变量 `LIGHTRAG_PARSER` 按文件后缀设置默认规则，再用文件名中的 `[hint]` 覆盖单个文件。引擎和选项可以写在同一个配置片段里，例如 `docx:native-iet` 或 `report.[native-R!].docx`。
 
-为了向后兼容，在未修改配置的情况下，升级后的文件内容提取方式会维持原来的 `legacy` 行为。如需启用新的内容处理引擎，请按本节说明配置。
+为了向后兼容，在未修改配置的情况下，升级后的文件内容提取方式会维持原来的 `legacy` 行为。如需启用新的内容处理引擎，请按本章说明配置；各引擎自身的能力与设置见 §3。
 
 ### 2.1 文件处理选项
 
@@ -159,7 +159,16 @@ filename.[-OPTIONS].ext
 
 - `LIGHTRAG_PARSER` 是默认规则表，按文件后缀匹配，例如 `pdf:mineru`、`docx:native-iet`。
 - 文件名 `[hint]` 是单文件覆盖规则，例如 `paper.[mineru].pdf`、`memo.[native-R!].docx`。
-- `ENGINE` 是内容抽取引擎：`legacy`、`native`、`mineru` 或 `docling`。
+- `ENGINE` 是内容抽取引擎。选哪个决定了解析阶段**能**产出什么：
+
+  | 引擎 | 是什么 | 什么时候用它 |
+  | --- | --- | --- |
+  | `legacy` | 纯文本抽取，不产出 sidecar | 想保持升级前的行为，或文档本来就是纯文本 |
+  | `native` | 内置结构化抽取器，完全本地，不依赖外部服务 | `docx` / `md` / `textpack`，且希望不部署任何东西就用上 `P` 分块或模态分析 |
+  | `mineru` | 外部 MinerU 服务 | PDF、扫描件，以及需要版面识别与 OCR 的 office / 图片格式 |
+  | `docling` | 外部 docling-serve | MinerU 的替代方案；也是内置路径里唯一能出 LaTeX 公式的 |
+
+  只有 `native`、`mineru`、`docling` 会产出 sidecar，因此也只有它们能支撑 `i` / `t` / `e` 选项与 `P` 分块器。各引擎的能力、配置与部署见 [§3](#3-文件解析引擎)。
 - `OPTIONS` 是处理选项字符组合，例如 `iet`、`R!`、`P`。选项最终写入 `process_options`，由后续流水线阶段读取。
 - `ENGINE-OPTIONS` 中的连字符只用于分隔引擎和选项，不属于选项本身。
 - 仅指定处理选项时必须写成 `[-OPTIONS]`，例如 `[-!]`。无横线的 `[abc]` 会被严格解释为引擎名并报错，不会回退为选项串。
@@ -239,35 +248,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 
 > `drop_references` 检测调参 `CHUNK_P_REFERENCES_TAIL_N`（默认 `0`：扫描全部内容块；正数表示只扫描文末最后 N 块）/ `CHUNK_P_REFERENCES_HEADINGS`（竖线分隔，默认 `References\|Bibliography\|参考文献`）仅经环境变量、运行时实时读取。drop_references可以通过环境变量 `CHUNK_P_DROP_REFERENCES` 设置为全局默认值.
 
-### 2.7 为解析引擎附加参数
-
-参数也可以附加到**引擎 token** 上，按文件覆盖外部引擎的行为。它们被编码进持久化的 `parse_engine` 字段，同时作用于引擎请求与其原始包缓存签名（因此改动参数会触发重解析，而非复用旧缓存包）。
-
-```text
-paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # 文件名 hint
-scan.[docling(force_ocr=true)].pdf
-report.[native(smart_heading)].docx                                      # 布尔参数的省值写法
-LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规则
-```
-
-当前支持的引擎参数（全称 / 别名）：
-
-| 引擎 | 参数 | 别名 | 类型 | 说明 |
-| --- | --- | --- | --- | --- |
-| `mineru` | `page_range` | `pr` | 列表 | 一个或多个页码范围；**见下方列表说明** |
-| `mineru` | `language` | — | str | OCR / 模型语言（如 `en`、`ch`） |
-| `mineru` | `local_parse_method` | `local_pm` | 枚举 | `auto` / `txt` / `ocr`（local 模式） |
-| `docling` | `force_ocr` | `ocr` | bool | `true` / `false`；可省值裸写，`docling(ocr)` 等价于 `docling(force_ocr=true)` |
-| `native` | `smart_heading` | — | bool | 可选开启的 docx 智能标题识别（见 [§3.3](#33-使用-native-文件解析引擎)）；可省值裸写，`native(smart_heading)` 等价于 `=true`；markdown 路径会告警并忽略 |
-
-- **`page_range` 可写多个页码段——每段都单独写一个 `page_range=...`。** 括号 `(...)` 内逗号只分隔参数，因此多段页码要写成 `page_range=1-3,page_range=5,page_range=7-9`，不要写成环境变量里的单串形式 `MINERU_PAGE_RANGES="1-3,5,7-9"`。**多段** `page_range` 需要 `MINERU_API_MODE=official`；`local` 模式只接受单页/单段（如 `page_range=1-3`）。
-- **`local_parse_method` 仅限 local 模式。** 它只影响本地 MinerU 请求，因此在 `MINERU_API_MODE=official` 下会被**拒绝**（official API 既不发送它、也不计入缓存键——接受它将静默无效）。
-- **布尔型引擎参数可以省略取值、写成裸开关**，用于缩短规则与文件名：`native(smart_heading)` 等价于 `native(smart_heading=true)`，`docling(ocr)` 等价于 `docling(force_ocr=true)`。只有布尔参数可以这样写（`mineru(language)` 会友好报错）；持久化的 `parse_engine` 始终按全称 `key=value` 重新编码（`native(smart_heading=true)`），因此省值写法不会改变缓存签名。关闭布尔参数仍需显式写出（`native(smart_heading=false)`）。
-- 引擎参数只被声明了参数的引擎接受（`mineru` / `docling` / `native`）；给 `legacy` 附加参数、或给任一引擎附加未知参数，都会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
-- 合并优先级：引擎参数按**最终引擎**解析——当文件名 hint 选中了另一个可用引擎时，规则的引擎参数会被丢弃。
-- `parse_engine` 以 hint 语法存储（如 `mineru(page_range=1-3)`），并展示在 `doc_status` metadata 中，便于查看文档当时使用的解析参数。
-
-### 2.8 校验、优先级与回退
+### 2.7 校验、优先级与回退
 
 - 启动时会严格校验 `LIGHTRAG_PARSER`：未知内容提取引擎、错误后缀写法、显式使用不支持的后缀、外部引擎缺少 endpoint、处理选项中的非法字符都会导致启动失败。
 - **通配符规则匹配某后缀时**，引擎需通过两道可用性检查（见 `parser_routing._engine_is_usable`）：(a) 该引擎能力表支持此后缀；(b) 若是外部引擎（`mineru` / `docling`），对应 endpoint/token 环境变量已配置。任一检查不过，本规则跳过，继续匹配下一条规则。例如 `*:mineru;html:docling` 中：MinerU 不支持 `html` 后缀（条件 a 不过），`html` 继续命中 `docling`；如果 `MINERU_API_MODE=local` 但未设置 `MINERU_LOCAL_ENDPOINT`，所有 PDF 也会跳过 `*:mineru` 落到下一条规则（条件 b 不过）。这一行为对 `LIGHTRAG_PARSER` 规则匹配和文件名 hint 引擎选择都生效。
@@ -300,8 +281,8 @@ LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重�
 
 `legacy` 是除 `.textpack`（路由层强制交给 `native`）之外所有后缀的兜底引擎，也是不配置 `LIGHTRAG_PARSER` 时的默认行为。它只抽取纯文本，由此带来四个在把文件路由给它之前值得先知道的后果：
 
-- **它永不产出 sidecar。** 输出是 `parse_format=raw`，不存在 `drawings.json` / `tables.json` / `equations.json` 供分析阶段读取。因此 `i` / `t` / `e` 选项对 legacy 解析的文档完全无效，`P` 也会因为没有标题结构可切而退化为 `R`（§2.8）。
-- **它没有原始缓存目录**，所以 `LIGHTRAG_FORCE_REPARSE_*` 对它不适用（§3.6）。
+- **它永不产出 sidecar。** 输出是 `parse_format=raw`，不存在 `drawings.json` / `tables.json` / `equations.json` 供分析阶段读取。因此 `i` / `t` / `e` 选项对 legacy 解析的文档完全无效，`P` 也会因为没有标题结构可切而退化为 `R`（§2.7）。
+- **它没有原始缓存目录**，所以 `LIGHTRAG_FORCE_REPARSE_*` 对它不适用（§3.7）。
 - **它唯一的配置项是 `PDF_DECRYPT_PASSWORD`**，用于打开受密码保护的 PDF。
 - **无文本层的扫描版 PDF 会硬失败**，而不是产出一个空文档。这类文件应改路由到能做 OCR 的 `mineru` 或 `docling`。
 
@@ -425,7 +406,7 @@ MINERU_LOCAL_ENDPOINT=http://<your_mineru_local_server_ip>:8000
 | `MINERU_POLL_INTERVAL_SECONDS` | `2` | 任务状态轮询间隔 |
 | `MINERU_MAX_POLLS` | `600` | 放弃前的最大轮询次数；缺省预算约 20 分钟 |
 | `MINERU_ENGINE_VERSION` | （空） | 记入原始产物包 manifest，不一致即缓存失效；留空则跳过该检查（§6.3） |
-| `LIGHTRAG_FORCE_REPARSE_MINERU` | `false` | 绕过原始缓存，每次解析都重新上传（§3.6） |
+| `LIGHTRAG_FORCE_REPARSE_MINERU` | `false` | 绕过原始缓存，每次解析都重新上传（§3.7） |
 | `MINERU_BBOX_ATTRIBUTES` | `{"origin":"LEFTTOP","max":1000}` | 记入 sidecar meta 的坐标系。注意其缺省值与 `DOCLING_BBOX_ATTRIBUTES` 不同 |
 
 > **本地部署 MinerU 服务**（Docker 镜像构建、vLLM 预加载、标题层级修正）见 [ParserServiceDeployment-zh.md §1](./ParserServiceDeployment-zh.md#1-本地部署-mineru-服务)。
@@ -482,7 +463,35 @@ Bundle 缓存 3 个 env：
 
 > **本地部署 docling-serve**（含 `DOCLING_DO_FORMULA_ENRICHMENT` 所需的公式识别模型下载）见 [ParserServiceDeployment-zh.md §2](./ParserServiceDeployment-zh.md#2-本地部署-docling-serve启用-latex-公式识别)。
 
-### 3.6 解析缓存与强制重解析
+### 3.6 为解析引擎附加参数
+
+参数也可以附加到**引擎 token** 上，按文件覆盖外部引擎的行为。它们被编码进持久化的 `parse_engine` 字段，同时作用于引擎请求与其原始包缓存签名（因此改动参数会触发重解析，而非复用旧缓存包）。
+
+```text
+paper.[mineru(page_range=1-3,language=en,local_parse_method=ocr)].pdf   # 文件名 hint
+scan.[docling(force_ocr=true)].pdf
+report.[native(smart_heading)].docx                                      # 布尔参数的省值写法
+LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规则
+```
+
+当前支持的引擎参数（全称 / 别名）：
+
+| 引擎 | 参数 | 别名 | 类型 | 说明 |
+| --- | --- | --- | --- | --- |
+| `mineru` | `page_range` | `pr` | 列表 | 一个或多个页码范围；**见下方列表说明** |
+| `mineru` | `language` | — | str | OCR / 模型语言（如 `en`、`ch`） |
+| `mineru` | `local_parse_method` | `local_pm` | 枚举 | `auto` / `txt` / `ocr`（local 模式） |
+| `docling` | `force_ocr` | `ocr` | bool | `true` / `false`；可省值裸写，`docling(ocr)` 等价于 `docling(force_ocr=true)` |
+| `native` | `smart_heading` | — | bool | 可选开启的 docx 智能标题识别（见 [§3.3](#33-使用-native-文件解析引擎)）；可省值裸写，`native(smart_heading)` 等价于 `=true`；markdown 路径会告警并忽略 |
+
+- **`page_range` 可写多个页码段——每段都单独写一个 `page_range=...`。** 括号 `(...)` 内逗号只分隔参数，因此多段页码要写成 `page_range=1-3,page_range=5,page_range=7-9`，不要写成环境变量里的单串形式 `MINERU_PAGE_RANGES="1-3,5,7-9"`。**多段** `page_range` 需要 `MINERU_API_MODE=official`；`local` 模式只接受单页/单段（如 `page_range=1-3`）。
+- **`local_parse_method` 仅限 local 模式。** 它只影响本地 MinerU 请求，因此在 `MINERU_API_MODE=official` 下会被**拒绝**（official API 既不发送它、也不计入缓存键——接受它将静默无效）。
+- **布尔型引擎参数可以省略取值、写成裸开关**，用于缩短规则与文件名：`native(smart_heading)` 等价于 `native(smart_heading=true)`，`docling(ocr)` 等价于 `docling(force_ocr=true)`。只有布尔参数可以这样写（`mineru(language)` 会友好报错）；持久化的 `parse_engine` 始终按全称 `key=value` 重新编码（`native(smart_heading=true)`），因此省值写法不会改变缓存签名。关闭布尔参数仍需显式写出（`native(smart_heading=false)`）。
+- 引擎参数只被声明了参数的引擎接受（`mineru` / `docling` / `native`）；给 `legacy` 附加参数、或给任一引擎附加未知参数，都会友好报错。校验在启动期（`LIGHTRAG_PARSER`）与上传期均执行。
+- 合并优先级：引擎参数按**最终引擎**解析——当文件名 hint 选中了另一个可用引擎时，规则的引擎参数会被丢弃。
+- `parse_engine` 以 hint 语法存储（如 `mineru(page_range=1-3)`），并展示在 `doc_status` metadata 中，便于查看文档当时使用的解析参数。
+
+### 3.7 解析缓存与强制重解析
 
 `native`、`mineru`、`docling` 三个引擎各自在解析产物旁保留一份原始产物缓存，这样重新解析未变更的文件时不必重复昂贵的工作——一次外部服务往返，或一轮 markdown 外链图片下载。目录布局与失效规则见 §6.3；配置时需要知道的是：
 
@@ -767,7 +776,7 @@ __parsed__/<base>.docling_raw/
 | `clear_documents` / 整体清空 `__parsed__` | 随之一并清除。 |
 | scan 周期 | **不会**回收孤立的产物包——只有用户显式删除时才移除，避免误扫掉调试现场。 |
 
-强制重解析（完全绕过缓存）：`LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING`（§3.6）。
+强制重解析（完全绕过缓存）：`LIGHTRAG_FORCE_REPARSE_NATIVE` / `LIGHTRAG_FORCE_REPARSE_MINERU` / `LIGHTRAG_FORCE_REPARSE_DOCLING`（§3.7）。
 
 并发安全：LightRAG 强制同一 workspace 内 `canonical_basename` 唯一（upload / enqueue 时返回 HTTP 409），加上流水线对每个文档的串行处理，任何产物包都不会被并发写入，无需额外加锁。
 
@@ -1075,14 +1084,14 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | 上传被拒，提示不支持该类型 | 该后缀不在生效的白名单里。只声明 `MINERU_ADDITIONAL_SUFFIXES` / `DOCLING_ADDITIONAL_SUFFIXES` 并不能让裸 `x.doc` 变成可上传（§3.1） | 补一条路由规则或文件名 hint；用 `GET /documents/supported_file_types` 确认 |
-| 改完 `LIGHTRAG_PARSER` 后服务起不来 | 启动校验是严格的：未知引擎、语法错误、外部引擎缺服务端点、引擎/分块参数非法（§2.6、§2.7、§2.8） | 读启动报错，它会指出是哪条规则 |
-| 规则像是被忽略，所有文件都走了 `legacy` | 引擎未通过可用性检查，该规则被跳过：要么不支持该后缀，要么服务端点/凭据未配置（§2.8） | 配置服务端点，或把该后缀路由给支持它的引擎 |
+| 改完 `LIGHTRAG_PARSER` 后服务起不来 | 启动校验是严格的：未知引擎、语法错误、外部引擎缺服务端点、引擎/分块参数非法（§2.6、§2.7、§3.6） | 读启动报错，它会指出是哪条规则 |
+| 规则像是被忽略，所有文件都走了 `legacy` | 引擎未通过可用性检查，该规则被跳过：要么不支持该后缀，要么服务端点/凭据未配置（§2.7） | 配置服务端点，或把该后缀路由给支持它的引擎 |
 | 文件名 hint 被忽略并打了告警 | 方括号内出现非法字符，或只写选项时漏了前导连字符（§2.5） | 使用 `[-OPTIONS]` 形式，例如 `report.[-teP].docx` |
 | 开了 `i` / `t` / `e` 却什么都没分析 | sidecar 不存在——文档没有该类内容，或引擎不产出它（`MINERU_ENABLE_TABLE` / `MINERU_ENABLE_FORMULA`、`DOCLING_DO_FORMULA_ENRICHMENT`；`legacy` 一个都不产出） | 查找那条指出 sidecar 为空的 INFO 日志，并检查 `*.parsed/`（§4.2） |
 | 文档 FAILED，报 "VLM analysis required but VLM role is not available" | 启用了 `i`，且有图片通过了前置过滤，而 VLM 未配置（§4.3） | 设 `VLM_PROCESS_ENABLE=true` 并配好支持视觉的 binding，**或者**删除该文档、改用 `te` 重新上传——直接重试不会去掉 `i` |
 | 部分图片被分析，另一些被静默跳过 | 非栅格格式、小于 `VLM_MIN_IMAGE_PIXEL`、或大于 `VLM_MAX_IMAGE_BYTES`（§4.3） | 看该 item 的 `llm_analyze_result` 消息；图片确实需要就调高字节上限 |
 | 多模态 item 因 token 预算失败 | 上下文预算挤占了 item 自身的空间（§4.4） | 调高 `MAX_EXTRACT_INPUT_TOKENS`，或调低 `SURROUNDING_LEADING_MAX_TOKENS` / `SURROUNDING_TRAILING_MAX_TOKENS` |
-| 指定了 `P`，分块结果却像 `R` | 没有产出结构化的 `LightRAG Document`，`P` 已退化（§2.8、§3.2） | 把文件路由给 `native` / `mineru` / `docling`，而不是 `legacy` |
+| 指定了 `P`，分块结果却像 `R` | 没有产出结构化的 `LightRAG Document`，`P` 已退化（§2.7、§3.2） | 把文件路由给 `native` / `mineru` / `docling`，而不是 `legacy` |
 | `.docx` 标题识别不准，导致 `P` 切分很差 | 该文档的 Word 大纲不可靠 | 试试 `native(smart_heading=true)`（§3.3），配合 parser CLI 迭代 |
 | 日志提示部分段落缺少 `paraId` | 由 LibreOffice / WPS / 旧版 Word 产生（§3.3） | 仅提示性。只有确实需要段落级溯源时，才用 Word 2013+ 另存一次 |
 | 文档 FAILED 且标记为重复 | 文件名查重（规范化并剥掉 hint 后）或内容 hash 查重（§7.1、§7.2） | 先删除已有文档，或给新文件改名 |
@@ -1091,9 +1100,9 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 所有接口都返回 `503` | `recovery_required` 栅栏已升起（§8.7） | 按该节给出的恢复顺序处理 |
 | `/documents/scan` 返回 `scanning_skipped_pipeline_busy` | 流水线正忙或正在扫描、有上传在途、或有手动重试排队中（§8.2） | 等待空闲；`POST /documents/reprocess_failed` 是卡住的重试请求的一键恢复 |
 | 改了引擎或选项，输出却没变 | 引擎与 `process_options` 在入队时就冻结进 doc_status 记录。自动续跑与 `/documents/reprocess_failed` 都沿用存量值；改 `LIGHTRAG_PARSER` 或 hint 只对新上传生效（§9.3） | 删除该文档（勾选"同时删除文件"）后重新上传 |
-| 修好了外部引擎的服务配置，它却一直返回旧结果 | 命中了原始产物包缓存（§6.3） | 打开对应的 `LIGHTRAG_FORCE_REPARSE_*`（§3.6），或删除文档时勾选"同时删除文件" |
+| 修好了外部引擎的服务配置，它却一直返回旧结果 | 命中了原始产物包缓存（§6.3） | 打开对应的 `LIGHTRAG_FORCE_REPARSE_*`（§3.7），或删除文档时勾选"同时删除文件" |
 | 扫描版 PDF 报 "extracted no usable text" | `legacy` 读不了没有文本层的 PDF（§3.2） | 改路由到开启 OCR 的 `mineru` 或 `docling` |
-| MinerU 拒绝多段页码范围 | 多段范围只有 `official` 模式支持，`local` 只接受单页或一个简单区间（§2.7） | `local` 下改用单个区间，或切换模式 |
+| MinerU 拒绝多段页码范围 | 多段范围只有 `official` 模式支持，`local` 只接受单页或一个简单区间（§3.6） | `local` 下改用单个区间，或切换模式 |
 | 启动时报缺少 spaCy 模型 | `DOCX_SMART_HEADING=true` 或规则里带 `native(smart_heading=true)` 触发了启动期快速失败检查（§3.3） | 执行 `lightrag-download-cache --spacy --spacy-install`，或改用已内置模型的主 Docker 镜像 |
 
 ## 11. Python SDK 调用
@@ -1204,7 +1213,7 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 | native docx smart_heading | `DOCX_SMART_HEADING`、`DOCX_SMART_*` 调优项 | §3.3 与 `env.example` 的 smart_heading 注释块 |
 | MinerU | `MINERU_*` | §3.4 |
 | Docling | `DOCLING_*` | §3.5 |
-| 解析缓存 | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`、`{MINERU,DOCLING}_ENGINE_VERSION` | §3.6、§6.3 |
+| 解析缓存 | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`、`{MINERU,DOCLING}_ENGINE_VERSION` | §3.7、§6.3 |
 | 目录 | `INPUT_DIR`、`WORKING_DIR`、`SCAN_SPOOL_DIR` | §6、§7.1 |
 | 并发 | `MAX_PARALLEL_*`、`QUEUE_SIZE_*` | §8.9 |
 | 准入与限制 | `MAX_UPLOAD_SIZE`、`MAX_REQUEST_BODY_BYTES`、`MAX_TEXTS_PER_REQUEST`、`MAX_PENDING_DOCUMENTS`、`PIPELINE_*`、`MAX_UNACKED_MANUAL_RETRIES`、`SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |
