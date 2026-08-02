@@ -1029,9 +1029,7 @@ The lock does **not** cover the ingress document publish (outside the lock; only
 
 ### 8.9 Where chunking runs
 
-Chunking is CPU-bound in the document supplied and — for the recursive strategy — in the separator cascade supplied with it, so it runs in a dedicated **single-worker** thread pool rather than inline on the asyncio event loop. Inline, one 414 KiB document made an unrelated `GET /health` take 63 seconds; the `POST` that queued the work had already returned `200 OK` in 1.6 ms, so nothing in the request/response exchange signalled the outage.
-
-Everything CPU-bound between "content in hand" and "chunks written" is in that pool: the four chunking strategies, the semantic chunker's oversized-piece re-split, the multimodal chunk builder, the pre-embedding hard split, and the `surrounding` backfill.
+Chunking is CPU-bound in the document supplied and — for the recursive strategy — in the separator cascade supplied with it, so it runs in a dedicated **single-worker** thread pool rather than inline on the asyncio event loop. Inline execution may block the event loop, causing latency for async operations. Everything CPU-bound between "content in hand" and "chunks written" is in that pool: the four chunking strategies, the semantic chunker's oversized-piece re-split, the multimodal chunk builder, the pre-embedding hard split, and the `surrounding` backfill.
 
 Two consequences worth knowing:
 
