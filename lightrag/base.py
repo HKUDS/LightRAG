@@ -140,7 +140,7 @@ class QueryParam:
     ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    # History mesages is only send to LLM for context, not used for retrieval
+    # History messages are only sent to LLM for context, not used for retrieval
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
@@ -148,8 +148,8 @@ class QueryParam:
 
     user_prompt: str | None = None
     """User-provided prompt for the query.
-    Addition instructions for LLM. If provided, this will be inject into the prompt template.
-    It's purpose is the let user customize the way LLM generate the response.
+    Additional instructions for LLM. If provided, this will be injected into the prompt template.
+    Its purpose is to let the user customize the way LLM generates the response.
     """
 
     enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
@@ -288,7 +288,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Insert or update vectors in the storage.
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -308,7 +308,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     async def delete_entity(self, entity_name: str) -> None:
         """Delete a single entity by its name.
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -321,7 +321,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity.
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -360,7 +360,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -438,13 +438,13 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """Return un-exist keys"""
+        """Return keys that do not exist in storage."""
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Upsert data
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
 
@@ -464,7 +464,7 @@ class BaseKVStorage(StorageNameSpace, ABC):
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
 
@@ -655,7 +655,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert a new node or update an existing node in the graph.
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -718,7 +718,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     ) -> None:
         """Insert a new edge or update an existing edge in the graph.
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -733,7 +733,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def delete_node(self, node_id: str) -> None:
         """Delete a node from the graph.
 
-        Importance notes for in-memory storage:
+        Important notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -746,7 +746,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
 
-        Importance notes:
+        Important notes:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -759,7 +759,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges
 
-        Importance notes:
+        Important notes:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
@@ -787,7 +787,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Args:
             node_label: Label(entity name) of the starting node，* means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
-            max_nodes: Maxiumu nodes to return, Defaults to 1000（BFS if possible)
+            max_nodes: Maximum nodes to return, Defaults to 1000 (BFS if possible)
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag

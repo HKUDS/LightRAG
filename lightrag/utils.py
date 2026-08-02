@@ -980,7 +980,7 @@ def priority_limit_async_func_call(
         Decorator function
     """
 
-    def final_decro(func):
+    def final_dec(func):
         # Ensure func is callable
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
@@ -2334,7 +2334,7 @@ def priority_limit_async_func_call(
 
         return wait_func
 
-    return final_decro
+    return final_dec
 
 
 def wrap_embedding_func_with_attrs(**kwargs):
@@ -2407,7 +2407,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
         A decorator that wraps the function as an EmbeddingFunc instance
     """
 
-    def final_decro(func) -> EmbeddingFunc:
+    def final_dec(func) -> EmbeddingFunc:
         embedding_kwargs = dict(kwargs)
         # Auto-detect supports_asymmetric from the wrapped function's signature
         # if the caller did not declare it explicitly. Without this, any user or
@@ -2425,7 +2425,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
         new_func = EmbeddingFunc(**embedding_kwargs, func=func)
         return new_func
 
-    return final_decro
+    return final_dec
 
 
 def load_json(file_name):

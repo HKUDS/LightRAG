@@ -456,7 +456,7 @@ async def _handle_entity_relation_summary(
                     )
                     current_chunk = []  # next group is empty
                     current_tokens = 0
-                else:  # curren_chunk is ready for summary in reduce phase
+                else:  # current_chunk is ready for summary in reduce phase
                     chunks.append(current_chunk)
                     current_chunk = [desc]  # leave it for next group
                     current_tokens = desc_tokens
@@ -1409,7 +1409,6 @@ async def _process_extraction_result(
         chunk_key (str): The chunk key for source tracking
         file_path (str): The file path for citation
         tuple_delimiter (str): Delimiter for tuple fields
-        record_delimiter (str): Delimiter for records
         completion_delimiter (str): Delimiter for completion
     Returns:
         tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
