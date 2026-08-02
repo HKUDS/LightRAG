@@ -518,6 +518,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     A function that returns a Tokenizer instance.
     If None, and a `tiktoken_model_name` is provided, a TiktokenTokenizer will be created.
     If both are None, the default TiktokenTokenizer is used.
+
+    Injection contract: token counting is CPU-bound and runs in worker threads so
+    it does not block the event loop, so an injected tokenizer MUST be safe to
+    call concurrently from multiple threads, and MUST survive ``copy.deepcopy``
+    (``asdict`` in ``_build_global_config`` copies non-dataclass fields; an
+    implementation guarding itself with a ``threading.Lock`` should declare
+    ``__deepcopy__`` returning ``self``). LightRAG deliberately does not serialize
+    it — a lock owned by LightRAG would be waited on by the event loop and would
+    recreate the freeze the offload removes. The built-in ``TiktokenTokenizer``
+    satisfies both. See :class:`lightrag.utils.Tokenizer`.
     """
 
     tiktoken_model_name: str = field(default="gpt-4o-mini")
@@ -1091,6 +1101,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def _build_global_config(self) -> dict[str, Any]:
         self._ensure_addon_params_cache()
         global_config = asdict(self)
+        # Restore the tokenizer object itself (asdict deep-copies non-dataclass
+        # fields), the same way __post_init__ restores embedding_func. Copying it
+        # was never the isolation it looked like: tiktoken caches encodings in a
+        # process-wide registry and Encoding.__setstate__ rebinds a copy's __dict__
+        # to the registered instance's, so every "independent" copy already shared
+        # one CoreBPE. Now that the injection contract is thread safety, sharing is
+        # what it asks for — and this keeps a tokenizer that holds an internal lock
+        # (deep-copying a lock raises TypeError) off the per-operation copy path.
+        global_config["tokenizer"] = self.tokenizer
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
         global_config.pop("_cached_entity_extraction_use_json", None)

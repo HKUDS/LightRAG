@@ -18,9 +18,10 @@ import re
 import time
 import uuid
 import warnings
+from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from functools import wraps
+from functools import partial, wraps
 from hashlib import md5
 from pathlib import Path
 from typing import (
@@ -2581,20 +2582,209 @@ def write_json(json_obj, file_name):
 class TokenizerInterface(Protocol):
     """
     Defines the interface for a tokenizer, requiring encode and decode methods.
+
+    Implementations MUST be safe to call concurrently from multiple OS threads —
+    LightRAG runs token counting in worker threads to keep it off the asyncio
+    event loop, and does not serialize calls on the implementation's behalf. See
+    :class:`Tokenizer` for why serializing here would be the wrong layer.
     """
 
     def encode(self, content: str) -> List[int]:
-        """Encodes a string into a list of tokens."""
+        """Encodes a string into a list of tokens.
+
+        May be called concurrently from multiple threads.
+        """
         ...
 
     def decode(self, tokens: List[int]) -> str:
-        """Decodes a list of tokens into a string."""
+        """Decodes a list of tokens into a string.
+
+        May be called concurrently from multiple threads.
+        """
         ...
+
+
+# ---------------------------------------------------------------------------
+# Bounded submission to a thread pool
+# ---------------------------------------------------------------------------
+#
+# Moving CPU-bound work off the event loop frees the loop to keep accepting
+# requests, which means more work can be in flight at once than before. A
+# ``ThreadPoolExecutor``'s wait queue is unbounded, so submissions need their own
+# ceiling.
+#
+# The subtle part is WHO holds the permit. Writing ``async with sem: await
+# run_in_executor(...)`` is wrong: cancelling the awaiting coroutine returns the
+# permit immediately, but the thread-pool task is not cancelled — an already
+# running ``concurrent.futures.Future.cancel()`` just returns False and the thread
+# runs to completion. A client that repeatedly submits and cancels would hand back
+# permits it is still consuming and rebuild an unbounded queue. The permit
+# therefore belongs to the executor future and is released from its done callback,
+# so permit occupancy tracks actual thread occupancy exactly.
+
+
+def _consume_future_exception(fut: "asyncio.Future") -> None:
+    """Mark a shielded future's exception as retrieved.
+
+    When ``shield`` is cancelled nobody awaits the inner future any more, so an
+    exception raised by the thread would surface as an "exception was never
+    retrieved" traceback at GC time. Retrieving it here only clears that log
+    flag; a caller that is still awaiting still sees the exception.
+    """
+    if not fut.cancelled():
+        fut.exception()
+
+
+async def bounded_submit(
+    executor: ThreadPoolExecutor,
+    semaphore: asyncio.Semaphore,
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run ``fn`` in ``executor`` under a permit owned by the executor future.
+
+    Args:
+        executor: destination pool.
+        semaphore: submission ceiling for this pool, from :func:`get_loop_semaphore`.
+        fn: synchronous callable to run in the pool.
+        *args, **kwargs: forwarded to ``fn``.
+
+    Returns:
+        Whatever ``fn`` returns.
+
+    Cancelling the caller does not cancel the thread: the work runs to completion
+    and only then is the permit returned. That is deliberate — see the module
+    comment above.
+    """
+    await semaphore.acquire()
+    try:
+        concurrent_future: ConcurrentFuture = executor.submit(
+            contextvars.copy_context().run, partial(fn, *args, **kwargs)
+        )
+    except BaseException:
+        semaphore.release()
+        raise
+
+    loop = asyncio.get_running_loop()
+
+    def _release(_done: ConcurrentFuture) -> None:
+        # Runs on the worker thread, so the release has to be posted back to the
+        # loop that owns the semaphore. A closed loop means the semaphore died
+        # with it and there is nothing left to release.
+        try:
+            loop.call_soon_threadsafe(semaphore.release)
+        except RuntimeError:
+            pass
+
+    concurrent_future.add_done_callback(_release)
+
+    async_future = asyncio.wrap_future(concurrent_future)
+    async_future.add_done_callback(_consume_future_exception)
+    return await asyncio.shield(async_future)
+
+
+# Semaphores are per event loop, executors are per process. ``asyncio.Semaphore``
+# binds to the first loop that has to wait on it and raises from any other loop
+# (``asyncio.mixins._LoopBoundMixin``), and the test suite runs one fresh loop per
+# case, so a module-level singleton would fail. Storing it ON the loop makes its
+# lifetime exactly the loop's; a container keyed by the loop would not, because
+# once contended the semaphore holds a strong reference back to its loop and a
+# ``WeakKeyDictionary`` entry whose value references its key never expires.
+_LOOP_SEMAPHORE_ATTR_PREFIX = "_lightrag_submit_semaphore_"
+_LOOP_SEMAPHORE_FALLBACK: dict[int, tuple[Any, dict[str, asyncio.Semaphore]]] = {}
+
+
+def _fallback_semaphore(loop: Any, name: str, capacity: int) -> asyncio.Semaphore:
+    """Per-loop semaphore for loops that reject attribute assignment.
+
+    The entry keeps a strong reference to the loop on purpose. Deriving the loop
+    from the semaphore does not work: ``Semaphore.acquire()`` only binds ``_loop``
+    when it actually has to wait, so an uncontended semaphore never learns which
+    loop it belongs to, leaving nothing to test ``is_closed()`` on and no way to
+    detect ``id()`` reuse. Closed loops are swept on the next call, so a closed
+    loop outlives itself by at most one lookup.
+    """
+    for stale_key, (stale_loop, _) in list(_LOOP_SEMAPHORE_FALLBACK.items()):
+        if stale_loop.is_closed():
+            _LOOP_SEMAPHORE_FALLBACK.pop(stale_key, None)
+    key = id(loop)
+    entry = _LOOP_SEMAPHORE_FALLBACK.get(key)
+    if entry is None or entry[0] is not loop:
+        entry = (loop, {})
+        _LOOP_SEMAPHORE_FALLBACK[key] = entry
+    semaphores = entry[1]
+    semaphore = semaphores.get(name)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(capacity)
+        semaphores[name] = semaphore
+    return semaphore
+
+
+def get_loop_semaphore(name: str, capacity: int) -> asyncio.Semaphore:
+    """Return the running loop's semaphore called ``name``, creating it once.
+
+    ``capacity`` is only used on creation. It is intentionally a fixed constant
+    rather than a per-``LightRAG`` setting: this helper is module level and is
+    called from places that hold no instance, and several instances sharing a loop
+    would otherwise each build their own semaphore and lose the global ceiling.
+    """
+    loop = asyncio.get_running_loop()
+    attr = _LOOP_SEMAPHORE_ATTR_PREFIX + name
+    semaphore = getattr(loop, attr, None)
+    if semaphore is not None:
+        return semaphore
+    semaphore = asyncio.Semaphore(capacity)
+    try:
+        setattr(loop, attr, semaphore)
+    except (AttributeError, TypeError):
+        return _fallback_semaphore(loop, name, capacity)
+    return semaphore
 
 
 class Tokenizer:
     """
     A wrapper around a tokenizer to provide a consistent interface for encoding and decoding.
+
+    Thread-safety contract
+    ----------------------
+    ``encode`` and ``decode`` MAY be called concurrently from several OS threads:
+    token counting is CPU-bound and runs in worker threads so it does not block
+    the asyncio event loop. **An injected tokenizer is responsible for its own
+    thread safety** — through immutable state, an internal lock, thread-local
+    state, or whatever its implementation requires. LightRAG does not serialize
+    it, and adding a lock here would be actively harmful: the event loop would
+    then wait on a worker thread holding it, recreating the very freeze that
+    moving this work off the loop exists to remove.
+
+    The built-in :class:`TiktokenTokenizer` satisfies this: ``tiktoken``'s own
+    ``encode_batch`` / ``decode_batch`` fan ``Encoding.encode`` / ``.decode`` of a
+    single instance across a ``ThreadPoolExecutor``, so concurrent use is a
+    supported capability of the library rather than an assumption made here. The
+    dependency floor in ``pyproject.toml`` is pinned to the oldest release for
+    which that holds.
+
+    Note that sharing is the norm, not the exception: ``tiktoken`` caches
+    encodings in a process-wide registry, and ``Encoding.__setstate__`` rebinds a
+    copy's ``__dict__`` to the registered instance's — so every
+    ``TiktokenTokenizer`` in the process, including ones produced by
+    ``copy.deepcopy``, funnels into a single ``CoreBPE``. An injected tokenizer
+    that is not thread-safe cannot be made safe by copying it.
+
+    Deep-copy requirement
+    ---------------------
+    An injected tokenizer must additionally survive ``copy.deepcopy``: ``LightRAG``
+    is a dataclass and ``_build_global_config`` runs ``dataclasses.asdict`` over
+    it, which deep-copies non-dataclass fields. An implementation that achieves
+    thread safety with an internal ``threading.Lock`` would otherwise fail at
+    construction with ``TypeError: cannot pickle '_thread.lock' object``. Such an
+    implementation should define ``__deepcopy__`` returning ``self`` — correct
+    precisely because being thread-safe is what makes it shareable.
+
+    ``_build_global_config`` then restores this object over the copy ``asdict``
+    made, so the per-operation config carries the tokenizer itself and no
+    consumer pays for a copy.
     """
 
     def __init__(self, model_name: str, tokenizer: TokenizerInterface):
@@ -2603,7 +2793,8 @@ class Tokenizer:
 
         Args:
             model_name: The associated model name for the tokenizer.
-            tokenizer: An instance of a class implementing the TokenizerInterface.
+            tokenizer: An instance of a class implementing the TokenizerInterface,
+                which must be safe to call concurrently from multiple threads.
         """
         self.model_name: str = model_name
         self.tokenizer: TokenizerInterface = tokenizer
@@ -2611,6 +2802,8 @@ class Tokenizer:
     def encode(self, content: str) -> List[int]:
         """
         Encodes a string into a list of tokens using the underlying tokenizer.
+
+        May be called concurrently from multiple threads; see the class docstring.
 
         Args:
             content: The string to encode.
@@ -2640,6 +2833,8 @@ class Tokenizer:
     def decode(self, tokens: List[int]) -> str:
         """
         Decodes a list of tokens into a string using the underlying tokenizer.
+
+        May be called concurrently from multiple threads; see the class docstring.
 
         Args:
             tokens: A list of integer tokens to decode.
