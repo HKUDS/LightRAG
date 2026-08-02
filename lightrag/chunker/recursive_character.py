@@ -22,6 +22,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from lightrag.constants import MAX_R_SEPARATOR_CHARS, MAX_R_SEPARATORS
 from lightrag.utils import Tokenizer, logger
 
 try:
@@ -207,6 +208,68 @@ def _merge_splits_with_spans(
     return docs
 
 
+def normalize_r_separators(
+    separators: Sequence[str] | None,
+    *,
+    context: str = "",
+) -> list[str] | None:
+    """Bound a separator cascade, whatever supplied it.
+
+    ``None`` passes straight through: it is the documented way to ask
+    :func:`chunking_by_recursive_character` for LangChain's own default cascade
+    (``["\\n\\n", "\\n", " ", ""]``), which is NOT
+    :data:`~lightrag.constants.DEFAULT_R_SEPARATORS` — turning one into the other
+    here would change how a direct SDK caller's CJK text splits.
+
+    Only bounding happens here. What to do about an empty result differs per
+    caller and is therefore the caller's decision.
+
+    Args:
+        separators: cascade to bound, or ``None``.
+        context: label for the warnings, naming who supplied the cascade.
+
+    Returns:
+        ``None`` if given ``None``; otherwise the bounded list, possibly empty.
+    """
+    if separators is None:
+        return None
+
+    prefix = f"[{context}] " if context else ""
+    bounded: list[str] = []
+    dropped = 0
+    for candidate in separators:
+        if len(candidate) > MAX_R_SEPARATOR_CHARS:
+            dropped += 1
+            continue
+        bounded.append(candidate)
+    if dropped:
+        logger.warning(
+            f"{prefix}dropped {dropped} separator(s) longer than "
+            f"{MAX_R_SEPARATOR_CHARS} characters"
+        )
+
+    if len(bounded) > MAX_R_SEPARATORS:
+        # Truncation must preserve a terminating sentinel. The empty string is
+        # the char-level fallback: ``_split_text_with_spans`` takes the
+        # ``if not candidate`` branch on it and splits anything. Dropping it
+        # exhausts ``new_separators`` early, so a segment that has no ordinary
+        # separator in it is emitted whole instead of being split — a data-quality
+        # regression introduced by a security fix. Only re-append a sentinel the
+        # caller actually had: ``load_chunk_separators`` strips it on purpose.
+        sentinel = "" if any(not candidate for candidate in bounded) else None
+        keep = MAX_R_SEPARATORS - (1 if sentinel is not None else 0)
+        truncated = [candidate for candidate in bounded[:keep] if candidate]
+        if sentinel is not None:
+            truncated.append(sentinel)
+        logger.warning(
+            f"{prefix}separator cascade of {len(bounded)} entries truncated to "
+            f"{len(truncated)} (limit {MAX_R_SEPARATORS})"
+        )
+        bounded = truncated
+
+    return bounded
+
+
 def _split_text_with_spans(
     text: str,
     *,
@@ -219,26 +282,59 @@ def _split_text_with_spans(
     is_separator_regex: bool,
     strip_whitespace: bool,
 ) -> list[_SpanPiece]:
-    """Mirror ``RecursiveCharacterTextSplitter._split_text`` with offsets."""
-    separator = separators[-1]
-    new_separators: Sequence[str] = []
-    for index, candidate in enumerate(separators):
-        separator_pattern = candidate if is_separator_regex else re.escape(candidate)
-        if not candidate:
-            separator = candidate
-            break
-        if re.search(separator_pattern, text):
-            separator = candidate
-            new_separators = separators[index + 1 :]
-            break
+    """Mirror ``RecursiveCharacterTextSplitter._split_text`` with offsets.
 
-    separator_pattern = separator if is_separator_regex else re.escape(separator)
-    splits = _split_text_with_regex_spans(
-        text,
-        separator_pattern,
-        keep_separator=keep_separator,
-        base_offset=base_offset,
-    )
+    One departure from a literal mirror, for cost only: a separator that matches
+    but does not actually divide the text is skipped in place instead of via a
+    recursive call. With ``keep_separator`` truthy, a separator occurring exactly
+    once at offset 0 yields a single piece byte-identical to the input, so the
+    parent would call ``length_function`` on it — a whole-text token encode — and
+    recurse with the same text. A cascade of such separators therefore costs one
+    full encode per level while splitting nothing, which is what made
+    ``O(len(separators) x len(text))`` reachable from a single request
+    (GHSA-26pm-px5v-8c4w).
+
+    The loop below reaches the same state the recursion would, minus the wasted
+    encodes, so the output is unchanged.
+    """
+    remaining: Sequence[str] = separators
+    while True:
+        separator = remaining[-1]
+        new_separators: Sequence[str] = []
+        for index, candidate in enumerate(remaining):
+            separator_pattern = (
+                candidate if is_separator_regex else re.escape(candidate)
+            )
+            if not candidate:
+                separator = candidate
+                break
+            if re.search(separator_pattern, text):
+                separator = candidate
+                new_separators = remaining[index + 1 :]
+                break
+
+        separator_pattern = separator if is_separator_regex else re.escape(separator)
+        splits = _split_text_with_regex_spans(
+            text,
+            separator_pattern,
+            keep_separator=keep_separator,
+            base_offset=base_offset,
+        )
+
+        # A no-op split: one piece, identical to the input. Recursing on it would
+        # re-encode the whole text to discover it is still oversized and then land
+        # exactly here with the next separator, so advance in place instead. When
+        # no separators remain the loop exits and the piece is emitted whole, as
+        # the recursion would have.
+        if (
+            new_separators
+            and len(splits) == 1
+            and splits[0][0] == text
+            and splits[0][1] == base_offset
+        ):
+            remaining = new_separators
+            continue
+        break
 
     final_chunks: list[_SpanPiece] = []
     good_splits: list[_SpanPiece] = []
@@ -324,6 +420,22 @@ def chunking_by_recursive_character(
 
     def length_function(text: str) -> int:
         return len(tokenizer.encode(text))
+
+    separators = normalize_r_separators(
+        separators, context="chunking_by_recursive_character"
+    )
+    if separators is not None and not separators:
+        # Everything was dropped as over-long. Falling back to this function's own
+        # default (LangChain's cascade) rather than to DEFAULT_R_SEPARATORS keeps
+        # the behaviour identical to ``separators=None``; substituting the
+        # repo-wide cascade here would silently change how CJK text splits for a
+        # caller who never asked for it. An empty list would be worse still —
+        # ``_split_text_with_spans`` reads ``separators[-1]`` on its first line.
+        logger.warning(
+            "[chunking_by_recursive_character] every supplied separator was "
+            "dropped; falling back to the splitter's default cascade"
+        )
+        separators = None
 
     splitter_kwargs: dict[str, Any] = {
         "chunk_size": max(int(chunk_token_size), 1),

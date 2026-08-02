@@ -1157,6 +1157,8 @@ notes.[-R].md
 
 每个文件最多选择 `F`、`R`、`V`、`P` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
 
+`R` 策略的分隔符级联无论来自何处都限制为最多 64 条、单条最长 256 字符；内置级联为 9 条。请求体超限返回 HTTP 422；其它来源——`CHUNK_R_SEPARATORS`、`addon_params`、直接 SDK 调用，以及在该上限出现之前持久化的按文档快照——一律截断（若原列表末尾有字符级 `""` 哨兵则予以保留）并记 WARNING，而不是拒绝：因一个配错的环境变量让每篇文档都失败，比收敛它更糟。
+
 完整路由语法、支持扩展名、解析缓存行为、chunker 配置、并发规则以及 Python SDK 差异，请参阅 [文件处理流水线规格](./FileProcessingPipeline-zh.md)。`P` 策略细节请参阅 [段落语义分块](./ParagraphSemanticChunking-zh.md)。如需在索引前调试解析输出，请参阅 [解析器调试 CLI](./ParserDebugCLI-zh.md)。
 
 ### 流水线并发

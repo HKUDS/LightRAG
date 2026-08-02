@@ -555,7 +555,7 @@ LIGHTRAG_PARSER=pdf:mineru(language=en);*:legacy-R                       # 规�
 
 ### 4.5 图片限制与吞吐
 
-`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.9），与解析、入库阶段互不影响。
+`VLM_MAX_IMAGE_BYTES`（缺省 5 MB）与 `VLM_MIN_IMAGE_PIXEL`（缺省 64）界定什么值得送出去：下限的存在是为了跳过图标和分隔线，而不是为它们付一次 VLM 调用。分析阶段的并发是 `MAX_PARALLEL_ANALYZE`（§8.10），与解析、入库阶段互不影响。
 
 ### 4.6 模型配置不在本章
 
@@ -635,6 +635,8 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
   ```
 
   分隔符级联，按语义边界从最强到最弱排列。默认包含中文句末（`。！？`）与句中（`；，`）标点，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 被刻意排除——按字面匹配会切断数字与缩写。
+
+  **上限为 64 条、单条最长 256 字符。** 切分器每保留一个分隔符就下降一层，且每层都会重扫全文，因此过长的级联付出 `O(len(separators) × len(text))` 的代价却切不出更多内容。超限部分会被截断（若原列表末尾有字符级 `""` 哨兵则予以保留）并记 WARNING，而非拒绝；该上限对级联的所有来源一致生效——请求体、本变量、`addon_params`、直接 SDK 调用，以及在该上限出现之前持久化的按文档快照。
 
 #### V —— 语义向量
 
@@ -1025,7 +1027,18 @@ POST /documents/recovery/force_reset
 
 锁**不**覆盖 ingress document 发布（在锁外，只取一下 `pipeline_status_lock`），也**不**阻塞处理循环的 `get_docs_by_statuses` 读（处理循环走的是 `doc_status` 自身的并发读，与 enqueue 写是 KV 级原子，不抢同一把锁）。锁顺序：`enqueue_serialize → pipeline_status_lock`，无死锁路径。
 
-### 8.9 流水线并发参数
+### 8.9 分块在哪里执行
+
+分块的开销取决于调用方提供的文档，对递归策略还取决于随之提供的分隔符级联，因此它在一个专用的**单 worker** 线程池中执行，而不是在 asyncio 事件循环上就地运行。就地运行时，一篇 414 KiB 的文档曾让一次无关的 `GET /health` 耗时 63 秒；而把这份工作排进队列的那个 `POST` 早在 1.6 ms 前就返回了 `200 OK`——请求/响应交互中没有任何信号提示这次不可用。
+
+从"拿到正文"到"写出分块"之间所有 CPU 密集的步骤都在该池内：四种分块策略、语义分块器对超尺寸片段的二次切分、多模态分块构建、嵌入前的硬切分，以及 `surrounding` 回填。
+
+有两点需要知悉：
+
+- **并发度不变，而非提升。** 单 worker 正是事件循环原本施加的并发度——一篇文档分块期间，其它文档的协程根本轮不到。该池释放的是事件循环，并不会让分块并行，也不随 `MAX_PARALLEL_INSERT` 增长。
+- **自定义 `chunking_func` 仍在事件循环上执行。** 它的契约是"同步或异步"，因此一个在被调用时触碰运行中事件循环的实现是受支持的，放进工作线程会直接失败。只有内置默认实现会被派发到该池；CPU 密集的自定义分块器应自行 `asyncio.to_thread`。
+
+### 8.10 流水线并发参数
 
 `pipeline_status` 相关的锁解决的是"谁能写"的正确性问题，本节这一组参数解决的是"同时跑几个 worker"的吞吐量问题。流水线分为 3 个阶段，每个阶段的 worker 池数量独立可调：
 
@@ -1064,7 +1077,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 - 纯 docx / txt（仅走 native）：`MAX_PARALLEL_PARSE_NATIVE=10`、`MAX_PARALLEL_INSERT` 按 `MAX_ASYNC_LLM/3` 推算。
 - LLM 限流明显：先降 `MAX_PARALLEL_INSERT`（process 阶段每文档多次 LLM 调用），再降 `MAX_PARALLEL_ANALYZE`（VLM 是独立配额）。
 
-### 8.10 准入与请求限制
+### 8.11 准入与请求限制
 
 在文档触及上述任何机制之前，服务端就可能直接拒收。下面这些变量决定一次上传是被拒绝还是被排队：
 
@@ -1136,7 +1149,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 日志提示部分段落缺少 `paraId` | 由 LibreOffice / WPS / 旧版 Word 产生（§3.3） | 仅提示性。只有确实需要段落级溯源时，才用 Word 2013+ 另存一次 |
 | 文档 FAILED 且标记为重复 | 文件名查重（规范化并剥掉 hint 后）或内容 hash 查重（§7.1、§7.2） | 先删除已有文档，或给新文件改名 |
 | 上传返回 `409` | 输入目录或 doc_status 里已存在同规范名的文档（§8.5） | 用 `POST /documents/delete_document` 删除后再上传 |
-| 上传返回 `413` 或 `429` | 触发了准入限制（§8.10） | 对照该节的限制表判断是哪一条 |
+| 上传返回 `413` 或 `429` | 触发了准入限制（§8.11） | 对照该节的限制表判断是哪一条 |
 | 所有接口都返回 `503` | `recovery_required` 栅栏已升起（§8.7） | 按该节给出的恢复顺序处理 |
 | `/documents/scan` 返回 `scanning_skipped_pipeline_busy` | 流水线正忙或正在扫描、有上传在途、或有手动重试排队中（§8.2） | 等待空闲；`POST /documents/reprocess_failed` 是卡住的重试请求的一键恢复 |
 | 改了引擎或选项，输出却没变 | 引擎与 `process_options` 在入队时就冻结进 doc_status 记录。自动续跑与 `/documents/reprocess_failed` 都沿用存量值；改 `LIGHTRAG_PARSER` 或 hint 只对新上传生效（§9.3） | 删除该文档（勾选"同时删除文件"）后重新上传 |
@@ -1255,7 +1268,7 @@ per-file 个性化的典型场景：管理 UI 单独配置某个文件的 separa
 | Docling | `DOCLING_*` | §3.5 |
 | 解析缓存 | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`、`{MINERU,DOCLING}_ENGINE_VERSION` | §3.7、§6.3 |
 | 目录 | `INPUT_DIR`、`WORKING_DIR`、`SCAN_SPOOL_DIR` | §6、§7.1 |
-| 并发 | `MAX_PARALLEL_*`、`QUEUE_SIZE_*` | §8.9 |
-| 准入与限制 | `MAX_UPLOAD_SIZE`、`MAX_REQUEST_BODY_BYTES`、`MAX_TEXTS_PER_REQUEST`、`MAX_PENDING_DOCUMENTS`、`PIPELINE_*`、`MAX_UNACKED_MANUAL_RETRIES`、`SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |
+| 并发 | `MAX_PARALLEL_*`、`QUEUE_SIZE_*` | §8.10 |
+| 准入与限制 | `MAX_UPLOAD_SIZE`、`MAX_REQUEST_BODY_BYTES`、`MAX_TEXTS_PER_REQUEST`、`MAX_PENDING_DOCUMENTS`、`PIPELINE_*`、`MAX_UNACKED_MANUAL_RETRIES`、`SCAN_ENQUEUE_BATCH_SIZE` | §8.11 |
 | 查询期（不影响分块） | `ENABLE_CONTENT_HEADINGS` —— 组装回答上下文时为每个分块追加其标题路径；它不改变分块边界，也不改变已存储的分块文本 | [LightRAG Server](./LightRAG-API-Server-zh.md) |
 | 离线 / 分词器 | `TIKTOKEN_CACHE_DIR` | [OfflineDeployment.md](./OfflineDeployment.md) |

@@ -113,6 +113,18 @@ DEFAULT_R_SEPARATORS: tuple[str, ...] = (
     " ",
     "",
 )
+# Bounds on any separator cascade, wherever it comes from. The recursive splitter
+# descends one level per remaining separator and re-scans the text at every level,
+# so total work is O(len(separators) x len(text)); with both factors supplied by
+# one request that is an amplifier (GHSA-26pm-px5v-8c4w). The request model caps
+# the list, but CHUNK_R_SEPARATORS, addon_params, direct SDK calls and per-doc
+# snapshots persisted before that cap existed all bypass it, so the chunker
+# normalizes whatever it is handed. 64 leaves ample room for a multi-language
+# cascade — the built-in one is 9 entries.
+MAX_R_SEPARATORS = 64
+# Per-entry length. A single huge separator is re-escaped and re-scanned at every
+# level, so it is expensive for the same reason a long list is.
+MAX_R_SEPARATOR_CHARS = 256
 # DEFAULT_SENTENCE_SPLIT_REGEX: pattern fed to langchain SemanticChunker.
 # Two alternates so the English branch keeps its ``\s+`` requirement
 # (avoiding ``0.95`` mid-token splits) while the Chinese branch matches
