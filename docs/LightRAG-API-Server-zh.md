@@ -25,6 +25,15 @@ LIGHTRAG_PARSER=*:legacy-F
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
 - 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
 
+## 升级到有界请求体
+
+引入分档 `MAX_REQUEST_BODY_BYTES` 的版本把它**默认打开**为 1 MiB——此前它默认关闭，且只覆盖三条摄取路由。对客户端有两处变化：
+
+- **普通路由上超过 1 MiB 的请求体将返回 413**，即 `/query*`、`/api/chat`、`/api/generate` 等既非上传也非文本插入的路由。`/documents/text` 与 `/documents/texts` 保留 50 MiB 上限，`/documents/upload` 由 `MAX_UPLOAD_SIZE` 派生，因此批量摄取不受影响。把 `MAX_REQUEST_BODY_BYTES` 设为任意正值即可用它统一约束所有非上传路由，设为 `0` 则关闭全部上限。
+- **模型侧字段新增固定上限**：单个 query/prompt 64 KiB、单条消息 32 KiB、每请求模型侧文本合计 128 KiB、最多 128 条消息，`top_k` / `chunk_top_k` 最大 1000，`max_*_tokens` 最大 1,000,000。依赖无界 `top_k` 或数 MB 查询文本的客户端需要相应调整。这些上限刻意不做成配置项。
+
+对本就合理控制请求体积的部署，两项变更均无影响；它们限制的是单个未认证请求能让服务端付出多少工作量。
+
 ## 升级到有界管线调度
 
 引入 `PIPELINE_SCHEDULING_PAGE_SIZE`、`MAX_PENDING_DOCUMENTS` 和 `MAX_UNACKED_MANUAL_RETRIES`（见 `env.example`）的这个版本，同时改变了各 writer 通过共享状态协调时使用的**并发协议**。这是一次性的原地升级，不写任何 marker、也不写协议版本号，因此存储层无法替你识别出残留的旧 writer。所以这是一条运维要求：
@@ -478,8 +487,17 @@ server {
    - Nginx 首先验证 `Content-Length` 头
    - LightRAG 在上传过程中执行流式验证
    - 在两层设置适当的限制可确保更好的错误消息和安全性
-6. **服务端入库限制**（默认全部关闭，见 `env.example`）：
-   - `MAX_REQUEST_BODY_BYTES` 限制 `/documents/upload`、`/text`、`/texts` 的**原始请求体**字节数，在 ASGI 流式接收过程中累加。与 `MAX_UPLOAD_SIZE`（multipart 解析后限制单个文件）不同，它也能拦住谎报或不报 `Content-Length` 的请求体，在整个 body 读完之前就返回 **413**。
+6. **服务端请求限制**（见 `env.example`）：
+   - `MAX_REQUEST_BODY_BYTES` 限制**所有路由**的原始请求体字节数，在 ASGI 流式接收过程中累加。与 `MAX_UPLOAD_SIZE`（multipart 解析后限制单个文件）不同，它也能拦住谎报或不报 `Content-Length` 的请求体，在整个 body 读完之前就返回 **413**。由于不同路由合理的请求体大小相差数量级，该上限是分档的：
+
+     | 路由 | 上限 |
+     |---|---|
+     | 普通路由（`/query`、`/api/chat` 等） | `MAX_REQUEST_BODY_BYTES`，默认 **1 MiB** |
+     | `/documents/text`、`/documents/texts` | 未设置 `MAX_REQUEST_BODY_BYTES` 时为内置 **50 MiB** |
+     | `/documents/upload` | `MAX_UPLOAD_SIZE` + 1 MiB multipart 开销 |
+
+     把 `MAX_REQUEST_BODY_BYTES` 设为任意正值时，该值将统一作用于除上传外的所有路由（含摄取路由）——即使该值恰好等于 1 MiB 默认值也是如此，这正是分档出现之前该配置项的行为。设为 `0` 则关闭全部上限（含派生的上传上限），启动时会给出告警。
+   - **输入字段上限**作用于 `/query*`、`/api/chat`、`/api/generate` 的模型侧字段：单个 query/prompt 64 KiB、单条消息 32 KiB、每请求模型侧文本合计 128 KiB、最多 128 条消息，以及 `top_k` / `chunk_top_k`（1000）与 `max_*_tokens`（1,000,000）的上界。这些上限刻意不做成配置项——一个用来阻止未认证调用者决定服务端 CPU 开销的限制，如果可以被配错，就等于没有。`/query*` 超限返回 **422**（FastAPI 原生校验响应），`/api/*` 返回 **413**。
    - `MAX_TEXTS_PER_REQUEST` 限制单个 `/documents/texts` 请求可携带的文本数量，在任何逐条存储查询之前就返回 **413**。它限制的是单个请求的扇出，因此与下面的容量上限不同，**不是**"稍后重试"类条件：超限的批次无论等多久都不会被接受，必须拆分。
    - `MAX_PENDING_DOCUMENTS` 限制可同时处于活跃状态（`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`）或被在飞请求预留的文档数。超容量时返回 **429**,带 `Retry-After` 头,detail 里给出当前数量、本次请求数量与容量——且**在 body 传输之前**就拒绝。`/documents/scan` 与人工重试按设计突破该上限;它们产生的文档会让普通上传排队等待。
 
@@ -1156,6 +1174,8 @@ notes.[-R].md
 | `P` | 面向结构化 LightRAG Document 内容的段落语义分块；缺少结构化内容时自动回退到 `R` |
 
 每个文件最多选择 `F`、`R`、`V`、`P` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
+
+`R` 策略的分隔符级联无论来自何处都限制为最多 64 条、单条最长 256 字符；内置级联为 9 条。请求体超限返回 HTTP 422；其它来源——`CHUNK_R_SEPARATORS`、`addon_params`、直接 SDK 调用，以及在该上限出现之前持久化的按文档快照——一律收敛并记 WARNING，而不是拒绝：因一个配错的环境变量让每篇文档都失败，比收敛它更糟。但收敛不等于截短：单条超过 256 字符的分隔符会被**整条丢弃**，列表超过 64 条才**截断**到 64 条（若末尾有字符级 `""` 哨兵则予以保留）。因此一条 300 字符的分隔符是消失，而不是退化成匹配它的前 256 字符，切分点将来自回退级联——各路径分别回退到什么，见[流水线规格](./FileProcessingPipeline-zh.md#r--递归字符)。
 
 完整路由语法、支持扩展名、解析缓存行为、chunker 配置、并发规则以及 Python SDK 差异，请参阅 [文件处理流水线规格](./FileProcessingPipeline-zh.md)。`P` 策略细节请参阅 [段落语义分块](./ParagraphSemanticChunking-zh.md)。如需在索引前调试解析输出，请参阅 [解析器调试 CLI](./ParserDebugCLI-zh.md)。
 

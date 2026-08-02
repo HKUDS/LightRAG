@@ -645,8 +645,28 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.verbose}")
     ASCIIColors.white("    ├─ API Key: ", end="")
     ASCIIColors.yellow("Set" if args.key else "Not Set")
-    ASCIIColors.white("    └─ JWT Auth: ", end="")
+    ASCIIColors.white("    ├─ JWT Auth: ", end="")
     ASCIIColors.yellow("Enabled" if args.auth_accounts else "Disabled")
+    # Request limits: previously invisible at startup, which made it hard to tell
+    # a deployment that had bounded its request surface from one that had not.
+    ASCIIColors.white("    ├─ Max Request Body: ", end="")
+    ASCIIColors.yellow(
+        f"{args.max_request_body_bytes} bytes"
+        if getattr(args, "max_request_body_bytes", 0)
+        else "Unlimited"
+    )
+    ASCIIColors.white("    ├─ Max Upload Size: ", end="")
+    ASCIIColors.yellow(
+        f"{args.max_upload_size} bytes"
+        if getattr(args, "max_upload_size", None)
+        else "Unlimited"
+    )
+    ASCIIColors.white("    └─ Max Pending Documents: ", end="")
+    ASCIIColors.yellow(
+        f"{args.max_pending_documents}"
+        if getattr(args, "max_pending_documents", 0)
+        else "Unlimited"
+    )
 
     # Directory Configuration
     ASCIIColors.magenta("\n📂 Directory Configuration:")
@@ -802,5 +822,48 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     open Ollama access, set WHITELIST_PATHS=/health to require authentication.
     """)
 
+    _warn_about_body_limits(args)
+
     # Ensure splash output flush to system log
     sys.stdout.flush()
+
+
+def _warn_about_body_limits(args) -> None:
+    """Flag body-limit settings that leave a route unbounded.
+
+    The ceilings themselves are printed in the Server Configuration block; this
+    only speaks up when a value turns protection off or weakens it in a way an
+    operator is unlikely to have intended.
+    """
+    from lightrag.constants import (
+        DEFAULT_MAX_INGEST_BODY_BYTES,
+        MULTIPART_OVERHEAD_BYTES,
+    )
+
+    body_limit = getattr(args, "max_request_body_bytes", 0) or 0
+    max_upload_size = getattr(args, "max_upload_size", None)
+
+    if body_limit <= 0:
+        ASCIIColors.yellow("\n⚠️  Security Warning:")
+        ASCIIColors.white("""    MAX_REQUEST_BODY_BYTES=0 disables every raw request-body ceiling, including
+    the one /documents/upload derives from MAX_UPLOAD_SIZE. A single large body
+    can then occupy memory and CPU for as long as it takes to parse.
+    """)
+        return
+
+    if body_limit > DEFAULT_MAX_INGEST_BODY_BYTES:
+        ASCIIColors.yellow("\n⚠️  Configuration Notice:")
+        ASCIIColors.white(f"""    MAX_REQUEST_BODY_BYTES is set to {body_limit} bytes, which now applies to
+    EVERY non-upload route including /query and the Ollama-compatible /api/*
+    endpoints. /documents/upload no longer needs it: that route derives its own
+    ceiling from MAX_UPLOAD_SIZE (+{MULTIPART_OVERHEAD_BYTES} bytes of multipart
+    overhead). If this value was raised for uploads, removing it restores a
+    tighter bound on the rest of the API.
+    """)
+
+    if not (isinstance(max_upload_size, int) and max_upload_size > 0):
+        ASCIIColors.yellow("\n⚠️  Security Warning:")
+        ASCIIColors.white("""    MAX_UPLOAD_SIZE is unset or unlimited, so /documents/upload has no raw
+    request-body ceiling to derive and accepts a body of any size. Set
+    MAX_UPLOAD_SIZE to the largest file you intend to accept.
+    """)

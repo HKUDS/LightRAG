@@ -37,6 +37,7 @@ from lightrag.api.utils_api import (
     internal_server_error,
 )
 from lightrag.api.admission_middleware import AdmissionMiddleware
+from lightrag.api.body_limit_middleware import BodyLimitMiddleware, resolve_body_limits
 from .config import (
     global_args,
     normalize_api_prefix,
@@ -1503,14 +1504,23 @@ def create_app(args):
     # (without them the WebUI would see an opaque network error instead of "at
     # capacity"). It therefore also sees the un-normalized path, which is why it
     # strips ``api_prefix`` itself.
-    if args.max_pending_documents > 0 or args.max_request_body_bytes > 0:
+    if args.max_pending_documents > 0:
         app.add_middleware(
             AdmissionMiddleware,
             rag_getter=lambda: rag,
             api_key=api_key,
             api_prefix=api_prefix,
-            max_body_bytes=args.max_request_body_bytes,
         )
+
+    # Raw request-body ceilings (GHSA-r8jh-295g-vv42). Added AFTER the admission
+    # middleware so it ends up outside it: an oversized body is then refused
+    # before it can take a capacity slot, and the reservation a mid-body 413
+    # would otherwise strand is released by admission's own finally block as the
+    # exception travels back out. Still added before CORS, for the same reason
+    # admission is — a browser has to be able to read the 413.
+    body_limits = resolve_body_limits(args)
+    if body_limits is not None:
+        app.add_middleware(BodyLimitMiddleware, api_prefix=api_prefix, **body_limits)
 
     # Add CORS middleware
     cors_origins = get_cors_origins()

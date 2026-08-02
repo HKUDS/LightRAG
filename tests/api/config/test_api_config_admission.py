@@ -14,6 +14,7 @@ from lightrag.api.config import (
 )
 from lightrag.constants import (
     DEFAULT_MAX_PENDING_DOCUMENTS,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
     DEFAULT_MAX_TEXTS_PER_REQUEST,
 )
 
@@ -87,8 +88,18 @@ def _parse_body_limit(monkeypatch, value: str | None):
     return parse_args()
 
 
-def test_body_limit_disabled_by_default(monkeypatch):
+def test_body_limit_is_enabled_by_default(monkeypatch):
+    """Was 0 (off) and covered three ingestion routes only, which let an operator
+    set it and stay exposed on the one route that needs no credentials."""
     args = _parse_body_limit(monkeypatch, None)
+    assert args.max_request_body_bytes == DEFAULT_MAX_REQUEST_BODY_BYTES
+    assert args.max_request_body_bytes > 0
+    assert args.max_request_body_bytes_explicit is False
+    validate_admission_configuration(args)
+
+
+def test_body_limit_can_be_explicitly_disabled(monkeypatch):
+    args = _parse_body_limit(monkeypatch, "0")
     assert args.max_request_body_bytes == 0
     validate_admission_configuration(args)
 
@@ -97,6 +108,26 @@ def test_body_limit_env_value_is_honoured(monkeypatch):
     args = _parse_body_limit(monkeypatch, "1048576")
     assert args.max_request_body_bytes == 1048576
     validate_admission_configuration(args)
+
+
+def test_provenance_survives_a_value_equal_to_the_default(monkeypatch):
+    """The provenance flag is the whole point: the value alone cannot say this.
+
+    ``MAX_REQUEST_BODY_BYTES=1048576`` is exactly the default, so anything that
+    reconstructs "was it configured?" from the number gets this wrong and hands
+    /documents/text(s) the 50 MiB tier instead of the configured 1 MiB.
+    """
+    args = _parse_body_limit(monkeypatch, str(DEFAULT_MAX_REQUEST_BODY_BYTES))
+    assert args.max_request_body_bytes == DEFAULT_MAX_REQUEST_BODY_BYTES
+    assert args.max_request_body_bytes_explicit is True
+
+
+def test_an_unparseable_value_falls_back_to_the_default_tiering(monkeypatch):
+    """Falling back to the default value must also fall back to the default
+    tiers, not leave the ingestion routes pinned to a value nobody chose."""
+    args = _parse_body_limit(monkeypatch, "not-a-number")
+    assert args.max_request_body_bytes == DEFAULT_MAX_REQUEST_BODY_BYTES
+    assert args.max_request_body_bytes_explicit is False
 
 
 def test_negative_body_limit_fails_fast(monkeypatch):

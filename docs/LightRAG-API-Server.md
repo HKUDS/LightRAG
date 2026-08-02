@@ -25,6 +25,15 @@ LIGHTRAG_PARSER=*:legacy-F
 - Changing chunker settings (`CHUNK_*`) affects documents enqueued after the server restarts. Reprocess older documents if you want their stored `chunk_options` snapshot to match the new settings.
 - Enabling multimodal options (`i/t/e`) requires parsed sidecars plus `VLM_PROCESS_ENABLE=true`. Existing documents can be reprocessed to run VLM analysis on available sidecars; switching extraction engines still requires delete + re-upload.
 
+## Upgrading to bounded request sizes
+
+The release that layers `MAX_REQUEST_BODY_BYTES` turns it **on by default** at 1 MiB, where it used to be off and to cover three ingestion routes only. Two things change for clients:
+
+- **A request body over 1 MiB is refused with 413 on the ordinary routes** — `/query*`, `/api/chat`, `/api/generate` and everything else that is neither an upload nor a text insert. `/documents/text` and `/documents/texts` keep a 50 MiB ceiling, and `/documents/upload` derives its own from `MAX_UPLOAD_SIZE`, so bulk ingestion is unaffected. Set `MAX_REQUEST_BODY_BYTES` to any positive value to govern every non-upload route with it, or `0` to turn every ceiling off.
+- **The model-facing fields now have fixed ceilings**: 64 KiB per query or prompt, 32 KiB per message, 128 KiB of model-facing text per request, 128 messages, `top_k` / `chunk_top_k` at most 1000, and the `max_*_tokens` budgets at most 1,000,000. Clients that relied on unbounded `top_k` or on multi-megabyte queries need adjusting. These are not configurable by design.
+
+Neither change affects a deployment that was already sizing its requests sensibly; both bound how much work one unauthenticated request can ask the server to do.
+
 ## Upgrading to bounded pipeline scheduling
 
 The release that introduces `PIPELINE_SCHEDULING_PAGE_SIZE`, `MAX_PENDING_DOCUMENTS` and `MAX_UNACKED_MANUAL_RETRIES` (see `env.example`) also changes the **concurrency protocol** writers use to coordinate through shared state. It is a one-time, in-place upgrade that writes no marker and no protocol version, so the storage cannot detect a stale writer for you. The requirement is therefore operational:
@@ -478,12 +487,34 @@ server {
    - Nginx validates the `Content-Length` header first
    - LightRAG performs streaming validation during upload
    - Setting appropriate limits at both layers ensures better error messages and security
-6. **Server-side ingestion limits** (all off by default, see `env.example`):
-   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of `/documents/upload`, `/text`
-     and `/texts`, counted as it streams through ASGI. Unlike `MAX_UPLOAD_SIZE`
-     (which bounds one uploaded file after multipart parsing), it also stops a
-     body that understates or omits its `Content-Length`, answering **413**
-     before the whole body is read.
+6. **Server-side request limits** (see `env.example`):
+   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of **every** route, counted as
+     it streams through ASGI. Unlike `MAX_UPLOAD_SIZE` (which bounds one uploaded
+     file after multipart parsing), it also stops a body that understates or
+     omits its `Content-Length`, answering **413** before the whole body is read.
+     It is layered, because routes differ by orders of magnitude in what they
+     legitimately carry:
+
+     | Route | Ceiling |
+     |---|---|
+     | ordinary routes (`/query`, `/api/chat`, ...) | `MAX_REQUEST_BODY_BYTES`, default **1 MiB** |
+     | `/documents/text`, `/documents/texts` | **50 MiB**, built in, when `MAX_REQUEST_BODY_BYTES` is not set |
+     | `/documents/upload` | `MAX_UPLOAD_SIZE` + 1 MiB of multipart overhead |
+
+     Setting `MAX_REQUEST_BODY_BYTES` to any positive value makes it govern
+     every non-upload route, ingestion included — including when that value
+     happens to equal the 1 MiB default, which is the behaviour this knob had
+     before the tiers existed. Setting it to `0` turns off every ceiling,
+     including the derived upload one, and the server warns at startup.
+   - **Input field ceilings** apply to the model-facing fields of `/query*`,
+     `/api/chat` and `/api/generate`: 64 KiB per query or prompt, 32 KiB per
+     message, 128 KiB of model-facing text per request, 128 messages, and upper
+     bounds on `top_k` / `chunk_top_k` (1000) and the `max_*_tokens` budgets
+     (1,000,000). These are fixed rather than configurable — a limit that keeps
+     an unauthenticated caller from choosing how much CPU the server spends is
+     worth nothing if it can be misconfigured away. `/query*` answers **422** for
+     an over-limit field (FastAPI's own validation response); `/api/*` answers
+     **413**.
    - `MAX_TEXTS_PER_REQUEST` bounds how many texts one `/documents/texts` request
      may carry, answering **413** before any per-text storage lookup. It bounds
      the fan-out of a single request, so — unlike the capacity limit below — it is
@@ -1173,7 +1204,7 @@ At most one of `F`, `R`, `V`, and `P` should be selected for a file. Chunker par
 
 The `V` strategy's sentence splitter is the one chunker parameter that cannot be set per request: `CHUNK_V_SENTENCE_SPLIT_REGEX` (or the SDK's `addon_params`) is the only way to change it. `/documents/text` and `/documents/texts` reject a `sentence_split_regex` key inside `chunking.params` with HTTP 422. A caller-supplied pattern is applied to that same request's text, and CPython's regex engine holds the GIL while backtracking, so a pattern such as `(a+)+$` can freeze an entire worker process — see [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84). A value already stored in a document's `chunk_options` snapshot is discarded at processing time as well (logged at `WARNING`), so a pattern persisted by an older build cannot freeze the worker after an upgrade.
 
-The `R` strategy's per-request `separators` list is capped at 64 entries (HTTP 422 beyond that); the built-in cascade is 9. The operator-side `CHUNK_R_SEPARATORS` is not capped.
+The `R` strategy's separator cascade is bounded to 64 entries of at most 256 characters each, wherever it comes from; the built-in cascade is 9. A request body over the limit is rejected with HTTP 422. Every other source — `CHUNK_R_SEPARATORS`, `addon_params`, a direct SDK call, or a per-document snapshot persisted before the bound existed — is converged and logged at WARNING instead, since failing every document over a misconfigured environment variable would be worse. Converging is not the same as shortening: an entry over 256 characters is **dropped**, while a list over 64 entries is **truncated** to 64 (keeping the trailing char-level `""` sentinel when present). A lone 300-character separator therefore disappears rather than matching its first 256, and the split points come from the fallback cascade — see the [pipeline spec](./FileProcessingPipeline.md#r--recursive-character) for which fallback applies where.
 
 For the full routing syntax, supported extensions, parser cache behavior, chunker configuration, concurrency rules, and Python SDK differences, see [File Processing Pipeline Specification](./FileProcessingPipeline.md). For the `P` strategy details, see [Paragraph Semantic Chunking](./ParagraphSemanticChunking.md). To debug parser output before indexing a file, see [Parser Debug CLI](./ParserDebugCLI.md).
 

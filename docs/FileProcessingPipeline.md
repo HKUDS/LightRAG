@@ -555,7 +555,7 @@ The surrounding budgets are subtracted from the total, so setting them too high 
 
 ### 4.5 Image limits and throughput
 
-`VLM_MAX_IMAGE_BYTES` (default 5 MB) and `VLM_MIN_IMAGE_PIXEL` (default 64) bound what is worth sending: the lower bound exists to skip icons and separator rules rather than pay for a VLM call on them. Analyze-stage concurrency is `MAX_PARALLEL_ANALYZE` (§8.9), which is independent of the parse and insert stages.
+`VLM_MAX_IMAGE_BYTES` (default 5 MB) and `VLM_MIN_IMAGE_PIXEL` (default 64) bound what is worth sending: the lower bound exists to skip icons and separator rules rather than pay for a VLM call on them. Analyze-stage concurrency is `MAX_PARALLEL_ANALYZE` (§8.10), which is independent of the parse and insert stages.
 
 ### 4.6 Model configuration lives elsewhere
 
@@ -635,6 +635,8 @@ They are grouped by the strategy they configure. A strategy-specific variable al
   ```
 
   The separator cascade, ordered from the strongest semantic boundary to the weakest. The default includes Chinese sentence-ending (`。！？`) and mid-sentence (`；，`) punctuation, so Chinese and mixed Chinese-English documents split at semantic boundaries. English `.?!` is deliberately excluded — matching it literally would cut through numbers and abbreviations.
+
+  **Bounded to 64 entries of at most 256 characters each.** The splitter descends one level per remaining separator and re-scans the whole text at every level, so an oversized cascade costs `O(len(separators) × len(text))` while splitting nothing extra. The two limits do not behave the same way, and the difference is visible in the output: an entry longer than 256 characters is **dropped**, not shortened — a lone 300-character separator disappears rather than matching its first 256 — while a list longer than 64 entries is **truncated** to 64, keeping the trailing char-level `""` sentinel when the original had one. If nothing survives, the fallback is the consumer's own and is *not* this variable's default: `chunking_by_recursive_character` takes its documented `separators=None` path, which is the splitter's four-entry English cascade `["\n\n", "\n", " ", ""]` rather than the nine-entry `DEFAULT_R_SEPARATORS`, while `load_chunk_separators` falls back to `DEFAULT_R_SEPARATORS` minus the sentinel. Those three outcomes belong to the *non-HTTP* sources — this variable, `addon_params`, a direct SDK call, and per-document snapshots persisted before the bound existed — where converging with a WARNING beats failing every document over one misconfigured value. An **HTTP request body is rejected instead**: the request model raises on either limit, so `/documents/text` and friends answer **422** and nothing is dropped, truncated or fallen back to. Same numeric bound everywhere, deliberately different response to breaching it — the caller of an HTTP request is present to read the error, an environment variable's author is not.
 
 #### V — semantic vector
 
@@ -1025,7 +1027,16 @@ With the serialization lock, the second enqueue's dedup read is guaranteed to se
 
 The lock does **not** cover the ingress document publish (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
 
-### 8.9 Pipeline Concurrency Parameters
+### 8.9 Where chunking runs
+
+Chunking is CPU-bound in the document supplied and — for the recursive strategy — in the separator cascade supplied with it, so it runs in a dedicated **single-worker** thread pool rather than inline on the asyncio event loop. Inline execution may block the event loop, causing latency for async operations. Everything CPU-bound between "content in hand" and "chunks written" is in that pool: the four chunking strategies, the semantic chunker's oversized-piece re-split, the multimodal chunk builder, the pre-embedding hard split, and the `surrounding` backfill.
+
+Two consequences worth knowing:
+
+- **Concurrency is unchanged, not increased.** One worker is exactly what the event loop already imposed — while one document chunked, no other document's coroutine could run. The pool frees the loop; it does not make chunking parallel, and it does not scale with `MAX_PARALLEL_INSERT`.
+- **A custom `chunking_func` still runs on the event loop.** Its contract is "synchronous or async", so an implementation that touches the running loop when called is supported and would fail in a worker thread. Only the built-in default is dispatched to the pool; a CPU-bound custom chunker should do its own `asyncio.to_thread`.
+
+### 8.10 Pipeline Concurrency Parameters
 
 The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
 
@@ -1064,14 +1075,14 @@ Parse queues are **created dynamically from the registry's `ParserSpec.queue_gro
 - Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
 - Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).
 
-### 8.10 Admission and Request Limits
+### 8.11 Admission and Request Limits
 
 Before a document reaches any of the machinery above, the server can refuse it outright. These are the variables behind an upload that is rejected rather than queued:
 
 | Variable | Default | Refusal |
 | --- | --- | --- |
 | `MAX_UPLOAD_SIZE` | `104857600` (100 MB) | `413` — single uploaded file too large |
-| `MAX_REQUEST_BODY_BYTES` | `0` (disabled) | `413` — raw request body too large, checked independently of the above |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | `413` — raw request body too large. Applies to **every** route, layered: ordinary routes get this value, `/documents/text` and `/documents/texts` get a built-in 50 MiB **while this variable is unset**, and `/documents/upload` derives `MAX_UPLOAD_SIZE` + 1 MiB. Configuring any positive value — the 1 MiB default included — makes it govern every non-upload route. `0` disables all of them |
 | `MAX_TEXTS_PER_REQUEST` | `0` (disabled) | `413` — too many texts in one `/documents/texts` call |
 | `MAX_PENDING_DOCUMENTS` | `0` (disabled) | `429` — too many documents already PENDING / PARSING / ANALYZING / PROCESSING |
 
@@ -1136,7 +1147,7 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | Log notes that paragraphs lack `paraId` | Produced by LibreOffice / WPS / older Word (§3.3) | Informational. Re-save in Word 2013+ only if you need paragraph-level provenance |
 | Document is FAILED as a duplicate | Basename dedup (canonicalized, hint stripped) or content-hash dedup (§7.1, §7.2) | Delete the existing document first, or rename the new file |
 | Upload returns `409` | A document with the same canonical basename already exists in the input directory or in doc-status (§8.5) | Delete it via `POST /documents/delete_document`, then upload again |
-| Upload returns `413` or `429` | An admission limit was hit (§8.10) | See the limits table for which one |
+| Upload returns `413` or `429` | An admission limit was hit (§8.11) | See the limits table for which one |
 | Everything returns `503` | The `recovery_required` fence is up (§8.7) | Follow the recovery order documented in that section |
 | `/documents/scan` returns `scanning_skipped_pipeline_busy` | The pipeline is busy or scanning, uploads are in flight, or a manual retry is queued (§8.2) | Wait for idle; `POST /documents/reprocess_failed` is the single-call recovery for a stuck retry request |
 | Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Automatic resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§9.3) | Delete the document (with "also delete file") and upload it again |
@@ -1255,7 +1266,7 @@ Where to find each family of file-processing variables. This is an index, not a 
 | Docling | `DOCLING_*` | §3.5 |
 | Parse cache | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`, `{MINERU,DOCLING}_ENGINE_VERSION` | §3.7, §6.3 |
 | Directories | `INPUT_DIR`, `WORKING_DIR`, `SCAN_SPOOL_DIR` | §6, §7.1 |
-| Concurrency | `MAX_PARALLEL_*`, `QUEUE_SIZE_*` | §8.9 |
-| Admission and limits | `MAX_UPLOAD_SIZE`, `MAX_REQUEST_BODY_BYTES`, `MAX_TEXTS_PER_REQUEST`, `MAX_PENDING_DOCUMENTS`, `PIPELINE_*`, `MAX_UNACKED_MANUAL_RETRIES`, `SCAN_ENQUEUE_BATCH_SIZE` | §8.10 |
+| Concurrency | `MAX_PARALLEL_*`, `QUEUE_SIZE_*` | §8.10 |
+| Admission and limits | `MAX_UPLOAD_SIZE`, `MAX_REQUEST_BODY_BYTES`, `MAX_TEXTS_PER_REQUEST`, `MAX_PENDING_DOCUMENTS`, `PIPELINE_*`, `MAX_UNACKED_MANUAL_RETRIES`, `SCAN_ENQUEUE_BATCH_SIZE` | §8.11 |
 | Query-time (not chunking) | `ENABLE_CONTENT_HEADINGS` — appends each chunk's heading path when assembling the answer context; it does not change chunk boundaries or stored chunk text | [LightRAG Server](./LightRAG-API-Server.md) |
 | Offline / tokenizer | `TIKTOKEN_CACHE_DIR` | [OfflineDeployment.md](./OfflineDeployment.md) |
