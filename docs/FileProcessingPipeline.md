@@ -600,28 +600,68 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (dispatched b
 
 ### 5.2 Environment Variables
 
-All variables in the table below are read into `addon_params["chunker"]` once when `LightRAG` is instantiated: strategy-specific env is read by `default_chunker_config()`, while legacy env (`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`) is filled in by `_apply_chunk_size_overlay` into slots that neither strategy env nor legacy constructor fields filled. After modifying env, the service must be restarted (or a new `LightRAG` instance created) for it to take effect; documents already enqueued hold the frozen snapshot and are unaffected.
+All variables below are read into `addon_params["chunker"]` once when `LightRAG` is instantiated: strategy-specific env is read by `default_chunker_config()`, while legacy env (`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`) is filled in by `_apply_chunk_size_overlay` into slots that neither strategy env nor legacy constructor fields filled. After modifying env, the service must be restarted (or a new `LightRAG` instance created) for it to take effect; documents already enqueued hold the frozen snapshot and are unaffected.
 
-| Variable | Default | Type | Scope |
-|---|---|---|---|
-| `CHUNK_SIZE` | `1200` | int | Legacy top-level `chunk_token_size` fallback; lower priority than strategy-specific env and the SDK path setting of `addon_params["chunker"]["chunk_token_size"]` |
-| `CHUNK_OVERLAP_SIZE` | `100` | int | Legacy overlap fallback; filled when a strategy has neither a specific env (`CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE`) nor the SDK path's `LightRAG(chunk_overlap_token_size=…)` |
-| `CHUNK_F_SIZE` | unset | int | F strategy-specific `chunk_token_size`; higher than the top-level legacy fallback (`CHUNK_SIZE` and the SDK path's `LightRAG(chunk_token_size=…)`). When unset, F inherits the top-level resolved value. |
-| `CHUNK_F_OVERLAP_SIZE` | unset | int | F strategy-specific overlap; higher than the legacy constructor field and `CHUNK_OVERLAP_SIZE` |
-| `CHUNK_F_SPLIT_BY_CHARACTER` | (unset = `null`) | str? | F pre-split separator; `null` / empty string = split by token window only |
-| `CHUNK_F_SPLIT_BY_CHARACTER_ONLY` | `false` | bool | F strict mode: no secondary token split; raise error when oversized |
-| `CHUNK_R_SIZE` | unset | int | R strategy-specific `chunk_token_size`; higher than top-level legacy fallback (`CHUNK_SIZE` and the SDK path's `LightRAG(chunk_token_size=…)`). When unset, R inherits the top-level resolved value. |
-| `CHUNK_R_OVERLAP_SIZE` | unset | int | R strategy-specific overlap; higher than the legacy constructor field and `CHUNK_OVERLAP_SIZE` |
-| `CHUNK_R_SEPARATORS` | `["\n\n","\n","。","！","？","；","，"," ",""]` | JSON array string | R separator cascade, ordered from strongest to weakest semantic boundary. The default includes Chinese sentence-ending (`。！？`) and mid-sentence (`；，`) punctuation, letting Chinese / mixed Chinese-English documents split at semantic boundaries. English `.?!` is deliberately excluded (literal matching would mis-split numbers and abbreviations). |
-| `CHUNK_V_SIZE` | unset | int | V strategy-specific `chunk_token_size` (hard cap, automatically re-split through R when exceeded); higher than the top-level legacy fallback. When unset, V inherits the top-level resolved value. |
-| `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE` | `percentile` | str | V threshold type; can be `percentile` / `standard_deviation` / `interquartile` / `gradient` |
-| `CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT` | (unset = `null`) | float? | V threshold magnitude; `null` lets LangChain pick the default by type (e.g., percentile=95) |
-| `CHUNK_V_BUFFER_SIZE` | `1` | int | V sentence buffer window; the number of adjacent sentences to merge during distance computation |
-| `CHUNK_V_SENTENCE_SPLIT_REGEX` | `(?<=[.?!])\s+\|(?<=[。？！])` | str | V's sentence splitting regex, fed to LangChain's `SemanticChunker`. The default recognizes both English `.?!` (requiring trailing whitespace to avoid mis-splitting `0.95`) and Chinese `。？！` (no whitespace required, fitting Chinese continuous writing). The env value is the raw regex string; no JSON quoting needed. |
-| `CHUNK_P_SIZE` | `2000` (`DEFAULT_CHUNK_P_SIZE`) | int | P strategy-specific `chunk_token_size`. Unlike R/V, P does NOT inherit the top-level `CHUNK_SIZE` / `LightRAG(chunk_token_size=…)` when unset — paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together, so the slot always carries `DEFAULT_CHUNK_P_SIZE` (2000) instead. |
-| `CHUNK_P_OVERLAP_SIZE` | unset | int | P strategy-specific overlap; higher than the legacy constructor field and `CHUNK_OVERLAP_SIZE`. Used for text overlap when long body text within the same JSONL content line falls back to R, and as the per-side budget for bridging text copied into the adjacent large-table chunks. |
+They are grouped by the strategy they configure. A strategy-specific variable always outranks the global fallback for the same slot.
 
-P's internal ratio constants are algorithmic scales and are automatically derived in proportion to `chunk_token_size`. P always uses an independent `chunk_token_size` decoupled from the global chain — even when `CHUNK_P_SIZE` is unset, P falls back to `DEFAULT_CHUNK_P_SIZE` (2000) rather than the global `CHUNK_SIZE`, because paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together. Use `CHUNK_P_SIZE` to override that default per deployment. `CHUNK_P_OVERLAP_SIZE` only affects P's internal plain-text fallback and table bridging context; it does not let table row-level slices overlap each other. `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` work differently — when unset they DO fall back to the top-level `chunk_token_size` (F is the default global window, R prefers a smaller target to better split sentences, while V — as an advisory ceiling — typically wants to be enlarged to reduce over-splitting).
+#### Global fallbacks
+
+- **`CHUNK_SIZE`** — `1200`, int.
+  Top-level `chunk_token_size` fallback. Ranks below strategy-specific env and below `addon_params["chunker"]["chunk_token_size"]` set on the SDK path.
+- **`CHUNK_OVERLAP_SIZE`** — `100`, int.
+  Overlap fallback. Fills a slot only when the strategy has neither its own env (`CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE`) nor the SDK path's `LightRAG(chunk_overlap_token_size=…)`.
+
+#### F — fixed length
+
+- **`CHUNK_F_SIZE`** — unset, int.
+  F's own `chunk_token_size`, outranking the top-level fallback (`CHUNK_SIZE` and the SDK path's `LightRAG(chunk_token_size=…)`). When unset, F inherits the top-level resolved value.
+- **`CHUNK_F_OVERLAP_SIZE`** — unset, int.
+  F's own overlap, outranking the legacy constructor field and `CHUNK_OVERLAP_SIZE`.
+- **`CHUNK_F_SPLIT_BY_CHARACTER`** — unset (`null`), str.
+  Pre-split separator. `null` or an empty string means split by token window only.
+- **`CHUNK_F_SPLIT_BY_CHARACTER_ONLY`** — `false`, bool.
+  Strict mode: do not re-split by token, raise on an oversized segment instead.
+
+#### R — recursive character
+
+- **`CHUNK_R_SIZE`** — unset, int.
+  R's own `chunk_token_size`, outranking the top-level fallback. When unset, R inherits the top-level resolved value.
+- **`CHUNK_R_OVERLAP_SIZE`** — unset, int.
+  R's own overlap, outranking the legacy constructor field and `CHUNK_OVERLAP_SIZE`.
+- **`CHUNK_R_SEPARATORS`** — JSON array string. Default:
+
+  ```json
+  ["\n\n","\n","。","！","？","；","，"," ",""]
+  ```
+
+  The separator cascade, ordered from the strongest semantic boundary to the weakest. The default includes Chinese sentence-ending (`。！？`) and mid-sentence (`；，`) punctuation, so Chinese and mixed Chinese-English documents split at semantic boundaries. English `.?!` is deliberately excluded — matching it literally would cut through numbers and abbreviations.
+
+#### V — semantic vector
+
+- **`CHUNK_V_SIZE`** — unset, int.
+  V's own `chunk_token_size`. It is a hard cap: anything over it is re-split through R. Outranks the top-level fallback; when unset, V inherits the top-level resolved value.
+- **`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`** — `percentile`, str.
+  One of `percentile` / `standard_deviation` / `interquartile` / `gradient`.
+- **`CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT`** — unset (`null`), float.
+  Threshold magnitude. `null` lets LangChain pick the per-type default (percentile uses 95).
+- **`CHUNK_V_BUFFER_SIZE`** — `1`, int.
+  How many adjacent sentences are merged when computing distances.
+- **`CHUNK_V_SENTENCE_SPLIT_REGEX`** — str. Default:
+
+  ```text
+  (?<=[.?!])\s+|(?<=[。？！])
+  ```
+
+  The sentence split fed to LangChain's `SemanticChunker`. The default recognizes English `.?!` (requiring trailing whitespace, so `0.95` survives) and Chinese `。？！` (no whitespace required, matching continuous Chinese text). The env value is the raw regex — no JSON quoting.
+
+#### P — paragraph semantic
+
+- **`CHUNK_P_SIZE`** — `2000` (`DEFAULT_CHUNK_P_SIZE`), int.
+  P's own `chunk_token_size`, and the one slot that does **not** inherit. When unset, P does not fall back to the top-level `CHUNK_SIZE` / `LightRAG(chunk_token_size=…)`; the slot always carries `DEFAULT_CHUNK_P_SIZE` instead, because paragraph-semantic merging needs more headroom than the global default to keep related paragraphs together. Override it here when a deployment needs a different ceiling. P's internal ratio constants are algorithmic scales derived in proportion to whatever this resolves to.
+- **`CHUNK_P_OVERLAP_SIZE`** — unset, int.
+  P's own overlap, outranking the legacy constructor field and `CHUNK_OVERLAP_SIZE`. It covers two things: text overlap when long body text inside one JSONL content line falls back to R, and the per-side budget for bridging text copied into the chunks around a large table. It does **not** make table row-level slices overlap each other.
+
+> `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` behave the opposite way from `CHUNK_P_SIZE`: left unset they **do** inherit the top-level `chunk_token_size`. That is usually what you want — F is the default global window, R prefers a smaller target so it can split at sentence level, and V, being an advisory ceiling, is usually raised rather than lowered to avoid over-splitting.
 
 ### 5.3 Priority Chain
 

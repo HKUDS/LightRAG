@@ -600,28 +600,68 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 ### 5.2 环境变量
 
-下表所有变量在 `LightRAG` 实例化时一次性读入 `addon_params["chunker"]`：strategy 特定 env 由 `default_chunker_config()` 读取，legacy env (`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`) 由 `_apply_chunk_size_overlay` 在 strategy env 与 legacy 构造字段都没填的槽位上兜底。修改 env 后需要重启服务（或新建 `LightRAG` 实例）才生效；已入队的文档持有冻结快照不受影响。
+以下变量都在 `LightRAG` 实例化时一次性读入 `addon_params["chunker"]`：strategy 特定 env 由 `default_chunker_config()` 读取，legacy env（`CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`）由 `_apply_chunk_size_overlay` 在 strategy env 与 legacy 构造字段都没填的槽位上兜底。修改 env 后需要重启服务（或新建 `LightRAG` 实例）才生效；已入队的文档持有冻结快照不受影响。
 
-| 变量 | 默认 | 类型 | 作用域 |
-|---|---|---|---|
-| `CHUNK_SIZE` | `1200` | int | legacy 顶层 `chunk_token_size` 兜底；优先级低于 strategy 特定 env 与 SDK 路径设置的 `addon_params["chunker"]["chunk_token_size"]` |
-| `CHUNK_OVERLAP_SIZE` | `100` | int | legacy overlap 兜底；当某 strategy 既无特定 env (`CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE`) 又无 SDK 路径的 `LightRAG(chunk_overlap_token_size=…)` 时填入 |
-| `CHUNK_F_SIZE` | 未设 | int | F strategy 特定 `chunk_token_size`；高于顶层 legacy 兜底（`CHUNK_SIZE` 与 SDK 路径的 `LightRAG(chunk_token_size=…)`）。未设时 F 沿用顶层解析结果 |
-| `CHUNK_F_OVERLAP_SIZE` | 未设 | int | F strategy 特定 overlap；高于 legacy 构造字段与 `CHUNK_OVERLAP_SIZE` |
-| `CHUNK_F_SPLIT_BY_CHARACTER` | （未设 = `null`） | str? | F 预切分隔符；`null` / 空串 = 仅按 token 窗 |
-| `CHUNK_F_SPLIT_BY_CHARACTER_ONLY` | `false` | bool | F 严格模式：不二次按 token 切，超长抛错 |
-| `CHUNK_R_SIZE` | 未设 | int | R strategy 特定 `chunk_token_size`；高于顶层 legacy 兜底（`CHUNK_SIZE` 与 SDK 路径的 `LightRAG(chunk_token_size=…)`）。未设时 R 沿用顶层解析结果 |
-| `CHUNK_R_OVERLAP_SIZE` | 未设 | int | R strategy 特定 overlap；高于 legacy 构造字段与 `CHUNK_OVERLAP_SIZE` |
-| `CHUNK_R_SEPARATORS` | `["\n\n","\n","。","！","？","；","，"," ",""]` | JSON 数组字符串 | R 分隔符级联，按从语义最强到最弱排列。默认包含中文句末（`。！？`）和句中（`；，`）标点，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 故意排除（字面量匹配会误切数字与缩写） |
-| `CHUNK_V_SIZE` | 未设 | int | V strategy 特定 `chunk_token_size`（hard cap，超过时自动通过 R 二次切分）；高于顶层 legacy 兜底。未设时 V 沿用顶层解析结果 |
-| `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE` | `percentile` | str | V 阈值类型；可选 `percentile` / `standard_deviation` / `interquartile` / `gradient` |
-| `CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT` | （未设 = `null`） | float? | V 阈值大小；`null` 让 LangChain 按类型自选默认（如 percentile=95） |
-| `CHUNK_V_BUFFER_SIZE` | `1` | int | V 句子缓冲窗，距离计算时合并的相邻句数 |
-| `CHUNK_V_SENTENCE_SPLIT_REGEX` | `(?<=[.?!])\s+\|(?<=[。？！])` | str | V 的句子切分正则，喂给 LangChain `SemanticChunker`。默认同时识别英文 `.?!`（要求后接空白，避免误切 `0.95`）和中文 `。？！`（不要求空白，适应中文连写）。env 值为原始正则字符串，无需 JSON 引号 |
-| `CHUNK_P_SIZE` | `2000`（`DEFAULT_CHUNK_P_SIZE`） | int | P strategy 特定 `chunk_token_size`。与 R/V 不同，未设时 P **不**沿用顶层 `CHUNK_SIZE` / `LightRAG(chunk_token_size=…)`——段落语义合并需要比全局默认更大的上限才能将相关段落保留在一起，因此槽位始终携带 `DEFAULT_CHUNK_P_SIZE`（2000） |
-| `CHUNK_P_OVERLAP_SIZE` | 未设 | int | P strategy 特定 overlap；高于 legacy 构造字段与 `CHUNK_OVERLAP_SIZE`。用于同一 JSONL content 行内长正文 fallback 到 R 时的文本重叠，以及相邻大表格之间桥接文字复制到前后表格块的单侧预算 |
+下面按各变量配置的策略分组。同一个槽位上，strategy 特定变量始终高于全局兜底。
 
-P 的内部比例常量是算法刻度，会随 `chunk_token_size` 自动按比例推导。P 始终使用独立于全局链的 `chunk_token_size`——即使 `CHUNK_P_SIZE` 未设，P 也会回退到 `DEFAULT_CHUNK_P_SIZE`（2000）而**不**沿用全局 `CHUNK_SIZE`，因为段落语义合并需要比全局默认更大的上限才能将相关段落保留在一起。需要按部署调整时通过 `CHUNK_P_SIZE` 覆盖该默认。`CHUNK_P_OVERLAP_SIZE` 只影响 P 内部普通文本 fallback 与表格桥接上下文，不会让表格行级切片互相重叠。`CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` 行为不同——未设时**仍会**沿用顶层 `chunk_token_size`（F 即默认全局窗口，R 偏向较小目标利于句段切分，V 作为 advisory ceiling 通常希望放大以减少过度拆分）。
+#### 全局兜底
+
+- **`CHUNK_SIZE`** —— `1200`，int。
+  顶层 `chunk_token_size` 兜底。低于 strategy 特定 env，也低于 SDK 路径设置的 `addon_params["chunker"]["chunk_token_size"]`。
+- **`CHUNK_OVERLAP_SIZE`** —— `100`，int。
+  overlap 兜底。只有当某策略既没有自己的 env（`CHUNK_F_OVERLAP_SIZE` / `CHUNK_R_OVERLAP_SIZE` / `CHUNK_P_OVERLAP_SIZE`）、也没有 SDK 路径的 `LightRAG(chunk_overlap_token_size=…)` 时才填入该槽位。
+
+#### F —— 定长
+
+- **`CHUNK_F_SIZE`** —— 未设，int。
+  F 自己的 `chunk_token_size`，高于顶层兜底（`CHUNK_SIZE` 与 SDK 路径的 `LightRAG(chunk_token_size=…)`）。未设时 F 沿用顶层解析结果。
+- **`CHUNK_F_OVERLAP_SIZE`** —— 未设，int。
+  F 自己的 overlap，高于 legacy 构造字段与 `CHUNK_OVERLAP_SIZE`。
+- **`CHUNK_F_SPLIT_BY_CHARACTER`** —— 未设（`null`），str。
+  预切分隔符。`null` 或空串表示仅按 token 窗切分。
+- **`CHUNK_F_SPLIT_BY_CHARACTER_ONLY`** —— `false`，bool。
+  严格模式：不再按 token 二次切分，遇到超长片段直接抛错。
+
+#### R —— 递归字符
+
+- **`CHUNK_R_SIZE`** —— 未设，int。
+  R 自己的 `chunk_token_size`，高于顶层兜底。未设时 R 沿用顶层解析结果。
+- **`CHUNK_R_OVERLAP_SIZE`** —— 未设，int。
+  R 自己的 overlap，高于 legacy 构造字段与 `CHUNK_OVERLAP_SIZE`。
+- **`CHUNK_R_SEPARATORS`** —— JSON 数组字符串。默认值：
+
+  ```json
+  ["\n\n","\n","。","！","？","；","，"," ",""]
+  ```
+
+  分隔符级联，按语义边界从最强到最弱排列。默认包含中文句末（`。！？`）与句中（`；，`）标点，使中文 / 中英混合文档能在语义边界切分。英文 `.?!` 被刻意排除——按字面匹配会切断数字与缩写。
+
+#### V —— 语义向量
+
+- **`CHUNK_V_SIZE`** —— 未设，int。
+  V 自己的 `chunk_token_size`。它是硬上限：超过的部分会通过 R 二次切分。高于顶层兜底；未设时 V 沿用顶层解析结果。
+- **`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`** —— `percentile`，str。
+  取值为 `percentile` / `standard_deviation` / `interquartile` / `gradient` 之一。
+- **`CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT`** —— 未设（`null`），float。
+  阈值大小。`null` 表示让 LangChain 按类型自选默认值（percentile 用 95）。
+- **`CHUNK_V_BUFFER_SIZE`** —— `1`，int。
+  计算距离时合并的相邻句数。
+- **`CHUNK_V_SENTENCE_SPLIT_REGEX`** —— str。默认值：
+
+  ```text
+  (?<=[.?!])\s+|(?<=[。？！])
+  ```
+
+  喂给 LangChain `SemanticChunker` 的句子切分正则。默认同时识别英文 `.?!`（要求后接空白，因此 `0.95` 不会被切开）和中文 `。？！`（不要求空白，适应中文连写）。env 值是原始正则，无需 JSON 引号。
+
+#### P —— 段落语义
+
+- **`CHUNK_P_SIZE`** —— `2000`（`DEFAULT_CHUNK_P_SIZE`），int。
+  P 自己的 `chunk_token_size`，也是唯一**不**继承的槽位。未设时 P 不会回退到顶层 `CHUNK_SIZE` / `LightRAG(chunk_token_size=…)`，而是始终携带 `DEFAULT_CHUNK_P_SIZE`——段落语义合并需要比全局默认更大的上限，才能把相关段落保留在一起。部署需要别的上限时在这里覆盖。P 的内部比例常量是算法刻度，会按这里解析出的值等比推导。
+- **`CHUNK_P_OVERLAP_SIZE`** —— 未设，int。
+  P 自己的 overlap，高于 legacy 构造字段与 `CHUNK_OVERLAP_SIZE`。它管两件事：同一 JSONL content 行内长正文 fallback 到 R 时的文本重叠，以及大表格前后桥接文字复制进相邻块的单侧预算。它**不会**让表格行级切片互相重叠。
+
+> `CHUNK_F_SIZE` / `CHUNK_R_SIZE` / `CHUNK_V_SIZE` 的行为与 `CHUNK_P_SIZE` 相反：不设时它们**会**沿用顶层 `chunk_token_size`。这通常正是你想要的——F 就是默认全局窗口，R 偏向较小目标以便按句段切分，而 V 作为 advisory ceiling 通常是被调大而非调小，以减少过度拆分。
 
 ### 5.3 优先级链
 
