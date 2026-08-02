@@ -944,19 +944,23 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Nested in-place mutation remains supported for compatibility; its first
         subsequent enqueue is normalized and cached by
         ``resolve_chunk_options``.
+
+        The correction is applied in place so the caller's own nested
+        ``recursive_character`` dict stays the object that is read later, and so
+        it cannot recursively re-enter this callback through
+        ``ObservableAddonParams.__setitem__``.
         """
         chunker_config = self._addon_params.get("chunker")
         if isinstance(chunker_config, Mapping):
             from lightrag.parser.routing import normalize_chunker_r_separators
 
             normalized, corrected = normalize_chunker_r_separators(
-                chunker_config, context="addon_params['chunker']"
+                chunker_config, context="addon_params['chunker']", in_place=True
             )
-            if corrected:
-                # Bypass ``ObservableAddonParams.__setitem__`` to avoid
-                # recursively re-entering this callback. The correction itself
-                # is already complete and this method marks the cache dirty
-                # below.
+            if corrected and normalized is not chunker_config:
+                # ``in_place`` could not apply (an immutable mapping was
+                # supplied). Store the corrected copy without re-entering this
+                # callback; the dirty mark below already covers it.
                 dict.__setitem__(self._addon_params, "chunker", dict(normalized))
         self._mark_addon_params_dirty()
 

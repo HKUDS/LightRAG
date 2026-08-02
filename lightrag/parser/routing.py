@@ -51,7 +51,7 @@ from lightrag.utils import get_env_value, logger, parse_optional_float
 
 import json
 from functools import lru_cache
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from copy import deepcopy
 
 # Trailing parser-hint pattern: matches ``.[engine].ext`` at end of basename.
@@ -396,33 +396,63 @@ def _cached_env_r_separators(raw: str | None) -> tuple[str, ...]:
     return tuple(normalized.separators or ())
 
 
-def env_r_separators() -> list[str]:
-    """Return the cached, bounded ``CHUNK_R_SEPARATORS`` cascade.
+def env_r_separators_for(raw: str | None) -> list[str]:
+    """Return the cached, bounded cascade for an already-read raw env value.
+
+    Use this over :func:`env_r_separators` when the caller has its own cache
+    keyed on ``raw``, so key and value cannot be read from two different
+    environments.
 
     Empty, malformed, and non-string JSON arrays retain the historic silent
     fallback to :data:`DEFAULT_R_SEPARATORS`. A syntactically valid cascade that
     exceeds the safety bounds is corrected and warned about once per raw value.
     """
-    return list(_cached_env_r_separators(os.getenv("CHUNK_R_SEPARATORS")))
+    return list(_cached_env_r_separators(raw))
 
 
-def _env_r_separators() -> list[str]:
-    """Load the cached, bounded environment R-separator cascade."""
-    return env_r_separators()
+def env_r_separators() -> list[str]:
+    """Return the cached, bounded ``CHUNK_R_SEPARATORS`` cascade."""
+    return env_r_separators_for(os.getenv("CHUNK_R_SEPARATORS"))
 
 
 def normalize_chunker_r_separators(
     chunker_config: Mapping[str, Any],
     *,
     context: str | None = None,
+    in_place: bool = False,
 ) -> tuple[Mapping[str, Any], bool]:
     """Correct the configured R cascade and optionally report it once.
 
-    This is for long-lived chunker configuration, not document snapshots. It
-    returns the original mapping untouched when no correction is needed so
-    callers can retain existing object identity and update their cache only when
-    necessary. Per-document snapshots use :func:`slim_chunk_options`' silent
-    backstop instead.
+    This is for long-lived chunker configuration, not document snapshots.
+    Per-document snapshots use :func:`slim_chunk_options`' silent backstop
+    instead.
+
+    Two corrections are possible, and both are reported exactly once because the
+    corrected value is what gets stored:
+
+    * a cascade breaching :data:`MAX_R_SEPARATORS` / :data:`MAX_R_SEPARATOR_CHARS`
+      is bounded;
+    * a ``separators`` value that is not a list/tuple has its key **removed**.
+      A bare ``str`` is the trap here: it satisfies ``Sequence[str]``, so bounding
+      it would iterate characters and silently turn one typo into a cascade of 64
+      single characters that looks legitimate forever after. Dropping the key
+      instead routes the chunker to its documented ``separators=None`` path.
+      ``None`` itself is a legitimate value and passes straight through.
+
+    Args:
+        chunker_config: the long-lived ``addon_params['chunker']`` mapping.
+        context: label for the one-time warning; ``None`` suppresses logging.
+        in_place: mutate ``chunker_config`` and its ``recursive_character``
+            sub-dict rather than returning corrected copies. Callers that own
+            live configuration use this so a caller-held reference to the nested
+            dict — the documented runtime-mutation idiom, see
+            :func:`lightrag.addon_params.default_addon_params` — keeps pointing
+            at the mapping that is actually read. Silently ignored when either
+            mapping is not mutable.
+
+    Returns:
+        ``(config, corrected)``. When nothing needed correcting the original
+        mapping is returned unchanged so callers can skip their cache update.
     """
     recursive = chunker_config.get("recursive_character")
     if not isinstance(recursive, Mapping) or "separators" not in recursive:
@@ -433,16 +463,41 @@ def normalize_chunker_r_separators(
         log_r_separator_normalization,
     )
 
-    normalized = inspect_r_separators(recursive["separators"])
-    if not normalized.changed:
-        return chunker_config, False
+    raw_separators = recursive["separators"]
+    drop_key = raw_separators is not None and not isinstance(
+        raw_separators, (list, tuple)
+    )
+    if drop_key:
+        normalized = None
+    else:
+        normalized = inspect_r_separators(raw_separators)
+        if not normalized.changed:
+            return chunker_config, False
 
-    corrected = dict(chunker_config)
-    corrected_recursive = dict(recursive)
-    corrected_recursive["separators"] = normalized.separators
-    corrected["recursive_character"] = corrected_recursive
-    if context is not None:
-        log_r_separator_normalization(normalized, context=context)
+    if (
+        in_place
+        and isinstance(chunker_config, MutableMapping)
+        and isinstance(recursive, MutableMapping)
+    ):
+        corrected: Any = chunker_config
+        corrected_recursive: Any = recursive
+    else:
+        corrected = dict(chunker_config)
+        corrected_recursive = dict(recursive)
+        corrected["recursive_character"] = corrected_recursive
+
+    if drop_key:
+        del corrected_recursive["separators"]
+        if context is not None:
+            logger.warning(
+                f"[{context}] separators must be a list of strings, got "
+                f"{type(raw_separators).__name__}; ignoring it so the recursive "
+                f"chunker falls back to its default cascade"
+            )
+    else:
+        corrected_recursive["separators"] = normalized.separators
+        if context is not None:
+            log_r_separator_normalization(normalized, context=context)
     return corrected, True
 
 
@@ -497,7 +552,7 @@ def default_chunker_config() -> dict[str, Any]:
             # boundaries instead of falling through to character-level
             # splitting.  See ``constants.DEFAULT_R_SEPARATORS`` for
             # cascade order rationale.
-            "separators": _env_r_separators(),
+            "separators": env_r_separators(),
         },
         "semantic_vector": {
             "breakpoint_threshold_type": os.getenv(
@@ -599,6 +654,13 @@ def resolve_chunk_options(
 
     The returned snapshot is an independent deep copy: mutating it has
     no effect on subsequent resolutions.
+
+    This function is not purely a reader of ``addon_params``: when the live
+    ``chunker`` config carries an out-of-bounds or wrongly-typed R separator
+    cascade, it corrects that config **in place** and logs once, so the next
+    document does not repeat the warning. The correction preserves the identity
+    of the ``recursive_character`` sub-dict, keeping the documented
+    nested-mutation idiom working afterwards.
     """
     src: Mapping[str, Any] | None = None
     if isinstance(addon_params, Mapping):
@@ -613,14 +675,19 @@ def resolve_chunk_options(
         # next enqueue is the first reliable chance to validate it. Correct and
         # cache the value here; subsequent document snapshots are already
         # bounded and therefore silent.
+        #
+        # ``in_place`` keeps the nested ``recursive_character`` dict identity:
+        # replacing it would detach a reference the caller obtained through the
+        # very idiom this branch exists to support, silently discarding every
+        # later write to it. Correcting in place also avoids re-entering
+        # ``ObservableAddonParams.__setitem__``, so a snapshot build does not
+        # invalidate the unrelated prompt-profile cache.
         from lightrag.addon_params import ObservableAddonParams
 
         if isinstance(addon_params, ObservableAddonParams):
-            src, corrected = normalize_chunker_r_separators(
-                src, context="addon_params['chunker']"
+            src, _ = normalize_chunker_r_separators(
+                src, context="addon_params['chunker']", in_place=True
             )
-            if corrected:
-                addon_params["chunker"] = dict(src)
 
     snapshot = slim_chunk_options(src, process_options)
     if chunk_strategy_key(process_options) == "fixed_token":

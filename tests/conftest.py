@@ -80,6 +80,28 @@ def _hermetic_mineru_env(monkeypatch):
     monkeypatch.setenv("DOCX_SMART_HEADING", "false")
 
 
+@pytest.fixture(autouse=True)
+def _reset_r_separator_caches():
+    """Drop the process-wide ``CHUNK_R_SEPARATORS`` caches between tests.
+
+    Both caches are keyed on the *raw* environment string and hold for the life
+    of the process, including the one-time correction WARNING each of them
+    emits. Without this reset, the second test in a session that happens to use
+    the same ``CHUNK_R_SEPARATORS`` value sees zero warnings and fails an
+    assertion that has nothing to do with what it is testing — or, worse, passes
+    for the wrong reason. Tests must not have to invent globally-unique
+    separator strings to stay independent.
+    """
+    from lightrag.multimodal_context import _cached_surrounding_chunk_separators
+    from lightrag.parser.routing import _cached_env_r_separators
+
+    _cached_env_r_separators.cache_clear()
+    _cached_surrounding_chunk_separators.cache_clear()
+    yield
+    _cached_env_r_separators.cache_clear()
+    _cached_surrounding_chunk_separators.cache_clear()
+
+
 #: Populated in ``pytest_configure`` and read by ``requires_spacy_models`` /
 #: ``pytest_terminal_summary``. Two independent facts:
 #: - which pinned spaCy models are missing (empty tuple == all present);

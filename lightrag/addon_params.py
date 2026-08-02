@@ -93,10 +93,14 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
     elif isinstance(normalized["chunker"], Mapping):
         from lightrag.parser.routing import normalize_chunker_r_separators
 
-        normalized_chunker, _ = normalize_chunker_r_separators(
+        # Copy semantics on purpose: this runs on a caller-supplied mapping
+        # (``LightRAG(addon_params=...)``), which must not be mutated. The
+        # in-place mode belongs to the live config owned by the instance.
+        normalized_chunker, corrected = normalize_chunker_r_separators(
             normalized["chunker"], context="addon_params['chunker']"
         )
-        normalized["chunker"] = dict(normalized_chunker)
+        if corrected:
+            normalized["chunker"] = dict(normalized_chunker)
     return normalized
 
 

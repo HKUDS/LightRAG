@@ -13,8 +13,6 @@ this fix would have broken, and are marked below.
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 from lightrag.chunker.recursive_character import (
@@ -112,16 +110,28 @@ def test_everything_over_long_normalizes_to_empty_not_to_a_substitute():
     assert normalize_r_separators(separators) == []
 
 
-def test_runtime_normalizer_is_silent_for_an_invalid_snapshot(
-    caplog: pytest.LogCaptureFixture,
-):
-    """The hot-path backstop must not recreate a warning per document."""
-    separators = ["x" * (MAX_R_SEPARATOR_CHARS + 1)] * 3
+def test_runtime_normalizer_is_silent_for_an_invalid_snapshot(monkeypatch):
+    """The hot-path backstop must not recreate a warning per document.
 
-    with caplog.at_level(logging.WARNING):
-        assert normalize_r_separators(separators) == []
+    ``caplog`` cannot express this assertion: ``lightrag.utils.logger`` sets
+    ``propagate = False``, so no record ever reaches pytest's root handler and
+    ``assert not caplog.records`` would hold even while the function warns on
+    every call. Intercept the logger the module actually uses instead.
+    """
+    import lightrag.chunker.recursive_character as recursive_character
 
-    assert not caplog.records
+    warnings: list[str] = []
+    monkeypatch.setattr(recursive_character.logger, "warning", warnings.append)
+
+    over_long = ["x" * (MAX_R_SEPARATOR_CHARS + 1)] * 3
+    too_many = [f"s{index}" for index in range(MAX_R_SEPARATORS + 6)]
+
+    # Both correction kinds, twice each: a re-processed snapshot must stay quiet.
+    for _ in range(2):
+        assert normalize_r_separators(over_long) == []
+        assert len(normalize_r_separators(too_many)) == MAX_R_SEPARATORS
+
+    assert warnings == []
 
 
 # --------------------------------------------------------------------------- #

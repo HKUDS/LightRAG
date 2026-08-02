@@ -307,17 +307,14 @@ def log_r_separator_normalization(
         )
 
 
-def normalize_r_separators(
-    separators: Sequence[str] | None,
-    *,
-    context: str = "",
-) -> list[str] | None:
+def normalize_r_separators(separators: Sequence[str] | None) -> list[str] | None:
     """Return a bounded separator cascade without logging.
 
-    ``context`` is retained for source compatibility with callers from before
-    configuration-time warning emission. It deliberately has no runtime effect.
+    This is the runtime backstop shared by direct SDK calls and per-document
+    snapshots. Warnings belong to the configuration ingress points, which use
+    :func:`inspect_r_separators` plus :func:`log_r_separator_normalization`
+    instead — see :class:`RSeparatorNormalization`.
     """
-    del context
     return inspect_r_separators(separators).separators
 
 

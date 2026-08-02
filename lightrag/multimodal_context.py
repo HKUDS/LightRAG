@@ -691,17 +691,21 @@ def _accumulate_text_trailing(
 def _cached_surrounding_chunk_separators(raw: str | None) -> tuple[str, ...]:
     """Resolve and cache the usable surrounding-context separator cascade.
 
-    ``env_r_separators`` owns parsing, bounds, and the one-time correction
+    ``env_r_separators_for`` owns parsing, bounds, and the one-time correction
     diagnostic. This companion cache owns the one-time diagnostic for the
     surrounding-specific fallback when every configured separator was dropped.
+
+    ``raw`` is both the cache key and the value that gets parsed — reading the
+    environment a second time inside would let the cached entry be keyed on one
+    value and populated from another.
     """
-    from lightrag.parser.routing import env_r_separators
+    from lightrag.parser.routing import env_r_separators_for
 
     # ``CHUNK_R_SEPARATORS`` reaches ``enrich_sidecars_with_surrounding``, which
     # scans each block once per separator. Reuse the same bounded environment
     # configuration as the R chunker; the empty sentinel remains deliberately
     # absent because this caller signals char fallback separately.
-    result = [s for s in env_r_separators() if s]
+    result = [s for s in env_r_separators_for(raw) if s]
     if not result:
         # Unlike the chunker, this function has no "splitter default" to fall back
         # to — its callers expect a usable cascade — so it falls back the same way
