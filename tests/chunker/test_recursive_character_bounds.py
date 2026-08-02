@@ -149,6 +149,30 @@ def test_an_all_over_long_cascade_falls_back_instead_of_crashing():
     assert chunks
 
 
+def test_load_chunk_separators_falls_back_to_the_repo_cascade(monkeypatch):
+    """The OTHER consumer decides differently, and the docs say so.
+
+    ``chunking_by_recursive_character`` falls back to the splitter's own
+    four-entry cascade (the test above). ``load_chunk_separators`` has no
+    "splitter default" available — its callers need a usable cascade — so it
+    falls back to ``DEFAULT_R_SEPARATORS`` the same way it already does for a
+    missing or malformed ``CHUNK_R_SEPARATORS``, minus the sentinel it strips on
+    purpose. Pinning both halves because they are documented as differing; a
+    change that collapsed them into one fallback would move split points on one
+    of the two paths without touching the other.
+    """
+    import json
+
+    from lightrag.multimodal_context import load_chunk_separators
+
+    monkeypatch.setenv(
+        "CHUNK_R_SEPARATORS",
+        json.dumps(["x" * (MAX_R_SEPARATOR_CHARS + 1)] * 3),
+    )
+
+    assert load_chunk_separators() == [s for s in DEFAULT_R_SEPARATORS if s]
+
+
 def test_the_all_over_long_fallback_matches_separators_none():
     """It falls back to this function's own default, not to DEFAULT_R_SEPARATORS.
 
