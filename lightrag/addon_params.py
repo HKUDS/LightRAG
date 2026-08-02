@@ -85,12 +85,18 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
         "entity_type_prompt_file",
         get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
     )
-    # Build the chunker default lazily — `default_chunker_config()` reads env
-    # vars (e.g. CHUNK_R_SEPARATORS via json.loads) and would raise on a
-    # malformed value, which would prevent an explicit caller-supplied
-    # `chunker` from bypassing a broken environment.
+    # Build the chunker default lazily. An explicit caller-supplied chunker
+    # bypasses the environment entirely, including a malformed environment
+    # value.
     if "chunker" not in normalized:
         normalized["chunker"] = default_chunker_config()
+    elif isinstance(normalized["chunker"], Mapping):
+        from lightrag.parser.routing import normalize_chunker_r_separators
+
+        normalized_chunker, _ = normalize_chunker_r_separators(
+            normalized["chunker"], context="addon_params['chunker']"
+        )
+        normalized["chunker"] = dict(normalized_chunker)
     return normalized
 
 

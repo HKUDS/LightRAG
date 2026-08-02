@@ -13,6 +13,8 @@ this fix would have broken, and are marked below.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from lightrag.chunker.recursive_character import (
@@ -110,6 +112,18 @@ def test_everything_over_long_normalizes_to_empty_not_to_a_substitute():
     assert normalize_r_separators(separators) == []
 
 
+def test_runtime_normalizer_is_silent_for_an_invalid_snapshot(
+    caplog: pytest.LogCaptureFixture,
+):
+    """The hot-path backstop must not recreate a warning per document."""
+    separators = ["x" * (MAX_R_SEPARATOR_CHARS + 1)] * 3
+
+    with caplog.at_level(logging.WARNING):
+        assert normalize_r_separators(separators) == []
+
+    assert not caplog.records
+
+
 # --------------------------------------------------------------------------- #
 # chunking_by_recursive_character consumes the bounds
 # --------------------------------------------------------------------------- #
@@ -163,14 +177,32 @@ def test_load_chunk_separators_falls_back_to_the_repo_cascade(monkeypatch):
     """
     import json
 
-    from lightrag.multimodal_context import load_chunk_separators
+    import lightrag.chunker.recursive_character as recursive_character
+    import lightrag.multimodal_context as multimodal_context
+
+    warnings: list[str] = []
+    monkeypatch.setattr(recursive_character.logger, "warning", warnings.append)
+    monkeypatch.setattr(multimodal_context.logger, "warning", warnings.append)
 
     monkeypatch.setenv(
         "CHUNK_R_SEPARATORS",
-        json.dumps(["x" * (MAX_R_SEPARATOR_CHARS + 1)] * 3),
+        json.dumps(["multimodal-warning-cache" * (MAX_R_SEPARATOR_CHARS + 1)] * 3),
     )
 
-    assert load_chunk_separators() == [s for s in DEFAULT_R_SEPARATORS if s]
+    assert multimodal_context.load_chunk_separators() == [
+        s for s in DEFAULT_R_SEPARATORS if s
+    ]
+    assert multimodal_context.load_chunk_separators() == [
+        s for s in DEFAULT_R_SEPARATORS if s
+    ]
+    assert sum("[CHUNK_R_SEPARATORS] dropped" in message for message in warnings) == 1
+    assert (
+        sum(
+            "[load_chunk_separators] no usable separators" in message
+            for message in warnings
+        )
+        == 1
+    )
 
 
 def test_the_all_over_long_fallback_matches_separators_none():

@@ -50,6 +50,7 @@ from lightrag.parser.param_schema import (
 from lightrag.utils import get_env_value, logger, parse_optional_float
 
 import json
+from functools import lru_cache
 from collections.abc import Mapping
 from copy import deepcopy
 
@@ -367,18 +368,82 @@ def _chunk_env_int(env_key: str, default: int | None) -> int | None:
         ) from exc
 
 
-def _env_r_separators() -> list[str]:
-    """Load CHUNK_R_SEPARATORS; empty/invalid JSON falls back to defaults."""
-    raw = os.getenv("CHUNK_R_SEPARATORS")
+@lru_cache(maxsize=32)
+def _cached_env_r_separators(raw: str | None) -> tuple[str, ...]:
+    """Parse, bound, and cache one environment separator configuration.
+
+    The cache key is the raw environment value. This keeps startup/configuration
+    diagnostics one-shot for a deployment while still reflecting a deliberate
+    runtime environment change in tests or embedded deployments.
+    """
     if not raw or not str(raw).strip():
-        return list(DEFAULT_R_SEPARATORS)
+        return DEFAULT_R_SEPARATORS
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return list(DEFAULT_R_SEPARATORS)
-    if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
-        return parsed
-    return list(DEFAULT_R_SEPARATORS)
+        return DEFAULT_R_SEPARATORS
+    if not isinstance(parsed, list) or not all(isinstance(s, str) for s in parsed):
+        return DEFAULT_R_SEPARATORS
+
+    from lightrag.chunker.recursive_character import (
+        inspect_r_separators,
+        log_r_separator_normalization,
+    )
+
+    normalized = inspect_r_separators(parsed)
+    if normalized.changed:
+        log_r_separator_normalization(normalized, context="CHUNK_R_SEPARATORS")
+    return tuple(normalized.separators or ())
+
+
+def env_r_separators() -> list[str]:
+    """Return the cached, bounded ``CHUNK_R_SEPARATORS`` cascade.
+
+    Empty, malformed, and non-string JSON arrays retain the historic silent
+    fallback to :data:`DEFAULT_R_SEPARATORS`. A syntactically valid cascade that
+    exceeds the safety bounds is corrected and warned about once per raw value.
+    """
+    return list(_cached_env_r_separators(os.getenv("CHUNK_R_SEPARATORS")))
+
+
+def _env_r_separators() -> list[str]:
+    """Load the cached, bounded environment R-separator cascade."""
+    return env_r_separators()
+
+
+def normalize_chunker_r_separators(
+    chunker_config: Mapping[str, Any],
+    *,
+    context: str | None = None,
+) -> tuple[Mapping[str, Any], bool]:
+    """Correct the configured R cascade and optionally report it once.
+
+    This is for long-lived chunker configuration, not document snapshots. It
+    returns the original mapping untouched when no correction is needed so
+    callers can retain existing object identity and update their cache only when
+    necessary. Per-document snapshots use :func:`slim_chunk_options`' silent
+    backstop instead.
+    """
+    recursive = chunker_config.get("recursive_character")
+    if not isinstance(recursive, Mapping) or "separators" not in recursive:
+        return chunker_config, False
+
+    from lightrag.chunker.recursive_character import (
+        inspect_r_separators,
+        log_r_separator_normalization,
+    )
+
+    normalized = inspect_r_separators(recursive["separators"])
+    if not normalized.changed:
+        return chunker_config, False
+
+    corrected = dict(chunker_config)
+    corrected_recursive = dict(recursive)
+    corrected_recursive["separators"] = normalized.separators
+    corrected["recursive_character"] = corrected_recursive
+    if context is not None:
+        log_r_separator_normalization(normalized, context=context)
+    return corrected, True
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
@@ -542,6 +607,20 @@ def resolve_chunk_options(
             src = candidate
     if src is None:
         src = default_chunker_config()
+    else:
+        # ``ObservableAddonParams`` supports a documented nested-mutation
+        # style. Such a mutation cannot notify the top-level mapping, so the
+        # next enqueue is the first reliable chance to validate it. Correct and
+        # cache the value here; subsequent document snapshots are already
+        # bounded and therefore silent.
+        from lightrag.addon_params import ObservableAddonParams
+
+        if isinstance(addon_params, ObservableAddonParams):
+            src, corrected = normalize_chunker_r_separators(
+                src, context="addon_params['chunker']"
+            )
+            if corrected:
+                addon_params["chunker"] = dict(src)
 
     snapshot = slim_chunk_options(src, process_options)
     if chunk_strategy_key(process_options) == "fixed_token":

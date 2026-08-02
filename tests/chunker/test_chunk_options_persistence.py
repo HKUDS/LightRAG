@@ -1134,6 +1134,52 @@ def test_runtime_addon_params_mutation_affects_subsequent_enqueue(tmp_path):
 
 
 @pytest.mark.offline
+def test_runtime_chunker_config_is_corrected_once_and_cached(tmp_path, monkeypatch):
+    """Top-level replacement warns immediately; nested mutation warns once at enqueue.
+
+    Nested ``addon_params`` dicts intentionally remain mutable for compatibility,
+    so snapshot construction is the first observable boundary after that style of
+    update. It must replace the bad live value as well as return a safe snapshot.
+    """
+    import lightrag.chunker.recursive_character as recursive_character
+
+    from lightrag.parser.routing import resolve_chunk_options
+
+    rag = _new_rag(tmp_path)
+    too_many = [f"runtime-cache-{index}" for index in range(70)]
+    warnings: list[str] = []
+    monkeypatch.setattr(recursive_character.logger, "warning", warnings.append)
+
+    rag.addon_params["chunker"] = {"recursive_character": {"separators": too_many}}
+
+    assert (
+        rag.addon_params["chunker"]["recursive_character"]["separators"]
+        == too_many[:64]
+    )
+    assert (
+        sum(
+            "[addon_params['chunker']] separator cascade" in message
+            for message in warnings
+        )
+        == 1
+    )
+
+    warnings.clear()
+    all_overlong = ["x" * 257] * 3
+    rag.addon_params["chunker"]["recursive_character"]["separators"] = all_overlong
+
+    first = resolve_chunk_options(rag.addon_params, process_options="R")
+    second = resolve_chunk_options(rag.addon_params, process_options="R")
+
+    assert first["recursive_character"]["separators"] == []
+    assert second["recursive_character"]["separators"] == []
+    assert rag.addon_params["chunker"]["recursive_character"]["separators"] == []
+    assert (
+        sum("[addon_params['chunker']] dropped" in message for message in warnings) == 1
+    )
+
+
+@pytest.mark.offline
 def test_r_strategy_uses_dedicated_chunk_size_env(tmp_path, monkeypatch):
     """``CHUNK_R_SIZE`` must give R its own ``chunk_token_size``,
     decoupled from the global ``CHUNK_SIZE`` shared by F/V."""

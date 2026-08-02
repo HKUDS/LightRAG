@@ -936,12 +936,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
 
+    def _on_addon_params_changed(self) -> None:
+        """Normalize a replacement chunker config before marking caches dirty.
+
+        ``ObservableAddonParams`` observes top-level assignments, so replacing
+        ``rag.addon_params['chunker']`` is corrected and reported immediately.
+        Nested in-place mutation remains supported for compatibility; its first
+        subsequent enqueue is normalized and cached by
+        ``resolve_chunk_options``.
+        """
+        chunker_config = self._addon_params.get("chunker")
+        if isinstance(chunker_config, Mapping):
+            from lightrag.parser.routing import normalize_chunker_r_separators
+
+            normalized, corrected = normalize_chunker_r_separators(
+                chunker_config, context="addon_params['chunker']"
+            )
+            if corrected:
+                # Bypass ``ObservableAddonParams.__setitem__`` to avoid
+                # recursively re-entering this callback. The correction itself
+                # is already complete and this method marks the cache dirty
+                # below.
+                dict.__setitem__(self._addon_params, "chunker", dict(normalized))
+        self._mark_addon_params_dirty()
+
     def _replace_addon_params(
         self, addon_params: Mapping[str, Any] | None, *, mark_dirty: bool
     ) -> None:
         wrapped = ObservableAddonParams(
             normalize_addon_params(addon_params),
-            on_change=self._mark_addon_params_dirty,
+            on_change=self._on_addon_params_changed,
         )
         self._addon_params = wrapped
         if mark_dirty:
