@@ -381,7 +381,7 @@ parser 保证「一条标题下的正文作为一个基础块」（native 经按
 | `CHUNK_P_OVERLAP_SIZE` | 未设（沿用 `CHUNK_OVERLAP_SIZE`） | P 专用 overlap；只影响同一内容行内长正文 fallback 和表格桥接预算，**不**让表格行级切片互相重叠 |
 | `CHUNK_OVERLAP_SIZE` / `LightRAG(chunk_overlap_token_size=…)` | `100` | 未设 P 专用 overlap 时的全局兜底 |
 
-配置语法、优先级链、`addon_params["chunker"]` 运行时改值等详见 [FileProcessingConfiguration-zh.md](FileProcessingConfiguration-zh.md) §3。
+配置语法、优先级链、`addon_params["chunker"]` 运行时改值等详见 [FileProcessingPipeline-zh.md](./FileProcessingPipeline-zh.md)。
 
 `P` 是与引擎正交的 chunking 选项（`后缀:引擎-选项`），可与任何产出 sidecar 的引擎组合。启用 P 的典型 `LIGHTRAG_PARSER` 写法：
 

@@ -81,7 +81,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `doc_title` | `str` | 文档标题（通常为首个 H1）；可选。docx smart_heading 模式下为 LLM 识别的标题块主标题，未识别出标题块时为空字符串 |
 | `doc_summary` | `str` | 文档摘要；可选 |
 | `doc_attributes` | `object` | 文章扩展属性对象；可选 |
-| `bbox_attributes` | `object` | bbox possition全局属性；详见[§八](八、positions) |
+| `bbox_attributes` | `object` | bbox possition全局属性；详见[§八](#八positions) |
 
 > LightRAG要求同一个workspace（知识库）内的文件名（document_name）必须唯一。
 
@@ -121,7 +121,7 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `session_type` | Block所处区域：`body` `preface` `TOC` `references` `appendix` |
 | `table_slice` | 可选保留字段；表示Block是否仅包括表格片段。目前分析引擎不会拆分长表格。因此本字段固定为 `"none"`（表示表格不会被分片） |
 | `table_header` | 可选保留字段；在当前块位表格片段的时候，保存识别出来的表格头。目前不存在 |
-| `positions` | `position` 对象数组：标识文本块的版面位置；文本块来与版面的多个位置的时候，则会出现多个`position` 对象。参见[§八](#八、position) |
+| `positions` | `position` 对象数组：标识文本块的版面位置；文本块来与版面的多个位置的时候，则会出现多个`position` 对象。参见[§八](#八positions) |
 
 > - blockid计算方式：`md5(doc_id + ":" + block_index + ":" + heading + ":" + content)`。文档经过分块策略处理得到的 chunk 将保存 blockid 用于溯源 chunk 在s idecar 中的位置。
 > - 不关系文档章节结构的分块策略 `F` `R` `V` 使用的就是 content 字段拼接后的内容进行分块。因此需要保证所有 Block 的 content字段合并在一起能够构成完整的文档内容，不会缺少内容，不会出现重叠的内容。
@@ -196,10 +196,10 @@ inputs/space1/__parsed__/<规范文件名>.parsed/
 | `src` | 原文档中图形的原始引用（远程 URL、外链 target）；多数情况下为空 |
 | `caption` | 可见标题（解析器可能留空） |
 | `footnotes` | 脚注字符串列表 |
-| `surrounding` | 上下文对象：参见[§七](#七、surrounding) |
+| `surrounding` | 上下文对象：参见[§七](#七surrounding) |
 | `self_ref` | 字符串：可选；解析引擎原始输出中的对象引用（如 Docling JSON Pointer `#/pictures/3`，或 MinerU `content_list.json#/23`），用于溯源时回查原始解析产物中的对应对象（页面位置、原始结构等）。native 等不提供此字段时不输出 |
 | `extras` | 对象：可选；引擎专属的旁路字段（如图片中包含的OCR文字等）。不属于 spec 校验范围，下游消费者不应依赖具体键。 |
-| `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九、`llm_analyze_result`) （后续会注入到多模态文本块） |
+| `llm_analyze_result` | 模态分析结果对象：详见 [§九](#九llm_analyze_result) （后续会注入到多模态文本块） |
 | `llm_cache_list` | 模态分析LLM缓存数组（后续会注入到多模态文本块） |
 
 `extras` 中常见的 drawing 专属键：

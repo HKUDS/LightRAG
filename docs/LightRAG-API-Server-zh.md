@@ -810,10 +810,9 @@ VLM_LLM_MODEL=gpt-5-mini
 
 ### 多模态分析配置
 
-解析器可以产出图片/绘图、表格和公式 sidecar。VLM 分析只会在两个条件同时满足时运行：
+解析器可以产出图片/绘图、表格和公式 sidecar。某个模态要被分析，需要文档的 `process_options` 包含对应标记（`i` 图片、`t` 表格、`e` 公式），并且对应的 sidecar 存在。
 
-- 文档的 `process_options` 包含对应模态标记：`i` 表示图片，`t` 表示表格，`e` 表示公式。
-- `VLM_PROCESS_ENABLE=true`，且实际生效的 VLM binding 支持图片输入。
+`VLM_PROCESS_ENABLE` **只闸控图片**。表格和公式由 `EXTRACT` 角色分析，不受该开关影响，因此 `*:native-teP` 无需配置任何 VLM 即可工作。若启用了 `i` 而 VLM 不可用，通过了前置过滤（文件存在、栅格格式、长宽均不小于 `VLM_MIN_IMAGE_PIXEL`）的图片会让**该文档失败**而非被跳过：文档进入 `FAILED`，`error_msg` 为 "VLM analysis required but VLM role is not available"。
 
 当前支持视觉输入的 provider 包括 `openai`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
 

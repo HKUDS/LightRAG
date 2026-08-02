@@ -981,7 +981,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru pool  × N2] ─┼�
           └─ parse_queues[<3rd-party group>] ─► [custom pool] ┘   ← created per ParserSpec.queue_group
 ```
 
-Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see `docs/ThirdPartyParser-zh.md`). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
+Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see [ThirdPartyParser.md](./ThirdPartyParser.md)). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
 
 | Environment variable | Default | Effect | Tuning advice |
 | --- | --- | --- | --- |
@@ -1115,5 +1115,23 @@ Only effective for the F strategy; other strategies' sub-dictionaries are unaffe
 
 The legacy `apipeline_enqueue_documents` behavior of `reprocess_existing_non_processed=True` would directly delete non-PROCESSED old records and rebuild them during scan, which conflicts with the rules in §5 / §6; it has been entirely removed. Replacement paths:
 
-- Automatic resume: scan handles same-named files per the classification rules in §6.4 (archive / resume / delete stub then re-enqueue), uniformly picked up by the resume rules in §7 inside the processing loop.
+- Automatic resume: scan handles same-named files per the classification rules in §5.1 (archive / resume / delete stub then re-enqueue), uniformly picked up by the resume rules in §7 inside the processing loop.
 - Forced refresh: first call `/documents/{doc_id}` to delete the old document, then upload the same-named new file.
+
+## Appendix A. Notes on Upgrading from Legacy
+
+### A.1 The global multimodal switch has been replaced by per-file options
+
+`addon_params["enable_multimodal_pipeline"]` is deprecated. Multimodal analysis is now selected per document through the `i` / `t` / `e` processing options (§2.5), set either as a rule default in `LIGHTRAG_PARSER` (§2.2) or via a filename hint (§2.3). There is no global "analyze everything" flag any more, because the modality set a document actually contains is decided by the parsing engine and reported through sidecar existence, not by configuration.
+
+Migration: replace the old global switch with the corresponding letters on your routing rules — for example `LIGHTRAG_PARSER=*:native-iteP,*:legacy-R`. Note that `VLM_PROCESS_ENABLE` is a separate, orthogonal switch: it gates **image** analysis only (tables and equations are analyzed by the `EXTRACT` role), and with `i` enabled but no VLM available an image that passes the pre-filters fails the document rather than being skipped.
+
+Documents ingested before the upgrade keep the `process_options` frozen into their `doc_status` record at enqueue time; changing rules or hints does not retroactively alter them. To re-process an existing document under new options, delete it and upload it again (§7.3).
+
+### A.2 Behavior defaults are unchanged unless you opt in
+
+With `LIGHTRAG_PARSER` unset, every extension still routes to the `legacy` content extractor with the legacy chunking behavior, exactly as before the upgrade. The new engines and chunking strategies are opt-in; see §1 for three ready-to-use presets.
+
+### A.3 Removed SDK parameter
+
+`apipeline_enqueue_documents(reprocess_existing_non_processed=...)` has been removed; see §8.6 for the replacement paths.
