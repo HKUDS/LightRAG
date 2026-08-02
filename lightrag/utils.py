@@ -17,6 +17,7 @@ import os
 import re
 import time
 import uuid
+import threading
 import warnings
 from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -2893,13 +2894,76 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     return [r.strip() for r in results if r.strip()]
 
 
+# ---------------------------------------------------------------------------
+# Token counting off the event loop
+# ---------------------------------------------------------------------------
+#
+# Tokenizing is CPU-bound and roughly linear in the input the caller chose —
+# about half a second per MiB — so doing it inline in an ``async def`` stops the
+# process from answering anything at all for the duration, /health included
+# (GHSA-r8jh-295g-vv42). These helpers move it to a thread.
+#
+# One worker, deliberately. Query-side tokenizing is serialized by the event loop
+# today, so a single worker preserves that concurrency exactly rather than
+# introducing parallelism this change has no reason to introduce. Thread-safety
+# is NOT what the single worker is for — that is the injected tokenizer's own
+# responsibility (see ``Tokenizer``), and it does not depend on how many pools
+# exist.
+#
+# Invariant: code running inside this executor must call the SYNCHRONOUS
+# tokenizer API. Awaiting these helpers from a worker thread would park that
+# thread on the loop while the loop waits for the thread.
+
+_TOKENIZER_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_TOKENIZER_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_tokenizer_executor() -> ThreadPoolExecutor:
+    """The process-wide single-worker pool used for token counting."""
+    global _TOKENIZER_EXECUTOR
+    if _TOKENIZER_EXECUTOR is None:
+        with _TOKENIZER_EXECUTOR_GUARD:
+            if _TOKENIZER_EXECUTOR is None:
+                _TOKENIZER_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-tokenizer"
+                )
+    return _TOKENIZER_EXECUTOR
+
+
+async def run_in_tokenizer_executor(fn: Callable[..., Any], *args: Any) -> Any:
+    """Run a synchronous, tokenizer-bound callable off the event loop.
+
+    Callers that already have a whole loop of encodes should hand over the loop,
+    not each encode: submissions must stay O(1) per request or the executor's
+    queue depth scales with the work instead of with the concurrency.
+    """
+    from lightrag.constants import TOKENIZER_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("tokenizer", TOKENIZER_SUBMIT_LIMIT)
+    return await bounded_submit(get_tokenizer_executor(), semaphore, fn, *args)
+
+
+async def aencode(tokenizer: Tokenizer, content: str) -> List[int]:
+    """Encode ``content`` without occupying the event loop."""
+    return await run_in_tokenizer_executor(tokenizer.encode, content)
+
+
+async def acount_tokens(tokenizer: Tokenizer, content: str) -> int:
+    """Token count of ``content``, computed off the event loop."""
+    return await run_in_tokenizer_executor(_count_tokens_sync, tokenizer, content)
+
+
+def _count_tokens_sync(tokenizer: Tokenizer, content: str) -> int:
+    return len(tokenizer.encode(content))
+
+
 def truncate_list_by_token_size(
     list_data: list[Any],
     key: Callable[[Any], str],
     max_token_size: int,
     tokenizer: Tokenizer,
-) -> list[int]:
-    """Truncate a list of data by token size"""
+) -> list[Any]:
+    """Truncate a list of data by token size."""
     if max_token_size <= 0:
         return []
     tokens = 0
@@ -2908,6 +2972,25 @@ def truncate_list_by_token_size(
         if tokens > max_token_size:
             return list_data[:i]
     return list_data
+
+
+async def atruncate_list_by_token_size(
+    list_data: list[Any],
+    key: Callable[[Any], str],
+    max_token_size: int,
+    tokenizer: Tokenizer,
+) -> list[Any]:
+    """Async :func:`truncate_list_by_token_size`.
+
+    The WHOLE loop is one submission, never one per element. Submitting per
+    element would make the executor's queue depth scale with the list length
+    times the number of in-flight requests, turning a bounded queue into an
+    amplifier — and this loop routinely runs over every retrieved chunk, which is
+    the largest single block of synchronous tokenizing on the query path.
+    """
+    return await run_in_tokenizer_executor(
+        truncate_list_by_token_size, list_data, key, max_token_size, tokenizer
+    )
 
 
 def normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
@@ -5057,7 +5140,7 @@ async def process_chunks_unified(
 
         original_count = len(unique_chunks)
 
-        unique_chunks = truncate_list_by_token_size(
+        unique_chunks = await atruncate_list_by_token_size(
             unique_chunks,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]

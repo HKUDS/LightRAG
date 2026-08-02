@@ -11,7 +11,7 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-from .utils import logger
+from .utils import logger, run_in_tokenizer_executor
 
 from dotenv import load_dotenv
 
@@ -165,6 +165,29 @@ def chunk_documents_for_rerank(
     return chunked_docs, doc_indices
 
 
+async def achunk_documents_for_rerank(
+    documents: List[str],
+    max_tokens: int = 480,
+    overlap_tokens: int = 32,
+    tokenizer_model: str = "gpt-4o-mini",
+) -> Tuple[List[str], List[int]]:
+    """Async :func:`chunk_documents_for_rerank`.
+
+    Reranking runs on the query path and this function encodes and decodes once
+    per document plus once per emitted window, so on the event loop it scales the
+    stall with the number of retrieved chunks. The whole function is a single
+    submission; splitting it per document would make the executor queue grow with
+    the result set instead of with the number of in-flight requests.
+    """
+    return await run_in_tokenizer_executor(
+        chunk_documents_for_rerank,
+        documents,
+        max_tokens,
+        overlap_tokens,
+        tokenizer_model,
+    )
+
+
 def aggregate_chunk_scores(
     chunk_results: List[Dict[str, Any]],
     doc_indices: List[int],
@@ -287,7 +310,7 @@ async def generic_rerank_api(
     original_top_n = top_n  # Save original top_n for post-aggregation limiting
 
     if enable_chunking:
-        documents, doc_indices = chunk_documents_for_rerank(
+        documents, doc_indices = await achunk_documents_for_rerank(
             documents, max_tokens=max_tokens_per_doc
         )
         logger.debug(

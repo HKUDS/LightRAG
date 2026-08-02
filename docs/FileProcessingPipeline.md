@@ -1071,7 +1071,7 @@ Before a document reaches any of the machinery above, the server can refuse it o
 | Variable | Default | Refusal |
 | --- | --- | --- |
 | `MAX_UPLOAD_SIZE` | `104857600` (100 MB) | `413` — single uploaded file too large |
-| `MAX_REQUEST_BODY_BYTES` | `0` (disabled) | `413` — raw request body too large, checked independently of the above |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | `413` — raw request body too large. Applies to **every** route, layered: ordinary routes get this value, `/documents/text` and `/documents/texts` get a built-in 50 MiB **while this variable is unset**, and `/documents/upload` derives `MAX_UPLOAD_SIZE` + 1 MiB. Configuring any positive value — the 1 MiB default included — makes it govern every non-upload route. `0` disables all of them |
 | `MAX_TEXTS_PER_REQUEST` | `0` (disabled) | `413` — too many texts in one `/documents/texts` call |
 | `MAX_PENDING_DOCUMENTS` | `0` (disabled) | `429` — too many documents already PENDING / PARSING / ANALYZING / PROCESSING |
 

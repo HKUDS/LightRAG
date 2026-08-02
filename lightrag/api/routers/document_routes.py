@@ -504,8 +504,10 @@ class RecursiveCharacterChunkParams(_OverlapChunkParams):
     # and matches in linear time. What is NOT bounded by that is the *number*
     # of candidates: the splitter walks the list per recursion level, so cost
     # grows as ``len(separators) x len(text)``, and unlike V the R chunker runs
-    # synchronously on the event loop. With ``MAX_REQUEST_BODY_BYTES=0`` (the
-    # default) both factors come from the same request, so cap the list here.
+    # synchronously on the event loop. One request supplies both factors, and
+    # the body ceiling does not bound the product — the text-ingestion routes
+    # allow 50 MiB by default, and ``MAX_REQUEST_BODY_BYTES=0`` removes the
+    # ceiling entirely — so cap the list here.
     # The built-in cascade is 9 entries (``DEFAULT_R_SEPARATORS``); 64 leaves
     # ample room for a multi-language cascade while removing the amplification.
     separators: Optional[list[str]] = Field(default=None, max_length=64)

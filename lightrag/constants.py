@@ -440,12 +440,70 @@ DEFAULT_MAX_PENDING_DOCUMENTS = 0
 # otherwise do all of them before being refused.
 DEFAULT_MAX_TEXTS_PER_REQUEST = 0
 
-# Hard ceiling on the raw request body an ingestion endpoint may receive, counted
-# as it streams through the ASGI ``receive`` channel (LR2 §9.4). ``0`` disables
-# it. Distinct from ``MAX_UPLOAD_SIZE``, which bounds one uploaded FILE after
-# multipart parsing: this bounds the bytes the server agrees to read at all, so a
-# body that lies about (or omits) Content-Length is still cut off.
-DEFAULT_MAX_REQUEST_BODY_BYTES = 0
+# Hard ceiling on the raw request body ANY route may receive, counted as it
+# streams through the ASGI ``receive`` channel. ``0`` disables every body limit,
+# including the upload one derived below. Distinct from ``MAX_UPLOAD_SIZE``,
+# which bounds one uploaded FILE after multipart parsing: this bounds the bytes
+# the server agrees to read at all, so a body that lies about (or omits)
+# Content-Length is still cut off.
+#
+# Enabled by default. It used to be ``0`` and to cover three ingestion routes
+# only, which meant an operator could set it, watch /documents/text reject an
+# oversized body in milliseconds, and still have /api/chat accept the same body
+# and stall the process on it (GHSA-r8jh-295g-vv42).
+DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024
+
+# The text-ingestion routes (/documents/text, /documents/texts) get their own,
+# far more generous ceiling. 1 MiB is right for a query or a chat turn and wrong
+# for pasting a document or batching several of them, and a batch insert has no
+# equivalent on the upload route (a batch is not several single-file uploads).
+# Not an env knob: an operator who needs a different value sets
+# MAX_REQUEST_BODY_BYTES, which then governs every non-upload route.
+DEFAULT_MAX_INGEST_BODY_BYTES = 50 * 1024 * 1024
+
+# Slack added to MAX_UPLOAD_SIZE to obtain the raw-body ceiling of
+# /documents/upload. Multipart framing (boundaries, part headers, any extra form
+# fields) rides along with the file, so the raw body is always somewhat larger
+# than the file the route is willing to keep.
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+
+# Input ceilings for the model-facing request fields. Deliberately NOT env knobs:
+# a limit that exists to keep an unauthenticated caller from choosing how much
+# CPU the server spends is worth nothing if it can be misconfigured away.
+#
+# Only the *volume* limits are load-bearing. Cost is proportional to bytes, not
+# to message count, and nothing on the path is super-linear in the number of
+# messages (``messages.extend(history_messages)``), so under a byte ceiling 5000
+# tiny messages and one large message cost the same.
+MAX_QUERY_CHARS = 64 * 1024
+MAX_MESSAGE_CHARS = 32 * 1024
+# All model-facing text in one request, summed. Without this a per-message limit
+# is trivially rebuilt out of many messages.
+MAX_REQUEST_TEXT_CHARS = 128 * 1024
+# The whole conversation_history, serialized. This is the complete bound: it does
+# not depend on enumerating field names, so a payload smuggled through ``role``
+# or through an extra key nobody thought of is still counted.
+MAX_HISTORY_JSON_CHARS = 128 * 1024
+
+# Sanity guards, NOT security boundaries — the volume limits above already bound
+# the work. They exist so obviously-abnormal input is refused at the request
+# boundary with a clear error instead of failing further upstream at the model
+# provider. 128 rather than something smaller because /api/chat serves clients
+# that send the whole conversation, where ~64 turns is ordinary use.
+MAX_MESSAGES_PER_REQUEST = 128
+MAX_ROLE_CHARS = 64
+MAX_KEYWORDS_PER_LIST = 64
+MAX_KEYWORD_CHARS = 512
+MAX_MODEL_NAME_CHARS = 256
+MAX_IMAGES_PER_MESSAGE = 16
+MAX_RESPONSE_TYPE_CHARS = 256
+
+# Upper bounds on the numeric retrieval knobs. Character limits alone do not
+# bound the work: ``top_k=10**6`` with ``max_total_tokens=10**9`` leaves the
+# retrieval volume — and the tokenization that follows it — under the caller's
+# control regardless of how short the query is.
+MAX_QUERY_TOP_K = 1000
+MAX_QUERY_TOKEN_BUDGET = 1_000_000
 
 # Submission ceilings for the two single-worker CPU pools (tokenizer, chunking).
 # A ``ThreadPoolExecutor`` wait queue is unbounded, and freeing the event loop

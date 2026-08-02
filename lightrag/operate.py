@@ -5,6 +5,7 @@ from pathlib import Path
 
 import asyncio
 import json
+import logging
 import re
 import json_repair
 from typing import Any, AsyncIterator, overload, Literal, Callable, Awaitable
@@ -25,7 +26,9 @@ from lightrag.utils import (
     tolerant_load_json_dict,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
-    truncate_list_by_token_size,
+    acount_tokens,
+    atruncate_list_by_token_size,
+    run_in_tokenizer_executor,
     compute_args_hash,
     handle_cache,
     save_to_cache,
@@ -533,7 +536,7 @@ async def _summarize_descriptions(
     json_descriptions = [{"Description": desc} for desc in description_list]
 
     # Use truncate_list_by_token_size for length truncation
-    truncated_json_descriptions = truncate_list_by_token_size(
+    truncated_json_descriptions = await atruncate_list_by_token_size(
         json_descriptions,
         key=lambda x: json.dumps(x, ensure_ascii=False),
         max_token_size=summary_context_size,
@@ -4226,10 +4229,17 @@ async def kg_query(
 
     # Call LLM
     tokenizer: Tokenizer = global_config["tokenizer"]
-    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(
-        f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
-    )
+    # Guarded rather than unconditional: this whole block exists for a debug log,
+    # and an f-string is evaluated eagerly, so the three encodes below used to run
+    # at every log level over the largest string on the query path.
+    if logger.isEnabledFor(logging.DEBUG):
+        query_prompt_tokens = await acount_tokens(tokenizer, query)
+        sys_prompt_tokens = await acount_tokens(tokenizer, sys_prompt)
+        len_of_prompts = await acount_tokens(tokenizer, query + sys_prompt)
+        logger.debug(
+            f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens "
+            f"(Query: {query_prompt_tokens}, System: {sys_prompt_tokens})"
+        )
 
     # Handle cache
     answer_cache_kv = _answer_cache_kv(query_param, hashing_kv)
@@ -4520,10 +4530,13 @@ async def extract_keywords_only(
     )
 
     tokenizer: Tokenizer = global_config["tokenizer"]
-    len_of_prompts = len(tokenizer.encode(kw_prompt))
-    logger.debug(
-        f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
-    )
+    # Debug-only, so pay for the encode only when it will actually be printed.
+    if logger.isEnabledFor(logging.DEBUG):
+        len_of_prompts = await acount_tokens(tokenizer, kw_prompt)
+        logger.debug(
+            f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens "
+            f"(Prompt: {len_of_prompts})"
+        )
 
     # 4. Call the LLM for keyword extraction
     # Apply higher priority (5) to query relation LLM function
@@ -4952,7 +4965,7 @@ async def _apply_token_truncation(
             entity_copy.pop("created_at", None)
             entities_context_for_truncation.append(entity_copy)
 
-        entities_context = truncate_list_by_token_size(
+        entities_context = await atruncate_list_by_token_size(
             entities_context_for_truncation,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]
@@ -4970,7 +4983,7 @@ async def _apply_token_truncation(
             relation_copy.pop("created_at", None)
             relations_context_for_truncation.append(relation_copy)
 
-        relations_context = truncate_list_by_token_size(
+        relations_context = await atruncate_list_by_token_size(
             relations_context_for_truncation,
             key=lambda x: "\n".join(
                 json.dumps(item, ensure_ascii=False) for item in [x]
@@ -5045,16 +5058,27 @@ async def _attach_content_headings(
     tokenizer = text_chunks_db.global_config.get("tokenizer")
     chunk_ids = [c.get("chunk_id") for c in chunks]
     chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
-    for chunk, data in zip(chunks, chunk_data_list):
-        if not isinstance(data, dict):
-            continue
-        headings = _truncate_section_context(
-            format_parent_headings(data),
-            tokenizer,
-            DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
-        )
-        if headings:
-            chunk["content_headings"] = headings
+
+    def _backfill() -> None:
+        for chunk, data in zip(chunks, chunk_data_list):
+            if not isinstance(data, dict):
+                continue
+            headings = _truncate_section_context(
+                format_parent_headings(data),
+                tokenizer,
+                DEFAULT_MAX_SECTION_CONTEXT_TOKENS,
+            )
+            if headings:
+                chunk["content_headings"] = headings
+
+    # The whole loop is one submission, keeping submissions O(1) per request.
+    # It has to leave the event loop at all because this tokenizer is the
+    # long-lived one the storages captured at init, i.e. the SAME object every
+    # concurrent query uses — and two of its other consumers
+    # (_apply_token_truncation, process_chunks_unified) now run in the tokenizer
+    # executor. Left here, two concurrent queries would contend: one holding the
+    # tokenizer in a worker thread while the other waits for it on the loop.
+    await run_in_tokenizer_executor(_backfill)
 
 
 async def _merge_all_chunks(
@@ -5230,7 +5254,7 @@ async def _build_context_str(
         text_chunks_str="",
         reference_list_str="",
     )
-    kg_context_tokens = len(tokenizer.encode(pre_kg_context))
+    kg_context_tokens = await acount_tokens(tokenizer, pre_kg_context)
 
     # Calculate preliminary system prompt tokens
     pre_sys_prompt = sys_prompt_template.format(
@@ -5238,10 +5262,10 @@ async def _build_context_str(
         response_type=response_type,
         user_prompt=user_prompt,
     )
-    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
+    sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
 
     # Calculate available tokens for text chunks
-    query_tokens = len(tokenizer.encode(query))
+    query_tokens = await acount_tokens(tokenizer, query)
     buffer_tokens = 200  # reserved for reference list and safety buffer
     available_chunk_tokens = max_total_tokens - (
         sys_prompt_tokens + kg_context_tokens + query_tokens + buffer_tokens
@@ -6158,8 +6182,8 @@ async def naive_query(
     )
 
     # Calculate available tokens for chunks
-    sys_prompt_tokens = len(tokenizer.encode(pre_sys_prompt))
-    query_tokens = len(tokenizer.encode(query))
+    sys_prompt_tokens = await acount_tokens(tokenizer, pre_sys_prompt)
+    query_tokens = await acount_tokens(tokenizer, query)
     buffer_tokens = 200  # reserved for reference list and safety buffer
     available_chunk_tokens = max_total_tokens - (
         sys_prompt_tokens + query_tokens + buffer_tokens

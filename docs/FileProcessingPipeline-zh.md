@@ -1071,7 +1071,7 @@ PENDING ─►├─ parse_queues["mineru"]  ─► [mineru 池  × N2] ─┼�
 | 变量 | 缺省 | 拒绝方式 |
 | --- | --- | --- |
 | `MAX_UPLOAD_SIZE` | `104857600`（100 MB） | `413` —— 单个上传文件过大 |
-| `MAX_REQUEST_BODY_BYTES` | `0`（关闭） | `413` —— 原始请求体过大，与上一项各自独立判定 |
+| `MAX_REQUEST_BODY_BYTES` | `1048576`（1 MiB） | `413` —— 原始请求体过大。作用于**所有**路由且分档：普通路由取该值，`/documents/text` 与 `/documents/texts` 在**未设置该变量时**取内置 50 MiB，`/documents/upload` 由 `MAX_UPLOAD_SIZE` + 1 MiB 派生。显式配置任意正值（含 1 MiB 默认值）会让它统一作用于所有非上传路由。设为 `0` 则全部关闭 |
 | `MAX_TEXTS_PER_REQUEST` | `0`（关闭） | `413` —— 单次 `/documents/texts` 携带的文本条数过多 |
 | `MAX_PENDING_DOCUMENTS` | `0`（关闭） | `429` —— 处于 PENDING / PARSING / ANALYZING / PROCESSING 的文档已过多 |
 
