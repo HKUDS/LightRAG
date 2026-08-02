@@ -28,7 +28,7 @@ For image build details, GPU driver setup, model weight locations, etc., refer t
 On top of the basic deployment, it is recommended to additionally enable two MinerU **server-side** features for your local MinerU. Both modify MinerU container-side configuration (the in-container `mineru.json` and the official `compose.yaml`), and do not involve any LightRAG env variable; title-level correction additionally requires an available LLM API.
 
 - **vLLM startup preload**: loads the VLM model into GPU memory at container startup, avoiding the model-loading latency on the first parse request.
-- **Title-level correction (`title_aided`)**: MinerU uses an external LLM to correct the title hierarchy of the parsed output, improving the quality of the structured artifacts. This is especially helpful for the [P (paragraph semantic) chunking strategy](./FileProcessingPipeline.md#25-file-processing-options), which depends on the title structure; the `P` chunking strategy splits by titles first, so the more accurate the title hierarchy, the better the chunking semantics.
+- **Title-level correction (`title_aided`)**: MinerU uses an external LLM to correct the title hierarchy of the parsed output, improving the quality of the structured artifacts. This is especially helpful for the [P (paragraph semantic) chunking strategy](./FileProcessingPipeline.md#21-file-processing-options), which depends on the title structure; the `P` chunking strategy splits by titles first, so the more accurate the title hierarchy, the better the chunking semantics.
 
 **Step 1: Export and modify `mineru-lightrag.json`**
 
