@@ -451,7 +451,12 @@ def chunking_by_recursive_character(
         chunk_token_size: Hard target size for each chunk (tokens).
         chunk_overlap_token_size: Token overlap between adjacent chunks.
         separators: Cascade of split candidates. ``None`` defers to
-            LangChain's defaults: ``["\\n\\n", "\\n", " ", ""]``.
+            LangChain's defaults: ``["\\n\\n", "\\n", " ", ""]``. Entries over
+            :data:`~lightrag.constants.MAX_R_SEPARATOR_CHARS` are dropped and a
+            cascade over :data:`~lightrag.constants.MAX_R_SEPARATORS` is
+            truncated; if nothing survives, the call behaves as ``None``.
+            Bounding is silent — see :func:`inspect_r_separators` to obtain the
+            correction detail yourself.
 
     Returns:
         Ordered list of ``{"tokens", "content", "chunk_order_index"}``
@@ -479,10 +484,16 @@ def chunking_by_recursive_character(
         # repo-wide cascade here would silently change how CJK text splits for a
         # caller who never asked for it. An empty list would be worse still —
         # ``_split_text_with_spans`` reads ``separators[-1]`` on its first line.
-        logger.warning(
-            "[chunking_by_recursive_character] every supplied separator was "
-            "dropped; falling back to the splitter's default cascade"
-        )
+        #
+        # No warning: this branch is reachable only from a direct SDK call. Every
+        # configured path resolves the same emptiness earlier — the env and
+        # addon_params ingress points report it once when they cache the value,
+        # and the pipeline drops the ``separators`` key from a stale snapshot
+        # before calling here, so this function receives ``None``. Warning here
+        # would therefore only fire per call, for one unchanging argument, which
+        # is exactly the amplification the ingress cache exists to remove. A
+        # caller that wants the diagnostic can ask for it: ``inspect_r_separators``
+        # returns the same correction detail without splitting anything.
         separators = None
 
     splitter_kwargs: dict[str, Any] = {

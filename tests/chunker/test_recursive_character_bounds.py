@@ -173,6 +173,43 @@ def test_an_all_over_long_cascade_falls_back_instead_of_crashing():
     assert chunks
 
 
+def test_the_chunker_entry_point_is_silent_across_repeated_calls(monkeypatch):
+    """One bad SDK argument must not produce one WARNING per document.
+
+    ``normalize_r_separators`` going quiet is not enough on its own: the
+    all-dropped fallback inside ``chunking_by_recursive_character`` used to warn
+    unconditionally, so an application calling the documented entry point in a
+    loop still got a log line per document from a single unchanging argument.
+    This asserts the real entry point, not just the normalizer.
+
+    The branch is only reachable from a direct SDK call: the env and
+    addon_params ingress points report the emptiness once when they cache it,
+    and ``_PipelineMixin`` removes the ``separators`` key from a stale snapshot
+    whose entries were all dropped, so a configured path hands this function
+    ``None`` rather than ``[]``.
+    """
+    import lightrag.chunker.recursive_character as recursive_character
+
+    warnings: list[object] = []
+    monkeypatch.setattr(
+        recursive_character.logger, "warning", lambda *a, **k: warnings.append(a)
+    )
+
+    tokenizer, _ = _tok()
+    over_long = ["x" * (MAX_R_SEPARATOR_CHARS + 1)] * 3
+
+    for _ in range(3):
+        assert chunking_by_recursive_character(
+            tokenizer,
+            "hello world\n\nsecond block",
+            1200,
+            chunk_overlap_token_size=100,
+            separators=over_long,
+        )
+
+    assert warnings == []
+
+
 def test_load_chunk_separators_falls_back_to_the_repo_cascade(monkeypatch):
     """The OTHER consumer decides differently, and the docs say so.
 
