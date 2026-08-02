@@ -474,6 +474,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | Document | What it covers |
 |---|---|
 | [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) 🇨🇳 | Pipeline specification: `LIGHTRAG_PARSER` routing rules, per-engine parameters, multimodal analysis, document status lifecycle |
+| [ParserServiceDeployment.md](./docs/ParserServiceDeployment.md) 🇨🇳 | Self-hosting the external MinerU and docling-serve parsing services (Docker, GPU, model weights) |
 | [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) 🇨🇳 | The `Paragraph semantic (P)` chunking strategy: heading/paragraph/table-aware boundaries, reference dropping |
 | [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) 🇨🇳 | The sidecar (`*.parsed/`) interchange format every multimodal-capable parser engine must emit |
 | [ThirdPartyParser.md](./docs/ThirdPartyParser.md) 🇨🇳 | Developing and registering your own parser engine |
