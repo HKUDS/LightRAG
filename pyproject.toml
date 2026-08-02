@@ -38,7 +38,10 @@ dependencies = [
     "python-dotenv",
     "setuptools",
     "tenacity",
-    "tiktoken",
+    # 0.7.0 adds o200k_base, required by the default gpt-4o-mini, and is the
+    # oldest release whose encode_batch/decode_batch fan encode()/decode() of
+    # one Encoding across threads — the thread safety Tokenizer relies on.
+    "tiktoken>=0.7.0",
     "xlsxwriter>=3.1.0",
 ]
 
@@ -69,7 +72,10 @@ api = [
     "python-dotenv",
     "setuptools",
     "tenacity",
-    "tiktoken",
+    # 0.7.0 adds o200k_base, required by the default gpt-4o-mini, and is the
+    # oldest release whose encode_batch/decode_batch fan encode()/decode() of
+    # one Encoding across threads — the thread safety Tokenizer relies on.
+    "tiktoken>=0.7.0",
     "xlsxwriter>=3.1.0",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<3.0.0",

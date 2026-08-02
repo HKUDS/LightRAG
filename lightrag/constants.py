@@ -447,6 +447,20 @@ DEFAULT_MAX_TEXTS_PER_REQUEST = 0
 # body that lies about (or omits) Content-Length is still cut off.
 DEFAULT_MAX_REQUEST_BODY_BYTES = 0
 
+# Submission ceilings for the two single-worker CPU pools (tokenizer, chunking).
+# A ``ThreadPoolExecutor`` wait queue is unbounded, and freeing the event loop
+# means more requests can be in flight at once, so submissions need their own
+# limit. Deliberately fixed process-wide constants rather than anything derived
+# from ``max_parallel_insert``: the submitting helpers are module level and are
+# called from places holding no ``LightRAG`` instance, several instances sharing
+# one event loop would each build their own semaphore and lose the global
+# ceiling, and — the substantive reason — the pools have ONE worker, so queue
+# depth beyond single digits buys no throughput and only pins more pending data
+# in memory. Over the limit the submitting coroutine waits; it is backpressure,
+# not refusal.
+TOKENIZER_SUBMIT_LIMIT = 8
+CHUNKING_SUBMIT_LIMIT = 8
+
 # Per-workspace ceiling on manual retry requests that have been published but
 # not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an
 # exclusive reset acknowledges it — so an operator hammering /reprocess_failed
