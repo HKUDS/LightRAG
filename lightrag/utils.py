@@ -2783,8 +2783,10 @@ class Tokenizer:
     precisely because being thread-safe is what makes it shareable.
 
     ``_build_global_config`` then restores this object over the copy ``asdict``
-    made, so the per-operation config carries the tokenizer itself and no
-    consumer pays for a copy.
+    made, so every consumer reading ``global_config["tokenizer"]`` holds the same
+    instance as ``LightRAG.tokenizer``. That is an identity guarantee, not a
+    saving: ``asdict`` copies the field before the restore can intervene, which is
+    exactly why the deep-copy requirement above still applies.
     """
 
     def __init__(self, model_name: str, tokenizer: TokenizerInterface):

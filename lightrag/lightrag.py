@@ -1101,14 +1101,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     def _build_global_config(self) -> dict[str, Any]:
         self._ensure_addon_params_cache()
         global_config = asdict(self)
-        # Restore the tokenizer object itself (asdict deep-copies non-dataclass
-        # fields), the same way __post_init__ restores embedding_func. Copying it
-        # was never the isolation it looked like: tiktoken caches encodings in a
-        # process-wide registry and Encoding.__setstate__ rebinds a copy's __dict__
-        # to the registered instance's, so every "independent" copy already shared
-        # one CoreBPE. Now that the injection contract is thread safety, sharing is
-        # what it asks for — and this keeps a tokenizer that holds an internal lock
-        # (deep-copying a lock raises TypeError) off the per-operation copy path.
+        # Restore the tokenizer object itself, the same way __post_init__ restores
+        # embedding_func. This is about IDENTITY, not cost: asdict has already
+        # deep-copied every non-dataclass field by the time we get here, so the
+        # copy is made and discarded, and an injected tokenizer must still survive
+        # copy.deepcopy (a bare threading.Lock raises TypeError — see Tokenizer).
+        #
+        # What it buys is one tokenizer object instead of a per-operation copy
+        # nobody can trace back. That copy was never the isolation it looked like:
+        # tiktoken caches encodings in a process-wide registry and
+        # Encoding.__setstate__ rebinds a copy's __dict__ to the registered
+        # instance's, so every "independent" copy already shared one CoreBPE. Now
+        # that the injection contract is thread safety, sharing is what it asks for.
         global_config["tokenizer"] = self.tokenizer
         global_config.pop("_addon_params", None)
         global_config.pop("_addon_params_dirty", None)
