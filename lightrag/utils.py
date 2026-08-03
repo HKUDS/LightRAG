@@ -4,7 +4,6 @@ import weakref
 import sys
 
 import asyncio
-import bisect
 import contextvars
 import html
 import csv
@@ -40,6 +39,7 @@ import numpy as np
 from dotenv import load_dotenv
 import json_repair
 
+from lightrag.exceptions import ChunkBlockMatchError
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -932,6 +932,27 @@ class HealthCheckTimeoutError(Exception):
         self.execution_duration = execution_duration
         super().__init__(
             f"Task forcefully terminated due to execution timeout (>{timeout_value}s, actual: {execution_duration:.1f}s)"
+        )
+
+
+class TokenBudgetError(Exception):
+    """Raised by :class:`Tokenizer`'s split/truncate contract when not even the
+    first complete Unicode code point of a candidate fits within ``max_tokens``.
+
+    Carries the fields needed to diagnose the failure without re-deriving them:
+    the budget that was violated, the independently-encoded token count of that
+    single code point under the same tokenizer, and a bounded preview of the
+    offending text.
+    """
+
+    def __init__(self, max_tokens: int, code_point_token_count: int, preview: str):
+        self.max_tokens = max_tokens
+        self.code_point_token_count = code_point_token_count
+        self.preview = preview
+        super().__init__(
+            f"Cannot fit content within max_tokens={max_tokens}: the first "
+            f"complete Unicode code point alone encodes to "
+            f"{code_point_token_count} token(s). Preview: {preview!r}"
         )
 
 
@@ -2580,6 +2601,23 @@ def write_json(json_obj, file_name):
     return sanitized
 
 
+@dataclass(frozen=True, slots=True)
+class TokenSpan:
+    """A character-offset span into an original string, plus its own token count.
+
+    ``content[start:end]`` is always a verbatim substring of the string that
+    produced this span — never a decoded reconstruction — and independently
+    re-encoding it under the same :class:`Tokenizer` yields exactly
+    ``token_count`` tokens, which is guaranteed to be ``<= max_tokens`` for
+    whatever budget produced the span. See the ``Tokenizer.split_by_token_limit``
+    / ``truncate_by_token_limit`` docstrings for the full contract.
+    """
+
+    start: int
+    end: int
+    token_count: int
+
+
 class TokenizerInterface(Protocol):
     """
     Defines the interface for a tokenizer, requiring encode and decode methods.
@@ -2902,6 +2940,150 @@ class Tokenizer:
         """
         return self.tokenizer.decode(tokens)
 
+    # -----------------------------------------------------------------------
+    # Safe split/truncate contract
+    # -----------------------------------------------------------------------
+    #
+    # These default implementations rely ONLY on ``encode()`` — never on
+    # ``decode()`` — because ``decode(tokens[:k])`` is not guaranteed to be a
+    # character-exact prefix of the original string for an arbitrary
+    # third-party tokenizer (only tiktoken's ``decode_with_offsets`` gives a
+    # reliable token-to-character mapping; see ``TiktokenTokenizer`` below for
+    # the optimized override). Every candidate here is instead a literal
+    # character-offset slice of the input, so there is no alignment risk, at
+    # the cost of a handful of extra ``encode()`` calls per span compared to
+    # the tiktoken fast path.
+    #
+    # BPE token count is not monotonic in character-prefix length, so this is
+    # a bounded, STRICTLY ONE-DIRECTIONAL retreat: candidate length only ever
+    # decreases (by exponential character steps: 1, 2, 4, 8, ...), never
+    # re-expands. That rules out oscillation and bounds the number of
+    # re-encodes to O(log max_tokens) regardless of how good the initial
+    # char/token ratio estimate turns out to be for a given region of text.
+    #
+    # No cross-call state: nothing here is written back onto ``self``. An
+    # injected tokenizer must remain safe under concurrent calls from
+    # multiple threads and under ``copy.deepcopy`` (see the class docstring),
+    # and any mutable "observed retreat" state would violate both.
+
+    def _bounded_prefix_span(
+        self, content: str, start: int, max_tokens: int, chars_per_token: float
+    ) -> TokenSpan:
+        """Find a safe ``TokenSpan`` starting at character offset ``start``.
+
+        ``chars_per_token`` is a rough estimate (chars per token, from a prior
+        whole-content encode) used only to pick a starting candidate length;
+        the result is always independently verified by encoding the exact
+        candidate substring.
+        """
+        remaining_len = len(content) - start
+        candidate_len = min(remaining_len, max(1, int(max_tokens * chars_per_token)))
+        step = 1
+        while True:
+            candidate = content[start : start + candidate_len]
+            count = len(self.encode(candidate))
+            if count <= max_tokens:
+                return TokenSpan(start, start + candidate_len, count)
+            if candidate_len <= 1:
+                break
+            candidate_len = max(1, candidate_len - step)
+            step *= 2
+
+        first_cp = content[start : start + 1]
+        first_cp_tokens = len(self.encode(first_cp))
+        if first_cp_tokens > max_tokens:
+            raise TokenBudgetError(
+                max_tokens, first_cp_tokens, content[start : start + 80]
+            )
+        return TokenSpan(start, start + 1, first_cp_tokens)
+
+    def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
+        """Return the longest safe prefix of ``content`` that fits ``max_tokens``.
+
+        The result always starts at character offset 0. If the whole string
+        already fits, the returned span covers it entirely. Raises
+        ``ValueError`` for a non-positive budget, and ``TokenBudgetError`` if
+        not even the first complete Unicode code point fits.
+        """
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if not content:
+            return TokenSpan(0, 0, 0)
+
+        full_tokens = len(self.encode(content))
+        if full_tokens <= max_tokens:
+            return TokenSpan(0, len(content), full_tokens)
+
+        chars_per_token = len(content) / full_tokens
+        return self._bounded_prefix_span(content, 0, max_tokens, chars_per_token)
+
+    def split_by_token_limit(
+        self, content: str, max_tokens: int, overlap_tokens: int = 0
+    ) -> List[TokenSpan]:
+        """Split ``content`` into safe, contiguous, optionally-overlapping spans.
+
+        Covers the whole string with no gaps and real forward progress: every
+        non-final span strictly extends the covered range (see the module
+        contract notes above the class). ``overlap_tokens`` is a best-effort
+        target, not a guarantee of the mathematically closest boundary — BPE
+        token count is not monotonic in character length, so this generic
+        implementation only guarantees a safe, progress-making boundary near
+        the target, retreating the target itself (by the same exponential
+        steps) whenever the estimated overlap would fail to make progress.
+        """
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if overlap_tokens < 0:
+            raise ValueError(
+                f"overlap_tokens must be non-negative, got {overlap_tokens}"
+            )
+        if not content:
+            return []
+
+        total_tokens = len(self.encode(content))
+        if total_tokens <= max_tokens:
+            return [TokenSpan(0, len(content), total_tokens)]
+
+        # One global char/token ratio estimate, reused as a local performance
+        # hint for every window and overlap guess in this call only — never
+        # persisted on `self` (see the note above).
+        chars_per_token = len(content) / total_tokens
+
+        spans: List[TokenSpan] = []
+        covered_end = 0
+        total_len = len(content)
+
+        while covered_end < total_len:
+            target_overlap = overlap_tokens if covered_end > 0 else 0
+            step = 1
+            span: Optional[TokenSpan] = None
+            while True:
+                overlap_chars = (
+                    int(round(target_overlap * chars_per_token))
+                    if target_overlap > 0
+                    else 0
+                )
+                start = max(0, covered_end - overlap_chars)
+                try:
+                    candidate_span = self._bounded_prefix_span(
+                        content, start, max_tokens, chars_per_token
+                    )
+                except TokenBudgetError:
+                    if target_overlap == 0:
+                        raise
+                    candidate_span = None
+                if candidate_span is not None and (
+                    candidate_span.end > covered_end or target_overlap == 0
+                ):
+                    span = candidate_span
+                    break
+                target_overlap = max(0, target_overlap - step)
+                step *= 2
+            spans.append(span)
+            covered_end = span.end
+
+        return spans
+
 
 class TiktokenTokenizer(Tokenizer):
     """
@@ -2931,6 +3113,176 @@ class TiktokenTokenizer(Tokenizer):
             super().__init__(model_name=model_name, tokenizer=tokenizer)
         except KeyError:
             raise ValueError(f"Invalid model_name: {model_name}.")
+
+    # -----------------------------------------------------------------------
+    # Optimized split/truncate: decode_with_offsets fast path
+    # -----------------------------------------------------------------------
+    #
+    # `tiktoken.Encoding.decode_with_offsets` (available since the repo's
+    # declared `tiktoken>=0.7.0` floor) maps each token index to the character
+    # offset where it starts, so a candidate "keep the first k tokens" prefix
+    # can be located in O(1) instead of guessing a char/token ratio. The
+    # candidate substring is still always independently re-encoded via
+    # `self.encode` (never `self.tokenizer.encode` directly, to preserve the
+    # base class's disallowed_special=() fallback) before being trusted,
+    # because BPE re-tokenization of a truncated substring is not guaranteed
+    # to reproduce the same token count.
+    #
+    # Retreat here happens in TOKEN space (1, 2, 4, 8, ... tokens) rather than
+    # character space, which is both more precise and, since consecutive token
+    # counts can map to the same character offset when a multi-byte UTF-8
+    # character's bytes are split across tokens, deduplicated so the same
+    # substring is never re-encoded twice in a row.
+
+    def _prefix_span_via_boundary(
+        self,
+        content: str,
+        start_char: int,
+        start_token: int,
+        max_tokens: int,
+        total_tokens: int,
+        boundary: Callable[[int], int],
+    ) -> tuple[TokenSpan, int]:
+        """Find a safe span starting at ``start_char``/``start_token``.
+
+        ``boundary(k)`` returns the character offset where absolute token
+        index ``k`` starts (``boundary(total_tokens)`` is ``len(content)``).
+        Returns ``(span, end_token)`` — the absolute token index the span's
+        ``end`` corresponds to, so callers can resume from it without
+        re-deriving it via a char-offset search.
+        """
+        remaining_tokens = total_tokens - start_token
+        k = min(remaining_tokens, max_tokens)
+        step = 1
+        last_end: Optional[int] = None
+        while True:
+            end = boundary(start_token + k)
+            if end != last_end:
+                # A token boundary can coincide with start_char (a
+                # continuation-byte-only token reports no character advance —
+                # see decode_with_offsets' docstring); an empty candidate
+                # would trivially satisfy count <= max_tokens without
+                # covering anything, so it must never be accepted here.
+                if end > start_char:
+                    candidate = content[start_char:end]
+                    count = len(self.encode(candidate))
+                    if count <= max_tokens:
+                        return TokenSpan(start_char, end, count), start_token + k
+                last_end = end
+            if k <= 1:
+                break
+            k = max(1, k - step)
+            step *= 2
+
+        # Floor: fall back to a direct check of the first complete Unicode
+        # code point, bypassing token-boundary ambiguity entirely (a single
+        # code point's bytes can themselves be split across tokens).
+        end_char = start_char + 1
+        first_cp = content[start_char:end_char]
+        first_cp_tokens = len(self.encode(first_cp))
+        if first_cp_tokens > max_tokens:
+            raise TokenBudgetError(
+                max_tokens, first_cp_tokens, content[start_char : start_char + 80]
+            )
+        end_token = start_token
+        while end_token < total_tokens and boundary(end_token) < end_char:
+            end_token += 1
+        return TokenSpan(start_char, end_char, first_cp_tokens), end_token
+
+    def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if not content:
+            return TokenSpan(0, 0, 0)
+
+        tokens = self.encode(content)
+        total_tokens = len(tokens)
+        if total_tokens <= max_tokens:
+            return TokenSpan(0, len(content), total_tokens)
+
+        try:
+            decoded_text, offsets = self.tokenizer.decode_with_offsets(tokens)
+        except Exception:
+            return super().truncate_by_token_limit(content, max_tokens)
+        if decoded_text != content:
+            # Lossy roundtrip (shouldn't normally happen once special tokens
+            # are handled via self.encode's fallback) — fall back to the
+            # generic, alignment-safe implementation rather than risk an
+            # off-by-however-many char offset.
+            return super().truncate_by_token_limit(content, max_tokens)
+
+        def boundary(k: int) -> int:
+            return offsets[k] if k < total_tokens else len(content)
+
+        span, _ = self._prefix_span_via_boundary(
+            content, 0, 0, max_tokens, total_tokens, boundary
+        )
+        return span
+
+    def split_by_token_limit(
+        self, content: str, max_tokens: int, overlap_tokens: int = 0
+    ) -> List[TokenSpan]:
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if overlap_tokens < 0:
+            raise ValueError(
+                f"overlap_tokens must be non-negative, got {overlap_tokens}"
+            )
+        if not content:
+            return []
+
+        tokens = self.encode(content)
+        total_tokens = len(tokens)
+        if total_tokens <= max_tokens:
+            return [TokenSpan(0, len(content), total_tokens)]
+
+        try:
+            decoded_text, offsets = self.tokenizer.decode_with_offsets(tokens)
+        except Exception:
+            return super().split_by_token_limit(content, max_tokens, overlap_tokens)
+        if decoded_text != content:
+            return super().split_by_token_limit(content, max_tokens, overlap_tokens)
+
+        def boundary(k: int) -> int:
+            return offsets[k] if k < total_tokens else len(content)
+
+        spans: List[TokenSpan] = []
+        covered_end_char = 0
+        covered_end_token = 0
+        total_len = len(content)
+
+        while covered_end_char < total_len:
+            target_overlap = overlap_tokens if covered_end_token > 0 else 0
+            step = 1
+            accepted: Optional[tuple[TokenSpan, int]] = None
+            while True:
+                start_token = max(0, covered_end_token - target_overlap)
+                start_char = boundary(start_token)
+                try:
+                    candidate = self._prefix_span_via_boundary(
+                        content,
+                        start_char,
+                        start_token,
+                        max_tokens,
+                        total_tokens,
+                        boundary,
+                    )
+                except TokenBudgetError:
+                    if target_overlap == 0:
+                        raise
+                    candidate = None
+                if candidate is not None and (
+                    candidate[0].end > covered_end_char or target_overlap == 0
+                ):
+                    accepted = candidate
+                    break
+                target_overlap = max(0, target_overlap - step)
+                step *= 2
+            span, covered_end_token = accepted
+            spans.append(span)
+            covered_end_char = span.end
+
+        return spans
 
 
 def pack_user_ass_to_openai_messages(*args: str):
@@ -3012,26 +3364,67 @@ def _count_tokens_sync(tokenizer: Tokenizer, content: str) -> int:
     return len(tokenizer.encode(content))
 
 
+def _rendered_prefix_item_count(
+    rendered: list[str], separator: str, safe_end: int
+) -> int:
+    """Largest ``k`` such that ``separator.join(rendered[:k])`` fits in ``safe_end`` chars."""
+    cumulative = 0
+    sep_len = len(separator)
+    for i, text in enumerate(rendered):
+        cumulative += (sep_len if i > 0 else 0) + len(text)
+        if cumulative > safe_end:
+            return i
+    return len(rendered)
+
+
 def truncate_list_by_token_size(
     list_data: list[Any],
     key: Callable[[Any], str],
+    separator: str,
     max_token_size: int,
     tokenizer: Tokenizer,
 ) -> list[Any]:
-    """Truncate a list of data by token size."""
-    if max_token_size <= 0:
+    """Truncate a list of data by token size, keeping only whole items.
+
+    Counts the real serialized text — every item's ``key(item)`` joined by
+    ``separator`` — so the separator's own tokens are part of the budget
+    (the previous per-item-only count silently missed them; see #3559).
+    Never partially truncates an item: the result is always "keep the first
+    K complete items, drop the rest", never a half-rendered item.
+
+    ``key``/``separator`` must match exactly what the caller will actually
+    render downstream — a mismatch (e.g. truncating on a fuller dict than the
+    one that ends up serialized) reintroduces the same class of undercount.
+    """
+    if max_token_size <= 0 or not list_data:
         return []
-    tokens = 0
-    for i, data in enumerate(list_data):
-        tokens += len(tokenizer.encode(key(data)))
-        if tokens > max_token_size:
-            return list_data[:i]
-    return list_data
+
+    rendered = [key(data) for data in list_data]
+    full_text = separator.join(rendered)
+    try:
+        safe_span = tokenizer.truncate_by_token_limit(full_text, max_token_size)
+    except TokenBudgetError:
+        return []
+
+    k = _rendered_prefix_item_count(rendered, separator, safe_span.end)
+
+    # BPE token count is not monotonic in text length, so the safe prefix
+    # above is not proof that the first k items' OWN serialization (which is
+    # shorter, since it excludes whatever partial item/separator was cut off)
+    # is itself safe — independently re-verify and shrink k if needed.
+    while k > 0:
+        candidate_text = separator.join(rendered[:k])
+        if len(tokenizer.encode(candidate_text)) <= max_token_size:
+            break
+        k -= 1
+
+    return list_data[:k]
 
 
 async def atruncate_list_by_token_size(
     list_data: list[Any],
     key: Callable[[Any], str],
+    separator: str,
     max_token_size: int,
     tokenizer: Tokenizer,
 ) -> list[Any]:
@@ -3044,7 +3437,12 @@ async def atruncate_list_by_token_size(
     the largest single block of synchronous tokenizing on the query path.
     """
     return await run_in_tokenizer_executor(
-        truncate_list_by_token_size, list_data, key, max_token_size, tokenizer
+        truncate_list_by_token_size,
+        list_data,
+        key,
+        separator,
+        max_token_size,
+        tokenizer,
     )
 
 
@@ -3070,173 +3468,129 @@ def normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     return result
 
 
-def split_text_units_for_hard_fallback(text: str) -> list[str]:
-    """Split text into sentence/paragraph-like units for fallback chunking."""
-    if not text:
-        return []
-    units: list[str] = []
-    for para in text.split("\n\n"):
-        p = para.strip()
-        if not p:
-            continue
-        for sentence in re.split(r"(?<=[。！？；.!?])", p):
-            s = sentence.strip()
-            if s:
-                units.append(s)
-    return units if units else [text]
-
-
 def split_text_by_token_limit(
     text: str, tokenizer: Tokenizer, max_tokens: int
 ) -> list[str]:
-    """Split text by token limit with sentence-first, token-window fallback."""
-    if not text:
+    """Deprecated: use ``tokenizer.split_by_token_limit`` directly instead.
+
+    Thin compatibility wrapper around the safe ``TokenSpan``-based split
+    contract (zero overlap, no sentence-boundary preservation — overlap is
+    what now carries the "don't lose context at a cut" job the old
+    sentence-first packer used to do; see
+    ``enforce_chunk_token_limit_before_embedding`` for the overlap-bearing
+    caller). Stays permissive on a non-positive ``max_tokens`` (returns ``[]``
+    rather than raising) to match this function's pre-existing contract for
+    any remaining direct callers.
+    """
+    if not text or max_tokens <= 0:
         return []
-    # Match truncate_list_by_token_size: non-positive budget cannot form a window.
-    if max_tokens <= 0:
-        return []
+    spans = tokenizer.split_by_token_limit(text, max_tokens, overlap_tokens=0)
+    return [text[span.start : span.end] for span in spans]
 
-    try:
-        total_tokens = len(tokenizer.encode(text))
-    except Exception:
-        total_tokens = 0
 
-    if total_tokens > 0 and total_tokens <= max_tokens:
-        return [text]
+def _parent_to_source_projection(
+    source_content: str, parent_start: int, parent_end: int, parent_content: str
+) -> list[int] | None:
+    """Monotonic char-offset map from ``parent_content`` positions to ``source_content``.
 
-    units = split_text_units_for_hard_fallback(text)
-    out: list[str] = []
-    cur_parts: list[str] = []
-    cur_tokens = 0
+    Built once per parent chunk and reused for every hard-split child it
+    produces (an ``O(parent length)`` build shared across ``N`` children,
+    instead of redone per child). ``proj[i]`` for ``0 <= i <= len(parent_content)``
+    is the absolute ``source_content`` offset corresponding to position ``i``
+    in ``parent_content``.
 
-    for unit in units:
-        try:
-            unit_tokens = len(tokenizer.encode(unit))
-        except Exception:
-            unit_tokens = 0
+    Needed because a parent's own ``content`` is not always a byte-verbatim
+    slice of the document text it was extracted from — e.g. the V strategy's
+    ``SemanticChunker`` rejoins sentences with a single space, which can
+    differ from the original whitespace run by more or fewer characters.
+    Returns ``None`` if the two cannot be reconciled even after removing all
+    whitespace (content diverged for some other reason, e.g. a summarizing
+    rewrite) — the caller must not guess in that case.
+    """
+    source_slice = source_content[parent_start:parent_end]
+    if source_slice == parent_content:
+        return list(range(parent_start, parent_end + 1))
 
-        # Sentence itself is oversize: token-window split directly.
-        if unit_tokens > max_tokens:
-            if cur_parts:
-                out.append("\n\n".join(cur_parts))
-                cur_parts = []
-                cur_tokens = 0
+    src_non_ws_positions = [i for i, ch in enumerate(source_slice) if not ch.isspace()]
+    parent_non_ws_positions = [
+        i for i, ch in enumerate(parent_content) if not ch.isspace()
+    ]
+    if len(src_non_ws_positions) != len(parent_non_ws_positions) or [
+        source_slice[i] for i in src_non_ws_positions
+    ] != [parent_content[i] for i in parent_non_ws_positions]:
+        return None
 
-            token_ids = tokenizer.encode(unit)
-            for start in range(0, len(token_ids), max_tokens):
-                piece = tokenizer.decode(token_ids[start : start + max_tokens]).strip()
-                if piece:
-                    out.append(piece)
-            continue
+    proj: list[Optional[int]] = [None] * (len(parent_content) + 1)
+    for p_idx, s_idx in zip(parent_non_ws_positions, src_non_ws_positions):
+        proj[p_idx] = parent_start + s_idx
 
-        if cur_parts and cur_tokens + unit_tokens > max_tokens:
-            out.append("\n\n".join(cur_parts))
-            cur_parts = [unit]
-            cur_tokens = unit_tokens
+    # Whitespace runs (and the trailing end position) inherit the offset of
+    # the next known non-whitespace position, so every index resolves to a
+    # definite, still-monotonic offset.
+    next_val = parent_end
+    for i in range(len(proj) - 1, -1, -1):
+        if proj[i] is None:
+            proj[i] = next_val
         else:
-            cur_parts.append(unit)
-            cur_tokens += unit_tokens
-
-    if cur_parts:
-        out.append("\n\n".join(cur_parts))
-
-    return [x for x in out if x.strip()]
+            next_val = proj[i]
+    return proj  # type: ignore[return-value]
 
 
-def _normalized_child_offsets(
-    parent_content: str,
-    piece: str,
-    search_from: int,
-) -> tuple[int, int] | None:
-    """Locate ``piece`` in ``parent_content`` ignoring all whitespace.
+def _map_child_span(
+    local_start: int,
+    local_end: int,
+    parent_start: int,
+    parent_end: int,
+    projection: list[int] | None,
+) -> dict[str, int] | None:
+    """Map a child's ``[local_start, local_end)`` offset within the parent's own
+    ``content`` to an absolute ``{start, end}`` span into the document text.
 
-    Returns ``(start, end)`` char offsets into ``parent_content`` for the first
-    whitespace-stripped occurrence at/after ``search_from``, or ``None`` if absent.
-    Removing every whitespace char (not collapsing runs) keeps the match exact even
-    when the two sides space the same characters differently — the same monotonic
-    projection :mod:`lightrag.sidecar.backfill` uses.
+    ``projection`` is ``None`` for the direct-arithmetic fast path (parent
+    ``content`` is a verbatim slice of the document, so ``parent_start +``
+    is exact); otherwise it is the per-parent map from
+    :func:`_parent_to_source_projection`.
     """
-    norm_piece = "".join(piece.split())
-    if not norm_piece:
-        return None
-    norm_chars: list[str] = []
-    norm_to_orig: list[int] = []
-    for idx, ch in enumerate(parent_content):
-        if ch.isspace():
-            continue
-        norm_chars.append(ch)
-        norm_to_orig.append(idx)
-    norm_parent = "".join(norm_chars)
-    # First normalized index whose source offset is >= search_from (norm_to_orig is
-    # strictly increasing), so repeated pieces resolve forward in order.
-    norm_start = bisect.bisect_left(norm_to_orig, search_from)
-    pos = norm_parent.find(norm_piece, norm_start)
-    if pos < 0:
-        return None
-    o_start = norm_to_orig[pos]
-    o_end = norm_to_orig[pos + len(norm_piece) - 1] + 1
-    return o_start, o_end
-
-
-def _child_source_span(
-    parent_content: str,
-    parent_span: Any,
-    piece: str,
-    search_from: int,
-) -> tuple[dict[str, int] | None, int]:
-    """Locate a hard-split child ``piece`` inside its parent's source span.
-
-    Pieces are usually verbatim substrings of ``parent_content`` (token-window
-    slices), so an exact forward ``find`` resolves them precisely. But
-    :func:`split_text_by_token_limit` rejoins multiple sentence units with
-    ``"\\n\\n"``, so a multi-unit piece is *not* byte-verbatim when the source
-    separated those sentences with a single space/newline. In that case we fall
-    back to a whitespace-stripped match (the same projection sidecar backfill uses),
-    which stays exact because whitespace removal is monotonic. Without this fallback
-    the child would lose its span and sidecar backfill would wrongly FAIL the
-    document.
-
-    Returns ``(span | None, next_search_from)`` where ``next_search_from`` is a
-    ``parent_content`` offset threaded forward by the caller so repeated pieces
-    resolve in order.
-    """
-    if not isinstance(parent_span, dict):
-        return None, search_from
-    try:
-        parent_start = int(parent_span["start"])
-        parent_end = int(parent_span["end"])
-    except (KeyError, TypeError, ValueError):
-        return None, search_from
-    if parent_start < 0 or parent_end < parent_start:
-        return None, search_from
-
-    search_from = max(0, search_from)
-
-    # Exact: verbatim token-window pieces.
-    local_start = parent_content.find(piece, search_from)
-    if local_start >= 0:
-        local_end = local_start + len(piece)
+    if projection is None:
+        abs_start, abs_end = parent_start + local_start, parent_start + local_end
     else:
-        # Whitespace-normalized fallback: multi-unit pieces rejoined with "\n\n".
-        offsets = _normalized_child_offsets(parent_content, piece, search_from)
-        if offsets is None:
-            return None, search_from
-        local_start, local_end = offsets
-
-    if parent_start + local_end > parent_end:
-        return None, search_from
-    return (
-        {"start": parent_start + local_start, "end": parent_start + local_end},
-        local_end,
-    )
+        abs_start, abs_end = projection[local_start], projection[local_end]
+    if abs_start < parent_start or abs_end > parent_end or abs_end <= abs_start:
+        return None
+    return {"start": abs_start, "end": abs_end}
 
 
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
     max_tokens: int,
+    overlap_tokens: int = 0,
+    source_content: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Hard fallback split before embedding while preserving heading hierarchy."""
+    """Hard fallback split before embedding while preserving heading hierarchy.
+
+    Splits any chunk still over ``max_tokens`` via the safe
+    ``Tokenizer.split_by_token_limit`` contract (see ``lightrag.utils.Tokenizer``),
+    carrying ``overlap_tokens`` of context between consecutive pieces. This no
+    longer preserves sentence/paragraph boundaries — overlap is what now
+    carries the "don't lose context at a cut" job that used to be the
+    sentence-first packer's.
+
+    ``source_content`` is the merged document text the chunker itself
+    received (the same string :mod:`lightrag.sidecar.backfill` reconstructs
+    from ``blocks.jsonl``) — needed to correctly relocate a hard-split
+    child's ``_source_span`` when a parent chunk's ``content`` is not a
+    byte-verbatim slice of it (see :func:`_parent_to_source_projection`).
+    Pass ``None`` only when the caller genuinely has no such text (e.g.
+    ``ainsert_custom_chunks``); a parent that would need the projection in
+    that case just loses its children's ``_source_span`` instead of raising,
+    matching this function's pre-existing behavior for callers with no
+    provenance concept at all. When ``source_content`` IS supplied but a
+    parent's content has diverged from it beyond whitespace, the projection
+    cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
+    than silently emitting a wrong span — the same failure sidecar backfill
+    itself would eventually surface, just earlier and with better context.
+    """
     if max_tokens <= 0:
         return list(chunking_result)
 
@@ -3263,8 +3617,13 @@ def enforce_chunk_token_limit_before_embedding(
             normalized.append(ndp)
             continue
 
-        pieces = split_text_by_token_limit(content, tokenizer, max_tokens)
-        if not pieces:
+        try:
+            spans = tokenizer.split_by_token_limit(
+                content, max_tokens, overlap_tokens=overlap_tokens
+            )
+        except TokenBudgetError:
+            spans = []
+        if not spans:
             ndp = dict(dp)
             ndp["tokens"] = token_count
             normalized.append(ndp)
@@ -3272,15 +3631,48 @@ def enforce_chunk_token_limit_before_embedding(
 
         base_chunk_id = dp.get("chunk_id")
         parent_span = dp.get("_source_span")
-        span_search_from = 0
-        total_parts = len(pieces)
-        for i, piece in enumerate(pieces, 1):
+
+        # Built once per parent, reused for every child below — never redone
+        # per child (that would be O(children x parent length) instead of
+        # O(parent length)).
+        projection: list[int] | None = None
+        parent_start = parent_end = None
+        if isinstance(parent_span, dict):
+            try:
+                parent_start = int(parent_span["start"])
+                parent_end = int(parent_span["end"])
+            except (KeyError, TypeError, ValueError):
+                parent_start = parent_end = None
+            if parent_start is not None and (
+                parent_start < 0 or parent_end < parent_start
+            ):
+                parent_start = parent_end = None
+
+            if parent_start is not None and parent_end - parent_start != len(content):
+                if source_content:
+                    projection = _parent_to_source_projection(
+                        source_content, parent_start, parent_end, content
+                    )
+                    if projection is None:
+                        raise ChunkBlockMatchError(
+                            chunk_order_index=int(dp.get("chunk_order_index", -1)),
+                            chunk_preview=content,
+                            blocks_path=None,
+                        )
+                else:
+                    # No provenance text available: children below fall back
+                    # to dropping _source_span rather than emit a naive,
+                    # possibly-wrong offset (parent_start is cleared so
+                    # _map_child_span is never reached with an untrustworthy
+                    # direct-arithmetic assumption).
+                    parent_start = parent_end = None
+
+        total_parts = len(spans)
+        for i, span in enumerate(spans, 1):
+            piece = content[span.start : span.end]
             new_dp = dict(dp)
             new_dp["content"] = piece
-            try:
-                new_dp["tokens"] = len(tokenizer.encode(piece))
-            except Exception:
-                new_dp["tokens"] = max(1, int(len(piece) * 0.5))
+            new_dp["tokens"] = span.token_count
 
             # Shallow-copy preserves the nested heading dict and sidecar
             # block from the source chunk; only the payload (content/tokens
@@ -3288,9 +3680,11 @@ def enforce_chunk_token_limit_before_embedding(
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
-            child_span, span_search_from = _child_source_span(
-                content, parent_span, piece, span_search_from
-            )
+            child_span = None
+            if parent_start is not None:
+                child_span = _map_child_span(
+                    span.start, span.end, parent_start, parent_end, projection
+                )
             if child_span is not None:
                 new_dp["_source_span"] = child_span
             elif "_source_span" in new_dp:
@@ -5195,13 +5589,11 @@ async def process_chunks_unified(
 
         original_count = len(unique_chunks)
 
-        unique_chunks = await atruncate_list_by_token_size(
+        unique_chunks = await run_in_tokenizer_executor(
+            _truncate_chunks_for_unified_context,
             unique_chunks,
-            key=lambda x: "\n".join(
-                json.dumps(item, ensure_ascii=False) for item in [x]
-            ),
-            max_token_size=chunk_token_limit,
-            tokenizer=tokenizer,
+            chunk_token_limit,
+            tokenizer,
         )
 
         logger.debug(
@@ -5772,6 +6164,82 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+
+def render_chunks_context_text(chunks_with_reference_ids: list[dict]) -> str:
+    """Render the exact chunk-context text sent to the LLM.
+
+    ``chunks_with_reference_ids`` must already carry ``reference_id`` — the
+    second return value of :func:`generate_reference_list_from_chunks`. This
+    is the single place that projects a chunk down to
+    ``{reference_id, content, content_headings?}`` and serializes it, one JSON
+    object per line, so that any token-budget check done against this exact
+    call sequence matches what callers go on to send downstream verbatim.
+    """
+    chunks_context = []
+    for chunk in chunks_with_reference_ids:
+        entry = {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        if chunk.get("content_headings"):
+            entry["content_headings"] = chunk["content_headings"]
+        chunks_context.append(entry)
+    return "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
+    )
+
+
+def _truncate_chunks_for_unified_context(
+    chunks: list[dict], max_token_size: int, tokenizer: "Tokenizer"
+) -> list[dict]:
+    """Two-stage truncation used by :func:`process_chunks_unified`.
+
+    Counting a chunk list's tokens against the chunk dicts themselves (as the
+    single-stage version used to) undercounts: what actually reaches the LLM
+    is the ``{reference_id, content, content_headings?}`` projection built by
+    :func:`generate_reference_list_from_chunks` /
+    :func:`render_chunks_context_text`, and ``reference_id`` itself is
+    recomputed from each survivor's ``file_path`` frequency — which changes
+    with the exact set of chunks kept, not just by a token or two.
+
+    Stage 1 approximates a safe count K from ``{content, content_headings}``
+    alone (``reference_id`` isn't assigned yet, and can't be until the
+    survivor set is known — a chicken-and-egg the real renderer resolves by
+    running after truncation, not before). Stage 2 re-renders that exact
+    candidate list through the real renderer and independently re-verifies
+    (shrinking K if needed), so the K this function returns is guaranteed safe
+    under the SAME rendering the caller will perform afterward on the same
+    list. Both stages run in this one synchronous call — it must always be
+    submitted as a single ``run_in_tokenizer_executor`` job, never split
+    across two round-trips through the event loop.
+    """
+    if max_token_size <= 0 or not chunks:
+        return []
+
+    def _approx_key(chunk: dict) -> str:
+        payload = {"content": chunk.get("content")}
+        if chunk.get("content_headings"):
+            payload["content_headings"] = chunk["content_headings"]
+        return json.dumps(payload, ensure_ascii=False)
+
+    approx = truncate_list_by_token_size(
+        chunks,
+        key=_approx_key,
+        separator="\n",
+        max_token_size=max_token_size,
+        tokenizer=tokenizer,
+    )
+
+    k = len(approx)
+    while k > 0:
+        _, rendered_chunks = generate_reference_list_from_chunks(approx[:k])
+        text = render_chunks_context_text(rendered_chunks)
+        if len(tokenizer.encode(text)) <= max_token_size:
+            break
+        k -= 1
+
+    return approx[:k]
 
 
 def validate_workspace(workspace: str) -> str:

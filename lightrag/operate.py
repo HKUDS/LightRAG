@@ -19,6 +19,7 @@ from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
+    TokenBudgetError,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
@@ -48,6 +49,7 @@ from lightrag.utils import (
     fix_tuple_delimiter_corruption,
     convert_to_user_format,
     generate_reference_list_from_chunks,
+    render_chunks_context_text,
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
@@ -288,8 +290,15 @@ def _truncate_section_context(
 
 
 def _truncate_vdb_content(content: str, global_config: dict, content_label: str) -> str:
-    """Clamp vector-store payload size to stay under embedding limits."""
+    """Clamp vector-store payload size to stay under embedding limits.
 
+    Uses the safe ``Tokenizer.truncate_by_token_limit`` contract: the result is
+    independently re-encoded and verified to actually fit ``threshold``, so
+    this no longer needs (or applies) a fixed heuristic safety margin — the
+    old ``decode(tokens[:k])`` here had no such verification and was not
+    guaranteed to round-trip back to <= ``threshold`` tokens for every
+    tokenizer/content combination.
+    """
     if not content:
         return content
 
@@ -302,18 +311,28 @@ def _truncate_vdb_content(content: str, global_config: dict, content_label: str)
     if threshold <= 0:
         return content
 
-    tokens = tokenizer.encode(content)
-    if len(tokens) <= threshold:
+    try:
+        span = tokenizer.truncate_by_token_limit(content, threshold)
+    except TokenBudgetError as e:
+        # Only possible if even the first Unicode code point can't fit the
+        # embedding model's own context limit — not a real-world budget.
+        logger.error(
+            "%s VDB content cannot fit embedding limit %d: %s",
+            content_label,
+            threshold,
+            e,
+        )
+        raise
+
+    if span.end == len(content):
         return content
 
-    # Leave headroom because tokenizer behavior can differ slightly from the provider.
-    effective_limit = max(threshold - min(256, max(32, threshold // 16)), 1)
-    truncated_content = tokenizer.decode(tokens[:effective_limit])
+    truncated_content = content[span.start : span.end]
     logger.warning(
         "%s VDB content truncated from %d to %d tokens (embedding limit: %d)",
         content_label,
-        len(tokens),
-        effective_limit,
+        len(tokenizer.encode(content)),
+        span.token_count,
         threshold,
     )
     return truncated_content
@@ -539,6 +558,7 @@ async def _summarize_descriptions(
     truncated_json_descriptions = await atruncate_list_by_token_size(
         json_descriptions,
         key=lambda x: json.dumps(x, ensure_ascii=False),
+        separator="\n",
         max_token_size=summary_context_size,
         tokenizer=tokenizer,
     )
@@ -4967,9 +4987,8 @@ async def _apply_token_truncation(
 
         entities_context = await atruncate_list_by_token_size(
             entities_context_for_truncation,
-            key=lambda x: "\n".join(
-                json.dumps(item, ensure_ascii=False) for item in [x]
-            ),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
+            separator="\n",
             max_token_size=max_entity_tokens,
             tokenizer=tokenizer,
         )
@@ -4985,9 +5004,8 @@ async def _apply_token_truncation(
 
         relations_context = await atruncate_list_by_token_size(
             relations_context_for_truncation,
-            key=lambda x: "\n".join(
-                json.dumps(item, ensure_ascii=False) for item in [x]
-            ),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
+            separator="\n",
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
@@ -5293,19 +5311,11 @@ async def _build_context_str(
 
     # Rebuild chunks_context with truncated chunks
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    chunks_context = []
-    for i, chunk in enumerate(truncated_chunks):
-        entry = {
-            "reference_id": chunk["reference_id"],
-            "content": chunk["content"],
-        }
-        if chunk.get("content_headings"):
-            entry["content_headings"] = chunk["content_headings"]
-        chunks_context.append(entry)
-
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
-    )
+    text_units_str = render_chunks_context_text(truncated_chunks)
+    chunks_context = [
+        {"reference_id": chunk["reference_id"], "content": chunk["content"]}
+        for chunk in truncated_chunks
+    ]
     reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list
@@ -6233,19 +6243,7 @@ async def naive_query(
     }
 
     # Build chunks_context from processed chunks with reference IDs
-    chunks_context = []
-    for i, chunk in enumerate(processed_chunks_with_ref_ids):
-        entry = {
-            "reference_id": chunk["reference_id"],
-            "content": chunk["content"],
-        }
-        if chunk.get("content_headings"):
-            entry["content_headings"] = chunk["content_headings"]
-        chunks_context.append(entry)
-
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
-    )
+    text_units_str = render_chunks_context_text(processed_chunks_with_ref_ids)
     reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list

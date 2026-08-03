@@ -2224,6 +2224,9 @@ def create_app(args):
             summary_context_size=args.summary_context_size,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
+            embedding_chunk_overlap_token_size=int(
+                args.embedding_chunk_overlap_token_size
+            ),
             llm_model_kwargs=create_llm_model_kwargs(
                 args.llm_binding, args, llm_timeout
             ),

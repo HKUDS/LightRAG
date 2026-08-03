@@ -70,6 +70,7 @@ from lightrag.constants import (
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_RERANK_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
@@ -616,6 +617,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     embedding_token_limit: int | None = field(default=None, init=False)
     """Token limit for embedding model. Set automatically from embedding_func.max_token_size in __post_init__."""
+
+    embedding_chunk_overlap_token_size: int = field(
+        default=get_env_value(
+            "EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE",
+            DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE,
+            int,
+        )
+    )
+    """Overlap (in tokens) the embedding hard fallback borrows from the tail of
+    the previous window when a chunk still exceeds ``embedding_token_limit``
+    after chunking and has to be token-window-split.
+
+    Independent from the chunker's own ``chunk_overlap_token_size``: that field
+    is a semantic-chunking concern (paragraph/heading-aware splitting), while
+    this one only applies to the mechanical last-resort split that runs after
+    chunking, on chunks the chunker already produced. Some strategies (e.g. V)
+    deliberately zero out ``chunk_overlap_token_size`` for reasons unrelated to
+    this fallback, so this field must never read or fall back to that one.
+
+    ``0`` disables the fallback's overlap. Negative values raise ``ValueError``
+    in ``__post_init__``. Effective overlap is clamped at runtime to
+    ``previous_content_token_count - 1`` and retreats further (exponentially)
+    if that still cannot make forward progress.
+    """
 
     embedding_batch_num: int = field(
         default=get_env_value("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int)
@@ -1221,6 +1246,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             raise ValueError(
                 "MAX_PENDING_DOCUMENTS must be >= 0 (0 disables admission "
                 f"control); got {self.max_pending_documents}"
+            )
+
+        # Embedding hard-fallback overlap: 0 disables it; negative is a
+        # misconfiguration (there is no such thing as negative overlap).
+        if self.embedding_chunk_overlap_token_size < 0:
+            raise ValueError(
+                "EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE must be >= 0 (0 disables "
+                f"the embedding hard fallback's overlap); got "
+                f"{self.embedding_chunk_overlap_token_size}"
             )
 
         # Handle deprecated parameters
