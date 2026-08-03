@@ -71,7 +71,7 @@ def test_default_deployment_contract(client):
     assert "mineru" not in engines and "docling" not in engines
     # Internal (non-user-selectable) engines are never advertised.
     assert "reuse" not in engines and "passthrough" not in engines
-    assert engines["native"] == [".docx", ".md", ".textpack"]
+    assert engines["native"] == [".docx", ".ipynb", ".md", ".textpack"]
     for suffixes in engines.values():
         assert all(s.startswith(".") and s == s.lower() for s in suffixes)
 
