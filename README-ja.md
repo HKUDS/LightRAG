@@ -467,24 +467,24 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 | ドキュメント | 内容 |
 |---|---|
-| [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) 🇨🇳 | サーバー完全ガイド：起動、設定、認証、REST エンドポイント、WebUI の使い方 |
+| [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) [🇨🇳](./docs/LightRAG-API-Server-zh.md) | サーバー完全ガイド：起動、設定、認証、REST エンドポイント、WebUI の使い方 |
 
 **ドキュメント処理**
 
 | ドキュメント | 内容 |
 |---|---|
-| [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) 🇨🇳 | パイプライン仕様：`LIGHTRAG_PARSER` のルーティング規則、エンジン別パラメータ、マルチモーダル解析、ドキュメント状態のライフサイクル |
-| [ParserServiceDeployment.md](./docs/ParserServiceDeployment.md) 🇨🇳 | 外部解析サービス MinerU / docling-serve の自前ホスティング（Docker、GPU、モデル重み） |
-| [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) 🇨🇳 | `Paragraph semantic (P)` チャンク戦略：見出し／段落／表の境界に合わせた分割、参考文献の除外 |
-| [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) 🇨🇳 | マルチモーダル対応パーサーエンジンが必ず出力すべき sidecar（`*.parsed/`）交換フォーマットの仕様 |
-| [ThirdPartyParser.md](./docs/ThirdPartyParser.md) 🇨🇳 | 独自パーサーエンジンの開発と登録 |
-| [ParserDebugCLI.md](./docs/ParserDebugCLI.md) 🇨🇳 | `python -m lightrag.parser.cli` — サーバーなしで単一ファイルをオフライン解析し、結果を確認する |
+| [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) [🇨🇳](./docs/FileProcessingPipeline-zh.md) | パイプライン仕様：`LIGHTRAG_PARSER` のルーティング規則、エンジン別パラメータ、マルチモーダル解析、ドキュメント状態のライフサイクル |
+| [ParserServiceDeployment.md](./docs/ParserServiceDeployment.md) [🇨🇳](./docs/ParserServiceDeployment-zh.md) | 外部解析サービス MinerU / docling-serve の自前ホスティング（Docker、GPU、モデル重み） |
+| [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) [🇨🇳](./docs/ParagraphSemanticChunking-zh.md) | `Paragraph semantic (P)` チャンク戦略：見出し／段落／表の境界に合わせた分割、参考文献の除外 |
+| [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) [🇨🇳](./docs/LightRAGSidecarFormat-zh.md) | マルチモーダル対応パーサーエンジンが必ず出力すべき sidecar（`*.parsed/`）交換フォーマットの仕様 |
+| [ThirdPartyParser.md](./docs/ThirdPartyParser.md) [🇨🇳](./docs/ThirdPartyParser-zh.md) | 独自パーサーエンジンの開発と登録 |
+| [ParserDebugCLI.md](./docs/ParserDebugCLI.md) [🇨🇳](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` — サーバーなしで単一ファイルをオフライン解析し、結果を確認する |
 
 **モデルとストレージ**
 
 | ドキュメント | 内容 |
 |---|---|
-| [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) 🇨🇳 | ロール別（`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`）の LLM・VLM 設定 |
+| [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) [🇨🇳](./docs/RoleSpecificLLMConfiguration-zh.md) | ロール別（`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`）の LLM・VLM 設定 |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | クエリ／文書の非対称 embedding（`EMBEDDING_ASYMMETRIC`）とモデルごとのプレフィックス |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | `vector_db_storage_cls_kwargs` を通じた Milvus インデックスパラメータのチューニング |
 

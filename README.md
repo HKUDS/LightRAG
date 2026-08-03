@@ -467,24 +467,24 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 
 | Document | What it covers |
 |---|---|
-| [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) 🇨🇳 | The complete server guide: startup, configuration, authentication, REST endpoints, and WebUI usage |
+| [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md) [🇨🇳](./docs/LightRAG-API-Server-zh.md) | The complete server guide: startup, configuration, authentication, REST endpoints, and WebUI usage |
 
 **Document Processing**
 
 | Document | What it covers |
 |---|---|
-| [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) 🇨🇳 | Pipeline specification: `LIGHTRAG_PARSER` routing rules, per-engine parameters, multimodal analysis, document status lifecycle |
-| [ParserServiceDeployment.md](./docs/ParserServiceDeployment.md) 🇨🇳 | Self-hosting the external MinerU and docling-serve parsing services (Docker, GPU, model weights) |
-| [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) 🇨🇳 | The `Paragraph semantic (P)` chunking strategy: heading/paragraph/table-aware boundaries, reference dropping |
-| [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) 🇨🇳 | The sidecar (`*.parsed/`) interchange format every multimodal-capable parser engine must emit |
-| [ThirdPartyParser.md](./docs/ThirdPartyParser.md) 🇨🇳 | Developing and registering your own parser engine |
-| [ParserDebugCLI.md](./docs/ParserDebugCLI.md) 🇨🇳 | `python -m lightrag.parser.cli` — parse a single file offline and inspect the result without a server |
+| [FileProcessingPipeline.md](./docs/FileProcessingPipeline.md) [🇨🇳](./docs/FileProcessingPipeline-zh.md) | Pipeline specification: `LIGHTRAG_PARSER` routing rules, per-engine parameters, multimodal analysis, document status lifecycle |
+| [ParserServiceDeployment.md](./docs/ParserServiceDeployment.md) [🇨🇳](./docs/ParserServiceDeployment-zh.md) | Self-hosting the external MinerU and docling-serve parsing services (Docker, GPU, model weights) |
+| [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) [🇨🇳](./docs/ParagraphSemanticChunking-zh.md) | The `Paragraph semantic (P)` chunking strategy: heading/paragraph/table-aware boundaries, reference dropping |
+| [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) [🇨🇳](./docs/LightRAGSidecarFormat-zh.md) | The sidecar (`*.parsed/`) interchange format every multimodal-capable parser engine must emit |
+| [ThirdPartyParser.md](./docs/ThirdPartyParser.md) [🇨🇳](./docs/ThirdPartyParser-zh.md) | Developing and registering your own parser engine |
+| [ParserDebugCLI.md](./docs/ParserDebugCLI.md) [🇨🇳](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` — parse a single file offline and inspect the result without a server |
 
 **Models and Storage**
 
 | Document | What it covers |
 |---|---|
-| [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) 🇨🇳 | Per-role (`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`) LLM and VLM configuration |
+| [RoleSpecificLLMConfiguration.md](./docs/RoleSpecificLLMConfiguration.md) [🇨🇳](./docs/RoleSpecificLLMConfiguration-zh.md) | Per-role (`EXTRACT` / `QUERY` / `KEYWORD` / `VLM`) LLM and VLM configuration |
 | [AsymmetricEmbedding.md](./docs/AsymmetricEmbedding.md) | Query/document asymmetric embedding (`EMBEDDING_ASYMMETRIC`) and per-model prefixes |
 | [MilvusConfigurationGuide.md](./docs/MilvusConfigurationGuide.md) | Tuning Milvus index parameters through `vector_db_storage_cls_kwargs` |
 
