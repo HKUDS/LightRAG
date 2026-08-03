@@ -352,7 +352,8 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:
-            return self._data.get(id)
+            data = self._data.get(id)
+            return data.copy() if isinstance(data, dict) else data
 
     async def get_docs_paginated(
         self,
@@ -513,7 +514,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 if doc_data.get("file_path") == file_path:
                     # Return complete document data, consistent with get_by_ids method
-                    return doc_data
+                    return doc_data.copy() if isinstance(doc_data, dict) else doc_data
 
         return None
 
