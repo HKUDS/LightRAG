@@ -593,13 +593,19 @@ class NetworkXStorage(BaseGraphStorage):
 
                     # Check if we've reached max_nodes
                     if len(bfs_nodes) >= max_nodes:
-                        if idx < len(current_level_nodes) - 1:
+                        if any(
+                            n not in visited
+                            for n, _, _ in current_level_nodes[idx + 1 :]
+                        ):
                             has_unprocessed_level_nodes = True
                         break
 
             # Check if graph is truncated - either due to max_nodes limit or depth limit
+            has_unvisited_in_queue = any(n not in visited for n, _, _ in queue)
             has_max_nodes_truncation = len(bfs_nodes) >= max_nodes and (
-                bool(queue) or has_unprocessed_level_nodes or has_unexplored_neighbors
+                has_unvisited_in_queue
+                or has_unprocessed_level_nodes
+                or has_unexplored_neighbors
             )
             if has_max_nodes_truncation or has_unexplored_neighbors:
                 if has_max_nodes_truncation:
