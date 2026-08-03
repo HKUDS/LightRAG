@@ -32,6 +32,8 @@ LLM_TIMEOUT=240
 MAX_ASYNC_LLM=4
 ```
 
+> **Tip:** `LLM_BINDING=openai` works with any OpenAI-compatible endpoint via `LLM_BINDING_HOST`. Multi-model gateways are one option when you are not using the official OpenAI API — for example [DaoXE](https://daoxe.com/?utm_source=github&utm_medium=organic&utm_campaign=lightrag&utm_content=role-llm) at `https://api.daoxe.com/v1`.
+
 Common fields:
 
 | Variable | Description |
