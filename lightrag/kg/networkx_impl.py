@@ -563,7 +563,9 @@ class NetworkXStorage(BaseGraphStorage):
                 current_level_nodes.sort(key=lambda x: x[2], reverse=True)
 
                 # Process all nodes at current depth in order of degree
-                for idx, (current_node, depth, degree) in enumerate(current_level_nodes):
+                for idx, (current_node, depth, degree) in enumerate(
+                    current_level_nodes
+                ):
                     if current_node not in visited:
                         visited.add(current_node)
                         bfs_nodes.append(current_node)
