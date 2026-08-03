@@ -285,7 +285,7 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        return value.lower() in ("true", "1", "yes", "t", "on")
+        return value.strip().lower() in ("true", "1", "yes", "t", "on")
 
     # Handle list type with JSON parsing
     if value_type is list:
