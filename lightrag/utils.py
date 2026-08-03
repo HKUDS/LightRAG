@@ -3313,8 +3313,8 @@ def cosine_similarity(v1, v2):
     norm1 = np.linalg.norm(v1)
     norm2 = np.linalg.norm(v2)
     denom = norm1 * norm2
-    # Zero vectors are orthogonal to everything in ranking use; avoid NaN.
-    if denom == 0:
+    # Zero or non-finite vectors are orthogonal to everything in ranking use; avoid NaN/Inf.
+    if denom == 0 or not np.isfinite(denom) or not np.isfinite(dot_product):
         return 0.0
     return float(dot_product / denom)
 
