@@ -2652,7 +2652,7 @@ def split_text_by_token_limit(
     text: str, tokenizer: Tokenizer, max_tokens: int
 ) -> list[str]:
     """Split text by token limit with sentence-first, token-window fallback."""
-    if not text:
+    if not text or max_tokens <= 0:
         return []
 
     try:
@@ -2667,6 +2667,10 @@ def split_text_by_token_limit(
     out: list[str] = []
     cur_parts: list[str] = []
     cur_tokens = 0
+    try:
+        sep_tokens = len(tokenizer.encode("\n\n"))
+    except Exception:
+        sep_tokens = 0
 
     for unit in units:
         try:
@@ -2688,14 +2692,14 @@ def split_text_by_token_limit(
                     out.append(piece)
             continue
 
-        if cur_parts and cur_tokens + unit_tokens > max_tokens:
+        cost = unit_tokens + (sep_tokens if cur_parts else 0)
+        if cur_parts and cur_tokens + cost > max_tokens:
             out.append("\n\n".join(cur_parts))
             cur_parts = [unit]
             cur_tokens = unit_tokens
         else:
             cur_parts.append(unit)
-            cur_tokens += unit_tokens
-
+            cur_tokens += cost
     if cur_parts:
         out.append("\n\n".join(cur_parts))
 

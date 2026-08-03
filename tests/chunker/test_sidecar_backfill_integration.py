@@ -230,7 +230,7 @@ def test_hard_split_multi_sentence_rejoin_keeps_provenance(tmp_path: Path) -> No
     assert len(chunks) == 1
     assert chunks[0]["_source_span"] == {"start": 0, "end": len(merged)}
 
-    chunks = enforce_chunk_token_limit_before_embedding(chunks, tok, max_tokens=7)
+    chunks = enforce_chunk_token_limit_before_embedding(chunks, tok, max_tokens=8)
     assert len(chunks) > 1  # hard split fired into multiple slices
     # At least one slice rejoined sentence units with "\n\n" (not byte-verbatim),
     # which is exactly the case the normalized span fallback must cover.

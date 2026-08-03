@@ -1064,3 +1064,23 @@ def test_decode_preserves_content():
         tokens = tokenizer.encode(original)
         decoded = tokenizer.decode(tokens)
         assert decoded == original, f"Failed to decode: {original}"
+@pytest.mark.offline
+def test_split_text_by_token_limit_joiner_token_cost():
+    """Verify that split_text_by_token_limit never emits chunks exceeding max_tokens."""
+    from lightrag.utils import split_text_by_token_limit
+    tokenizer = make_tokenizer()
+    u1 = "alpha beta gamma delta"
+    u2 = "epsilon zeta eta theta"
+    joined = f"{u1}\n\n{u2}"
+    n1 = len(tokenizer.encode(u1))
+    n2 = len(tokenizer.encode(u2))
+    max_tokens = n1 + n2
+    assert len(tokenizer.encode(joined)) > max_tokens
+
+    chunks = split_text_by_token_limit(joined, tokenizer, max_tokens)
+    for chunk in chunks:
+        chunk_tokens = len(tokenizer.encode(chunk))
+        assert chunk_tokens <= max_tokens, f"Chunk token count {chunk_tokens} > max_tokens {max_tokens}"
+
+    assert split_text_by_token_limit(joined, tokenizer, max_tokens=0) == []
+    assert split_text_by_token_limit(joined, tokenizer, max_tokens=-5) == []
