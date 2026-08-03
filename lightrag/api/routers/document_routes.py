@@ -4214,7 +4214,7 @@ def _encode_folder_prefix(folder_path: str) -> str:
     p = re.sub(r"/+", "/", p)
     if not p:
         return ""
-    return p.split("/").join(_MOVE_FOLDER_SEPARATOR) + _MOVE_FOLDER_SEPARATOR
+    return _MOVE_FOLDER_SEPARATOR.join(p.split("/")) + _MOVE_FOLDER_SEPARATOR
 
 
 def _doc_basename(file_path: str) -> str:
@@ -4296,9 +4296,7 @@ async def background_move_documents(
                     "latest_message": "Starting document move process",
                 }
             )
-            pipeline_status["history_messages"][:] = [
-                "Starting document move process"
-            ]
+            pipeline_status["history_messages"][:] = ["Starting document move process"]
 
         target_prefix = _encode_folder_prefix(target_folder)
         # Basenames already present in the target folder (detect collisions).
@@ -4338,9 +4336,7 @@ async def background_move_documents(
                 basename = _doc_basename(old_file_path)
                 if not basename:
                     failed_moves.append(doc_id)
-                    error_msg = (
-                        f"Cannot move document with empty file_path: {doc_id}"
-                    )
+                    error_msg = f"Cannot move document with empty file_path: {doc_id}"
                     logger.warning(error_msg)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = error_msg
@@ -4353,8 +4349,7 @@ async def background_move_documents(
                 if new_basename is None:
                     skipped_moves.append(doc_id)
                     skip_msg = (
-                        f"Skipped (name exists in target folder): "
-                        f"{doc_id}[{basename}]"
+                        f"Skipped (name exists in target folder): {doc_id}[{basename}]"
                     )
                     logger.info(skip_msg)
                     async with pipeline_status_lock:
@@ -4367,9 +4362,7 @@ async def background_move_documents(
                 # Rewrite the stored file_path. update_doc_status_fields keeps
                 # every secondary index (incl. the source multimap) consistent
                 # and leaves chunks/vectors/graph untouched.
-                await rag.update_doc_status_fields(
-                    doc_id, {"file_path": new_file_path}
-                )
+                await rag.update_doc_status_fields(doc_id, {"file_path": new_file_path})
 
                 # Best-effort physical rename in INPUT_DIR and __parsed__ dir.
                 _rename_physical_file(
@@ -4389,8 +4382,7 @@ async def background_move_documents(
             except Exception as e:
                 failed_moves.append(doc_id)
                 error_msg = (
-                    f"Error moving document {i}/{total_docs}: "
-                    f"{doc_id} - {str(e)}"
+                    f"Error moving document {i}/{total_docs}: {doc_id} - {str(e)}"
                 )
                 logger.error(error_msg)
                 logger.error(traceback.format_exc())
@@ -6547,7 +6539,9 @@ def create_document_routes(
             )
 
         except Exception as e:
-            error_msg = f"Error initiating document move for {move_request.doc_ids}: {str(e)}"
+            error_msg = (
+                f"Error initiating document move for {move_request.doc_ids}: {str(e)}"
+            )
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise internal_server_error(e)
