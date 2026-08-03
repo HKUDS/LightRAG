@@ -4239,8 +4239,12 @@ def _conflict_free_basename(
     if not rename_on_conflict:
         return None
     stem, dot, ext = basename.rpartition(".")
-    suffix = f".{ext}" if dot else ""
-    base_stem = stem or basename
+    if dot and stem:
+        base_stem, suffix = stem, f".{ext}"
+    else:
+        # No extension ("README") or a leading-dot name (".env"): treat the
+        # whole basename as the stem so the suffix is not duplicated.
+        base_stem, suffix = basename, ""
     idx = 1
     while True:
         candidate = f"{base_stem} ({idx}){suffix}"
