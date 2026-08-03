@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import copy
 import hashlib
 import heapq
 import json
@@ -176,7 +177,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    ordered_results.append(data.copy())
+                    ordered_results.append(copy.deepcopy(data) if isinstance(data, dict) else data)
                 else:
                     ordered_results.append(None)
         return ordered_results
@@ -240,8 +241,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             for k, v in self._data.items():
                 if v.get("track_id") == track_id:
                     try:
-                        # Make a copy of the data to avoid modifying the original
-                        data = v.copy()
+                        # Make a deep copy of the data to avoid modifying the original
+                        data = copy.deepcopy(v) if isinstance(v, dict) else v
                         # Remove deprecated content field if it exists
                         data.pop("content", None)
                         # Normalize missing or null file_path
@@ -353,7 +354,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:
             data = self._data.get(id)
-            return data.copy() if isinstance(data, dict) else data
+            return copy.deepcopy(data) if isinstance(data, dict) else data
 
     async def get_docs_paginated(
         self,
@@ -514,7 +515,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 if doc_data.get("file_path") == file_path:
                     # Return complete document data, consistent with get_by_ids method
-                    return doc_data.copy() if isinstance(doc_data, dict) else doc_data
+                    return copy.deepcopy(doc_data) if isinstance(doc_data, dict) else doc_data
 
         return None
 
@@ -606,7 +607,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             row = self._data.get(id)
-        return row.copy() if isinstance(row, dict) else row
+        return copy.deepcopy(row) if isinstance(row, dict) else row
 
     async def get_doc_by_content_hash(
         self, content_hash: str, *, exclude_doc_id: str | None = None
@@ -647,7 +648,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     best = (sort_key, doc_id, doc_data)
         if best is None:
             return None
-        return best[1], best[2]
+        return best[1], copy.deepcopy(best[2]) if isinstance(best[2], dict) else best[2]
 
     # ------------------------------------------------------------------
     # Memory-bounding scheduling API (Phase 1)
