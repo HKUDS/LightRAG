@@ -547,6 +547,7 @@ class NetworkXStorage(BaseGraphStorage):
 
             # Flag to track if there are unexplored neighbors due to depth limit
             has_unexplored_neighbors = False
+            has_unprocessed_level_nodes = False
 
             # Modified breadth-first search with degree-based prioritization
             while queue and len(bfs_nodes) < max_nodes:
@@ -562,7 +563,7 @@ class NetworkXStorage(BaseGraphStorage):
                 current_level_nodes.sort(key=lambda x: x[2], reverse=True)
 
                 # Process all nodes at current depth in order of degree
-                for current_node, depth, degree in current_level_nodes:
+                for idx, (current_node, depth, degree) in enumerate(current_level_nodes):
                     if current_node not in visited:
                         visited.add(current_node)
                         bfs_nodes.append(current_node)
@@ -590,11 +591,16 @@ class NetworkXStorage(BaseGraphStorage):
 
                     # Check if we've reached max_nodes
                     if len(bfs_nodes) >= max_nodes:
+                        if idx < len(current_level_nodes) - 1:
+                            has_unprocessed_level_nodes = True
                         break
 
             # Check if graph is truncated - either due to max_nodes limit or depth limit
-            if (queue and len(bfs_nodes) >= max_nodes) or has_unexplored_neighbors:
-                if len(bfs_nodes) >= max_nodes:
+            has_max_nodes_truncation = len(bfs_nodes) >= max_nodes and (
+                bool(queue) or has_unprocessed_level_nodes or has_unexplored_neighbors
+            )
+            if has_max_nodes_truncation or has_unexplored_neighbors:
+                if has_max_nodes_truncation:
                     result.is_truncated = True
                     logger.info(
                         f"[{self.workspace}] Graph truncated: max_nodes limit {max_nodes} reached"
@@ -603,7 +609,6 @@ class NetworkXStorage(BaseGraphStorage):
                     logger.info(
                         f"[{self.workspace}] Graph truncated: found {len(bfs_nodes)} nodes within max_depth {max_depth}"
                     )
-
             # Create subgraph with BFS discovered nodes
             subgraph = graph.subgraph(bfs_nodes)
 
