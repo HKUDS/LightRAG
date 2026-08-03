@@ -60,11 +60,14 @@ from copy import deepcopy
 _PARSER_HINT_RE = re.compile(r"\.\[([^\]]*)\](\.[^.]+)$")
 
 # Per-suffix default engine override, consulted before the global ``legacy``
-# fallback. ``.textpack`` is handled only by the native engine, so it routes
-# there automatically (no filename hint / LIGHTRAG_PARSER rule needed). ``.md``
-# is deliberately absent — it keeps the legacy default and opts into native the
-# same way ``.docx`` does (hint or rule).
-_DEFAULT_ENGINE_BY_SUFFIX: dict[str, str] = {"textpack": PARSER_ENGINE_NATIVE}
+# fallback. ``.textpack`` and ``.ipynb`` are handled only by the native engine,
+# so they route there automatically (no filename hint / LIGHTRAG_PARSER rule
+# needed). ``.md`` is deliberately absent — it keeps the legacy default and
+# opts into native the same way ``.docx`` does (hint or rule).
+_DEFAULT_ENGINE_BY_SUFFIX: dict[str, str] = {
+    "ipynb": PARSER_ENGINE_NATIVE,
+    "textpack": PARSER_ENGINE_NATIVE,
+}
 
 
 class ParserRoutingConfigError(ValueError):

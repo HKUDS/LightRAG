@@ -8,6 +8,8 @@ Sub-packages and modules:
   parser debugging across all engines.
 - ``docx``: native ``.docx`` parser. Additional native format parsers
   should live as sibling sub-packages here (e.g. ``parser/pdf/``).
+- ``notebook``: native ``.ipynb`` parser that delegates rendered cells to the
+  Markdown extraction pipeline.
 - ``external``: adapters for external parsing services (``mineru``,
   ``docling``) that post to a remote API and cache the raw bundle.
 """

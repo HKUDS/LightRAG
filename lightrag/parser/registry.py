@@ -266,10 +266,10 @@ _DOCLING_SUFFIXES = frozenset(
 _REGISTRY: dict[str, ParserSpec] = {
     PARSER_ENGINE_NATIVE: ParserSpec(
         engine_name=PARSER_ENGINE_NATIVE,
-        # Single ``native`` engine; the dispatcher picks docx vs markdown by
-        # source suffix (see lightrag.parser.native_dispatch).
+        # Single ``native`` engine; the dispatcher picks the concrete parser
+        # by source suffix (see lightrag.parser.native_dispatch).
         impl="lightrag.parser.native_dispatch:NativeParser",
-        suffixes=frozenset({"docx", "md", "textpack"}),
+        suffixes=frozenset({"docx", "ipynb", "md", "textpack"}),
         queue_group=PARSER_ENGINE_NATIVE,
         # Built-in groups are sized by the LightRAG ``max_parallel_parse_*``
         # instance field (supports constructor override), so no spec-level

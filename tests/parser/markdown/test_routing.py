@@ -19,12 +19,13 @@ def _engine(path: str, rules: str = "") -> str:
 
 def test_native_declares_markdown_suffixes():
     assert registry.suffix_capabilities("native") == frozenset(
-        {"docx", "md", "textpack"}
+        {"docx", "ipynb", "md", "textpack"}
     )
 
 
 def test_textpack_and_md_in_upload_allowlist():
     suffixes = registry.available_engine_suffixes()
+    assert "ipynb" in suffixes
     assert "textpack" in suffixes
     assert "md" in suffixes
 
@@ -36,6 +37,10 @@ def test_get_parser_native_is_dispatcher():
 
 def test_textpack_defaults_to_native_without_hint():
     assert _engine("note.textpack") == "native"
+
+
+def test_notebook_defaults_to_native_without_hint():
+    assert _engine("guide.ipynb") == "native"
 
 
 def test_md_defaults_to_legacy_opt_in_for_native():
@@ -70,12 +75,14 @@ def _dispatch(file_path: str) -> str:
     dispatcher = NativeParser()
     dispatcher._docx = _SentinelParser("docx")
     dispatcher._markdown = _SentinelParser("markdown")
+    dispatcher._notebook = _SentinelParser("notebook")
     return asyncio.run(dispatcher.parse(_Ctx(file_path)))
 
 
 def test_dispatcher_routes_by_suffix():
     assert _dispatch("a.md") == "markdown"
     assert _dispatch("a.textpack") == "markdown"
+    assert _dispatch("a.ipynb") == "notebook"
     assert _dispatch("a.[native-iet].md") == "markdown"
     assert _dispatch("a.docx") == "docx"
     assert _dispatch("report.[native].docx") == "docx"
