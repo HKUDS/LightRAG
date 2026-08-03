@@ -52,7 +52,7 @@ async def test_get_by_ids_escapes_special_characters():
     storage = _make_milvus_storage()
     storage._client.query.return_value = [{"id": 'doc"1', "content": "test"}]
 
-    result = await storage.get_by_ids(['doc"1', 'doc\\2'])
+    result = await storage.get_by_ids(['doc"1', "doc\\2"])
     assert result == [{"id": 'doc"1', "content": "test"}, None]
 
     storage._client.query.assert_called_once()
@@ -82,4 +82,6 @@ async def test_delete_entity_relation_escapes_special_characters():
 
     storage._client.query.assert_called_once()
     _, kwargs = storage._client.query.call_args
-    assert kwargs["filter"] == 'src_id == "ENTITY \\"A\\"" or tgt_id == "ENTITY \\"A\\""'
+    assert (
+        kwargs["filter"] == 'src_id == "ENTITY \\"A\\"" or tgt_id == "ENTITY \\"A\\""'
+    )
