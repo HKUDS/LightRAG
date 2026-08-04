@@ -41,6 +41,7 @@ from lightrag.utils_graph import (
     _merge_entities_impl,
     acreate_entity,
     acreate_relation,
+    aedit_relation,
 )
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
@@ -77,6 +78,28 @@ class _AlwaysFailsTruncateTokenizer(Tokenizer):
 
     def truncate_by_token_limit(self, content, max_tokens):
         raise TokenBudgetError(max_tokens, 999, content[:20])
+
+
+class _FailsOnlyForRelationContentTokenizer(Tokenizer):
+    """Truncates entity content fine, but always fails for relation content.
+
+    Relation content is always built as ``f"{keywords}\\t{src}\\n{tgt}\\n{desc}"``
+    (a literal tab), while entity content is ``f"{name}\\n{desc}"`` (no tab) --
+    so a literal tab reliably discriminates the two without needing to know
+    which VDB the caller is building for. Used to reproduce "entity payload
+    truncates fine, only the relationship's own content fails" -- the exact
+    scenario a full front-load must protect against for multi-object
+    operations (custom KG, relationship rebuild, edge merge with a new
+    endpoint), where per-object front-loading alone is not enough.
+    """
+
+    def __init__(self):
+        super().__init__("relation-hostile", _CharTokenizerImpl())
+
+    def truncate_by_token_limit(self, content, max_tokens):
+        if "\t" in content:
+            raise TokenBudgetError(max_tokens, 999, content[:20])
+        return super().truncate_by_token_limit(content, max_tokens)
 
 
 def _tok() -> Tokenizer:
@@ -319,6 +342,55 @@ async def test_rebuild_single_relationship_truncation_failure_leaves_edge_untouc
     assert relationships_vdb.upsert_calls == 0
 
 
+async def test_rebuild_single_relationship_missing_endpoint_not_created_when_relation_content_fails():
+    """Multi-object case: the endpoint entity's own content would truncate
+    fine, but the relationship's own content cannot. A missing endpoint must
+    not be created in the graph/VDB just because ITS payload happened to
+    validate -- the whole operation's payloads (endpoint + relationship) must
+    all be validated before either is written."""
+    graph = _MemGraph()
+    await graph.upsert_node(
+        "A", {"entity_id": "A", "description": "short", "source_id": "c1"}
+    )
+    # The edge already exists (so the rebuild has something to rebuild from)
+    # but "B" does not exist as a node yet -- _rebuild_single_relationship
+    # must create it as a missing endpoint.
+    await graph.upsert_edge(
+        "A",
+        "B",
+        {
+            "description": "short",
+            "keywords": "k",
+            "weight": 1.0,
+            "source_id": "c1",
+            "file_path": "f",
+        },
+    )
+    cfg = _cfg(_FailsOnlyForRelationContentTokenizer(), embedding_token_limit=20)
+    entities_vdb = _MemVDB(cfg)
+    relationships_vdb = _MemVDB(cfg)
+
+    with pytest.raises(TokenBudgetError):
+        await _rebuild_single_relationship(
+            graph,
+            relationships_vdb,
+            entities_vdb,
+            "A",
+            "B",
+            ["c1"],
+            chunk_relationships={
+                "c1": {("A", "B"): [{"description": "short", "keywords": "k"}]}
+            },
+            llm_response_cache=None,
+            global_config=cfg,
+            structural_fallback=True,
+        )
+
+    assert "B" not in graph.nodes
+    assert entities_vdb.upsert_calls == 0
+    assert relationships_vdb.upsert_calls == 0
+
+
 # --------------------------------------------------------------------------- #
 # operate.py: merge (ingestion) path
 # --------------------------------------------------------------------------- #
@@ -460,6 +532,42 @@ async def test_merge_edges_then_upsert_new_endpoint_entity_content_truncated():
         assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
+async def test_merge_edges_then_upsert_new_endpoints_not_created_when_relation_content_fails():
+    """Multi-object case: both new endpoints' own content would truncate
+    fine, but the relationship's own content cannot. Neither endpoint may be
+    created in the graph/VDB just because ITS OWN payload happened to
+    validate -- the whole operation's payloads (both endpoints AND the
+    relationship) must all be validated before any of them is written."""
+    graph = _MemGraph()
+    cfg = _cfg(_FailsOnlyForRelationContentTokenizer(), embedding_token_limit=20)
+    entities_vdb = _MemVDB(cfg)
+    relationships_vdb = _MemVDB(cfg)
+
+    with pytest.raises(TokenBudgetError):
+        await _merge_edges_then_upsert(
+            "NEW_A",
+            "NEW_B",
+            [
+                {
+                    "description": "short",
+                    "keywords": "k",
+                    "weight": 1.0,
+                    "source_id": "c1",
+                }
+            ],
+            graph,
+            relationships_vdb,
+            entities_vdb,
+            cfg,
+        )
+
+    assert "NEW_A" not in graph.nodes
+    assert "NEW_B" not in graph.nodes
+    assert ("NEW_A", "NEW_B") not in graph.edges
+    assert entities_vdb.upsert_calls == 0
+    assert relationships_vdb.upsert_calls == 0
+
+
 # --------------------------------------------------------------------------- #
 # utils_graph.py: create / edit(rename) / merge
 # --------------------------------------------------------------------------- #
@@ -542,6 +650,73 @@ async def test_acreate_relation_truncation_failure_leaves_graph_untouched():
 
     assert ("A", "B") not in graph.edges and ("B", "A") not in graph.edges
     assert relationships_vdb.upsert_calls == 0
+
+
+async def test_edit_relation_truncates_content():
+    graph = _MemGraph()
+    for name in ("A", "B"):
+        await graph.upsert_node(name, {"entity_id": name, "description": name})
+    await graph.upsert_edge(
+        "A",
+        "B",
+        {
+            "description": "short",
+            "keywords": "k",
+            "weight": 1.0,
+            "source_id": "c1",
+            "file_path": "f",
+        },
+    )
+    cfg = _cfg(_tok(), embedding_token_limit=20)
+    entities_vdb = _MemVDB(cfg)
+    relationships_vdb = _MemVDB(cfg)
+
+    await aedit_relation(
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        "A",
+        "B",
+        {"description": LONG_DESCRIPTION},
+    )
+    rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
+    record = relationships_vdb.records[rel_id]
+    assert len(cfg["tokenizer"].encode(record["content"])) <= 20
+
+
+async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
+    graph = _MemGraph()
+    for name in ("A", "B"):
+        await graph.upsert_node(name, {"entity_id": name, "description": name})
+    original_edge = {
+        "description": "short",
+        "keywords": "k",
+        "weight": 1.0,
+        "source_id": "c1",
+        "file_path": "f",
+    }
+    await graph.upsert_edge("A", "B", dict(original_edge))
+    cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
+    entities_vdb = _MemVDB(cfg)
+    relationships_vdb = _MemVDB(cfg)
+    # Pre-seed the VDB record the edit would otherwise delete, to prove the
+    # delete never happened either.
+    rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
+    relationships_vdb.records[rel_id] = {"content": "pre-existing"}
+
+    with pytest.raises(TokenBudgetError):
+        await aedit_relation(
+            graph,
+            entities_vdb,
+            relationships_vdb,
+            "A",
+            "B",
+            {"description": LONG_DESCRIPTION},
+        )
+
+    assert graph.edges[("A", "B")] == original_edge
+    assert relationships_vdb.upsert_calls == 0
+    assert rel_id in relationships_vdb.records  # delete never happened either
 
 
 async def test_edit_entity_rename_truncates_content():
@@ -708,6 +883,56 @@ async def test_ainsert_custom_kg_truncation_failure_leaves_graph_untouched():
 
     assert "Alice" not in rag.chunk_entity_relation_graph.nodes
     assert rag.entities_vdb.upsert_calls == 0
+
+
+async def test_ainsert_custom_kg_entities_not_created_when_relationship_content_fails():
+    """Multi-object case: the entity payload would truncate fine, but the
+    relationship's own content cannot. Neither Alice nor Bob (nor the edge)
+    may land in the graph just because the entity payloads happened to
+    validate -- the whole batch's payloads (entities AND relationships) must
+    all be validated before ANY graph mutation."""
+    cfg = _cfg(_FailsOnlyForRelationContentTokenizer(), embedding_token_limit=20)
+    rag = _make_custom_kg_rag(cfg)
+
+    with pytest.raises(TokenBudgetError):
+        await rag.ainsert_custom_kg(
+            {
+                "chunks": [],
+                "entities": [
+                    {
+                        "entity_name": "Alice",
+                        "entity_type": "PERSON",
+                        "description": "short",
+                        "source_id": "chunk-1",
+                        "file_path": "f",
+                    },
+                    {
+                        "entity_name": "Bob",
+                        "entity_type": "PERSON",
+                        "description": "short",
+                        "source_id": "chunk-1",
+                        "file_path": "f",
+                    },
+                ],
+                "relationships": [
+                    {
+                        "src_id": "Alice",
+                        "tgt_id": "Bob",
+                        "description": "short",
+                        "keywords": "k",
+                        "weight": 1.0,
+                        "source_id": "chunk-1",
+                        "file_path": "f",
+                    }
+                ],
+            }
+        )
+
+    assert "Alice" not in rag.chunk_entity_relation_graph.nodes
+    assert "Bob" not in rag.chunk_entity_relation_graph.nodes
+    assert not rag.chunk_entity_relation_graph.edges
+    assert rag.entities_vdb.upsert_calls == 0
+    assert rag.relationships_vdb.upsert_calls == 0
 
 
 async def test_ainsert_custom_kg_empty_batch_never_builds_global_config():

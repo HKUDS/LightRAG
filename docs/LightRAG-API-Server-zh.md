@@ -312,6 +312,10 @@ EMBEDDING_DIM=3072
 EMBEDDING_TOKEN_LIMIT=8192
 EMBEDDING_SEND_DIM=false
 EMBEDDING_USE_BASE64=true
+# 分块后若单个 chunk 仍超过 EMBEDDING_TOKEN_LIMIT，embedding 硬回退切分时
+# 从上一片内容尾部借用的重叠 token 数。独立于 CHUNK_OVERLAP_SIZE。
+# 默认 100；0 表示禁用该回退的重叠。
+# EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE=100
 
 ############################
 ### Data storage selection

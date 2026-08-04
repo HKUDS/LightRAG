@@ -3375,15 +3375,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
             async def _do_graph_and_vdb_writes() -> None:
-                # Construct and verify the entity VDB payload BEFORE the
-                # first graph mutation below (entity_nodes batch upsert): if
-                # truncation fails, nothing has been written yet. Skipped
-                # entirely when there is nothing to insert (e.g. a
-                # chunks-only custom_kg) — _build_global_config is real work
-                # callers with no entities/relationships should not pay for.
-                # Shared with the relationship VDB payload built further
-                # below in this same function, so it is built at most once
-                # per call.
+                # Construct and verify EVERY VDB payload (entities AND
+                # relationships) BEFORE any graph mutation in this function:
+                # if truncation fails anywhere, nothing has been written yet.
+                # Discovering missing relationship endpoints only needs
+                # has_nodes_batch, a read, so it can run here too, ahead of
+                # every write. Skipped entirely when there is nothing to
+                # insert (e.g. a chunks-only custom_kg) — _build_global_config
+                # is real work callers with no entities/relationships should
+                # not pay for.
                 global_config: dict[str, Any] | None = None
                 data_for_entities_vdb: dict[str, Any] = {}
                 if all_entities_data or deduped_relationships:
@@ -3404,12 +3404,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         }
                         for dp in all_entities_data
                     }
-
-                # Batch insert entities (reduces N serial awaits to 1)
-                if entity_nodes:
-                    await self.chunk_entity_relation_graph.upsert_nodes_batch(
-                        entity_nodes
-                    )
 
                 # Insert relationships into knowledge graph (batch for performance)
                 all_relationships_data: list[dict[str, str]] = []
@@ -3510,6 +3504,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         }
                         for dp in all_relationships_data
                     }
+
+                # Every VDB payload is now validated — only from here on does
+                # this function touch the graph.
+
+                # Batch insert entities (reduces N serial awaits to 1)
+                if entity_nodes:
+                    await self.chunk_entity_relation_graph.upsert_nodes_batch(
+                        entity_nodes
+                    )
 
                 # Batch insert missing placeholder nodes
                 if missing_nodes:

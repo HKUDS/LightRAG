@@ -349,6 +349,7 @@ During the document insertion stage, you may also want to adjust the following e
 - **FORCE_LLM_SUMMARY_ON_MERGE / MAX_SOURCE_IDS_PER_RELATION**: Controls the maximum number of text chunks an `entity/relation` can be associated with.
 - **SOURCE_IDS_LIMIT_METHOD**: Controls whether to keep updating the entity/relation description once an `entity/relation` exceeds its associated text chunk limit (by default it stops updating, because at that point the entity-relation description is already rich enough and further updates add little value; skipping updates can greatly speed up knowledge base construction).
 - **DEFAULT_MAX_FILE_PATHS**: Controls the maximum number of source files an `entity/relation` can be associated with; once this limit is exceeded, new file names are no longer written to the vector storage.
+- **EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE**: Controls the token overlap the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `CHUNK_OVERLAP_SIZE` (the chunker's own overlap setting) — some chunking strategies zero that one out for unrelated reasons, so this fallback keeps its own value. Defaults to `100`; `0` disables the fallback's overlap.
 
 ### Resolving LLM Timeouts During Entity-Relation Extraction
 

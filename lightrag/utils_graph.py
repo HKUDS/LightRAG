@@ -836,38 +836,24 @@ async def aedit_relation(
             edge_data = await chunk_entity_relation_graph.get_edge(
                 source_entity, target_entity
             )
-            # Important: First delete the old relation record from the vector database
-            # Delete both permutations to handle relationships created before normalization
-            rel_ids_to_delete = [
-                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-            ]
-            await relationships_vdb.delete(rel_ids_to_delete)
-            logger.debug(
-                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
-            )
-
-            # 2. Update relation information in the graph
+            # 2. Recalculate relation's vector representation. Construct and
+            # verify the VDB payload BEFORE any mutation below (including the
+            # VDB delete): if truncation fails, nothing has been touched yet.
             new_edge_data = {**edge_data, **updated_data}
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, new_edge_data
-            )
-
-            # 3. Recalculate relation's vector representation and update vector database
             description = new_edge_data.get("description", "")
             keywords = new_edge_data.get("keywords", "")
             source_id = new_edge_data.get("source_id", "")
             weight = float(new_edge_data.get("weight", 1.0))
 
-            # Create content for embedding
-            content = f"{source_entity}\t{target_entity}\n{keywords}\n{description}"
+            content = _truncate_vdb_content(
+                f"{source_entity}\t{target_entity}\n{keywords}\n{description}",
+                relationships_vdb.global_config,
+                f"relation:{source_entity}-{target_entity}",
+            )
 
-            # Calculate relation ID
             relation_id = compute_mdhash_id(
                 source_entity + target_entity, prefix="rel-"
             )
-
-            # Prepare data for vector database update
             relation_data = {
                 relation_id: {
                     "content": content,
@@ -879,6 +865,22 @@ async def aedit_relation(
                     "weight": weight,
                 }
             }
+
+            # Important: First delete the old relation record from the vector database
+            # Delete both permutations to handle relationships created before normalization
+            rel_ids_to_delete = [
+                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+            ]
+            await relationships_vdb.delete(rel_ids_to_delete)
+            logger.debug(
+                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
+            )
+
+            # 3. Update relation information in the graph
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, new_edge_data
+            )
 
             # Update vector database
             await relationships_vdb.upsert(relation_data)
