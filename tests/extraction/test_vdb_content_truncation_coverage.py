@@ -738,6 +738,47 @@ async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
     assert rel_id in relationships_vdb.records  # delete never happened either
 
 
+async def test_edit_relation_vdb_delete_failure_still_leaves_graph_updated():
+    """A *transient* VDB I/O failure (unlike a TokenBudgetError) must not
+    prevent the graph write: the graph write happens before the VDB delete,
+    so a delete failure still leaves the new relation content saved in the
+    graph -- the recoverable (graph-updated, VDB-stale) window the offline
+    rebuild tool is for."""
+    graph = _MemGraph()
+    for name in ("A", "B"):
+        await graph.upsert_node(name, {"entity_id": name, "description": name})
+    original_edge = {
+        "description": "short",
+        "keywords": "k",
+        "weight": 1.0,
+        "source_id": "c1",
+        "file_path": "f",
+    }
+    await graph.upsert_edge("A", "B", dict(original_edge))
+    cfg = _cfg(_tok(), embedding_token_limit=1000)
+    entities_vdb = _MemVDB(cfg)
+    relationships_vdb = _MemVDB(cfg)
+
+    async def _boom(_ids):
+        raise RuntimeError("transient VDB backend error")
+
+    relationships_vdb.delete = _boom
+
+    with pytest.raises(RuntimeError, match="transient VDB backend error"):
+        await aedit_relation(
+            graph,
+            entities_vdb,
+            relationships_vdb,
+            "A",
+            "B",
+            {"description": "updated description"},
+        )
+
+    # The graph write already happened before the failing VDB delete.
+    assert graph.edges[("A", "B")]["description"] == "updated description"
+    assert relationships_vdb.upsert_calls == 0
+
+
 async def test_edit_entity_rename_truncates_content():
     graph = _MemGraph()
     await graph.upsert_node(
