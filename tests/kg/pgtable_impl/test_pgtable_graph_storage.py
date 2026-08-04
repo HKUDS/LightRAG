@@ -54,12 +54,23 @@ def test_constructor_validates_workspace_like_other_backends():
 @pytest.mark.parametrize(
     ("global_config", "expected_vector_storage"),
     [
+        # No vector backend configured -> this class's own name, NOT None.
+        # ClientManager maps None to enable_vector=True, which would make the pool
+        # require pgvector and break the whole point of this backend. Callers with
+        # a bare global_config are real: tests/kg/test_graph_storage.py, the
+        # cross-backend contract suite, is one, and it runs against a plain
+        # postgres image in CI.
         ({}, "PGTableGraphStorage"),
+        ({"vector_storage": None}, "PGTableGraphStorage"),
+        # Whenever the key IS set, the value must be forwarded verbatim so the
+        # pool signature agrees with the sibling PG storages. LightRAG always sets
+        # it, so this is the path that actually runs in production.
         ({"vector_storage": "NanoVectorDBStorage"}, "NanoVectorDBStorage"),
+        ({"vector_storage": "PGVectorStorage"}, "PGVectorStorage"),
     ],
 )
 @pytest.mark.asyncio
-async def test_initialize_passes_pgtable_safe_vector_storage_to_client_manager(
+async def test_initialize_forwards_configured_vector_storage_verbatim(
     global_config, expected_vector_storage
 ):
     storage = make_uninitialized_storage(global_config=global_config)
@@ -210,6 +221,51 @@ def test_ddl_adds_cascading_edge_foreign_keys():
     assert "ON DELETE CASCADE" in _DDL
     assert "DELETE FROM lightrag_graph_edges e" in _DDL
     assert "n.namespace = e.namespace" in _DDL
+
+
+def test_ddl_gates_orphan_sweep_behind_missing_foreign_keys():
+    """The table-wide orphan sweep must not run once both FKs already exist.
+
+    It is an anti-join over the WHOLE edge table (all workspaces — the FK is a
+    global composite constraint), it runs inside the transaction holding
+    pg_advisory_xact_lock, and with the FKs enforced it can never match a row.
+    As a top-level statement every process paid it, serialized, on every start.
+    """
+    from lightrag.kg.pgtable_impl import _DDL
+
+    # The sweep must live inside the *second* DO block (the FK creator), after
+    # its both-present early return and before the first ADD CONSTRAINT.
+    fk_block = _DDL.split("DO $$", 2)[2]
+    early_return = fk_block.index("RETURN;")
+    sweep = fk_block.index("DELETE FROM lightrag_graph_edges e")
+    add_src_fk = fk_block.index("ADD CONSTRAINT fk_lightrag_graph_edges_src")
+    assert early_return < sweep < add_src_fk, (
+        "orphan sweep must sit between the early return and ADD CONSTRAINT"
+    )
+    assert "IF has_src_fk AND has_tgt_fk THEN" in fk_block
+    # ...and must not additionally exist as an ungated top-level statement.
+    assert _DDL.count("DELETE FROM lightrag_graph_edges e") == 1
+
+
+def test_normalize_guard_predicate_matches_the_partial_index():
+    """The guard and its partial index must share one predicate, verbatim.
+
+    The planner can only serve the guard from
+    idx_lightrag_graph_edges_noncanonical if it can prove the query predicate
+    implies the index predicate. Any drift between the two spellings silently
+    turns a ~0.04 ms index-only probe back into a full scan of the edge table on
+    every process start, with no error to notice.
+    """
+    import inspect
+
+    from lightrag.kg.pgtable_impl import _DDL, PGTableGraphStorage
+
+    predicate = 'src_id COLLATE "C" > tgt_id COLLATE "C"'
+
+    assert "idx_lightrag_graph_edges_noncanonical" in _DDL
+    assert predicate in _DDL
+    guard_src = inspect.getsource(PGTableGraphStorage._normalize_legacy_edges)
+    assert predicate in guard_src
 
 
 def test_postgres_impl_loads_pgvector_lazily_for_vector_connections():
@@ -699,12 +755,100 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
 
 
 # ---------------------------------------------------------------------------
+# _bfs_frontier — per-hop work bounded in SQL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bfs_hop_ranks_and_caps_in_sql_without_per_level_degree_roundtrip():
+    """Each hop must rank + cap server-side and cost ONE query.
+
+    Previously a hop fetched every neighbour (full JSONB properties included),
+    then issued a second node_degrees_batch round trip over that whole
+    neighbourhood, then ranked and truncated in Python. On a hub that meant
+    shipping the entire neighbour set just to discard all but `node_budget` of
+    it. node_degrees_batch must now be called exactly once — for the seed's
+    ordering tie-break — no matter how many levels are walked.
+    """
+    storage = make_storage()
+
+    seed_row = {"id": "seed", "properties": json.dumps({"entity_id": "seed"})}
+    # Two levels, each already degree-ranked and capped by the DB.
+    hop_rows = [
+        [
+            {"id": "a", "properties": json.dumps({"entity_id": "a"}), "degree": 9},
+            {"id": "b", "properties": json.dumps({"entity_id": "b"}), "degree": 4},
+        ],
+        [{"id": "c", "properties": json.dumps({"entity_id": "c"}), "degree": 1}],
+        [],
+    ]
+    fetch = AsyncMock(side_effect=hop_rows)
+    degrees_batch = AsyncMock(return_value={"seed": 7})
+
+    with (
+        patch.object(storage, "_fetchrow", new=AsyncMock(return_value=seed_row)),
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(storage, "node_degrees_batch", new=degrees_batch),
+    ):
+        rows, degrees = await storage._bfs_frontier("seed", max_depth=3, node_budget=10)
+
+    # Seed only — NOT once per level.
+    degrees_batch.assert_awaited_once_with(["seed"])
+    # Degrees come from the hop query itself.
+    assert degrees == {"a": 9, "b": 4, "c": 1, "seed": 7}
+    assert [r["id"] for r in rows] == ["seed", "a", "b", "c"]
+    assert [r["depth"] for r in rows] == [0, 1, 1, 2]
+
+    # Every hop must push the unvisited filter, the degree ranking and the
+    # remaining-budget cap into SQL.
+    first_sql = fetch.await_args_list[0].args[0]
+    assert "ORDER BY COALESCE(d.degree, 0) DESC" in first_sql
+    assert "LIMIT $5" in first_sql
+    assert "NOT EXISTS" in first_sql
+
+    # The cap is the remaining budget + 1, so the caller still sees the one
+    # overfetched row that distinguishes "exactly full" from "truncated".
+    # collected grows 1 -> 3 -> 4, so the cap is 10-1+1, 10-3+1, 10-4+1.
+    caps = [call.args[5] for call in fetch.await_args_list]
+    assert caps == [10, 8, 7]
+    # The visited set is passed so the DB can anti-join it.
+    visited_per_hop = [call.args[4] for call in fetch.await_args_list]
+    assert visited_per_hop[0] == ["seed"]
+    assert visited_per_hop[1] == ["seed", "a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_bfs_hop_cap_never_exceeds_remaining_budget():
+    """A hop must not admit more than budget+1 nodes even if SQL returned more."""
+    storage = make_storage()
+    seed_row = {"id": "seed", "properties": json.dumps({"entity_id": "seed"})}
+    fetch = AsyncMock(
+        return_value=[
+            {"id": "a", "properties": json.dumps({"entity_id": "a"}), "degree": 3},
+        ]
+    )
+
+    with (
+        patch.object(storage, "_fetchrow", new=AsyncMock(return_value=seed_row)),
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(
+            storage, "node_degrees_batch", new=AsyncMock(return_value={"seed": 0})
+        ),
+    ):
+        await storage._bfs_frontier("seed", max_depth=5, node_budget=1)
+
+    # budget 1, seed already collected -> cap 1, and the loop stops after it.
+    assert fetch.await_args_list[0].args[5] == 1
+    assert fetch.await_count == 1
+
+
+# ---------------------------------------------------------------------------
 # search_labels — literal SQL pattern semantics
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_search_labels_strips_and_relevance_orders():
+async def test_search_labels_strips_and_ranks_and_limits_in_sql():
     storage = make_storage()
     fetch = AsyncMock(return_value=[])
 
@@ -712,11 +856,24 @@ async def test_search_labels_strips_and_relevance_orders():
         assert await storage.search_labels("   ") == []
         await storage.search_labels(" Foo ", limit=7)
 
-    sql, workspace, namespace, contains = fetch.call_args.args
+    sql, workspace, namespace, exact, prefix, space_bnd, us_bnd, contains, limit = (
+        fetch.call_args.args
+    )
     assert workspace == "test"
     assert namespace == GRAPH_NAMESPACE
+    # $3 is compared with '=', so it must be the raw lowercased query with no
+    # LIKE escaping applied.
+    assert exact == "foo"
+    assert prefix == "foo%"
+    assert space_bnd == "% foo%"
+    # '_' is a LIKE wildcard: the "_query" word-boundary probe must escape it.
+    assert us_bnd == r"%\_foo%"
     assert contains == "%foo%"
-    assert "ORDER BY" not in sql
+    # Ranking and truncation must happen server-side, not after transferring the
+    # whole match set (that was the point of the change).
+    assert limit == 7
+    assert "ORDER BY score DESC" in sql
+    assert "LIMIT $8" in sql
     # E'' escape literal: unambiguous one-char escape regardless of
     # standard_conforming_strings (see search_labels).
     assert "ESCAPE E'\\\\'" in sql
@@ -730,29 +887,32 @@ async def test_search_labels_escapes_like_wildcards():
     with patch.object(storage, "_fetch", new=fetch):
         await storage.search_labels(r"a_%\b")
 
-    _sql, _workspace, namespace, contains = fetch.call_args.args
+    args = fetch.call_args.args
+    namespace, exact, prefix, space_bnd, us_bnd, contains = args[2:8]
     assert namespace == GRAPH_NAMESPACE
+    assert exact == r"a_%\b"
+    assert prefix == r"a\_\%\\b%"
+    assert space_bnd == r"% a\_\%\\b%"
+    assert us_bnd == r"%\_a\_\%\\b%"
     assert contains == r"%a\_\%\\b%"
 
 
 @pytest.mark.asyncio
-async def test_search_labels_relevance_sorted_in_python():
-    storage = make_storage()
-    with patch.object(
-        storage,
-        "_fetch",
-        new=AsyncMock(
-            return_value=[
-                {"id": "xx_foo"},
-                {"id": "foo"},
-                {"id": "bar foo"},
-                {"id": "foobar"},
-            ]
-        ),
-    ):
-        result = await storage.search_labels("foo", limit=3)
+async def test_search_labels_preserves_sql_row_order():
+    """Ordering is the DB's job now; the method must not re-sort or re-slice.
 
-    assert result == ["foo", "foobar", "xx_foo"]
+    Rows are handed back in the order SQL returned them (the equivalence of that
+    SQL ordering to _search_score is proven against a live PostgreSQL by
+    tests/kg/pgtable_impl/test_pgtable_smoke.py).
+    """
+    storage = make_storage()
+    # Deliberately NOT in _search_score order: a lingering Python sort would
+    # reorder these, and a lingering [:limit] would drop the last one.
+    sql_order = [{"id": "zz"}, {"id": "aa"}, {"id": "mm"}]
+    with patch.object(storage, "_fetch", new=AsyncMock(return_value=sql_order)):
+        result = await storage.search_labels("a", limit=1)
+
+    assert result == ["zz", "aa", "mm"]
 
 
 # ---------------------------------------------------------------------------

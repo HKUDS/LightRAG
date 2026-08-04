@@ -58,6 +58,11 @@ async def store():
     storage = PGTableGraphStorage(
         namespace="graph",
         workspace=workspace,
+        # Deliberately no "vector_storage" key: this exercises the
+        # no-vector-backend-configured fallback in initialize(), which is what
+        # keeps the pool from requiring pgvector. CI runs these against a plain
+        # postgres image, so a regression here fails loudly rather than silently
+        # depending on an extension.
         global_config={"max_graph_nodes": 1000},
         embedding_func=None,
     )
@@ -626,3 +631,212 @@ async def test_get_node_edges_self_loop_appears_once(store):
 
     edges = await store.get_node_edges("A")
     assert edges == [("A", "A")], f"self-loop must appear exactly once: {edges}"
+
+
+# ---------------------------------------------------------------------------
+# SQL-vs-Python equivalence — the SQL rewrites must match their references
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_labels_sql_scoring_matches_search_score_reference(store):
+    """The SQL CASE must score/rank exactly like the _search_score reference.
+
+    Scoring moved from Python into SQL so the LIMIT could be applied server-side
+    (the Python version transferred every id matching %q% to return `limit` of
+    them). _search_score stays the definition of NetworkXStorage's semantics, so
+    the two must agree — including the subtle part: the +50 word-boundary bonus
+    applies ONLY to the contains branch, never to an exact or prefix match.
+    """
+    labels = [
+        "foo",
+        "FOO",
+        "foobar",
+        "foo foo",  # prefix match that ALSO has a boundary hit -> must stay 500
+        "xx_foo",
+        "bar foo",
+        "barfoo",
+        "foo_bar",
+        "prefix_foo_suffix",
+        "x" * 120 + "foo",  # negative score (100 - len)
+        "_foo",
+        "café foo",
+        "北京 foo",
+        "foo%bar",  # literal % must not act as a wildcard
+        "a_foo",  # literal _ must not act as a wildcard
+        "zzfoo",
+    ]
+    await store.upsert_nodes_batch([(lbl, _node(lbl)) for lbl in labels])
+
+    for query in ("foo", "f", "oo", "bar", "%", "_", "FOO"):
+        normalized = query.strip().lower()
+        for limit in (1, 3, 50):
+            got = await store.search_labels(query, limit=limit)
+
+            matched = [lbl for lbl in labels if normalized in lbl.lower()]
+            expected = sorted(
+                matched, key=lambda lbl: (-store._search_score(lbl, normalized), lbl)
+            )[:limit]
+
+            assert got == expected, (
+                f"SQL scoring diverged from _search_score for "
+                f"query={query!r} limit={limit}: {got} != {expected}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_bfs_matches_degree_ordered_reference_traversal(store):
+    """SQL-side rank+cap BFS must equal the Python reference on a hub graph.
+
+    The per-hop unvisited filter, degree ranking and budget cap all moved into
+    SQL. This pins the observable result — which nodes are retained at which BFS
+    depth, and their degrees — against a plain in-memory reference walk, on a
+    graph with a hub whose degree far exceeds the node budget (the case the
+    rewrite targets).
+    """
+    nodes = [f"n{i:03d}" for i in range(120)]
+    hub = nodes[0]
+    edges = {(min(hub, n), max(hub, n)) for n in nodes[1:80]}
+    # A second, lower-degree cluster reachable only at depth 2.
+    edges |= {(min(nodes[80], n), max(nodes[80], n)) for n in nodes[81:100]}
+    edges.add((min(hub, nodes[80]), max(hub, nodes[80])))
+    edges.add((nodes[5], nodes[5]))  # self-loop: counts twice, like node_degree
+
+    await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
+    await store.upsert_edges_batch([(s, t, _edge()) for s, t in sorted(edges)])
+
+    adjacency: dict[str, set[str]] = {}
+    degree: dict[str, int] = {}
+    for src, tgt in edges:
+        adjacency.setdefault(src, set()).add(tgt)
+        adjacency.setdefault(tgt, set()).add(src)
+        degree[src] = degree.get(src, 0) + 1
+        degree[tgt] = degree.get(tgt, 0) + 1
+
+    def reference(seed, max_depth, budget):
+        """Degree-ordered BFS, admitting one past the budget like the real one."""
+        collected = {seed: 0}
+        frontier, depth = [seed], 0
+        while frontier and depth < max_depth and len(collected) <= budget:
+            depth += 1
+            candidates = {
+                nb
+                for node in frontier
+                for nb in adjacency.get(node, ())
+                if nb not in collected
+            }
+            if not candidates:
+                break
+            ordered = sorted(candidates, key=lambda n: (-degree.get(n, 0), n))
+            nxt = []
+            for node in ordered:
+                collected[node] = depth
+                nxt.append(node)
+                if len(collected) > budget:
+                    break
+            frontier = nxt
+        return collected
+
+    for seed, max_depth, budget in [
+        (hub, 1, 1000),
+        (hub, 2, 1000),
+        (hub, 3, 25),
+        (hub, 2, 10),
+        (nodes[80], 2, 1000),
+        (nodes[99], 3, 40),
+        (nodes[5], 2, 1000),
+    ]:
+        rows, degrees = await store._bfs_frontier(seed, max_depth, budget)
+        expected = reference(seed, max_depth, budget)
+
+        assert {r["id"] for r in rows} == set(expected), (
+            f"node set diverged for seed={seed} depth={max_depth} budget={budget}"
+        )
+        assert {r["id"]: r["depth"] for r in rows} == expected, (
+            f"BFS depths diverged for seed={seed} depth={max_depth} budget={budget}"
+        )
+        for row in rows:
+            assert degrees[row["id"]] == degree.get(row["id"], 0), (
+                f"degree diverged for {row['id']}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_reinitialize_is_idempotent_and_keeps_data(store):
+    """Re-running the DDL must not disturb existing rows.
+
+    The orphan sweep is now gated behind "an FK is missing", so a second
+    initialize() must skip it entirely — and must certainly not delete live
+    edges. Guards the gating change against a regression that would make
+    startup destructive.
+    """
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_node("B", _node("B"))
+    await store.upsert_edge("A", "B", _edge(weight=3.5))
+
+    from lightrag.kg.pgtable_impl import _DDL
+
+    # Second pass over the schema DDL + legacy normalization.
+    await store._db.execute(_DDL)
+    await store._normalize_legacy_edges()
+
+    assert await store.get_node("A") is not None
+    assert await store.get_node("B") is not None
+    edge = await store.get_edge("A", "B")
+    assert edge is not None, "re-running the DDL must not delete live edges"
+    assert edge["weight"] == 3.5
+
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_still_runs_when_foreign_keys_are_missing(store):
+    """Gating the sweep must not break the legacy migration it exists for.
+
+    Drop both FKs, plant an orphan edge that the constraints would have
+    forbidden, then re-run the DDL: the sweep must remove the orphan and both
+    constraints must come back. Without the sweep, ADD CONSTRAINT would fail and
+    initialize() would abort.
+    """
+    from lightrag.kg.pgtable_impl import _DDL
+
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_node("B", _node("B"))
+    await store.upsert_edge("A", "B", _edge())
+
+    async def _plant_orphan(conn):
+        await conn.execute(
+            "ALTER TABLE lightrag_graph_edges "
+            "DROP CONSTRAINT IF EXISTS fk_lightrag_graph_edges_src"
+        )
+        await conn.execute(
+            "ALTER TABLE lightrag_graph_edges "
+            "DROP CONSTRAINT IF EXISTS fk_lightrag_graph_edges_tgt"
+        )
+        await conn.execute(
+            "INSERT INTO lightrag_graph_edges "
+            "(workspace, namespace, src_id, tgt_id, properties) "
+            "VALUES ($1, $2, 'A', 'GHOST', '{}'::jsonb)",
+            store.workspace,
+            store.namespace,
+        )
+
+    await store._db._run_with_retry(_plant_orphan)
+    assert await store.has_edge("A", "GHOST") is True
+
+    await store._db.execute(_DDL)
+
+    assert await store.has_edge("A", "GHOST") is False, (
+        "orphan edge must be swept before the FKs are recreated"
+    )
+    assert await store.get_edge("A", "B") is not None, "live edge must survive"
+
+    async def _count_fks(conn):
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_constraint "
+            "WHERE conrelid = 'lightrag_graph_edges'::regclass "
+            "AND conname IN ('fk_lightrag_graph_edges_src', "
+            "'fk_lightrag_graph_edges_tgt')"
+        )
+
+    assert await store._db._run_with_retry(_count_fks) == 2, (
+        "both foreign keys must be recreated after the sweep"
+    )
