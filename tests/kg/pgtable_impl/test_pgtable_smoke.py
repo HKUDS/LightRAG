@@ -647,6 +647,13 @@ async def test_search_labels_sql_scoring_matches_search_score_reference(store):
     them). _search_score stays the definition of NetworkXStorage's semantics, so
     the two must agree — including the subtle part: the +50 word-boundary bonus
     applies ONLY to the contains branch, never to an exact or prefix match.
+
+    Scope: every label below folds identically under SQL LOWER() and Python
+    str.lower(), which is true of all but a handful of code points. Those are a
+    separate, documented divergence — see
+    test_search_labels_folds_case_with_the_database_not_python. Keep this corpus
+    free of them, or this test stops testing the scoring rules and starts
+    testing case folding.
     """
     labels = [
         "foo",
@@ -682,6 +689,47 @@ async def test_search_labels_sql_scoring_matches_search_score_reference(store):
                 f"SQL scoring diverged from _search_score for "
                 f"query={query!r} limit={limit}: {got} != {expected}"
             )
+
+
+@pytest.mark.asyncio
+async def test_search_labels_folds_case_with_the_database_not_python(store):
+    """Pin the one place SQL scoring is allowed to disagree with _search_score.
+
+    SQL LOWER() folds one character to one character; Python str.lower() applies
+    full Unicode case mapping. So LOWER('İ') is 'i' — an EXACT match for query
+    'i', worth 1000 — while 'İ'.lower() is 'i̇', only a prefix match worth
+    500, which the code-point tie-break then puts behind 'ia'.
+
+    This is not new authority: the pre-scoring implementation already folded with
+    LOWER() in the same WHERE clause, so which labels match has always been the
+    database's call. PGGraphStorage folds the same way, so the divergence is
+    against the NetworkX/JSON storages, not between the PostgreSQL ones. Asserted
+    explicitly here so it stays a decision rather than drifting into a surprise —
+    if a future change unifies the folding, this test is the one to update.
+    """
+    # LOWER() is lc_ctype-dependent: a server initdb'd with the pure "C" locale
+    # does not fold non-ASCII at all, so there is no divergence to pin there.
+    # Ask this server rather than hard-coding one libc's answer.
+    server_lower = await store._fetchval("SELECT LOWER($1)", "İ")
+    if server_lower != "i":
+        pytest.skip(
+            f"server folds 'İ' to {server_lower!r}, not 'i' "
+            "(lc_ctype=C?) — nothing to diverge from Python here"
+        )
+
+    labels = ["İ", "ia"]
+    await store.upsert_nodes_batch([(lbl, _node(lbl)) for lbl in labels])
+
+    # What the database's folding produces, in full and truncated to one.
+    assert await store.search_labels("i", limit=50) == ["İ", "ia"]
+    assert await store.search_labels("i", limit=1) == ["İ"]
+
+    # ... and that this is a real divergence from the Python reference, not an
+    # accident of ordering: the reference disagrees on both the tier and the rank.
+    assert store._search_score("İ", "i") == 500
+    assert store._search_score("ia", "i") == 500
+    reference = sorted(labels, key=lambda lbl: (-store._search_score(lbl, "i"), lbl))
+    assert reference == ["ia", "İ"]
 
 
 @pytest.mark.asyncio

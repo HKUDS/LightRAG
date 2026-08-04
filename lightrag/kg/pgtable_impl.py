@@ -300,8 +300,11 @@ class PGTableGraphStorage(BaseGraphStorage):
         decoded per hop are bounded by the remaining budget.
       - search_labels scores and truncates in SQL (like PGGraphStorage) using the
         NetworkXStorage scoring rules, so the wire cost is O(limit) rather than
-        O(every id matching the query). _search_score is the reference definition
-        and the pg_smoke suite pins the SQL to it.
+        O(every id matching the query). _search_score is the reference for the
+        rules and the pg_smoke suite pins the SQL to it; case folding is the
+        database's LOWER(), not Python str.lower(), which is a documented
+        PostgreSQL-family divergence on the few code points where the two
+        disagree — see the comment in search_labels.
 
     Flush-time batching:
         upsert_nodes_batch / upsert_edges_batch split their payload by
@@ -494,6 +497,10 @@ class PGTableGraphStorage(BaseGraphStorage):
         # Mirror NetworkXStorage.search_labels scoring exactly: the
         # word-boundary bonus applies ONLY to the contains branch, not to
         # exact/prefix matches.
+        #
+        # Reference for the RULES only. search_labels evaluates them in SQL and
+        # folds case with the database's LOWER(), which is not Python
+        # str.lower() on every code point — see the comment there.
         lowered = label.lower()
         if lowered == query:
             return 1000
@@ -957,14 +964,35 @@ class PGTableGraphStorage(BaseGraphStorage):
         # table over the wire per search. The LIKE filter is unindexable either
         # way, but the transfer is now O(limit).
         #
-        # The CASE mirrors _search_score / NetworkXStorage.search_labels exactly:
-        # the +50 word-boundary bonus is nested INSIDE the ELSE branch so it can
-        # never apply to an exact or prefix match (AGE's SQL adds it
+        # The CASE mirrors _search_score / NetworkXStorage.search_labels' scoring
+        # RULES: the +50 word-boundary bonus is nested INSIDE the ELSE branch so
+        # it can never apply to an exact or prefix match (AGE's SQL adds it
         # unconditionally, which is the divergent one). LENGTH() counts
         # characters like Python len(), not octets. ORDER BY id COLLATE "C"
         # reproduces Python's code-point tie-break on the original,
-        # non-lowercased id. _search_score stays the reference definition and the
-        # pg_smoke suite asserts this SQL agrees with it.
+        # non-lowercased id.
+        #
+        # Case folding, however, is the DATABASE's — LOWER() is not Python
+        # str.lower(). LOWER() maps one character to one character, while Python
+        # applies full Unicode case mapping, so the two disagree on a small set
+        # of code points: LOWER('İ') = 'i' but 'İ'.lower() == 'i̇', and
+        # LOWER('ΟΣ') = 'οσ' but 'ΟΣ'.lower() == 'ος' (final sigma). Where they
+        # disagree, a label can land in a different score tier than
+        # _search_score would give it. That is deliberate and unchanged in
+        # authority: the pre-scoring version already folded with LOWER() in this
+        # same WHERE clause, so which labels MATCH has always been the
+        # database's call — this only extends it to which tier they match in.
+        # PGGraphStorage scores with LOWER() the same way, so the whole
+        # PostgreSQL family shares one folding authority while NetworkX/JSON
+        # storages use Python's;
+        # test_search_labels_folds_case_with_the_database_not_python in the
+        # pg_smoke suite pins it.
+        #
+        # _search_score remains the reference for the rules, and
+        # test_search_labels_sql_scoring_matches_search_score_reference asserts
+        # the SQL agrees with it over a corpus whose folding is identical on both
+        # sides (which is every label whose characters fold 1:1 — i.e. all but
+        # that handful).
         #
         # $3 is the RAW lowercased query (compared with =, so it must not carry
         # LIKE escapes); $4..$7 are LIKE patterns built from the escaped form.
