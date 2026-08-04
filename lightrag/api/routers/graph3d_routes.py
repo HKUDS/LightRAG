@@ -109,6 +109,49 @@ def create_graph3d_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(status_code=404, detail="QR code image not found.")
         return FileResponse(img_path, media_type="image/jpeg")
 
+    @router.get("/graph3d/edge_info", dependencies=[Depends(combined_auth)])
+    async def graph3d_edge_info(src: str, tgt: str):
+        """Return relationship details (description, keywords, weight) for an entity pair."""
+        graph = rag.chunk_entity_relation_graph
+        edge = await graph.get_edge(src, tgt)
+        if not edge:
+            edge = await graph.get_edge(tgt, src)
+        if not edge:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No relationship between '{src}' and '{tgt}'.",
+            )
+        return {
+            "src_id": src,
+            "tgt_id": tgt,
+            "description": edge.get("description", ""),
+            "keywords": edge.get("keywords", ""),
+            "weight": edge.get("weight", 0.0),
+            "source_id": edge.get("source_id", ""),
+        }
+
+    @router.get("/graph3d/entity_edges", dependencies=[Depends(combined_auth)])
+    async def graph3d_entity_edges(name: str, limit: int = 50):
+        """Return an entity's neighbors with relationship details, ordered by weight desc."""
+        graph = rag.chunk_entity_relation_graph
+        node_edges = await graph.get_node_edges(name) or []
+        neighbors = []
+        for s, t in node_edges:
+            other = t if s == name else s
+            edge = await graph.get_edge(s, t)
+            if not edge:
+                edge = await graph.get_edge(t, s)
+            neighbors.append(
+                {
+                    "name": other,
+                    "description": (edge or {}).get("description", ""),
+                    "keywords": (edge or {}).get("keywords", ""),
+                    "weight": (edge or {}).get("weight", 0.0),
+                }
+            )
+        neighbors.sort(key=lambda n: n["weight"], reverse=True)
+        return {"entity": name, "neighbors": neighbors[:limit], "total": len(neighbors)}
+
     @router.get("/graph3d/insights", dependencies=[Depends(combined_auth)])
     async def graph3d_insights():
         """Generate research insights about the knowledge graph."""

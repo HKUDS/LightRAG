@@ -30,6 +30,24 @@ _recent_query_activations: List[Dict[str, Any]] = []
 _MAX_ACTIVATIONS_TO_KEEP = 100
 _ACTIVATION_TTL_SECONDS = 60  # Activations expire after 60 seconds
 
+# Daily cache of query activations for idle replay in the 3D viewer.
+# Keyed by day ("2026-08-05"); previous days are dropped on the next write.
+_daily_query_cache: Dict[str, List[Dict[str, Any]]] = {}
+_MAX_DAILY_CACHE = 500
+
+
+def _record_daily_activation(activation_data: Dict[str, Any]) -> None:
+    """Cache a query activation under today's date for idle replay."""
+    day_key = time.strftime("%Y-%m-%d")
+    bucket = _daily_query_cache.setdefault(day_key, [])
+    bucket.append(activation_data)
+    while len(bucket) > _MAX_DAILY_CACHE:
+        bucket.pop(0)
+    # Drop previous days
+    for key in list(_daily_query_cache.keys()):
+        if key != day_key:
+            del _daily_query_cache[key]
+
 
 class QueryRequest(BaseModel):
     query: str = Field(
@@ -1450,6 +1468,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
                     _recent_query_activations.append(activation_data)
 
+                    # Cache under today's date for idle replay in the 3D viewer
+                    _record_daily_activation(activation_data)
+
                     # Log the activation
                     entity_count = len(activation_data["entities"])
                     rel_count = len(activation_data["relationships"])
@@ -1535,5 +1556,27 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             "count": len(activations),
             "latest_timestamp": activations[-1]["timestamp"] if activations else None,
         }
+
+    @router.get(
+        "/query/activations/daily_replay",
+        dependencies=[Depends(combined_auth)],
+        summary="Get a random cached query activation for idle replay",
+        description="Returns a random activation from today's query cache so the 3D viewer can replay activations when idle",
+        include_in_schema=False,
+    )
+    async def get_daily_replay():
+        """Return a random activation from today's cache for idle replay.
+
+        The 3D viewer polls this when no new query has arrived for a while and
+        replays the returned activation in a dimmed style. Pure read — replays
+        are never recorded back into the cache.
+        """
+        import random
+
+        day_key = time.strftime("%Y-%m-%d")
+        bucket = _daily_query_cache.get(day_key) or []
+        if not bucket:
+            return {"activation": None, "cached_count": 0}
+        return {"activation": random.choice(bucket), "cached_count": len(bucket)}
 
     return router

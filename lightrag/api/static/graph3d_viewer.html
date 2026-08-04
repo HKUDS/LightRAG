@@ -719,6 +719,147 @@
     color: var(--color-text-muted);
     line-height: 1.3;
   }
+  .brightness-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    padding: 10px 16px;
+    color: var(--color-text);
+    font-size: 14px;
+    backdrop-filter: blur(10px);
+    cursor: default;
+    transition: border-color 0.3s ease;
+  }
+
+  .brightness-control:hover {
+    border-color: var(--color-accent);
+  }
+
+  .brightness-control input[type="range"] {
+    width: 110px;
+    accent-color: var(--color-accent);
+    cursor: pointer;
+  }
+
+  .conn-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .conn-chip {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 3px 9px;
+    font-size: 11px;
+    color: var(--color-text);
+    cursor: pointer;
+    transition: border-color 0.2s ease, color 0.2s ease;
+  }
+
+  .conn-chip:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .conn-chip.disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .conn-chip.disabled:hover {
+    border-color: var(--color-border);
+    color: var(--color-text);
+  }
+
+  .relationship-view {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .relationship-view.hidden {
+    display: none;
+  }
+
+  .relationship-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+
+  .rel-entity-link {
+    color: var(--color-accent);
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .rel-entity-link:hover {
+    text-decoration: underline;
+  }
+
+  .rel-desc {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    line-height: 1.4;
+    margin-top: 6px;
+  }
+
+  .rel-keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+  }
+
+  .rel-keyword {
+    background: rgba(74, 158, 255, 0.1);
+    border-radius: 8px;
+    padding: 2px 7px;
+    font-size: 10px;
+    color: var(--color-accent);
+  }
+
+  .rel-weight {
+    font-size: 10px;
+    color: var(--color-text-muted);
+    margin-top: 6px;
+  }
+
+  .panel-back {
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+    margin-bottom: 8px;
+    display: none;
+  }
+
+  .panel-back:hover {
+    text-decoration: underline;
+  }
+
+  #entity-cluster {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0 3px;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  #entity-cluster:hover {
+    background: rgba(74, 158, 255, 0.15);
+    color: var(--color-accent);
+  }
 </style>
 </head>
 <body>
@@ -739,13 +880,18 @@
 
 <div class="ui-overlay side-panel hidden" id="side-panel">
   <div class="panel-title">Entity Details</div>
+  <button class="panel-back" id="panel-back">← Back</button>
   <div class="entity-name" id="entity-name">—</div>
   <div class="entity-description" id="entity-description">—</div>
   <div class="entity-meta">
-    <div>Cluster: <span id="entity-cluster">—</span></div>
+    <div>Cluster: <span id="entity-cluster" title="Hover to highlight this cluster in the graph">—</span></div>
     <div>Position: <span id="entity-position">—</span></div>
     <div>Connections: <span id="entity-connections">—</span></div>
   </div>
+  <div class="conn-chips" id="entity-conn-chips"></div>
+
+  <!-- Relationship drill-down view (populated on connection-chip click) -->
+  <div class="relationship-view hidden" id="relationship-view"></div>
 
   <!-- Cluster Information Legend -->
   <div class="cluster-legend" id="cluster-legend">
@@ -782,6 +928,10 @@
   <button class="control-btn" id="btn-gk-mobile">
     <span>📱</span> GK充电宝移动端
   </button>
+  <div class="brightness-control" title="Node brightness">
+    <span>🔆</span>
+    <input type="range" id="brightness-slider" min="0.2" max="2.0" step="0.05" value="1.0">
+  </div>
 </div>
 
 <div class="gk-modal-overlay hidden" id="gk-modal-overlay">
@@ -855,6 +1005,7 @@ const CLUSTER_COLORS = [
 ];
 
 let scene, camera, renderer, composer, controls;
+let bloomPass = null;
 let pointsMesh, edgesMesh;
 let entityData = null;
 let edgeData = null;
@@ -863,12 +1014,111 @@ let selectedEntity = -1;
 let showEdges = false;
 let showLabels = false;
 
+// Node brightness (slider-controlled, persisted in localStorage)
+const BLOOM_STRENGTH_BASE = 0.6; // UnrealBloomPass strength at brightness 1.0
+let brightnessFactor = parseFloat(localStorage.getItem('graph3d_brightness')) || 1.0;
+
 // Neuron activation state
 let entityNameToIndex = new Map();
 let activationAnimation = null;
 
 // Multi-activation system: track multiple coexisting activation groups
 const MAX_CONCURRENT_ACTIVATIONS = 6;
+
+// Cluster lookup (built in createPoints): clusterId -> array of entity indices
+const clusterToIndices = new Map();
+
+// Persistent highlight layer: survives pulse()'s per-frame base-color reset.
+// Entries are re-applied every frame while activations run (pulse() calls
+// applyHighlightsToArrays), and applied directly when no loop is active.
+// idx -> { color: THREE.Color, sizeBoost: number, source: string, startTime: number }
+const persistentHighlights = new Map();
+const HIGHLIGHT_SETTLE_MS = 1500; // clicked-node pulse-then-settle duration
+const HIGHLIGHT_SETTLED_BOOST = 1.4; // settled size multiplier for clicked node
+let highlightAnimFrame = null;
+
+function setHighlight(indices, color, sizeBoost = 2.0, source = 'click') {
+  for (const idx of indices) {
+    persistentHighlights.set(idx, { color, sizeBoost, source, startTime: Date.now() });
+  }
+  applyPersistentHighlights();
+}
+
+function clearHighlights(source = null) {
+  if (source === null) {
+    persistentHighlights.clear();
+  } else {
+    for (const [idx, h] of persistentHighlights) {
+      if (h.source === source) persistentHighlights.delete(idx);
+    }
+  }
+  applyPersistentHighlights();
+}
+
+// Write highlight colors/sizes into attribute arrays. Caller handles needsUpdate.
+// Returns true while any clicked-node highlight is still settling (needs another frame).
+function applyHighlightsToArrays(colors, sizes) {
+  const now = Date.now();
+  let settling = false;
+  for (const [idx, h] of persistentHighlights) {
+    let boost = h.sizeBoost;
+    if (h.source === 'click') {
+      const t = Math.min((now - h.startTime) / HIGHLIGHT_SETTLE_MS, 1);
+      boost = HIGHLIGHT_SETTLED_BOOST + (h.sizeBoost - HIGHLIGHT_SETTLED_BOOST) * (1 - t);
+      if (t < 1) settling = true;
+    }
+    colors[idx * 3] = h.color.r;
+    colors[idx * 3 + 1] = h.color.g;
+    colors[idx * 3 + 2] = h.color.b;
+    sizes[idx] = POINT_SIZE * boost;
+  }
+  return settling;
+}
+
+function applyPersistentHighlights() {
+  if (!pointsMesh || !entityData) return;
+  const colors = pointsMesh.geometry.attributes.color.array;
+  const sizes = pointsMesh.geometry.attributes.size.array;
+  if (activationGroups.length === 0) {
+    // No pulse loop rewriting colors each frame — restore base state first so
+    // cleared highlights revert immediately.
+    for (let idx = 0; idx < entityData.length; idx++) {
+      const baseColor = getBaseColor(idx);
+      colors[idx * 3] = baseColor.r;
+      colors[idx * 3 + 1] = baseColor.g;
+      colors[idx * 3 + 2] = baseColor.b;
+      sizes[idx] = POINT_SIZE;
+    }
+  }
+  const settling = applyHighlightsToArrays(colors, sizes);
+  pointsMesh.geometry.attributes.color.needsUpdate = true;
+  pointsMesh.geometry.attributes.size.needsUpdate = true;
+  // Keep animating the settle while no activation loop is running
+  if (settling && !highlightAnimFrame && !activationAnimation) {
+    highlightAnimFrame = requestAnimationFrame(() => {
+      highlightAnimFrame = null;
+      applyPersistentHighlights();
+    });
+  }
+}
+
+// Base point color for an entity (cluster color scaled by brightness)
+function getBaseColor(idx) {
+  return new THREE.Color(CLUSTER_COLORS[entityData[idx].cluster % CLUSTER_COLORS.length])
+    .multiplyScalar(brightnessFactor);
+}
+
+// Apply the current brightness to the scene. While activations run, pulse()'s
+// per-frame reset picks up brightnessFactor automatically — this handles the
+// idle case via applyPersistentHighlights(), which rewrites base colors.
+function applyBrightness() {
+  if (bloomPass) {
+    bloomPass.strength = BLOOM_STRENGTH_BASE * brightnessFactor;
+  }
+  if (!pointsMesh || !entityData) return;
+  if (activationGroups.length > 0) return; // next pulse() frame applies it
+  applyPersistentHighlights();
+}
 
 // Format a description that may contain <SEP> tokens into styled HTML.
 // Splits on <SEP>, trims, deduplicates, and wraps each segment as a bullet.
@@ -922,6 +1172,13 @@ let activationQueue = [];
 let isProcessingQueue = false;
 const ACTIVATION_DISPLAY_DURATION = 4000; // How long each activation stays visible
 const QUEUE_PROCESSING_DELAY = 500; // Delay between processing queued activations
+
+// Idle replay: when no real query activity for IDLE_REPLAY_DELAY_MS, replay a
+// random activation from today's server-side cache in a dimmed style.
+let lastQueryActivityAt = Date.now();
+const IDLE_REPLAY_DELAY_MS = 30000;
+const REPLAY_CHECK_INTERVAL_MS = 5000;
+const REPLAY_DIM_FACTOR = 0.45;
 
 // Logging functions
 function addLog(message, type = 'info', details = null) {
@@ -1022,9 +1279,9 @@ function initScene() {
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
 
-  const bloomPass = new UnrealBloomPass(
+  bloomPass = new UnrealBloomPass(
     new THREE.Vector2(width, height),
-    0.6,  // strength (reduced for better activation visibility)
+    BLOOM_STRENGTH_BASE * brightnessFactor,  // strength (reduced for better activation visibility)
     0.4,  // radius
     0.3   // threshold (increased so only activated entities glow brightly)
   );
@@ -1064,7 +1321,7 @@ function createPoints() {
     positions[i * 3 + 1] = entity.y;
     positions[i * 3 + 2] = entity.z;
 
-    const color = new THREE.Color(CLUSTER_COLORS[entity.cluster % CLUSTER_COLORS.length]);
+    const color = getBaseColor(i);
     colors[i * 3] = color.r;
     colors[i * 3 + 1] = color.g;
     colors[i * 3 + 2] = color.b;
@@ -1073,6 +1330,12 @@ function createPoints() {
 
     // Build name-to-index map
     entityNameToIndex.set(entity.name, i);
+
+    // Build cluster-to-indices map
+    if (!clusterToIndices.has(entity.cluster)) {
+      clusterToIndices.set(entity.cluster, []);
+    }
+    clusterToIndices.get(entity.cluster).push(i);
   }
 
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -1113,7 +1376,7 @@ const ACTIVATION_COLOR_NAMES = [
 ];
 let activationColorIndex = 0;
 
-function activateEntities(entityNames, duration = 3000) {
+function activateEntities(entityNames, duration = 3000, dimFactor = 1.0) {
   if (!pointsMesh || !entityData) return;
 
   // Keep original edges hidden during activation
@@ -1158,7 +1421,8 @@ function activateEntities(entityNames, duration = 3000) {
     edgesMesh: null,
     particles: null,
     trafficData: null,
-    startTime: Date.now()
+    startTime: Date.now(),
+    dimFactor: dimFactor // 1.0 = live query, < 1.0 = dimmed idle replay
   };
 
   // Create small glowing spheres for each activated entity (node-sized glow)
@@ -1269,12 +1533,17 @@ function startActivationAnimation() {
     // Reset all points to original colors first
     // (We'll re-apply activation colors for each group)
     for (let idx = 0; idx < entityData.length; idx++) {
-      const baseColor = new THREE.Color(CLUSTER_COLORS[entityData[idx].cluster % CLUSTER_COLORS.length]);
+      const baseColor = getBaseColor(idx);
       colors[idx * 3] = baseColor.r;
       colors[idx * 3 + 1] = baseColor.g;
       colors[idx * 3 + 2] = baseColor.b;
       sizes[idx] = POINT_SIZE;
     }
+
+    // Re-apply persistent highlights (clicked node, hovered cluster, selected
+    // edge endpoints) so they survive the per-frame reset. Activation groups
+    // below may still brighten a highlighted node further.
+    applyHighlightsToArrays(colors, sizes);
 
     // Process each activation group
     for (const group of activationGroups) {
@@ -1300,17 +1569,20 @@ function startActivationAnimation() {
         ? Math.sin((groupElapsed / 2000) * Math.PI * 4) * 0.5 + 0.5
         : 1.0;
 
+      // Replays render dimmer: scale every fade-driven term by the group's dimFactor
+      const effectiveFade = fadeFactor * (group.dimFactor ?? 1);
+
       // Apply activation color to entities
       for (const idx of group.indices) {
-        const baseColor = new THREE.Color(CLUSTER_COLORS[entityData[idx].cluster % CLUSTER_COLORS.length]);
+        const baseColor = getBaseColor(idx);
         // Blend toward activation color-white with fade
         const brightColor = baseColor.clone()
-          .lerp(group.color, 0.3 * fadeFactor)
-          .lerp(new THREE.Color(0xffffff), pulseIntensity * 0.5 * fadeFactor);
+          .lerp(group.color, 0.3 * effectiveFade)
+          .lerp(new THREE.Color(0xffffff), pulseIntensity * 0.5 * effectiveFade);
         colors[idx * 3] = brightColor.r;
         colors[idx * 3 + 1] = brightColor.g;
         colors[idx * 3 + 2] = brightColor.b;
-        sizes[idx] = POINT_SIZE * (1 + pulseIntensity * 1.5 * fadeFactor);
+        sizes[idx] = POINT_SIZE * (1 + pulseIntensity * 1.5 * effectiveFade);
       }
 
       // Propagate to neighbor entities with dimmer effect
@@ -1322,10 +1594,10 @@ function startActivationAnimation() {
           if (srcActivated || tgtActivated) {
             const neighborIdx = srcActivated ? tgtIdx : srcIdx;
             if (!group.indices.has(neighborIdx)) {
-              const neighborColor = new THREE.Color(CLUSTER_COLORS[entityData[neighborIdx].cluster % CLUSTER_COLORS.length]);
-              const dimPulse = pulseIntensity * 0.3 * fadeFactor;
+              const neighborColor = getBaseColor(neighborIdx);
+              const dimPulse = pulseIntensity * 0.3 * effectiveFade;
               const dimColor = neighborColor.clone()
-                .lerp(group.color, 0.2 * fadeFactor)
+                .lerp(group.color, 0.2 * effectiveFade)
                 .lerp(new THREE.Color(0xffffff), dimPulse);
               colors[neighborIdx * 3] = dimColor.r;
               colors[neighborIdx * 3 + 1] = dimColor.g;
@@ -1338,7 +1610,7 @@ function startActivationAnimation() {
 
       // Pulse the edges mesh
       if (group.edgesMesh) {
-        group.edgesMesh.material.opacity = (0.3 + pulseIntensity * 0.3) * fadeFactor;
+        group.edgesMesh.material.opacity = (0.3 + pulseIntensity * 0.3) * effectiveFade;
       }
 
       // Animate pulse spheres
@@ -1346,8 +1618,8 @@ function startActivationAnimation() {
         group.spheres.forEach(sphere => {
           const sphereElapsed = now - sphere.userData.startTime;
           const pulse = Math.sin((sphereElapsed / 1000) * Math.PI * 2) * 0.3 + 0.7;
-          sphere.material.opacity = sphere.userData.baseOpacity * pulse * fadeFactor;
-          const scale = 1 + (pulse - 0.7) * 0.5 * fadeFactor;
+          sphere.material.opacity = sphere.userData.baseOpacity * pulse * effectiveFade;
+          const scale = 1 + (pulse - 0.7) * 0.5 * effectiveFade;
           sphere.scale.set(scale, scale, scale);
         });
       }
@@ -1384,7 +1656,7 @@ function startActivationAnimation() {
         }
 
         group.particles.geometry.attributes.position.needsUpdate = true;
-        group.particles.material.opacity = 0.9 * fadeFactor;
+        group.particles.material.opacity = 0.9 * effectiveFade;
       }
     }
 
@@ -1584,6 +1856,9 @@ async function queryAndActivate(queryText) {
         isManual: true
       });
 
+      // Stamp activity so idle replay pauses
+      lastQueryActivityAt = Date.now();
+
       // Advance the polling watermark so the same activation isn't
       // re-fetched by pollForActivations() and processed a second time.
       lastActivationTimestamp = Date.now() / 1000 + 1;
@@ -1722,9 +1997,146 @@ function setupInteraction() {
   renderer.domElement.addEventListener('click', () => {
     if (hoveredEntity >= 0) {
       selectedEntity = hoveredEntity;
+      // Fresh graph click starts a new navigation path
+      panelHistory.length = 0;
+      updatePanelBack();
+      // Light up the clicked node (pulse-then-settle, source-tagged 'click')
+      clearHighlights('click');
+      setHighlight([selectedEntity], new THREE.Color(0xffffff), 2.5, 'click');
       showEntityDetails(selectedEntity);
     }
   });
+}
+
+// Panel navigation history for relationship drill-down
+const panelHistory = [];
+let panelClusterId = null;
+let highlightEdgeMesh = null;
+
+function updatePanelBack() {
+  document.getElementById('panel-back').style.display =
+    panelHistory.length > 0 ? 'block' : 'none';
+}
+
+// Navigate to an entity from inside the panel (keeps back-history)
+function navigateToEntity(idx) {
+  if (idx == null || idx < 0) return;
+  if (selectedEntity >= 0 && selectedEntity !== idx) {
+    panelHistory.push(selectedEntity);
+  }
+  selectedEntity = idx;
+  clearHighlights('click');
+  setHighlight([idx], new THREE.Color(0xffffff), 2.5, 'click');
+  showEntityDetails(idx);
+  updatePanelBack();
+}
+
+// Bright single edge between two entities (relationship selection)
+function setHighlightEdge(srcIdx, tgtIdx) {
+  clearHighlightEdge();
+  const src = entityData[srcIdx];
+  const tgt = entityData[tgtIdx];
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(
+    [src.x, src.y, src.z, tgt.x, tgt.y, tgt.z], 3));
+  const material = new THREE.LineBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  highlightEdgeMesh = new THREE.LineSegments(geometry, material);
+  scene.add(highlightEdgeMesh);
+}
+
+function clearHighlightEdge() {
+  if (highlightEdgeMesh) {
+    scene.remove(highlightEdgeMesh);
+    highlightEdgeMesh.geometry.dispose();
+    highlightEdgeMesh.material.dispose();
+    highlightEdgeMesh = null;
+  }
+}
+
+// Show relationship details between two entities in the side panel and
+// light both nodes plus the connecting edge in the 3D graph.
+async function showRelationship(fromName, toName) {
+  const relView = document.getElementById('relationship-view');
+  relView.classList.remove('hidden');
+  relView.innerHTML = '<div class="relationship-title">Relationship</div>' +
+    '<div class="rel-desc">Loading…</div>';
+
+  let edge;
+  try {
+    const r = await fetch(
+      `${API_BASE}/graph3d/edge_info?src=${encodeURIComponent(fromName)}&tgt=${encodeURIComponent(toName)}`
+    );
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.detail || r.statusText);
+    }
+    edge = await r.json();
+  } catch (err) {
+    relView.innerHTML = '<div class="relationship-title">Relationship</div>' +
+      `<div class="rel-desc">⚠️ ${err.message}</div>`;
+    return;
+  }
+
+  relView.innerHTML = '<div class="relationship-title">Relationship</div>';
+
+  // Entity pair as clickable links (built via DOM to avoid attribute injection)
+  const pairDiv = document.createElement('div');
+  const makeLink = (name) => {
+    const link = document.createElement('span');
+    link.className = 'rel-entity-link';
+    link.textContent = name;
+    link.addEventListener('click', () => {
+      const idx = entityNameToIndex.get(name);
+      if (idx !== undefined) navigateToEntity(idx);
+    });
+    return link;
+  };
+  pairDiv.appendChild(makeLink(fromName));
+  pairDiv.appendChild(document.createTextNode(' ↔ '));
+  pairDiv.appendChild(makeLink(toName));
+  relView.appendChild(pairDiv);
+
+  const descDiv = document.createElement('div');
+  descDiv.className = 'rel-desc';
+  descDiv.innerHTML = formatDescription(edge.description) || 'No description available.';
+  relView.appendChild(descDiv);
+
+  const keywords = (edge.keywords || '').split(',').map(k => k.trim()).filter(Boolean);
+  if (keywords.length) {
+    const kwDiv = document.createElement('div');
+    kwDiv.className = 'rel-keywords';
+    for (const kw of keywords) {
+      const tag = document.createElement('span');
+      tag.className = 'rel-keyword';
+      tag.textContent = kw;
+      kwDiv.appendChild(tag);
+    }
+    relView.appendChild(kwDiv);
+  }
+
+  const weightDiv = document.createElement('div');
+  weightDiv.className = 'rel-weight';
+  weightDiv.textContent = `Weight: ${Number(edge.weight || 0).toFixed(2)}`;
+  relView.appendChild(weightDiv);
+
+  // Light both nodes and the edge in the 3D graph
+  const srcIdx = entityNameToIndex.get(fromName);
+  const tgtIdx = entityNameToIndex.get(toName);
+  clearHighlights('edge');
+  clearHighlightEdge();
+  const lit = [];
+  if (srcIdx !== undefined) lit.push(srcIdx);
+  if (tgtIdx !== undefined) lit.push(tgtIdx);
+  if (lit.length) setHighlight(lit, new THREE.Color(0xffffff), 2.2, 'edge');
+  if (srcIdx !== undefined && tgtIdx !== undefined) {
+    setHighlightEdge(srcIdx, tgtIdx);
+  }
 }
 
 function showEntityDetails(idx) {
@@ -1743,9 +2155,46 @@ function showEntityDetails(idx) {
   document.getElementById('entity-position').textContent =
     `(${entity.x.toFixed(2)}, ${entity.y.toFixed(2)}, ${entity.z.toFixed(2)})`;
 
+  // Track cluster for hover-highlight (feature: hover cluster text lights cluster N)
+  panelClusterId = entity.cluster;
+
+  // Reset relationship drill-down state
+  const relView = document.getElementById('relationship-view');
+  relView.classList.add('hidden');
+  relView.innerHTML = '';
+  clearHighlights('edge');
+  clearHighlightEdge();
+
   // Count connections
   const connections = edgeData.filter(([s, t]) => s === idx || t === idx).length;
   document.getElementById('entity-connections').textContent = connections;
+
+  // Clickable connection chips (sorted by relationship weight, capped by backend)
+  const chipsDiv = document.getElementById('entity-conn-chips');
+  chipsDiv.innerHTML = '';
+  fetch(`${API_BASE}/graph3d/entity_edges?name=${encodeURIComponent(entity.name)}`)
+    .then(r => (r.ok ? r.json() : null))
+    .then(data => {
+      // Ignore stale responses if the user already clicked another entity
+      if (selectedEntity !== idx) return;
+      chipsDiv.innerHTML = '';
+      const neighbors = data?.neighbors || [];
+      for (const neighbor of neighbors) {
+        const chip = document.createElement('span');
+        const neighborIdx = entityNameToIndex.get(neighbor.name);
+        const inLayout = neighborIdx !== undefined;
+        chip.className = inLayout ? 'conn-chip' : 'conn-chip disabled';
+        chip.textContent = neighbor.name;
+        chip.title = inLayout
+          ? `Weight ${Number(neighbor.weight || 0).toFixed(2)} — click to view relationship`
+          : 'Not in 3D layout';
+        if (inLayout) {
+          chip.addEventListener('click', () => showRelationship(entity.name, neighbor.name));
+        }
+        chipsDiv.appendChild(chip);
+      }
+    })
+    .catch(err => console.error('Error loading entity edges:', err));
 
   panel.classList.remove('hidden');
 
@@ -1772,7 +2221,6 @@ document.getElementById('btn-reset-camera').addEventListener('click', () => {
 document.getElementById('btn-toggle-edges').addEventListener('click', () => {
   showEdges = !showEdges;
   if (edgesMesh) edgesMesh.visible = showEdges;
-  if (activatedEdgesMesh) activatedEdgesMesh.visible = showEdges;
 });
 
 document.getElementById('btn-toggle-labels').addEventListener('click', () => {
@@ -1810,12 +2258,53 @@ document.getElementById('btn-auto-rotate').addEventListener('click', () => {
   );
 });
 
+// Brightness slider (persisted in localStorage)
+const brightnessSlider = document.getElementById('brightness-slider');
+brightnessSlider.value = brightnessFactor;
+brightnessSlider.addEventListener('input', () => {
+  brightnessFactor = parseFloat(brightnessSlider.value) || 1.0;
+  localStorage.setItem('graph3d_brightness', String(brightnessFactor));
+  applyBrightness();
+});
+
 // Entity Details toggle button
 document.getElementById('btn-entity-details').addEventListener('click', () => {
   const panel = document.getElementById('side-panel');
   panel.classList.toggle('hidden');
   const btn = document.getElementById('btn-entity-details');
   btn.style.opacity = panel.classList.contains('hidden') ? '0.5' : '1';
+  if (panel.classList.contains('hidden')) {
+    // Closing the panel clears all interactive highlights
+    clearHighlights('click');
+    clearHighlights('edge');
+    clearHighlights('cluster-hover');
+    clearHighlightEdge();
+  }
+});
+
+// Back button for relationship drill-down navigation
+document.getElementById('panel-back').addEventListener('click', () => {
+  const prev = panelHistory.pop();
+  if (prev != null) {
+    selectedEntity = prev;
+    clearHighlights('click');
+    setHighlight([prev], new THREE.Color(0xffffff), 2.5, 'click');
+    showEntityDetails(prev);
+  }
+  updatePanelBack();
+});
+
+// Hover the cluster label in the entity panel -> light up the whole cluster
+const clusterSpan = document.getElementById('entity-cluster');
+clusterSpan.addEventListener('mouseenter', () => {
+  if (panelClusterId == null) return;
+  const idxs = clusterToIndices.get(panelClusterId) || [];
+  const color = new THREE.Color(CLUSTER_COLORS[panelClusterId % CLUSTER_COLORS.length])
+    .lerp(new THREE.Color(0xffffff), 0.55);
+  setHighlight(idxs, color, 1.8, 'cluster-hover');
+});
+clusterSpan.addEventListener('mouseleave', () => {
+  clearHighlights('cluster-hover');
 });
 
 // Query Log toggle button
@@ -1895,6 +2384,9 @@ async function pollForActivations() {
       // Update timestamp
       lastActivationTimestamp = data.latest_timestamp;
 
+      // Stamp activity so idle replay pauses
+      lastQueryActivityAt = Date.now();
+
       // Start processing queue if not already processing
       if (!isProcessingQueue) {
         processActivationQueue();
@@ -1910,7 +2402,48 @@ function startPolling() {
   if (pollingInterval) return; // Already polling
 
   pollingInterval = setInterval(pollForActivations, POLL_INTERVAL_MS);
+  setInterval(checkIdleReplay, REPLAY_CHECK_INTERVAL_MS);
   addLog('🔄 Real-time activation monitoring enabled', 'info');
+}
+
+// After 30s without real query activity, replay a random activation from
+// today's server-side cache in a dimmed style. A real query arriving at any
+// point (including mid-fetch) prevents the replay from being queued.
+async function checkIdleReplay() {
+  if (isProcessingQueue || activationQueue.length > 0) return;
+  if (Date.now() - lastQueryActivityAt < IDLE_REPLAY_DELAY_MS) return;
+
+  try {
+    const response = await fetch(`${ACTIVATIONS_URL}/daily_replay`);
+    if (!response.ok) return;
+    const { activation } = await response.json();
+    if (!activation) return;
+
+    // Re-check idle after the await — a real query may have arrived mid-fetch
+    if (Date.now() - lastQueryActivityAt < IDLE_REPLAY_DELAY_MS) return;
+    if (isProcessingQueue || activationQueue.length > 0) return;
+
+    const entityNames = [...(activation.entities || [])];
+    for (const rel of (activation.relationships || [])) {
+      entityNames.push(rel.src, rel.tgt);
+    }
+    const uniqueEntities = [...new Set(entityNames)];
+    if (uniqueEntities.length === 0) return;
+
+    activationQueue.push({
+      query: activation.query,
+      entities: uniqueEntities,
+      entityCount: activation.entities?.length || 0,
+      timestamp: Date.now() / 1000,
+      isReplay: true
+    });
+
+    if (!isProcessingQueue) {
+      processActivationQueue();
+    }
+  } catch (error) {
+    console.error('Idle replay error:', error);
+  }
 }
 
 // Process activation queue sequentially
@@ -1924,8 +2457,13 @@ async function processActivationQueue() {
   while (activationQueue.length > 0) {
     const activation = activationQueue.shift();
 
-    // Log the activation (different message for manual vs external queries)
-    if (activation.isManual) {
+    // Log the activation (different message for manual vs external vs replay)
+    if (activation.isReplay) {
+      addLog(
+        `🔁 Replay: <strong>"${activation.query}"</strong> (dimmed)`,
+        'info'
+      );
+    } else if (activation.isManual) {
       addLog(
         `🔍 Manual query: <strong>"${activation.query}"</strong>`,
         'info'
@@ -1943,8 +2481,12 @@ async function processActivationQueue() {
       formatEntityList(activation.entities, 15)
     );
 
-    // Activate the entities
-    activateEntities(activation.entities, ACTIVATION_DISPLAY_DURATION);
+    // Activate the entities (dimmed for replays)
+    activateEntities(
+      activation.entities,
+      ACTIVATION_DISPLAY_DURATION,
+      activation.isReplay ? REPLAY_DIM_FACTOR : 1.0
+    );
     addLog(`⚡ Activated <strong>${activation.entities.length}</strong> neurons`, 'success');
 
     // If there are more items in queue, show queue status
