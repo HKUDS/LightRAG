@@ -58,6 +58,11 @@ async def store():
     storage = PGTableGraphStorage(
         namespace="graph",
         workspace=workspace,
+        # Deliberately no "vector_storage" key: this exercises the
+        # no-vector-backend-configured fallback in initialize(), which is what
+        # keeps the pool from requiring pgvector. CI runs these against a plain
+        # postgres image, so a regression here fails loudly rather than silently
+        # depending on an extension.
         global_config={"max_graph_nodes": 1000},
         embedding_func=None,
     )
@@ -626,3 +631,356 @@ async def test_get_node_edges_self_loop_appears_once(store):
 
     edges = await store.get_node_edges("A")
     assert edges == [("A", "A")], f"self-loop must appear exactly once: {edges}"
+
+
+# ---------------------------------------------------------------------------
+# SQL-vs-Python equivalence — the SQL rewrites must match their references
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_labels_sql_scoring_matches_search_score_reference(store):
+    """The SQL CASE must score/rank exactly like the _search_score reference.
+
+    Scoring moved from Python into SQL so the LIMIT could be applied server-side
+    (the Python version transferred every id matching %q% to return `limit` of
+    them). _search_score stays the definition of NetworkXStorage's semantics, so
+    the two must agree — including the subtle part: the +50 word-boundary bonus
+    applies ONLY to the contains branch, never to an exact or prefix match.
+
+    Scope: every label below folds identically under SQL LOWER() and Python
+    str.lower(), which is true of all but a handful of code points. Those are a
+    separate, documented divergence — see
+    test_search_labels_folds_case_with_the_database_not_python. Keep this corpus
+    free of them, or this test stops testing the scoring rules and starts
+    testing case folding.
+    """
+    labels = [
+        "foo",
+        "FOO",
+        "foobar",
+        "foo foo",  # prefix match that ALSO has a boundary hit -> must stay 500
+        "xx_foo",
+        "bar foo",
+        "barfoo",
+        "foo_bar",
+        "prefix_foo_suffix",
+        "x" * 120 + "foo",  # negative score (100 - len)
+        "_foo",
+        "café foo",
+        "北京 foo",
+        "foo%bar",  # literal % must not act as a wildcard
+        "a_foo",  # literal _ must not act as a wildcard
+        "zzfoo",
+    ]
+    await store.upsert_nodes_batch([(lbl, _node(lbl)) for lbl in labels])
+
+    for query in ("foo", "f", "oo", "bar", "%", "_", "FOO"):
+        normalized = query.strip().lower()
+        for limit in (1, 3, 50):
+            got = await store.search_labels(query, limit=limit)
+
+            matched = [lbl for lbl in labels if normalized in lbl.lower()]
+            expected = sorted(
+                matched, key=lambda lbl: (-store._search_score(lbl, normalized), lbl)
+            )[:limit]
+
+            assert got == expected, (
+                f"SQL scoring diverged from _search_score for "
+                f"query={query!r} limit={limit}: {got} != {expected}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_search_labels_folds_case_with_the_database_not_python(store):
+    """Pin the one place SQL scoring is allowed to disagree with _search_score.
+
+    SQL LOWER() folds one character to one character; Python str.lower() applies
+    full Unicode case mapping. So LOWER('İ') is 'i' — an EXACT match for query
+    'i', worth 1000 — while 'İ'.lower() is 'i̇', only a prefix match worth
+    500, which the code-point tie-break then puts behind 'ia'.
+
+    This is not new authority: the pre-scoring implementation already folded with
+    LOWER() in the same WHERE clause, so which labels match has always been the
+    database's call. PGGraphStorage folds the same way, so the divergence is
+    against the NetworkX/JSON storages, not between the PostgreSQL ones. Asserted
+    explicitly here so it stays a decision rather than drifting into a surprise —
+    if a future change unifies the folding, this test is the one to update.
+    """
+    # LOWER() is lc_ctype-dependent: a server initdb'd with the pure "C" locale
+    # does not fold non-ASCII at all, so there is no divergence to pin there.
+    # Ask this server rather than hard-coding one libc's answer.
+    server_lower = await store._fetchval("SELECT LOWER($1)", "İ")
+    if server_lower != "i":
+        pytest.skip(
+            f"server folds 'İ' to {server_lower!r}, not 'i' "
+            "(lc_ctype=C?) — nothing to diverge from Python here"
+        )
+
+    labels = ["İ", "ia"]
+    await store.upsert_nodes_batch([(lbl, _node(lbl)) for lbl in labels])
+
+    # What the database's folding produces, in full and truncated to one.
+    assert await store.search_labels("i", limit=50) == ["İ", "ia"]
+    assert await store.search_labels("i", limit=1) == ["İ"]
+
+    # ... and that this is a real divergence from the Python reference, not an
+    # accident of ordering: the reference disagrees on both the tier and the rank.
+    assert store._search_score("İ", "i") == 500
+    assert store._search_score("ia", "i") == 500
+    reference = sorted(labels, key=lambda lbl: (-store._search_score(lbl, "i"), lbl))
+    assert reference == ["ia", "İ"]
+
+
+@pytest.mark.asyncio
+async def test_bfs_matches_degree_ordered_reference_traversal(store):
+    """SQL-side rank+cap BFS must equal the Python reference on a hub graph.
+
+    The per-hop unvisited filter, degree ranking and budget cap all moved into
+    SQL. This pins the observable result — which nodes are retained at which BFS
+    depth, and their degrees — against a plain in-memory reference walk, on a
+    graph with a hub whose degree far exceeds the node budget (the case the
+    rewrite targets).
+    """
+    nodes = [f"n{i:03d}" for i in range(120)]
+    hub = nodes[0]
+    edges = {(min(hub, n), max(hub, n)) for n in nodes[1:80]}
+    # A second, lower-degree cluster reachable only at depth 2.
+    edges |= {(min(nodes[80], n), max(nodes[80], n)) for n in nodes[81:100]}
+    edges.add((min(hub, nodes[80]), max(hub, nodes[80])))
+    edges.add((nodes[5], nodes[5]))  # self-loop: counts twice, like node_degree
+
+    await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
+    await store.upsert_edges_batch([(s, t, _edge()) for s, t in sorted(edges)])
+
+    adjacency: dict[str, set[str]] = {}
+    degree: dict[str, int] = {}
+    for src, tgt in edges:
+        adjacency.setdefault(src, set()).add(tgt)
+        adjacency.setdefault(tgt, set()).add(src)
+        degree[src] = degree.get(src, 0) + 1
+        degree[tgt] = degree.get(tgt, 0) + 1
+
+    def reference(seed, max_depth, budget):
+        """Degree-ordered BFS, admitting one past the budget like the real one."""
+        collected = {seed: 0}
+        frontier, depth = [seed], 0
+        while frontier and depth < max_depth and len(collected) <= budget:
+            depth += 1
+            candidates = {
+                nb
+                for node in frontier
+                for nb in adjacency.get(node, ())
+                if nb not in collected
+            }
+            if not candidates:
+                break
+            ordered = sorted(candidates, key=lambda n: (-degree.get(n, 0), n))
+            nxt = []
+            for node in ordered:
+                collected[node] = depth
+                nxt.append(node)
+                if len(collected) > budget:
+                    break
+            frontier = nxt
+        return collected
+
+    for seed, max_depth, budget in [
+        (hub, 1, 1000),
+        (hub, 2, 1000),
+        (hub, 3, 25),
+        (hub, 2, 10),
+        (nodes[80], 2, 1000),
+        (nodes[99], 3, 40),
+        (nodes[5], 2, 1000),
+    ]:
+        rows, degrees = await store._bfs_frontier(seed, max_depth, budget)
+        expected = reference(seed, max_depth, budget)
+
+        assert {r["id"] for r in rows} == set(expected), (
+            f"node set diverged for seed={seed} depth={max_depth} budget={budget}"
+        )
+        assert {r["id"]: r["depth"] for r in rows} == expected, (
+            f"BFS depths diverged for seed={seed} depth={max_depth} budget={budget}"
+        )
+        for row in rows:
+            assert degrees[row["id"]] == degree.get(row["id"], 0), (
+                f"degree diverged for {row['id']}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_reinitialize_is_idempotent_and_keeps_data(store):
+    """Re-running the DDL must not disturb existing rows.
+
+    The orphan sweep is now gated behind "an FK is missing", so a second
+    initialize() must skip it entirely — and must certainly not delete live
+    edges. Guards the gating change against a regression that would make
+    startup destructive.
+    """
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_node("B", _node("B"))
+    await store.upsert_edge("A", "B", _edge(weight=3.5))
+
+    from lightrag.kg.pgtable_impl import _DDL
+
+    # Second pass over the schema DDL + legacy normalization.
+    await store._db.execute(_DDL)
+    await store._normalize_legacy_edges()
+
+    assert await store.get_node("A") is not None
+    assert await store.get_node("B") is not None
+    edge = await store.get_edge("A", "B")
+    assert edge is not None, "re-running the DDL must not delete live edges"
+    assert edge["weight"] == 3.5
+
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_still_runs_when_foreign_keys_are_missing(store):
+    """Gating the sweep must not break the legacy migration it exists for.
+
+    Drop both FKs, plant an orphan edge that the constraints would have
+    forbidden, then re-run the DDL: the sweep must remove the orphan and both
+    constraints must come back. Without the sweep, ADD CONSTRAINT would fail and
+    initialize() would abort.
+    """
+    from lightrag.kg.pgtable_impl import _DDL
+
+    await store.upsert_node("A", _node("A"))
+    await store.upsert_node("B", _node("B"))
+    await store.upsert_edge("A", "B", _edge())
+
+    async def _plant_orphan(conn):
+        await conn.execute(
+            "ALTER TABLE lightrag_graph_edges "
+            "DROP CONSTRAINT IF EXISTS fk_lightrag_graph_edges_src"
+        )
+        await conn.execute(
+            "ALTER TABLE lightrag_graph_edges "
+            "DROP CONSTRAINT IF EXISTS fk_lightrag_graph_edges_tgt"
+        )
+        await conn.execute(
+            "INSERT INTO lightrag_graph_edges "
+            "(workspace, namespace, src_id, tgt_id, properties) "
+            "VALUES ($1, $2, 'A', 'GHOST', '{}'::jsonb)",
+            store.workspace,
+            store.namespace,
+        )
+
+    await store._db._run_with_retry(_plant_orphan)
+    assert await store.has_edge("A", "GHOST") is True
+
+    await store._db.execute(_DDL)
+
+    assert await store.has_edge("A", "GHOST") is False, (
+        "orphan edge must be swept before the FKs are recreated"
+    )
+    assert await store.get_edge("A", "B") is not None, "live edge must survive"
+
+    async def _count_fks(conn):
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_constraint "
+            "WHERE conrelid = 'lightrag_graph_edges'::regclass "
+            "AND conname IN ('fk_lightrag_graph_edges_src', "
+            "'fk_lightrag_graph_edges_tgt')"
+        )
+
+    assert await store._db._run_with_retry(_count_fks) == 2, (
+        "both foreign keys must be recreated after the sweep"
+    )
+
+
+# ---------------------------------------------------------------------------
+# flush-time batching against a real server
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chunked_batch_writes_and_deletes_round_trip(store, monkeypatch):
+    """Multi-chunk upserts and deletes must be indistinguishable from single ones.
+
+    Caps are set absurdly low so every batch path splits, then the full data set is
+    read back. This is the live counterpart to the offline chunking tests: it proves
+    the per-chunk statements are valid SQL, that each edge chunk satisfies the
+    endpoint foreign keys on its own, and that a chunked delete removes exactly the
+    requested set.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "4")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "512")
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "3")
+    # The fixture may already have cached the default caps.
+    store._cached_batch_limits = None
+
+    nodes = [f"n{i:03d}" for i in range(37)]
+    # Chain plus a few cross edges, all endpoints among `nodes`.
+    edges = [(nodes[i], nodes[i + 1]) for i in range(len(nodes) - 1)]
+    edges += [(nodes[0], nodes[20]), (nodes[5], nodes[30])]
+
+    await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
+    await store.upsert_edges_batch([(s, t, _edge()) for s, t in edges])
+
+    fetched = await store.get_nodes_batch(nodes)
+    assert set(fetched) == set(nodes), "every node must survive chunked upsert"
+    for n in nodes:
+        assert fetched[n]["description"] == f"smoke node {n}"
+
+    all_edges = await store.get_all_edges()
+    expected_pairs = {(min(s, t), max(s, t)) for s, t in edges}
+    assert {(e["source"], e["target"]) for e in all_edges} == expected_pairs
+
+    # Chunked edge delete removes exactly the requested pairs.
+    to_drop = edges[:7]
+    await store.remove_edges(list(to_drop))
+    remaining = {(e["source"], e["target"]) for e in await store.get_all_edges()}
+    assert remaining == expected_pairs - {(min(s, t), max(s, t)) for s, t in to_drop}
+
+    # Chunked node delete removes exactly the requested nodes (and cascades edges).
+    await store.remove_nodes(nodes[:11])
+    still_there = await store.get_nodes_batch(nodes)
+    assert set(still_there) == set(nodes[11:])
+    for edge in await store.get_all_edges():
+        assert edge["source"] in still_there and edge["target"] in still_there, (
+            "cascade must not leave an edge pointing at a deleted node"
+        )
+
+
+@pytest.mark.asyncio
+async def test_failed_upsert_chunk_leaves_no_edge_without_endpoints(store, monkeypatch):
+    """A chunk failure mid-batch must not strand an edge without its endpoints.
+
+    Upsert chunks are separate statements, so a crash between them leaves earlier
+    chunks committed. That is acceptable only because each chunk creates its own
+    endpoints in the same statement: the partial result must still satisfy the
+    foreign keys, and replaying the whole batch must converge (upsert is
+    idempotent). Without the per-chunk endpoint set, a later chunk's edge could
+    reference a node an earlier failed chunk never wrote.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "2")
+    store._cached_batch_limits = None
+
+    edges = [(f"s{i}", f"t{i}", _edge()) for i in range(6)]
+    real_execute = store._execute
+    seen = {"count": 0}
+
+    async def _flaky(sql, *args):
+        seen["count"] += 1
+        if seen["count"] == 2:
+            raise RuntimeError("injected chunk failure")
+        return await real_execute(sql, *args)
+
+    store._execute = _flaky
+    with pytest.raises(RuntimeError, match="injected chunk failure"):
+        await store.upsert_edges_batch(edges)
+    store._execute = real_execute
+
+    persisted_nodes = {n["id"] for n in await store.get_all_nodes()}
+    partial = await store.get_all_edges()
+    assert partial, "the chunk before the failure must have committed"
+    for edge in partial:
+        assert (
+            edge["source"] in persisted_nodes and edge["target"] in persisted_nodes
+        ), "a committed chunk left an edge whose endpoint node is missing"
+
+    # Replaying the full batch converges on the complete edge set.
+    await store.upsert_edges_batch(edges)
+    assert len(await store.get_all_edges()) == len(edges)
