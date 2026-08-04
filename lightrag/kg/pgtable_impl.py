@@ -295,7 +295,20 @@ class PGTableGraphStorage(BaseGraphStorage):
         PGGraphStorage); edge properties are replaced, node properties merged.
       - get_knowledge_graph uses a frontier-capped iterative BFS (see
         _bfs_frontier) whose cost is bounded by max_nodes, not by the number of
-        simple paths in the reachable subgraph.
+        simple paths in the reachable subgraph. Each hop's unvisited filter,
+        degree ranking and budget cap run in SQL, so rows returned and JSONB
+        decoded per hop are bounded by the remaining budget.
+      - search_labels scores and truncates in SQL (like PGGraphStorage) using the
+        NetworkXStorage scoring rules, so the wire cost is O(limit) rather than
+        O(every id matching the query). _search_score is the reference definition
+        and the pg_smoke suite pins the SQL to it.
+
+    Configuration note:
+        global_config["vector_storage"] selects the pool's vector support. An
+        absent/empty value falls back to this class's own name rather than None,
+        because ClientManager treats None as "enable pgvector" and this backend
+        must stay installable on stock PostgreSQL. See initialize() for the
+        pool-signature tradeoff that buys.
     """
 
     db: Any | None = field(default=None, init=False, repr=False)
@@ -399,6 +412,24 @@ class PGTableGraphStorage(BaseGraphStorage):
             if self.db is None:
                 from .postgres_impl import ClientManager
 
+                # Substitute this class's own name when no vector backend is
+                # configured, instead of forwarding None like the sibling PG
+                # storages do. This is deliberate and load-bearing: ClientManager
+                # maps vector_storage=None to enable_vector=True, which makes the
+                # pool require pgvector — and a graph backend whose entire purpose
+                # is running on stock PostgreSQL must not demand an extension just
+                # because the caller left the vector backend unspecified. Callers
+                # with a bare global_config are real: tests/kg/test_graph_storage.py
+                # (the cross-backend contract suite) is one.
+                #
+                # The cost is that the process-wide pool signature records this
+                # name, so a sibling PG storage in the same process that forwarded
+                # None would disagree and whichever initialized second would be
+                # rejected. That is acceptable because (a) LightRAG always
+                # populates global_config["vector_storage"], so both sides compute
+                # the identical value and the fallback never fires, and (b) when it
+                # does fire the mismatch surfaces as an explicit RuntimeError from
+                # _assert_compatible_vector_signature, not as silent corruption.
                 vector_storage = (
                     self.global_config.get("vector_storage") or "PGTableGraphStorage"
                 )
@@ -835,22 +866,64 @@ class PGTableGraphStorage(BaseGraphStorage):
         q = query.strip().lower()
         if not q:
             return []
+        escaped = self._escape_like(q)
+        # Score, rank and truncate server-side, like PGGraphStorage does. Scoring
+        # in Python instead meant transferring EVERY id matching %q% just to
+        # return `limit` of them — on a large graph that is most of the node
+        # table over the wire per search. The LIKE filter is unindexable either
+        # way, but the transfer is now O(limit).
+        #
+        # The CASE mirrors _search_score / NetworkXStorage.search_labels exactly:
+        # the +50 word-boundary bonus is nested INSIDE the ELSE branch so it can
+        # never apply to an exact or prefix match (AGE's SQL adds it
+        # unconditionally, which is the divergent one). LENGTH() counts
+        # characters like Python len(), not octets. ORDER BY id COLLATE "C"
+        # reproduces Python's code-point tie-break on the original,
+        # non-lowercased id. _search_score stays the reference definition and the
+        # pg_smoke suite asserts this SQL agrees with it.
+        #
+        # $3 is the RAW lowercased query (compared with =, so it must not carry
+        # LIKE escapes); $4..$7 are LIKE patterns built from the escaped form.
         # ESCAPE uses an E'' literal so the backslash escape char is unambiguously
         # one character regardless of standard_conforming_strings; a plain '\'
         # literal is a syntax error when that (deprecated, non-default) setting is
         # off. E'\\' is one backslash under both settings.
         rows = await self._fetch(
             """
-            SELECT id FROM lightrag_graph_nodes
-            WHERE workspace=$1 AND namespace=$2 AND LOWER(id) LIKE $3 ESCAPE E'\\\\'
+            SELECT id
+            FROM (
+                SELECT id,
+                       CASE
+                           WHEN LOWER(id) = $3 THEN 1000
+                           WHEN LOWER(id) LIKE $4 ESCAPE E'\\\\' THEN 500
+                           ELSE 100 - LENGTH(id)
+                                + CASE
+                                      WHEN LOWER(id) LIKE $5 ESCAPE E'\\\\'
+                                        OR LOWER(id) LIKE $6 ESCAPE E'\\\\'
+                                      THEN 50
+                                      ELSE 0
+                                  END
+                       END AS score
+                FROM lightrag_graph_nodes
+                WHERE workspace = $1
+                  AND namespace = $2
+                  AND LOWER(id) LIKE $7 ESCAPE E'\\\\'
+            ) scored
+            ORDER BY score DESC, id COLLATE "C" ASC
+            LIMIT $8
             """,
             self.workspace,
             self.namespace,
-            f"%{self._escape_like(q)}%",
+            q,
+            f"{escaped}%",
+            f"% {escaped}%",
+            # Literal underscore: '_' is a LIKE wildcard, so the word-boundary
+            # probe for "_query" must escape it or it would match any character.
+            rf"%\_{escaped}%",
+            f"%{escaped}%",
+            limit,
         )
-        labels = [r["id"] for r in rows]
-        labels.sort(key=lambda label: (-self._search_score(label, q), label))
-        return labels[:limit]
+        return [r["id"] for r in rows]
 
     @staticmethod
     def _escape_like(value: str) -> str:
@@ -900,11 +973,16 @@ class PGTableGraphStorage(BaseGraphStorage):
         CTE with a path-local visited array does — that re-materializes shared
         nodes per path and blows up on dense/cyclic graphs.
 
-        NOTE on cost: the per-hop *work* is bounded by the size of the frontier's
-        neighbourhood, NOT by ``node_budget``. A single very high-degree node
-        still pulls (and degree-ranks) its entire neighbour set on the hop that
-        expands it, before the budget truncates the result. Pushing the
-        degree-rank + cap down into SQL is tracked as a follow-up optimization.
+        NOTE on cost: the unvisited-filter, degree ranking and budget cap all run
+        inside the per-hop SQL, so the rows returned, the JSONB payloads decoded
+        and the round trips per hop are bounded by the remaining budget — a hub
+        with a million edges no longer ships a million property blobs to Python
+        to have all but ``node_budget`` of them discarded. What is NOT bounded is
+        the server-side edge enumeration: ranking a hub's neighbours by degree
+        requires visiting that hub's edges, which is a lower bound for any
+        correct top-k-by-degree. Those scans are index-driven (see the UNION
+        note below) and no longer duplicated by a second node_degrees_batch
+        round trip.
 
         Within each depth level the highest-degree unvisited neighbours are
         admitted first, so when the budget cuts a level the retained nodes are
@@ -941,48 +1019,84 @@ class PGTableGraphStorage(BaseGraphStorage):
             # "src_id = ANY OR tgt_id = ANY" predicate cannot use either index and
             # degrades to a seq scan of the whole edge table on every level —
             # which made traversal O(edges) per hop on large sparse graphs.
+            #
+            # The hop admits at most (node_budget - collected + 1) nodes: one
+            # past the budget, so get_knowledge_graph still sees the overfetched
+            # row that distinguishes "exactly full" from "truncated". This is the
+            # SQL equivalent of the previous admit-then-break-on-overflow loop.
+            level_cap = node_budget - len(collected) + 1
             rows = await self._fetch(
                 """
-                SELECT n.id AS id, n.properties AS properties
-                FROM lightrag_graph_nodes n
-                JOIN (
+                WITH nb AS (
                     SELECT tgt_id AS nid FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2 AND src_id = ANY($3)
                   UNION
                     SELECT src_id AS nid FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2 AND tgt_id = ANY($3)
-                ) nb ON n.id = nb.nid
-                WHERE n.workspace = $1 AND n.namespace = $2
+                ),
+                -- Anti-join against the visited set rather than "nid <> ALL($4)":
+                -- a scalar <> ALL over a ~node_budget-element array is evaluated
+                -- per candidate row, i.e. O(neighbours x visited), which on a hub
+                -- is worse than the Python-side set lookup this replaces. The
+                -- NOT EXISTS form lets the planner hash the visited set once.
+                visited AS (
+                    SELECT unnest($4::text[]) AS vid
+                ),
+                candidates AS (
+                    SELECT nb.nid FROM nb
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM visited v WHERE v.vid = nb.nid
+                    )
+                ),
+                -- Same UNION ALL + GROUP BY shape as node_degrees_batch, so
+                -- self-loops count twice here exactly as they do there and in
+                -- node_degree. Each arm is index-served: src_id via the PK
+                -- prefix, tgt_id via idx_..._namespace_tgt.
+                candidate_degrees AS (
+                    SELECT id, COUNT(*) AS degree
+                    FROM (
+                        SELECT src_id AS id FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND namespace = $2
+                          AND src_id IN (SELECT nid FROM candidates)
+                        UNION ALL
+                        SELECT tgt_id AS id FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND namespace = $2
+                          AND tgt_id IN (SELECT nid FROM candidates)
+                    ) sub
+                    GROUP BY id
+                )
+                SELECT n.id AS id,
+                       n.properties AS properties,
+                       COALESCE(d.degree, 0) AS degree
+                FROM candidates c
+                JOIN lightrag_graph_nodes n
+                  ON n.workspace = $1 AND n.namespace = $2 AND n.id = c.nid
+                LEFT JOIN candidate_degrees d ON d.id = c.nid
+                -- Reproduces the previous Python key=(-degree, nid) exactly;
+                -- COLLATE "C" makes the tie-break a code-point sort like Python's.
+                ORDER BY COALESCE(d.degree, 0) DESC, n.id COLLATE "C" ASC
+                LIMIT $5
                 """,
                 self.workspace,
                 self.namespace,
                 frontier,
+                list(collected),
+                level_cap,
             )
-            # Gather this level's unvisited neighbours, then admit the
-            # highest-degree ones first so a budget cut keeps high-degree nodes
-            # (degree-priority truncation), rather than whatever order the DB
-            # happened to return rows in.
-            candidates: dict[str, Any] = {}
-            for r in rows:
-                if r["id"] not in collected and r["id"] not in candidates:
-                    candidates[r["id"]] = r["properties"]
-            if not candidates:
+            if not rows:
                 break
-            level_degrees = await self.node_degrees_batch(list(candidates))
-            degrees.update(level_degrees)
-            ordered = sorted(
-                candidates, key=lambda nid: (-level_degrees.get(nid, 0), nid)
-            )
+            # Rows arrive already unvisited-filtered, degree-ranked and capped,
+            # so admission is a straight walk in the order the DB returned.
             next_frontier: list[str] = []
-            for nid in ordered:
+            for r in rows:
+                nid = r["id"]
+                degrees[nid] = int(r["degree"] or 0)
                 collected[nid] = {
                     "id": nid,
-                    "properties": candidates[nid],
+                    "properties": r["properties"],
                     "depth": depth,
                 }
                 next_frontier.append(nid)
-                if len(collected) > node_budget:
-                    break
             frontier = next_frontier
         # The seed is never a candidate (it seeds the frontier), so its degree
         # was never gathered in the loop — fetch it once for the ordering
