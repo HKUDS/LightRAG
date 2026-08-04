@@ -894,6 +894,13 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 
 For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
+**PostgreSQL Graph Storage — prefer `PGTableGraphStorage`:** For new PostgreSQL deployments, `PGTableGraphStorage` is the recommended `GRAPH_STORAGE` implementation and supersedes `PGGraphStorage`. It keeps the entity-relation graph in ordinary tables — JSONB properties plus B-tree indexes — instead of going through Apache AGE, which brings two practical advantages:
+
+* **No extension to install.** `PGGraphStorage` requires the Apache AGE extension, which most managed PostgreSQL services (Amazon RDS, Cloud SQL, Supabase, Neon) do not offer — so the graph layer frequently could not run on the same database as the other three storage types. `PGTableGraphStorage` runs on any stock PostgreSQL 14+ and creates the tables it needs during `initialize()`.
+* **Substantially faster.** Queries are plain indexed SQL rather than Cypher over `agtype`, and `get_knowledge_graph` uses a frontier-capped BFS bounded by `max_nodes`. From the measurements published with [PR #3103](https://github.com/HKUDS/LightRAG/pull/3103) (PostgreSQL 18, an 8k-node / ~40k-edge graph, both backends `VACUUM ANALYZE`d before measuring): `get_knowledge_graph` p50 **39 ms vs 1,099 ms (~28×)**, bulk graph load **3.0 s vs 434 s**, mixed-workload throughput **1,431 vs 73 RPS**.
+
+Both implementations read the same `POSTGRES_*` environment variables, but they store the graph in different places — `PGTableGraphStorage` in its own `lightrag_graph_nodes` / `lightrag_graph_edges` tables, `PGGraphStorage` inside an AGE graph. Switching an existing deployment is therefore not an in-place migration: the previously extracted graph will not be visible and the documents have to be re-indexed (the LLM cache can be carried over — see *LLM Cache Migration Between Storage Types* below). `PGGraphStorage` remains supported for deployments already running on AGE.
+
 The environment variables required at startup for each storage implementation are listed below. Implementations not listed require no additional configuration and rely only on file persistence under WORKING_DIR.
 
 | Storage Implementation | Required Environment Variables |
@@ -918,7 +925,7 @@ You can select the storage implementation by configuring environment variables. 
 ```
 LIGHTRAG_KV_STORAGE=PGKVStorage
 LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
-LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage
 LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
