@@ -174,28 +174,73 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_lightrag_graph_edges_namespace_tgt
     ON lightrag_graph_edges (workspace, namespace, tgt_id);
 
-DELETE FROM lightrag_graph_edges e
-WHERE NOT EXISTS (
-        SELECT 1 FROM lightrag_graph_nodes n
-        WHERE n.workspace = e.workspace
-          AND n.namespace = e.namespace
-          AND n.id = e.src_id
-    )
-   OR NOT EXISTS (
-        SELECT 1 FROM lightrag_graph_nodes n
-        WHERE n.workspace = e.workspace
-          AND n.namespace = e.namespace
-          AND n.id = e.tgt_id
-    );
+-- Partial index serving _normalize_legacy_edges' fast-path guard. Its predicate
+-- IS the non-canonical condition, so in the steady state the index is empty and
+-- the guard becomes an index-only probe instead of a sequential scan of the
+-- whole edge table on every process start (the guard cannot use a plain index:
+-- EXISTS can only short-circuit when it FINDS a row, and after the one-time
+-- migration there are none, so it used to scan to completion forever).
+--
+-- Measured on PostgreSQL 14.15, 200k canonical edges: Seq Scan 28.6 ms /
+-- 2273 buffers -> Index Only Scan 0.04 ms / empty 8 kB index. Canonical writes
+-- never satisfy the predicate, so they create no index entries and pay only the
+-- predicate evaluation. If the planner ever declines the index the guard simply
+-- degrades to the previous full scan, so this is an optimization, not a
+-- correctness dependency.
+CREATE INDEX IF NOT EXISTS idx_lightrag_graph_edges_noncanonical
+    ON lightrag_graph_edges (workspace, namespace)
+    WHERE src_id COLLATE "C" > tgt_id COLLATE "C";
 
 DO $$
+DECLARE
+    has_src_fk BOOLEAN;
+    has_tgt_fk BOOLEAN;
 BEGIN
-    IF NOT EXISTS (
+    SELECT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'fk_lightrag_graph_edges_src'
           AND conrelid = 'lightrag_graph_edges'::regclass
-    ) THEN
+    ) INTO has_src_fk;
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_lightrag_graph_edges_tgt'
+          AND conrelid = 'lightrag_graph_edges'::regclass
+    ) INTO has_tgt_fk;
+
+    -- Steady state: both constraints already exist, so there is nothing to
+    -- create and — because they are enforced — no orphan edge can exist either.
+    -- Returning here keeps the table-wide orphan sweep below off the startup
+    -- path, which matters because every process pays it: it runs inside the
+    -- transaction holding pg_advisory_xact_lock('lightrag_pgtable_schema'), so
+    -- N gunicorn workers used to pay N *serialized* full scans of the entire
+    -- edge table (all workspaces) before serving traffic.
+    IF has_src_fk AND has_tgt_fk THEN
+        RETURN;
+    END IF;
+
+    -- Only reachable on first install, or immediately after the namespace PK
+    -- migration above dropped the constraints. ADD CONSTRAINT fails outright if
+    -- any edge references a missing endpoint, so orphans must be removed first.
+    -- The sweep is table-wide because the FK is a global composite constraint
+    -- and cannot be validated per workspace.
+    DELETE FROM lightrag_graph_edges e
+    WHERE NOT EXISTS (
+            SELECT 1 FROM lightrag_graph_nodes n
+            WHERE n.workspace = e.workspace
+              AND n.namespace = e.namespace
+              AND n.id = e.src_id
+        )
+       OR NOT EXISTS (
+            SELECT 1 FROM lightrag_graph_nodes n
+            WHERE n.workspace = e.workspace
+              AND n.namespace = e.namespace
+              AND n.id = e.tgt_id
+        );
+
+    IF NOT has_src_fk THEN
         ALTER TABLE lightrag_graph_edges
             ADD CONSTRAINT fk_lightrag_graph_edges_src
             FOREIGN KEY (workspace, namespace, src_id)
@@ -203,12 +248,7 @@ BEGIN
             ON DELETE CASCADE;
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'fk_lightrag_graph_edges_tgt'
-          AND conrelid = 'lightrag_graph_edges'::regclass
-    ) THEN
+    IF NOT has_tgt_fk THEN
         ALTER TABLE lightrag_graph_edges
             ADD CONSTRAINT fk_lightrag_graph_edges_tgt
             FOREIGN KEY (workspace, namespace, tgt_id)
@@ -394,12 +434,19 @@ class PGTableGraphStorage(BaseGraphStorage):
         # UTF-8). Using the DB's default collation here could diverge on
         # non-ASCII ids and either skip rows that still need normalizing or
         # rescan already-canonical data forever.
+        #
+        # The predicate is written to match idx_lightrag_graph_edges_noncanonical's
+        # partial-index predicate verbatim (see _DDL) so the planner can prove
+        # implication and serve this as an index-only probe on a normally-empty
+        # index. Keep the two in sync: any change to the COLLATE spelling here
+        # silently turns this back into a full scan on every process start.
         needs_normalize = await self._fetchval(
             """
             SELECT EXISTS (
                 SELECT 1 FROM lightrag_graph_edges
                 WHERE workspace = $1 AND namespace = $2
                   AND src_id COLLATE "C" > tgt_id COLLATE "C"
+                LIMIT 1
             )
             """,
             self.workspace,
@@ -511,9 +558,13 @@ class PGTableGraphStorage(BaseGraphStorage):
             # one statement (hence one implicit transaction), so a mid-drop
             # failure can never leave nodes stripped of their edges or vice versa
             # — the two-statement version committed the edge delete independently.
-            # Edges are deleted explicitly rather than relying solely on FK
-            # CASCADE so the drop stays correct even on a legacy table whose FK
-            # was never (re)created.
+            #
+            # Edges are named explicitly to keep the delete set unambiguous and
+            # the statement self-describing, NOT because the FK might be missing:
+            # _DDL either creates both fk_lightrag_graph_edges_{src,tgt} or raises
+            # and aborts initialize(), so after a successful init the CASCADE is
+            # guaranteed. delete_node / remove_nodes rely on exactly that
+            # guarantee instead of repeating the edge delete.
             await self._execute(
                 """
                 WITH deleted_edges AS (
@@ -583,6 +634,9 @@ class PGTableGraphStorage(BaseGraphStorage):
         )
 
     async def delete_node(self, node_id: str) -> None:
+        # Incident edges go via ON DELETE CASCADE on
+        # fk_lightrag_graph_edges_{src,tgt}. _DDL creates both or raises and
+        # aborts initialize(), so the cascade is guaranteed here — see drop().
         await self._execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND namespace = $2 AND id = $3",
             self.workspace,
@@ -593,6 +647,7 @@ class PGTableGraphStorage(BaseGraphStorage):
     async def remove_nodes(self, nodes: list[str]) -> None:
         if not nodes:
             return
+        # Incident edges cascade — same guarantee as delete_node().
         await self._execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND namespace = $2 AND id = ANY($3)",
             self.workspace,
