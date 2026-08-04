@@ -54,12 +54,21 @@ def test_constructor_validates_workspace_like_other_backends():
 @pytest.mark.parametrize(
     ("global_config", "expected_vector_storage"),
     [
-        ({}, "PGTableGraphStorage"),
+        # Forwarded verbatim in every case, exactly like the sibling PG storages,
+        # so the process-wide pool signature can never diverge. An unspecified
+        # backend stays None: ClientManager maps that to enable_vector=False, so a
+        # bare global_config does not demand pgvector and this backend needs no
+        # sentinel name to stay installable on stock PostgreSQL. Bare configs are
+        # real — tests/kg/test_graph_storage.py, the cross-backend contract suite,
+        # is one, and CI runs it against a plain postgres image.
+        ({}, None),
+        ({"vector_storage": None}, None),
         ({"vector_storage": "NanoVectorDBStorage"}, "NanoVectorDBStorage"),
+        ({"vector_storage": "PGVectorStorage"}, "PGVectorStorage"),
     ],
 )
 @pytest.mark.asyncio
-async def test_initialize_passes_pgtable_safe_vector_storage_to_client_manager(
+async def test_initialize_forwards_configured_vector_storage_verbatim(
     global_config, expected_vector_storage
 ):
     storage = make_uninitialized_storage(global_config=global_config)
@@ -210,6 +219,51 @@ def test_ddl_adds_cascading_edge_foreign_keys():
     assert "ON DELETE CASCADE" in _DDL
     assert "DELETE FROM lightrag_graph_edges e" in _DDL
     assert "n.namespace = e.namespace" in _DDL
+
+
+def test_ddl_gates_orphan_sweep_behind_missing_foreign_keys():
+    """The table-wide orphan sweep must not run once both FKs already exist.
+
+    It is an anti-join over the WHOLE edge table (all workspaces — the FK is a
+    global composite constraint), it runs inside the transaction holding
+    pg_advisory_xact_lock, and with the FKs enforced it can never match a row.
+    As a top-level statement every process paid it, serialized, on every start.
+    """
+    from lightrag.kg.pgtable_impl import _DDL
+
+    # The sweep must live inside the *second* DO block (the FK creator), after
+    # its both-present early return and before the first ADD CONSTRAINT.
+    fk_block = _DDL.split("DO $$", 2)[2]
+    early_return = fk_block.index("RETURN;")
+    sweep = fk_block.index("DELETE FROM lightrag_graph_edges e")
+    add_src_fk = fk_block.index("ADD CONSTRAINT fk_lightrag_graph_edges_src")
+    assert early_return < sweep < add_src_fk, (
+        "orphan sweep must sit between the early return and ADD CONSTRAINT"
+    )
+    assert "IF has_src_fk AND has_tgt_fk THEN" in fk_block
+    # ...and must not additionally exist as an ungated top-level statement.
+    assert _DDL.count("DELETE FROM lightrag_graph_edges e") == 1
+
+
+def test_normalize_guard_predicate_matches_the_partial_index():
+    """The guard and its partial index must share one predicate, verbatim.
+
+    The planner can only serve the guard from
+    idx_lightrag_graph_edges_noncanonical if it can prove the query predicate
+    implies the index predicate. Any drift between the two spellings silently
+    turns a ~0.04 ms index-only probe back into a full scan of the edge table on
+    every process start, with no error to notice.
+    """
+    import inspect
+
+    from lightrag.kg.pgtable_impl import _DDL, PGTableGraphStorage
+
+    predicate = 'src_id COLLATE "C" > tgt_id COLLATE "C"'
+
+    assert "idx_lightrag_graph_edges_noncanonical" in _DDL
+    assert predicate in _DDL
+    guard_src = inspect.getsource(PGTableGraphStorage._normalize_legacy_edges)
+    assert predicate in guard_src
 
 
 def test_postgres_impl_loads_pgvector_lazily_for_vector_connections():
@@ -699,12 +753,100 @@ async def test_get_knowledge_graph_bfs_depth_beats_degree_on_truncation():
 
 
 # ---------------------------------------------------------------------------
+# _bfs_frontier — per-hop work bounded in SQL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bfs_hop_ranks_and_caps_in_sql_without_per_level_degree_roundtrip():
+    """Each hop must rank + cap server-side and cost ONE query.
+
+    Previously a hop fetched every neighbour (full JSONB properties included),
+    then issued a second node_degrees_batch round trip over that whole
+    neighbourhood, then ranked and truncated in Python. On a hub that meant
+    shipping the entire neighbour set just to discard all but `node_budget` of
+    it. node_degrees_batch must now be called exactly once — for the seed's
+    ordering tie-break — no matter how many levels are walked.
+    """
+    storage = make_storage()
+
+    seed_row = {"id": "seed", "properties": json.dumps({"entity_id": "seed"})}
+    # Two levels, each already degree-ranked and capped by the DB.
+    hop_rows = [
+        [
+            {"id": "a", "properties": json.dumps({"entity_id": "a"}), "degree": 9},
+            {"id": "b", "properties": json.dumps({"entity_id": "b"}), "degree": 4},
+        ],
+        [{"id": "c", "properties": json.dumps({"entity_id": "c"}), "degree": 1}],
+        [],
+    ]
+    fetch = AsyncMock(side_effect=hop_rows)
+    degrees_batch = AsyncMock(return_value={"seed": 7})
+
+    with (
+        patch.object(storage, "_fetchrow", new=AsyncMock(return_value=seed_row)),
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(storage, "node_degrees_batch", new=degrees_batch),
+    ):
+        rows, degrees = await storage._bfs_frontier("seed", max_depth=3, node_budget=10)
+
+    # Seed only — NOT once per level.
+    degrees_batch.assert_awaited_once_with(["seed"])
+    # Degrees come from the hop query itself.
+    assert degrees == {"a": 9, "b": 4, "c": 1, "seed": 7}
+    assert [r["id"] for r in rows] == ["seed", "a", "b", "c"]
+    assert [r["depth"] for r in rows] == [0, 1, 1, 2]
+
+    # Every hop must push the unvisited filter, the degree ranking and the
+    # remaining-budget cap into SQL.
+    first_sql = fetch.await_args_list[0].args[0]
+    assert "ORDER BY COALESCE(d.degree, 0) DESC" in first_sql
+    assert "LIMIT $5" in first_sql
+    assert "NOT EXISTS" in first_sql
+
+    # The cap is the remaining budget + 1, so the caller still sees the one
+    # overfetched row that distinguishes "exactly full" from "truncated".
+    # collected grows 1 -> 3 -> 4, so the cap is 10-1+1, 10-3+1, 10-4+1.
+    caps = [call.args[5] for call in fetch.await_args_list]
+    assert caps == [10, 8, 7]
+    # The visited set is passed so the DB can anti-join it.
+    visited_per_hop = [call.args[4] for call in fetch.await_args_list]
+    assert visited_per_hop[0] == ["seed"]
+    assert visited_per_hop[1] == ["seed", "a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_bfs_hop_cap_never_exceeds_remaining_budget():
+    """A hop must not admit more than budget+1 nodes even if SQL returned more."""
+    storage = make_storage()
+    seed_row = {"id": "seed", "properties": json.dumps({"entity_id": "seed"})}
+    fetch = AsyncMock(
+        return_value=[
+            {"id": "a", "properties": json.dumps({"entity_id": "a"}), "degree": 3},
+        ]
+    )
+
+    with (
+        patch.object(storage, "_fetchrow", new=AsyncMock(return_value=seed_row)),
+        patch.object(storage, "_fetch", new=fetch),
+        patch.object(
+            storage, "node_degrees_batch", new=AsyncMock(return_value={"seed": 0})
+        ),
+    ):
+        await storage._bfs_frontier("seed", max_depth=5, node_budget=1)
+
+    # budget 1, seed already collected -> cap 1, and the loop stops after it.
+    assert fetch.await_args_list[0].args[5] == 1
+    assert fetch.await_count == 1
+
+
+# ---------------------------------------------------------------------------
 # search_labels — literal SQL pattern semantics
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_search_labels_strips_and_relevance_orders():
+async def test_search_labels_strips_and_ranks_and_limits_in_sql():
     storage = make_storage()
     fetch = AsyncMock(return_value=[])
 
@@ -712,11 +854,24 @@ async def test_search_labels_strips_and_relevance_orders():
         assert await storage.search_labels("   ") == []
         await storage.search_labels(" Foo ", limit=7)
 
-    sql, workspace, namespace, contains = fetch.call_args.args
+    sql, workspace, namespace, exact, prefix, space_bnd, us_bnd, contains, limit = (
+        fetch.call_args.args
+    )
     assert workspace == "test"
     assert namespace == GRAPH_NAMESPACE
+    # $3 is compared with '=', so it must be the raw lowercased query with no
+    # LIKE escaping applied.
+    assert exact == "foo"
+    assert prefix == "foo%"
+    assert space_bnd == "% foo%"
+    # '_' is a LIKE wildcard: the "_query" word-boundary probe must escape it.
+    assert us_bnd == r"%\_foo%"
     assert contains == "%foo%"
-    assert "ORDER BY" not in sql
+    # Ranking and truncation must happen server-side, not after transferring the
+    # whole match set (that was the point of the change).
+    assert limit == 7
+    assert "ORDER BY score DESC" in sql
+    assert "LIMIT $8" in sql
     # E'' escape literal: unambiguous one-char escape regardless of
     # standard_conforming_strings (see search_labels).
     assert "ESCAPE E'\\\\'" in sql
@@ -730,29 +885,32 @@ async def test_search_labels_escapes_like_wildcards():
     with patch.object(storage, "_fetch", new=fetch):
         await storage.search_labels(r"a_%\b")
 
-    _sql, _workspace, namespace, contains = fetch.call_args.args
+    args = fetch.call_args.args
+    namespace, exact, prefix, space_bnd, us_bnd, contains = args[2:8]
     assert namespace == GRAPH_NAMESPACE
+    assert exact == r"a_%\b"
+    assert prefix == r"a\_\%\\b%"
+    assert space_bnd == r"% a\_\%\\b%"
+    assert us_bnd == r"%\_a\_\%\\b%"
     assert contains == r"%a\_\%\\b%"
 
 
 @pytest.mark.asyncio
-async def test_search_labels_relevance_sorted_in_python():
-    storage = make_storage()
-    with patch.object(
-        storage,
-        "_fetch",
-        new=AsyncMock(
-            return_value=[
-                {"id": "xx_foo"},
-                {"id": "foo"},
-                {"id": "bar foo"},
-                {"id": "foobar"},
-            ]
-        ),
-    ):
-        result = await storage.search_labels("foo", limit=3)
+async def test_search_labels_preserves_sql_row_order():
+    """Ordering is the DB's job now; the method must not re-sort or re-slice.
 
-    assert result == ["foo", "foobar", "xx_foo"]
+    Rows are handed back in the order SQL returned them (the equivalence of that
+    SQL ordering to _search_score is proven against a live PostgreSQL by
+    tests/kg/pgtable_impl/test_pgtable_smoke.py).
+    """
+    storage = make_storage()
+    # Deliberately NOT in _search_score order: a lingering Python sort would
+    # reorder these, and a lingering [:limit] would drop the last one.
+    sql_order = [{"id": "zz"}, {"id": "aa"}, {"id": "mm"}]
+    with patch.object(storage, "_fetch", new=AsyncMock(return_value=sql_order)):
+        result = await storage.search_labels("a", limit=1)
+
+    assert result == ["zz", "aa", "mm"]
 
 
 # ---------------------------------------------------------------------------
@@ -920,3 +1078,244 @@ async def test_get_all_edges_returns_source_target_keys():
     assert edges[0]["weight"] == 1.0
     assert "src_id" not in edges[0]
     assert "tgt_id" not in edges[0]
+
+
+# ---------------------------------------------------------------------------
+# flush-time batching — POSTGRES_UPSERT_* / POSTGRES_DELETE_* caps
+# ---------------------------------------------------------------------------
+
+
+class _FakeConn:
+    """Records execute() calls and the transaction nesting they ran under."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, tuple, int]] = []
+        self.depth = 0
+        self.max_depth = 0
+
+    def transaction(self):
+        outer = self
+
+        class _Txn:
+            async def __aenter__(self):
+                outer.depth += 1
+                outer.max_depth = max(outer.max_depth, outer.depth)
+
+            async def __aexit__(self, *exc):
+                outer.depth -= 1
+                return False
+
+        return _Txn()
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args, self.depth))
+
+
+def _wire_delete_capture(storage) -> _FakeConn:
+    """Record every statement a delete path emits, whichever route it takes.
+
+    Both the transactional `_run_with_retry` route and a plain `_execute` land in
+    the same recorder, so the assertions are about observable behaviour — how many
+    statements, and whether they ran inside a transaction — rather than about which
+    private helper happens to exist. A single-statement implementation shows up as
+    one call at depth 0.
+    """
+    conn = _FakeConn()
+
+    async def _run(fn):
+        return await fn(conn)
+
+    async def _execute(sql, *args):
+        await conn.execute(sql, *args)
+
+    storage.db._run_with_retry = _run
+    storage._execute = _execute
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_splits_by_record_cap(monkeypatch):
+    """A large node batch must not go out as one unbounded statement."""
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "3")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "16777216")
+    storage = make_storage()
+    nodes = [(f"n{i:02d}", {"entity_id": f"n{i:02d}"}) for i in range(7)]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_nodes_batch(nodes)
+
+    assert execute.await_count == 3, "7 nodes at cap 3 must be 3 statements"
+    per_chunk_ids = [call.args[3] for call in execute.await_args_list]
+    assert [len(ids) for ids in per_chunk_ids] == [3, 3, 1]
+    # Every node written exactly once, in id order, with parallel props arrays.
+    assert [nid for ids in per_chunk_ids for nid in ids] == [n[0] for n in nodes]
+    for call in execute.await_args_list:
+        assert len(call.args[3]) == len(call.args[4])
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_splits_by_payload_bytes(monkeypatch):
+    """The byte budget is the primary limiter, independent of the record cap."""
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "1000")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "400")
+    storage = make_storage()
+    # ~300 bytes of properties each, so only one fits per chunk.
+    nodes = [
+        (f"n{i}", {"entity_id": f"n{i}", "description": "x" * 300}) for i in range(4)
+    ]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_nodes_batch(nodes)
+
+    assert execute.await_count == 4, "byte cap must split even under the record cap"
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_chunk_carries_its_own_endpoints(monkeypatch):
+    """Each edge chunk must create the endpoints for its OWN edges.
+
+    Chunks are separate statements, so an edge whose endpoint node was only going
+    to be created by a different chunk would violate the FK.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "2")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "16777216")
+    storage = make_storage()
+    edges = [(f"s{i}", f"t{i}", {"weight": 1.0}) for i in range(5)]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_edges_batch(edges)
+
+    assert execute.await_count == 3
+    for call in execute.await_args_list:
+        srcs, tgts, props, endpoint_ids = call.args[3:7]
+        assert len(srcs) == len(tgts) == len(props)
+        # endpoint_ids is exactly this chunk's endpoint set — no more, no less.
+        assert set(endpoint_ids) == set(srcs) | set(tgts)
+
+
+def _edge_statement_bytes(call) -> int:
+    """UTF-8 bytes an edge-upsert statement actually binds for its chunk.
+
+    All four text arrays, including the $6 endpoint list — the point being that
+    $6 is real bound data, not free, so the chunk splitter has to have paid for
+    it.
+    """
+    srcs, tgts, props, endpoint_ids = call.args[3:7]
+    return sum(
+        len(value.encode("utf-8"))
+        for array in (srcs, tgts, props, endpoint_ids)
+        for value in array
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_payload_cap_accounts_for_the_endpoint_array(
+    monkeypatch,
+):
+    """No edge chunk may bind more bytes than POSTGRES_UPSERT_MAX_PAYLOAD_BYTES.
+
+    The chunk splitter used to size an edge by src + tgt + properties, but the
+    statement also sends the chunk's endpoint ids again in $6. With distinct
+    endpoints and small properties — long entity names, thin edges, i.e. the
+    normal shape — the id bytes went over the wire twice while being budgeted
+    once, so a chunk that "fit" bound close to double the cap.
+
+    Long ids and tiny properties here so the id bytes dominate and the
+    under-count is the whole difference: at this cap the old accounting emitted a
+    4-edge chunk binding 1660 bytes.
+    """
+    cap = 1000
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", str(cap))
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "1000")
+    storage = make_storage()
+    edges = [
+        (f"s{i}" + "x" * 98, f"t{i}" + "y" * 98, {"weight": 1.0}) for i in range(6)
+    ]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_edges_batch(edges)
+
+    sizes = [_edge_statement_bytes(call) for call in execute.await_args_list]
+    counts = [len(call.args[3]) for call in execute.await_args_list]
+    for size, count in zip(sizes, counts):
+        # A single item over budget is passed through by design (the server is the
+        # final arbiter); a multi-item chunk over budget is an accounting bug.
+        assert count == 1 or size <= cap, (
+            f"chunk of {count} edges bound {size} bytes against a {cap}-byte cap"
+        )
+    # Guard against the assertion above passing vacuously through the
+    # oversized-single-item exemption.
+    assert max(counts) > 1, "expected multi-edge chunks at this cap"
+    assert sum(counts) == len(edges)
+
+
+@pytest.mark.asyncio
+async def test_remove_nodes_chunks_inside_one_transaction(monkeypatch):
+    """Delete chunking must stay all-or-nothing across chunks."""
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "2")
+    storage = make_storage()
+    conn = _wire_delete_capture(storage)
+
+    await storage.remove_nodes([f"n{i}" for i in range(5)])
+
+    assert len(conn.calls) == 3, "5 ids at cap 2 must be 3 statements"
+    assert conn.max_depth == 1, "all chunks must run in ONE transaction"
+    for sql, args, depth in conn.calls:
+        assert depth == 1, "every chunk must execute inside the transaction"
+        assert args[0] == "test" and args[1] == GRAPH_NAMESPACE
+    assert [len(args[2]) for _sql, args, _d in conn.calls] == [2, 2, 1]
+    assert [nid for _s, args, _d in conn.calls for nid in args[2]] == [
+        f"n{i}" for i in range(5)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remove_edges_chunks_canonically_inside_one_transaction(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "2")
+    storage = make_storage()
+    conn = _wire_delete_capture(storage)
+
+    # Mixed orientation: canonicalization must survive chunking.
+    await storage.remove_edges([("z", "a"), ("b", "y"), ("m", "c")])
+
+    assert len(conn.calls) == 2
+    assert conn.max_depth == 1
+    pairs = [pair for _sql, args, _d in conn.calls for pair in zip(args[2], args[3])]
+    assert pairs == [("a", "z"), ("b", "y"), ("c", "m")]
+
+
+@pytest.mark.asyncio
+async def test_non_positive_caps_disable_chunking(monkeypatch):
+    """A non-positive cap means "one statement", matching the sibling storages."""
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "0")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "0")
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "0")
+
+    storage = make_storage()
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_nodes_batch(
+            [(f"n{i}", {"entity_id": f"n{i}"}) for i in range(50)]
+        )
+    assert execute.await_count == 1
+
+    delete_storage = make_storage()
+    conn = _wire_delete_capture(delete_storage)
+    await delete_storage.remove_nodes([f"n{i}" for i in range(50)])
+    assert len(conn.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_limits_come_from_the_shared_pg_resolver(monkeypatch):
+    """The caps must be the shared POSTGRES_* ones, not a private re-read.
+
+    Guards against this backend growing its own env names or defaults and
+    drifting from the rest of the PostgreSQL write paths.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "12345")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "67")
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "89")
+
+    from lightrag.kg.postgres_impl import _resolve_pg_batch_limits
+
+    assert make_storage()._batch_limits() == _resolve_pg_batch_limits()
+    assert make_storage()._batch_limits() == (12345, 67, 89)

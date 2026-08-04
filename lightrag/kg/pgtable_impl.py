@@ -174,28 +174,73 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_lightrag_graph_edges_namespace_tgt
     ON lightrag_graph_edges (workspace, namespace, tgt_id);
 
-DELETE FROM lightrag_graph_edges e
-WHERE NOT EXISTS (
-        SELECT 1 FROM lightrag_graph_nodes n
-        WHERE n.workspace = e.workspace
-          AND n.namespace = e.namespace
-          AND n.id = e.src_id
-    )
-   OR NOT EXISTS (
-        SELECT 1 FROM lightrag_graph_nodes n
-        WHERE n.workspace = e.workspace
-          AND n.namespace = e.namespace
-          AND n.id = e.tgt_id
-    );
+-- Partial index serving _normalize_legacy_edges' fast-path guard. Its predicate
+-- IS the non-canonical condition, so in the steady state the index is empty and
+-- the guard becomes an index-only probe instead of a sequential scan of the
+-- whole edge table on every process start (the guard cannot use a plain index:
+-- EXISTS can only short-circuit when it FINDS a row, and after the one-time
+-- migration there are none, so it used to scan to completion forever).
+--
+-- Measured on PostgreSQL 14.15, 200k canonical edges: Seq Scan 28.6 ms /
+-- 2273 buffers -> Index Only Scan 0.04 ms / empty 8 kB index. Canonical writes
+-- never satisfy the predicate, so they create no index entries and pay only the
+-- predicate evaluation. If the planner ever declines the index the guard simply
+-- degrades to the previous full scan, so this is an optimization, not a
+-- correctness dependency.
+CREATE INDEX IF NOT EXISTS idx_lightrag_graph_edges_noncanonical
+    ON lightrag_graph_edges (workspace, namespace)
+    WHERE src_id COLLATE "C" > tgt_id COLLATE "C";
 
 DO $$
+DECLARE
+    has_src_fk BOOLEAN;
+    has_tgt_fk BOOLEAN;
 BEGIN
-    IF NOT EXISTS (
+    SELECT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'fk_lightrag_graph_edges_src'
           AND conrelid = 'lightrag_graph_edges'::regclass
-    ) THEN
+    ) INTO has_src_fk;
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_lightrag_graph_edges_tgt'
+          AND conrelid = 'lightrag_graph_edges'::regclass
+    ) INTO has_tgt_fk;
+
+    -- Steady state: both constraints already exist, so there is nothing to
+    -- create and — because they are enforced — no orphan edge can exist either.
+    -- Returning here keeps the table-wide orphan sweep below off the startup
+    -- path, which matters because every process pays it: it runs inside the
+    -- transaction holding pg_advisory_xact_lock('lightrag_pgtable_schema'), so
+    -- N gunicorn workers used to pay N *serialized* full scans of the entire
+    -- edge table (all workspaces) before serving traffic.
+    IF has_src_fk AND has_tgt_fk THEN
+        RETURN;
+    END IF;
+
+    -- Only reachable on first install, or immediately after the namespace PK
+    -- migration above dropped the constraints. ADD CONSTRAINT fails outright if
+    -- any edge references a missing endpoint, so orphans must be removed first.
+    -- The sweep is table-wide because the FK is a global composite constraint
+    -- and cannot be validated per workspace.
+    DELETE FROM lightrag_graph_edges e
+    WHERE NOT EXISTS (
+            SELECT 1 FROM lightrag_graph_nodes n
+            WHERE n.workspace = e.workspace
+              AND n.namespace = e.namespace
+              AND n.id = e.src_id
+        )
+       OR NOT EXISTS (
+            SELECT 1 FROM lightrag_graph_nodes n
+            WHERE n.workspace = e.workspace
+              AND n.namespace = e.namespace
+              AND n.id = e.tgt_id
+        );
+
+    IF NOT has_src_fk THEN
         ALTER TABLE lightrag_graph_edges
             ADD CONSTRAINT fk_lightrag_graph_edges_src
             FOREIGN KEY (workspace, namespace, src_id)
@@ -203,12 +248,7 @@ BEGIN
             ON DELETE CASCADE;
     END IF;
 
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'fk_lightrag_graph_edges_tgt'
-          AND conrelid = 'lightrag_graph_edges'::regclass
-    ) THEN
+    IF NOT has_tgt_fk THEN
         ALTER TABLE lightrag_graph_edges
             ADD CONSTRAINT fk_lightrag_graph_edges_tgt
             FOREIGN KEY (workspace, namespace, tgt_id)
@@ -255,10 +295,40 @@ class PGTableGraphStorage(BaseGraphStorage):
         PGGraphStorage); edge properties are replaced, node properties merged.
       - get_knowledge_graph uses a frontier-capped iterative BFS (see
         _bfs_frontier) whose cost is bounded by max_nodes, not by the number of
-        simple paths in the reachable subgraph.
+        simple paths in the reachable subgraph. Each hop's unvisited filter,
+        degree ranking and budget cap run in SQL, so rows returned and JSONB
+        decoded per hop are bounded by the remaining budget.
+      - search_labels scores and truncates in SQL (like PGGraphStorage) using the
+        NetworkXStorage scoring rules, so the wire cost is O(limit) rather than
+        O(every id matching the query). _search_score is the reference for the
+        rules and the pg_smoke suite pins the SQL to it; case folding is the
+        database's LOWER(), not Python str.lower(), which is a documented
+        PostgreSQL-family divergence on the few code points where the two
+        disagree — see the comment in search_labels.
+
+    Flush-time batching:
+        upsert_nodes_batch / upsert_edges_batch split their payload by
+        POSTGRES_UPSERT_MAX_PAYLOAD_BYTES (primary) and
+        POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH; remove_nodes / remove_edges split by
+        POSTGRES_DELETE_MAX_RECORDS_PER_BATCH. Same variables, same defaults and
+        same splitter as every other PostgreSQL write path. Upsert chunks are
+        separate statements (bounded lock/WAL footprint, idempotent on replay);
+        delete chunks all share ONE transaction, preserving the all-or-nothing
+        semantics the pre-chunking single statement had.
+
+    Configuration note:
+        global_config["vector_storage"] is forwarded to ClientManager verbatim,
+        like every other PG storage. Only "PGVectorStorage" enables pgvector on the
+        shared pool, so this backend needs no extension whether the caller names a
+        non-PostgreSQL vector backend or names none at all.
     """
 
     db: Any | None = field(default=None, init=False, repr=False)
+    # Populated on first use by _batch_limits(); see that method for why it is not
+    # resolved in __post_init__ like the sibling PG storages do.
+    _cached_batch_limits: tuple[int, int, int] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         validate_workspace(self.workspace)
@@ -270,6 +340,93 @@ class PGTableGraphStorage(BaseGraphStorage):
                 "PGTableGraphStorage not initialized — call initialize() first"
             )
         return self.db
+
+    # ------------------------------------------------------------------
+    # Flush-time batching limits
+    # ------------------------------------------------------------------
+
+    def _batch_limits(self) -> tuple[int, int, int]:
+        """``(upsert_payload_bytes, upsert_records, delete_records)`` from env.
+
+        Uses the same ``_resolve_pg_batch_limits`` helper — hence the same
+        POSTGRES_UPSERT_MAX_PAYLOAD_BYTES / POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH /
+        POSTGRES_DELETE_MAX_RECORDS_PER_BATCH variables and the same defaults — as
+        every other PostgreSQL write path, so one deployment-wide setting bounds
+        them all.
+
+        Resolved on first use and cached, rather than in __post_init__ like the
+        sibling storages, for two reasons: postgres_impl must stay lazily imported
+        (importing it installs and imports asyncpg at module scope — see
+        _is_transient_error), and batch writes only run after initialize(), which
+        imports postgres_impl anyway, so this is a cache hit there. getattr()
+        rather than a plain attribute read because callers legitimately build this
+        storage without __init__ (object.__new__ in the offline test suites).
+        """
+        limits = getattr(self, "_cached_batch_limits", None)
+        if limits is None:
+            from .postgres_impl import _resolve_pg_batch_limits
+
+            limits = _resolve_pg_batch_limits()
+            self._cached_batch_limits = limits
+        return limits
+
+    @staticmethod
+    def _chunk_writes(
+        items: list[Any], size_of: Callable[[Any], int], limits: tuple[int, int, int]
+    ) -> list[list[Any]]:
+        """Split an upsert payload with the shared byte/record budget splitter.
+
+        Delegates to postgres_impl._chunk_by_budget so the byte accounting (JSON
+        array overhead, separator overhead, oversized-single-item passthrough) is
+        identical to the other PG storages instead of a second approximation.
+        """
+        from .postgres_impl import _chunk_by_budget
+
+        payload_bytes, records, _delete_records = limits
+        return [
+            chunk
+            for chunk, _bytes in _chunk_by_budget(
+                items, size_of, payload_bytes, records
+            )
+        ]
+
+    async def _chunked_delete(
+        self,
+        sql: str,
+        items: list[Any],
+        to_args: Callable[[list[Any]], tuple[Any, ...]],
+        label: str,
+    ) -> None:
+        """Run one DELETE per POSTGRES_DELETE_MAX_RECORDS_PER_BATCH-sized chunk.
+
+        Unlike the upsert paths, every chunk runs inside ONE transaction: the
+        pre-chunking implementation was a single statement, so it was
+        all-or-nothing, and a caller deleting a set of nodes must not be left with
+        half of them gone. This mirrors PGGraphStorage's delete batching exactly.
+        _run_with_retry replays the whole closure on transient errors, which is
+        safe because DELETE is idempotent.
+
+        ``to_args`` maps a chunk to the positional parameters after
+        (workspace, namespace) — one array for nodes, two parallel arrays for edge
+        pairs. A non-positive cap disables chunking.
+        """
+        _payload_bytes, _records, delete_records = self._batch_limits()
+        chunk_size = delete_records if delete_records > 0 else len(items)
+        if len(items) > chunk_size:
+            logger.info(
+                f"[{self.workspace}] {self.namespace}: {label} delete of "
+                f"{len(items)} items split into chunks (chunk={chunk_size})"
+            )
+
+        async def _batch_delete(conn: Any) -> None:
+            async with conn.transaction():
+                for start in range(0, len(items), chunk_size):
+                    chunk = items[start : start + chunk_size]
+                    await conn.execute(
+                        sql, self.workspace, self.namespace, *to_args(chunk)
+                    )
+
+        await self._with_retry(lambda: self._db._run_with_retry(_batch_delete))
 
     # ------------------------------------------------------------------
     # Query helpers — thin wrappers over PostgreSQLDB.query / execute
@@ -340,6 +497,10 @@ class PGTableGraphStorage(BaseGraphStorage):
         # Mirror NetworkXStorage.search_labels scoring exactly: the
         # word-boundary bonus applies ONLY to the contains branch, not to
         # exact/prefix matches.
+        #
+        # Reference for the RULES only. search_labels evaluates them in SQL and
+        # folds case with the database's LOWER(), which is not Python
+        # str.lower() on every code point — see the comment there.
         lowered = label.lower()
         if lowered == query:
             return 1000
@@ -359,11 +520,13 @@ class PGTableGraphStorage(BaseGraphStorage):
             if self.db is None:
                 from .postgres_impl import ClientManager
 
-                vector_storage = (
-                    self.global_config.get("vector_storage") or "PGTableGraphStorage"
-                )
+                # Forwarded unchanged, exactly like the sibling PG storages. An
+                # unspecified vector backend resolves to None, which ClientManager
+                # maps to enable_vector=False — so a bare global_config no longer
+                # demands pgvector and this backend stays installable on stock
+                # PostgreSQL without passing a sentinel backend name.
                 self.db = await ClientManager.get_client(
-                    vector_storage=vector_storage,
+                    vector_storage=self.global_config.get("vector_storage")
                 )
                 # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
                 if self.db.workspace:
@@ -394,12 +557,19 @@ class PGTableGraphStorage(BaseGraphStorage):
         # UTF-8). Using the DB's default collation here could diverge on
         # non-ASCII ids and either skip rows that still need normalizing or
         # rescan already-canonical data forever.
+        #
+        # The predicate is written to match idx_lightrag_graph_edges_noncanonical's
+        # partial-index predicate verbatim (see _DDL) so the planner can prove
+        # implication and serve this as an index-only probe on a normally-empty
+        # index. Keep the two in sync: any change to the COLLATE spelling here
+        # silently turns this back into a full scan on every process start.
         needs_normalize = await self._fetchval(
             """
             SELECT EXISTS (
                 SELECT 1 FROM lightrag_graph_edges
                 WHERE workspace = $1 AND namespace = $2
                   AND src_id COLLATE "C" > tgt_id COLLATE "C"
+                LIMIT 1
             )
             """,
             self.workspace,
@@ -511,9 +681,13 @@ class PGTableGraphStorage(BaseGraphStorage):
             # one statement (hence one implicit transaction), so a mid-drop
             # failure can never leave nodes stripped of their edges or vice versa
             # — the two-statement version committed the edge delete independently.
-            # Edges are deleted explicitly rather than relying solely on FK
-            # CASCADE so the drop stays correct even on a legacy table whose FK
-            # was never (re)created.
+            #
+            # Edges are named explicitly to keep the delete set unambiguous and
+            # the statement self-describing, NOT because the FK might be missing:
+            # _DDL either creates both fk_lightrag_graph_edges_{src,tgt} or raises
+            # and aborts initialize(), so after a successful init the CASCADE is
+            # guaranteed. delete_node / remove_nodes rely on exactly that
+            # guarantee instead of repeating the edge delete.
             await self._execute(
                 """
                 WITH deleted_edges AS (
@@ -583,6 +757,9 @@ class PGTableGraphStorage(BaseGraphStorage):
         )
 
     async def delete_node(self, node_id: str) -> None:
+        # Incident edges go via ON DELETE CASCADE on
+        # fk_lightrag_graph_edges_{src,tgt}. _DDL creates both or raises and
+        # aborts initialize(), so the cascade is guaranteed here — see drop().
         await self._execute(
             "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND namespace = $2 AND id = $3",
             self.workspace,
@@ -593,11 +770,13 @@ class PGTableGraphStorage(BaseGraphStorage):
     async def remove_nodes(self, nodes: list[str]) -> None:
         if not nodes:
             return
-        await self._execute(
-            "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND namespace = $2 AND id = ANY($3)",
-            self.workspace,
-            self.namespace,
+        # Incident edges cascade — same guarantee as delete_node().
+        await self._chunked_delete(
+            "DELETE FROM lightrag_graph_nodes "
+            "WHERE workspace = $1 AND namespace = $2 AND id = ANY($3)",
             nodes,
+            lambda chunk: (chunk,),
+            label="node",
         )
 
     # ------------------------------------------------------------------
@@ -667,19 +846,17 @@ class PGTableGraphStorage(BaseGraphStorage):
             return
         if not all(isinstance(e[0], str) and isinstance(e[1], str) for e in edges):
             raise ValueError("Edge node IDs must be non-None strings")
-        srcs = [min(e[0], e[1]) for e in edges]
-        tgts = [max(e[0], e[1]) for e in edges]
-        await self._execute(
+        pairs = [(min(e[0], e[1]), max(e[0], e[1])) for e in edges]
+        await self._chunked_delete(
             """
             DELETE FROM lightrag_graph_edges
             WHERE workspace = $1
               AND namespace = $2
               AND (src_id, tgt_id) IN (SELECT * FROM unnest($3::text[], $4::text[]))
             """,
-            self.workspace,
-            self.namespace,
-            srcs,
-            tgts,
+            pairs,
+            lambda chunk: ([p[0] for p in chunk], [p[1] for p in chunk]),
+            label="edge",
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -780,22 +957,85 @@ class PGTableGraphStorage(BaseGraphStorage):
         q = query.strip().lower()
         if not q:
             return []
+        escaped = self._escape_like(q)
+        # Score, rank and truncate server-side, like PGGraphStorage does. Scoring
+        # in Python instead meant transferring EVERY id matching %q% just to
+        # return `limit` of them — on a large graph that is most of the node
+        # table over the wire per search. The LIKE filter is unindexable either
+        # way, but the transfer is now O(limit).
+        #
+        # The CASE mirrors _search_score / NetworkXStorage.search_labels' scoring
+        # RULES: the +50 word-boundary bonus is nested INSIDE the ELSE branch so
+        # it can never apply to an exact or prefix match (AGE's SQL adds it
+        # unconditionally, which is the divergent one). LENGTH() counts
+        # characters like Python len(), not octets. ORDER BY id COLLATE "C"
+        # reproduces Python's code-point tie-break on the original,
+        # non-lowercased id.
+        #
+        # Case folding, however, is the DATABASE's — LOWER() is not Python
+        # str.lower(). LOWER() maps one character to one character, while Python
+        # applies full Unicode case mapping, so the two disagree on a small set
+        # of code points: LOWER('İ') = 'i' but 'İ'.lower() == 'i̇', and
+        # LOWER('ΟΣ') = 'οσ' but 'ΟΣ'.lower() == 'ος' (final sigma). Where they
+        # disagree, a label can land in a different score tier than
+        # _search_score would give it. That is deliberate and unchanged in
+        # authority: the pre-scoring version already folded with LOWER() in this
+        # same WHERE clause, so which labels MATCH has always been the
+        # database's call — this only extends it to which tier they match in.
+        # PGGraphStorage scores with LOWER() the same way, so the whole
+        # PostgreSQL family shares one folding authority while NetworkX/JSON
+        # storages use Python's;
+        # test_search_labels_folds_case_with_the_database_not_python in the
+        # pg_smoke suite pins it.
+        #
+        # _search_score remains the reference for the rules, and
+        # test_search_labels_sql_scoring_matches_search_score_reference asserts
+        # the SQL agrees with it over a corpus whose folding is identical on both
+        # sides (which is every label whose characters fold 1:1 — i.e. all but
+        # that handful).
+        #
+        # $3 is the RAW lowercased query (compared with =, so it must not carry
+        # LIKE escapes); $4..$7 are LIKE patterns built from the escaped form.
         # ESCAPE uses an E'' literal so the backslash escape char is unambiguously
         # one character regardless of standard_conforming_strings; a plain '\'
         # literal is a syntax error when that (deprecated, non-default) setting is
         # off. E'\\' is one backslash under both settings.
         rows = await self._fetch(
             """
-            SELECT id FROM lightrag_graph_nodes
-            WHERE workspace=$1 AND namespace=$2 AND LOWER(id) LIKE $3 ESCAPE E'\\\\'
+            SELECT id
+            FROM (
+                SELECT id,
+                       CASE
+                           WHEN LOWER(id) = $3 THEN 1000
+                           WHEN LOWER(id) LIKE $4 ESCAPE E'\\\\' THEN 500
+                           ELSE 100 - LENGTH(id)
+                                + CASE
+                                      WHEN LOWER(id) LIKE $5 ESCAPE E'\\\\'
+                                        OR LOWER(id) LIKE $6 ESCAPE E'\\\\'
+                                      THEN 50
+                                      ELSE 0
+                                  END
+                       END AS score
+                FROM lightrag_graph_nodes
+                WHERE workspace = $1
+                  AND namespace = $2
+                  AND LOWER(id) LIKE $7 ESCAPE E'\\\\'
+            ) scored
+            ORDER BY score DESC, id COLLATE "C" ASC
+            LIMIT $8
             """,
             self.workspace,
             self.namespace,
-            f"%{self._escape_like(q)}%",
+            q,
+            f"{escaped}%",
+            f"% {escaped}%",
+            # Literal underscore: '_' is a LIKE wildcard, so the word-boundary
+            # probe for "_query" must escape it or it would match any character.
+            rf"%\_{escaped}%",
+            f"%{escaped}%",
+            limit,
         )
-        labels = [r["id"] for r in rows]
-        labels.sort(key=lambda label: (-self._search_score(label, q), label))
-        return labels[:limit]
+        return [r["id"] for r in rows]
 
     @staticmethod
     def _escape_like(value: str) -> str:
@@ -845,11 +1085,16 @@ class PGTableGraphStorage(BaseGraphStorage):
         CTE with a path-local visited array does — that re-materializes shared
         nodes per path and blows up on dense/cyclic graphs.
 
-        NOTE on cost: the per-hop *work* is bounded by the size of the frontier's
-        neighbourhood, NOT by ``node_budget``. A single very high-degree node
-        still pulls (and degree-ranks) its entire neighbour set on the hop that
-        expands it, before the budget truncates the result. Pushing the
-        degree-rank + cap down into SQL is tracked as a follow-up optimization.
+        NOTE on cost: the unvisited-filter, degree ranking and budget cap all run
+        inside the per-hop SQL, so the rows returned, the JSONB payloads decoded
+        and the round trips per hop are bounded by the remaining budget — a hub
+        with a million edges no longer ships a million property blobs to Python
+        to have all but ``node_budget`` of them discarded. What is NOT bounded is
+        the server-side edge enumeration: ranking a hub's neighbours by degree
+        requires visiting that hub's edges, which is a lower bound for any
+        correct top-k-by-degree. Those scans are index-driven (see the UNION
+        note below) and no longer duplicated by a second node_degrees_batch
+        round trip.
 
         Within each depth level the highest-degree unvisited neighbours are
         admitted first, so when the budget cuts a level the retained nodes are
@@ -886,48 +1131,84 @@ class PGTableGraphStorage(BaseGraphStorage):
             # "src_id = ANY OR tgt_id = ANY" predicate cannot use either index and
             # degrades to a seq scan of the whole edge table on every level —
             # which made traversal O(edges) per hop on large sparse graphs.
+            #
+            # The hop admits at most (node_budget - collected + 1) nodes: one
+            # past the budget, so get_knowledge_graph still sees the overfetched
+            # row that distinguishes "exactly full" from "truncated". This is the
+            # SQL equivalent of the previous admit-then-break-on-overflow loop.
+            level_cap = node_budget - len(collected) + 1
             rows = await self._fetch(
                 """
-                SELECT n.id AS id, n.properties AS properties
-                FROM lightrag_graph_nodes n
-                JOIN (
+                WITH nb AS (
                     SELECT tgt_id AS nid FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2 AND src_id = ANY($3)
                   UNION
                     SELECT src_id AS nid FROM lightrag_graph_edges
                     WHERE workspace = $1 AND namespace = $2 AND tgt_id = ANY($3)
-                ) nb ON n.id = nb.nid
-                WHERE n.workspace = $1 AND n.namespace = $2
+                ),
+                -- Anti-join against the visited set rather than "nid <> ALL($4)":
+                -- a scalar <> ALL over a ~node_budget-element array is evaluated
+                -- per candidate row, i.e. O(neighbours x visited), which on a hub
+                -- is worse than the Python-side set lookup this replaces. The
+                -- NOT EXISTS form lets the planner hash the visited set once.
+                visited AS (
+                    SELECT unnest($4::text[]) AS vid
+                ),
+                candidates AS (
+                    SELECT nb.nid FROM nb
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM visited v WHERE v.vid = nb.nid
+                    )
+                ),
+                -- Same UNION ALL + GROUP BY shape as node_degrees_batch, so
+                -- self-loops count twice here exactly as they do there and in
+                -- node_degree. Each arm is index-served: src_id via the PK
+                -- prefix, tgt_id via idx_..._namespace_tgt.
+                candidate_degrees AS (
+                    SELECT id, COUNT(*) AS degree
+                    FROM (
+                        SELECT src_id AS id FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND namespace = $2
+                          AND src_id IN (SELECT nid FROM candidates)
+                        UNION ALL
+                        SELECT tgt_id AS id FROM lightrag_graph_edges
+                        WHERE workspace = $1 AND namespace = $2
+                          AND tgt_id IN (SELECT nid FROM candidates)
+                    ) sub
+                    GROUP BY id
+                )
+                SELECT n.id AS id,
+                       n.properties AS properties,
+                       COALESCE(d.degree, 0) AS degree
+                FROM candidates c
+                JOIN lightrag_graph_nodes n
+                  ON n.workspace = $1 AND n.namespace = $2 AND n.id = c.nid
+                LEFT JOIN candidate_degrees d ON d.id = c.nid
+                -- Reproduces the previous Python key=(-degree, nid) exactly;
+                -- COLLATE "C" makes the tie-break a code-point sort like Python's.
+                ORDER BY COALESCE(d.degree, 0) DESC, n.id COLLATE "C" ASC
+                LIMIT $5
                 """,
                 self.workspace,
                 self.namespace,
                 frontier,
+                list(collected),
+                level_cap,
             )
-            # Gather this level's unvisited neighbours, then admit the
-            # highest-degree ones first so a budget cut keeps high-degree nodes
-            # (degree-priority truncation), rather than whatever order the DB
-            # happened to return rows in.
-            candidates: dict[str, Any] = {}
-            for r in rows:
-                if r["id"] not in collected and r["id"] not in candidates:
-                    candidates[r["id"]] = r["properties"]
-            if not candidates:
+            if not rows:
                 break
-            level_degrees = await self.node_degrees_batch(list(candidates))
-            degrees.update(level_degrees)
-            ordered = sorted(
-                candidates, key=lambda nid: (-level_degrees.get(nid, 0), nid)
-            )
+            # Rows arrive already unvisited-filtered, degree-ranked and capped,
+            # so admission is a straight walk in the order the DB returned.
             next_frontier: list[str] = []
-            for nid in ordered:
+            for r in rows:
+                nid = r["id"]
+                degrees[nid] = int(r["degree"] or 0)
                 collected[nid] = {
                     "id": nid,
-                    "properties": candidates[nid],
+                    "properties": r["properties"],
                     "depth": depth,
                 }
                 next_frontier.append(nid)
-                if len(collected) > node_budget:
-                    break
             frontier = next_frontier
         # The seed is never a candidate (it seeds the frontier), so its degree
         # was never gathered in the loop — fetch it once for the ordering
@@ -1186,25 +1467,42 @@ class PGTableGraphStorage(BaseGraphStorage):
             node_props = dict(node_data)
             node_props["entity_id"] = node_id
             deduped[node_id] = node_props
-        sorted_ids = sorted(deduped)
-        props = [json.dumps(deduped[node_id]) for node_id in sorted_ids]
-        await self._execute(
-            """
-            INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
-            SELECT $1, $2, u.id, u.props::jsonb, now()
-            FROM unnest($3::text[], $4::text[]) AS u(id, props)
-            ORDER BY u.id
-            ON CONFLICT (workspace, namespace, id)
-            DO UPDATE SET
-                -- Merge (not replace), same as upsert_node — see note there.
-                properties = lightrag_graph_nodes.properties || EXCLUDED.properties,
-                updated_at = now()
-            """,
-            self.workspace,
-            self.namespace,
-            sorted_ids,
-            props,
+        # (id, props_json) pairs in id order, then split so no single statement
+        # carries an unbounded payload. Chunks are applied sequentially and each is
+        # its own statement (hence its own implicit transaction), matching
+        # PGGraphStorage.upsert_nodes_batch — deliberately NOT one transaction over
+        # all chunks, which would reintroduce the unbounded lock/WAL footprint the
+        # chunking exists to avoid. Node upsert is idempotent (jsonb merge to the
+        # same payload), so a partially-applied batch is safe to replay.
+        items = [(node_id, json.dumps(deduped[node_id])) for node_id in sorted(deduped)]
+        chunks = self._chunk_writes(
+            items,
+            lambda pair: len(pair[0].encode("utf-8")) + len(pair[1].encode("utf-8")),
+            self._batch_limits(),
         )
+        if len(chunks) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace}: node upsert split into "
+                f"{len(chunks)} chunks for {len(items)} nodes"
+            )
+        for chunk in chunks:
+            await self._execute(
+                """
+                INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
+                SELECT $1, $2, u.id, u.props::jsonb, now()
+                FROM unnest($3::text[], $4::text[]) AS u(id, props)
+                ORDER BY u.id
+                ON CONFLICT (workspace, namespace, id)
+                DO UPDATE SET
+                    -- Merge (not replace), same as upsert_node — see note there.
+                    properties = lightrag_graph_nodes.properties || EXCLUDED.properties,
+                    updated_at = now()
+                """,
+                self.workspace,
+                self.namespace,
+                [item[0] for item in chunk],
+                [item[1] for item in chunk],
+            )
 
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -1216,35 +1514,63 @@ class PGTableGraphStorage(BaseGraphStorage):
         for src, tgt, edge_data in edges:
             key = (min(src, tgt), max(src, tgt))
             deduped[key] = edge_data
-        sorted_keys = sorted(deduped.keys())
-        srcs = [k[0] for k in sorted_keys]
-        tgts = [k[1] for k in sorted_keys]
-        props = [json.dumps(deduped[k]) for k in sorted_keys]
-        endpoint_ids = sorted({nid for key in sorted_keys for nid in key})
-        await self._execute(
-            """
-            WITH endpoints AS (
-                INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
-                SELECT $1, $2, u.id, jsonb_build_object('entity_id', u.id), now()
-                FROM unnest($6::text[]) AS u(id)
-                ON CONFLICT (workspace, namespace, id) DO NOTHING
-                RETURNING id
+        # (src, tgt, props_json) triples in canonical pair order, then split so no
+        # single statement carries an unbounded payload. Per-chunk statements, like
+        # upsert_nodes_batch and PGGraphStorage — see the note there.
+        #
+        # Each chunk stays self-consistent under the FK: it creates the endpoints
+        # for its OWN edges inside the same statement, so no chunk can insert an
+        # edge whose endpoint another chunk was going to create.
+        items = [(key[0], key[1], json.dumps(deduped[key])) for key in sorted(deduped)]
+        chunks = self._chunk_writes(
+            items,
+            # Endpoint ids are charged TWICE, because the statement sends them
+            # twice: once as the $3/$4 edge arrays and again as the chunk's
+            # distinct endpoint list in $6. Deduplication inside the chunk can
+            # only make the second copy smaller, never larger, and a per-item
+            # size_of cannot see how much it will save — so charge the worst case
+            # (every endpoint distinct). Counting them once let a chunk whose
+            # estimate fit under POSTGRES_UPSERT_MAX_PAYLOAD_BYTES bind close to
+            # twice that, which is exactly the unbounded single statement the cap
+            # exists to prevent, and it under-counted most on the graphs where it
+            # matters: long entity-name ids with small edge payloads.
+            lambda triple: (
+                2 * len(triple[0].encode("utf-8"))
+                + 2 * len(triple[1].encode("utf-8"))
+                + len(triple[2].encode("utf-8"))
             ),
-            endpoint_write AS (
-                SELECT COUNT(*) AS inserted_count FROM endpoints
-            )
-            INSERT INTO lightrag_graph_edges (workspace, namespace, src_id, tgt_id, properties, updated_at)
-            SELECT $1, $2, u.src, u.tgt, u.props::jsonb, now()
-            FROM unnest($3::text[], $4::text[], $5::text[]) AS u(src, tgt, props)
-            CROSS JOIN endpoint_write
-            ORDER BY u.src, u.tgt
-            ON CONFLICT (workspace, namespace, src_id, tgt_id)
-            DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
-            """,
-            self.workspace,
-            self.namespace,
-            srcs,
-            tgts,
-            props,
-            endpoint_ids,
+            self._batch_limits(),
         )
+        if len(chunks) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace}: edge upsert split into "
+                f"{len(chunks)} chunks for {len(items)} edges"
+            )
+        for chunk in chunks:
+            await self._execute(
+                """
+                WITH endpoints AS (
+                    INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
+                    SELECT $1, $2, u.id, jsonb_build_object('entity_id', u.id), now()
+                    FROM unnest($6::text[]) AS u(id)
+                    ON CONFLICT (workspace, namespace, id) DO NOTHING
+                    RETURNING id
+                ),
+                endpoint_write AS (
+                    SELECT COUNT(*) AS inserted_count FROM endpoints
+                )
+                INSERT INTO lightrag_graph_edges (workspace, namespace, src_id, tgt_id, properties, updated_at)
+                SELECT $1, $2, u.src, u.tgt, u.props::jsonb, now()
+                FROM unnest($3::text[], $4::text[], $5::text[]) AS u(src, tgt, props)
+                CROSS JOIN endpoint_write
+                ORDER BY u.src, u.tgt
+                ON CONFLICT (workspace, namespace, src_id, tgt_id)
+                DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
+                """,
+                self.workspace,
+                self.namespace,
+                [item[0] for item in chunk],
+                [item[1] for item in chunk],
+                [item[2] for item in chunk],
+                sorted({nid for item in chunk for nid in (item[0], item[1])}),
+            )
