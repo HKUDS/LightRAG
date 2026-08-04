@@ -1679,14 +1679,10 @@ async def _rebuild_single_entity(
                 "truncate": truncation_info,
             }
 
-            # Update entity in graph storage first (critical path): the
-            # graph is the authoritative store, and a truncation/VDB
-            # failure below must never prevent this write — a stale/missing
-            # VDB entry can always be repaired from the graph via the
-            # offline rebuild tool, but a graph write gated behind VDB
-            # feasibility would lose the rebuild entirely.
-            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
-
+            # Construct and verify the VDB payload BEFORE the first graph
+            # mutation: if truncation fails (a deterministic, non-retryable
+            # content-shape problem), nothing has been written yet. The
+            # actual VDB I/O call still happens after the graph write below.
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
             entity_content = _truncate_vdb_content(
                 f"{entity_name}\n{final_description}",
@@ -1703,6 +1699,9 @@ async def _rebuild_single_entity(
                     "file_path": updated_entity_data["file_path"],
                 }
             }
+
+            # Update entity in graph storage (critical path)
+            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
             # Update entity in vector database (equally critical).  Use safe
             # operation wrapper - VDB failure must throw exception.
@@ -2091,12 +2090,6 @@ async def _rebuild_single_relationship(
     node_source_id = updated_relationship_data.get("source_id", "")
     node_file_path = updated_relationship_data.get("file_path", "unknown_source")
 
-    # Ensure missing endpoint nodes exist in the graph first for each node:
-    # the graph is the authoritative store, and a truncation/VDB failure
-    # below must never prevent a node's graph write — a stale/missing VDB
-    # entry can always be repaired from the graph via the offline rebuild
-    # tool, but a graph write gated behind VDB feasibility would strand the
-    # rebuild with a dangling edge referencing a node that was never created.
     for node_id in {src, tgt}:
         if not (await knowledge_graph_inst.has_node(node_id)):
             node_created_at = int(time.time())
@@ -2109,6 +2102,29 @@ async def _rebuild_single_relationship(
                 "created_at": node_created_at,
                 "truncate": "",
             }
+
+            # Construct and verify the VDB payload BEFORE the first graph
+            # mutation: if truncation fails (a deterministic, non-retryable
+            # content-shape problem), nothing has been written yet. The
+            # actual VDB I/O call still happens after the graph write below.
+            vdb_data = (
+                {
+                    compute_mdhash_id(node_id, prefix="ent-"): {
+                        "content": _truncate_vdb_content(
+                            f"{node_id}\n{node_description}",
+                            global_config,
+                            f"entity:{node_id}",
+                        ),
+                        "entity_name": node_id,
+                        "source_id": node_source_id,
+                        "entity_type": "UNKNOWN",
+                        "file_path": node_file_path,
+                    }
+                }
+                if entities_vdb is not None
+                else None
+            )
+
             await knowledge_graph_inst.upsert_node(node_id, node_data=node_data)
 
             # Update entity_chunks_storage for the newly created entity
@@ -2124,20 +2140,6 @@ async def _rebuild_single_relationship(
 
             # Update entity_vdb for the newly created entity
             if entities_vdb is not None:
-                entity_vdb_id = compute_mdhash_id(node_id, prefix="ent-")
-                vdb_data = {
-                    entity_vdb_id: {
-                        "content": _truncate_vdb_content(
-                            f"{node_id}\n{node_description}",
-                            global_config,
-                            f"entity:{node_id}",
-                        ),
-                        "entity_name": node_id,
-                        "source_id": node_source_id,
-                        "entity_type": "UNKNOWN",
-                        "file_path": node_file_path,
-                    }
-                }
                 await safe_vdb_operation_with_exception(
                     operation=lambda payload=vdb_data: entities_vdb.upsert(payload),
                     operation_name="rebuild_added_entity_upsert",
@@ -2146,15 +2148,35 @@ async def _rebuild_single_relationship(
                     retry_delay=0.1,
                 )
 
-    # Update relationship in graph storage first, same reasoning as above.
-    await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
-
     # Sort src/tgt for a consistent VDB record identity (smaller string
     # first) — kept separate from the src/tgt used for the graph edge write
-    # above, which must use the caller's original direction.
+    # below, which must use the caller's original direction.
     vdb_src, vdb_tgt = (tgt, src) if src > tgt else (src, tgt)
     rel_vdb_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
     rel_vdb_id_reverse = compute_mdhash_id(vdb_tgt + vdb_src, prefix="rel-")
+
+    # Construct and verify the VDB payload BEFORE the first graph mutation
+    # below: if truncation fails, nothing has been written yet. The actual
+    # VDB I/O call still happens after the graph write below.
+    rel_content = _truncate_vdb_content(
+        f"{combined_keywords}\t{vdb_src}\n{vdb_tgt}\n{final_description}",
+        global_config,
+        f"relation:{vdb_src}-{vdb_tgt}",
+    )
+    vdb_data = {
+        rel_vdb_id: {
+            "src_id": vdb_src,
+            "tgt_id": vdb_tgt,
+            "source_id": updated_relationship_data["source_id"],
+            "content": rel_content,
+            "keywords": combined_keywords,
+            "description": final_description,
+            "weight": weight,
+            "file_path": updated_relationship_data["file_path"],
+        }
+    }
+
+    await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Update relationship in vector database
     try:
@@ -2167,25 +2189,6 @@ async def _rebuild_single_relationship(
             logger.debug(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
-
-        # Insert new vector record
-        rel_content = _truncate_vdb_content(
-            f"{combined_keywords}\t{vdb_src}\n{vdb_tgt}\n{final_description}",
-            global_config,
-            f"relation:{vdb_src}-{vdb_tgt}",
-        )
-        vdb_data = {
-            rel_vdb_id: {
-                "src_id": vdb_src,
-                "tgt_id": vdb_tgt,
-                "source_id": updated_relationship_data["source_id"],
-                "content": rel_content,
-                "keywords": combined_keywords,
-                "description": final_description,
-                "weight": weight,
-                "file_path": updated_relationship_data["file_path"],
-            }
-        }
 
         # Use safe operation wrapper - VDB failure must throw exception
         await safe_vdb_operation_with_exception(
@@ -2562,16 +2565,11 @@ async def _merge_nodes_then_upsert(
             truncate=truncation_info,
         )
 
-        # Update graph first: the graph is the authoritative store, and a
-        # truncation/VDB failure below must never prevent this write — a
-        # stale/missing VDB entry can always be repaired from the graph via
-        # the offline rebuild tool, but a graph write gated behind VDB
-        # feasibility would lose the merge entirely.
-        await knowledge_graph_inst.upsert_node(
-            entity_name,
-            node_data=node_data,
-        )
-        node_data["entity_name"] = entity_name
+        # Construct and verify the VDB payload BEFORE the first graph
+        # mutation: if truncation fails (a deterministic, non-retryable
+        # content-shape problem), nothing has been written yet. The actual
+        # VDB I/O call still happens after the graph write below.
+        data_for_vdb = None
         if entity_vdb is not None:
             entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
             entity_content = _truncate_vdb_content(
@@ -2588,6 +2586,13 @@ async def _merge_nodes_then_upsert(
                     "file_path": file_path,
                 }
             }
+
+        await knowledge_graph_inst.upsert_node(
+            entity_name,
+            node_data=node_data,
+        )
+        node_data["entity_name"] = entity_name
+        if entity_vdb is not None:
             await safe_vdb_operation_with_exception(
                 operation=lambda payload=data_for_vdb: entity_vdb.upsert(payload),
                 operation_name="entity_upsert",
@@ -2946,13 +2951,7 @@ async def _merge_edges_then_upsert(
         else:
             logger.debug(status_message)
 
-        # 11. Update both graph and vector db. The graph write for each
-        # object (endpoint node, then the edge itself) always happens
-        # first and unconditionally: the graph is the authoritative store,
-        # and a downstream truncation/VDB failure must never prevent it —
-        # a stale/missing VDB entry can always be repaired from the graph
-        # via the offline rebuild tool, but a graph write gated behind VDB
-        # feasibility would lose the merge entirely.
+        # 11. Update both graph and vector db.
         for need_insert_id in [src_id, tgt_id]:
             # Optimization: Use get_node instead of has_node + get_node
             existing_node = await knowledge_graph_inst.get_node(need_insert_id)
@@ -2969,6 +2968,30 @@ async def _merge_edges_then_upsert(
                     "created_at": node_created_at,
                     "truncate": "",
                 }
+
+                # Construct and verify the VDB payload BEFORE the first
+                # graph mutation: if truncation fails (a deterministic,
+                # non-retryable content-shape problem), nothing has been
+                # written yet. The actual VDB I/O call still happens after
+                # the graph write below.
+                vdb_data = None
+                if entity_vdb is not None:
+                    entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
+                    entity_content = _truncate_vdb_content(
+                        f"{need_insert_id}\n{description}",
+                        global_config,
+                        f"entity:{need_insert_id}",
+                    )
+                    vdb_data = {
+                        entity_vdb_id: {
+                            "content": entity_content,
+                            "entity_name": need_insert_id,
+                            "source_id": source_id,
+                            "entity_type": "UNKNOWN",
+                            "file_path": file_path,
+                        }
+                    }
+
                 await knowledge_graph_inst.upsert_node(
                     need_insert_id, node_data=node_data
                 )
@@ -2987,21 +3010,6 @@ async def _merge_edges_then_upsert(
                         )
 
                 if entity_vdb is not None:
-                    entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
-                    entity_content = _truncate_vdb_content(
-                        f"{need_insert_id}\n{description}",
-                        global_config,
-                        f"entity:{need_insert_id}",
-                    )
-                    vdb_data = {
-                        entity_vdb_id: {
-                            "content": entity_content,
-                            "entity_name": need_insert_id,
-                            "source_id": source_id,
-                            "entity_type": "UNKNOWN",
-                            "file_path": file_path,
-                        }
-                    }
                     await safe_vdb_operation_with_exception(
                         operation=lambda payload=vdb_data: entity_vdb.upsert(payload),
                         operation_name="added_entity_upsert",
@@ -3095,11 +3103,12 @@ async def _merge_edges_then_upsert(
                         **existing_node,
                         "source_id": limited_source_id_str,
                     }
-                    await knowledge_graph_inst.upsert_node(
-                        need_insert_id, node_data=updated_node_data
-                    )
 
-                    # Update vector database
+                    # Construct and verify the VDB payload BEFORE the first
+                    # graph mutation: if truncation fails, nothing has been
+                    # written yet. The actual VDB I/O call still happens
+                    # after the graph write below.
+                    vdb_data = None
                     if entity_vdb is not None:
                         entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
                         entity_content = _truncate_vdb_content(
@@ -3120,6 +3129,13 @@ async def _merge_edges_then_upsert(
                                 ),
                             }
                         }
+
+                    await knowledge_graph_inst.upsert_node(
+                        need_insert_id, node_data=updated_node_data
+                    )
+
+                    # Update vector database
+                    if entity_vdb is not None:
                         await safe_vdb_operation_with_exception(
                             operation=lambda payload=vdb_data: entity_vdb.upsert(
                                 payload
@@ -3144,6 +3160,44 @@ async def _merge_edges_then_upsert(
                     status_logger.log(status_message)
 
         edge_created_at = int(time.time())
+
+        # Sort src_id/tgt_id for a consistent VDB record identity (smaller
+        # string first) — kept separate from src_id/tgt_id used for the
+        # graph edge write below, which must use the caller's original
+        # direction.
+        vdb_src_id, vdb_tgt_id = (
+            (tgt_id, src_id) if src_id > tgt_id else (src_id, tgt_id)
+        )
+
+        # Construct and verify the VDB payload BEFORE the first graph
+        # mutation below: if truncation fails (a deterministic,
+        # non-retryable content-shape problem), nothing has been written
+        # yet. The actual VDB I/O calls still happen after the graph write
+        # below.
+        vdb_data = None
+        if relationships_vdb is not None:
+            rel_vdb_id = compute_mdhash_id(vdb_src_id + vdb_tgt_id, prefix="rel-")
+            rel_vdb_id_reverse = compute_mdhash_id(
+                vdb_tgt_id + vdb_src_id, prefix="rel-"
+            )
+            rel_content = _truncate_vdb_content(
+                f"{keywords}\t{vdb_src_id}\n{vdb_tgt_id}\n{description}",
+                global_config,
+                f"relationship:{vdb_src_id}-{vdb_tgt_id}",
+            )
+            vdb_data = {
+                rel_vdb_id: {
+                    "src_id": vdb_src_id,
+                    "tgt_id": vdb_tgt_id,
+                    "source_id": source_id,
+                    "content": rel_content,
+                    "keywords": keywords,
+                    "description": description,
+                    "weight": weight,
+                    "file_path": file_path,
+                }
+            }
+
         edge_upsert_started = time.perf_counter()
         await knowledge_graph_inst.upsert_edge(
             src_id,
@@ -3179,40 +3233,12 @@ async def _merge_edges_then_upsert(
         )
 
         if relationships_vdb is not None:
-            # Sort src_id/tgt_id for a consistent VDB record identity
-            # (smaller string first) — kept separate from src_id/tgt_id used
-            # for the graph edge write above, which must use the caller's
-            # original direction.
-            vdb_src_id, vdb_tgt_id = (
-                (tgt_id, src_id) if src_id > tgt_id else (src_id, tgt_id)
-            )
-            rel_vdb_id = compute_mdhash_id(vdb_src_id + vdb_tgt_id, prefix="rel-")
-            rel_vdb_id_reverse = compute_mdhash_id(
-                vdb_tgt_id + vdb_src_id, prefix="rel-"
-            )
             try:
                 await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
             except Exception as e:
                 logger.debug(
                     f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
                 )
-            rel_content = _truncate_vdb_content(
-                f"{keywords}\t{vdb_src_id}\n{vdb_tgt_id}\n{description}",
-                global_config,
-                f"relationship:{vdb_src_id}-{vdb_tgt_id}",
-            )
-            vdb_data = {
-                rel_vdb_id: {
-                    "src_id": vdb_src_id,
-                    "tgt_id": vdb_tgt_id,
-                    "source_id": source_id,
-                    "content": rel_content,
-                    "keywords": keywords,
-                    "description": description,
-                    "weight": weight,
-                    "file_path": file_path,
-                }
-            }
             relation_status_message = f"Upserting relation VDB: `{relation_key}`"
             logger.info(relation_status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
