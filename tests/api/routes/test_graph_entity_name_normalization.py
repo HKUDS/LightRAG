@@ -21,6 +21,7 @@ class _NoopLock:
 class _Graph:
     def __init__(self, nodes=None):
         self.nodes = deepcopy(nodes or {})
+        self.deleted_nodes = []
 
     async def has_node(self, entity_name):
         return entity_name in self.nodes
@@ -36,6 +37,7 @@ class _Graph:
         return []
 
     async def delete_node(self, entity_name):
+        self.deleted_nodes.append(entity_name)
         self.nodes.pop(entity_name, None)
 
     async def index_done_callback(self):
@@ -208,3 +210,65 @@ async def test_create_refuses_duplicate_exact_legacy_key():
         )
 
     assert set(graph.nodes) == {legacy_name}
+
+
+@pytest.mark.asyncio
+async def test_merge_normalizes_sources_and_creates_normalized_target_once():
+    graph = _Graph(
+        {
+            "Source公司": {
+                "entity_id": "Source公司",
+                "description": "source",
+                "entity_type": "organization",
+                "source_id": "manual_creation",
+            }
+        }
+    )
+    entities_vdb = _VectorStorage()
+
+    result = await utils_graph.amerge_entities(
+        graph,
+        entities_vdb,
+        _VectorStorage(),
+        ["Ｓｏｕｒｃｅ 公 司", "Source公司"],
+        " “Ｔ 目 标” ",
+    )
+
+    assert result["entity_name"] == "T目标"
+    assert set(graph.nodes) == {"T目标"}
+    assert graph.nodes["T目标"]["entity_id"] == "T目标"
+    assert graph.deleted_nodes == ["Source公司"]
+    target_id = compute_mdhash_id("T目标", prefix="ent-")
+    assert entities_vdb.records[target_id]["entity_name"] == "T目标"
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_exact_legacy_source_and_target_keys():
+    legacy_source = "1"
+    legacy_target = "“Ａ 公 司”"
+    graph = _Graph(
+        {
+            legacy_source: {
+                "entity_id": legacy_source,
+                "description": "source",
+                "source_id": "manual_creation",
+            },
+            legacy_target: {
+                "entity_id": legacy_target,
+                "description": "target",
+                "source_id": "manual_creation",
+            },
+        }
+    )
+
+    result = await utils_graph.amerge_entities(
+        graph,
+        _VectorStorage(),
+        _VectorStorage(),
+        [legacy_source],
+        legacy_target,
+    )
+
+    assert result["entity_name"] == legacy_target
+    assert set(graph.nodes) == {legacy_target}
+    assert graph.deleted_nodes == [legacy_source]

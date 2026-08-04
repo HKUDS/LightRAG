@@ -9,6 +9,7 @@ exclude any concurrent edge write that names the same entity in
 
 These tests pin:
 - `aedit_entity` locks exact and canonical source/target candidates.
+- `amerge_entities` locks exact and canonical source/target candidates.
 - `adelete_by_entity` locks {entity_name}.
 - `ainsert_custom_kg` locks every normalized entity name plus every normalized
   relationship endpoint that the batch will write, sharing the doc-ingest
@@ -284,6 +285,34 @@ class _AbortOnEnterLock:
 class _LockCaptured(RuntimeError):
     """Sentinel raised from the captured lock context to short-circuit the
     enclosing async with block."""
+
+
+@pytest.mark.asyncio
+async def test_amerge_entities_locks_exact_and_normalized_name_candidates():
+    """Merge resolution stays inside the complete exact/canonical lock set."""
+    from lightrag import utils_graph
+
+    graph = _make_graph_mock(existing_entity="A公司")
+    entities_vdb = _make_vdb_mock(workspace="ws1")
+    relationships_vdb = _make_vdb_mock(workspace="ws1")
+    lock_spy = _AbortOnEnterLock()
+
+    with patch.object(utils_graph, "get_storage_keyed_lock", lock_spy):
+        with pytest.raises(_LockCaptured):
+            await utils_graph.amerge_entities(
+                chunk_entity_relation_graph=graph,
+                entities_vdb=entities_vdb,
+                relationships_vdb=relationships_vdb,
+                source_entities=["“Ａ 公 司”"],
+                target_entity="“Ｔ 目 标”",
+            )
+
+    assert lock_spy.captured == [
+        {
+            "keys": ["A公司", "T目标", "“Ａ 公 司”", "“Ｔ 目 标”"],
+            "namespace": "ws1:GraphDB",
+        }
+    ]
 
 
 @pytest.mark.asyncio

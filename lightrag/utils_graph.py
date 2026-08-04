@@ -1449,14 +1449,12 @@ async def _merge_entities_impl(
                     edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
                     all_relations.append((src, tgt, edge_data))
 
-    # 5. Create or update the target entity
+    # 5. Create or update the target entity. A missing target is intentional:
+    # spelling-repair merges may consolidate sources into a new canonical name.
     merged_entity_data["entity_id"] = target_entity
-    if not target_exists:
-        await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
-        logger.info(f"Entity Merge: created target '{target_entity}'")
-    else:
-        await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
-        logger.info(f"Entity Merge: Updated target '{target_entity}'")
+    await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
+    target_action = "updated" if target_exists else "created"
+    logger.info(f"Entity Merge: {target_action} target '{target_entity}'")
 
     # 6. Recreate all relations pointing to the target entity in KG
     # Also collect chunk tracking information in the same loop
@@ -1880,10 +1878,26 @@ async def amerge_entities(
     Returns:
         Dictionary containing the merged entity information
     """
-    # Collect all entities involved (source + target) and lock them all in sorted order
-    all_entities = set(source_entities)
-    all_entities.add(target_entity)
-    lock_keys = sorted(all_entities)
+    if not source_entities:
+        raise ValueError("At least one source entity is required for merge")
+
+    requested_source_entities = list(source_entities)
+    normalized_source_entities = [
+        _normalize_manual_entity_name(entity_name)
+        for entity_name in requested_source_entities
+    ]
+    requested_target_entity = target_entity
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
+
+    # Lock every exact/canonical candidate before resolving legacy keys. This
+    # shares the extraction pipeline's canonical locks while preserving access
+    # to historical manually-created names.
+    lock_key_set = set(requested_source_entities)
+    lock_key_set.update(name for name in normalized_source_entities if name)
+    lock_key_set.add(requested_target_entity)
+    if normalized_target_entity:
+        lock_key_set.add(normalized_target_entity)
+    lock_keys = sorted(lock_key_set)
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -1891,11 +1905,49 @@ async def amerge_entities(
         lock_keys, namespace=namespace, enable_logging=False
     ):
         try:
+            resolved_source_entities: list[str] = []
+            seen_source_entities: set[str] = set()
+            for requested_name, normalized_name in zip(
+                requested_source_entities,
+                normalized_source_entities,
+                strict=True,
+            ):
+                if (
+                    requested_name != normalized_name
+                    and await chunk_entity_relation_graph.has_node(requested_name)
+                ):
+                    resolved_name = requested_name
+                elif normalized_name:
+                    resolved_name = normalized_name
+                else:
+                    raise ValueError(
+                        "Source entity name cannot be empty after normalization"
+                    )
+
+                # Multiple caller spellings may resolve to one canonical node.
+                # Merge it once so relations, vectors, and deletion are not
+                # processed repeatedly.
+                if resolved_name not in seen_source_entities:
+                    seen_source_entities.add(resolved_name)
+                    resolved_source_entities.append(resolved_name)
+
+            if (
+                requested_target_entity != normalized_target_entity
+                and await chunk_entity_relation_graph.has_node(requested_target_entity)
+            ):
+                target_entity = requested_target_entity
+            elif normalized_target_entity:
+                target_entity = normalized_target_entity
+            else:
+                raise ValueError(
+                    "Target entity name cannot be empty after normalization"
+                )
+
             return await _merge_entities_impl(
                 chunk_entity_relation_graph,
                 entities_vdb,
                 relationships_vdb,
-                source_entities,
+                resolved_source_entities,
                 target_entity,
                 merge_strategy=merge_strategy,
                 target_entity_data=target_entity_data,
