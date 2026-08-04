@@ -12,11 +12,11 @@ declare -ag KV_STORAGE_OPTIONS=(
 declare -ag GRAPH_STORAGE_OPTIONS=(
   "NetworkXStorage"
   "PGGraphStorage"
-  "PGTableGraphStorage"
   "MongoGraphStorage"
   "OpenSearchGraphStorage"
   "MemgraphStorage"
   "Neo4JStorage"
+  "PGTableGraphStorage"
 )
 
 declare -ag VECTOR_STORAGE_OPTIONS=(
