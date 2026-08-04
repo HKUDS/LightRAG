@@ -3605,6 +3605,26 @@ def enforce_chunk_token_limit_before_embedding(
     cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
     than silently emitting a wrong span — the same failure sidecar backfill
     itself would eventually surface, just earlier and with better context.
+
+    Known limitation -- ``sidecar`` is not re-scoped for pre-sidecar chunks:
+    this function runs BEFORE :func:`lightrag.sidecar.backfill.backfill_chunk_sidecars`
+    in the pipeline (see ``pipeline.py``'s call order around the "Final hard
+    guard before embedding" comment). For the F/R/V strategies that is exactly
+    right: at this point they carry only ``_source_span`` (no ``sidecar`` yet),
+    this function recomputes a correctly-shrunk ``_source_span`` per child, and
+    backfill then derives each child's own ``sidecar`` from that shrunk span
+    afterward. But the P (paragraph_semantic) strategy attaches its ``sidecar``
+    field during chunking itself, upstream of this function, and does not
+    route through backfill at all. If a P chunk is large enough to still need
+    a hard split here, every resulting child is a shallow copy of the parent
+    (see the loop below) and so inherits the *exact same* ``sidecar`` value
+    unmodified -- all children end up pointing at the whole parent's block
+    range instead of each getting a sidecar scoped to its own, smaller slice.
+    ``_source_span`` itself never reaches storage either way (stripped in
+    ``build_chunks_dict_from_chunking_result``); this note is only about the
+    accuracy of the ``sidecar`` field that IS persisted to ``text_chunks``.
+    Follow-up if this needs fixing: shrink/re-derive ``sidecar`` per child for
+    the P case too, analogous to what backfill already does for F/R/V.
     """
     if max_tokens <= 0:
         return list(chunking_result)
@@ -3697,7 +3717,11 @@ def enforce_chunk_token_limit_before_embedding(
 
             # Shallow-copy preserves the nested heading dict and sidecar
             # block from the source chunk; only the payload (content/tokens
-            # /chunk_id) is rewritten per split slice.
+            # /chunk_id) is rewritten per split slice. For a P-strategy
+            # parent that already carries a "sidecar" field, this means
+            # every child gets an unmodified copy of the PARENT's sidecar,
+            # not one re-scoped to its own smaller slice -- see the "Known
+            # limitation" paragraph in this function's docstring.
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
