@@ -177,7 +177,9 @@ class JsonDocStatusStorage(DocStatusStorage):
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    ordered_results.append(copy.deepcopy(data) if isinstance(data, dict) else data)
+                    ordered_results.append(
+                        copy.deepcopy(data) if isinstance(data, dict) else data
+                    )
                 else:
                     ordered_results.append(None)
         return ordered_results
@@ -515,7 +517,11 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 if doc_data.get("file_path") == file_path:
                     # Return complete document data, consistent with get_by_ids method
-                    return copy.deepcopy(doc_data) if isinstance(doc_data, dict) else doc_data
+                    return (
+                        copy.deepcopy(doc_data)
+                        if isinstance(doc_data, dict)
+                        else doc_data
+                    )
 
         return None
 

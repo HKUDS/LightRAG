@@ -58,6 +58,7 @@ async def test_get_by_id_returns_copy(tmp_path):
     assert doc_after["metadata"]["key"] == "original"
     assert doc_after["chunks_list"] == []
 
+
 @pytest.mark.asyncio
 async def test_get_doc_by_file_path_returns_copy(tmp_path):
     storage = JsonDocStatusStorage(
@@ -91,6 +92,8 @@ async def test_get_doc_by_file_path_returns_copy(tmp_path):
     assert doc_after is not None
     assert doc_after["status"] == "pending"
     assert doc_after["metadata"]["key"] == "original"
+
+
 @pytest.mark.asyncio
 async def test_get_by_ids_returns_deep_copy(tmp_path):
     """
