@@ -1279,7 +1279,7 @@ class SupportedFileTypesResponse(BaseModel):
                 "engines": {
                     "legacy": [".md", ".pdf", ".txt"],
                     "mineru": [".jpg", ".pdf", ".png"],
-                    "native": [".docx", ".md", ".textpack"],
+                    "native": [".docx", ".ipynb", ".md", ".textpack"],
                 },
             }
         }

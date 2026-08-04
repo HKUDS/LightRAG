@@ -71,7 +71,7 @@ Each comma-separated item of `LIGHTRAG_PARSER` is one routing rule, matched agai
 └─ extension the rule applies to; `*` matches any
 ```
 
-So the first rule says "parse anything with `native`, analyze all three modalities, chunk with `P`", and the second says "anything the first rule cannot handle falls back to `legacy` with `R` chunking". A rule is skipped when the engine does not support that extension, or when an external engine has no endpoint configured — which is exactly how `*:native-iteP` ends up handling only `docx` / `md` / `textpack` while everything else drops through to `legacy`.
+So the first rule says "parse anything with `native`, analyze all three modalities, chunk with `P`", and the second says "anything the first rule cannot handle falls back to `legacy` with `R` chunking". A rule is skipped when the engine does not support that extension, or when an external engine has no endpoint configured — which is exactly how `*:native-iteP` ends up handling only `docx` / `ipynb` / `md` / `textpack` while everything else drops through to `legacy`.
 
 The full grammar is in §2.3, the option letters in §2.1, and the engines in §3.
 
@@ -164,7 +164,7 @@ filename.[-OPTIONS].ext
   | Engine | What it is | Reach for it when |
   | --- | --- | --- |
   | `legacy` | plain-text extraction, no sidecars | you want the pre-upgrade behavior, or the document is plain text anyway |
-  | `native` | built-in structured extractor, fully local, no external service | `docx` / `md` / `textpack`, and you want `P` chunking or modality analysis without deploying anything |
+  | `native` | built-in structured extractor, fully local, no external service | `docx` / `ipynb` / `md` / `textpack`, and you want `P` chunking or modality analysis without deploying anything |
   | `mineru` | external MinerU service | PDFs, scanned documents, and office / image formats that need layout and OCR |
   | `docling` | external docling-serve | an alternative to MinerU; the only built-in path to LaTeX equations |
 
@@ -267,7 +267,7 @@ Currently supported parameters (canonical name / short alias):
 | Engine | Description | Supported file formats (extensions) |
 | --- | --- | --- |
 | `legacy` | Legacy extraction; content is centrally extracted before joining the pipeline | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
-| `native` | Built-in intelligent structured content extractor | `docx` `md` `textpack` |
+| `native` | Built-in intelligent structured content extractor | `docx` `ipynb` `md` `textpack` |
 | `mineru` | External MinerU content extraction engine | `pdf` `docx` `pptx` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp` (extensible, see `MINERU_ADDITIONAL_SUFFIXES`) |
 | `docling` | External Docling content extraction engine | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp` (extensible, see `DOCLING_ADDITIONAL_SUFFIXES`) |
 
@@ -279,7 +279,7 @@ LightRAG caches the parsing results of the `mineru` and `docling` engines locall
 
 ### 3.2 Using the legacy Content Extractor
 
-`legacy` is the fallback engine for every extension except `.textpack`, which the routing layer always sends to `native`. It is also what you get with `LIGHTRAG_PARSER` unset. It extracts plain text only, which has four consequences worth knowing before you route anything to it:
+`legacy` is the fallback engine for every extension except `.ipynb` and `.textpack`, which the routing layer always sends to `native`. It is also what you get with `LIGHTRAG_PARSER` unset. It extracts plain text only, which has four consequences worth knowing before you route anything to it:
 
 - **It never writes sidecars.** Its output is `parse_format=raw`, so there is no `drawings.json` / `tables.json` / `equations.json` for the analyze stage to read. The `i` / `t` / `e` options therefore do nothing on a legacy-parsed document, and `P` degrades to `R` because there is no heading structure to split on (§2.7).
 - **It has no raw cache directory**, so `LIGHTRAG_FORCE_REPARSE_*` does not apply to it (§3.7).
@@ -290,10 +290,10 @@ LightRAG caches the parsing results of the `mineru` and `docling` engines locall
 
 `native` is LightRAG's built-in structured content extractor that runs **fully locally**: it does not depend on external services such as MinerU / Docling, the extraction stage never calls a VLM, and it works out of the box with no deployment. Its runtime dependencies are only `python-docx` + `defusedxml` (required); the markdown path additionally relies on the **optional** `cairosvg` for SVG rasterization (when missing, the SVG is skipped with a warning and the rest of the content is unaffected). Enabling the opt-in `smart_heading` engine parameter for docx additionally requires the pinned `zh_core_web_sm` / `en_core_web_sm` spaCy models (the `spacy` runtime ships with the `api` extra; install the models with `lightrag-download-cache --spacy --spacy-install` — the main Docker image already bundles them); deployments that never enable it need no models, and the smart_heading path also calls the EXTRACT-role LLM during parsing. Setting the `DOCX_SMART_HEADING=true` env var enables smart_heading by default for `.docx` files that resolve to the native engine — an explicit `native(smart_heading=false)` rule/hint opts a file back out — and makes the server verify the spaCy models at startup (fail fast instead of failing on the first parse); the same startup check triggers when a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)` (or its flag shorthand `native(smart_heading)`). The default applies at upload time only: already-ingested documents keep their persisted engine parameters on re-parse.
 
-Supported extensions: `docx` / `md` / `textpack`. How to enable:
+Supported extensions: `docx` / `ipynb` / `md` / `textpack`. How to enable:
 
 - `docx` and `md` still default to `legacy`; select native explicitly, e.g. a default rule `LIGHTRAG_PARSER=docx:native` / `LIGHTRAG_PARSER=md:native`, or a filename hint `report.[native-iet].docx` / `notes.[native].md` (syntax in [§2.4](#24-default-rules-lightrag_parser) / [§2.5](#25-single-file-override-filename-hints)).
-- `textpack` is a native-exclusive extension and is routed to native automatically without a hint/rule.
+- `ipynb` and `textpack` are native-exclusive extensions and are routed to native automatically without a hint/rule.
 
 #### docx Extraction Capabilities
 
@@ -323,7 +323,7 @@ native docx collects the `w14:paraId` written by Word 2013+ as a paragraph-level
 
 The affected blocks' `positions` degrade to `[{"type": "paraid", "range": null}]`. This is only a notice and **does not affect parsing success**; if you need precise paragraph provenance, follow the hint and "Save As .docx" in Word 2013+ to regenerate the ids.
 
-#### md / textpack Extraction Capabilities
+#### md / textpack / ipynb Extraction Capabilities
 
 Beyond `docx`, the `native` engine also supports Markdown:
 
@@ -336,6 +336,7 @@ Beyond `docx`, the `native` engine also supports Markdown:
     - The lookup directory must contain **exactly one** `.md` / `.markdown` file: zero or more than one is an error.
     - The directory holding the body is the "bundle root" (`bundle_root`) used for asset resolution.
   - File-reference images embedded by relative path are resolved relative to the bundle root and **may live in any subdirectory** (not only `assets/`); directory traversal is forbidden (`..`, absolute paths, or references escaping the bundle root are skipped with a warning), and the resolved bytes must pass an image magic-byte check or they are skipped. Relative-path images in a standalone `.md` (not a textpack) are not resolved (skipped with a warning).
+- `ipynb`: Jupyter notebooks are converted locally before Markdown extraction. Markdown and raw cells are kept as text; code cells are kept in language-tagged fenced blocks using the notebook kernel metadata. Execution counts and all cell outputs (including tracebacks and binary display data) are not indexed.
 - SVG images (base64 / textpack file / downloaded) are rasterized to PNG via cairosvg before being written to the sidecar; if cairosvg is unavailable or rendering fails, the image is skipped (with a warning).
 - External URL images (`![](http://...)`) are **downloaded and embedded by default** (`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` defaults to `true`); a drawing is always emitted (the fetched asset on success, or an external-link fallback on failure). Downloading allows only globally-routable public IPs (both DNS-resolved IPs and every redirect target are checked, and the socket dials the validated IP directly to defeat DNS rebinding; any ambient `HTTP(S)_PROXY` is ignored); private / loopback / link-local / reserved / CGNAT (`100.64.0.0/10`) ranges are all rejected. To allow specific internal ranges, configure a CIDR allowlist via `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`. Set the flag to `false` to instead drop external images entirely (no drawing emitted, so a document whose only images are external links produces no `drawings.json`).
 

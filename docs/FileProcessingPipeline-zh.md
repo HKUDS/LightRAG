@@ -71,7 +71,7 @@ MINERU_LOCAL_ENDPOINT=http://localhost:8000
 └─ 规则适用的后缀；`*` 匹配任意后缀
 ```
 
-所以第一条规则的意思是"任何文件都交给 `native` 解析，三种模态全部分析，用 `P` 分块"，第二条是"第一条处理不了的，退回 `legacy` 并用 `R` 分块"。当引擎不支持该后缀、或外部引擎没有配置服务端点时，该规则会被跳过——这正是 `*:native-iteP` 实际只接管 `docx` / `md` / `textpack`、其余文件全部落到 `legacy` 的原因。
+所以第一条规则的意思是"任何文件都交给 `native` 解析，三种模态全部分析，用 `P` 分块"，第二条是"第一条处理不了的，退回 `legacy` 并用 `R` 分块"。当引擎不支持该后缀、或外部引擎没有配置服务端点时，该规则会被跳过——这正是 `*:native-iteP` 实际只接管 `docx` / `ipynb` / `md` / `textpack`、其余文件全部落到 `legacy` 的原因。
 
 完整语法见 §2.3，选项字母见 §2.1，各引擎见 §3。
 
@@ -164,7 +164,7 @@ filename.[-OPTIONS].ext
   | 引擎 | 是什么 | 什么时候用它 |
   | --- | --- | --- |
   | `legacy` | 纯文本抽取，不产出 sidecar | 想保持升级前的行为，或文档本来就是纯文本 |
-  | `native` | 内置结构化抽取器，完全本地，不依赖外部服务 | `docx` / `md` / `textpack`，且希望不部署任何东西就用上 `P` 分块或模态分析 |
+  | `native` | 内置结构化抽取器，完全本地，不依赖外部服务 | `docx` / `ipynb` / `md` / `textpack`，且希望不部署任何东西就用上 `P` 分块或模态分析 |
   | `mineru` | 外部 MinerU 服务 | PDF、扫描件，以及需要版面识别与 OCR 的 office / 图片格式 |
   | `docling` | 外部 docling-serve | MinerU 的替代方案；也是内置路径里唯一能出 LaTeX 公式的 |
 
@@ -267,7 +267,7 @@ LIGHTRAG_PARSER=pdf:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R  # 规则
 | 引擎 | 说明 | 支持的文件格式（后缀） |
 | --- | --- | --- |
 | `legacy` | 旧版提取方式，在加入流水线前集中提取内容 | `txt` `md` `mdx` `pdf` `docx` `pptx` `xlsx` `rtf` `odt` `tex` `epub` `html` `htm` `csv` `json` `xml` `yaml` `yml` `log` `conf` `ini` `properties` `sql` `bat` `sh` `c` `h` `cpp` `hpp` `py` `java` `js` `ts` `swift` `go` `rb` `php` `css` `scss` `less` |
-| `native` | 内置智能结构化内容抽取器 | `docx` `md` `textpack` |
+| `native` | 内置智能结构化内容抽取器 | `docx` `ipynb` `md` `textpack` |
 | `mineru` | 外部 MinerU 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp`（可扩展，见 `MINERU_ADDITIONAL_SUFFIXES`） |
 | `docling` | 外部 Docling 内容提取引擎 | `pdf` `docx` `pptx` `xlsx` `md` `html` `xhtml` `png` `jpg` `jpeg` `tiff` `webp` `bmp`（可扩展，见 `DOCLING_ADDITIONAL_SUFFIXES`） |
 
@@ -279,7 +279,7 @@ LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重�
 
 ### 3.2 使用 legacy 内容抽取器
 
-`legacy` 是除 `.textpack`（路由层强制交给 `native`）之外所有后缀的兜底引擎，也是不配置 `LIGHTRAG_PARSER` 时的默认行为。它只抽取纯文本，由此带来四个在把文件路由给它之前值得先知道的后果：
+`legacy` 是除 `.ipynb` 和 `.textpack`（路由层强制交给 `native`）之外所有后缀的兜底引擎，也是不配置 `LIGHTRAG_PARSER` 时的默认行为。它只抽取纯文本，由此带来四个在把文件路由给它之前值得先知道的后果：
 
 - **它永不产出 sidecar。** 输出是 `parse_format=raw`，不存在 `drawings.json` / `tables.json` / `equations.json` 供分析阶段读取。因此 `i` / `t` / `e` 选项对 legacy 解析的文档完全无效，`P` 也会因为没有标题结构可切而退化为 `R`（§2.7）。
 - **它没有原始缓存目录**，所以 `LIGHTRAG_FORCE_REPARSE_*` 对它不适用（§3.7）。
@@ -290,10 +290,10 @@ LightRAG 在本地会缓存 `mineru` 和 `docling` 引擎的解析结果。重�
 
 `native` 是 LightRAG 内置的结构化内容抽取引擎，**纯本地运行**：不依赖 MinerU / Docling 等外部服务，抽取阶段也不调用 VLM，开箱即用无需任何部署。运行依赖仅 `python-docx` + `defusedxml`（必备）；其中 markdown 路径的 SVG 栅格化额外依赖**可选**的 `cairosvg`（缺失时跳过该 SVG 并记 warning，不影响其余内容）。为 docx 启用可选的 `smart_heading` 引擎参数时，额外需要钉定版本的 `zh_core_web_sm` / `en_core_web_sm` spaCy 模型（`spacy` 运行时已随 `api` extra 一并安装，模型用 `lightrag-download-cache --spacy --spacy-install` 安装——Docker 主镜像已内置）；从不启用该参数的部署无需模型，另外 smart_heading 路径会在解析阶段调用 EXTRACT 角色 LLM。设置环境变量 `DOCX_SMART_HEADING=true` 后，路由到 native 引擎的 `.docx` 文件默认启用 smart_heading——单个文件/规则可用显式 `native(smart_heading=false)` 关闭——同时服务器会在启动时校验 spaCy 模型并 fail-fast（而不是等到首次解析才报错）；`LIGHTRAG_PARSER` 规则中携带 `native(smart_heading=true)`（或其省值写法 `native(smart_heading)`）时同样触发启动校验。该默认值仅作用于新上传：已入库文档重解析时沿用其持久化的引擎参数。
 
-支持后缀：`docx` / `md` / `textpack`。启用方式：
+支持后缀：`docx` / `ipynb` / `md` / `textpack`。启用方式：
 
 - `docx`、`md` 默认仍走 `legacy`，需显式选择 native，例如默认规则 `LIGHTRAG_PARSER=docx:native`、`LIGHTRAG_PARSER=md:native`，或文件名 hint `report.[native-iet].docx`、`notes.[native].md`（语法见 [§2.4](#24-默认规则lightrag_parser) / [§2.5](#25-单文件覆盖文件名-hint)）。
-- `textpack` 为 native 独占后缀，无需 hint/规则即自动路由到 native。
+- `ipynb` 和 `textpack` 为 native 独占后缀，无需 hint/规则即自动路由到 native。
 
 #### docx 抽取能力
 
@@ -323,7 +323,7 @@ native docx 会采集 Word 2013+ 写入的 `w14:paraId` 作为段落级溯源锚
 
 受影响块的 `positions` 退化为 `[{"type": "paraid", "range": null}]`。这只是提示，**不影响解析成功**；如需精确段落溯源，按提示在 Word 2013+ 中「另存为 .docx」即可重建 id。
 
-#### md / textpack 抽取能力
+#### md / textpack / ipynb 抽取能力
 
 `native` 引擎除 `docx` 外还支持 Markdown：
 
@@ -336,6 +336,7 @@ native docx 会采集 Word 2013+ 写入的 `w14:paraId` 作为段落级溯源锚
     - 查找目录内 `.md` / `.markdown` 文件**必须恰好 1 个**：0 个或多于 1 个均报错。
     - 正文所在目录即资源解析的"包根"（`bundle_root`）。
   - 包内以相对路径（文件引用）内嵌的图片按相对包根目录解析，**允许放在包内任意子目录**（不限于 `assets/`），但禁止目录穿越（`..`、绝对路径、越出包根的引用会被记 warning 跳过）；解析出的字节须通过图片 magic bytes 校验，否则跳过。独立 `.md`（非 textpack）中的相对路径图片不解析（记 warning 跳过）。
+- `ipynb`：Jupyter Notebook 会先在本地转换再走 Markdown 抽取。Markdown 和 raw 单元保留为文本；代码单元按 notebook kernel 元数据的语言写为带语言标记的围栏代码块。执行计数以及所有单元输出（包括 traceback 和二进制展示数据）都不会进入索引。
 - SVG 图片（base64 / textpack 包内文件 / 在线下载）会先经 cairosvg 栅格化为 PNG 再写入 sidecar；cairosvg 不可用或渲染失败时跳过该图（记 warning）。
 - 外部 URL 图片（`![](http://...)`）**默认下载并内嵌**（`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` 默认 `true`）；无论下载成功与否都会生成 drawing（成功内嵌资源，失败回退为外链）。下载默认仅允许可全球路由的公网 IP（DNS 解析结果与每一跳重定向目标都校验，且 socket 直连已校验 IP 以防 DNS rebinding，忽略环境 `HTTP(S)_PROXY`），私网 / 环回 / 链路本地 / 保留 / CGNAT（`100.64.0.0/10`）等一律拒绝；如需放行特定内网段，用 `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS` 配置 CIDR 白名单。若设为 `false`，外链图片整个丢弃（不生成对应 drawing，故仅含外链图片的文档不会生成 `drawings.json`）。
 

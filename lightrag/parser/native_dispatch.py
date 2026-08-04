@@ -2,9 +2,9 @@
 
 The registry exposes a single ``native`` engine with one ``impl``; routing
 yields the engine key and ``get_parser("native")`` returns this one instance.
-Suffix capabilities (``docx`` / ``md`` / ``textpack``) are declared on the
-registry spec but do NOT pick an implementation — that is this dispatcher's
-job.
+Suffix capabilities (``docx`` / ``ipynb`` / ``md`` / ``textpack``) are
+declared on the registry spec but do NOT pick an implementation — that is this
+dispatcher's job.
 
 It delegates the **entire** ``parse(ctx)`` to the matching concrete parser
 (rather than subclassing :class:`NativeParserBase` and only forwarding the
@@ -21,16 +21,18 @@ from lightrag.constants import PARSER_ENGINE_NATIVE
 from lightrag.parser.base import BaseParser, ParseContext, ParseResult
 
 _MARKDOWN_SUFFIXES = {".md", ".textpack"}
+_NOTEBOOK_SUFFIXES = {".ipynb"}
 
 
 class NativeParser(BaseParser):
-    """Routes a document to the docx or markdown native parser by suffix."""
+    """Routes a document to the matching native parser by suffix."""
 
     engine_name = PARSER_ENGINE_NATIVE
 
     def __init__(self) -> None:
         self._docx: BaseParser | None = None
         self._markdown: BaseParser | None = None
+        self._notebook: BaseParser | None = None
 
     def _docx_parser(self) -> BaseParser:
         parser = self._docx
@@ -50,10 +52,21 @@ class NativeParser(BaseParser):
             self._markdown = parser
         return parser
 
+    def _notebook_parser(self) -> BaseParser:
+        parser = self._notebook
+        if parser is None:
+            from lightrag.parser.notebook.parser import NativeNotebookParser
+
+            parser = NativeNotebookParser()
+            self._notebook = parser
+        return parser
+
     async def parse(self, ctx: ParseContext) -> ParseResult:
         suffix = Path(ctx.file_path).suffix.lower()
         if suffix in _MARKDOWN_SUFFIXES:
             return await self._markdown_parser().parse(ctx)
+        if suffix in _NOTEBOOK_SUFFIXES:
+            return await self._notebook_parser().parse(ctx)
         # Default to docx; its validate_source raises a clear error for any
         # other suffix the native engine was (mis)routed for.
         return await self._docx_parser().parse(ctx)
