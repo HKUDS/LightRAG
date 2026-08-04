@@ -1193,6 +1193,62 @@ async def test_upsert_edges_batch_chunk_carries_its_own_endpoints(monkeypatch):
         assert set(endpoint_ids) == set(srcs) | set(tgts)
 
 
+def _edge_statement_bytes(call) -> int:
+    """UTF-8 bytes an edge-upsert statement actually binds for its chunk.
+
+    All four text arrays, including the $6 endpoint list — the point being that
+    $6 is real bound data, not free, so the chunk splitter has to have paid for
+    it.
+    """
+    srcs, tgts, props, endpoint_ids = call.args[3:7]
+    return sum(
+        len(value.encode("utf-8"))
+        for array in (srcs, tgts, props, endpoint_ids)
+        for value in array
+    )
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_payload_cap_accounts_for_the_endpoint_array(
+    monkeypatch,
+):
+    """No edge chunk may bind more bytes than POSTGRES_UPSERT_MAX_PAYLOAD_BYTES.
+
+    The chunk splitter used to size an edge by src + tgt + properties, but the
+    statement also sends the chunk's endpoint ids again in $6. With distinct
+    endpoints and small properties — long entity names, thin edges, i.e. the
+    normal shape — the id bytes went over the wire twice while being budgeted
+    once, so a chunk that "fit" bound close to double the cap.
+
+    Long ids and tiny properties here so the id bytes dominate and the
+    under-count is the whole difference: at this cap the old accounting emitted a
+    4-edge chunk binding 1660 bytes.
+    """
+    cap = 1000
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", str(cap))
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "1000")
+    storage = make_storage()
+    edges = [
+        (f"s{i}" + "x" * 98, f"t{i}" + "y" * 98, {"weight": 1.0}) for i in range(6)
+    ]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_edges_batch(edges)
+
+    sizes = [_edge_statement_bytes(call) for call in execute.await_args_list]
+    counts = [len(call.args[3]) for call in execute.await_args_list]
+    for size, count in zip(sizes, counts):
+        # A single item over budget is passed through by design (the server is the
+        # final arbiter); a multi-item chunk over budget is an accounting bug.
+        assert count == 1 or size <= cap, (
+            f"chunk of {count} edges bound {size} bytes against a {cap}-byte cap"
+        )
+    # Guard against the assertion above passing vacuously through the
+    # oversized-single-item exemption.
+    assert max(counts) > 1, "expected multi-edge chunks at this cap"
+    assert sum(counts) == len(edges)
+
+
 @pytest.mark.asyncio
 async def test_remove_nodes_chunks_inside_one_transaction(monkeypatch):
     """Delete chunking must stay all-or-nothing across chunks."""

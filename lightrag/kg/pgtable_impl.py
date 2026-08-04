@@ -1496,9 +1496,19 @@ class PGTableGraphStorage(BaseGraphStorage):
         items = [(key[0], key[1], json.dumps(deduped[key])) for key in sorted(deduped)]
         chunks = self._chunk_writes(
             items,
+            # Endpoint ids are charged TWICE, because the statement sends them
+            # twice: once as the $3/$4 edge arrays and again as the chunk's
+            # distinct endpoint list in $6. Deduplication inside the chunk can
+            # only make the second copy smaller, never larger, and a per-item
+            # size_of cannot see how much it will save — so charge the worst case
+            # (every endpoint distinct). Counting them once let a chunk whose
+            # estimate fit under POSTGRES_UPSERT_MAX_PAYLOAD_BYTES bind close to
+            # twice that, which is exactly the unbounded single statement the cap
+            # exists to prevent, and it under-counted most on the graphs where it
+            # matters: long entity-name ids with small edge payloads.
             lambda triple: (
-                len(triple[0].encode("utf-8"))
-                + len(triple[1].encode("utf-8"))
+                2 * len(triple[0].encode("utf-8"))
+                + 2 * len(triple[1].encode("utf-8"))
                 + len(triple[2].encode("utf-8"))
             ),
             self._batch_limits(),
