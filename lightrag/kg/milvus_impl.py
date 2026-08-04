@@ -178,8 +178,14 @@ def _get_env_int(key: str, default: int) -> int:
 
 
 def _escape_milvus_str(val: str) -> str:
-    """Escape double quotes and backslashes for Milvus query filter string literals."""
-    return val.replace("\\", "\\\\").replace('"', '\\"')
+    """Escape a value embedded in a double-quoted Milvus filter literal."""
+    return (
+        val.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
 
 
 @dataclass
