@@ -192,6 +192,81 @@
     transform: translateY(0);
   }
 
+  /* GK Charger mobile QR modal */
+  .gk-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(3, 3, 10, 0.7);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+
+  .gk-modal-overlay.hidden {
+    display: none;
+  }
+
+  .gk-modal {
+    position: relative;
+    background: var(--color-surface);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    padding: 32px 36px 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 40px var(--color-accent-glow);
+    animation: gk-modal-in 0.25s ease;
+  }
+
+  @keyframes gk-modal-in {
+    from { transform: translateY(12px) scale(0.97); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+  }
+
+  .gk-modal-title {
+    color: var(--color-text);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .gk-modal-qr {
+    width: 260px;
+    height: 260px;
+    border-radius: 12px;
+    background: #fff;
+    padding: 8px;
+    box-sizing: border-box;
+  }
+
+  .gk-modal-hint {
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+
+  .gk-modal-close {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    background: none;
+    border: none;
+    color: var(--color-text);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+  }
+
+  .gk-modal-close:hover {
+    opacity: 1;
+  }
+
   .loading-overlay {
     position: absolute;
     top: 0; left: 0;
@@ -704,6 +779,18 @@
   <button class="control-btn" id="btn-query-log">
     <span>🔍</span> Query Log
   </button>
+  <button class="control-btn" id="btn-gk-mobile">
+    <span>📱</span> GK充电宝移动端
+  </button>
+</div>
+
+<div class="gk-modal-overlay hidden" id="gk-modal-overlay">
+  <div class="gk-modal">
+    <button class="gk-modal-close" id="gk-modal-close">×</button>
+    <div class="gk-modal-title">使用GK充电宝移动端提问</div>
+    <img class="gk-modal-qr" src="__API_BASE__/graph3d/gkcharger_qrcode.jpg" alt="GK Charger mobile WeChat QR code" />
+    <div class="gk-modal-hint">微信扫一扫，打开小程序提问</div>
+  </div>
 </div>
 
 <div class="ui-overlay query-panel" id="query-panel">
@@ -1738,6 +1825,21 @@ document.getElementById('btn-query-log').addEventListener('click', () => {
   panel.style.display = isHidden ? 'flex' : 'none';
   const btn = document.getElementById('btn-query-log');
   btn.style.opacity = isHidden ? '1' : '0.5';
+});
+
+// GK Charger mobile QR modal
+const gkModalOverlay = document.getElementById('gk-modal-overlay');
+document.getElementById('btn-gk-mobile').addEventListener('click', () => {
+  gkModalOverlay.classList.remove('hidden');
+});
+document.getElementById('gk-modal-close').addEventListener('click', () => {
+  gkModalOverlay.classList.add('hidden');
+});
+gkModalOverlay.addEventListener('click', (e) => {
+  if (e.target === gkModalOverlay) gkModalOverlay.classList.add('hidden');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') gkModalOverlay.classList.add('hidden');
 });
 
 // Log panel close button (now toggles visibility)

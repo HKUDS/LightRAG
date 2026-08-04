@@ -101,6 +101,14 @@ def create_graph3d_routes(rag, api_key: Optional[str] = None):
         html = html.replace("__API_BASE__", root_path)
         return HTMLResponse(content=html)
 
+    @router.get("/graph3d/gkcharger_qrcode.jpg", include_in_schema=False)
+    async def graph3d_gkcharger_qrcode():
+        """Serve the GK Charger mobile (WeChat) QR code image."""
+        img_path = Path(__file__).parent.parent / "static" / "gkcharger_qrcode.jpg"
+        if not img_path.exists():
+            raise HTTPException(status_code=404, detail="QR code image not found.")
+        return FileResponse(img_path, media_type="image/jpeg")
+
     @router.get("/graph3d/insights", dependencies=[Depends(combined_auth)])
     async def graph3d_insights():
         """Generate research insights about the knowledge graph."""
