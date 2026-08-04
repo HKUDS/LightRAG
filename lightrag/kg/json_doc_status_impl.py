@@ -112,20 +112,6 @@ class JsonDocStatusStorage(DocStatusStorage):
     # source-conflict listing/repair APIs — never materialize the whole set.
     _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
 
-    # DocProcessingStatus fields with no dataclass default — a row missing
-    # any of these fails ``DocProcessingStatus(**data)`` with KeyError.
-    # ``file_path`` is deliberately excluded: ``_doc_processing_status_from_row``
-    # fills it with "no-file-path" when absent/falsy, so its absence never
-    # raises. Used by ``get_docs_paginated`` to reject unhydratable rows
-    # during its lightweight (pre-hydration) scan.
-    _REQUIRED_STATUS_FIELDS: ClassVar[tuple[str, ...]] = (
-        "content_summary",
-        "content_length",
-        "status",
-        "created_at",
-        "updated_at",
-    )
-
     def __post_init__(self):
         # Reject path traversal before using workspace in a file path
         validate_workspace(self.workspace)
@@ -412,30 +398,37 @@ class JsonDocStatusStorage(DocStatusStorage):
         if sort_direction.lower() not in ["asc", "desc"]:
             sort_direction = "desc"
 
-        # Phase 1: lightweight projection under the lock — only the sort key
-        # and doc_id, never a copy of the full row. Deep-copying every
-        # matching document (including a potentially large chunks_list) just
-        # to discard all but one page of them made pagination cost scale
-        # with total matching documents instead of page_size, and held
-        # _storage_lock — which upsert/delete also need — for the whole
-        # scan, able to stall concurrent ingestion for a large corpus.
-        # A row missing a field DocProcessingStatus requires with no default
-        # (_REQUIRED_STATUS_FIELDS) would fail hydration in phase 3 anyway;
-        # excluding it here keeps total_count consistent with what phase 3
-        # can actually return, matching the previous single-pass behavior.
-        projections: list[tuple[Any, str]] = []
+        # Everything below — filtering, hydratability validation, sorting,
+        # page selection, and the final page's deep-copy hydration — runs
+        # inside ONE uninterrupted lock hold. Nothing in this block awaits,
+        # so no concurrent upsert/delete can land between the scan and the
+        # final hydration; splitting these into separate lock acquisitions
+        # let a status update/delete land in that gap, producing a response
+        # that mixed two snapshots (e.g. a status=pending filter returning an
+        # already-updated "processed" row, or overcounting a row that a
+        # concurrent delete then removed before it could be hydrated).
+        #
+        # The scan and validation below are still cheap per document — no
+        # nested-structure copying, just a throwaway shallow
+        # DocProcessingStatus construction (see ``_row_is_hydratable``) — so
+        # holding the lock across them does not reintroduce the "deep-copy
+        # the whole corpus" cost. Only the final page (bounded by page_size,
+        # <=200) is ever deep-copied.
         async with self._storage_lock:
+            projections: list[tuple[Any, str]] = []
             for doc_id, doc_data in self._data.items():
                 if (
                     status_filter_values is not None
                     and doc_data.get("status") not in status_filter_values
                 ):
                     continue
-                if any(f not in doc_data for f in self._REQUIRED_STATUS_FIELDS):
-                    logger.error(
-                        f"[{self.workspace}] Error processing document {doc_id}: "
-                        "missing required status field"
-                    )
+                # Validate via a real (throwaway) construction attempt rather
+                # than checking a fixed set of required-field names: a row
+                # with an extra/unexpected field fails construction too, and
+                # must be excluded from total_count for the same reason a
+                # missing field is — otherwise total_count could count rows
+                # the page-hydration step below can never actually return.
+                if not self._row_is_hydratable(doc_id, doc_data):
                     continue
 
                 if sort_field == "id":
@@ -444,7 +437,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     # Use pinyin sorting for file_path field to support Chinese
                     # characters; "no-file-path" mirrors the fallback applied
                     # during hydration (_doc_processing_status_from_row) so
-                    # sort order matches what phase 3 would have produced.
+                    # sort order matches what the hydrated page would use.
                     sort_key = get_pinyin_sort_key(
                         doc_data.get("file_path") or "no-file-path"
                     )
@@ -452,43 +445,30 @@ class JsonDocStatusStorage(DocStatusStorage):
                     sort_key = doc_data.get(sort_field, "")
                 projections.append((sort_key, doc_id))
 
-        total_count = len(projections)
+            total_count = len(projections)
 
-        # Phase 2: sort the lightweight projection. No lock held — pure CPU
-        # work with no await point, so nothing can mutate self._data
-        # concurrently while this runs.
-        reverse_sort = sort_direction.lower() == "desc"
-        projections.sort(key=lambda t: t[0], reverse=reverse_sort)
+            reverse_sort = sort_direction.lower() == "desc"
+            projections.sort(key=lambda t: t[0], reverse=reverse_sort)
 
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        page_doc_ids = [doc_id for _, doc_id in projections[start_idx:end_idx]]
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+            page_doc_ids = [doc_id for _, doc_id in projections[start_idx:end_idx]]
 
-        # Phase 3: deep-copy and hydrate ONLY the requested page — bounded by
-        # page_size (<=200) regardless of how many documents matched.
-        paginated_docs: list[tuple[str, DocProcessingStatus]] = []
-        async with self._storage_lock:
+            # Deep-copy and hydrate ONLY the requested page. Each doc_id here
+            # was validated as hydratable above in this same uninterrupted
+            # critical section, so the row is guaranteed present and usable.
+            paginated_docs: list[tuple[str, DocProcessingStatus]] = []
             for doc_id in page_doc_ids:
-                row = self._data.get(doc_id)
-                if row is None:
-                    continue  # deleted concurrently between phase 1 and here
-                try:
-                    # Pagination never surfaces chunks_list (DocStatusResponse
-                    # doesn't expose it — see the PG backend's paged CTE,
-                    # which excludes the column for the same reason), so drop
-                    # it before hydration instead of deep-copying a
-                    # potentially large chunk-id list only to discard it.
-                    row_without_chunks = {
-                        k: v for k, v in row.items() if k != "chunks_list"
-                    }
-                    doc_status = self._doc_processing_status_from_row(
-                        row_without_chunks
-                    )
-                except (KeyError, TypeError) as e:
-                    logger.error(
-                        f"[{self.workspace}] Error processing document {doc_id}: {e}"
-                    )
-                    continue
+                row = self._data[doc_id]
+                # Pagination never surfaces chunks_list (DocStatusResponse
+                # doesn't expose it — see the PG backend's paged CTE, which
+                # excludes the column for the same reason), so drop it before
+                # hydration instead of deep-copying a potentially large
+                # chunk-id list only to discard it.
+                row_without_chunks = {
+                    k: v for k, v in row.items() if k != "chunks_list"
+                }
+                doc_status = self._doc_processing_status_from_row(row_without_chunks)
                 paginated_docs.append((doc_id, doc_status))
 
         return paginated_docs, total_count
@@ -757,7 +737,24 @@ class JsonDocStatusStorage(DocStatusStorage):
             return None
 
     @staticmethod
-    def _doc_processing_status_from_row(row: dict[str, Any]) -> DocProcessingStatus:
+    def _normalize_status_row(data: dict[str, Any]) -> dict[str, Any]:
+        """Field normalisation shared by hydration and validation: pop the
+        deprecated ``content`` field, default missing/falsy ``file_path``,
+        default missing ``metadata``/``error_msg``. Mutates and returns
+        ``data`` in place — the caller decides whether ``data`` is a deep
+        copy (safe to expose) or a shallow/throwaway one (validation only,
+        see ``_row_is_hydratable``)."""
+        data.pop("content", None)  # deprecated inline content, never a status field
+        if not data.get("file_path"):
+            data["file_path"] = "no-file-path"
+        data.setdefault("metadata", {})
+        data.setdefault("error_msg", None)
+        return data
+
+    @classmethod
+    def _doc_processing_status_from_row(
+        cls, row: dict[str, Any]
+    ) -> DocProcessingStatus:
         """Normalise a raw doc_status row into a FULL DocProcessingStatus.
 
         Single source of the raw → status construction shared by
@@ -772,13 +769,32 @@ class JsonDocStatusStorage(DocStatusStorage):
         corrupt persisted state without going through ``upsert`` — the same
         class of bug fixed for the other read paths.
         """
-        data = copy.deepcopy(row)
-        data.pop("content", None)  # deprecated inline content, never a status field
-        if not data.get("file_path"):
-            data["file_path"] = "no-file-path"
-        data.setdefault("metadata", {})
-        data.setdefault("error_msg", None)
+        data = cls._normalize_status_row(copy.deepcopy(row))
         return DocProcessingStatus(**data)
+
+    def _row_is_hydratable(self, doc_id: str, row: dict[str, Any]) -> bool:
+        """True if ``row`` can be hydrated into a full DocProcessingStatus.
+
+        Used by ``get_docs_paginated``'s validation pass to keep
+        ``total_count`` consistent with what the page-hydration step can
+        actually return: a row missing a required field OR carrying an
+        unexpected one would fail ``DocProcessingStatus(**data)`` — counting
+        it as present without confirming that would let ``total_count``
+        overstate what pages can actually deliver.
+
+        Attempts the SAME normalisation + construction as
+        ``_doc_processing_status_from_row``, but on a shallow copy that is
+        discarded immediately (never returned to a caller), so it validates
+        constructibility without paying the deep-copy cost across every
+        matching document — only the final page (bounded by page_size) is
+        ever deep-copied.
+        """
+        try:
+            DocProcessingStatus(**self._normalize_status_row(dict(row)))
+            return True
+        except (KeyError, TypeError) as e:
+            logger.error(f"[{self.workspace}] Error processing document {doc_id}: {e}")
+            return False
 
     async def get_docs_by_statuses_page(
         self,

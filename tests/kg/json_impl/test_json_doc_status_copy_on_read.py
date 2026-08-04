@@ -1,9 +1,15 @@
 """Unit tests verifying that JsonDocStatusStorage read methods return deep copies to prevent internal state mutation of nested status fields."""
 
+from unittest.mock import patch
+
 import pytest
 from lightrag.base import DocStatus
 from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
-from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
+from lightrag.kg.shared_storage import (
+    NamespaceLock,
+    initialize_share_data,
+    finalize_share_data,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -212,12 +218,12 @@ async def test_get_docs_paginated_returns_copy(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_docs_paginated_excludes_malformed_rows(tmp_path):
+async def test_get_docs_paginated_excludes_rows_missing_required_fields(tmp_path):
     """
-    get_docs_paginated's lightweight pre-hydration scan rejects rows missing
-    a required DocProcessingStatus field before sorting/pagination, matching
-    the previous behavior where such rows raised KeyError during hydration
-    and were silently dropped from both total_count and every page.
+    get_docs_paginated's validation pass rejects rows missing a required
+    DocProcessingStatus field before sorting/pagination, so such rows are
+    dropped from both total_count and every page — not just logged and
+    silently miscounted.
     """
     storage = JsonDocStatusStorage(
         namespace="doc_status",
@@ -252,6 +258,103 @@ async def test_get_docs_paginated_excludes_malformed_rows(tmp_path):
     docs, total = await storage.get_docs_paginated()
     assert total == 1
     assert [doc_id for doc_id, _ in docs] == ["doc7"]
+
+
+@pytest.mark.asyncio
+async def test_get_docs_paginated_excludes_rows_with_unexpected_fields(tmp_path):
+    """
+    A row can carry every required field and STILL fail to hydrate — e.g. an
+    unexpected top-level key makes ``DocProcessingStatus(**data)`` raise
+    TypeError even though nothing is missing. Regression test for a bug
+    where the validation pass only checked a fixed set of required-field
+    names present, so such a row was counted in total_count but then
+    silently dropped when the page-hydration step actually tried to
+    construct it — total_count and the returned page disagreed.
+    """
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        workspace="test",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc9": {
+                "status": "pending",
+                "file_path": "good.pdf",
+                "content_summary": "summary",
+                "content_length": 100,
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "doc10": {
+                "status": "pending",
+                "file_path": "unexpected_field.pdf",
+                "content_summary": "summary",
+                "content_length": 100,
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "unexpected_field": "x",
+            },
+        }
+    )
+
+    docs, total = await storage.get_docs_paginated()
+    assert total == 1
+    assert [doc_id for doc_id, _ in docs] == ["doc9"]
+
+
+@pytest.mark.asyncio
+async def test_get_docs_paginated_uses_a_single_lock_acquisition(tmp_path):
+    """
+    Regression test for a snapshot-consistency bug: get_docs_paginated used
+    to scan+filter+sort under one lock acquisition, release the lock, then
+    re-acquire a second time to hydrate just the requested page. A
+    concurrent status update or delete landing in the gap between those two
+    acquisitions could mix two snapshots into a single response — e.g. a
+    status=pending filter returning an already-updated "processed" document,
+    or overcounting a row a concurrent delete then removed.
+
+    Filtering, hydratability validation, sorting, page selection and the
+    final page's hydration must all happen inside ONE uninterrupted critical
+    section, so nothing else can run in between. Pinned here by counting
+    NamespaceLock acquisitions during a single call.
+    """
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        workspace="test",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc11": {
+                "status": "pending",
+                "file_path": "single_lock.pdf",
+                "content_summary": "summary",
+                "content_length": 100,
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        }
+    )
+
+    real_aenter = NamespaceLock.__aenter__
+    acquisitions = []
+
+    async def counting_aenter(self):
+        acquisitions.append(1)
+        return await real_aenter(self)
+
+    with patch.object(NamespaceLock, "__aenter__", counting_aenter):
+        docs, total = await storage.get_docs_paginated()
+
+    assert total == 1
+    assert len(acquisitions) == 1
 
 
 @pytest.mark.asyncio
