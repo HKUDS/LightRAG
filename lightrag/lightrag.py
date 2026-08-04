@@ -182,6 +182,7 @@ from lightrag.utils import (
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
+    normalize_entity_name,
     normalize_source_ids_limit_method,
     normalize_string_list,
     run_in_chunking_executor,
@@ -3240,6 +3241,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> None:
         """Insert caller-constructed KG objects directly into the stores.
 
+        Entity names and relationship endpoints are normalized with the same
+        contract used by document extraction before any storage write begins.
+
         .. warning:: (issue #3400 Phase 5 — direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
            no durable operation journal and does not prewrite
@@ -3257,6 +3261,50 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         update_storage = False
         try:
+
+            def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
+                if not isinstance(value, str):
+                    raise ValueError(f"Custom KG {field} must be a string")
+                normalized_value = normalize_entity_name(value)
+                if not normalized_value:
+                    raise ValueError(
+                        f"Custom KG {field} cannot be empty after normalization"
+                    )
+                return normalized_value
+
+            # Validate and canonicalize the complete identifier set before
+            # chunks or graph objects are written. Copies keep the caller's
+            # custom_kg payload unchanged.
+            normalized_entities: list[dict[str, Any]] = []
+            for index, entity_data in enumerate(custom_kg.get("entities", [])):
+                normalized_entity_data = dict(entity_data)
+                normalized_entity_data["entity_name"] = (
+                    _normalize_custom_kg_entity_name(
+                        entity_data["entity_name"],
+                        field=f"entities[{index}].entity_name",
+                    )
+                )
+                normalized_entities.append(normalized_entity_data)
+
+            normalized_relationships: list[dict[str, Any]] = []
+            for index, relationship_data in enumerate(
+                custom_kg.get("relationships", [])
+            ):
+                normalized_relationship_data = dict(relationship_data)
+                normalized_relationship_data["src_id"] = (
+                    _normalize_custom_kg_entity_name(
+                        relationship_data["src_id"],
+                        field=f"relationships[{index}].src_id",
+                    )
+                )
+                normalized_relationship_data["tgt_id"] = (
+                    _normalize_custom_kg_entity_name(
+                        relationship_data["tgt_id"],
+                        field=f"relationships[{index}].tgt_id",
+                    )
+                )
+                normalized_relationships.append(normalized_relationship_data)
+
             # Insert chunks into vector storage
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
@@ -3310,7 +3358,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Keep the last declaration for each entity_name so batch backends
             # preserve the old serial upsert semantics deterministically.
             deduped_entities: dict[str, dict[str, Any]] = {}
-            for entity_data in custom_kg.get("entities", []):
+            for entity_data in normalized_entities:
                 entity_name = entity_data["entity_name"]
                 deduped_entities.pop(entity_name, None)
                 deduped_entities[entity_name] = entity_data
@@ -3350,7 +3398,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Relationship storage is undirected, so keep only the last update
             # for each endpoint pair regardless of order.
             deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
-            for relationship_data in custom_kg.get("relationships", []):
+            for relationship_data in normalized_relationships:
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
                 relation_key = tuple(sorted((src_id, tgt_id)))

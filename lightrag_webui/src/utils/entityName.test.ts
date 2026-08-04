@@ -3,6 +3,9 @@ import { describe, expect, test } from 'bun:test'
 import { normalizeEntityName } from './entityName'
 
 describe('normalizeEntityName', () => {
+  // Bun runs these unit tests without a DOM, so HTML decoding assertions
+  // exercise the explicit non-browser fallback. Production browsers use a
+  // detached textarea for the full native HTML5 entity decoder.
   test('mirrors extraction cleanup for HTML, full-width characters, quotes and CJK spaces', () => {
     expect(normalizeEntityName('  <p>“Ａ 公 司”</p>  ')).toBe('A公司')
     expect(normalizeEntityName('《北 京》')).toBe('北京')

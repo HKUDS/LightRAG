@@ -10,8 +10,9 @@ exclude any concurrent edge write that names the same entity in
 These tests pin:
 - `aedit_entity` locks exact and canonical source/target candidates.
 - `adelete_by_entity` locks {entity_name}.
-- `ainsert_custom_kg` locks every entity name plus every relationship
-  endpoint that the batch will write, sharing the doc-ingest namespace.
+- `ainsert_custom_kg` locks every normalized entity name plus every normalized
+  relationship endpoint that the batch will write, sharing the doc-ingest
+  namespace.
 - An empty `ainsert_custom_kg` batch skips the lock entirely.
 """
 
@@ -290,9 +291,9 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
     single_process_shared_data,
 ):
     """ainsert_custom_kg must hold a single coarse-grained keyed lock whose
-    key set covers every entity name plus every relationship endpoint in the
-    batch — sharing the doc-ingest namespace so concurrent callers on
-    overlapping entities serialise instead of racing.
+    key set covers every normalized entity name plus every normalized
+    relationship endpoint in the batch — sharing the doc-ingest namespace so
+    concurrent callers on overlapping entities serialise instead of racing.
     """
     from lightrag import lightrag as lightrag_module
     from lightrag.lightrag import LightRAG
@@ -314,14 +315,14 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
         "chunks": [],
         "entities": [
             {
-                "entity_name": "Alice",
+                "entity_name": "Ａｌｉｃｅ",
                 "entity_type": "PERSON",
                 "description": "x",
                 "source_id": "chunk-1",
                 "file_path": "f",
             },
             {
-                "entity_name": "Bob",
+                "entity_name": "“Ｂｏｂ”",
                 "entity_type": "PERSON",
                 "description": "y",
                 "source_id": "chunk-1",
@@ -330,8 +331,8 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
         ],
         "relationships": [
             {
-                "src_id": "Alice",
-                "tgt_id": "Bob",
+                "src_id": "Ａｌｉｃｅ",
+                "tgt_id": "“Ｂｏｂ”",
                 "description": "knows",
                 "keywords": "k",
                 "weight": 1.0,
@@ -339,8 +340,8 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
                 "file_path": "f",
             },
             {
-                "src_id": "Bob",
-                "tgt_id": "Carol",
+                "src_id": "Ｂｏｂ",
+                "tgt_id": "Ｃａｒｏｌ",
                 "description": "knows",
                 "keywords": "k",
                 "weight": 1.0,
@@ -361,8 +362,8 @@ async def test_ainsert_custom_kg_locks_every_entity_and_endpoint(
     # mutually exclude across paths.
     assert call["namespace"] == "ws1:GraphDB"
 
-    # Union of entity names ({Alice, Bob}) and every relationship endpoint
-    # ({Alice, Bob, Carol}), sorted.
+    # The raw full-width/quoted spellings are normalized before the union is
+    # locked, so keys collide with the extraction pipeline's canonical names.
     assert call["keys"] == ["Alice", "Bob", "Carol"]
 
 
