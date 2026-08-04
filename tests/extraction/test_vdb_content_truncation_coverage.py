@@ -860,6 +860,58 @@ async def test_ainsert_custom_kg_truncates_entity_and_relation_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
+async def test_ainsert_custom_kg_relationship_endpoints_keep_real_entity_data():
+    """A relationship endpoint that is ALSO one of the batch's own explicit
+    entities must not be treated as a missing/placeholder node just because
+    the graph hasn't seen the real entity_nodes upsert yet at discovery time
+    -- that would let the placeholder {description: "UNKNOWN"} mutation
+    (which runs after the real entity write in the same batch) clobber the
+    real submitted description/entity_type."""
+    cfg = _cfg(_tok(), embedding_token_limit=1000)
+    rag = _make_custom_kg_rag(cfg)
+
+    await rag.ainsert_custom_kg(
+        {
+            "chunks": [],
+            "entities": [
+                {
+                    "entity_name": "Alice",
+                    "entity_type": "PERSON",
+                    "description": "Alice is a scientist.",
+                    "source_id": "chunk-1",
+                    "file_path": "f",
+                },
+                {
+                    "entity_name": "Bob",
+                    "entity_type": "PERSON",
+                    "description": "Bob is an engineer.",
+                    "source_id": "chunk-1",
+                    "file_path": "f",
+                },
+            ],
+            "relationships": [
+                {
+                    "src_id": "Alice",
+                    "tgt_id": "Bob",
+                    "description": "Alice and Bob are colleagues.",
+                    "keywords": "colleague",
+                    "weight": 1.0,
+                    "source_id": "chunk-1",
+                    "file_path": "f",
+                }
+            ],
+        }
+    )
+
+    alice = rag.chunk_entity_relation_graph.nodes["Alice"]
+    bob = rag.chunk_entity_relation_graph.nodes["Bob"]
+    assert alice["description"] == "Alice is a scientist."
+    assert alice["entity_type"] == "PERSON"
+    assert bob["description"] == "Bob is an engineer."
+    assert bob["entity_type"] == "PERSON"
+    assert ("Alice", "Bob") in rag.chunk_entity_relation_graph.edges
+
+
 async def test_ainsert_custom_kg_truncation_failure_leaves_graph_untouched():
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     rag = _make_custom_kg_rag(cfg)

@@ -3418,6 +3418,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 existing_nodes = await self.chunk_entity_relation_graph.has_nodes_batch(
                     list(needed_node_ids)
                 )
+                # A relationship endpoint that is also one of this batch's own
+                # explicit entities is not "missing" just because the graph
+                # hasn't seen entity_nodes' real upsert yet (deferred to the
+                # mutation phase below, after every payload validates) — it
+                # must never be added to missing_nodes, which upserts a bare
+                # {description: "UNKNOWN"} placeholder that would otherwise
+                # overwrite the real entity data written moments earlier in
+                # the very same batch.
+                existing_nodes.update(name for name, _ in entity_nodes)
 
                 # Create missing nodes in batch
                 missing_nodes: list[tuple[str, dict[str, str]]] = []
