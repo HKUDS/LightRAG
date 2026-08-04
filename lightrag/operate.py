@@ -3683,6 +3683,8 @@ async def extract_entities(
     use_json_extraction = global_config.get("entity_extraction_use_json", False)
 
     ordered_chunks = list(chunks.items())
+    if not ordered_chunks:
+        return []
     # add language and example number params to prompt
     addon_params = global_config.get("addon_params") or {}
     language = global_config.get("_resolved_summary_language")
