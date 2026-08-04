@@ -2483,10 +2483,20 @@ class ClientManager:
                 config.get("postgres", "ssl_crl", fallback=None),
             ),
             # Vector configuration: derived from the vector storage backend in use.
-            # PGVectorStorage requires pgvector; all other backends do not.
-            "enable_vector": vector_storage == "PGVectorStorage"
-            if vector_storage is not None
-            else True,
+            # PGVectorStorage requires pgvector; all other backends — and an
+            # unspecified one — do not.
+            #
+            # There is deliberately NO `None -> True` special case. That was the
+            # last surviving default of the removed POSTGRES_ENABLE_VECTOR env var
+            # (which defaulted to "true"), and it meant "I don't know which vector
+            # backend is in use" was answered with the most demanding option:
+            # require an extension nobody asked for. It cost two workarounds
+            # elsewhere in the tree — PGTableGraphStorage had to pass a sentinel
+            # backend name to avoid demanding pgvector on stock PostgreSQL, and
+            # tools/rebuild_vdb.py had to populate vector_storage defensively — so
+            # an unspecified backend now means no pgvector. A storage that does
+            # need it says so itself: see PGVectorStorage.initialize.
+            "enable_vector": vector_storage == "PGVectorStorage",
             "vector_index_type": os.environ.get(
                 "POSTGRES_VECTOR_INDEX_TYPE",
                 config.get("postgres", "vector_index_type", fallback="HNSW"),
@@ -3886,8 +3896,23 @@ class PGVectorStorage(BaseVectorStorage):
     async def initialize(self):
         async with get_data_init_lock():
             if self.db is None:
+                # Declare this class's OWN requirement rather than asking
+                # global_config what the vector backend is. This storage IS the
+                # pgvector backend, so it always needs the extension and the
+                # asyncpg codec — even when constructed directly with a
+                # global_config that never named a vector backend. Reading the
+                # ambient value would resolve to None there and, since an
+                # unspecified backend no longer implies pgvector (see get_config),
+                # hand back a pool with no vector codec that only fails later.
+                #
+                # In every LightRAG-driven path the two are identical: this class
+                # is only instantiated because global_config["vector_storage"] is
+                # "PGVectorStorage". A caller that hand-builds this storage
+                # alongside another PG storage under a bare global_config now gets
+                # an explicit signature-mismatch RuntimeError instead, which is the
+                # correct answer for a config that never said it wanted pgvector.
                 self.db = await ClientManager.get_client(
-                    vector_storage=self.global_config.get("vector_storage")
+                    vector_storage="PGVectorStorage"
                 )
 
             # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"

@@ -314,11 +314,10 @@ class PGTableGraphStorage(BaseGraphStorage):
         semantics the pre-chunking single statement had.
 
     Configuration note:
-        global_config["vector_storage"] selects the pool's vector support. An
-        absent/empty value falls back to this class's own name rather than None,
-        because ClientManager treats None as "enable pgvector" and this backend
-        must stay installable on stock PostgreSQL. See initialize() for the
-        pool-signature tradeoff that buys.
+        global_config["vector_storage"] is forwarded to ClientManager verbatim,
+        like every other PG storage. Only "PGVectorStorage" enables pgvector on the
+        shared pool, so this backend needs no extension whether the caller names a
+        non-PostgreSQL vector backend or names none at all.
     """
 
     db: Any | None = field(default=None, init=False, repr=False)
@@ -514,29 +513,13 @@ class PGTableGraphStorage(BaseGraphStorage):
             if self.db is None:
                 from .postgres_impl import ClientManager
 
-                # Substitute this class's own name when no vector backend is
-                # configured, instead of forwarding None like the sibling PG
-                # storages do. This is deliberate and load-bearing: ClientManager
-                # maps vector_storage=None to enable_vector=True, which makes the
-                # pool require pgvector — and a graph backend whose entire purpose
-                # is running on stock PostgreSQL must not demand an extension just
-                # because the caller left the vector backend unspecified. Callers
-                # with a bare global_config are real: tests/kg/test_graph_storage.py
-                # (the cross-backend contract suite) is one.
-                #
-                # The cost is that the process-wide pool signature records this
-                # name, so a sibling PG storage in the same process that forwarded
-                # None would disagree and whichever initialized second would be
-                # rejected. That is acceptable because (a) LightRAG always
-                # populates global_config["vector_storage"], so both sides compute
-                # the identical value and the fallback never fires, and (b) when it
-                # does fire the mismatch surfaces as an explicit RuntimeError from
-                # _assert_compatible_vector_signature, not as silent corruption.
-                vector_storage = (
-                    self.global_config.get("vector_storage") or "PGTableGraphStorage"
-                )
+                # Forwarded unchanged, exactly like the sibling PG storages. An
+                # unspecified vector backend resolves to None, which ClientManager
+                # maps to enable_vector=False — so a bare global_config no longer
+                # demands pgvector and this backend stays installable on stock
+                # PostgreSQL without passing a sentinel backend name.
                 self.db = await ClientManager.get_client(
-                    vector_storage=vector_storage,
+                    vector_storage=self.global_config.get("vector_storage")
                 )
                 # Workspace priority: POSTGRES_WORKSPACE env > self.workspace > "default"
                 if self.db.workspace:

@@ -54,17 +54,15 @@ def test_constructor_validates_workspace_like_other_backends():
 @pytest.mark.parametrize(
     ("global_config", "expected_vector_storage"),
     [
-        # No vector backend configured -> this class's own name, NOT None.
-        # ClientManager maps None to enable_vector=True, which would make the pool
-        # require pgvector and break the whole point of this backend. Callers with
-        # a bare global_config are real: tests/kg/test_graph_storage.py, the
-        # cross-backend contract suite, is one, and it runs against a plain
-        # postgres image in CI.
-        ({}, "PGTableGraphStorage"),
-        ({"vector_storage": None}, "PGTableGraphStorage"),
-        # Whenever the key IS set, the value must be forwarded verbatim so the
-        # pool signature agrees with the sibling PG storages. LightRAG always sets
-        # it, so this is the path that actually runs in production.
+        # Forwarded verbatim in every case, exactly like the sibling PG storages,
+        # so the process-wide pool signature can never diverge. An unspecified
+        # backend stays None: ClientManager maps that to enable_vector=False, so a
+        # bare global_config does not demand pgvector and this backend needs no
+        # sentinel name to stay installable on stock PostgreSQL. Bare configs are
+        # real — tests/kg/test_graph_storage.py, the cross-backend contract suite,
+        # is one, and CI runs it against a plain postgres image.
+        ({}, None),
+        ({"vector_storage": None}, None),
         ({"vector_storage": "NanoVectorDBStorage"}, "NanoVectorDBStorage"),
         ({"vector_storage": "PGVectorStorage"}, "PGVectorStorage"),
     ],
