@@ -195,7 +195,9 @@ def test_hard_split_slices_get_precise_refs(tmp_path: Path) -> None:
     assert len(chunks) == 1  # everything in one chunk pre-split
     assert chunks[0]["_source_span"] == {"start": 0, "end": len(merged)}
 
-    chunks = enforce_chunk_token_limit_before_embedding(chunks, tok, max_tokens=30)
+    chunks = enforce_chunk_token_limit_before_embedding(
+        chunks, tok, max_tokens=30, source_content=merged
+    )
     assert len(chunks) > 1  # hard-split fired
 
     backfill_chunk_sidecars(chunks, blocks_path)
@@ -210,12 +212,12 @@ def test_hard_split_slices_get_precise_refs(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
-def test_hard_split_multi_sentence_rejoin_keeps_provenance(tmp_path: Path) -> None:
-    # A single block whose sentences are separated by single spaces. The hard
-    # split regroups whole sentence units and rejoins them with "\n\n", so the
-    # resulting slice content is NOT byte-verbatim in the source. Span propagation
-    # must fall back to whitespace-normalized matching instead of dropping the span
-    # — otherwise span-first backfill would wrongly FAIL the document.
+def test_hard_split_token_windows_stay_byte_verbatim(tmp_path: Path) -> None:
+    # A single block of several short sentences. The safe split contract
+    # (Tokenizer.split_by_token_limit) no longer packs sentence units and
+    # rejoins them with "\n\n" — every slice is a direct character-offset
+    # window into the parent content, so it is always byte-verbatim and its
+    # ``_source_span`` is always exact (direct-arithmetic fast path).
     block = "ab. cd. ef. gh. ij. kl."
     blocks_path, merged = _write_blocks(tmp_path, [("b1", block)])
     tok = _tokenizer()
@@ -230,14 +232,16 @@ def test_hard_split_multi_sentence_rejoin_keeps_provenance(tmp_path: Path) -> No
     assert len(chunks) == 1
     assert chunks[0]["_source_span"] == {"start": 0, "end": len(merged)}
 
-    chunks = enforce_chunk_token_limit_before_embedding(chunks, tok, max_tokens=7)
+    chunks = enforce_chunk_token_limit_before_embedding(
+        chunks, tok, max_tokens=7, source_content=merged
+    )
     assert len(chunks) > 1  # hard split fired into multiple slices
-    # At least one slice rejoined sentence units with "\n\n" (not byte-verbatim),
-    # which is exactly the case the normalized span fallback must cover.
-    assert any("\n\n" in ch["content"] for ch in chunks)
+    for ch in chunks:
+        span = ch["_source_span"]
+        assert merged[span["start"] : span["end"]] == ch["content"]
 
-    # Must NOT raise: every slice keeps a span via the normalized fallback, and
-    # each maps back to the single source block it came from.
+    # Must NOT raise: every slice keeps an exact span, and each maps back to
+    # the single source block it came from.
     backfill_chunk_sidecars(chunks, blocks_path)
 
     for ch in chunks:

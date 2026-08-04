@@ -2664,18 +2664,20 @@ class MongoGraphStorage(BaseGraphStorage):
         max_depth: int,
         max_nodes: int,
     ) -> KnowledgeGraph:
-        if depth > max_depth or len(result.nodes) > max_nodes:
+        if depth > max_depth:
             return result
 
         cursor = self.collection.find({"_id": {"$in": node_labels}})
 
         async for node in cursor:
             node_id = node["_id"]
-            if node_id not in seen_nodes:
-                seen_nodes.add(node_id)
-                result.nodes.append(self._construct_graph_node(node_id, node))
-                if len(result.nodes) > max_nodes:
-                    return result
+            if node_id in seen_nodes:
+                continue
+            if len(result.nodes) >= max_nodes:
+                result.is_truncated = True
+                return result
+            seen_nodes.add(node_id)
+            result.nodes.append(self._construct_graph_node(node_id, node))
 
         # Collect neighbors
         # Get both inbound and outbound one hop nodes
@@ -2817,19 +2819,42 @@ class MongoGraphStorage(BaseGraphStorage):
             key=lambda x: (x["depth"], -x["weight"]),
         )
 
-        # As order matters, we need to use another list to store the node_id
-        # And only take the first max_nodes ones
-        node_ids = []
+        # Dedupe edge endpoints (excluding the start node) preserving the
+        # existing depth/weight priority order.
+        ordered_candidates = []
+        seen_candidates = set()
         for edge in node_edges:
-            if len(node_ids) < max_nodes and edge["source_node_id"] not in seen_nodes:
-                node_ids.append(edge["source_node_id"])
-                seen_nodes.add(edge["source_node_id"])
+            for candidate in (edge["source_node_id"], edge["target_node_id"]):
+                if candidate != node_label and candidate not in seen_candidates:
+                    seen_candidates.add(candidate)
+                    ordered_candidates.append(candidate)
 
-            if len(node_ids) < max_nodes and edge["target_node_id"] not in seen_nodes:
-                node_ids.append(edge["target_node_id"])
-                seen_nodes.add(edge["target_node_id"])
+        # Candidates are raw edge endpoints: upsert_edge only guarantees the
+        # source node exists, not the target, so some candidates may be
+        # dangling (no node document). Resolve real existence in priority
+        # order, in bounded batches, stopping once max_nodes real candidates
+        # are confirmed -- the start node already occupies one of the
+        # max_nodes slots, so only the first max_nodes - 1 real ids end up in
+        # the result, and finding a max_nodes-th real candidate proves
+        # truncation without having to probe the entire reachable set.
+        real_ids = []
+        batch_size = max(max_nodes, 1)
+        for i in range(0, len(ordered_candidates), batch_size):
+            if len(real_ids) >= max_nodes:
+                break
+            batch = ordered_candidates[i : i + batch_size]
+            found_cursor = self.collection.find({"_id": {"$in": batch}}, {"_id": 1})
+            found_ids = {doc["_id"] async for doc in found_cursor}
+            for candidate in batch:
+                if candidate in found_ids:
+                    real_ids.append(candidate)
+                    if len(real_ids) >= max_nodes:
+                        break
 
-        # Filter out all the node whose id is same as node_label so that we do not check existence next step
+        result.is_truncated = len(real_ids) >= max_nodes
+        node_ids = real_ids[: max_nodes - 1]
+        seen_nodes.update(node_ids)
+
         cursor = self.collection.find({"_id": {"$in": node_ids}})
 
         async for doc in cursor:

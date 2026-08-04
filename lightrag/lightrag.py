@@ -70,6 +70,7 @@ from lightrag.constants import (
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_EMBEDDING_TIMEOUT,
     DEFAULT_EMBEDDING_BATCH_NUM,
+    DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_RERANK_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
@@ -136,6 +137,7 @@ from lightrag.namespace import NameSpace
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
+    _truncate_vdb_content,
     collect_kg_merge_candidates,
     extract_entities,
     kg_query,
@@ -180,6 +182,7 @@ from lightrag.utils import (
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
+    normalize_entity_name,
     normalize_source_ids_limit_method,
     normalize_string_list,
     run_in_chunking_executor,
@@ -616,6 +619,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     embedding_token_limit: int | None = field(default=None, init=False)
     """Token limit for embedding model. Set automatically from embedding_func.max_token_size in __post_init__."""
+
+    embedding_chunk_overlap_token_size: int = field(
+        default=get_env_value(
+            "EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE",
+            DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE,
+            int,
+        )
+    )
+    """Overlap (in tokens) the embedding hard fallback borrows from the tail of
+    the previous window when a chunk still exceeds ``embedding_token_limit``
+    after chunking and has to be token-window-split.
+
+    Independent from the chunker's own ``chunk_overlap_token_size``: that field
+    is a semantic-chunking concern (paragraph/heading-aware splitting), while
+    this one only applies to the mechanical last-resort split that runs after
+    chunking, on chunks the chunker already produced. Some strategies (e.g. V)
+    deliberately zero out ``chunk_overlap_token_size`` for reasons unrelated to
+    this fallback, so this field must never read or fall back to that one.
+
+    ``0`` disables the fallback's overlap. Negative values raise ``ValueError``
+    in ``__post_init__``. Effective overlap is clamped at runtime to
+    ``previous_content_token_count - 1`` and retreats further (exponentially)
+    if that still cannot make forward progress.
+    """
 
     embedding_batch_num: int = field(
         default=get_env_value("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int)
@@ -1221,6 +1248,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             raise ValueError(
                 "MAX_PENDING_DOCUMENTS must be >= 0 (0 disables admission "
                 f"control); got {self.max_pending_documents}"
+            )
+
+        # Embedding hard-fallback overlap: 0 disables it; negative is a
+        # misconfiguration (there is no such thing as negative overlap).
+        if self.embedding_chunk_overlap_token_size < 0:
+            raise ValueError(
+                "EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE must be >= 0 (0 disables "
+                f"the embedding hard fallback's overlap); got "
+                f"{self.embedding_chunk_overlap_token_size}"
             )
 
         # Handle deprecated parameters
@@ -3205,6 +3241,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ) -> None:
         """Insert caller-constructed KG objects directly into the stores.
 
+        Entity names and relationship endpoints are normalized with the same
+        contract used by document extraction before any storage write begins.
+
         .. warning:: (issue #3400 Phase 5 — direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
            no durable operation journal and does not prewrite
@@ -3222,6 +3261,50 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         update_storage = False
         try:
+
+            def _normalize_custom_kg_entity_name(value: Any, *, field: str) -> str:
+                if not isinstance(value, str):
+                    raise ValueError(f"Custom KG {field} must be a string")
+                normalized_value = normalize_entity_name(value)
+                if not normalized_value:
+                    raise ValueError(
+                        f"Custom KG {field} cannot be empty after normalization"
+                    )
+                return normalized_value
+
+            # Validate and canonicalize the complete identifier set before
+            # chunks or graph objects are written. Copies keep the caller's
+            # custom_kg payload unchanged.
+            normalized_entities: list[dict[str, Any]] = []
+            for index, entity_data in enumerate(custom_kg.get("entities", [])):
+                normalized_entity_data = dict(entity_data)
+                normalized_entity_data["entity_name"] = (
+                    _normalize_custom_kg_entity_name(
+                        entity_data["entity_name"],
+                        field=f"entities[{index}].entity_name",
+                    )
+                )
+                normalized_entities.append(normalized_entity_data)
+
+            normalized_relationships: list[dict[str, Any]] = []
+            for index, relationship_data in enumerate(
+                custom_kg.get("relationships", [])
+            ):
+                normalized_relationship_data = dict(relationship_data)
+                normalized_relationship_data["src_id"] = (
+                    _normalize_custom_kg_entity_name(
+                        relationship_data["src_id"],
+                        field=f"relationships[{index}].src_id",
+                    )
+                )
+                normalized_relationship_data["tgt_id"] = (
+                    _normalize_custom_kg_entity_name(
+                        relationship_data["tgt_id"],
+                        field=f"relationships[{index}].tgt_id",
+                    )
+                )
+                normalized_relationships.append(normalized_relationship_data)
+
             # Insert chunks into vector storage
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
@@ -3275,7 +3358,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Keep the last declaration for each entity_name so batch backends
             # preserve the old serial upsert semantics deterministically.
             deduped_entities: dict[str, dict[str, Any]] = {}
-            for entity_data in custom_kg.get("entities", []):
+            for entity_data in normalized_entities:
                 entity_name = entity_data["entity_name"]
                 deduped_entities.pop(entity_name, None)
                 deduped_entities[entity_name] = entity_data
@@ -3315,7 +3398,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # Relationship storage is undirected, so keep only the last update
             # for each endpoint pair regardless of order.
             deduped_relationships: dict[tuple[str, str], dict[str, Any]] = {}
-            for relationship_data in custom_kg.get("relationships", []):
+            for relationship_data in normalized_relationships:
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
                 relation_key = tuple(sorted((src_id, tgt_id)))
@@ -3340,7 +3423,43 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
             async def _do_graph_and_vdb_writes() -> None:
-                # Batch insert entities (reduces N serial awaits to 1)
+                # Construct and verify the entity VDB payload BEFORE the
+                # first graph mutation below (entity_nodes batch upsert): if
+                # truncation fails (a deterministic, non-retryable
+                # content-shape problem), nothing has been written yet. The
+                # actual VDB upsert I/O still happens after all graph writes,
+                # at the end of this function. Skipped entirely when there is
+                # nothing to insert (e.g. a chunks-only custom_kg) —
+                # _build_global_config is real work callers with no
+                # entities/relationships should not pay for. Shared with the
+                # relationship VDB payload built further below in this same
+                # function, so it is built at most once per call.
+                global_config: dict[str, Any] | None = None
+                data_for_entities_vdb: dict[str, Any] = {}
+                if all_entities_data or deduped_relationships:
+                    global_config = self._build_global_config()
+                if all_entities_data:
+                    data_for_entities_vdb = {
+                        compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                            "content": _truncate_vdb_content(
+                                dp["entity_name"] + "\n" + dp["description"],
+                                global_config,
+                                f"entity:{dp['entity_name']}",
+                            ),
+                            "entity_name": dp["entity_name"],
+                            "source_id": dp["source_id"],
+                            "description": dp["description"],
+                            "entity_type": dp["entity_type"],
+                            "file_path": dp.get("file_path", "custom_kg"),
+                        }
+                        for dp in all_entities_data
+                    }
+
+                # Batch insert entities (reduces N serial awaits to 1).
+                # Writing entity_nodes here (before the relationship-endpoint
+                # discovery below) means has_nodes_batch naturally sees them,
+                # so a relationship endpoint that is also one of this batch's
+                # own explicit entities is never mistaken for a missing node.
                 if entity_nodes:
                     await self.chunk_entity_relation_graph.upsert_nodes_batch(
                         entity_nodes
@@ -3418,6 +3537,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         }
                     )
 
+                # Construct and verify the relationship VDB payload BEFORE
+                # the graph mutations below (missing-node + edge batch
+                # upserts): if truncation fails, nothing has been written
+                # yet. The actual VDB upsert I/O still happens after all
+                # graph writes, at the end of this function. Reuses the
+                # entity-side global_config built above via closure — that
+                # guard (`all_entities_data or deduped_relationships`)
+                # already covers this branch, since non-empty
+                # all_relationships_data implies non-empty
+                # deduped_relationships.
+                data_for_rels_vdb: dict[str, Any] = {}
+                if all_relationships_data:
+                    data_for_rels_vdb = {
+                        compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+                            "src_id": dp["src_id"],
+                            "tgt_id": dp["tgt_id"],
+                            "source_id": dp["source_id"],
+                            "content": _truncate_vdb_content(
+                                f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
+                                global_config,
+                                f"relation:{dp['src_id']}-{dp['tgt_id']}",
+                            ),
+                            "keywords": dp["keywords"],
+                            "description": dp["description"],
+                            "weight": dp["weight"],
+                            "file_path": dp.get("file_path", "custom_kg"),
+                        }
+                        for dp in all_relationships_data
+                    }
+
                 # Batch insert missing placeholder nodes
                 if missing_nodes:
                     await self.chunk_entity_relation_graph.upsert_nodes_batch(
@@ -3427,33 +3576,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Batch insert edges
                 if edge_list:
                     await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
-
-                # Insert entities and relationships into vector storage (parallel)
-                data_for_entities_vdb = {
-                    compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                        "content": dp["entity_name"] + "\n" + dp["description"],
-                        "entity_name": dp["entity_name"],
-                        "source_id": dp["source_id"],
-                        "description": dp["description"],
-                        "entity_type": dp["entity_type"],
-                        "file_path": dp.get("file_path", "custom_kg"),
-                    }
-                    for dp in all_entities_data
-                }
-
-                data_for_rels_vdb = {
-                    compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                        "src_id": dp["src_id"],
-                        "tgt_id": dp["tgt_id"],
-                        "source_id": dp["source_id"],
-                        "content": f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
-                        "keywords": dp["keywords"],
-                        "description": dp["description"],
-                        "weight": dp["weight"],
-                        "file_path": dp.get("file_path", "custom_kg"),
-                    }
-                    for dp in all_relationships_data
-                }
 
                 legacy_rel_ids_to_delete = sorted(
                     {
