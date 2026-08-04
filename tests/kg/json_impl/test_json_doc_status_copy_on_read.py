@@ -196,14 +196,62 @@ async def test_get_docs_paginated_returns_copy(tmp_path):
     doc_id, doc_status = docs[0]
     assert doc_id == "doc5"
 
-    # Mutate the returned DocProcessingStatus's nested mutable fields
+    # Pagination never surfaces chunks_list (mirrors the PG backend's paged
+    # CTE, which excludes the column for the same reason: DocStatusResponse
+    # doesn't expose it) — asserted here so the field isn't silently
+    # deep-copied from storage again by a future change.
+    assert doc_status.chunks_list == []
+
+    # Mutate the returned DocProcessingStatus's nested mutable metadata field
     doc_status.metadata["kg_purge"]["phase"] = "corrupted"
-    doc_status.chunks_list.append("c3")
 
     stored = await storage.get_by_id_strict("doc5")
     assert stored is not None
     assert stored["metadata"]["kg_purge"]["phase"] == "prepared"
     assert stored["chunks_list"] == ["c1", "c2"]
+
+
+@pytest.mark.asyncio
+async def test_get_docs_paginated_excludes_malformed_rows(tmp_path):
+    """
+    get_docs_paginated's lightweight pre-hydration scan rejects rows missing
+    a required DocProcessingStatus field before sorting/pagination, matching
+    the previous behavior where such rows raised KeyError during hydration
+    and were silently dropped from both total_count and every page.
+    """
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        workspace="test",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc7": {
+                "status": "pending",
+                "file_path": "good.pdf",
+                "content_summary": "summary",
+                "content_length": 100,
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            # Missing content_summary/content_length: upsert() itself does
+            # not validate required fields, so a malformed row can reach
+            # storage (e.g. from a partial write or external tooling).
+            "doc8": {
+                "status": "pending",
+                "file_path": "malformed.pdf",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+            },
+        }
+    )
+
+    docs, total = await storage.get_docs_paginated()
+    assert total == 1
+    assert [doc_id for doc_id, _ in docs] == ["doc7"]
 
 
 @pytest.mark.asyncio

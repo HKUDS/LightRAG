@@ -112,6 +112,20 @@ class JsonDocStatusStorage(DocStatusStorage):
     # source-conflict listing/repair APIs — never materialize the whole set.
     _CONFLICT_SAMPLE_CAP: ClassVar[int] = 32
 
+    # DocProcessingStatus fields with no dataclass default — a row missing
+    # any of these fails ``DocProcessingStatus(**data)`` with KeyError.
+    # ``file_path`` is deliberately excluded: ``_doc_processing_status_from_row``
+    # fills it with "no-file-path" when absent/falsy, so its absence never
+    # raises. Used by ``get_docs_paginated`` to reject unhydratable rows
+    # during its lightweight (pre-hydration) scan.
+    _REQUIRED_STATUS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "content_summary",
+        "content_length",
+        "status",
+        "created_at",
+        "updated_at",
+    )
+
     def __post_init__(self):
         # Reject path traversal before using workspace in a file path
         validate_workspace(self.workspace)
@@ -398,56 +412,84 @@ class JsonDocStatusStorage(DocStatusStorage):
         if sort_direction.lower() not in ["asc", "desc"]:
             sort_direction = "desc"
 
-        # For JSON storage, we load all data and sort/filter in memory
-        all_docs = []
-
+        # Phase 1: lightweight projection under the lock — only the sort key
+        # and doc_id, never a copy of the full row. Deep-copying every
+        # matching document (including a potentially large chunks_list) just
+        # to discard all but one page of them made pagination cost scale
+        # with total matching documents instead of page_size, and held
+        # _storage_lock — which upsert/delete also need — for the whole
+        # scan, able to stall concurrent ingestion for a large corpus.
+        # A row missing a field DocProcessingStatus requires with no default
+        # (_REQUIRED_STATUS_FIELDS) would fail hydration in phase 3 anyway;
+        # excluding it here keeps total_count consistent with what phase 3
+        # can actually return, matching the previous single-pass behavior.
+        projections: list[tuple[Any, str]] = []
         async with self._storage_lock:
             for doc_id, doc_data in self._data.items():
-                # Apply status filter
                 if (
                     status_filter_values is not None
                     and doc_data.get("status") not in status_filter_values
                 ):
                     continue
+                if any(f not in doc_data for f in self._REQUIRED_STATUS_FIELDS):
+                    logger.error(
+                        f"[{self.workspace}] Error processing document {doc_id}: "
+                        "missing required status field"
+                    )
+                    continue
 
+                if sort_field == "id":
+                    sort_key = doc_id
+                elif sort_field == "file_path":
+                    # Use pinyin sorting for file_path field to support Chinese
+                    # characters; "no-file-path" mirrors the fallback applied
+                    # during hydration (_doc_processing_status_from_row) so
+                    # sort order matches what phase 3 would have produced.
+                    sort_key = get_pinyin_sort_key(
+                        doc_data.get("file_path") or "no-file-path"
+                    )
+                else:
+                    sort_key = doc_data.get(sort_field, "")
+                projections.append((sort_key, doc_id))
+
+        total_count = len(projections)
+
+        # Phase 2: sort the lightweight projection. No lock held — pure CPU
+        # work with no await point, so nothing can mutate self._data
+        # concurrently while this runs.
+        reverse_sort = sort_direction.lower() == "desc"
+        projections.sort(key=lambda t: t[0], reverse=reverse_sort)
+
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        page_doc_ids = [doc_id for _, doc_id in projections[start_idx:end_idx]]
+
+        # Phase 3: deep-copy and hydrate ONLY the requested page — bounded by
+        # page_size (<=200) regardless of how many documents matched.
+        paginated_docs: list[tuple[str, DocProcessingStatus]] = []
+        async with self._storage_lock:
+            for doc_id in page_doc_ids:
+                row = self._data.get(doc_id)
+                if row is None:
+                    continue  # deleted concurrently between phase 1 and here
                 try:
-                    doc_status = self._doc_processing_status_from_row(doc_data)
-
-                    # Add sort key for sorting
-                    if sort_field == "id":
-                        doc_status._sort_key = doc_id
-                    elif sort_field == "file_path":
-                        # Use pinyin sorting for file_path field to support Chinese characters
-                        file_path_value = getattr(doc_status, sort_field, "")
-                        doc_status._sort_key = get_pinyin_sort_key(file_path_value)
-                    else:
-                        doc_status._sort_key = getattr(doc_status, sort_field, "")
-
-                    all_docs.append((doc_id, doc_status))
-
-                except KeyError as e:
+                    # Pagination never surfaces chunks_list (DocStatusResponse
+                    # doesn't expose it — see the PG backend's paged CTE,
+                    # which excludes the column for the same reason), so drop
+                    # it before hydration instead of deep-copying a
+                    # potentially large chunk-id list only to discard it.
+                    row_without_chunks = {
+                        k: v for k, v in row.items() if k != "chunks_list"
+                    }
+                    doc_status = self._doc_processing_status_from_row(
+                        row_without_chunks
+                    )
+                except (KeyError, TypeError) as e:
                     logger.error(
                         f"[{self.workspace}] Error processing document {doc_id}: {e}"
                     )
                     continue
-
-        # Sort documents
-        reverse_sort = sort_direction.lower() == "desc"
-        all_docs.sort(
-            key=lambda x: getattr(x[1], "_sort_key", ""), reverse=reverse_sort
-        )
-
-        # Remove sort key from documents
-        for doc_id, doc in all_docs:
-            if hasattr(doc, "_sort_key"):
-                delattr(doc, "_sort_key")
-
-        total_count = len(all_docs)
-
-        # Apply pagination
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        paginated_docs = all_docs[start_idx:end_idx]
+                paginated_docs.append((doc_id, doc_status))
 
         return paginated_docs, total_count
 
