@@ -836,10 +836,30 @@ async def aedit_relation(
             edge_data = await chunk_entity_relation_graph.get_edge(
                 source_entity, target_entity
             )
-            # 2. Recalculate relation's vector representation. Construct and
-            # verify the VDB payload BEFORE any mutation below (including the
-            # VDB delete): if truncation fails, nothing has been touched yet.
             new_edge_data = {**edge_data, **updated_data}
+
+            # Important: First delete the old relation record from the vector database
+            # Delete both permutations to handle relationships created before normalization
+            rel_ids_to_delete = [
+                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+            ]
+            await relationships_vdb.delete(rel_ids_to_delete)
+            logger.debug(
+                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
+            )
+
+            # 2. Update relation information in the graph first: the graph
+            # is the authoritative store, and a truncation/VDB failure below
+            # must never prevent this write — a stale/missing VDB entry can
+            # always be repaired from the graph via the offline rebuild
+            # tool, but a graph write gated behind VDB feasibility would
+            # lose the edit entirely.
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, new_edge_data
+            )
+
+            # 3. Recalculate relation's vector representation
             description = new_edge_data.get("description", "")
             keywords = new_edge_data.get("keywords", "")
             source_id = new_edge_data.get("source_id", "")
@@ -865,22 +885,6 @@ async def aedit_relation(
                     "weight": weight,
                 }
             }
-
-            # Important: First delete the old relation record from the vector database
-            # Delete both permutations to handle relationships created before normalization
-            rel_ids_to_delete = [
-                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-            ]
-            await relationships_vdb.delete(rel_ids_to_delete)
-            logger.debug(
-                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
-            )
-
-            # 3. Update relation information in the graph
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, new_edge_data
-            )
 
             # Update vector database
             await relationships_vdb.upsert(relation_data)
@@ -1025,9 +1029,15 @@ async def acreate_entity(
                 "created_at": int(time.time()),
             }
 
-            # Prepare content for entity. Construct and verify the VDB
-            # payload BEFORE the first graph mutation below: if truncation
-            # fails, nothing has been written yet.
+            # Add entity to knowledge graph first: the graph is the
+            # authoritative store, and a truncation/VDB failure below must
+            # never prevent this write — a stale/missing VDB entry can
+            # always be repaired from the graph via the offline rebuild
+            # tool, but a graph write gated behind VDB feasibility would
+            # lose the entity entirely.
+            await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
+
+            # Prepare content for entity
             description = node_data.get("description", "")
             source_id = node_data.get("source_id", "")
             entity_type = node_data.get("entity_type", "")
@@ -1051,9 +1061,6 @@ async def acreate_entity(
                     "file_path": entity_data.get("file_path", "manual_creation"),
                 }
             }
-
-            # Add entity to knowledge graph
-            await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
 
             # Update vector database
             await entities_vdb.upsert(entity_data_for_vdb)
@@ -1179,9 +1186,16 @@ async def acreate_relation(
             source_id = edge_data.get("source_id", "")
             weight = edge_data.get("weight", 1.0)
 
-            # Construct and verify the VDB payload BEFORE the first graph
-            # mutation below: if truncation fails, nothing has been written
-            # yet.
+            # Add relation to knowledge graph first: the graph is the
+            # authoritative store, and a truncation/VDB failure below must
+            # never prevent this write — a stale/missing VDB entry can
+            # always be repaired from the graph via the offline rebuild
+            # tool, but a graph write gated behind VDB feasibility would
+            # lose the relation entirely.
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, edge_data
+            )
+
             content = _truncate_vdb_content(
                 f"{keywords}\t{vdb_src}\n{vdb_tgt}\n{description}",
                 relationships_vdb.global_config,
@@ -1204,11 +1218,6 @@ async def acreate_relation(
                     "file_path": relation_data.get("file_path", "manual_creation"),
                 }
             }
-
-            # Add relation to knowledge graph
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, edge_data
-            )
 
             # Update vector database
             await relationships_vdb.upsert(relation_data_for_vdb)

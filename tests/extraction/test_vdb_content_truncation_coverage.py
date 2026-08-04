@@ -2,20 +2,22 @@
 
 Design: "Tokenizer safe splitting and truncation refactor". A prior review of
 this refactor found that several entity/relation VDB write paths built their
-``content`` field directly, bypassing ``_truncate_vdb_content`` entirely, and
-that several already-migrated paths called it AFTER the first graph mutation
-— so a truncation failure (``TokenBudgetError``) would leave the graph
-updated and the vector store untouched, with no clear signal. These tests
-drive each affected function directly (in-memory graph/VDB fakes, no DB or
-LLM) and assert:
+``content`` field directly, bypassing ``_truncate_vdb_content`` entirely.
+These tests drive each affected function directly (in-memory graph/VDB
+fakes, no DB or LLM) and assert:
 
 * the final VDB payload's ``content`` is actually truncated to fit
   ``embedding_token_limit`` when the source is oversized;
-* a truncation failure prevents the graph mutation entirely for paths that
-  now construct+verify the VDB payload before mutating (the "front-load"
-  fix), OR is surfaced as ``VectorStorageConsistencyError`` for paths where
-  the graph is documented as authoritative and mutated first (the merge
-  helpers in ``utils_graph.py``).
+* a truncation failure never blocks a graph write. The project-wide
+  contract is: the graph is always the authoritative store and is written
+  first, unconditionally, for every object -- a downstream VDB
+  truncation/upsert failure only ever risks a stale/missing VDB entry,
+  which the offline rebuild tool can always repair from the graph. A
+  truncation failure therefore either surfaces as a bare ``TokenBudgetError``
+  after the graph write already succeeded, or -- for paths that already
+  wrapped VDB failures in ``VectorStorageConsistencyError`` before this
+  refactor (the merge helpers in ``utils_graph.py``) -- keeps that same
+  wrapping.
 """
 
 from __future__ import annotations
@@ -228,7 +230,11 @@ async def test_rebuild_single_entity_truncates_content_and_updates_graph():
     assert record["content"] != "ALICE\n" + LONG_DESCRIPTION
 
 
-async def test_rebuild_single_entity_truncation_failure_leaves_graph_untouched():
+async def test_rebuild_single_entity_truncation_failure_still_updates_graph():
+    """The graph is authoritative and is written first, unconditionally: a
+    downstream VDB truncation failure must not prevent it (a stale/missing
+    VDB entry is repairable from the graph via the rebuild tool; a graph
+    write gated behind VDB feasibility would not be)."""
     graph = _MemGraph()
     await graph.upsert_node(
         "ALICE",
@@ -242,7 +248,6 @@ async def test_rebuild_single_entity_truncation_failure_leaves_graph_untouched()
     )
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     vdb = _MemVDB(cfg)
-    node_before = dict(graph.nodes["ALICE"])
 
     with pytest.raises(TokenBudgetError):
         await _rebuild_single_entity(
@@ -255,9 +260,8 @@ async def test_rebuild_single_entity_truncation_failure_leaves_graph_untouched()
             global_config=cfg,
         )
 
-    # The truncation failure happened before the graph write: the node is
-    # unchanged from before the call, and the VDB was never touched.
-    assert graph.nodes["ALICE"] == node_before
+    # The graph write already happened before the VDB truncation failed.
+    assert graph.nodes["ALICE"]["description"] == LONG_DESCRIPTION
     assert vdb.upsert_calls == 0
 
 
@@ -301,7 +305,10 @@ async def test_rebuild_single_relationship_truncates_own_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_rebuild_single_relationship_truncation_failure_leaves_edge_untouched():
+async def test_rebuild_single_relationship_truncation_failure_still_updates_edge():
+    """The graph edge write happens first, unconditionally: a downstream VDB
+    truncation failure for the relationship's own content must not prevent
+    it."""
     graph = _MemGraph()
     for name in ("A", "B"):
         await graph.upsert_node(
@@ -321,7 +328,6 @@ async def test_rebuild_single_relationship_truncation_failure_leaves_edge_untouc
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     entities_vdb = _MemVDB(cfg)
     relationships_vdb = _MemVDB(cfg)
-    edge_before = dict(graph.edges[("A", "B")])
 
     with pytest.raises(TokenBudgetError):
         await _rebuild_single_relationship(
@@ -338,16 +344,17 @@ async def test_rebuild_single_relationship_truncation_failure_leaves_edge_untouc
             global_config=cfg,
         )
 
-    assert graph.edges[("A", "B")] == edge_before
+    assert graph.edges[("A", "B")]["description"] == LONG_DESCRIPTION
     assert relationships_vdb.upsert_calls == 0
 
 
-async def test_rebuild_single_relationship_missing_endpoint_not_created_when_relation_content_fails():
-    """Multi-object case: the endpoint entity's own content would truncate
-    fine, but the relationship's own content cannot. A missing endpoint must
-    not be created in the graph/VDB just because ITS payload happened to
-    validate -- the whole operation's payloads (endpoint + relationship) must
-    all be validated before either is written."""
+async def test_rebuild_single_relationship_endpoint_created_when_relation_content_fails():
+    """Multi-object case: the endpoint entity's own content truncates fine,
+    but the relationship's own content cannot. The graph is authoritative and
+    each object's graph write happens as soon as its own payload is ready --
+    a missing endpoint is created (graph + VDB) even though the relationship
+    VDB write later fails, because the endpoint's own VDB payload is
+    independently valid."""
     graph = _MemGraph()
     await graph.upsert_node(
         "A", {"entity_id": "A", "description": "short", "source_id": "c1"}
@@ -386,8 +393,9 @@ async def test_rebuild_single_relationship_missing_endpoint_not_created_when_rel
             structural_fallback=True,
         )
 
-    assert "B" not in graph.nodes
-    assert entities_vdb.upsert_calls == 0
+    assert "B" in graph.nodes
+    assert entities_vdb.upsert_calls == 1
+    assert graph.edges[("A", "B")]["description"] == "short"
     assert relationships_vdb.upsert_calls == 0
 
 
@@ -420,7 +428,7 @@ async def test_merge_nodes_then_upsert_truncates_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_merge_nodes_then_upsert_truncation_failure_leaves_graph_untouched():
+async def test_merge_nodes_then_upsert_truncation_failure_still_updates_graph():
     graph = _MemGraph()
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     vdb = _MemVDB(cfg)
@@ -441,7 +449,7 @@ async def test_merge_nodes_then_upsert_truncation_failure_leaves_graph_untouched
             cfg,
         )
 
-    assert "ALICE" not in graph.nodes
+    assert graph.nodes["ALICE"]["description"] == LONG_DESCRIPTION
     assert vdb.upsert_calls == 0
 
 
@@ -474,10 +482,16 @@ async def test_merge_edges_then_upsert_truncates_relation_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_merge_edges_then_upsert_truncation_failure_leaves_edge_untouched():
+async def test_merge_edges_then_upsert_truncation_failure_still_updates_edge():
     graph = _MemGraph()
+    # source_id already matches the relation's own source_id so neither
+    # endpoint's source_id changes -- the endpoint-update branch (which
+    # would itself hit _truncate_vdb_content and fail first) is skipped,
+    # isolating the failure to the relationship's own content.
     for name in ("A", "B"):
-        await graph.upsert_node(name, {"entity_id": name, "description": name})
+        await graph.upsert_node(
+            name, {"entity_id": name, "description": name, "source_id": "c1"}
+        )
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     entities_vdb = _MemVDB(cfg)
     relationships_vdb = _MemVDB(cfg)
@@ -500,7 +514,7 @@ async def test_merge_edges_then_upsert_truncation_failure_leaves_edge_untouched(
             cfg,
         )
 
-    assert ("A", "B") not in graph.edges and ("B", "A") not in graph.edges
+    assert graph.edges[("A", "B")]["description"] == LONG_DESCRIPTION
     assert relationships_vdb.upsert_calls == 0
 
 
@@ -532,12 +546,12 @@ async def test_merge_edges_then_upsert_new_endpoint_entity_content_truncated():
         assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_merge_edges_then_upsert_new_endpoints_not_created_when_relation_content_fails():
-    """Multi-object case: both new endpoints' own content would truncate
-    fine, but the relationship's own content cannot. Neither endpoint may be
-    created in the graph/VDB just because ITS OWN payload happened to
-    validate -- the whole operation's payloads (both endpoints AND the
-    relationship) must all be validated before any of them is written."""
+async def test_merge_edges_then_upsert_new_endpoints_created_when_relation_content_fails():
+    """Multi-object case: both new endpoints' own content truncates fine, but
+    the relationship's own content cannot. The graph is authoritative and
+    each object's graph write happens as soon as its own payload is ready --
+    both new endpoints (graph + VDB) and the edge (graph) are created even
+    though the relationship VDB write later fails."""
     graph = _MemGraph()
     cfg = _cfg(_FailsOnlyForRelationContentTokenizer(), embedding_token_limit=20)
     entities_vdb = _MemVDB(cfg)
@@ -561,10 +575,10 @@ async def test_merge_edges_then_upsert_new_endpoints_not_created_when_relation_c
             cfg,
         )
 
-    assert "NEW_A" not in graph.nodes
-    assert "NEW_B" not in graph.nodes
-    assert ("NEW_A", "NEW_B") not in graph.edges
-    assert entities_vdb.upsert_calls == 0
+    assert "NEW_A" in graph.nodes
+    assert "NEW_B" in graph.nodes
+    assert ("NEW_A", "NEW_B") in graph.edges
+    assert entities_vdb.upsert_calls == 2
     assert relationships_vdb.upsert_calls == 0
 
 
@@ -590,7 +604,7 @@ async def test_acreate_entity_truncates_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_acreate_entity_truncation_failure_leaves_graph_untouched():
+async def test_acreate_entity_truncation_failure_still_updates_graph():
     graph = _MemGraph()
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     entities_vdb = _MemVDB(cfg)
@@ -605,7 +619,7 @@ async def test_acreate_entity_truncation_failure_leaves_graph_untouched():
             {"description": LONG_DESCRIPTION, "entity_type": "PERSON"},
         )
 
-    assert "ALICE" not in graph.nodes
+    assert graph.nodes["ALICE"]["description"] == LONG_DESCRIPTION
     assert entities_vdb.upsert_calls == 0
 
 
@@ -630,7 +644,7 @@ async def test_acreate_relation_truncates_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_acreate_relation_truncation_failure_leaves_graph_untouched():
+async def test_acreate_relation_truncation_failure_still_updates_graph():
     graph = _MemGraph()
     for name in ("A", "B"):
         await graph.upsert_node(name, {"entity_id": name, "description": name})
@@ -648,7 +662,7 @@ async def test_acreate_relation_truncation_failure_leaves_graph_untouched():
             {"description": LONG_DESCRIPTION, "keywords": "k"},
         )
 
-    assert ("A", "B") not in graph.edges and ("B", "A") not in graph.edges
+    assert graph.edges[("A", "B")]["description"] == LONG_DESCRIPTION
     assert relationships_vdb.upsert_calls == 0
 
 
@@ -684,7 +698,13 @@ async def test_edit_relation_truncates_content():
     assert len(cfg["tokenizer"].encode(record["content"])) <= 20
 
 
-async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
+async def test_edit_relation_truncation_failure_still_updates_graph():
+    """aedit_relation's pre-existing order is delete-old-VDB-record, then
+    graph upsert, then (now) content truncation + VDB upsert -- unchanged by
+    this refactor other than adding the truncation step. A truncation
+    failure must not roll back the delete or the graph write: the graph is
+    authoritative, and the stale VDB record is already gone (about to be
+    replaced) regardless of whether the replacement can be built."""
     graph = _MemGraph()
     for name in ("A", "B"):
         await graph.upsert_node(name, {"entity_id": name, "description": name})
@@ -699,8 +719,6 @@ async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     entities_vdb = _MemVDB(cfg)
     relationships_vdb = _MemVDB(cfg)
-    # Pre-seed the VDB record the edit would otherwise delete, to prove the
-    # delete never happened either.
     rel_id = operate.compute_mdhash_id("A" + "B", prefix="rel-")
     relationships_vdb.records[rel_id] = {"content": "pre-existing"}
 
@@ -714,9 +732,9 @@ async def test_edit_relation_truncation_failure_leaves_edge_and_vdb_untouched():
             {"description": LONG_DESCRIPTION},
         )
 
-    assert graph.edges[("A", "B")] == original_edge
+    assert graph.edges[("A", "B")]["description"] == LONG_DESCRIPTION
     assert relationships_vdb.upsert_calls == 0
-    assert rel_id in relationships_vdb.records  # delete never happened either
+    assert rel_id not in relationships_vdb.records  # old record already deleted
 
 
 async def test_edit_entity_rename_truncates_content():
@@ -862,11 +880,12 @@ async def test_ainsert_custom_kg_truncates_entity_and_relation_content():
 
 async def test_ainsert_custom_kg_relationship_endpoints_keep_real_entity_data():
     """A relationship endpoint that is ALSO one of the batch's own explicit
-    entities must not be treated as a missing/placeholder node just because
-    the graph hasn't seen the real entity_nodes upsert yet at discovery time
-    -- that would let the placeholder {description: "UNKNOWN"} mutation
-    (which runs after the real entity write in the same batch) clobber the
-    real submitted description/entity_type."""
+    entities must not be treated as a missing/placeholder node. entity_nodes
+    is batch-upserted to the graph FIRST, before the relationship-endpoint
+    discovery pass runs has_nodes_batch, so the discovery pass correctly
+    sees Alice/Bob as already existing and never queues a placeholder
+    {description: "UNKNOWN"} node that would clobber the real submitted
+    description/entity_type."""
     cfg = _cfg(_tok(), embedding_token_limit=1000)
     rag = _make_custom_kg_rag(cfg)
 
@@ -912,7 +931,10 @@ async def test_ainsert_custom_kg_relationship_endpoints_keep_real_entity_data():
     assert ("Alice", "Bob") in rag.chunk_entity_relation_graph.edges
 
 
-async def test_ainsert_custom_kg_truncation_failure_leaves_graph_untouched():
+async def test_ainsert_custom_kg_truncation_failure_still_updates_graph():
+    """The graph is authoritative and all graph batch writes for this custom
+    KG batch happen before the VDB payloads are even constructed: a
+    truncation failure must not roll any of them back."""
     cfg = _cfg(_AlwaysFailsTruncateTokenizer(), embedding_token_limit=20)
     rag = _make_custom_kg_rag(cfg)
 
@@ -933,16 +955,20 @@ async def test_ainsert_custom_kg_truncation_failure_leaves_graph_untouched():
             }
         )
 
-    assert "Alice" not in rag.chunk_entity_relation_graph.nodes
+    assert (
+        rag.chunk_entity_relation_graph.nodes["Alice"]["description"]
+        == LONG_DESCRIPTION
+    )
     assert rag.entities_vdb.upsert_calls == 0
 
 
-async def test_ainsert_custom_kg_entities_not_created_when_relationship_content_fails():
-    """Multi-object case: the entity payload would truncate fine, but the
-    relationship's own content cannot. Neither Alice nor Bob (nor the edge)
-    may land in the graph just because the entity payloads happened to
-    validate -- the whole batch's payloads (entities AND relationships) must
-    all be validated before ANY graph mutation."""
+async def test_ainsert_custom_kg_entities_and_edge_still_created_when_relationship_content_fails():
+    """Multi-object case: the entity payloads would truncate fine, but the
+    relationship's own content cannot. All graph batch writes (entities,
+    missing nodes, edges) happen before any VDB payload is built, so Alice,
+    Bob, and their edge all land in the graph even though the relationship
+    VDB payload later fails to build -- only the VDB upserts (which run
+    after ALL graph writes) are skipped."""
     cfg = _cfg(_FailsOnlyForRelationContentTokenizer(), embedding_token_limit=20)
     rag = _make_custom_kg_rag(cfg)
 
@@ -980,9 +1006,9 @@ async def test_ainsert_custom_kg_entities_not_created_when_relationship_content_
             }
         )
 
-    assert "Alice" not in rag.chunk_entity_relation_graph.nodes
-    assert "Bob" not in rag.chunk_entity_relation_graph.nodes
-    assert not rag.chunk_entity_relation_graph.edges
+    assert "Alice" in rag.chunk_entity_relation_graph.nodes
+    assert "Bob" in rag.chunk_entity_relation_graph.nodes
+    assert ("Alice", "Bob") in rag.chunk_entity_relation_graph.edges
     assert rag.entities_vdb.upsert_calls == 0
     assert rag.relationships_vdb.upsert_calls == 0
 

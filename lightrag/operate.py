@@ -1679,8 +1679,14 @@ async def _rebuild_single_entity(
                 "truncate": truncation_info,
             }
 
-            # Construct and verify the VDB payload BEFORE the first graph
-            # mutation: if truncation fails, nothing has been written yet.
+            # Update entity in graph storage first (critical path): the
+            # graph is the authoritative store, and a truncation/VDB
+            # failure below must never prevent this write — a stale/missing
+            # VDB entry can always be repaired from the graph via the
+            # offline rebuild tool, but a graph write gated behind VDB
+            # feasibility would lose the rebuild entirely.
+            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
+
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
             entity_content = _truncate_vdb_content(
                 f"{entity_name}\n{final_description}",
@@ -1697,9 +1703,6 @@ async def _rebuild_single_entity(
                     "file_path": updated_entity_data["file_path"],
                 }
             }
-
-            # Update entity in graph storage (critical path)
-            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
             # Update entity in vector database (equally critical).  Use safe
             # operation wrapper - VDB failure must throw exception.
@@ -2088,13 +2091,12 @@ async def _rebuild_single_relationship(
     node_source_id = updated_relationship_data.get("source_id", "")
     node_file_path = updated_relationship_data.get("file_path", "unknown_source")
 
-    # Discover missing endpoint nodes and validate every VDB payload this
-    # call will need (missing endpoints AND the relationship itself) BEFORE
-    # any graph mutation below: has_node is a read, so the discovery pass
-    # costs nothing extra, and a truncation failure anywhere leaves the
-    # graph completely untouched instead of stranding already-created
-    # endpoint nodes while the relationship's own content still fails.
-    missing_nodes: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
+    # Ensure missing endpoint nodes exist in the graph first for each node:
+    # the graph is the authoritative store, and a truncation/VDB failure
+    # below must never prevent a node's graph write — a stale/missing VDB
+    # entry can always be repaired from the graph via the offline rebuild
+    # tool, but a graph write gated behind VDB feasibility would strand the
+    # rebuild with a dangling edge referencing a node that was never created.
     for node_id in {src, tgt}:
         if not (await knowledge_graph_inst.has_node(node_id)):
             node_created_at = int(time.time())
@@ -2107,9 +2109,23 @@ async def _rebuild_single_relationship(
                 "created_at": node_created_at,
                 "truncate": "",
             }
-            entity_vdb_id = compute_mdhash_id(node_id, prefix="ent-")
-            vdb_data = (
-                {
+            await knowledge_graph_inst.upsert_node(node_id, node_data=node_data)
+
+            # Update entity_chunks_storage for the newly created entity
+            if entity_chunks_storage is not None and limited_chunk_ids:
+                await entity_chunks_storage.upsert(
+                    {
+                        node_id: {
+                            "chunk_ids": limited_chunk_ids,
+                            "count": len(limited_chunk_ids),
+                        }
+                    }
+                )
+
+            # Update entity_vdb for the newly created entity
+            if entities_vdb is not None:
+                entity_vdb_id = compute_mdhash_id(node_id, prefix="ent-")
+                vdb_data = {
                     entity_vdb_id: {
                         "content": _truncate_vdb_content(
                             f"{node_id}\n{node_description}",
@@ -2122,63 +2138,23 @@ async def _rebuild_single_relationship(
                         "file_path": node_file_path,
                     }
                 }
-                if entities_vdb is not None
-                else None
-            )
-            missing_nodes.append((node_id, node_data, vdb_data))
+                await safe_vdb_operation_with_exception(
+                    operation=lambda payload=vdb_data: entities_vdb.upsert(payload),
+                    operation_name="rebuild_added_entity_upsert",
+                    entity_name=node_id,
+                    max_retries=3,
+                    retry_delay=0.1,
+                )
+
+    # Update relationship in graph storage first, same reasoning as above.
+    await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Sort src/tgt for a consistent VDB record identity (smaller string
     # first) — kept separate from the src/tgt used for the graph edge write
-    # below, which must use the caller's original direction.
+    # above, which must use the caller's original direction.
     vdb_src, vdb_tgt = (tgt, src) if src > tgt else (src, tgt)
     rel_vdb_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
     rel_vdb_id_reverse = compute_mdhash_id(vdb_tgt + vdb_src, prefix="rel-")
-
-    rel_content = _truncate_vdb_content(
-        f"{combined_keywords}\t{vdb_src}\n{vdb_tgt}\n{final_description}",
-        global_config,
-        f"relation:{vdb_src}-{vdb_tgt}",
-    )
-    vdb_data = {
-        rel_vdb_id: {
-            "src_id": vdb_src,
-            "tgt_id": vdb_tgt,
-            "source_id": updated_relationship_data["source_id"],
-            "content": rel_content,
-            "keywords": combined_keywords,
-            "description": final_description,
-            "weight": weight,
-            "file_path": updated_relationship_data["file_path"],
-        }
-    }
-
-    # Every VDB payload is now validated — only from here on does this
-    # function touch the graph or vector storages.
-    for node_id, node_data, node_vdb_data in missing_nodes:
-        await knowledge_graph_inst.upsert_node(node_id, node_data=node_data)
-
-        # Update entity_chunks_storage for the newly created entity
-        if entity_chunks_storage is not None and limited_chunk_ids:
-            await entity_chunks_storage.upsert(
-                {
-                    node_id: {
-                        "chunk_ids": limited_chunk_ids,
-                        "count": len(limited_chunk_ids),
-                    }
-                }
-            )
-
-        # Update entity_vdb for the newly created entity
-        if entities_vdb is not None:
-            await safe_vdb_operation_with_exception(
-                operation=lambda payload=node_vdb_data: entities_vdb.upsert(payload),
-                operation_name="rebuild_added_entity_upsert",
-                entity_name=node_id,
-                max_retries=3,
-                retry_delay=0.1,
-            )
-
-    await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Update relationship in vector database
     try:
@@ -2191,6 +2167,25 @@ async def _rebuild_single_relationship(
             logger.debug(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
+
+        # Insert new vector record
+        rel_content = _truncate_vdb_content(
+            f"{combined_keywords}\t{vdb_src}\n{vdb_tgt}\n{final_description}",
+            global_config,
+            f"relation:{vdb_src}-{vdb_tgt}",
+        )
+        vdb_data = {
+            rel_vdb_id: {
+                "src_id": vdb_src,
+                "tgt_id": vdb_tgt,
+                "source_id": updated_relationship_data["source_id"],
+                "content": rel_content,
+                "keywords": combined_keywords,
+                "description": final_description,
+                "weight": weight,
+                "file_path": updated_relationship_data["file_path"],
+            }
+        }
 
         # Use safe operation wrapper - VDB failure must throw exception
         await safe_vdb_operation_with_exception(
@@ -2567,9 +2562,16 @@ async def _merge_nodes_then_upsert(
             truncate=truncation_info,
         )
 
-        # Construct and verify the VDB payload BEFORE the first graph
-        # mutation: if truncation fails, nothing has been written yet.
-        data_for_vdb = None
+        # Update graph first: the graph is the authoritative store, and a
+        # truncation/VDB failure below must never prevent this write — a
+        # stale/missing VDB entry can always be repaired from the graph via
+        # the offline rebuild tool, but a graph write gated behind VDB
+        # feasibility would lose the merge entirely.
+        await knowledge_graph_inst.upsert_node(
+            entity_name,
+            node_data=node_data,
+        )
+        node_data["entity_name"] = entity_name
         if entity_vdb is not None:
             entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
             entity_content = _truncate_vdb_content(
@@ -2586,13 +2588,6 @@ async def _merge_nodes_then_upsert(
                     "file_path": file_path,
                 }
             }
-
-        await knowledge_graph_inst.upsert_node(
-            entity_name,
-            node_data=node_data,
-        )
-        node_data["entity_name"] = entity_name
-        if entity_vdb is not None:
             await safe_vdb_operation_with_exception(
                 operation=lambda payload=data_for_vdb: entity_vdb.upsert(payload),
                 operation_name="entity_upsert",
@@ -2951,14 +2946,13 @@ async def _merge_edges_then_upsert(
         else:
             logger.debug(status_message)
 
-        # 11. Discover per-endpoint plans and validate every VDB payload
-        # (both endpoints AND the relationship itself, built further below)
-        # BEFORE any graph mutation in this function: get_node/get_by_id are
-        # reads, so this discovery pass costs nothing extra, and a
-        # truncation failure anywhere leaves the graph completely untouched
-        # instead of stranding an already-created/updated endpoint while the
-        # relationship's own content still fails.
-        endpoint_plans: list[dict[str, Any]] = []
+        # 11. Update both graph and vector db. The graph write for each
+        # object (endpoint node, then the edge itself) always happens
+        # first and unconditionally: the graph is the authoritative store,
+        # and a downstream truncation/VDB failure must never prevent it —
+        # a stale/missing VDB entry can always be repaired from the graph
+        # via the offline rebuild tool, but a graph write gated behind VDB
+        # feasibility would lose the merge entirely.
         for need_insert_id in [src_id, tgt_id]:
             # Optimization: Use get_node instead of has_node + get_node
             existing_node = await knowledge_graph_inst.get_node(need_insert_id)
@@ -2975,8 +2969,23 @@ async def _merge_edges_then_upsert(
                     "created_at": node_created_at,
                     "truncate": "",
                 }
+                await knowledge_graph_inst.upsert_node(
+                    need_insert_id, node_data=node_data
+                )
 
-                vdb_data = None
+                # Update entity_chunks_storage for the newly created entity
+                if entity_chunks_storage is not None:
+                    chunk_ids = [chunk_id for chunk_id in full_source_ids if chunk_id]
+                    if chunk_ids:
+                        await entity_chunks_storage.upsert(
+                            {
+                                need_insert_id: {
+                                    "chunk_ids": chunk_ids,
+                                    "count": len(chunk_ids),
+                                }
+                            }
+                        )
+
                 if entity_vdb is not None:
                     entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
                     entity_content = _truncate_vdb_content(
@@ -2993,176 +3002,8 @@ async def _merge_edges_then_upsert(
                             "file_path": file_path,
                         }
                     }
-
-                endpoint_plans.append(
-                    {
-                        "kind": "create",
-                        "need_insert_id": need_insert_id,
-                        "node_data": node_data,
-                        "vdb_data": vdb_data,
-                        "node_created_at": node_created_at,
-                        "chunk_ids": [
-                            chunk_id for chunk_id in full_source_ids if chunk_id
-                        ],
-                    }
-                )
-                continue
-
-            # Node exists - update its source_ids by merging with new source_ids
-            updated = False  # Track if any update occurred
-
-            # 1. Get existing full source_ids from entity_chunks_storage
-            existing_full_source_ids = []
-            if entity_chunks_storage is not None:
-                stored_chunks = await entity_chunks_storage.get_by_id(need_insert_id)
-                if stored_chunks and isinstance(stored_chunks, dict):
-                    existing_full_source_ids = [
-                        chunk_id
-                        for chunk_id in stored_chunks.get("chunk_ids", [])
-                        if chunk_id
-                    ]
-
-            # If not in entity_chunks_storage, get from graph database
-            if not existing_full_source_ids:
-                if existing_node.get("source_id"):
-                    existing_full_source_ids = existing_node["source_id"].split(
-                        GRAPH_FIELD_SEP
-                    )
-
-            # 2. Merge with new source_ids from this relationship
-            new_source_ids_from_relation = [
-                chunk_id for chunk_id in source_ids if chunk_id
-            ]
-            merged_full_source_ids = merge_source_ids(
-                existing_full_source_ids, new_source_ids_from_relation
-            )
-
-            # 3. Merged full list for entity_chunks_storage (conditional)
-            entity_chunks_upsert = None
-            if (
-                entity_chunks_storage is not None
-                and merged_full_source_ids != existing_full_source_ids
-            ):
-                updated = True
-                entity_chunks_upsert = {
-                    "chunk_ids": merged_full_source_ids,
-                    "count": len(merged_full_source_ids),
-                }
-
-            # 4. Apply source_ids limit for graph and vector db
-            limit_method = global_config.get(
-                "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
-            )
-            max_source_limit = global_config.get("max_source_ids_per_entity")
-            limited_source_ids = apply_source_ids_limit(
-                merged_full_source_ids,
-                max_source_limit,
-                limit_method,
-                identifier=f"`{need_insert_id}`",
-            )
-
-            # 5. Graph/vector database update payload (conditional)
-            limited_source_id_str = GRAPH_FIELD_SEP.join(limited_source_ids)
-            updated_node_data = None
-            vdb_data = None
-
-            if limited_source_id_str != existing_node.get("source_id", ""):
-                updated = True
-                updated_node_data = {
-                    **existing_node,
-                    "source_id": limited_source_id_str,
-                }
-
-                if entity_vdb is not None:
-                    entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
-                    entity_content = _truncate_vdb_content(
-                        f"{need_insert_id}\n{existing_node.get('description', '')}",
-                        global_config,
-                        f"entity:{need_insert_id}",
-                    )
-                    vdb_data = {
-                        entity_vdb_id: {
-                            "content": entity_content,
-                            "entity_name": need_insert_id,
-                            "source_id": limited_source_id_str,
-                            "entity_type": existing_node.get("entity_type", "UNKNOWN"),
-                            "file_path": existing_node.get(
-                                "file_path", "unknown_source"
-                            ),
-                        }
-                    }
-
-            endpoint_plans.append(
-                {
-                    "kind": "update",
-                    "need_insert_id": need_insert_id,
-                    "entity_chunks_upsert": entity_chunks_upsert,
-                    "updated_node_data": updated_node_data,
-                    "vdb_data": vdb_data,
-                    "updated": updated,
-                }
-            )
-
-        edge_created_at = int(time.time())
-
-        # Sort src_id/tgt_id for a consistent VDB record identity (smaller
-        # string first) — kept separate from src_id/tgt_id used for the graph
-        # edge write below, which must use the caller's original direction.
-        vdb_src_id, vdb_tgt_id = (
-            (tgt_id, src_id) if src_id > tgt_id else (src_id, tgt_id)
-        )
-
-        # Construct and verify the VDB payload BEFORE the first graph
-        # mutation: if truncation fails, nothing has been written yet.
-        vdb_data = None
-        if relationships_vdb is not None:
-            rel_vdb_id = compute_mdhash_id(vdb_src_id + vdb_tgt_id, prefix="rel-")
-            rel_vdb_id_reverse = compute_mdhash_id(
-                vdb_tgt_id + vdb_src_id, prefix="rel-"
-            )
-            rel_content = _truncate_vdb_content(
-                f"{keywords}\t{vdb_src_id}\n{vdb_tgt_id}\n{description}",
-                global_config,
-                f"relationship:{vdb_src_id}-{vdb_tgt_id}",
-            )
-            vdb_data = {
-                rel_vdb_id: {
-                    "src_id": vdb_src_id,
-                    "tgt_id": vdb_tgt_id,
-                    "source_id": source_id,
-                    "content": rel_content,
-                    "keywords": keywords,
-                    "description": description,
-                    "weight": weight,
-                    "file_path": file_path,
-                }
-            }
-
-        # Every VDB payload is now validated (both endpoints above and the
-        # relationship itself just above) — only from here on does this
-        # function touch the graph or vector storages.
-        for plan in endpoint_plans:
-            need_insert_id = plan["need_insert_id"]
-            if plan["kind"] == "create":
-                await knowledge_graph_inst.upsert_node(
-                    need_insert_id, node_data=plan["node_data"]
-                )
-
-                if entity_chunks_storage is not None and plan["chunk_ids"]:
-                    await entity_chunks_storage.upsert(
-                        {
-                            need_insert_id: {
-                                "chunk_ids": plan["chunk_ids"],
-                                "count": len(plan["chunk_ids"]),
-                            }
-                        }
-                    )
-
-                if entity_vdb is not None:
                     await safe_vdb_operation_with_exception(
-                        operation=lambda payload=plan["vdb_data"]: entity_vdb.upsert(
-                            payload
-                        ),
+                        operation=lambda payload=vdb_data: entity_vdb.upsert(payload),
                         operation_name="added_entity_upsert",
                         entity_name=f"{need_insert_id} [relation:{relation_key}]",
                         max_retries=3,
@@ -3174,6 +3015,7 @@ async def _merge_edges_then_upsert(
                         success_log_threshold_seconds=5.0,
                     )
 
+                # Track entities added during edge processing
                 if added_entities is not None:
                     added_entities.append(
                         {
@@ -3182,43 +3024,126 @@ async def _merge_edges_then_upsert(
                             "description": description,
                             "source_id": source_id,
                             "file_path": file_path,
-                            "created_at": plan["node_created_at"],
+                            "created_at": node_created_at,
                         }
                     )
-                continue
+            else:
+                # Node exists - update its source_ids by merging with new source_ids
+                updated = False  # Track if any update occurred
 
-            # kind == "update"
-            if plan["entity_chunks_upsert"] is not None:
-                await entity_chunks_storage.upsert(
-                    {need_insert_id: plan["entity_chunks_upsert"]}
+                # 1. Get existing full source_ids from entity_chunks_storage
+                existing_full_source_ids = []
+                if entity_chunks_storage is not None:
+                    stored_chunks = await entity_chunks_storage.get_by_id(
+                        need_insert_id
+                    )
+                    if stored_chunks and isinstance(stored_chunks, dict):
+                        existing_full_source_ids = [
+                            chunk_id
+                            for chunk_id in stored_chunks.get("chunk_ids", [])
+                            if chunk_id
+                        ]
+
+                # If not in entity_chunks_storage, get from graph database
+                if not existing_full_source_ids:
+                    if existing_node.get("source_id"):
+                        existing_full_source_ids = existing_node["source_id"].split(
+                            GRAPH_FIELD_SEP
+                        )
+
+                # 2. Merge with new source_ids from this relationship
+                new_source_ids_from_relation = [
+                    chunk_id for chunk_id in source_ids if chunk_id
+                ]
+                merged_full_source_ids = merge_source_ids(
+                    existing_full_source_ids, new_source_ids_from_relation
                 )
 
-            if plan["updated_node_data"] is not None:
-                await knowledge_graph_inst.upsert_node(
-                    need_insert_id, node_data=plan["updated_node_data"]
-                )
-
-                if entity_vdb is not None and plan["vdb_data"] is not None:
-                    await safe_vdb_operation_with_exception(
-                        operation=lambda payload=plan["vdb_data"]: entity_vdb.upsert(
-                            payload
-                        ),
-                        operation_name="existing_entity_update",
-                        entity_name=f"{need_insert_id} [relation:{relation_key}]",
-                        max_retries=3,
-                        retry_delay=0.1,
-                        timeout_seconds=_get_relationship_vdb_timeout_seconds(
-                            global_config
-                        ),
-                        log_start=False,
-                        success_log_threshold_seconds=5.0,
+                # 3. Save merged full list to entity_chunks_storage (conditional)
+                if (
+                    entity_chunks_storage is not None
+                    and merged_full_source_ids != existing_full_source_ids
+                ):
+                    updated = True
+                    await entity_chunks_storage.upsert(
+                        {
+                            need_insert_id: {
+                                "chunk_ids": merged_full_source_ids,
+                                "count": len(merged_full_source_ids),
+                            }
+                        }
                     )
 
-            if plan["updated"]:
-                status_message = f"Chunks appended from relation: `{need_insert_id}`"
-                logger.info(status_message)
-                status_logger.log(status_message)
+                # 4. Apply source_ids limit for graph and vector db
+                limit_method = global_config.get(
+                    "source_ids_limit_method", SOURCE_IDS_LIMIT_METHOD_KEEP
+                )
+                max_source_limit = global_config.get("max_source_ids_per_entity")
+                limited_source_ids = apply_source_ids_limit(
+                    merged_full_source_ids,
+                    max_source_limit,
+                    limit_method,
+                    identifier=f"`{need_insert_id}`",
+                )
 
+                # 5. Update graph database and vector database with limited source_ids (conditional)
+                limited_source_id_str = GRAPH_FIELD_SEP.join(limited_source_ids)
+
+                if limited_source_id_str != existing_node.get("source_id", ""):
+                    updated = True
+                    updated_node_data = {
+                        **existing_node,
+                        "source_id": limited_source_id_str,
+                    }
+                    await knowledge_graph_inst.upsert_node(
+                        need_insert_id, node_data=updated_node_data
+                    )
+
+                    # Update vector database
+                    if entity_vdb is not None:
+                        entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
+                        entity_content = _truncate_vdb_content(
+                            f"{need_insert_id}\n{existing_node.get('description', '')}",
+                            global_config,
+                            f"entity:{need_insert_id}",
+                        )
+                        vdb_data = {
+                            entity_vdb_id: {
+                                "content": entity_content,
+                                "entity_name": need_insert_id,
+                                "source_id": limited_source_id_str,
+                                "entity_type": existing_node.get(
+                                    "entity_type", "UNKNOWN"
+                                ),
+                                "file_path": existing_node.get(
+                                    "file_path", "unknown_source"
+                                ),
+                            }
+                        }
+                        await safe_vdb_operation_with_exception(
+                            operation=lambda payload=vdb_data: entity_vdb.upsert(
+                                payload
+                            ),
+                            operation_name="existing_entity_update",
+                            entity_name=f"{need_insert_id} [relation:{relation_key}]",
+                            max_retries=3,
+                            retry_delay=0.1,
+                            timeout_seconds=_get_relationship_vdb_timeout_seconds(
+                                global_config
+                            ),
+                            log_start=False,
+                            success_log_threshold_seconds=5.0,
+                        )
+
+                # 6. Log once at the end if any update occurred
+                if updated:
+                    status_message = (
+                        f"Chunks appended from relation: `{need_insert_id}`"
+                    )
+                    logger.info(status_message)
+                    status_logger.log(status_message)
+
+        edge_created_at = int(time.time())
         edge_upsert_started = time.perf_counter()
         await knowledge_graph_inst.upsert_edge(
             src_id,
@@ -3254,12 +3179,40 @@ async def _merge_edges_then_upsert(
         )
 
         if relationships_vdb is not None:
+            # Sort src_id/tgt_id for a consistent VDB record identity
+            # (smaller string first) — kept separate from src_id/tgt_id used
+            # for the graph edge write above, which must use the caller's
+            # original direction.
+            vdb_src_id, vdb_tgt_id = (
+                (tgt_id, src_id) if src_id > tgt_id else (src_id, tgt_id)
+            )
+            rel_vdb_id = compute_mdhash_id(vdb_src_id + vdb_tgt_id, prefix="rel-")
+            rel_vdb_id_reverse = compute_mdhash_id(
+                vdb_tgt_id + vdb_src_id, prefix="rel-"
+            )
             try:
                 await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
             except Exception as e:
                 logger.debug(
                     f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
                 )
+            rel_content = _truncate_vdb_content(
+                f"{keywords}\t{vdb_src_id}\n{vdb_tgt_id}\n{description}",
+                global_config,
+                f"relationship:{vdb_src_id}-{vdb_tgt_id}",
+            )
+            vdb_data = {
+                rel_vdb_id: {
+                    "src_id": vdb_src_id,
+                    "tgt_id": vdb_tgt_id,
+                    "source_id": source_id,
+                    "content": rel_content,
+                    "keywords": keywords,
+                    "description": description,
+                    "weight": weight,
+                    "file_path": file_path,
+                }
+            }
             relation_status_message = f"Upserting relation VDB: `{relation_key}`"
             logger.info(relation_status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
