@@ -50,6 +50,7 @@ from lightrag.constants import (
     PARSED_DIR_NAME,
 )
 from lightrag.exceptions import (
+    ChunkBlockMatchError,
     MultimodalAnalysisError,
     PipelineCancelledException,
     PipelineRecoveryRequiredError,
@@ -5107,12 +5108,26 @@ class _PipelineMixin:
                     self.embedding_token_limit is not None
                     and self.embedding_token_limit > 0
                 ):
+                    # A document eligible for sidecar backfill (blocks_path set)
+                    # must be able to relocate hard-split children's
+                    # _source_span against the merged text it was chunked
+                    # from — if that text is missing here, the wiring itself
+                    # is broken; surface it now with full context rather than
+                    # let backfill fail later with a more confusing error.
+                    if blocks_path and not content:
+                        raise ChunkBlockMatchError(
+                            chunk_order_index=-1,
+                            chunk_preview=None,
+                            blocks_path=blocks_path,
+                        )
                     original_chunk_count = len(chunking_result)
                     chunking_result = await run_in_chunking_executor(
                         enforce_chunk_token_limit_before_embedding,
                         chunking_result=chunking_result,
                         tokenizer=self.tokenizer,
                         max_tokens=self.embedding_token_limit,
+                        overlap_tokens=self.embedding_chunk_overlap_token_size,
+                        source_content=content,
                     )
                     if len(chunking_result) != original_chunk_count:
                         logger.info(

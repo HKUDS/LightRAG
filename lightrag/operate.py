@@ -19,6 +19,8 @@ from lightrag.utils import (
     logger,
     compute_mdhash_id,
     Tokenizer,
+    TokenBudgetError,
+    normalize_entity_name,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
@@ -48,6 +50,7 @@ from lightrag.utils import (
     fix_tuple_delimiter_corruption,
     convert_to_user_format,
     generate_reference_list_from_chunks,
+    render_chunks_context_text,
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
@@ -288,8 +291,15 @@ def _truncate_section_context(
 
 
 def _truncate_vdb_content(content: str, global_config: dict, content_label: str) -> str:
-    """Clamp vector-store payload size to stay under embedding limits."""
+    """Clamp vector-store payload size to stay under embedding limits.
 
+    Uses the safe ``Tokenizer.truncate_by_token_limit`` contract: the result is
+    independently re-encoded and verified to actually fit ``threshold``, so
+    this no longer needs (or applies) a fixed heuristic safety margin — the
+    old ``decode(tokens[:k])`` here had no such verification and was not
+    guaranteed to round-trip back to <= ``threshold`` tokens for every
+    tokenizer/content combination.
+    """
     if not content:
         return content
 
@@ -302,19 +312,30 @@ def _truncate_vdb_content(content: str, global_config: dict, content_label: str)
     if threshold <= 0:
         return content
 
-    tokens = tokenizer.encode(content)
-    if len(tokens) <= threshold:
+    try:
+        span = tokenizer.truncate_by_token_limit(content, threshold)
+    except TokenBudgetError as e:
+        # Only possible if even the first Unicode code point can't fit the
+        # embedding model's own context limit — not a real-world budget.
+        logger.error(
+            "%s VDB content cannot fit embedding limit %d: %s",
+            content_label,
+            threshold,
+            e,
+        )
+        raise
+
+    if span.end == len(content):
         return content
 
-    # Leave headroom because tokenizer behavior can differ slightly from the provider.
-    effective_limit = max(threshold - min(256, max(32, threshold // 16)), 1)
-    truncated_content = tokenizer.decode(tokens[:effective_limit])
+    truncated_content = content[span.start : span.end]
     logger.warning(
-        "%s VDB content truncated from %d to %d tokens (embedding limit: %d)",
+        "%s VDB content truncated to %d tokens (embedding limit: %d, "
+        "original length %d chars)",
         content_label,
-        len(tokens),
-        effective_limit,
+        span.token_count,
         threshold,
+        len(content),
     )
     return truncated_content
 
@@ -539,6 +560,7 @@ async def _summarize_descriptions(
     truncated_json_descriptions = await atruncate_list_by_token_size(
         json_descriptions,
         key=lambda x: json.dumps(x, ensure_ascii=False),
+        separator="\n",
         max_token_size=summary_context_size,
         tokenizer=tokenizer,
     )
@@ -604,9 +626,7 @@ def _handle_single_entity_extraction(
         return None
 
     try:
-        entity_name = sanitize_and_normalize_extracted_text(
-            record_attributes[1], remove_inner_quotes=True
-        )
+        entity_name = normalize_entity_name(record_attributes[1])
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -693,12 +713,8 @@ def _handle_single_relationship_extraction(
         return None
 
     try:
-        source = sanitize_and_normalize_extracted_text(
-            record_attributes[1], remove_inner_quotes=True
-        )
-        target = sanitize_and_normalize_extracted_text(
-            record_attributes[2], remove_inner_quotes=True
-        )
+        source = normalize_entity_name(record_attributes[1])
+        target = normalize_entity_name(record_attributes[2])
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -854,9 +870,7 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            entity_name = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("name", "")), remove_inner_quotes=True
-            )
+            entity_name = normalize_entity_name(str(entity_data.get("name", "")))
             if not entity_name or not entity_name.strip():
                 logger.info(
                     f"{chunk_key}: Empty entity name found after sanitization in JSON result"
@@ -922,12 +936,8 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            source = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("source", "")), remove_inner_quotes=True
-            )
-            target = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("target", "")), remove_inner_quotes=True
-            )
+            source = normalize_entity_name(str(rel_data.get("source", "")))
+            target = normalize_entity_name(str(rel_data.get("target", "")))
 
             if not source:
                 logger.info(
@@ -1646,7 +1656,6 @@ async def _rebuild_single_entity(
         truncation_info: str = "",
     ):
         try:
-            # Update entity in graph storage (critical path)
             updated_entity_data = {
                 **current_entity,
                 "description": final_description,
@@ -1658,16 +1667,17 @@ async def _rebuild_single_entity(
                 "created_at": int(time.time()),
                 "truncate": truncation_info,
             }
-            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
-            # Update entity in vector database (equally critical)
+            # Construct and verify the VDB payload BEFORE the first graph
+            # mutation: if truncation fails (a deterministic, non-retryable
+            # content-shape problem), nothing has been written yet. The
+            # actual VDB I/O call still happens after the graph write below.
             entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
             entity_content = _truncate_vdb_content(
                 f"{entity_name}\n{final_description}",
                 global_config,
                 f"entity:{entity_name}",
             )
-
             vdb_data = {
                 entity_vdb_id: {
                     "content": entity_content,
@@ -1679,7 +1689,11 @@ async def _rebuild_single_entity(
                 }
             }
 
-            # Use safe operation wrapper - VDB failure must throw exception
+            # Update entity in graph storage (critical path)
+            await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
+
+            # Update entity in vector database (equally critical).  Use safe
+            # operation wrapper - VDB failure must throw exception.
             await safe_vdb_operation_with_exception(
                 operation=lambda: entities_vdb.upsert(vdb_data),
                 operation_name="rebuild_entity_upsert",
@@ -2077,6 +2091,29 @@ async def _rebuild_single_relationship(
                 "created_at": node_created_at,
                 "truncate": "",
             }
+
+            # Construct and verify the VDB payload BEFORE the first graph
+            # mutation: if truncation fails (a deterministic, non-retryable
+            # content-shape problem), nothing has been written yet. The
+            # actual VDB I/O call still happens after the graph write below.
+            vdb_data = (
+                {
+                    compute_mdhash_id(node_id, prefix="ent-"): {
+                        "content": _truncate_vdb_content(
+                            f"{node_id}\n{node_description}",
+                            global_config,
+                            f"entity:{node_id}",
+                        ),
+                        "entity_name": node_id,
+                        "source_id": node_source_id,
+                        "entity_type": "UNKNOWN",
+                        "file_path": node_file_path,
+                    }
+                }
+                if entities_vdb is not None
+                else None
+            )
+
             await knowledge_graph_inst.upsert_node(node_id, node_data=node_data)
 
             # Update entity_chunks_storage for the newly created entity
@@ -2092,21 +2129,6 @@ async def _rebuild_single_relationship(
 
             # Update entity_vdb for the newly created entity
             if entities_vdb is not None:
-                entity_vdb_id = compute_mdhash_id(node_id, prefix="ent-")
-                entity_content = _truncate_vdb_content(
-                    f"{node_id}\n{node_description}",
-                    global_config,
-                    f"entity:{node_id}",
-                )
-                vdb_data = {
-                    entity_vdb_id: {
-                        "content": entity_content,
-                        "entity_name": node_id,
-                        "source_id": node_source_id,
-                        "entity_type": "UNKNOWN",
-                        "file_path": node_file_path,
-                    }
-                }
                 await safe_vdb_operation_with_exception(
                     operation=lambda payload=vdb_data: entities_vdb.upsert(payload),
                     operation_name="rebuild_added_entity_upsert",
@@ -2115,16 +2137,38 @@ async def _rebuild_single_relationship(
                     retry_delay=0.1,
                 )
 
+    # Sort src/tgt for a consistent VDB record identity (smaller string
+    # first) — kept separate from the src/tgt used for the graph edge write
+    # below, which must use the caller's original direction.
+    vdb_src, vdb_tgt = (tgt, src) if src > tgt else (src, tgt)
+    rel_vdb_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
+    rel_vdb_id_reverse = compute_mdhash_id(vdb_tgt + vdb_src, prefix="rel-")
+
+    # Construct and verify the VDB payload BEFORE the first graph mutation
+    # below: if truncation fails, nothing has been written yet. The actual
+    # VDB I/O call still happens after the graph write below.
+    rel_content = _truncate_vdb_content(
+        f"{combined_keywords}\t{vdb_src}\n{vdb_tgt}\n{final_description}",
+        global_config,
+        f"relation:{vdb_src}-{vdb_tgt}",
+    )
+    vdb_data = {
+        rel_vdb_id: {
+            "src_id": vdb_src,
+            "tgt_id": vdb_tgt,
+            "source_id": updated_relationship_data["source_id"],
+            "content": rel_content,
+            "keywords": combined_keywords,
+            "description": final_description,
+            "weight": weight,
+            "file_path": updated_relationship_data["file_path"],
+        }
+    }
+
     await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
 
     # Update relationship in vector database
-    # Sort src and tgt to ensure consistent ordering (smaller string first)
-    if src > tgt:
-        src, tgt = tgt, src
     try:
-        rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")
-        rel_vdb_id_reverse = compute_mdhash_id(tgt + src, prefix="rel-")
-
         # Delete old vector records first (both directions to be safe)
         try:
             await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
@@ -2135,39 +2179,26 @@ async def _rebuild_single_relationship(
                 f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
             )
 
-        # Insert new vector record
-        rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
-        vdb_data = {
-            rel_vdb_id: {
-                "src_id": src,
-                "tgt_id": tgt,
-                "source_id": updated_relationship_data["source_id"],
-                "content": rel_content,
-                "keywords": combined_keywords,
-                "description": final_description,
-                "weight": weight,
-                "file_path": updated_relationship_data["file_path"],
-            }
-        }
-
         # Use safe operation wrapper - VDB failure must throw exception
         await safe_vdb_operation_with_exception(
             operation=lambda: relationships_vdb.upsert(vdb_data),
             operation_name="rebuild_relationship_upsert",
-            entity_name=f"{src}-{tgt}",
+            entity_name=f"{vdb_src}-{vdb_tgt}",
             max_retries=3,
             retry_delay=0.2,
         )
 
     except Exception as e:
-        error_msg = f"Failed to rebuild relationship storage for `{src}-{tgt}`: {e}"
+        error_msg = (
+            f"Failed to rebuild relationship storage for `{vdb_src}-{vdb_tgt}`: {e}"
+        )
         logger.error(error_msg)
         raise  # Re-raise exception
 
     # Log rebuild completion with truncation info. Per-item detail goes to the
     # backend log only; pipeline history keeps the rebuild summary (volume
     # control).
-    status_message = f"Rebuild `{src}`~`{tgt}` from {len(chunk_ids)} chunks"
+    status_message = f"Rebuild `{vdb_src}`~`{vdb_tgt}` from {len(chunk_ids)} chunks"
     if truncation_info:
         status_message += f" ({truncation_info})"
     # Add truncation info from apply_source_ids_limit if truncation occurred
@@ -2522,11 +2553,12 @@ async def _merge_nodes_then_upsert(
             created_at=int(time.time()),
             truncate=truncation_info,
         )
-        await knowledge_graph_inst.upsert_node(
-            entity_name,
-            node_data=node_data,
-        )
-        node_data["entity_name"] = entity_name
+
+        # Construct and verify the VDB payload BEFORE the first graph
+        # mutation: if truncation fails (a deterministic, non-retryable
+        # content-shape problem), nothing has been written yet. The actual
+        # VDB I/O call still happens after the graph write below.
+        data_for_vdb = None
         if entity_vdb is not None:
             entity_vdb_id = compute_mdhash_id(str(entity_name), prefix="ent-")
             entity_content = _truncate_vdb_content(
@@ -2543,6 +2575,13 @@ async def _merge_nodes_then_upsert(
                     "file_path": file_path,
                 }
             }
+
+        await knowledge_graph_inst.upsert_node(
+            entity_name,
+            node_data=node_data,
+        )
+        node_data["entity_name"] = entity_name
+        if entity_vdb is not None:
             await safe_vdb_operation_with_exception(
                 operation=lambda payload=data_for_vdb: entity_vdb.upsert(payload),
                 operation_name="entity_upsert",
@@ -2901,7 +2940,7 @@ async def _merge_edges_then_upsert(
         else:
             logger.debug(status_message)
 
-        # 11. Update both graph and vector db
+        # 11. Update both graph and vector db.
         for need_insert_id in [src_id, tgt_id]:
             # Optimization: Use get_node instead of has_node + get_node
             existing_node = await knowledge_graph_inst.get_node(need_insert_id)
@@ -2918,6 +2957,30 @@ async def _merge_edges_then_upsert(
                     "created_at": node_created_at,
                     "truncate": "",
                 }
+
+                # Construct and verify the VDB payload BEFORE the first
+                # graph mutation: if truncation fails (a deterministic,
+                # non-retryable content-shape problem), nothing has been
+                # written yet. The actual VDB I/O call still happens after
+                # the graph write below.
+                vdb_data = None
+                if entity_vdb is not None:
+                    entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
+                    entity_content = _truncate_vdb_content(
+                        f"{need_insert_id}\n{description}",
+                        global_config,
+                        f"entity:{need_insert_id}",
+                    )
+                    vdb_data = {
+                        entity_vdb_id: {
+                            "content": entity_content,
+                            "entity_name": need_insert_id,
+                            "source_id": source_id,
+                            "entity_type": "UNKNOWN",
+                            "file_path": file_path,
+                        }
+                    }
+
                 await knowledge_graph_inst.upsert_node(
                     need_insert_id, node_data=node_data
                 )
@@ -2936,21 +2999,6 @@ async def _merge_edges_then_upsert(
                         )
 
                 if entity_vdb is not None:
-                    entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
-                    entity_content = _truncate_vdb_content(
-                        f"{need_insert_id}\n{description}",
-                        global_config,
-                        f"entity:{need_insert_id}",
-                    )
-                    vdb_data = {
-                        entity_vdb_id: {
-                            "content": entity_content,
-                            "entity_name": need_insert_id,
-                            "source_id": source_id,
-                            "entity_type": "UNKNOWN",
-                            "file_path": file_path,
-                        }
-                    }
                     await safe_vdb_operation_with_exception(
                         operation=lambda payload=vdb_data: entity_vdb.upsert(payload),
                         operation_name="added_entity_upsert",
@@ -2966,15 +3014,16 @@ async def _merge_edges_then_upsert(
 
                 # Track entities added during edge processing
                 if added_entities is not None:
-                    entity_data = {
-                        "entity_name": need_insert_id,
-                        "entity_type": "UNKNOWN",
-                        "description": description,
-                        "source_id": source_id,
-                        "file_path": file_path,
-                        "created_at": node_created_at,
-                    }
-                    added_entities.append(entity_data)
+                    added_entities.append(
+                        {
+                            "entity_name": need_insert_id,
+                            "entity_type": "UNKNOWN",
+                            "description": description,
+                            "source_id": source_id,
+                            "file_path": file_path,
+                            "created_at": node_created_at,
+                        }
+                    )
             else:
                 # Node exists - update its source_ids by merging with new source_ids
                 updated = False  # Track if any update occurred
@@ -3043,15 +3092,18 @@ async def _merge_edges_then_upsert(
                         **existing_node,
                         "source_id": limited_source_id_str,
                     }
-                    await knowledge_graph_inst.upsert_node(
-                        need_insert_id, node_data=updated_node_data
-                    )
 
-                    # Update vector database
+                    # Construct and verify the VDB payload BEFORE the first
+                    # graph mutation: if truncation fails, nothing has been
+                    # written yet. The actual VDB I/O call still happens
+                    # after the graph write below.
+                    vdb_data = None
                     if entity_vdb is not None:
                         entity_vdb_id = compute_mdhash_id(need_insert_id, prefix="ent-")
-                        entity_content = (
-                            f"{need_insert_id}\n{existing_node.get('description', '')}"
+                        entity_content = _truncate_vdb_content(
+                            f"{need_insert_id}\n{existing_node.get('description', '')}",
+                            global_config,
+                            f"entity:{need_insert_id}",
                         )
                         vdb_data = {
                             entity_vdb_id: {
@@ -3066,11 +3118,13 @@ async def _merge_edges_then_upsert(
                                 ),
                             }
                         }
-                        # Inside the `entity_vdb is not None` guard: vdb_data is
-                        # only assigned here, and entity_vdb.upsert needs a real
-                        # store. Previously this call sat outside the guard, so
-                        # entity_vdb=None raised UnboundLocalError on vdb_data
-                        # (and would have called None.upsert).
+
+                    await knowledge_graph_inst.upsert_node(
+                        need_insert_id, node_data=updated_node_data
+                    )
+
+                    # Update vector database
+                    if entity_vdb is not None:
                         await safe_vdb_operation_with_exception(
                             operation=lambda payload=vdb_data: entity_vdb.upsert(
                                 payload
@@ -3095,6 +3149,44 @@ async def _merge_edges_then_upsert(
                     status_logger.log(status_message)
 
         edge_created_at = int(time.time())
+
+        # Sort src_id/tgt_id for a consistent VDB record identity (smaller
+        # string first) — kept separate from src_id/tgt_id used for the
+        # graph edge write below, which must use the caller's original
+        # direction.
+        vdb_src_id, vdb_tgt_id = (
+            (tgt_id, src_id) if src_id > tgt_id else (src_id, tgt_id)
+        )
+
+        # Construct and verify the VDB payload BEFORE the first graph
+        # mutation below: if truncation fails (a deterministic,
+        # non-retryable content-shape problem), nothing has been written
+        # yet. The actual VDB I/O calls still happen after the graph write
+        # below.
+        vdb_data = None
+        if relationships_vdb is not None:
+            rel_vdb_id = compute_mdhash_id(vdb_src_id + vdb_tgt_id, prefix="rel-")
+            rel_vdb_id_reverse = compute_mdhash_id(
+                vdb_tgt_id + vdb_src_id, prefix="rel-"
+            )
+            rel_content = _truncate_vdb_content(
+                f"{keywords}\t{vdb_src_id}\n{vdb_tgt_id}\n{description}",
+                global_config,
+                f"relationship:{vdb_src_id}-{vdb_tgt_id}",
+            )
+            vdb_data = {
+                rel_vdb_id: {
+                    "src_id": vdb_src_id,
+                    "tgt_id": vdb_tgt_id,
+                    "source_id": source_id,
+                    "content": rel_content,
+                    "keywords": keywords,
+                    "description": description,
+                    "weight": weight,
+                    "file_path": file_path,
+                }
+            }
+
         edge_upsert_started = time.perf_counter()
         await knowledge_graph_inst.upsert_edge(
             src_id,
@@ -3129,36 +3221,13 @@ async def _merge_edges_then_upsert(
             weight=weight,
         )
 
-        # Sort src_id and tgt_id to ensure consistent ordering (smaller string first)
-        if src_id > tgt_id:
-            src_id, tgt_id = tgt_id, src_id
-
         if relationships_vdb is not None:
-            rel_vdb_id = compute_mdhash_id(src_id + tgt_id, prefix="rel-")
-            rel_vdb_id_reverse = compute_mdhash_id(tgt_id + src_id, prefix="rel-")
             try:
                 await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
             except Exception as e:
                 logger.debug(
                     f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
                 )
-            rel_content = _truncate_vdb_content(
-                f"{keywords}\t{src_id}\n{tgt_id}\n{description}",
-                global_config,
-                f"relationship:{src_id}-{tgt_id}",
-            )
-            vdb_data = {
-                rel_vdb_id: {
-                    "src_id": src_id,
-                    "tgt_id": tgt_id,
-                    "source_id": source_id,
-                    "content": rel_content,
-                    "keywords": keywords,
-                    "description": description,
-                    "weight": weight,
-                    "file_path": file_path,
-                }
-            }
             relation_status_message = f"Upserting relation VDB: `{relation_key}`"
             logger.info(relation_status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
@@ -4969,9 +5038,8 @@ async def _apply_token_truncation(
 
         entities_context = await atruncate_list_by_token_size(
             entities_context_for_truncation,
-            key=lambda x: "\n".join(
-                json.dumps(item, ensure_ascii=False) for item in [x]
-            ),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
+            separator="\n",
             max_token_size=max_entity_tokens,
             tokenizer=tokenizer,
         )
@@ -4987,9 +5055,8 @@ async def _apply_token_truncation(
 
         relations_context = await atruncate_list_by_token_size(
             relations_context_for_truncation,
-            key=lambda x: "\n".join(
-                json.dumps(item, ensure_ascii=False) for item in [x]
-            ),
+            key=lambda x: json.dumps(x, ensure_ascii=False),
+            separator="\n",
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
@@ -5295,19 +5362,11 @@ async def _build_context_str(
 
     # Rebuild chunks_context with truncated chunks
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
-    chunks_context = []
-    for i, chunk in enumerate(truncated_chunks):
-        entry = {
-            "reference_id": chunk["reference_id"],
-            "content": chunk["content"],
-        }
-        if chunk.get("content_headings"):
-            entry["content_headings"] = chunk["content_headings"]
-        chunks_context.append(entry)
-
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
-    )
+    text_units_str = render_chunks_context_text(truncated_chunks)
+    chunks_context = [
+        {"reference_id": chunk["reference_id"], "content": chunk["content"]}
+        for chunk in truncated_chunks
+    ]
     reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list
@@ -6235,19 +6294,7 @@ async def naive_query(
     }
 
     # Build chunks_context from processed chunks with reference IDs
-    chunks_context = []
-    for i, chunk in enumerate(processed_chunks_with_ref_ids):
-        entry = {
-            "reference_id": chunk["reference_id"],
-            "content": chunk["content"],
-        }
-        if chunk.get("content_headings"):
-            entry["content_headings"] = chunk["content_headings"]
-        chunks_context.append(entry)
-
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
-    )
+    text_units_str = render_chunks_context_text(processed_chunks_with_ref_ids)
     reference_list_str = "\n".join(
         f"[{ref['reference_id']}] {ref['file_path']}"
         for ref in reference_list

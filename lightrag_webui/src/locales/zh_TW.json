@@ -329,6 +329,7 @@
       "editPropertyDescription": "在下方文字區域編輯屬性值。",
       "errors": {
         "duplicateName": "節點名稱已存在",
+        "invalidEntityName": "請輸入有效的節點名稱",
         "updateFailed": "更新節點失敗",
         "tryAgainLater": "請稍後重試",
         "updateSuccessButMergeFailed": "屬性已更新，但合併失敗：{{error}}",

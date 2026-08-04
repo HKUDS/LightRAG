@@ -1551,7 +1551,7 @@ class Neo4JStorage(BaseGraphStorage):
         queue = deque([(start_node, None, 0)])
 
         # True BFS implementation using a queue
-        while queue and len(visited_nodes) < max_nodes:
+        while queue:
             # Dequeue the next node to process
             current_node, current_edge, current_depth = queue.popleft()
 
@@ -1565,6 +1565,19 @@ class Neo4JStorage(BaseGraphStorage):
                 )
                 continue
 
+            # This is a real, not-yet-visited, in-depth-limit node that cannot
+            # be added because the cap is already full -- that's the only
+            # condition that proves truncation. Checking the cap here (rather
+            # than after appending, or via the while-loop condition) means a
+            # queue that runs dry exactly at max_nodes never reaches this
+            # check and is never falsely reported as truncated.
+            if len(visited_nodes) >= max_nodes:
+                result.is_truncated = True
+                logger.info(
+                    f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
+                )
+                break
+
             # Add current node to result
             result.nodes.append(current_node)
             visited_nodes.add(current_node.id)
@@ -1573,14 +1586,6 @@ class Neo4JStorage(BaseGraphStorage):
             if current_edge and current_edge.id not in visited_edges:
                 result.edges.append(current_edge)
                 visited_edges.add(current_edge.id)
-
-            # Stop if we've reached the node limit
-            if len(visited_nodes) >= max_nodes:
-                result.is_truncated = True
-                logger.info(
-                    f"[{self.workspace}] Graph truncated: breadth-first search limited to: {max_nodes} nodes"
-                )
-                break
 
             # Get all edges and target nodes for the current node (even at max_depth)
             async with self._driver.session(

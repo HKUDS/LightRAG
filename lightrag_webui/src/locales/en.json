@@ -329,6 +329,7 @@
       "editPropertyDescription": "Edit the property value in the text area below.",
       "errors": {
         "duplicateName": "Node name already exists",
+        "invalidEntityName": "Enter a valid node name",
         "updateFailed": "Failed to update node",
         "tryAgainLater": "Please try again later",
         "updateSuccessButMergeFailed": "Properties updated, but merge failed: {{error}}",
