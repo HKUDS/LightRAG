@@ -2,9 +2,9 @@ name: Linting and Formatting
 
 on:
     push:
-        branches: [ main, dev ]
+        branches: [ main, dev, 'dev-*' ]
     pull_request:
-        branches: [ main, dev ]
+        branches: [ main, dev, 'dev-*' ]
         types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:

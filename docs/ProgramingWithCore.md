@@ -71,7 +71,7 @@ Notes:
 | **workspace** | str | Workspace name for data isolation between different LightRAG Instances | |
 | **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`OpenSearchKVStorage`,`LanceDBKVStorage` | `JsonKVStorage` |
 | **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage`,`OpenSearchVectorDBStorage`,`LanceDBVectorStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage`,`LanceDBGraphStorage` | `NetworkXStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGTableGraphStorage`,`PGGraphStorage`,`AGEStorage`,`OpenSearchGraphStorage`,`LanceDBGraphStorage` | `NetworkXStorage` |
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage`,`LanceDBDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
@@ -656,12 +656,19 @@ LanceDBKVStorage     LanceDB (embedded)
 NetworkXStorage          NetworkX (default)
 Neo4JStorage             Neo4J
 PGGraphStorage           PostgreSQL with AGE plugin
+PGTableGraphStorage      PostgreSQL, plain tables (no AGE, no extensions)
 MemgraphStorage          Memgraph
 OpenSearchGraphStorage   OpenSearch
 LanceDBGraphStorage      LanceDB (embedded)
 ```
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
+>
+> `PGTableGraphStorage` implements the graph layer on ordinary indexed tables plus
+> JSONB, so it runs on any stock PostgreSQL 14+ — including managed instances
+> (RDS, Cloud SQL, Supabase, Neon) where the AGE extension cannot be installed.
+> It shares the same `POSTGRES_*` configuration and connection pool as the other
+> PG storages. Choose `PGGraphStorage` only if you specifically need AGE/Cypher.
 
 **VECTOR_STORAGE**
 ```
@@ -968,7 +975,7 @@ The `workspace` parameter ensures data isolation between different LightRAG inst
 | `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage` | Workspace subdirectories |
 | `RedisKVStorage`, `MilvusVectorDBStorage`, `MongoKVStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage` | Workspace prefix on collection name |
 | `QdrantVectorDBStorage` | Payload-based partitioning (Qdrant multitenancy) |
-| `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage` | `workspace` field in tables |
+| `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`, `PGTableGraphStorage` | `workspace` field in tables |
 | `Neo4JStorage` | Labels |
 | `OpenSearch*` | Index name prefixes |
 | `LanceDB*` | Table name prefixes |

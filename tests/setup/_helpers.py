@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import functools
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,12 +18,62 @@ PRESERVED_NOTICE = (
 )
 
 
+def _bash_version_major(candidate: str) -> int | None:
+    result = subprocess.run(
+        [candidate, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    match = re.search(r"version ([0-9]+)", first_line)
+    return int(match.group(1)) if match else None
+
+
+@functools.cache
+def bash_bin() -> str:
+    """Path to a bash >= 4 interpreter, resolved once per process.
+
+    ``scripts/setup/setup.sh`` uses associative arrays (``declare -A``), which
+    need bash 4+. macOS still ships bash 3.2 as ``/bin/bash``, so a plain
+    ``"bash"`` picks an interpreter that cannot source the wizard at all.
+
+    Deliberately lazy (and cached): resolution shells out to ``bash --version``
+    once per candidate, and a module-level constant made every test session that
+    merely imports this helper pay those forks — including sessions that run no
+    setup test. Override with ``LIGHTRAG_TEST_BASH``.
+    """
+    candidates = [
+        os.environ.get("LIGHTRAG_TEST_BASH"),
+        "/opt/homebrew/bin/bash",
+        "/usr/local/bin/bash",
+        shutil.which("bash"),
+        "/bin/bash",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        candidate_path = Path(candidate)
+        if candidate_path.is_absolute() and not candidate_path.exists():
+            continue
+        major = _bash_version_major(candidate)
+        if major is not None and major >= 4:
+            return candidate
+    # No bash 4+ found. Return the best available so the caller fails with the
+    # script's own error rather than a confusing FileNotFoundError.
+    return shutil.which("bash") or "bash"
+
+
 def run_bash_process(
     script: str, cwd: Path | None = None, stdin: str | None = ""
 ) -> subprocess.CompletedProcess[str]:
     """Run a bash snippet and return the completed process."""
     return subprocess.run(
-        ["bash", "--norc", "--noprofile", "-c", script],
+        [bash_bin(), "--norc", "--noprofile", "-c", script],
         cwd=cwd or REPO_ROOT,
         input=stdin,
         capture_output=True,
