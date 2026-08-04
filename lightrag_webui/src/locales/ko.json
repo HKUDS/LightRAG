@@ -329,6 +329,7 @@
       "editPropertyDescription": "아래 텍스트 영역에서 속성 값을 수정하세요.",
       "errors": {
         "duplicateName": "노드 이름이 이미 존재합니다",
+        "invalidEntityName": "올바른 노드 이름을 입력하세요",
         "updateFailed": "노드 업데이트 실패",
         "tryAgainLater": "나중에 다시 시도해주세요",
         "updateSuccessButMergeFailed": "속성이 업데이트되었으나 병합 실패: {{error}}",

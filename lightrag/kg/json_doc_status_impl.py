@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import copy
 import hashlib
 import heapq
 import json
@@ -176,7 +177,9 @@ class JsonDocStatusStorage(DocStatusStorage):
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    ordered_results.append(data.copy())
+                    ordered_results.append(
+                        copy.deepcopy(data) if isinstance(data, dict) else data
+                    )
                 else:
                     ordered_results.append(None)
         return ordered_results
@@ -240,8 +243,8 @@ class JsonDocStatusStorage(DocStatusStorage):
             for k, v in self._data.items():
                 if v.get("track_id") == track_id:
                     try:
-                        # Make a copy of the data to avoid modifying the original
-                        data = v.copy()
+                        # Make a deep copy of the data to avoid modifying the original
+                        data = copy.deepcopy(v) if isinstance(v, dict) else v
                         # Remove deprecated content field if it exists
                         data.pop("content", None)
                         # Normalize missing or null file_path
@@ -352,7 +355,8 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         async with self._storage_lock:
-            return self._data.get(id)
+            data = self._data.get(id)
+            return copy.deepcopy(data) if isinstance(data, dict) else data
 
     async def get_docs_paginated(
         self,
@@ -394,66 +398,78 @@ class JsonDocStatusStorage(DocStatusStorage):
         if sort_direction.lower() not in ["asc", "desc"]:
             sort_direction = "desc"
 
-        # For JSON storage, we load all data and sort/filter in memory
-        all_docs = []
-
+        # Everything below — filtering, hydratability validation, sorting,
+        # page selection, and the final page's deep-copy hydration — runs
+        # inside ONE uninterrupted lock hold. Nothing in this block awaits,
+        # so no concurrent upsert/delete can land between the scan and the
+        # final hydration; splitting these into separate lock acquisitions
+        # let a status update/delete land in that gap, producing a response
+        # that mixed two snapshots (e.g. a status=pending filter returning an
+        # already-updated "processed" row, or overcounting a row that a
+        # concurrent delete then removed before it could be hydrated).
+        #
+        # The scan and validation below are still cheap per document — no
+        # nested-structure copying, just a throwaway shallow
+        # DocProcessingStatus construction (see ``_row_is_hydratable``) — so
+        # holding the lock across them does not reintroduce the "deep-copy
+        # the whole corpus" cost. Only the final page (bounded by page_size,
+        # <=200) is ever deep-copied.
         async with self._storage_lock:
+            projections: list[tuple[Any, str]] = []
             for doc_id, doc_data in self._data.items():
-                # Apply status filter
                 if (
                     status_filter_values is not None
                     and doc_data.get("status") not in status_filter_values
                 ):
                     continue
-
-                try:
-                    # Prepare document data
-                    data = doc_data.copy()
-                    data.pop("content", None)
-                    if not data.get("file_path"):
-                        data["file_path"] = "no-file-path"
-                    if "metadata" not in data:
-                        data["metadata"] = {}
-                    if "error_msg" not in data:
-                        data["error_msg"] = None
-
-                    doc_status = DocProcessingStatus(**data)
-
-                    # Add sort key for sorting
-                    if sort_field == "id":
-                        doc_status._sort_key = doc_id
-                    elif sort_field == "file_path":
-                        # Use pinyin sorting for file_path field to support Chinese characters
-                        file_path_value = getattr(doc_status, sort_field, "")
-                        doc_status._sort_key = get_pinyin_sort_key(file_path_value)
-                    else:
-                        doc_status._sort_key = getattr(doc_status, sort_field, "")
-
-                    all_docs.append((doc_id, doc_status))
-
-                except KeyError as e:
-                    logger.error(
-                        f"[{self.workspace}] Error processing document {doc_id}: {e}"
-                    )
+                # Validate via a real (throwaway) construction attempt rather
+                # than checking a fixed set of required-field names: a row
+                # with an extra/unexpected field fails construction too, and
+                # must be excluded from total_count for the same reason a
+                # missing field is — otherwise total_count could count rows
+                # the page-hydration step below can never actually return.
+                if not self._row_is_hydratable(doc_id, doc_data):
                     continue
 
-        # Sort documents
-        reverse_sort = sort_direction.lower() == "desc"
-        all_docs.sort(
-            key=lambda x: getattr(x[1], "_sort_key", ""), reverse=reverse_sort
-        )
+                if sort_field == "id":
+                    sort_key = doc_id
+                elif sort_field == "file_path":
+                    # Use pinyin sorting for file_path field to support Chinese
+                    # characters; "no-file-path" mirrors the fallback applied
+                    # during hydration (_doc_processing_status_from_row) so
+                    # sort order matches what the hydrated page would use.
+                    sort_key = get_pinyin_sort_key(
+                        doc_data.get("file_path") or "no-file-path"
+                    )
+                else:
+                    sort_key = doc_data.get(sort_field, "")
+                projections.append((sort_key, doc_id))
 
-        # Remove sort key from documents
-        for doc_id, doc in all_docs:
-            if hasattr(doc, "_sort_key"):
-                delattr(doc, "_sort_key")
+            total_count = len(projections)
 
-        total_count = len(all_docs)
+            reverse_sort = sort_direction.lower() == "desc"
+            projections.sort(key=lambda t: t[0], reverse=reverse_sort)
 
-        # Apply pagination
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        paginated_docs = all_docs[start_idx:end_idx]
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+            page_doc_ids = [doc_id for _, doc_id in projections[start_idx:end_idx]]
+
+            # Deep-copy and hydrate ONLY the requested page. Each doc_id here
+            # was validated as hydratable above in this same uninterrupted
+            # critical section, so the row is guaranteed present and usable.
+            paginated_docs: list[tuple[str, DocProcessingStatus]] = []
+            for doc_id in page_doc_ids:
+                row = self._data[doc_id]
+                # Pagination never surfaces chunks_list (DocStatusResponse
+                # doesn't expose it — see the PG backend's paged CTE, which
+                # excludes the column for the same reason), so drop it before
+                # hydration instead of deep-copying a potentially large
+                # chunk-id list only to discard it.
+                row_without_chunks = {
+                    k: v for k, v in row.items() if k != "chunks_list"
+                }
+                doc_status = self._doc_processing_status_from_row(row_without_chunks)
+                paginated_docs.append((doc_id, doc_status))
 
         return paginated_docs, total_count
 
@@ -513,7 +529,11 @@ class JsonDocStatusStorage(DocStatusStorage):
             for doc_id, doc_data in self._data.items():
                 if doc_data.get("file_path") == file_path:
                     # Return complete document data, consistent with get_by_ids method
-                    return doc_data
+                    return (
+                        copy.deepcopy(doc_data)
+                        if isinstance(doc_data, dict)
+                        else doc_data
+                    )
 
         return None
 
@@ -554,7 +574,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 if doc_data.get("file_path") == basename and not self._is_duplicate_row(
                     doc_data
                 ):
-                    return doc_id, doc_data
+                    return doc_id, copy.deepcopy(doc_data)
         return None
 
     async def resolve_doc_source_strict(
@@ -605,7 +625,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             raise StorageNotInitializedError("JsonDocStatusStorage")
         async with self._storage_lock:
             row = self._data.get(id)
-        return row.copy() if isinstance(row, dict) else row
+        return copy.deepcopy(row) if isinstance(row, dict) else row
 
     async def get_doc_by_content_hash(
         self, content_hash: str, *, exclude_doc_id: str | None = None
@@ -646,7 +666,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     best = (sort_key, doc_id, doc_data)
         if best is None:
             return None
-        return best[1], best[2]
+        return best[1], copy.deepcopy(best[2]) if isinstance(best[2], dict) else best[2]
 
     # ------------------------------------------------------------------
     # Memory-bounding scheduling API (Phase 1)
@@ -717,21 +737,64 @@ class JsonDocStatusStorage(DocStatusStorage):
             return None
 
     @staticmethod
-    def _doc_processing_status_from_row(row: dict[str, Any]) -> DocProcessingStatus:
-        """Normalise a raw doc_status row into a FULL DocProcessingStatus.
-
-        Single source of the raw → status construction shared by
-        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
-        path. Raises ``KeyError``/``TypeError`` on a malformed row; the caller
-        decides strict (raise) vs relaxed (skip).
-        """
-        data = dict(row)
+    def _normalize_status_row(data: dict[str, Any]) -> dict[str, Any]:
+        """Field normalisation shared by hydration and validation: pop the
+        deprecated ``content`` field, default missing/falsy ``file_path``,
+        default missing ``metadata``/``error_msg``. Mutates and returns
+        ``data`` in place — the caller decides whether ``data`` is a deep
+        copy (safe to expose) or a shallow/throwaway one (validation only,
+        see ``_row_is_hydratable``)."""
         data.pop("content", None)  # deprecated inline content, never a status field
         if not data.get("file_path"):
             data["file_path"] = "no-file-path"
         data.setdefault("metadata", {})
         data.setdefault("error_msg", None)
+        return data
+
+    @classmethod
+    def _doc_processing_status_from_row(
+        cls, row: dict[str, Any]
+    ) -> DocProcessingStatus:
+        """Normalise a raw doc_status row into a FULL DocProcessingStatus.
+
+        Single source of the raw → status construction shared by
+        ``get_docs_by_statuses``, ``get_docs_paginated`` and the
+        ``get_full_docs_by_ids`` hydration path. Raises ``KeyError``/
+        ``TypeError`` on a malformed row; the caller decides strict (raise)
+        vs relaxed (skip).
+
+        Deep-copies ``row`` before use: the returned ``DocProcessingStatus``
+        carries nested mutable fields (``metadata``, ``chunks_list``) that
+        must not alias the live storage row, or a caller mutating them would
+        corrupt persisted state without going through ``upsert`` — the same
+        class of bug fixed for the other read paths.
+        """
+        data = cls._normalize_status_row(copy.deepcopy(row))
         return DocProcessingStatus(**data)
+
+    def _row_is_hydratable(self, doc_id: str, row: dict[str, Any]) -> bool:
+        """True if ``row`` can be hydrated into a full DocProcessingStatus.
+
+        Used by ``get_docs_paginated``'s validation pass to keep
+        ``total_count`` consistent with what the page-hydration step can
+        actually return: a row missing a required field OR carrying an
+        unexpected one would fail ``DocProcessingStatus(**data)`` — counting
+        it as present without confirming that would let ``total_count``
+        overstate what pages can actually deliver.
+
+        Attempts the SAME normalisation + construction as
+        ``_doc_processing_status_from_row``, but on a shallow copy that is
+        discarded immediately (never returned to a caller), so it validates
+        constructibility without paying the deep-copy cost across every
+        matching document — only the final page (bounded by page_size) is
+        ever deep-copied.
+        """
+        try:
+            DocProcessingStatus(**self._normalize_status_row(dict(row)))
+            return True
+        except (KeyError, TypeError) as e:
+            logger.error(f"[{self.workspace}] Error processing document {doc_id}: {e}")
+            return False
 
     async def get_docs_by_statuses_page(
         self,

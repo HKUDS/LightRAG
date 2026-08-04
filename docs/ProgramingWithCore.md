@@ -75,6 +75,7 @@ Notes:
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage`,`LanceDBDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
+| **embedding_chunk_overlap_token_size** | `int` | Overlap token size the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `chunk_overlap_token_size` (some chunking strategies, e.g. V, deliberately zero that one out for unrelated reasons); `0` disables the fallback's overlap; negative values raise `ValueError` at construction. Configured by env var `EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE`. | `100` |
 | **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. An injected tokenizer must be safe to call concurrently from multiple threads and must survive `copy.deepcopy` — see [Injecting a custom tokenizer](#injecting-a-custom-tokenizer). | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
@@ -1099,6 +1100,16 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
     "weight": 3.0
 })
 ```
+
+Entity names supplied to `create_entity` and new names supplied during
+`edit_entity` renames use the same normalization rules as extracted entity
+names. When editing an existing entity, LightRAG first preserves an exact
+legacy name match and otherwise falls back to the normalized name.
+`insert_custom_kg` applies the same rules to declared entity names and both
+endpoints of every relationship before writing any custom KG data.
+`merge_entities` resolves existing exact legacy source/target names first and
+otherwise uses normalized names. The target may be an existing entity or a
+new normalized name created by the merge.
 
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
