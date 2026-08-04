@@ -1,3 +1,4 @@
+import copy
 import os
 from dataclasses import dataclass
 from typing import Any, ClassVar, final
@@ -258,8 +259,13 @@ class JsonKVStorage(BaseKVStorage):
         async with self._storage_lock:
             result = self._data.get(id)
             if result:
-                # Create a copy to avoid modifying the original data
-                result = dict(result)
+                # Deep-copy so nested mutable fields (e.g. text_chunks'
+                # llm_cache_list) don't alias the live storage row — a
+                # shallow copy here only protects top-level keys, letting a
+                # caller that mutates a nested list/dict in place (see
+                # update_chunk_cache_list in utils.py) corrupt persisted
+                # state without going through upsert.
+                result = copy.deepcopy(result)
                 # Ensure time fields are present, provide default values for old data
                 result.setdefault("create_time", 0)
                 result.setdefault("update_time", 0)
@@ -281,8 +287,9 @@ class JsonKVStorage(BaseKVStorage):
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    # Create a copy to avoid modifying the original data
-                    result = {k: v for k, v in data.items()}
+                    # Deep-copy — see get_by_id for why a shallow copy isn't
+                    # enough to protect nested mutable fields.
+                    result = copy.deepcopy(data)
                     # Ensure time fields are present, provide default values for old data
                     result.setdefault("create_time", 0)
                     result.setdefault("update_time", 0)

@@ -84,13 +84,6 @@ const PropertyEditDialog = ({
     }
   };
 
-  const handleSave = async () => {
-    const trimmedValue = value.trim()
-    if (trimmedValue !== '') {
-      await onSave()
-    }
-  }
-
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -173,7 +166,7 @@ const PropertyEditDialog = ({
           </Button>
           <Button
             type="button"
-            onClick={handleSave}
+            onClick={onSave}
             disabled={isSubmitting || disableSave}
           >
             {isSubmitting ? (
