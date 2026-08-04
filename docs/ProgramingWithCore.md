@@ -75,7 +75,8 @@ Notes:
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage`,`OpenSearchDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
-| **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. | `TiktokenTokenizer` |
+| **embedding_chunk_overlap_token_size** | `int` | Overlap token size the embedding hard fallback borrows from the previous window when a chunk is still over the embedding model's context limit after chunking. Independent from `chunk_overlap_token_size` (some chunking strategies, e.g. V, deliberately zero that one out for unrelated reasons); `0` disables the fallback's overlap; negative values raise `ValueError` at construction. Configured by env var `EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE`. | `100` |
+| **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. An injected tokenizer must be safe to call concurrently from multiple threads and must survive `copy.deepcopy` — see [Injecting a custom tokenizer](#injecting-a-custom-tokenizer). | `TiktokenTokenizer` |
 | **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
 | **node_embedding_algorithm** | `str` | Algorithm for node embedding (currently not used) | `node2vec` |
@@ -130,6 +131,8 @@ Compact `chunker` shape:
     "breakpoint_threshold_type": "percentile",
     "breakpoint_threshold_amount": null,
     "buffer_size": 1,
+    // env/SDK only (CHUNK_V_SENTENCE_SPLIT_REGEX); the REST chunking.params
+    // object rejects this key with 422 — see GHSA-32jh-39m7-8x84 (ReDoS)
     "sentence_split_regex": "(?<=[.?!])\\s+|(?<=[。？！])"
   },
   "paragraph_semantic": {
@@ -216,6 +219,8 @@ rag.addon_params["chunker"]["recursive_character"]["separators"] = [
 ```
 
 Nested `chunker` edits are read when future documents are enqueued. Documents already enqueued keep their persisted `chunk_options` snapshot.
+
+`semantic_vector.sentence_split_regex` is the one exception: it is re-read from `addon_params` (seeded by `CHUNK_V_SENTENCE_SPLIT_REGEX`) on **every** processing run, and any value inside a persisted `chunk_options` snapshot is discarded and logged at WARNING. This also applies to an explicit `chunk_options=` passed to `apipeline_enqueue_documents` — a per-document splitter pattern is not supported. The pattern is applied by `re.split` to the document body while CPython holds the GIL, so an untrusted one can freeze the whole worker process; see [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84).
 
 ### Notes and Precedence
 
@@ -563,6 +568,45 @@ To enhance retrieval quality, documents can be re-ranked based on a more effecti
 - **Aliyun**: `ali_rerank`
 
 Inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. For detailed usage, refer to `examples/rerank_example.py`.
+
+### Injecting a Custom Tokenizer
+
+Any object with `encode(str) -> list[int]` and `decode(list[int]) -> str` can be
+wrapped in `Tokenizer` and passed as `tokenizer=`. Two requirements apply:
+
+1. **It must be safe to call concurrently from multiple threads.** Token counting
+   is CPU-bound, so LightRAG runs it in worker threads to keep the asyncio event
+   loop responsive; several of them may enter your `encode`/`decode` at once.
+   LightRAG deliberately does not serialize calls on your behalf — a lock owned
+   by LightRAG would end up being waited on by the event loop behind a worker
+   thread, which is exactly the stall the threading is there to avoid.
+2. **It must survive `copy.deepcopy`.** `LightRAG` is a dataclass and builds its
+   internal config with `dataclasses.asdict`, which deep-copies non-dataclass
+   fields.
+
+The two interact: if you achieve thread safety with an internal `threading.Lock`,
+deep-copying it raises `TypeError: cannot pickle '_thread.lock' object`. Declare
+`__deepcopy__` returning `self`, which is sound precisely because a thread-safe
+tokenizer is safe to share:
+
+```python
+class MyTokenizer:
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def __deepcopy__(self, memo):
+        return self  # thread-safe, therefore shareable
+
+    def encode(self, content: str) -> list[int]: ...
+    def decode(self, tokens: list[int]) -> str: ...
+
+rag = LightRAG(..., tokenizer=Tokenizer("my-model", MyTokenizer()))
+```
+
+The built-in `TiktokenTokenizer` satisfies both. Note that copying it is not a
+way to get isolation: `tiktoken` caches encodings in a process-wide registry, so
+every `TiktokenTokenizer` for a given model — copies included — resolves to the
+same underlying BPE engine.
 
 ### User Prompt vs. Query
 
@@ -1008,6 +1052,16 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
     "weight": 3.0
 })
 ```
+
+Entity names supplied to `create_entity` and new names supplied during
+`edit_entity` renames use the same normalization rules as extracted entity
+names. When editing an existing entity, LightRAG first preserves an exact
+legacy name match and otherwise falls back to the normalized name.
+`insert_custom_kg` applies the same rules to declared entity names and both
+endpoints of every relationship before writing any custom KG data.
+`merge_entities` resolves existing exact legacy source/target names first and
+otherwise uses normalized names. The target may be an existing entity or a
+new normalized name created by the merge.
 
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 

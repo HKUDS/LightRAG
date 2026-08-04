@@ -224,6 +224,44 @@ def test_endpoint_passes_through_when_pipeline_idle(monkeypatch):
     rag.aedit_entity.assert_awaited_once()
 
 
+def test_create_entity_message_uses_normalized_result_name(monkeypatch):
+    rag = _make_mock_rag()
+    rag.acreate_entity.return_value = {"entity_name": "A公司"}
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entity/create",
+        json={
+            "entity_name": "“Ａ 公 司”",
+            "entity_data": {"description": "x"},
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"] == "Entity 'A公司' created successfully"
+
+
+def test_merge_entity_message_uses_normalized_result_name(monkeypatch):
+    rag = _make_mock_rag()
+    rag.amerge_entities.return_value = {"entity_name": "T目标"}
+    client = _build_client(rag)
+    _patch_guard(monkeypatch, _noop_guard)
+
+    response = client.post(
+        "/graph/entities/merge",
+        json={
+            "entities_to_change": ["Ｓｏｕｒｃｅ 公 司"],
+            "entity_to_change_into": "“Ｔ 目 标”",
+        },
+        headers=_HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"] == ("Successfully merged 1 entities into 'T目标'")
+
+
 # ---------------------------------------------------------------------------
 # Part B: helper unit -- against real pipeline_status namespace
 # ---------------------------------------------------------------------------
@@ -270,6 +308,27 @@ async def test_helper_returns_silently_when_pipeline_idle():
         rag = SimpleNamespace(workspace="")
         # Should not raise.
         await check_pipeline_busy_or_raise(rag)
+
+    await _with_pipeline_status(_do)
+
+
+async def test_helper_raises_503_when_recovery_required():
+    """A dead custom_chunks/delete/clear owner leaves ``recovery_required`` set
+    and ``busy`` cleared; the graph-edit guard must still refuse (503), not wave
+    the edit through onto a possibly partially-committed store."""
+
+    async def _do(pipeline_status):
+        pipeline_status["busy"] = False  # reconcile cleared it when fencing
+        pipeline_status["recovery_required"] = {
+            "kind": "delete",
+            "owner_key": "busy_owner",
+            "operation_record": {"kind": "delete", "doc_id": "doc-1"},
+        }
+        rag = SimpleNamespace(workspace="")
+        with pytest.raises(HTTPException) as exc_info:
+            await check_pipeline_busy_or_raise(rag)
+        assert exc_info.value.status_code == 503
+        assert "fenced" in exc_info.value.detail.lower()
 
     await _with_pipeline_status(_do)
 

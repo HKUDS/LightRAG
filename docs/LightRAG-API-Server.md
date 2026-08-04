@@ -8,9 +8,9 @@ The LightRAG Server is designed to provide a Web UI and API support. The Web UI 
 
 ![image-20250323123011220](./LightRAG-API-Server.assets/image-20250323123011220.png)
 
-## Upgrading from v1.4.16 to v1.5.0rc2
+## Upgrading from v1.4.16 to v1.5.x
 
-The v1.5.0rc2 release adds the new file-processing pipeline, parser routing, multimodal analysis, role-specific LLM/VLM configuration, JSON entity extraction, and several provider/storage changes. Review the [v1.5.0rc2 release notes](https://github.com/HKUDS/LightRAG/releases/tag/v1.5.0rc2) before upgrading a production instance.
+LightRAG v1.5.x adds the new file-processing pipeline, parser routing, multimodal analysis, role-specific LLM/VLM configuration, JSON entity extraction, and several provider/storage changes. Review the [v1.5.0rc2 release notes](https://github.com/HKUDS/LightRAG/releases/tag/v1.5.0rc2) before upgrading a production instance.
 
 - To keep the old file-processing behavior while upgrading the server, set:
 
@@ -24,6 +24,37 @@ LIGHTRAG_PARSER=*:legacy-F
 - Changing parser routing (`LIGHTRAG_PARSER`) or filename hints affects newly uploaded files. To switch an existing document to another parser engine, delete that document and upload it again.
 - Changing chunker settings (`CHUNK_*`) affects documents enqueued after the server restarts. Reprocess older documents if you want their stored `chunk_options` snapshot to match the new settings.
 - Enabling multimodal options (`i/t/e`) requires parsed sidecars plus `VLM_PROCESS_ENABLE=true`. Existing documents can be reprocessed to run VLM analysis on available sidecars; switching extraction engines still requires delete + re-upload.
+
+## Upgrading to bounded request sizes
+
+The release that layers `MAX_REQUEST_BODY_BYTES` turns it **on by default** at 1 MiB, where it used to be off and to cover three ingestion routes only. Two things change for clients:
+
+- **A request body over 1 MiB is refused with 413 on the ordinary routes** — `/query*`, `/api/chat`, `/api/generate` and everything else that is neither an upload nor a text insert. `/documents/text` and `/documents/texts` keep a 50 MiB ceiling, and `/documents/upload` derives its own from `MAX_UPLOAD_SIZE`, so bulk ingestion is unaffected. Set `MAX_REQUEST_BODY_BYTES` to any positive value to govern every non-upload route with it, or `0` to turn every ceiling off.
+- **The model-facing fields now have fixed ceilings**: 64 KiB per query or prompt, 32 KiB per message, 128 KiB of model-facing text per request, 128 messages, `top_k` / `chunk_top_k` at most 1000, and the `max_*_tokens` budgets at most 1,000,000. Clients that relied on unbounded `top_k` or on multi-megabyte queries need adjusting. These are not configurable by design.
+
+Neither change affects a deployment that was already sizing its requests sensibly; both bound how much work one unauthenticated request can ask the server to do.
+
+## Upgrading to bounded pipeline scheduling
+
+The release that introduces `PIPELINE_SCHEDULING_PAGE_SIZE`, `MAX_PENDING_DOCUMENTS` and `MAX_UNACKED_MANUAL_RETRIES` (see `env.example`) also changes the **concurrency protocol** writers use to coordinate through shared state. It is a one-time, in-place upgrade that writes no marker and no protocol version, so the storage cannot detect a stale writer for you. The requirement is therefore operational:
+
+> **Stop every old writer before starting a new one against the same storage and workspace.** A rolling restart that leaves one old worker — or one old instance sharing the same Redis/PostgreSQL workspace — running is the failure case, not a slower upgrade.
+
+Three things an old writer cannot honour:
+
+- **The manual retry freeze.** `/documents/reprocess_failed` no longer resets `FAILED` rows inline. It publishes an intent, freezes ingestion, waits for the pipeline to go idle, and only then rewrites `FAILED`→`PENDING` page by page with no worker running. An old writer does not read the freeze flag, so it keeps enqueueing into a window the reset assumes is exclusive.
+- **The scheduling sort key.** `created_at` is now the immutable `(created_at, id)` keyset cursor, written as a UTC ISO-8601 timestamp. Rows an old writer stamps in another format sort inconsistently against it, and a keyset page can then skip or repeat documents.
+- **Derived indexes.** On Redis the status set and the source multimap are maintained in the same transaction as the document row. An old writer updates the row only, leaving the index stale — after which strict paging and the strict active count silently omit that document.
+
+Recommended sequence:
+
+1. Stop accepting new documents and let the pipeline finish. On the authenticated `/health`, `scheduling.drain_waiting_on_workers` is `false` and `scheduling.drain_pending_enqueues` is `0` when nothing is in flight.
+2. Stop **all** workers and instances that share the storage and workspace.
+3. Start the new version.
+
+No data migration is required. The first sweep after startup is a strict full sweep, so a document an old writer left mid-flight — a row stuck in `PARSING`/`ANALYZING`/`PROCESSING` with no worker behind it — is picked up and reprocessed on its own. If a run genuinely cannot be drained, stopping mid-run is still safe for the same reason; what is not safe is starting the old version again afterwards.
+
+**After starting, check the log for a strict-capability warning.** All five built-in `doc_status` backends (JSON, Redis, PostgreSQL, MongoDB, OpenSearch) have every capability. A third-party backend may not, and each gap fails closed rather than degrading quietly: admission answers 503, the source-conflict endpoints answer 501, and a scan keeps re-examining a stale `FAILED` stub. Startup names each missing capability and what it costs, and the authenticated `/health` reports the same under `capabilities`. Set `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` to turn those gaps into a startup failure instead. There is no equivalent knob for bounded paging: the paging and typed source-resolution methods are abstract, so a backend without them cannot be constructed at all.
 
 ## Getting Started
 
@@ -200,7 +231,7 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 ### Path Prefix and Multi-Site WebUI
 
-Set `LIGHTRAG_API_PREFIX` or `--api-prefix` when one host serves multiple LightRAG instances behind a reverse proxy that strips a site prefix before forwarding to the backend:
+Set `LIGHTRAG_API_PREFIX` or `--api-prefix` when one host serves multiple LightRAG instances behind a reverse proxy. Either forwarding style works: the proxy may strip the site prefix before forwarding to the backend, or forward the request unchanged.
 
 ```bash
 LIGHTRAG_API_PREFIX=/site01
@@ -208,6 +239,8 @@ lightrag-server --port 9621
 ```
 
 The backend passes this value to FastAPI as `root_path` and injects the same runtime prefix into the WebUI. The WebUI is always mounted at `/webui` inside the server, so one frontend build can serve any prefix. See [Single-Server Multi-Site Deployment](./MultiSiteDeployment.md) for full Nginx, Docker, and Kubernetes examples.
+
+> **`WHITELIST_PATHS` is written without the prefix.** Its entries are internal route paths, exactly as the routes are declared. The mount prefix is removed before matching, in both forwarding styles, so with `LIGHTRAG_API_PREFIX=/site01` the shipped default `WHITELIST_PATHS=/health,/api/*` is already correct and exempts `/site01/health` as the browser sees it. Writing the browser-visible form (`WHITELIST_PATHS=/site01/health`) matches nothing and makes those paths require authentication.
 
 ### Launching LightRAG Server with Docker
 
@@ -279,6 +312,10 @@ EMBEDDING_DIM=3072
 EMBEDDING_TOKEN_LIMIT=8192
 EMBEDDING_SEND_DIM=false
 EMBEDDING_USE_BASE64=true
+# Overlap (in tokens) the embedding hard fallback borrows from the previous
+# chunk's tail when a chunk still exceeds EMBEDDING_TOKEN_LIMIT after
+# chunking. Independent of CHUNK_OVERLAP_SIZE. Default 100; 0 disables it.
+# EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE=100
 
 ############################
 ### Data storage selection
@@ -454,10 +491,23 @@ server {
    - Nginx validates the `Content-Length` header first
    - LightRAG performs streaming validation during upload
    - Setting appropriate limits at both layers ensures better error messages and security
+6. **Server-side request limits** (see `env.example`):
+   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of **every** route, counted as it streams through ASGI. Unlike `MAX_UPLOAD_SIZE` (which bounds one uploaded file after multipart parsing), it also stops a body that understates or omits its `Content-Length`, answering **413** before the whole body is read. It is layered, because routes differ by orders of magnitude in what they legitimately carry:
+
+     | Route | Ceiling |
+     |---|---|
+     | ordinary routes (`/query`, `/api/chat`, ...) | `MAX_REQUEST_BODY_BYTES`, default **1 MiB** |
+     | `/documents/text`, `/documents/texts` | **50 MiB**, built in, when `MAX_REQUEST_BODY_BYTES` is not set |
+     | `/documents/upload` | `MAX_UPLOAD_SIZE` + 1 MiB of multipart overhead |
+
+     Setting `MAX_REQUEST_BODY_BYTES` to any positive value makes it govern every non-upload route, ingestion included — including when that value happens to equal the 1 MiB default, which is the behaviour this knob had before the tiers existed. Setting it to `0` turns off every ceiling, including the derived upload one, and the server warns at startup.
+   - **Input field ceilings** apply to the model-facing fields of `/query*`, `/api/chat` and `/api/generate`: 64 KiB per query or prompt, 32 KiB per message, 128 KiB of model-facing text per request, 128 messages, and upper bounds on `top_k` / `chunk_top_k` (1000) and the `max_*_tokens` budgets (1,000,000). These are fixed rather than configurable — a limit that keeps an unauthenticated caller from choosing how much CPU the server spends is worth nothing if it can be misconfigured away. `/query*` answers **422** for an over-limit field (FastAPI's own validation response); `/api/*` answers **413**.
+   - `MAX_TEXTS_PER_REQUEST` bounds how many texts one `/documents/texts` request may carry, answering **413** before any per-text storage lookup. It bounds the fan-out of a single request, so — unlike the capacity limit below — it is not a "retry later" condition: an oversized batch never fits and must be split.
+   - `MAX_PENDING_DOCUMENTS` bounds how many documents may be active (`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`) or reserved by an in-flight request. Over capacity the server answers **429** with a `Retry-After` header and a detail naming the current count, the requested count and the capacity — refused *before* the body is transferred. `/documents/scan` and manual retries exceed the cap on purpose; the documents they create make ordinary uploads wait.
 
 ### Offline Deployment
 
-Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up you own  offline enviroment, please refer to [Offline Deployment Guide](./OfflineDeployment.md).
+Official LightRAG Docker images are fully compatible with offline or air-gapped environments. If you want to build up your own offline environment, please refer to [Offline Deployment Guide](./OfflineDeployment.md).
 
 ### Starting Multiple LightRAG Instances
 
@@ -519,7 +569,7 @@ lightrag-gunicorn --workers 2
 Create your service file `lightrag.service` from the sample file: `lightrag.service.example`. Modify the start options the service file:
 
 ```text
-# Set Enviroment to your Python virtual enviroment
+# Set environment to your Python virtual environment
 Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
@@ -552,7 +602,7 @@ Open WebUI uses an LLM to do the session title and session keyword generation ta
 
 ### Choose Query mode in chat
 
-The default query mode is `hybrid` if you send a message (query) from the Ollama interface of LightRAG. You can select query mode by sending a message with a query prefix.
+The default query mode is `mix` if you send a message (query) from the Ollama interface of LightRAG. You can select query mode by sending a message with a query prefix.
 
 A query prefix in the query string can determine which LightRAG query mode is used to generate the response for the query. The supported prefixes include:
 
@@ -572,7 +622,7 @@ A query prefix in the query string can determine which LightRAG query mode is us
 /mixcontext
 ```
 
-For example, the chat message `/mix What's LightRAG?` will trigger a mix mode query for LightRAG. A chat message without a query prefix will trigger a hybrid mode query by default.
+For example, the chat message `/hybrid What's LightRAG?` will trigger a hybrid mode query for LightRAG. A chat message without a query prefix will trigger a mix mode query by default.
 
 `/bypass` is not a LightRAG query mode; it will tell the API Server to pass the query directly to the underlying LLM, including the chat history. So the user can use the LLM to answer questions based on the chat history. If you are using Open WebUI as a front end, you can just switch the model to a normal LLM instead of using the `/bypass` prefix.
 
@@ -599,6 +649,8 @@ WHITELIST_PATHS=/health,/api/*
 ```
 
 > Health check and Ollama emulation endpoints are excluded from API Key check by default. For security reasons, remove `/api/*` from `WHITELIST_PATHS` if the Ollama service is not required. `/health` stays whitelisted as a liveness probe but only returns its full configuration to authenticated callers — unauthenticated requests get liveness signals only.
+>
+> **Entries are internal route paths, never prefixed.** A `/*` suffix matches on path-segment boundaries, so `/api/*` covers `/api` and everything under `/api/` and nothing else. If `LIGHTRAG_API_PREFIX` is set, do **not** include it here: the prefix is removed before matching, so `WHITELIST_PATHS=/health` exempts `/site01/health` and `WHITELIST_PATHS=/site01/health` exempts nothing. See [Path Prefix and Multi-Site WebUI](#path-prefix-and-multi-site-webui).
 
 The API key is passed using the request header `X-API-Key`. Below is an example of accessing the LightRAG Server via API:
 
@@ -632,6 +684,8 @@ The command prompts for the password and prints an `admin:{bcrypt}...` entry rea
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 
 If Account credentials are not configured, the Web UI will access the system as a Guest. Therefore, even if only an API Key is configured, all APIs can still be accessed through the Guest account, which remains insecure. Hence, to safeguard the API, it is necessary to configure both authentication methods simultaneously.
+
+> Although the server can be configured with **both** an API key and account credentials, a single request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied.
 
 ## For Azure OpenAI Backend
 
@@ -764,14 +818,23 @@ QUERY_LLM_MODEL=gpt-5
 VLM_LLM_MODEL=gpt-5-mini
 ```
 
+**Recommended models by role:**
+
+- **`EXTRACT`**: Entity-relation extraction runs on every chunk, so a fast, cost-effective mainstream model is enough — a **non-thinking** model (reasoning/thinking mode disabled) is strongly recommended. E.g. GPT-5.6-luna, Claude Haiku, or Gemini-mini (hosted), or DeepSeek-V4-lite / Kimi in China. For local deployment, Qwen3-30B-A3B-Instruct is a reasonable minimum.
+- **`QUERY`**: Writes the final answer from long, noisy context, so choose a *stronger* model than `EXTRACT` to maximize answer quality; a thinking-capable model is fine here.
+- **`KEYWORD`**: A lightweight, latency-sensitive step that **must** use a non-thinking model to keep query latency low; a fast model comparable to `EXTRACT` is enough.
+- **`VLM`**: Any mainstream multimodal model with image-input support works; for local deployment, consider Qwen3.6-35B-A3B.
+- **Embedding / Reranker**: Any mainstream, up-to-date model works. For local deployment, use `BAAI/bge-m3` for embeddings and `BAAI/bge-reranker-v2-m3` for reranking.
+
+Within an acceptable latency and cost budget, prefer the highest-scoring model available (per public benchmarks/leaderboards).
+
 For cross-provider rules, provider-specific options such as `QUERY_OPENAI_LLM_REASONING_EFFORT`, role-level Bedrock SigV4 credentials, and queue behavior, see [Role-Specific LLM/VLM Configuration Guide](./RoleSpecificLLMConfiguration.md).
 
 ### Multimodal Analysis Configuration
 
-The parser can produce sidecars for drawings/images, tables, and equations. VLM analysis only runs when both conditions are true:
+The parser can produce sidecars for drawings/images, tables, and equations. Analysis of a modality requires the document's `process_options` to contain the matching flag — `i` for images, `t` for tables, `e` for equations — and the corresponding sidecar to exist.
 
-- The document's `process_options` contains the matching modality flag: `i` for images, `t` for tables, or `e` for equations.
-- `VLM_PROCESS_ENABLE=true` and the effective VLM binding supports image input.
+`VLM_PROCESS_ENABLE` gates **images only**. Tables and equations are analyzed by the `EXTRACT` role and run regardless of this switch, so `*:native-teP` works without any VLM configured. With `i` enabled and the VLM unavailable, an image that survives the pre-filters (file present, raster format, both sides at least `VLM_MIN_IMAGE_PIXEL`) **fails the document** rather than being skipped — it lands in `FAILED` with `error_msg` "VLM analysis required but VLM role is not available".
 
 Current vision-capable providers are `openai`, `azure_openai`, `gemini`, `bedrock`, `ollama`, and `anthropic`; `lollms` is rejected for VLM use. Typical configuration:
 
@@ -820,9 +883,35 @@ LightRAG uses 4 types of storage for different purposes:
 * GRAPH_STORAGE: entity relation graph
 * DOC_STATUS_STORAGE: document indexing status
 
-LightRAG Server offers various storage implementations, with the default being an in-memory database that persists data to the WORKING_DIR directory. Additionally, LightRAG supports a wide range of storage solutions including PostgreSQL, MongoDB, FAISS, Milvus, Qdrant, Neo4j, Memgraph, Redis, and OpenSearch. For detailed information on supported storage options, please refer to the storage section in the README.md file located in the root directory.
+Each storage type offers multiple implementations. By default, LightRAG Server uses in-memory databases with data persisted to the WORKING_DIR directory. This is suitable for quickly evaluating the project but is not recommended for production. The implementations currently available for each storage type are listed below:
 
-**Milvus Index Configuration:** LightRAG now supports configurable index types for Milvus vector storage (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.) through environment variables. HNSW_SQ requires Milvus 2.6.8+ and provides significant memory savings. See the "Using Milvus for Vector Storage" section in the main README.md for complete configuration options.
+| Storage Type | Available Implementations (Default First) |
+|---|---|
+| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
+
+For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
+
+The environment variables required at startup for each storage implementation are listed below. Implementations not listed require no additional configuration and rely only on file persistence under WORKING_DIR.
+
+| Storage Implementation | Required Environment Variables |
+|---|---|
+| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` (plus `POSTGRES_HOST` and `POSTGRES_PORT`) |
+| `Neo4JStorage` | `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
+| `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`, `MONGO_DATABASE` (`MongoVectorDBStorage` requires a MongoDB deployment that supports Atlas Search / Vector Search) |
+| `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
+| `MilvusVectorDBStorage` | `MILVUS_URI`, `MILVUS_DB_NAME` |
+| `QdrantVectorDBStorage` | `QDRANT_URL` (`QDRANT_API_KEY` is optional) |
+| `MemgraphStorage` | `MEMGRAPH_URI` |
+| `OpenSearchKVStorage` / `OpenSearchVectorDBStorage` / `OpenSearchGraphStorage` / `OpenSearchDocStatusStorage` | `OPENSEARCH_HOSTS` |
+
+The `WORKSPACE` environment variable isolates data for multiple LightRAG instances on the same backend (valid characters are `a-z`, `A-Z`, `0-9`, and `_`). Each storage backend also provides a backend-specific override such as `POSTGRES_WORKSPACE` or `NEO4J_WORKSPACE`. These overrides are retained only for compatibility with legacy configurations; under normal circumstances, use `WORKSPACE` consistently.
+
+The table above lists only the connection parameters required at startup. Each storage implementation also provides many optional tuning environment variables, including connection pool sizes, SSL settings, sharding thresholds for batch writes and deletions, and vector index parameters. For the complete list and default values, see the repository's root-level `env.example`, where the variables are grouped by storage backend and include detailed comments.
+
+**Milvus Index Configuration:** LightRAG now supports configurable index types for Milvus vector storage (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.) through environment variables. HNSW_SQ requires Milvus 2.6.8+ and provides significant memory savings. For the complete configuration options, see [MilvusConfigurationGuide.md](./MilvusConfigurationGuide.md).
 
 You can select the storage implementation by configuring environment variables. For instance, prior to the initial launch of the API server, you can set the following environment variable to specify your desired storage implementation:
 
@@ -834,6 +923,8 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample `.env.example` file.
+
+> The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
 ### LLM Cache Migration Between Storage Types
 
@@ -879,12 +970,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-Here is an example configuration for utilizing the Reranker service provided by Aliyun:
+Here is an example configuration for utilizing the Reranker service provided by Aliyun (`gte-rerank-*` and `qwen3-vl-rerank`, which use the nested `input`/`parameters` payload format):
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **Aliyun `qwen3-rerank` series:** Unlike `gte-rerank-*` and `qwen3-vl-rerank`, the `qwen3-rerank` models use a flat, Cohere-style payload (`{"model", "query", "documents", "top_n", ...}`), return top-level `results`, and are served from a **different**, Cohere-compatible endpoint — `/compatible-api/v1/reranks`, not the `.../text-rerank/text-rerank` path used above. Because the format is identical to standard Cohere, configure them with `RERANK_BINDING=cohere` (not `aliyun`); no dedicated binding is needed. Replace `{WorkspaceId}` and the region with your own (see the [Aliyun Text Rerank API docs](https://help.aliyun.com/zh/model-studio/text-rerank-api)):
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
@@ -1106,6 +1206,10 @@ Processing options are appended after the engine with a hyphen, or supplied alon
 | `P` | Paragraph semantic chunking for structured LightRAG Document content; falls back to `R` when structured content is unavailable |
 
 At most one of `F`, `R`, `V`, and `P` should be selected for a file. Chunker parameters are configured with `CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`, and strategy-specific variables such as `CHUNK_R_SEPARATORS`, `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`, `CHUNK_P_SIZE`, and `CHUNK_P_OVERLAP_SIZE`. These values are read at server startup and stored as a per-document `chunk_options` snapshot when a document is enqueued.
+
+The `V` strategy's sentence splitter is the one chunker parameter that cannot be set per request: `CHUNK_V_SENTENCE_SPLIT_REGEX` (or the SDK's `addon_params`) is the only way to change it. `/documents/text` and `/documents/texts` reject a `sentence_split_regex` key inside `chunking.params` with HTTP 422. A caller-supplied pattern is applied to that same request's text, and CPython's regex engine holds the GIL while backtracking, so a pattern such as `(a+)+$` can freeze an entire worker process — see [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84). A value already stored in a document's `chunk_options` snapshot is discarded at processing time as well (logged at `WARNING`), so a pattern persisted by an older build cannot freeze the worker after an upgrade.
+
+The `R` strategy's separator cascade is bounded to 64 entries of at most 256 characters each, wherever it comes from; the built-in cascade is 9. A request body over the limit is rejected with HTTP 422. A non-HTTP configured value is converged and logged once when cached: `CHUNK_R_SEPARATORS` at configuration load, and a supplied or replaced `addon_params['chunker']` immediately (a compatible nested in-place mutation is handled at its first enqueue). The normalized value is then reused for later documents, corrected in place so a caller-held reference to the nested `recursive_character` dict still applies. Direct SDK calls and per-document snapshots persisted before the bound existed retain their stored value and are converged silently at execution, so one stale value cannot warn once per document. A `separators` value that is neither a list/tuple nor `None` is not converged at all — the key is dropped, with its own warning, because bounding a bare string would silently turn it into 64 single-character separators. Converging is not the same as shortening: an entry over 256 characters is **dropped**, while a list over 64 entries is **truncated** to 64 (keeping the trailing char-level `""` sentinel when present). A lone 300-character separator therefore disappears rather than matching its first 256, and the split points come from the fallback cascade — see the [pipeline spec](./FileProcessingPipeline.md#r--recursive-character) for which fallback applies where.
 
 For the full routing syntax, supported extensions, parser cache behavior, chunker configuration, concurrency rules, and Python SDK differences, see [File Processing Pipeline Specification](./FileProcessingPipeline.md). For the `P` strategy details, see [Paragraph Semantic Chunking](./ParagraphSemanticChunking.md). To debug parser output before indexing a file, see [Parser Debug CLI](./ParserDebugCLI.md).
 

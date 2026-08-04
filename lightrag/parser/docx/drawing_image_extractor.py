@@ -286,7 +286,7 @@ def _extract_imagedata_relationship(container_elem) -> Optional[str]:
 
 
 def _build_placeholder(attrs: Dict[str, str]) -> str:
-    ordered_keys = ["id", "name", "path", "format"]
+    ordered_keys = ["id", "name", "path", "format", "src"]
     pieces = []
     for key in ordered_keys:
         if key in attrs and attrs[key] is not None:
@@ -312,7 +312,8 @@ def extract_drawing_placeholder_from_element(
     Behavior:
     - Always emits id/name from wp:docPr when present.
     - For embedded images (a:blip@r:embed): exports image and sets path/format.
-    - For linked images (a:blip@r:link): does not download; path is original link target.
+    - For linked images (a:blip@r:link): does not download; the link target
+      lands in ``src`` and no ``path`` is emitted (nothing materialized).
     - When no image reference exists (e.g. chart drawing): keeps id/name only.
     """
     doc_pr = drawing_elem.find(".//wp:docPr", NS)
@@ -335,7 +336,7 @@ def extract_drawing_placeholder_from_element(
                         attrs["format"] = rel.image_format
                 elif rel_kind == "link":
                     if rel.target:
-                        attrs["path"] = rel.target
+                        attrs["src"] = rel.target
                     if rel.image_format:
                         attrs["format"] = rel.image_format
 
@@ -377,10 +378,10 @@ def extract_vml_image_placeholder_from_element(
                 # linked images; only the resolved TargetMode tells us which.
                 # Treating an external relationship as embedded would call
                 # export_embedded_image() (which short-circuits on external)
-                # and silently drop the linked path.
+                # and silently drop the linked reference.
                 if rel.target_mode.lower() == "external":
                     if rel.target:
-                        attrs["path"] = rel.target
+                        attrs["src"] = rel.target
                     if rel.image_format:
                         attrs["format"] = rel.image_format
                 else:
@@ -422,8 +423,10 @@ def normalize_drawing_placeholder(
             normalized["path"] = attrs["path"]
         if "format" in attrs:
             normalized["format"] = attrs["format"]
+        if "src" in attrs:
+            normalized["src"] = attrs["src"]
         for key, value in attrs.items():
-            if key not in {"id", "name", "path", "format"}:
+            if key not in {"id", "name", "path", "format", "src"}:
                 normalized[key] = value
     return _build_placeholder(normalized)
 

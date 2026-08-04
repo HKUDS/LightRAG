@@ -1,6 +1,7 @@
+import copy
 import os
 from dataclasses import dataclass
-from typing import Any, final
+from typing import Any, ClassVar, final
 
 from lightrag.base import (
     BaseKVStorage,
@@ -132,6 +133,8 @@ class JsonKVStorage(BaseKVStorage):
           interleaving with batched ingest work.
     """
 
+    supports_strict_point_reads: ClassVar[bool] = True
+
     def __post_init__(self):
         # Reject path traversal before using workspace in a file path
         validate_workspace(self.workspace)
@@ -223,9 +226,12 @@ class JsonKVStorage(BaseKVStorage):
         """
         async with self._storage_lock:
             if self.storage_updated.value:
-                data_dict = (
-                    dict(self._data) if hasattr(self._data, "_getvalue") else self._data
-                )
+                # DictProxy.copy() is a single Manager RPC that marshals the
+                # whole mapping server-side; dict(proxy) would walk the mapping
+                # protocol and fetch every value with its own RPC. Plain dicts
+                # (single-process mode) copy cheaply and identically — write_json
+                # only reads its argument, so the shallow copy is safe there too.
+                data_dict = self._data.copy()
 
                 # Calculate data count - all data is now flattened
                 data_count = len(data_dict)
@@ -253,8 +259,13 @@ class JsonKVStorage(BaseKVStorage):
         async with self._storage_lock:
             result = self._data.get(id)
             if result:
-                # Create a copy to avoid modifying the original data
-                result = dict(result)
+                # Deep-copy so nested mutable fields (e.g. text_chunks'
+                # llm_cache_list) don't alias the live storage row — a
+                # shallow copy here only protects top-level keys, letting a
+                # caller that mutates a nested list/dict in place (see
+                # update_chunk_cache_list in utils.py) corrupt persisted
+                # state without going through upsert.
+                result = copy.deepcopy(result)
                 # Ensure time fields are present, provide default values for old data
                 result.setdefault("create_time", 0)
                 result.setdefault("update_time", 0)
@@ -262,14 +273,23 @@ class JsonKVStorage(BaseKVStorage):
                 result["_id"] = id
             return result
 
+    async def get_by_id_strict(self, id: str) -> dict[str, Any] | None:
+        """Strict point read (base contract): the in-memory shared dict has
+        no transport failure surface — a miss is a confirmed absence, and an
+        uninitialized storage raises instead of returning one."""
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
+        return await self.get_by_id(id)
+
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._storage_lock:
             results = []
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
-                    # Create a copy to avoid modifying the original data
-                    result = {k: v for k, v in data.items()}
+                    # Deep-copy — see get_by_id for why a shallow copy isn't
+                    # enough to protect nested mutable fields.
+                    result = copy.deepcopy(data)
                     # Ensure time fields are present, provide default values for old data
                     result.setdefault("create_time", 0)
                     result.setdefault("update_time", 0)

@@ -99,7 +99,7 @@
         "error": "一部のファイルのアップロードに失敗しました"
       },
       "generalError": "アップロード失敗\n{{error}}",
-      "fileTypes": "サポートされている形式: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "サポートされている形式: {{types}}",
       "fileUploader": {
         "singleFileLimit": "一度に1つ以上のファイルをアップロードできません",
         "maxFilesLimit": "{{count}}個を超えるファイルをアップロードできません",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "すべて",
         "completed": "完了",
-        "parse": "抽出",
-        "analyze": "分析",
-        "process": "処理",
+        "parse": "解析中",
+        "analyze": "分析中",
+        "process": "処理中",
         "failed": "失敗"
       },
       "status": {
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "パイプラインステータス",
       "busy": "パイプラインがビジー",
-      "requestPending": "リクエスト保留中",
       "cancellationRequested": "キャンセル要求済み",
       "jobName": "ジョブ名",
       "startTime": "開始時刻",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "下のテキストエリアでプロパティ値を編集してください。",
       "errors": {
         "duplicateName": "ノード名が既に存在します",
+        "invalidEntityName": "有効なノード名を入力してください",
         "updateFailed": "ノードの更新に失敗しました",
         "tryAgainLater": "後でもう一度お試しください",
         "updateSuccessButMergeFailed": "プロパティは更新されましたが、マージに失敗しました: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "テキストを手動で選択してコピーしてください",
       "thinking": "思考中...",
       "thinkingTime": "思考時間 {{time}}秒",
-      "thinkingInProgress": "思考中..."
+      "thinkingInProgress": "思考中...",
+      "responseTime": "応答時間 {{time}}秒",
+      "firstTokenTime": "初回トークン {{time}}秒",
+      "progress": {
+        "extracting_keywords": "キーワードを抽出中...",
+        "retrieving_entities": "エンティティを検索中...",
+        "retrieving_relations": "関係を検索中...",
+        "retrieving_chunks": "テキストチャンクを検索中...",
+        "reranking": "再ランキング中...",
+        "generating_response": "応答を生成中..."
+      }
     },
     "retrieval": {
       "startPrompt": "下にクエリを入力して検索を開始",
+      "scrollToBottom": "最新のメッセージへ",
       "clear": "クリア",
       "send": "送信",
       "stop": "停止",

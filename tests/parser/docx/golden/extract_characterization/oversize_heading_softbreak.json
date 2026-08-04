@@ -1,0 +1,20 @@
+{
+  "blocks": [
+    {
+      "content": "# Short heading line kept as the heading\nbody remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder body remainder\nFollowing body paragraph.",
+      "heading": "Short heading line kept as the heading",
+      "level": 1,
+      "parent_headings": [],
+      "type": "text",
+      "uuid": null,
+      "uuid_end": null
+    }
+  ],
+  "metadata": {
+    "first_heading": "Short heading line kept as the heading"
+  },
+  "warnings": {
+    "heading_softbreak_split_count": 1,
+    "missing_paraid_count": 2
+  }
+}

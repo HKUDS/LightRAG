@@ -160,6 +160,45 @@ async def test_single_doc_get_by_id_failure_is_isolated_no_orphans(
 
 
 @pytest.mark.asyncio
+async def test_enqueue_dedup_failure_aborts_before_any_upsert(tmp_path, monkeypatch):
+    """The first-layer enqueue dedup (``doc_status.filter_keys``, pipeline.py)
+    failing with a transient backend error must abort the enqueue and write
+    NOTHING. A fail-open there (reporting every id as new) would overwrite an
+    existing document's row to PENDING and re-schedule it. Proves the
+    OpenSearch ``filter_keys`` fail-closed fix at the pipeline level,
+    backend-agnostically (the JSON rig raises here via a monkeypatch)."""
+    rag = await _build_rag(tmp_path)
+    try:
+        full_docs_upserts: list = []
+        doc_status_upserts: list = []
+        orig_full_upsert = rag.full_docs.upsert
+        orig_status_upsert = rag.doc_status.upsert
+
+        async def spy_full_upsert(*args, **kwargs):
+            full_docs_upserts.append(args)
+            return await orig_full_upsert(*args, **kwargs)
+
+        async def spy_status_upsert(*args, **kwargs):
+            doc_status_upserts.append(args)
+            return await orig_status_upsert(*args, **kwargs)
+
+        async def dead_filter_keys(keys):
+            raise ConnectionError("doc_status backend transient failure")
+
+        monkeypatch.setattr(rag.full_docs, "upsert", spy_full_upsert)
+        monkeypatch.setattr(rag.doc_status, "upsert", spy_status_upsert)
+        monkeypatch.setattr(rag.doc_status, "filter_keys", dead_filter_keys)
+
+        with pytest.raises(ConnectionError):
+            await rag.apipeline_enqueue_documents(input="body", file_paths="a.txt")
+
+        assert full_docs_upserts == [], "full_docs written despite dedup failure"
+        assert doc_status_upserts == [], "doc_status written despite dedup failure"
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_full_outage_escape_still_cancels_workers(tmp_path, monkeypatch):
     """When even the FAILED-status write fails (full outage), the exception
     escapes the enqueue loop, but the try/finally still cancels all workers

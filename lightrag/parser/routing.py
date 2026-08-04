@@ -9,6 +9,8 @@ from typing import Any
 
 from lightrag.constants import (
     DEFAULT_CHUNK_P_SIZE,
+    DEFAULT_DOCX_SMART_HEADING,
+    DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
     DEFAULT_R_SEPARATORS,
     DEFAULT_SENTENCE_SPLIT_REGEX,
     FULL_DOCS_FORMAT_LIGHTRAG,
@@ -33,20 +35,23 @@ from lightrag.parser.registry import (
     PARSER_ENGINE_REUSE,
     engine_endpoint_configured,
     engine_endpoint_requirement,
+    malformed_env_suffixes,
     supported_parser_engines,
     suffix_capabilities,
 )
 from lightrag.parser.param_schema import (
+    _parse_bool,
     parse_chunk_params,
     parse_engine_params,
     render_engine_params,
     split_top_level,
     take_paren_block,
 )
-from lightrag.utils import logger, parse_optional_float
+from lightrag.utils import get_env_value, logger, parse_optional_float
 
 import json
-from collections.abc import Mapping
+from functools import lru_cache
+from collections.abc import Mapping, MutableMapping
 from copy import deepcopy
 
 # Trailing parser-hint pattern: matches ``.[engine].ext`` at end of basename.
@@ -314,9 +319,8 @@ def slim_chunk_options(
     result[key] = deepcopy(dict(src.get(key) or {}))
     if key == "paragraph_semantic":
         if "chunk_token_size" not in result[key]:
-            p_size_raw = os.getenv("CHUNK_P_SIZE")
-            result[key]["chunk_token_size"] = (
-                int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+            result[key]["chunk_token_size"] = _chunk_env_int(
+                "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE
             )
         # Mirror the CHUNK_P_DROP_REFERENCES env default for the drop-references
         # switch here — this is the single chokepoint every enqueue path runs
@@ -341,6 +345,160 @@ def _env_optional_str(key: str) -> str | None:
     if not stripped or stripped.lower() == "none":
         return None
     return raw
+
+
+def _chunk_env_int(env_key: str, default: int | None) -> int | None:
+    """Read a chunk size/overlap env as int.
+
+    Unset, empty, whitespace, and literal ``None`` fall back to ``default``
+    (empty ``.env`` / Compose slots). Non-empty malformed values raise so a
+    typo like ``20OO`` does not silently change retrieval defaults.
+    """
+    raw = os.getenv(env_key)
+    if raw is None:
+        return default
+    stripped = raw.strip()
+    if not stripped or stripped.lower() == "none":
+        return default
+    try:
+        return int(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"Environment variable {env_key}={raw!r} is not a valid integer"
+        ) from exc
+
+
+@lru_cache(maxsize=32)
+def _cached_env_r_separators(raw: str | None) -> tuple[str, ...]:
+    """Parse, bound, and cache one environment separator configuration.
+
+    The cache key is the raw environment value. This keeps startup/configuration
+    diagnostics one-shot for a deployment while still reflecting a deliberate
+    runtime environment change in tests or embedded deployments.
+    """
+    if not raw or not str(raw).strip():
+        return DEFAULT_R_SEPARATORS
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return DEFAULT_R_SEPARATORS
+    if not isinstance(parsed, list) or not all(isinstance(s, str) for s in parsed):
+        return DEFAULT_R_SEPARATORS
+
+    from lightrag.chunker.recursive_character import (
+        inspect_r_separators,
+        log_r_separator_normalization,
+    )
+
+    normalized = inspect_r_separators(parsed)
+    if normalized.changed:
+        log_r_separator_normalization(normalized, context="CHUNK_R_SEPARATORS")
+    return tuple(normalized.separators or ())
+
+
+def env_r_separators_for(raw: str | None) -> list[str]:
+    """Return the cached, bounded cascade for an already-read raw env value.
+
+    Use this over :func:`env_r_separators` when the caller has its own cache
+    keyed on ``raw``, so key and value cannot be read from two different
+    environments.
+
+    Empty, malformed, and non-string JSON arrays retain the historic silent
+    fallback to :data:`DEFAULT_R_SEPARATORS`. A syntactically valid cascade that
+    exceeds the safety bounds is corrected and warned about once per raw value.
+    """
+    return list(_cached_env_r_separators(raw))
+
+
+def env_r_separators() -> list[str]:
+    """Return the cached, bounded ``CHUNK_R_SEPARATORS`` cascade."""
+    return env_r_separators_for(os.getenv("CHUNK_R_SEPARATORS"))
+
+
+def normalize_chunker_r_separators(
+    chunker_config: Mapping[str, Any],
+    *,
+    context: str | None = None,
+    in_place: bool = False,
+) -> tuple[Mapping[str, Any], bool]:
+    """Correct the configured R cascade and optionally report it once.
+
+    This is for long-lived chunker configuration, not document snapshots.
+    Per-document snapshots use :func:`slim_chunk_options`' silent backstop
+    instead.
+
+    Two corrections are possible, and both are reported exactly once because the
+    corrected value is what gets stored:
+
+    * a cascade breaching :data:`MAX_R_SEPARATORS` / :data:`MAX_R_SEPARATOR_CHARS`
+      is bounded;
+    * a ``separators`` value that is not a list/tuple has its key **removed**.
+      A bare ``str`` is the trap here: it satisfies ``Sequence[str]``, so bounding
+      it would iterate characters and silently turn one typo into a cascade of 64
+      single characters that looks legitimate forever after. Dropping the key
+      instead routes the chunker to its documented ``separators=None`` path.
+      ``None`` itself is a legitimate value and passes straight through.
+
+    Args:
+        chunker_config: the long-lived ``addon_params['chunker']`` mapping.
+        context: label for the one-time warning; ``None`` suppresses logging.
+        in_place: mutate ``chunker_config`` and its ``recursive_character``
+            sub-dict rather than returning corrected copies. Callers that own
+            live configuration use this so a caller-held reference to the nested
+            dict — the documented runtime-mutation idiom, see
+            :func:`lightrag.addon_params.default_addon_params` — keeps pointing
+            at the mapping that is actually read. Silently ignored when either
+            mapping is not mutable.
+
+    Returns:
+        ``(config, corrected)``. When nothing needed correcting the original
+        mapping is returned unchanged so callers can skip their cache update.
+    """
+    recursive = chunker_config.get("recursive_character")
+    if not isinstance(recursive, Mapping) or "separators" not in recursive:
+        return chunker_config, False
+
+    from lightrag.chunker.recursive_character import (
+        inspect_r_separators,
+        log_r_separator_normalization,
+    )
+
+    raw_separators = recursive["separators"]
+    drop_key = raw_separators is not None and not isinstance(
+        raw_separators, (list, tuple)
+    )
+    if drop_key:
+        normalized = None
+    else:
+        normalized = inspect_r_separators(raw_separators)
+        if not normalized.changed:
+            return chunker_config, False
+
+    if (
+        in_place
+        and isinstance(chunker_config, MutableMapping)
+        and isinstance(recursive, MutableMapping)
+    ):
+        corrected: Any = chunker_config
+        corrected_recursive: Any = recursive
+    else:
+        corrected = dict(chunker_config)
+        corrected_recursive = dict(recursive)
+        corrected["recursive_character"] = corrected_recursive
+
+    if drop_key:
+        del corrected_recursive["separators"]
+        if context is not None:
+            logger.warning(
+                f"[{context}] separators must be a list of strings, got "
+                f"{type(raw_separators).__name__}; ignoring it so the recursive "
+                f"chunker falls back to its default cascade"
+            )
+    else:
+        corrected_recursive["separators"] = normalized.separators
+        if context is not None:
+            log_r_separator_normalization(normalized, context=context)
+    return corrected, True
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
@@ -394,9 +552,7 @@ def default_chunker_config() -> dict[str, Any]:
             # boundaries instead of falling through to character-level
             # splitting.  See ``constants.DEFAULT_R_SEPARATORS`` for
             # cascade order rationale.
-            "separators": json.loads(
-                os.getenv("CHUNK_R_SEPARATORS", json.dumps(list(DEFAULT_R_SEPARATORS)))
-            ),
+            "separators": env_r_separators(),
         },
         "semantic_vector": {
             "breakpoint_threshold_type": os.getenv(
@@ -405,7 +561,7 @@ def default_chunker_config() -> dict[str, Any]:
             "breakpoint_threshold_amount": parse_optional_float(
                 os.getenv("CHUNK_V_BREAKPOINT_THRESHOLD_AMOUNT")
             ),
-            "buffer_size": int(os.getenv("CHUNK_V_BUFFER_SIZE", "1")),
+            "buffer_size": get_env_value("CHUNK_V_BUFFER_SIZE", 1, int),
             # Default extends LangChain's English-only sentence splitter
             # with CJK terminators so SemanticChunker can actually find
             # sentence boundaries on Chinese input.  Override per
@@ -418,48 +574,47 @@ def default_chunker_config() -> dict[str, Any]:
     }
 
     # Strategy-specific overlap envs only — leave the slot absent when
-    # unset so overlay can detect provenance and fill from the legacy
+    # unset/empty so overlay can detect provenance and fill from the legacy
     # tier (constructor field → CHUNK_OVERLAP_SIZE env).
-    f_overlap_raw = os.getenv("CHUNK_F_OVERLAP_SIZE")
-    if f_overlap_raw is not None:
-        config["fixed_token"]["chunk_overlap_token_size"] = int(f_overlap_raw)
-    r_overlap_raw = os.getenv("CHUNK_R_OVERLAP_SIZE")
-    if r_overlap_raw is not None:
-        config["recursive_character"]["chunk_overlap_token_size"] = int(r_overlap_raw)
-    p_overlap_raw = os.getenv("CHUNK_P_OVERLAP_SIZE")
-    if p_overlap_raw is not None:
-        config["paragraph_semantic"]["chunk_overlap_token_size"] = int(p_overlap_raw)
+    f_overlap = _chunk_env_int("CHUNK_F_OVERLAP_SIZE", None)
+    if f_overlap is not None:
+        config["fixed_token"]["chunk_overlap_token_size"] = f_overlap
+    r_overlap = _chunk_env_int("CHUNK_R_OVERLAP_SIZE", None)
+    if r_overlap is not None:
+        config["recursive_character"]["chunk_overlap_token_size"] = r_overlap
+    p_overlap = _chunk_env_int("CHUNK_P_OVERLAP_SIZE", None)
+    if p_overlap is not None:
+        config["paragraph_semantic"]["chunk_overlap_token_size"] = p_overlap
 
     # P strategy carries its own ``chunk_token_size`` override so the
     # paragraph-semantic merge target can diverge from the global
     # ``CHUNK_SIZE`` (e.g. heading-aligned chunks may want a larger
     # ceiling).  Unlike R/V, the slot is ALWAYS populated — when
-    # ``CHUNK_P_SIZE`` is unset we use ``DEFAULT_CHUNK_P_SIZE`` (2000)
+    # ``CHUNK_P_SIZE`` is unset/empty we use ``DEFAULT_CHUNK_P_SIZE`` (2000)
     # rather than letting the dispatcher fall back to the global
     # ``CHUNK_SIZE`` (1200): paragraph-semantic merging needs more
     # headroom than the global default to keep related paragraphs
     # together, and silently inheriting the smaller global ceiling
     # defeats the strategy's purpose.
-    p_size_raw = os.getenv("CHUNK_P_SIZE")
-    config["paragraph_semantic"]["chunk_token_size"] = (
-        int(p_size_raw) if p_size_raw is not None else DEFAULT_CHUNK_P_SIZE
+    config["paragraph_semantic"]["chunk_token_size"] = _chunk_env_int(
+        "CHUNK_P_SIZE", DEFAULT_CHUNK_P_SIZE
     )
 
     # F/R/V strategies likewise carry their own optional ``chunk_token_size``
     # overrides (fixed-token may want a deployment-specific window, recursive
     # character splitting a smaller target, semantic-vector clustering a larger
     # advisory ceiling).  Same slot-absent convention as P: leave the slot
-    # absent when the env is unset so the strategy inherits the top-level
+    # absent when the env is unset/empty so the strategy inherits the top-level
     # ``chunk_token_size`` fallback at consumption time.
-    f_size_raw = os.getenv("CHUNK_F_SIZE")
-    if f_size_raw is not None:
-        config["fixed_token"]["chunk_token_size"] = int(f_size_raw)
-    r_size_raw = os.getenv("CHUNK_R_SIZE")
-    if r_size_raw is not None:
-        config["recursive_character"]["chunk_token_size"] = int(r_size_raw)
-    v_size_raw = os.getenv("CHUNK_V_SIZE")
-    if v_size_raw is not None:
-        config["semantic_vector"]["chunk_token_size"] = int(v_size_raw)
+    f_size = _chunk_env_int("CHUNK_F_SIZE", None)
+    if f_size is not None:
+        config["fixed_token"]["chunk_token_size"] = f_size
+    r_size = _chunk_env_int("CHUNK_R_SIZE", None)
+    if r_size is not None:
+        config["recursive_character"]["chunk_token_size"] = r_size
+    v_size = _chunk_env_int("CHUNK_V_SIZE", None)
+    if v_size is not None:
+        config["semantic_vector"]["chunk_token_size"] = v_size
 
     return config
 
@@ -499,6 +654,13 @@ def resolve_chunk_options(
 
     The returned snapshot is an independent deep copy: mutating it has
     no effect on subsequent resolutions.
+
+    This function is not purely a reader of ``addon_params``: when the live
+    ``chunker`` config carries an out-of-bounds or wrongly-typed R separator
+    cascade, it corrects that config **in place** and logs once, so the next
+    document does not repeat the warning. The correction preserves the identity
+    of the ``recursive_character`` sub-dict, keeping the documented
+    nested-mutation idiom working afterwards.
     """
     src: Mapping[str, Any] | None = None
     if isinstance(addon_params, Mapping):
@@ -507,6 +669,25 @@ def resolve_chunk_options(
             src = candidate
     if src is None:
         src = default_chunker_config()
+    else:
+        # ``ObservableAddonParams`` supports a documented nested-mutation
+        # style. Such a mutation cannot notify the top-level mapping, so the
+        # next enqueue is the first reliable chance to validate it. Correct and
+        # cache the value here; subsequent document snapshots are already
+        # bounded and therefore silent.
+        #
+        # ``in_place`` keeps the nested ``recursive_character`` dict identity:
+        # replacing it would detach a reference the caller obtained through the
+        # very idiom this branch exists to support, silently discarding every
+        # later write to it. Correcting in place also avoids re-entering
+        # ``ObservableAddonParams.__setitem__``, so a snapshot build does not
+        # invalidate the unrelated prompt-profile cache.
+        from lightrag.addon_params import ObservableAddonParams
+
+        if isinstance(addon_params, ObservableAddonParams):
+            src, _ = normalize_chunker_r_separators(
+                src, context="addon_params['chunker']", in_place=True
+            )
 
     snapshot = slim_chunk_options(src, process_options)
     if chunk_strategy_key(process_options) == "fixed_token":
@@ -612,7 +793,7 @@ def _parse_chunk_param_texts(
 def split_engine_and_options(bracket_inner: str) -> tuple[str | None, str]:
     """Decompose a bracket-hint inner string into ``(engine, options)``.
 
-    Format rules (see docs/FileProcessingPipeline-zh.md):
+    Format rules (see docs/FileProcessingPipeline.md):
         - ``ENGINE-OPTIONS``: first ``-``-separated segment is the engine
           candidate; the remainder is the options string.
         - ``ENGINE``: matches a supported engine name as a whole.
@@ -945,8 +1126,33 @@ def _rule_engine_and_options(engine_hint: str) -> tuple[str, str]:
     return normalize_parser_engine(head), tail.strip()
 
 
+def validate_parser_suffix_env_vars() -> None:
+    """Fail fast on malformed entries in a spec's ``extra_suffixes_env`` list.
+
+    An entry that is not a bare lowercase-alphanumeric suffix — ``*.doc`` out
+    of glob habit, or a semicolon-separated list — can never equal a real
+    ``Path.suffix``, so admitting it would do nothing while leaving the
+    operator's intent (route ``.doc`` to docling) unmet and undiagnosed. Rejecting
+    it at startup mirrors the strictness ``LIGHTRAG_PARSER`` already gets.
+    """
+    errors = [
+        f"{env_name} has malformed entries: "
+        + ", ".join(repr(token) for token in tokens)
+        + "; use bare lowercase suffixes separated by ',' (e.g. 'doc,ppt,xls')"
+        for env_name, tokens in sorted(malformed_env_suffixes().items())
+    ]
+    if errors:
+        raise ParserRoutingConfigError("; ".join(errors))
+
+
 def validate_parser_routing_config(parser_rules: str | None = None) -> None:
-    """Validate LIGHTRAG_PARSER syntax and required external parser endpoints."""
+    """Validate LIGHTRAG_PARSER syntax and required external parser endpoints.
+
+    Deployment suffix extensions are checked first: they feed engine capability
+    (``suffix_capabilities``), so a malformed list must be reported as such
+    rather than as a downstream "rule does not match any supported suffix".
+    """
+    validate_parser_suffix_env_vars()
     rules = parser_rules_from_env() if parser_rules is None else parser_rules.strip()
     if not rules:
         return
@@ -1010,6 +1216,132 @@ def validate_parser_routing_config(parser_rules: str | None = None) -> None:
     if errors:
         raise ParserRoutingConfigError(
             "Invalid LIGHTRAG_PARSER configuration: " + "; ".join(errors)
+        )
+
+
+def smart_heading_default_enabled() -> bool:
+    """Global default for the native docx ``smart_heading`` engine param.
+
+    Read live from env ``DOCX_SMART_HEADING`` (same live-env pattern as the
+    other DOCX_SMART_* knobs). When true, :func:`seed_smart_heading_param`
+    seeds ``smart_heading=true`` for .docx files that resolve to the native
+    engine; an explicit ``native(smart_heading=false)`` rule/hint/directive
+    overrides it back off. An unparseable value raises so a typo surfaces at
+    startup (``validate_smart_heading_dependencies``) instead of silently
+    disabling.
+    """
+    raw = os.getenv("DOCX_SMART_HEADING", "").strip()
+    if not raw:
+        return DEFAULT_DOCX_SMART_HEADING
+    parsed = _parse_bool(raw)
+    if parsed is None:
+        raise ParserRoutingConfigError(
+            f"Invalid DOCX_SMART_HEADING value {raw!r}; expected a boolean (true/false)"
+        )
+    return parsed
+
+
+def seed_smart_heading_param(
+    engine: str, engine_params: dict[str, Any], file_path: str | Path
+) -> None:
+    """Materialize the ``DOCX_SMART_HEADING`` default into ``engine_params``.
+
+    Lowest precedence: fills ``smart_heading=True`` only when ``engine`` is
+    native, ``file_path`` is a .docx, the switch is on, and the caller has no
+    explicit ``smart_heading`` param (so ``smart_heading=false`` stays the
+    opt-out). Shared by every chokepoint that persists ``parse_engine`` —
+    upload-time :func:`resolve_parser_directives` and the direct-enqueue
+    ``apipeline_enqueue_documents`` path — so the seed lands in the stored
+    field regardless of how the document entered and re-parses stay immune
+    to later env toggles.
+    """
+    if (
+        engine == PARSER_ENGINE_NATIVE
+        and "smart_heading" not in engine_params
+        and parser_suffix(file_path) == "docx"
+        and smart_heading_default_enabled()
+    ):
+        engine_params["smart_heading"] = True
+
+
+def _rules_enable_smart_heading(rules: str) -> bool:
+    """True when a docx-matching native LIGHTRAG_PARSER rule sets ``smart_heading=true``.
+
+    Rules whose suffix pattern cannot match ``docx`` are ignored: smart_heading
+    only ever takes effect on .docx files (other native paths warn-and-ignore
+    the param), so e.g. ``md:native(smart_heading=true)`` must not force the
+    spaCy models at startup.
+    """
+    for _, item in _iter_parser_rule_items(rules):
+        if ":" not in item:
+            continue
+        pattern, engine_hint = item.split(":", 1)
+        if not fnmatch.fnmatch("docx", pattern.strip().lower()):
+            continue
+        stripped_hint, engine_param, _, _ = _extract_param_blocks(engine_hint.strip())
+        engine, _ = _rule_engine_and_options(stripped_hint)
+        if engine != PARSER_ENGINE_NATIVE or engine_param is None:
+            continue
+        params, _ = parse_engine_params(engine_param, engine=engine, label="rule")
+        if params.get("smart_heading") is True:
+            return True
+    return False
+
+
+def validate_smart_heading_dependencies(parser_rules: str | None = None) -> None:
+    """Fail fast at startup when config enables smart_heading without models.
+
+    Triggers when the ``DOCX_SMART_HEADING`` global default is on, or when any
+    ``LIGHTRAG_PARSER`` rule carries ``native(smart_heading=true)``. Per-file
+    filename hints cannot be known at startup — those keep the parse-time hard
+    error as the backstop. Silent no-op otherwise (deployments that never use
+    smart_heading are not forced to install the models).
+    """
+    rules = parser_rules_from_env() if parser_rules is None else parser_rules.strip()
+    if not (
+        smart_heading_default_enabled()
+        or (rules and _rules_enable_smart_heading(rules))
+    ):
+        return
+    _validate_smart_heading_max_chars()
+    # Lazy import: only configurations that enable smart_heading pay for it.
+    from lightrag.parser.docx.smart_heading.nlp import ensure_spacy_models_installed
+
+    ensure_spacy_models_installed(
+        "smart_heading is enabled by DOCX_SMART_HEADING or a LIGHTRAG_PARSER rule"
+    )
+
+
+def _validate_smart_heading_max_chars() -> None:
+    """Startup check for ``DOCX_SMART_HEADING_MAX_CHARS`` (only when smart_heading
+    is enabled).
+
+    The structural rule (reject non-integer / ``< 3``) is the shared single
+    source :func:`~lightrag.parser.docx.smart_heading.guardrails.validate_heading_max_chars_env`,
+    used here AND at the parse-time entry (``run_smart_heading``) so a bad cap is
+    rejected identically however smart_heading was enabled; here it is re-raised
+    as a config error so the API refuses to start. On top of that, warn (startup
+    only, to avoid a per-document log storm) on a usable-but-tiny cap: below the
+    per-line title width even accepted title lines exceed it, so almost every
+    heading would be demoted to body — usable, but almost certainly a misconfig.
+    """
+    from lightrag.parser.docx.smart_heading import guardrails
+    from lightrag.parser.docx.smart_heading.title_block import (
+        TITLE_LINE_MAX_WEIGHTED_CHARS,
+    )
+
+    try:
+        value = guardrails.validate_heading_max_chars_env()
+    except ValueError as exc:
+        raise ParserRoutingConfigError(str(exc)) from exc
+    if value is not None and value < TITLE_LINE_MAX_WEIGHTED_CHARS:
+        logger.warning(
+            "DOCX_SMART_HEADING_MAX_CHARS=%d is below the title-line width (%d "
+            "en-equivalent chars); most real headings will be demoted to body. "
+            "This is usually a misconfiguration — the default is %d.",
+            value,
+            TITLE_LINE_MAX_WEIGHTED_CHARS,
+            DEFAULT_DOCX_SMART_HEADING_MAX_CHARS,
         )
 
 
@@ -1151,15 +1483,19 @@ def resolve_parser_directives(
         if merged:
             chunk_params[selector] = merged
 
-    # Engine params are flat (one resolved engine per file). Keep only the
-    # params whose attached engine == the resolved engine: rule params first,
-    # then filename-hint params (filename wins on a shared key). Params attached
-    # to an engine that lost resolution are dropped.
+    # Engine params are flat (one resolved engine per file): keep only the
+    # params whose attached engine == the resolved engine — rule params first,
+    # then filename-hint params (filename wins on a shared key); params
+    # attached to a losing engine are dropped. The DOCX_SMART_HEADING global
+    # default seeds in last at the lowest precedence (an explicit
+    # smart_heading=false rule/hint wins), materialized into the persisted
+    # parse_engine so re-parses stay immune to later env toggles.
     engine_params: dict[str, Any] = {}
     if rule_engine == engine:
         engine_params.update(rule_engine_params)
     if hinted_engine_for_params == engine:
         engine_params.update(hinted_engine_params)
+    seed_smart_heading_param(engine, engine_params, file_path)
 
     return ParserDirectives(
         engine=engine,

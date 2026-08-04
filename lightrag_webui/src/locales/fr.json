@@ -99,7 +99,7 @@
         "error": "Certains fichiers n'ont pas pu être téléchargés"
       },
       "generalError": "Échec du téléchargement\n{{error}}",
-      "fileTypes": "Types pris en charge : TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Types pris en charge : {{types}}",
       "fileUploader": {
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
@@ -139,18 +139,18 @@
       "filters": {
         "all": "Tous",
         "completed": "Terminé",
-        "parse": "Extraction",
+        "parse": "Parsing",
         "analyze": "Analyse",
-        "process": "Traitement",
-        "failed": "Échec"
+        "process": "Extraction",
+        "failed": "Échoué"
       },
       "status": {
         "all": "Tous",
         "completed": "Terminé",
         "preprocessed": "Prétraité",
-        "parsing": "Analyse syntaxique",
-        "analyzing": "Analyse en cours",
-        "processing": "En traitement",
+        "parsing": "Parsing",
+        "analyzing": "Analyse",
+        "processing": "Extraction",
         "pending": "En attente",
         "failed": "Échoué"
       },
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "État du Pipeline",
       "busy": "Pipeline Occupé",
-      "requestPending": "Demande en Attente",
       "cancellationRequested": "Annulation Demandée",
       "jobName": "Nom du Travail",
       "startTime": "Heure de Début",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "Modifiez la valeur de la propriété dans la zone de texte ci-dessous.",
       "errors": {
         "duplicateName": "Le nom du nœud existe déjà",
+        "invalidEntityName": "Saisissez un nom de nœud valide",
         "updateFailed": "Échec de la mise à jour du nœud",
         "tryAgainLater": "Veuillez réessayer plus tard",
         "updateSuccessButMergeFailed": "Propriétés mises à jour, mais la fusion a échoué : {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "Veuillez sélectionner et copier le texte manuellement",
       "thinking": "Réflexion en cours...",
       "thinkingTime": "Temps de réflexion {{time}}s",
-      "thinkingInProgress": "Réflexion en cours..."
+      "thinkingInProgress": "Réflexion en cours...",
+      "responseTime": "Temps de réponse {{time}}s",
+      "firstTokenTime": "Premier token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Extraction des mots-clés...",
+        "retrieving_entities": "Récupération des entités...",
+        "retrieving_relations": "Récupération des relations...",
+        "retrieving_chunks": "Récupération des segments...",
+        "reranking": "Réévaluation des résultats...",
+        "generating_response": "Génération de la réponse..."
+      }
     },
     "retrieval": {
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
+      "scrollToBottom": "Aller au dernier message",
       "clear": "Effacer",
       "send": "Envoyer",
       "stop": "Arrêter",

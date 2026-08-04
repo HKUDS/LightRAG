@@ -72,6 +72,13 @@ def compute_mdhash_id_for_qdrant(
         raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
 
 
+def _normalize_qdrant_point_id(point_id: Any) -> str:
+    try:
+        return uuid.UUID(str(point_id)).hex
+    except (ValueError, AttributeError, TypeError):
+        return str(point_id)
+
+
 def workspace_filter_condition(workspace: str) -> models.FieldCondition:
     """
     Create a workspace filter condition for Qdrant queries.
@@ -1159,7 +1166,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if CREATED_AT_FIELD not in payload:
                         payload[CREATED_AT_FIELD] = None
 
-                    qdrant_point_id = str(point.id) if point.id is not None else ""
+                    qdrant_point_id = (
+                        _normalize_qdrant_point_id(point.id)
+                        if point.id is not None
+                        else ""
+                    )
                     if qdrant_point_id:
                         payload_by_qdrant_id[qdrant_point_id] = payload
 
@@ -1259,10 +1270,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             return result
 
         try:
-            qdrant_ids = [
-                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace)
+            qdrant_id_to_requested_id = {
+                compute_mdhash_id_for_qdrant(id, prefix=self.effective_workspace): id
                 for id in remaining
-            ]
+            }
+            qdrant_ids = list(qdrant_id_to_requested_id)
             results = self._client.retrieve(
                 collection_name=self.final_namespace,
                 ids=qdrant_ids,
@@ -1271,13 +1283,19 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             )
 
             for point in results:
-                if point and point.vector is not None and point.payload:
-                    original_id = point.payload.get(ID_FIELD)
-                    if original_id:
-                        vector_data = point.vector
-                        if isinstance(vector_data, np.ndarray):
-                            vector_data = vector_data.tolist()
-                        result[original_id] = vector_data
+                if point and point.vector is not None:
+                    payload = point.payload or {}
+                    original_id = payload.get(ID_FIELD)
+                    if not original_id and point.id is not None:
+                        original_id = qdrant_id_to_requested_id.get(
+                            _normalize_qdrant_point_id(point.id)
+                        )
+                    if not original_id:
+                        continue
+                    vector_data = point.vector
+                    if isinstance(vector_data, np.ndarray):
+                        vector_data = vector_data.tolist()
+                    result[str(original_id)] = vector_data
 
             return result
         except Exception as e:
@@ -1285,12 +1303,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             return result
 
     async def finalize(self):
-        """Flush pending vector ops; surface unflushed data as RuntimeError.
+        """Flush pending vector ops, then release the Qdrant client.
 
-        Qdrant has no client connection that needs explicit release here
-        (the QdrantClient is held by the storage instance and torn down
-        on GC), but we still need to fail loudly when a transient bulk
-        error left writes buffered. ``_flush_pending_vector_ops`` is
+        The QdrantClient owns an HTTP/gRPC transport that should be closed
+        explicitly rather than left for GC — matching the close-on-release
+        pattern used by the other server-backed storages (Neo4j / Postgres /
+        Mongo / OpenSearch / Milvus). We still fail loudly when a transient
+        bulk error left writes buffered. ``_flush_pending_vector_ops`` is
         all-or-nothing: it either clears both buffers or raises with
         them intact, but we still defensively check both buffers after a
         successful flush in case a future refactor breaks that invariant.
@@ -1300,6 +1319,17 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             await self._flush_pending_vector_ops()
         except Exception as e:
             flush_error = e
+
+        # Release the client after the flush so the flush can still use it.
+        # The transport is freed on every exit path, matching the
+        # close-on-release pattern of the other server-backed storages.
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as close_error:
+                logger.warning(
+                    f"[{self.workspace}] Failed to close Qdrant client: {close_error}"
+                )
 
         async with self._flush_lock:
             pending_docs = len(self._pending_vector_docs)

@@ -132,6 +132,7 @@ class TestMigrationToolOpenSearch:
                 ],
                 [
                     {"_id": "default:summary:1", "_source": {"return": "b"}},
+                    {"_id": "default:analysis:1", "_source": {"return": "vlm"}},
                     {"_id": "default:extract:2", "_source": {"return": "c"}},
                 ],
             ]
@@ -145,13 +146,16 @@ class TestMigrationToolOpenSearch:
             )
         ]
 
-        assert count == 3
+        assert count == 4
         assert streamed == [
             {
                 "default:extract:1": {"return": "a"},
                 "default:summary:1": {"return": "b"},
             },
-            {"default:extract:2": {"return": "c"}},
+            {
+                "default:analysis:1": {"return": "vlm"},
+                "default:extract:2": {"return": "c"},
+            },
         ]
 
     def test_count_available_storage_types_includes_opensearch(

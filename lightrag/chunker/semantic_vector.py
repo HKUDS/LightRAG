@@ -32,7 +32,12 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
-from lightrag.utils import EmbeddingFunc, Tokenizer, logger
+from lightrag.utils import (
+    EmbeddingFunc,
+    Tokenizer,
+    logger,
+    run_in_chunking_executor,
+)
 
 if TYPE_CHECKING:
     from langchain_experimental.text_splitter import (
@@ -251,7 +256,12 @@ async def chunking_by_semantic_vector(
             chunking_by_recursive_character,
         )
 
-        return chunking_by_recursive_character(
+        # Off the loop like every other R run. Without this the ``await
+        # asyncio.to_thread`` further down is never reached, so V's "already
+        # offloaded" reputation does not hold for a deployment without an
+        # embedding function — the R attack surface reappears in full.
+        return await run_in_chunking_executor(
+            chunking_by_recursive_character,
             tokenizer,
             content,
             chunk_token_size,
@@ -296,54 +306,71 @@ async def chunking_by_semantic_vector(
     )
 
     target_max = max(int(chunk_token_size), 1)
-    results: list[dict[str, Any]] = []
-    for piece, source_start, source_end in pieces:
-        body = piece.strip()
-        if not body:
-            continue
-        piece_tokens = len(tokenizer.encode(body))
-        if piece_tokens <= target_max:
-            results.append(
-                {
-                    "tokens": piece_tokens,
-                    "content": body,
-                    "chunk_order_index": len(results),
-                    "_source_span": {
-                        "start": source_start,
-                        "end": source_end,
-                    },
-                }
-            )
-            continue
-        # Oversized semantic piece: re-split via R while preserving the
-        # surrounding chunk order.  ``chunk_overlap_token_size=0`` keeps
-        # V's non-overlapping semantics.
-        sub_pieces = chunking_by_recursive_character(
-            tokenizer,
-            body,
-            target_max,
-            chunk_overlap_token_size=0,
-        )
-        for sub in sub_pieces:
-            sub_body = sub.get("content", "")
-            if not sub_body:
+
+    def _size_and_resplit() -> list[dict[str, Any]]:
+        """Encode every semantic piece and re-split the oversized ones.
+
+        ``await asyncio.to_thread`` above covers the embedding-driven grouping
+        and nothing else: this loop encodes each piece and, for anything over
+        budget, runs a whole R pass on it. On the event loop that is comparable
+        in cost to the grouping it follows, which is why the whole loop — not
+        each piece — moves off it in one hop.
+
+        ``chunking_by_recursive_character`` is called DIRECTLY here: this
+        function already runs inside the chunking executor, and a nested
+        submission into a single-worker pool whose permit it holds would
+        deadlock.
+        """
+        results: list[dict[str, Any]] = []
+        for piece, source_start, source_end in pieces:
+            body = piece.strip()
+            if not body:
                 continue
-            sub_span = sub.get("_source_span")
-            source_span = None
-            if isinstance(sub_span, dict):
-                try:
-                    source_span = {
-                        "start": source_start + int(sub_span["start"]),
-                        "end": source_start + int(sub_span["end"]),
+            piece_tokens = len(tokenizer.encode(body))
+            if piece_tokens <= target_max:
+                results.append(
+                    {
+                        "tokens": piece_tokens,
+                        "content": body,
+                        "chunk_order_index": len(results),
+                        "_source_span": {
+                            "start": source_start,
+                            "end": source_end,
+                        },
                     }
-                except (KeyError, TypeError, ValueError):
-                    source_span = None
-            results.append(
-                {
-                    "tokens": sub.get("tokens", len(tokenizer.encode(sub_body))),
-                    "content": sub_body,
-                    "chunk_order_index": len(results),
-                    **({"_source_span": source_span} if source_span else {}),
-                }
+                )
+                continue
+            # Oversized semantic piece: re-split via R while preserving the
+            # surrounding chunk order.  ``chunk_overlap_token_size=0`` keeps
+            # V's non-overlapping semantics.
+            sub_pieces = chunking_by_recursive_character(
+                tokenizer,
+                body,
+                target_max,
+                chunk_overlap_token_size=0,
             )
-    return results
+            for sub in sub_pieces:
+                sub_body = sub.get("content", "")
+                if not sub_body:
+                    continue
+                sub_span = sub.get("_source_span")
+                source_span = None
+                if isinstance(sub_span, dict):
+                    try:
+                        source_span = {
+                            "start": source_start + int(sub_span["start"]),
+                            "end": source_start + int(sub_span["end"]),
+                        }
+                    except (KeyError, TypeError, ValueError):
+                        source_span = None
+                results.append(
+                    {
+                        "tokens": sub.get("tokens", len(tokenizer.encode(sub_body))),
+                        "content": sub_body,
+                        "chunk_order_index": len(results),
+                        **({"_source_span": source_span} if source_span else {}),
+                    }
+                )
+        return results
+
+    return await run_in_chunking_executor(_size_and_resplit)

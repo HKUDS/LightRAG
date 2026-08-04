@@ -2,8 +2,9 @@
 """
 LLM Cache Migration Tool for LightRAG
 
-This tool migrates LLM response cache (default:extract:* and default:summary:*)
-between different KV storage implementations while preserving workspace isolation.
+This tool migrates default-mode LLM response caches (extract, summary, and
+multimodal analysis) between different KV storage implementations while
+preserving workspace isolation.
 
 Usage:
     python -m lightrag.tools.migrate_llm_cache
@@ -64,13 +65,38 @@ WORKSPACE_ENV_MAP = {
 # Default batch size for migration
 DEFAULT_BATCH_SIZE = 1000
 
-
 # Default count batch size for efficient counting
 DEFAULT_COUNT_BATCH_SIZE = 1000
+
+# Cache types produced in default mode and migrated by this tool.
+DEFAULT_CACHE_TYPES = ("extract", "summary", "analysis")
+DEFAULT_CACHE_PREFIXES = tuple(
+    f"default:{cache_type}:" for cache_type in DEFAULT_CACHE_TYPES
+)
+DEFAULT_CACHE_PATTERNS = tuple(
+    f"default:{cache_type}:*" for cache_type in DEFAULT_CACHE_TYPES
+)
+DEFAULT_CACHE_MONGO_REGEX = f"^default:({'|'.join(DEFAULT_CACHE_TYPES)}):"
+DEFAULT_CACHE_SQL_FILTER = " OR ".join(
+    f"id LIKE 'default:{cache_type}:%'" for cache_type in DEFAULT_CACHE_TYPES
+)
 
 # ANSI color codes for terminal output
 BOLD_CYAN = "\033[1;36m"
 RESET = "\033[0m"
+
+
+def _is_default_cache_key(key: str) -> bool:
+    """Return whether a key belongs to a supported default-mode cache type."""
+    return key.startswith(DEFAULT_CACHE_PREFIXES)
+
+
+def _cache_type_from_key(key: str) -> str:
+    """Return a supported cache type from a flattened key, or ``unknown``."""
+    parts = key.split(":", 2)
+    if len(parts) == 3 and parts[0] == "default" and parts[1] in DEFAULT_CACHE_TYPES:
+        return parts[1]
+    return "unknown"
 
 
 @dataclass
@@ -300,15 +326,13 @@ class MigrationTool:
             storage: JsonKVStorage instance
 
         Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
+            Dictionary of supported default-mode cache entries
         """
         # Access _data directly - it's a dict from shared_storage
         async with storage._storage_lock:
             filtered = {}
             for key, value in storage._data.items():
-                if key.startswith("default:extract:") or key.startswith(
-                    "default:summary:"
-                ):
+                if _is_default_cache_key(key):
                     filtered[key] = value.copy()
             return filtered
 
@@ -322,7 +346,7 @@ class MigrationTool:
             batch_size: Number of keys to process per batch
 
         Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
+            Dictionary of supported default-mode cache entries
         """
         import json
 
@@ -330,7 +354,7 @@ class MigrationTool:
 
         # Use _get_redis_connection() context manager
         async with storage._get_redis_connection() as redis:
-            for pattern in ["default:extract:*", "default:summary:*"]:
+            for pattern in DEFAULT_CACHE_PATTERNS:
                 # Add namespace prefix to pattern
                 prefixed_pattern = f"{storage.final_namespace}:{pattern}"
                 cursor = 0
@@ -402,7 +426,7 @@ class MigrationTool:
             batch_size: Number of records to fetch per batch
 
         Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
+            Dictionary of supported default-mode cache entries
         """
         from lightrag.kg.postgres_impl import namespace_to_table_name
 
@@ -418,7 +442,7 @@ class MigrationTool:
                        EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                 FROM {table_name}
                 WHERE workspace = $1
-                AND (id LIKE 'default:extract:%' OR id LIKE 'default:summary:%')
+                AND ({DEFAULT_CACHE_SQL_FILTER})
                 ORDER BY id
                 LIMIT $2 OFFSET $3
             """
@@ -464,12 +488,12 @@ class MigrationTool:
             batch_size: Number of documents to process per batch
 
         Returns:
-            Dictionary of cache entries with default:extract:* or default:summary:* keys
+            Dictionary of supported default-mode cache entries
         """
         cache_data = {}
 
         # MongoDB query with regex - use _data not collection
-        query = {"_id": {"$regex": "^default:(extract|summary):"}}
+        query = {"_id": {"$regex": DEFAULT_CACHE_MONGO_REGEX}}
 
         # Use cursor without to_list() - process in batches
         cursor = storage._data.find(query).batch_size(batch_size)
@@ -501,9 +525,7 @@ class MigrationTool:
         async for hits in storage._iter_raw_docs(batch_size=batch_size):
             for hit in hits:
                 key = hit["_id"]
-                if key.startswith("default:extract:") or key.startswith(
-                    "default:summary:"
-                ):
+                if _is_default_cache_key(key):
                     cache_data[key] = hit["_source"].copy()
 
         return cache_data
@@ -541,12 +563,7 @@ class MigrationTool:
             Total count of cache records
         """
         async with storage._storage_lock:
-            return sum(
-                1
-                for key in storage._data.keys()
-                if key.startswith("default:extract:")
-                or key.startswith("default:summary:")
-            )
+            return sum(1 for key in storage._data.keys() if _is_default_cache_key(key))
 
     async def count_default_caches_redis(self, storage) -> int:
         """Count default caches in RedisKVStorage using SCAN with progress display
@@ -561,7 +578,7 @@ class MigrationTool:
         print("Scanning Redis keys...", end="", flush=True)
 
         async with storage._get_redis_connection() as redis:
-            for pattern in ["default:extract:*", "default:summary:*"]:
+            for pattern in DEFAULT_CACHE_PATTERNS:
                 prefixed_pattern = f"{storage.final_namespace}:{pattern}"
                 cursor = 0
                 while True:
@@ -600,7 +617,7 @@ class MigrationTool:
             SELECT COUNT(*) as count
             FROM {table_name}
             WHERE workspace = $1
-            AND (id LIKE 'default:extract:%' OR id LIKE 'default:summary:%')
+            AND ({DEFAULT_CACHE_SQL_FILTER})
         """
 
         print("Counting PostgreSQL records...", end="", flush=True)
@@ -624,7 +641,7 @@ class MigrationTool:
         Returns:
             Total count of cache records
         """
-        query = {"_id": {"$regex": "^default:(extract|summary):"}}
+        query = {"_id": {"$regex": DEFAULT_CACHE_MONGO_REGEX}}
 
         print("Counting MongoDB documents...", end="", flush=True)
         start_time = time.time()
@@ -647,9 +664,7 @@ class MigrationTool:
         async for hits in storage._iter_raw_docs(batch_size=DEFAULT_COUNT_BATCH_SIZE):
             for hit in hits:
                 key = hit["_id"]
-                if key.startswith("default:extract:") or key.startswith(
-                    "default:summary:"
-                ):
+                if _is_default_cache_key(key):
                     count += 1
 
         elapsed = time.time() - start_time
@@ -703,8 +718,7 @@ class MigrationTool:
             matching_items = [
                 (key, value)
                 for key, value in storage._data.items()
-                if key.startswith("default:extract:")
-                or key.startswith("default:summary:")
+                if _is_default_cache_key(key)
             ]
 
         # Now iterate over snapshot without holding lock
@@ -732,7 +746,7 @@ class MigrationTool:
         import json
 
         async with storage._get_redis_connection() as redis:
-            for pattern in ["default:extract:*", "default:summary:*"]:
+            for pattern in DEFAULT_CACHE_PATTERNS:
                 prefixed_pattern = f"{storage.final_namespace}:{pattern}"
                 cursor = 0
 
@@ -815,7 +829,7 @@ class MigrationTool:
                        EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                 FROM {table_name}
                 WHERE workspace = $1
-                AND (id LIKE 'default:extract:%' OR id LIKE 'default:summary:%')
+                AND ({DEFAULT_CACHE_SQL_FILTER})
                 ORDER BY id
                 LIMIT $2 OFFSET $3
             """
@@ -859,7 +873,7 @@ class MigrationTool:
         Yields:
             Dictionary batches of cache entries
         """
-        query = {"_id": {"$regex": "^default:(extract|summary):"}}
+        query = {"_id": {"$regex": DEFAULT_CACHE_MONGO_REGEX}}
         cursor = storage._data.find(query).batch_size(batch_size)
 
         batch = {}
@@ -888,9 +902,7 @@ class MigrationTool:
         async for hits in storage._iter_raw_docs(batch_size=batch_size):
             for hit in hits:
                 key = hit["_id"]
-                if key.startswith("default:extract:") or key.startswith(
-                    "default:summary:"
-                ):
+                if _is_default_cache_key(key):
                     batch[key] = hit["_source"].copy()
 
                 if len(batch) >= batch_size:
@@ -945,16 +957,12 @@ class MigrationTool:
         Returns:
             Dictionary with counts for each cache type
         """
-        counts = {
-            "extract": 0,
-            "summary": 0,
-        }
+        counts = dict.fromkeys(DEFAULT_CACHE_TYPES, 0)
 
         for key in cache_data.keys():
-            if key.startswith("default:extract:"):
-                counts["extract"] += 1
-            elif key.startswith("default:summary:"):
-                counts["summary"] += 1
+            cache_type = _cache_type_from_key(key)
+            if cache_type in counts:
+                counts[cache_type] += 1
 
         return counts
 
@@ -1168,6 +1176,7 @@ class MigrationTool:
 
                 print(f"- default:extract: {counts['extract']:,} records")
                 print(f"- default:summary: {counts['summary']:,} records")
+                print(f"- default:analysis: {counts['analysis']:,} records")
                 print(f"- Total: {total_count:,} records")
         except Exception as e:
             print(f"✗ {'Counting' if use_streaming else 'Loading'} failed: {e}")
@@ -1211,7 +1220,7 @@ class MigrationTool:
 
             # Determine current cache type for display
             current_key = batch_items[0][0]
-            cache_type = "extract" if "extract" in current_key else "summary"
+            cache_type = _cache_type_from_key(current_key)
 
             try:
                 # Attempt to write batch
@@ -1299,7 +1308,7 @@ class MigrationTool:
             # Determine current cache type for display
             if batch:
                 first_key = next(iter(batch.keys()))
-                cache_type = "extract" if "extract" in first_key else "summary"
+                cache_type = _cache_type_from_key(first_key)
             else:
                 cache_type = "unknown"
 

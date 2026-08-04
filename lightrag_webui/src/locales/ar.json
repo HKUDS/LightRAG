@@ -99,7 +99,7 @@
         "error": "فشل رفع بعض الملفات"
       },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، TEXTPACK، MDX، DOCX، PDF، PPTX، XLSX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، H، CPP، HPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileTypes": "الأنواع المدعومة: {{types}}",
       "fileUploader": {
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
@@ -139,18 +139,18 @@
       "filters": {
         "all": "الكل",
         "completed": "مكتمل",
-        "parse": "استخراج",
-        "analyze": "تحليل",
-        "process": "معالجة",
+        "parse": "تحليل ملف",
+        "analyze": "وسائط",
+        "process": "استخراج",
         "failed": "فشل"
       },
       "status": {
         "all": "الكل",
         "completed": "مكتمل",
         "preprocessed": "مُعالج مسبقًا",
-        "parsing": "جارٍ التحليل الأولي",
-        "analyzing": "جارٍ التحليل",
-        "processing": "قيد المعالجة",
+        "parsing": "تحليل ملف",
+        "analyzing": "وسائط",
+        "processing": "استخراج",
         "pending": "معلق",
         "failed": "فشل"
       },
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "حالة خط الأنابيب",
       "busy": "خط الأنابيب مشغول",
-      "requestPending": "طلب معلق",
       "cancellationRequested": "طلب الإلغاء",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "قم بتحرير قيمة الخاصية في منطقة النص أدناه.",
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",
+        "invalidEntityName": "أدخل اسم عقدة صالحًا",
         "updateFailed": "فشل تحديث العقدة",
         "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا",
         "updateSuccessButMergeFailed": "تم تحديث الخصائص، لكن الدمج فشل: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "يرجى تحديد ونسخ النص يدوياً",
       "thinking": "جاري التفكير...",
       "thinkingTime": "وقت التفكير {{time}} ثانية",
-      "thinkingInProgress": "التفكير قيد التقدم..."
+      "thinkingInProgress": "التفكير قيد التقدم...",
+      "responseTime": "زمن الاستجابة {{time}}ث",
+      "firstTokenTime": "أول رمز {{time}}ث",
+      "progress": {
+        "extracting_keywords": "استخراج الكلمات المفتاحية...",
+        "retrieving_entities": "استرجاع الكيانات...",
+        "retrieving_relations": "استرجاع العلاقات...",
+        "retrieving_chunks": "استرجاع أجزاء النص...",
+        "reranking": "إعادة ترتيب النتائج...",
+        "generating_response": "توليد الرد..."
+      }
     },
     "retrieval": {
       "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
+      "scrollToBottom": "الانتقال إلى أحدث رسالة",
       "clear": "مسح",
       "send": "إرسال",
       "stop": "إيقاف",

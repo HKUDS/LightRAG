@@ -99,7 +99,7 @@
         "error": "Некоторые файлы не удалось загрузить"
       },
       "generalError": "Ошибка загрузки\n{{error}}",
-      "fileTypes": "Поддерживаемые типы: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Поддерживаемые типы: {{types}}",
       "fileUploader": {
         "singleFileLimit": "Нельзя загрузить более 1 файла за раз",
         "maxFilesLimit": "Нельзя загрузить более {{count}} файлов",
@@ -139,7 +139,7 @@
       "filters": {
         "all": "Все",
         "completed": "Завершено",
-        "parse": "Извлечение",
+        "parse": "Разбор",
         "analyze": "Анализ",
         "process": "Обработка",
         "failed": "Ошибка"
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Статус конвейера",
       "busy": "Конвейер занят",
-      "requestPending": "Запрос ожидает",
       "cancellationRequested": "Запрошена отмена",
       "jobName": "Название задачи",
       "startTime": "Время начала",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "Отредактируйте значение свойства в текстовой области ниже.",
       "errors": {
         "duplicateName": "Имя узла уже существует",
+        "invalidEntityName": "Введите допустимое имя узла",
         "updateFailed": "Не удалось обновить узел",
         "tryAgainLater": "Пожалуйста, попробуйте позже",
         "updateSuccessButMergeFailed": "Свойства обновлены, но слияние не удалось: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "Пожалуйста, выберите и скопируйте текст вручную",
       "thinking": "Размышление...",
       "thinkingTime": "Время размышления {{time}}с",
-      "thinkingInProgress": "Размышление в процессе..."
+      "thinkingInProgress": "Размышление в процессе...",
+      "responseTime": "Время ответа {{time}}с",
+      "firstTokenTime": "Первый токен {{time}}с",
+      "progress": {
+        "extracting_keywords": "Извлечение ключевых слов...",
+        "retrieving_entities": "Поиск сущностей...",
+        "retrieving_relations": "Поиск отношений...",
+        "retrieving_chunks": "Поиск фрагментов...",
+        "reranking": "Переранжирование...",
+        "generating_response": "Генерация ответа..."
+      }
     },
     "retrieval": {
       "startPrompt": "Начните поиск, введя ваш запрос ниже",
+      "scrollToBottom": "К последнему сообщению",
       "clear": "Очистить",
       "send": "Отправить",
       "stop": "Остановить",

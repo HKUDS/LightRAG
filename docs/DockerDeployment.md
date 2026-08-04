@@ -303,6 +303,8 @@ docker compose up
 
 Software packages requiring `transformers`, `torch`, or `cuda` are not preinstalled in the docker images. Consequently, document extraction tools such as Docling, as well as local LLM models like Hugging Face and LMDeploy, cannot be used in an offline environment. These high-compute-resource-demanding services should not be integrated into LightRAG. Docling will be decoupled and deployed as a standalone service.
 
+The main image bundles everything the native docx parser's opt-in `smart_heading` engine parameter needs: the spaCy runtime plus the pinned `zh_core_web_sm` / `en_core_web_sm` 3.8.0 models are baked in at build time, so `smart_heading` works fully offline out of the box. The lite image ships the spaCy runtime (it comes with the `api` extra) but not the models — enabling `smart_heading` there requires installing them first (`lightrag-download-cache --spacy --spacy-install`, or see [OfflineDeployment.md](./OfflineDeployment.md) for air-gapped hosts).
+
 ## 📦 Build Docker Images
 
 ### For local development and testing

@@ -10,6 +10,9 @@ if not pm.is_installed("aioboto3"):
     pm.install("aioboto3")
 import aioboto3
 import numpy as np
+
+# botocore is a hard dependency of aioboto3, so this import is always safe.
+from botocore.config import Config as BotocoreConfig
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -20,7 +23,11 @@ from tenacity import (
 from collections.abc import AsyncIterator
 from typing import Any, Union
 
-from lightrag.utils import wrap_embedding_func_with_attrs
+from lightrag.utils import (
+    TruncatedResponse,
+    logger,
+    wrap_embedding_func_with_attrs,
+)
 
 # Import botocore exceptions for proper exception handling
 try:
@@ -70,8 +77,14 @@ def _bedrock_client_kwargs(
     aws_access_key_id: str | None = None,
     aws_secret_access_key: str | None = None,
     aws_session_token: str | None = None,
+    timeout: int | None = None,
 ) -> dict:
-    """Build kwargs for aioboto3 ``session.client("bedrock-runtime", ...)``."""
+    """Build kwargs for aioboto3 ``session.client("bedrock-runtime", ...)``.
+
+    ``timeout`` (seconds) maps to botocore ``connect_timeout``/``read_timeout``,
+    mirroring how the OpenAI driver applies one scalar timeout to every request
+    phase. When None, botocore's defaults (60s each) stay in effect.
+    """
     client_kwargs: dict = {"region_name": region}
     if endpoint_url is not None:
         client_kwargs["endpoint_url"] = endpoint_url
@@ -81,6 +94,11 @@ def _bedrock_client_kwargs(
         client_kwargs["aws_secret_access_key"] = aws_secret_access_key
     if aws_session_token:
         client_kwargs["aws_session_token"] = aws_session_token
+    if timeout is not None:
+        client_kwargs["config"] = BotocoreConfig(
+            connect_timeout=timeout,
+            read_timeout=timeout,
+        )
     return client_kwargs
 
 
@@ -177,6 +195,7 @@ async def bedrock_complete_if_cache(
     api_key: str | None = None,
     endpoint_url: str | None = None,
     image_inputs: list[Any] | None = None,
+    timeout: int | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Amazon Bedrock Converse API with LightRAG-compatible shims.
@@ -202,6 +221,12 @@ async def bedrock_complete_if_cache(
     - ``endpoint_url`` overrides the default regional Bedrock endpoint. Pass
       ``None``, an empty string, or the sentinel ``DEFAULT_BEDROCK_ENDPOINT``
       to let the AWS SDK select its default endpoint.
+
+    Timeout note:
+    - ``timeout`` is in seconds and maps to botocore ``connect_timeout`` and
+      ``read_timeout``; ``None`` keeps botocore's defaults (60s each).
+    - For streaming responses the read timeout bounds the wait for the next
+      chunk of network data, not the total duration of the whole response.
     """
     if enable_cot:
         logging.debug(
@@ -325,6 +350,7 @@ async def bedrock_complete_if_cache(
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
+            timeout=timeout,
         )
 
         # Define the generator function that will manage the client lifecycle
@@ -389,6 +415,7 @@ async def bedrock_complete_if_cache(
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
+            timeout=timeout,
         ),
     ) as bedrock_async_client:
         try:
@@ -419,6 +446,15 @@ async def bedrock_complete_if_cache(
 
             if not content or content.strip() == "":
                 raise BedrockError("Received empty content from Bedrock API")
+
+            # Flag token-limit truncation (Converse API stopReason ==
+            # "max_tokens") so the cache layer skips persisting partial output.
+            if response.get("stopReason") == "max_tokens":
+                logger.warning(
+                    "Bedrock response truncated by token limit "
+                    f"(stopReason=max_tokens, content_len={len(content)}), returning partial content"
+                )
+                content = TruncatedResponse(content)
 
             return content
 

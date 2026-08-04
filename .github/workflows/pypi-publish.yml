@@ -40,7 +40,7 @@ jobs:
           echo "Frontend files:"
           ls -lh lightrag/api/webui/ | head -10
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 

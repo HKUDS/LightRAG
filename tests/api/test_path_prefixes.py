@@ -642,14 +642,131 @@ class TestUvicornRootPathSemantics:
             "app-level root_path only — see TestUvicornRootPathSemantics docstring."
         )
 
-    def test_gunicorn_uses_upstream_uvicorn_worker(self):
+    def test_gunicorn_worker_does_not_inject_root_path(self):
         """Symmetric guard for the multi-worker launcher.
 
-        gunicorn_config.worker_class must remain the upstream
-        ``uvicorn.workers.UvicornWorker`` — a custom subclass injecting
-        root_path via CONFIG_KWARGS would re-introduce the same
-        path-doubling regression in worker processes.
+        The regression this protects against is a worker class that injects
+        ``root_path`` through ``CONFIG_KWARGS``, re-creating the path-doubling
+        in worker processes. Asserted as that invariant rather than as an exact
+        class name: the configured class IS a subclass now
+        (``LightRAGUvicornWorker`` adds the orphan check gunicorn's own workers
+        have and uvicorn's drops), and pinning the name would have blocked it
+        while proving nothing extra — a subclass could add root_path under any
+        name.
         """
-        from lightrag.api import gunicorn_config
+        from uvicorn_worker import UvicornWorker
 
-        assert gunicorn_config.worker_class == "uvicorn.workers.UvicornWorker"
+        from lightrag.api import gunicorn_config
+        from gunicorn.util import load_class
+
+        worker_class = load_class(gunicorn_config.worker_class)
+        assert issubclass(worker_class, UvicornWorker), worker_class
+        # Covers the subclass's own kwargs and everything it inherits.
+        assert "root_path" not in worker_class.CONFIG_KWARGS, (
+            "the gunicorn worker must not inject root_path; rely on FastAPI's "
+            "app-level root_path only — see TestUvicornRootPathSemantics docstring."
+        )
+
+
+class TestWhitelistUnderApiPrefix:
+    """WHITELIST_PATHS is matched against route paths, on the real application.
+
+    The unit-level matrix lives in tests/api/auth/test_whitelist_path_prefix.py;
+    these two cases pin the same contract on the app ``create_app`` actually
+    builds, because that is where the mount prefix, the normalizing middleware and
+    the routers' own auth dependency all come together.
+    """
+
+    @pytest.fixture
+    def _default_whitelist(self, monkeypatch):
+        """Pin the shipped default so a developer-local WHITELIST_PATHS in .env
+        (already baked into the module-level patterns at import time) cannot
+        change what these tests assert."""
+        original_argv = sys.argv.copy()
+        try:
+            # config resolves its args on first attribute access; importing under
+            # pytest's own argv would argparse it and exit.
+            sys.argv = [sys.argv[0]]
+            from lightrag.api import utils_api
+        finally:
+            sys.argv = original_argv
+
+        monkeypatch.setattr(
+            utils_api, "whitelist_patterns", [("/health", False), ("/api", True)]
+        )
+
+    @staticmethod
+    def _args_with_prefix(prefix: str):
+        from lightrag.api.config import parse_args
+
+        original_argv = sys.argv.copy()
+        try:
+            sys.argv = [
+                "lightrag-server",
+                "--api-prefix",
+                prefix,
+                "--key",
+                "test-api-key",
+            ]
+            return parse_args()
+        finally:
+            sys.argv = original_argv
+
+    @pytest.fixture
+    def _colliding_prefix_args(self):
+        """An api_prefix that collides with the default whitelist's /api entry —
+        the value the project's own --help suggests."""
+        return self._args_with_prefix("/api/v1")
+
+    @pytest.fixture
+    def _noncolliding_prefix_args(self):
+        """The prefix style the multi-site docs use. Nothing here collides with
+        the whitelist, so this is where the *under*-exemption showed: no entry
+        matched and the exempt routes started demanding credentials."""
+        return self._args_with_prefix("/site01")
+
+    @pytest.mark.parametrize("mode", ["verbatim", "strip"])
+    def test_destructive_route_requires_auth_under_a_colliding_prefix(
+        self, _colliding_prefix_args, _default_whitelist, mode
+    ):
+        """DELETE /documents answered 200 unauthenticated before this fix, in
+        both forwarding modes."""
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            client = TestClient(create_app(_colliding_prefix_args))
+            prefix = "" if mode == "strip" else "/api/v1"
+
+            assert client.delete(f"{prefix}/documents").status_code == 401
+            assert client.get(f"{prefix}/documents").status_code == 401
+
+    @pytest.mark.parametrize("mode", ["verbatim", "strip"])
+    def test_whitelisted_routes_stay_open_under_a_prefix(
+        self, _noncolliding_prefix_args, _default_whitelist, mode
+    ):
+        """/health must keep answering liveness probes (#3294) and the
+        Ollama-compatible routes must keep their documented exemption.
+
+        Both answered 401 under this prefix before the fix. The assertion is
+        "not 401" rather than 200 because these handlers reach further into a
+        LightRAG that is only a MagicMock here: /health reads shared storage that
+        no test initializes, and /api/tags feeds mock attributes to a Pydantic
+        response model. Both therefore fail *after* the auth gate, which is why
+        server exceptions are surfaced as responses rather than raised. Getting
+        past the dependency at all is the property under test; the unit-level
+        matrix pins the exact 200.
+        """
+        with patch("lightrag.api.lightrag_server.LightRAG") as mock_rag:
+            mock_rag.return_value = MagicMock()
+            from lightrag.api.lightrag_server import create_app
+
+            client = TestClient(
+                create_app(_noncolliding_prefix_args), raise_server_exceptions=False
+            )
+            prefix = "" if mode == "strip" else "/site01"
+
+            assert client.get(f"{prefix}/health").status_code != 401
+            # GET, matching the real registration; GET /api/chat would be a 405
+            # from the router without the dependency ever running.
+            assert client.get(f"{prefix}/api/tags").status_code != 401

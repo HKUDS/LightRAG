@@ -99,7 +99,7 @@
         "error": "Một số tệp tải lên thất bại"
       },
       "generalError": "Tải Lên Thất Bại\n{{error}}",
-      "fileTypes": "Các loại được hỗ trợ: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Các loại được hỗ trợ: {{types}}",
       "fileUploader": {
         "singleFileLimit": "Không thể tải lên nhiều hơn 1 tệp một lần",
         "maxFilesLimit": "Không thể tải lên nhiều hơn {{count}} tệp",
@@ -139,18 +139,18 @@
       "filters": {
         "all": "Tất cả",
         "completed": "Hoàn tất",
-        "parse": "Trích xuất",
+        "parse": "Cú pháp",
         "analyze": "Phân tích",
         "process": "Xử lý",
         "failed": "Thất bại"
       },
       "status": {
         "all": "Tất cả",
-        "completed": "Hoàn thành",
+        "completed": "Hoàn tất",
         "preprocessed": "Đã tiền xử lý",
-        "parsing": "Đang phân tích cú pháp",
-        "analyzing": "Đang phân tích",
-        "processing": "Đang xử lý",
+        "parsing": "Cú pháp",
+        "analyzing": "Phân tích",
+        "processing": "Xử lý",
         "pending": "Đang chờ",
         "failed": "Thất bại"
       },
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Trạng Thái Quy Trình",
       "busy": "Quy Trình Đang Bận",
-      "requestPending": "Yêu Cầu Đang Chờ",
       "cancellationRequested": "Đã Yêu Cầu Hủy",
       "jobName": "Tên Công Việc",
       "startTime": "Thời Gian Bắt Đầu",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "Chỉnh sửa giá trị thuộc tính trong vùng văn bản bên dưới.",
       "errors": {
         "duplicateName": "Tên nút đã tồn tại",
+        "invalidEntityName": "Hãy nhập tên nút hợp lệ",
         "updateFailed": "Cập nhật nút thất bại",
         "tryAgainLater": "Vui lòng thử lại sau",
         "updateSuccessButMergeFailed": "Đã cập nhật thuộc tính, nhưng hợp nhất thất bại: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "Vui lòng chọn và sao chép văn bản thủ công",
       "thinking": "Đang suy nghĩ...",
       "thinkingTime": "Thời gian suy nghĩ {{time}}s",
-      "thinkingInProgress": "Đang suy nghĩ..."
+      "thinkingInProgress": "Đang suy nghĩ...",
+      "responseTime": "Thời gian phản hồi {{time}}giây",
+      "firstTokenTime": "Token đầu {{time}}giây",
+      "progress": {
+        "extracting_keywords": "Đang trích xuất từ khóa...",
+        "retrieving_entities": "Đang truy xuất thực thể...",
+        "retrieving_relations": "Đang truy xuất quan hệ...",
+        "retrieving_chunks": "Đang truy xuất đoạn văn...",
+        "reranking": "Đang xếp hạng lại...",
+        "generating_response": "Đang tạo phản hồi..."
+      }
     },
     "retrieval": {
       "startPrompt": "Bắt đầu truy xuất bằng cách nhập truy vấn của bạn bên dưới",
+      "scrollToBottom": "Cuộn đến tin nhắn mới nhất",
       "clear": "Xóa",
       "send": "Gửi",
       "stop": "Dừng",

@@ -310,10 +310,8 @@ Your task is to synthesize a list of descriptions of a given entity or relation 
   - In cases of conflicting or inconsistent descriptions, first determine if these conflicts arise from multiple, distinct entities or relationships that share the same name.
   - If distinct entities/relations are identified, summarize each one *separately* within the overall output.
   - If conflicts within a single entity/relation (e.g., historical discrepancies) exist, attempt to reconcile them or present both viewpoints with noted uncertainty.
-7. Length Constraint:The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
-8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) may in their original language if proper translation is not available.
-  - The entire output must be written in {language}.
-  - Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+7. Length Constraint: The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
+8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
 
 ---Input---
 {description_type} Name: {description_name}

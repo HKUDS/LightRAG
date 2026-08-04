@@ -99,7 +99,7 @@
         "error": "Some files failed to upload"
       },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Supported types: {{types}}",
       "fileUploader": {
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
@@ -139,10 +139,10 @@
       "filters": {
         "all": "All",
         "completed": "Completed",
-        "parse": "Parse",
-        "analyze": "Analyze",
-        "process": "Process",
-        "failed": "Fail"
+        "parse": "Parsing",
+        "analyze": "Analyzing",
+        "process": "Processing",
+        "failed": "Failed"
       },
       "status": {
         "all": "All",
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
-      "requestPending": "Request Pending",
       "cancellationRequested": "Cancellation Requested",
       "jobName": "Job Name",
       "startTime": "Start Time",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "Edit the property value in the text area below.",
       "errors": {
         "duplicateName": "Node name already exists",
+        "invalidEntityName": "Enter a valid node name",
         "updateFailed": "Failed to update node",
         "tryAgainLater": "Please try again later",
         "updateSuccessButMergeFailed": "Properties updated, but merge failed: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "Please select and copy the text manually",
       "thinking": "Thinking...",
       "thinkingTime": "Thinking time {{time}}s",
-      "thinkingInProgress": "Thinking in progress..."
+      "thinkingInProgress": "Thinking in progress...",
+      "responseTime": "Response time {{time}}s",
+      "firstTokenTime": "First token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Extracting keywords...",
+        "retrieving_entities": "Retrieving entities...",
+        "retrieving_relations": "Retrieving relations...",
+        "retrieving_chunks": "Retrieving text chunks...",
+        "reranking": "Reranking results...",
+        "generating_response": "Generating response..."
+      }
     },
     "retrieval": {
       "startPrompt": "Start a retrieval by typing your query below",
+      "scrollToBottom": "Scroll to latest",
       "clear": "Clear",
       "send": "Send",
       "stop": "Stop",

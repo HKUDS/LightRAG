@@ -1,6 +1,6 @@
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 pytest.importorskip(
     "pymongo",
@@ -14,6 +14,7 @@ from lightrag.kg.mongo_impl import (
     MongoGraphStorage,
     _canonical_edge_endpoints,
 )
+from lightrag.types import KnowledgeGraph
 
 pytestmark = pytest.mark.offline
 
@@ -37,11 +38,52 @@ class _AsyncCursor:
             raise StopAsyncIteration
 
 
+def _make_node_find_side_effect(real_ids: set):
+    """Mock ``collection.find({"_id": {"$in": ids}})``, dropping ids that have
+    no node document -- mirrors a dangling edge endpoint (upsert_edge only
+    guarantees the source node exists, never the target)."""
+
+    def _find(query, projection=None):
+        ids = query["_id"]["$in"]
+        return _AsyncCursor(
+            [{"_id": i, "entity_type": "person"} for i in ids if i in real_ids]
+        )
+
+    return _find
+
+
+def _make_edge_find_side_effect(edges: list):
+    """Mock ``edge_collection.find`` for both the ``$or`` (neighbor lookup)
+    and ``$and`` (final edge-set) query shapes used by the bidirectional BFS."""
+
+    def _find(query):
+        if "$or" in query:
+            ids = set(query["$or"][0]["source_node_id"]["$in"])
+            return _AsyncCursor(
+                [
+                    e
+                    for e in edges
+                    if e["source_node_id"] in ids or e["target_node_id"] in ids
+                ]
+            )
+        ids = set(query["$and"][0]["source_node_id"]["$in"])
+        return _AsyncCursor(
+            [
+                e
+                for e in edges
+                if e["source_node_id"] in ids and e["target_node_id"] in ids
+            ]
+        )
+
+    return _find
+
+
 class TestMongoGraphStorage:
     def _make_storage(self):
         storage = MongoGraphStorage.__new__(MongoGraphStorage)
         storage.workspace = "test"
         storage.global_config = {"max_graph_nodes": 1000}
+        storage._collection_name = "test_nodes"
         storage._edge_collection_name = "test_edges"
         storage.collection = SimpleNamespace()
         storage.edge_collection = SimpleNamespace()
@@ -101,6 +143,226 @@ class TestMongoGraphStorage:
         assert len(result.edges) == 1
         assert result.edges[0].source == "A"
         assert result.edges[0].target == "B"
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_bfs_reports_truncated_and_respects_cap(self):
+        """Star graph exceeding max_nodes must be flagged truncated and must
+        never return more than max_nodes nodes."""
+        storage = self._make_storage()
+        real_ids = {"A", "B", "C", "D", "E", "F"}
+        edges = [
+            {"source_node_id": "A", "target_node_id": leaf}
+            for leaf in ["B", "C", "D", "E", "F"]
+        ]
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+        storage.edge_collection.find = Mock(
+            side_effect=_make_edge_find_side_effect(edges)
+        )
+
+        result = await storage.get_knowledge_subgraph_bidirectional_bfs(
+            "A", 0, max_depth=2, max_nodes=3
+        )
+
+        assert result.is_truncated is True
+        assert len(result.nodes) <= 3
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_bfs_not_truncated_when_exactly_at_cap(self):
+        """Diamond graph (A-B-D, A-C-D) whose 4 nodes exactly fill max_nodes
+        must not be falsely reported as truncated."""
+        storage = self._make_storage()
+        real_ids = {"A", "B", "C", "D"}
+        edges = [
+            {"source_node_id": "A", "target_node_id": "B"},
+            {"source_node_id": "A", "target_node_id": "C"},
+            {"source_node_id": "B", "target_node_id": "D"},
+            {"source_node_id": "C", "target_node_id": "D"},
+        ]
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+        storage.edge_collection.find = Mock(
+            side_effect=_make_edge_find_side_effect(edges)
+        )
+
+        result = await storage.get_knowledge_subgraph_bidirectional_bfs(
+            "A", 0, max_depth=2, max_nodes=4
+        )
+
+        assert result.is_truncated is False
+        assert {node.id for node in result.nodes} == real_ids
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_bfs_depth_limit_not_reported_as_node_truncation(self):
+        """A-B-C chain with max_depth=1, max_nodes=2: A and B exactly fill the
+        cap, and C is excluded purely by depth -- must not be misreported as
+        node-cap truncation."""
+        storage = self._make_storage()
+        real_ids = {"A", "B", "C"}
+        edges = [
+            {"source_node_id": "A", "target_node_id": "B"},
+            {"source_node_id": "B", "target_node_id": "C"},
+        ]
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+        storage.edge_collection.find = Mock(
+            side_effect=_make_edge_find_side_effect(edges)
+        )
+
+        result = await storage._bidirectional_bfs_nodes(
+            ["A"], set(), KnowledgeGraph(), depth=0, max_depth=1, max_nodes=2
+        )
+
+        assert [node.id for node in result.nodes] == ["A", "B"]
+        assert result.is_truncated is False
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_bfs_ignores_dangling_edge_endpoint(self):
+        """An edge pointing at "X" with no node document must not be treated
+        as a real node, and must not pollute is_truncated."""
+        storage = self._make_storage()
+        real_ids = {"A", "B"}
+        edges = [
+            {"source_node_id": "A", "target_node_id": "X"},
+            {"source_node_id": "A", "target_node_id": "B"},
+        ]
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+        storage.edge_collection.find = Mock(
+            side_effect=_make_edge_find_side_effect(edges)
+        )
+
+        result = await storage.get_knowledge_subgraph_bidirectional_bfs(
+            "A", 0, max_depth=2, max_nodes=5
+        )
+
+        assert {node.id for node in result.nodes} == {"A", "B"}
+        assert result.is_truncated is False
+
+    @pytest.mark.asyncio
+    async def test_in_out_bound_bfs_reports_truncated_and_respects_cap(self):
+        storage = self._make_storage()
+        real_ids = {"A", "B", "C", "D", "E", "F"}
+        storage.collection.find_one = AsyncMock(
+            return_value={"_id": "A", "entity_type": "person"}
+        )
+        storage.collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor(
+                [
+                    {
+                        "connected_edges": [
+                            {
+                                "source_node_id": "A",
+                                "target_node_id": leaf,
+                                "depth": 0,
+                                "weight": 1.0,
+                            }
+                            for leaf in ["B", "C", "D", "E", "F"]
+                        ]
+                    }
+                ]
+            )
+        )
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+
+        result = await storage.get_knowledge_subgraph_in_out_bound_bfs(
+            "A", max_depth=2, max_nodes=3
+        )
+
+        assert result.is_truncated is True
+        assert len(result.nodes) <= 3
+
+    @pytest.mark.asyncio
+    async def test_in_out_bound_bfs_not_truncated_when_exactly_at_cap(self):
+        storage = self._make_storage()
+        real_ids = {"A", "B", "C"}
+        storage.collection.find_one = AsyncMock(
+            return_value={"_id": "A", "entity_type": "person"}
+        )
+        storage.collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor(
+                [
+                    {
+                        "connected_edges": [
+                            {
+                                "source_node_id": "A",
+                                "target_node_id": leaf,
+                                "depth": 0,
+                                "weight": 1.0,
+                            }
+                            for leaf in ["B", "C"]
+                        ]
+                    }
+                ]
+            )
+        )
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+
+        result = await storage.get_knowledge_subgraph_in_out_bound_bfs(
+            "A", max_depth=2, max_nodes=3
+        )
+
+        assert result.is_truncated is False
+        assert {node.id for node in result.nodes} == real_ids
+
+    @pytest.mark.asyncio
+    async def test_in_out_bound_bfs_dangling_edge_endpoint_does_not_steal_real_node_slot(
+        self,
+    ):
+        """A dangling candidate "X" ordered ahead of the real "C" (higher
+        edge weight -> sorted first) must not consume a node slot that would
+        otherwise go to a real node."""
+        storage = self._make_storage()
+        real_ids = {"A", "B", "C"}
+        storage.collection.find_one = AsyncMock(
+            return_value={"_id": "A", "entity_type": "person"}
+        )
+        storage.collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor(
+                [
+                    {
+                        "connected_edges": [
+                            {
+                                "source_node_id": "A",
+                                "target_node_id": "X",
+                                "depth": 0,
+                                "weight": 2.0,
+                            },
+                            {
+                                "source_node_id": "A",
+                                "target_node_id": "B",
+                                "depth": 0,
+                                "weight": 1.0,
+                            },
+                            {
+                                "source_node_id": "A",
+                                "target_node_id": "C",
+                                "depth": 0,
+                                "weight": 1.0,
+                            },
+                        ]
+                    }
+                ]
+            )
+        )
+        storage.collection.find = Mock(
+            side_effect=_make_node_find_side_effect(real_ids)
+        )
+
+        result = await storage.get_knowledge_subgraph_in_out_bound_bfs(
+            "A", max_depth=2, max_nodes=3
+        )
+
+        assert {node.id for node in result.nodes} == {"A", "B", "C"}
+        assert result.is_truncated is False
 
 
 class TestMongoEdgeKey:
@@ -553,6 +815,29 @@ class TestMongoEdgeReadCanonicalFilter:
         assert len(s.edge_collection.delete_many.call_args[0][0]["$or"]) == 5
 
 
+class _FakeFindCursor:
+    """Records the find(...).sort(...).limit(...).to_list(...) chain."""
+
+    def __init__(self, docs, error=None):
+        self._docs = list(docs)
+        self._error = error
+        self.sort_spec = None
+        self.limit_value = None
+
+    def sort(self, spec):
+        self.sort_spec = spec
+        return self
+
+    def limit(self, n):
+        self.limit_value = n
+        return self
+
+    async def to_list(self, length=None):
+        if self._error is not None:
+            raise self._error
+        return self._docs
+
+
 class TestMongoDocStatusLookup:
     """Cover the Mongo-native overrides for basename / content_hash lookups."""
 
@@ -581,7 +866,11 @@ class TestMongoDocStatusLookup:
         doc_id, doc = result
         assert doc_id == "doc-1"
         assert doc["file_path"] == "report.pdf"
-        storage._data.find_one.assert_awaited_once_with({"file_path": "report.pdf"})
+        # Primary-only lookup: duplicate markers (metadata.is_duplicate=true)
+        # are excluded so filename dedup never matches a dup-* row.
+        storage._data.find_one.assert_awaited_once_with(
+            {"file_path": "report.pdf", "metadata.is_duplicate": {"$ne": True}}
+        )
 
     @pytest.mark.asyncio
     async def test_get_doc_by_file_basename_empty_returns_none_without_query(self):
@@ -609,16 +898,21 @@ class TestMongoDocStatusLookup:
         assert await storage.get_doc_by_file_basename("missing.pdf") is None
 
     @pytest.mark.asyncio
-    async def test_get_doc_by_content_hash_returns_tuple_on_hit(self):
+    async def test_get_doc_by_content_hash_returns_earliest_on_hit(self):
+        # Sorted + limited server-side: the base contract promises the EARLIEST
+        # holder, because that id is persisted as a duplicate's original_doc_id.
         storage = self._make_storage()
-        storage._data.find_one = AsyncMock(
-            return_value={
-                "_id": "doc-1",
-                "file_path": "report.pdf",
-                "content_hash": "abc123",
-                "status": "processed",
-            }
+        cursor = _FakeFindCursor(
+            [
+                {
+                    "_id": "doc-1",
+                    "file_path": "report.pdf",
+                    "content_hash": "abc123",
+                    "status": "processed",
+                }
+            ]
         )
+        storage._data.find = MagicMock(return_value=cursor)
 
         result = await storage.get_doc_by_content_hash("abc123")
 
@@ -626,31 +920,45 @@ class TestMongoDocStatusLookup:
         doc_id, doc = result
         assert doc_id == "doc-1"
         assert doc["content_hash"] == "abc123"
-        storage._data.find_one.assert_awaited_once_with({"content_hash": "abc123"})
+        storage._data.find.assert_called_once_with({"content_hash": "abc123"})
+        assert cursor.sort_spec == [("created_at", 1), ("_id", 1)]
+        assert cursor.limit_value == 1
 
     @pytest.mark.asyncio
     async def test_get_doc_by_content_hash_empty_returns_none_without_query(self):
         # Empty hash must short-circuit so it cannot match legacy rows missing
         # the field via accidental coercion.
         storage = self._make_storage()
-        storage._data.find_one = AsyncMock()
+        storage._data.find = MagicMock()
 
         assert await storage.get_doc_by_content_hash("") is None
-        storage._data.find_one.assert_not_called()
+        storage._data.find.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_doc_by_content_hash_miss_returns_none(self):
         storage = self._make_storage()
-        storage._data.find_one = AsyncMock(return_value=None)
+        storage._data.find = MagicMock(return_value=_FakeFindCursor([]))
 
         assert await storage.get_doc_by_content_hash("zzz999") is None
 
     @pytest.mark.asyncio
-    async def test_lookup_swallows_pymongo_error_and_returns_none(self):
-        # PyMongoError must not propagate to the caller; the dedup path treats
-        # a storage failure as "no match" and the error is logged instead.
+    async def test_basename_lookup_swallows_pymongo_error_and_returns_none(self):
+        # The legacy basename lookup keeps its documented best-effort miss;
+        # identity-critical callers use resolve_doc_source_strict instead.
         storage = self._make_storage()
         storage._data.find_one = AsyncMock(side_effect=PyMongoError("boom"))
 
         assert await storage.get_doc_by_file_basename("report.pdf") is None
-        assert await storage.get_doc_by_content_hash("abc123") is None
+
+    @pytest.mark.asyncio
+    async def test_content_hash_lookup_raises_instead_of_reporting_no_match(self):
+        """Fail-proof: a PyMongoError used to be swallowed into None, which the
+        dedup callers read as "no duplicate" — so a transport blip enqueued a
+        duplicate row and ingested its content again. It must propagate."""
+        storage = self._make_storage()
+        storage._data.find = MagicMock(
+            return_value=_FakeFindCursor([], error=PyMongoError("boom"))
+        )
+
+        with pytest.raises(PyMongoError):
+            await storage.get_doc_by_content_hash("abc123")

@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
+from lightrag.constants import MAX_R_SEPARATOR_CHARS, MAX_R_SEPARATORS
 from lightrag.utils import Tokenizer, logger
 
 try:
@@ -34,6 +36,26 @@ except ImportError:
 
 
 _SpanPiece = tuple[str, int, int]
+
+
+@dataclass(frozen=True)
+class RSeparatorNormalization:
+    """The bounded R-separator cascade plus any correction that was needed.
+
+    The normalizer is deliberately silent: it is also the final safety boundary
+    for direct SDK calls and old persisted document snapshots, where a warning
+    per document would turn one historic bad configuration into a log storm.
+    Configuration ingress points inspect this result and emit a single warning
+    when they cache a corrected value.
+    """
+
+    separators: list[str] | None
+    dropped: int = 0
+    truncated_from: int | None = None
+
+    @property
+    def changed(self) -> bool:
+        return self.dropped > 0 or self.truncated_from is not None
 
 
 def _split_text_with_regex_spans(
@@ -207,6 +229,95 @@ def _merge_splits_with_spans(
     return docs
 
 
+def inspect_r_separators(
+    separators: Sequence[str] | None,
+) -> RSeparatorNormalization:
+    """Bound a separator cascade and report whether it was corrected.
+
+    ``None`` passes straight through: it is the documented way to ask
+    :func:`chunking_by_recursive_character` for LangChain's own default cascade
+    (``["\\n\\n", "\\n", " ", ""]``), which is NOT
+    :data:`~lightrag.constants.DEFAULT_R_SEPARATORS` — turning one into the other
+    here would change how a direct SDK caller's CJK text splits.
+
+    Only bounding happens here. What to do about an empty result differs per
+    caller and is therefore the caller's decision. This function does not log:
+    it runs in document-processing hot paths as well as at configuration ingress.
+
+    Args:
+        separators: cascade to bound, or ``None``.
+
+    Returns:
+        The bounded cascade, possibly empty, and correction diagnostics.
+    """
+    if separators is None:
+        return RSeparatorNormalization(None)
+
+    bounded: list[str] = []
+    dropped = 0
+    for candidate in separators:
+        if len(candidate) > MAX_R_SEPARATOR_CHARS:
+            dropped += 1
+            continue
+        bounded.append(candidate)
+    truncated_from: int | None = None
+    if len(bounded) > MAX_R_SEPARATORS:
+        # Truncation must preserve a terminating sentinel. The empty string is
+        # the char-level fallback: ``_split_text_with_spans`` takes the
+        # ``if not candidate`` branch on it and splits anything. Dropping it
+        # exhausts ``new_separators`` early, so a segment that has no ordinary
+        # separator in it is emitted whole instead of being split — a data-quality
+        # regression introduced by a security fix. Only re-append a sentinel the
+        # caller actually had: ``load_chunk_separators`` strips it on purpose.
+        sentinel = "" if any(not candidate for candidate in bounded) else None
+        keep = MAX_R_SEPARATORS - (1 if sentinel is not None else 0)
+        truncated = [candidate for candidate in bounded[:keep] if candidate]
+        if sentinel is not None:
+            truncated.append(sentinel)
+        truncated_from = len(bounded)
+        bounded = truncated
+
+    return RSeparatorNormalization(
+        bounded, dropped=dropped, truncated_from=truncated_from
+    )
+
+
+def log_r_separator_normalization(
+    result: RSeparatorNormalization,
+    *,
+    context: str,
+) -> None:
+    """Log corrections made while caching a separator configuration.
+
+    Callers must invoke this only at a configuration ingress boundary. The
+    runtime normalizer intentionally remains silent so already-persisted bad
+    snapshots and direct SDK calls cannot emit one warning per document.
+    """
+    prefix = f"[{context}] " if context else ""
+    if result.dropped:
+        logger.warning(
+            f"{prefix}dropped {result.dropped} separator(s) longer than "
+            f"{MAX_R_SEPARATOR_CHARS} characters"
+        )
+    if result.truncated_from is not None:
+        logger.warning(
+            f"{prefix}separator cascade of {result.truncated_from} entries "
+            f"truncated to {len(result.separators or [])} "
+            f"(limit {MAX_R_SEPARATORS})"
+        )
+
+
+def normalize_r_separators(separators: Sequence[str] | None) -> list[str] | None:
+    """Return a bounded separator cascade without logging.
+
+    This is the runtime backstop shared by direct SDK calls and per-document
+    snapshots. Warnings belong to the configuration ingress points, which use
+    :func:`inspect_r_separators` plus :func:`log_r_separator_normalization`
+    instead — see :class:`RSeparatorNormalization`.
+    """
+    return inspect_r_separators(separators).separators
+
+
 def _split_text_with_spans(
     text: str,
     *,
@@ -219,26 +330,59 @@ def _split_text_with_spans(
     is_separator_regex: bool,
     strip_whitespace: bool,
 ) -> list[_SpanPiece]:
-    """Mirror ``RecursiveCharacterTextSplitter._split_text`` with offsets."""
-    separator = separators[-1]
-    new_separators: Sequence[str] = []
-    for index, candidate in enumerate(separators):
-        separator_pattern = candidate if is_separator_regex else re.escape(candidate)
-        if not candidate:
-            separator = candidate
-            break
-        if re.search(separator_pattern, text):
-            separator = candidate
-            new_separators = separators[index + 1 :]
-            break
+    """Mirror ``RecursiveCharacterTextSplitter._split_text`` with offsets.
 
-    separator_pattern = separator if is_separator_regex else re.escape(separator)
-    splits = _split_text_with_regex_spans(
-        text,
-        separator_pattern,
-        keep_separator=keep_separator,
-        base_offset=base_offset,
-    )
+    One departure from a literal mirror, for cost only: a separator that matches
+    but does not actually divide the text is skipped in place instead of via a
+    recursive call. With ``keep_separator`` truthy, a separator occurring exactly
+    once at offset 0 yields a single piece byte-identical to the input, so the
+    parent would call ``length_function`` on it — a whole-text token encode — and
+    recurse with the same text. A cascade of such separators therefore costs one
+    full encode per level while splitting nothing, which is what made
+    ``O(len(separators) x len(text))`` reachable from a single request
+    (GHSA-26pm-px5v-8c4w).
+
+    The loop below reaches the same state the recursion would, minus the wasted
+    encodes, so the output is unchanged.
+    """
+    remaining: Sequence[str] = separators
+    while True:
+        separator = remaining[-1]
+        new_separators: Sequence[str] = []
+        for index, candidate in enumerate(remaining):
+            separator_pattern = (
+                candidate if is_separator_regex else re.escape(candidate)
+            )
+            if not candidate:
+                separator = candidate
+                break
+            if re.search(separator_pattern, text):
+                separator = candidate
+                new_separators = remaining[index + 1 :]
+                break
+
+        separator_pattern = separator if is_separator_regex else re.escape(separator)
+        splits = _split_text_with_regex_spans(
+            text,
+            separator_pattern,
+            keep_separator=keep_separator,
+            base_offset=base_offset,
+        )
+
+        # A no-op split: one piece, identical to the input. Recursing on it would
+        # re-encode the whole text to discover it is still oversized and then land
+        # exactly here with the next separator, so advance in place instead. When
+        # no separators remain the loop exits and the piece is emitted whole, as
+        # the recursion would have.
+        if (
+            new_separators
+            and len(splits) == 1
+            and splits[0][0] == text
+            and splits[0][1] == base_offset
+        ):
+            remaining = new_separators
+            continue
+        break
 
     final_chunks: list[_SpanPiece] = []
     good_splits: list[_SpanPiece] = []
@@ -307,7 +451,12 @@ def chunking_by_recursive_character(
         chunk_token_size: Hard target size for each chunk (tokens).
         chunk_overlap_token_size: Token overlap between adjacent chunks.
         separators: Cascade of split candidates. ``None`` defers to
-            LangChain's defaults: ``["\\n\\n", "\\n", " ", ""]``.
+            LangChain's defaults: ``["\\n\\n", "\\n", " ", ""]``. Entries over
+            :data:`~lightrag.constants.MAX_R_SEPARATOR_CHARS` are dropped and a
+            cascade over :data:`~lightrag.constants.MAX_R_SEPARATORS` is
+            truncated; if nothing survives, the call behaves as ``None``.
+            Bounding is silent — see :func:`inspect_r_separators` to obtain the
+            correction detail yourself.
 
     Returns:
         Ordered list of ``{"tokens", "content", "chunk_order_index"}``
@@ -324,6 +473,28 @@ def chunking_by_recursive_character(
 
     def length_function(text: str) -> int:
         return len(tokenizer.encode(text))
+
+    # Final silent boundary for direct SDK calls and persisted snapshots that
+    # predate configuration-time normalization.
+    separators = normalize_r_separators(separators)
+    if separators is not None and not separators:
+        # Everything was dropped as over-long. Falling back to this function's own
+        # default (LangChain's cascade) rather than to DEFAULT_R_SEPARATORS keeps
+        # the behaviour identical to ``separators=None``; substituting the
+        # repo-wide cascade here would silently change how CJK text splits for a
+        # caller who never asked for it. An empty list would be worse still —
+        # ``_split_text_with_spans`` reads ``separators[-1]`` on its first line.
+        #
+        # No warning: this branch is reachable only from a direct SDK call. Every
+        # configured path resolves the same emptiness earlier — the env and
+        # addon_params ingress points report it once when they cache the value,
+        # and the pipeline drops the ``separators`` key from a stale snapshot
+        # before calling here, so this function receives ``None``. Warning here
+        # would therefore only fire per call, for one unchanging argument, which
+        # is exactly the amplification the ingress cache exists to remove. A
+        # caller that wants the diagnostic can ask for it: ``inspect_r_separators``
+        # returns the same correction detail without splitting anything.
+        separators = None
 
     splitter_kwargs: dict[str, Any] = {
         "chunk_size": max(int(chunk_token_size), 1),

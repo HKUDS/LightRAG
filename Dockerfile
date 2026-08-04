@@ -59,10 +59,11 @@ RUN --mount=type=cache,target=/root/.local/share/uv \
     uv sync --frozen --no-dev --extra api --extra offline --no-editable \
     && /app/.venv/bin/python -m ensurepip --upgrade
 
-# Prepare offline cache directory and pre-populate tiktoken data
+# Prepare offline cache directory, pre-populate tiktoken data, and download the
+# pinned spaCy model wheels for the docx smart_heading engine parameter.
 # Use uv run to execute commands from the virtual environment
 RUN mkdir -p /app/data/tiktoken \
-    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken || status=$?; \
+    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken --spacy --spacy-dir /app/spacy_models || status=$?; \
     if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
@@ -90,10 +91,16 @@ COPY uv.lock .
 ENV PATH=/app/.venv/bin:/root/.local/bin:$PATH
 
 # Install dependencies with uv sync (uses locked versions from uv.lock)
-# And ensure pip is available for runtime installs
+# and ensure pip is available for runtime installs. The pinned spaCy model
+# wheels (docx smart_heading) MUST be installed after uv sync — sync is exact
+# and would remove packages that are not in the lock. The bind mount exposes
+# the wheels downloaded in the builder stage without adding an image layer.
 RUN --mount=type=cache,target=/root/.local/share/uv \
+    --mount=type=bind,from=builder,source=/app/spacy_models,target=/tmp/spacy_models \
     uv sync --frozen --no-dev --extra api --extra offline --no-editable \
-    && /app/.venv/bin/python -m ensurepip --upgrade
+    && /app/.venv/bin/python -m ensurepip --upgrade \
+    && /app/.venv/bin/python -m pip install --no-index --no-cache-dir \
+        --find-links=/tmp/spacy_models zh_core_web_sm en_core_web_sm
 
 # Create persistent data directories AFTER package installation
 RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/data/prompts /app/data/tiktoken

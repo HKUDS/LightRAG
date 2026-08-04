@@ -4,21 +4,24 @@ import weakref
 import sys
 
 import asyncio
-import bisect
+import contextvars
 import html
 import csv
 import inspect
 import json
 import logging
 import logging.handlers
+import math
 import os
 import re
 import time
 import uuid
+import threading
 import warnings
+from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from functools import wraps
+from functools import partial, wraps
 from hashlib import md5
 from pathlib import Path
 from typing import (
@@ -34,7 +37,9 @@ from typing import (
 )
 import numpy as np
 from dotenv import load_dotenv
+import json_repair
 
+from lightrag.exceptions import ChunkBlockMatchError
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -242,13 +247,18 @@ def parse_optional_float(raw: str | None) -> float | None:
     the consuming code fall back to its own default.  Any other
     non-numeric value raises :class:`ValueError` so misconfigured envs
     fail loudly at parse time rather than silently downstream.
+    Non-finite values (``nan`` / ``inf``) are also rejected: they parse as
+    floats but corrupt semantic-chunker thresholds.
     """
     if raw is None:
         return None
     stripped = raw.strip()
     if not stripped or stripped.lower() == "none":
         return None
-    return float(stripped)
+    value = float(stripped)
+    if not math.isfinite(value):
+        raise ValueError(f"expected a finite float, got {raw!r}")
+    return value
 
 
 def get_env_value(
@@ -275,7 +285,7 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        return value.lower() in ("true", "1", "yes", "t", "on")
+        return value.strip().lower() in ("true", "1", "yes", "t", "on")
 
     # Handle list type with JSON parsing
     if value_type is list:
@@ -298,9 +308,23 @@ def get_env_value(
             return default
 
     try:
-        return value_type(value)
+        converted = value_type(value)
     except (ValueError, TypeError):
         return default
+
+    # Reject non-finite floats so env-backed thresholds cannot become NaN/Inf.
+    if (
+        value_type is float
+        and isinstance(converted, float)
+        and not math.isfinite(converted)
+    ):
+        logger.warning(
+            "Environment variable %s=%r is not a finite float, using default",
+            env_key,
+            value,
+        )
+        return default
+    return converted
 
 
 # Use TYPE_CHECKING to avoid circular imports
@@ -355,6 +379,24 @@ def performance_timing_log(msg: str, *args, **kwargs):
     """Emit targeted performance timing logs only when explicitly enabled."""
     if PERFORMANCE_TIMING_LOGS:
         logger.info(msg, *args, **kwargs)
+
+
+def safe_log_value(value: str, max_length: int = 200) -> str:
+    """Make a caller-supplied value safe to embed in a log line.
+
+    Replaces non-printable characters -- notably CR/LF, which could otherwise
+    be used to forge extra log lines (log injection) -- with '?' and truncates
+    over-long values. Only the *logged* form is sanitized; the caller keeps the
+    original value for its own logic.
+
+    Used wherever untrusted input reaches the log: rate-limit keys built from a
+    submitted username, and operator-supplied identifiers in audited admin
+    actions (source-conflict repair).
+    """
+    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "…(truncated)"
+    return sanitized
 
 
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
@@ -642,9 +684,29 @@ def compute_args_hash(*args: Any) -> str:
         *args: Arguments to hash
     Returns:
         str: Hash string
+
+    Note:
+        - **Single-argument calls preserve the original algorithm** (plain
+          ``str(arg)``) so that ``compute_mdhash_id(content)`` keeps producing
+          the same document IDs across upgrades. Existing persisted IDs stay valid.
+        - **Two or more arguments** use length-prefixed encoding
+          (``"{len}:{str(arg)}"`` joined without separators) so that adjacent
+          field boundaries are unambiguously recoverable. This prevents the
+          cache-key collisions that the delimiter-less join could produce
+          (e.g. ``("abc","x")`` vs ``("ab","cx")`` both hashed to the same MD5).
+          Length-prefixing is used instead of a sentinel character because
+          query text and free-form fields can contain arbitrary characters,
+          so any fixed delimiter could still be constructed to collide.
     """
-    # Convert all arguments to strings and join them
-    args_str = "".join([str(arg) for arg in args])
+    if len(args) <= 1:
+        # Single-arg (or no-arg) path: keep the legacy behavior unchanged so
+        # compute_mdhash_id(content) document IDs remain stable.
+        args_str = "".join([str(arg) for arg in args])
+    else:
+        # Multi-arg path: length-prefix each field to make boundaries unique.
+        # Format: "3:abc1:x2:10" — the leading length makes the field extent
+        # unambiguous regardless of the field content.
+        args_str = "".join(f"{len(s)}:{s}" for s in (str(arg) for arg in args))
 
     # Use 'replace' error handling to safely encode problematic Unicode characters
     # This replaces invalid characters with Unicode replacement character (U+FFFD)
@@ -873,6 +935,27 @@ class HealthCheckTimeoutError(Exception):
         )
 
 
+class TokenBudgetError(Exception):
+    """Raised by :class:`Tokenizer`'s split/truncate contract when not even the
+    first complete Unicode code point of a candidate fits within ``max_tokens``.
+
+    Carries the fields needed to diagnose the failure without re-deriving them:
+    the budget that was violated, the independently-encoded token count of that
+    single code point under the same tokenizer, and a bounded preview of the
+    offending text.
+    """
+
+    def __init__(self, max_tokens: int, code_point_token_count: int, preview: str):
+        self.max_tokens = max_tokens
+        self.code_point_token_count = code_point_token_count
+        self.preview = preview
+        super().__init__(
+            f"Cannot fit content within max_tokens={max_tokens}: the first "
+            f"complete Unicode code point alone encodes to "
+            f"{code_point_token_count} token(s). Preview: {preview!r}"
+        )
+
+
 def priority_limit_async_func_call(
     max_size: int,
     llm_timeout: float = None,
@@ -920,7 +1003,7 @@ def priority_limit_async_func_call(
         Decorator function
     """
 
-    def final_decro(func):
+    def final_dec(func):
         # Ensure func is callable
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
@@ -1243,6 +1326,7 @@ def priority_limit_async_func_call(
                                 task_id,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
@@ -1270,13 +1354,25 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute function with timeout protection
+                            # Execute the call under the enqueuer's captured
+                            # context, not the worker's creation-time context
+                            # (asyncio.Task snapshots contextvars once, at
+                            # create_task() time, and this worker task is
+                            # long-lived — reused across many unrelated
+                            # calls). ctx.run(asyncio.ensure_future, ...)
+                            # schedules the coroutine as a fresh Task whose
+                            # own context is copied from ctx (works on
+                            # Python 3.10, unlike create_task's context=
+                            # kwarg which needs 3.11+).
+                            exec_task = ctx.run(
+                                asyncio.ensure_future, func(*args, **kwargs)
+                            )
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs), timeout=max_execution_timeout
+                                    exec_task, timeout=max_execution_timeout
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                result = await exec_task
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1414,7 +1510,12 @@ def priority_limit_async_func_call(
                                     # compaction holds them): return the
                                     # slot immediately.
                                     break
-                                task_id, args, kwargs = item[2], item[3], item[4]
+                                task_id, args, kwargs, ctx = (
+                                    item[2],
+                                    item[3],
+                                    item[4],
+                                    item[5],
+                                )
                                 is_zombie = False
                                 async with task_states_lock:
                                     task_state = task_states.get(task_id)
@@ -1442,6 +1543,7 @@ def priority_limit_async_func_call(
                                             task_state,
                                             args,
                                             kwargs,
+                                            ctx,
                                         )
                                 if is_zombie:
                                     # Never call the provider for a zombie.
@@ -1494,6 +1596,7 @@ def priority_limit_async_func_call(
                                 task_state,
                                 args,
                                 kwargs,
+                                ctx,
                             ) = await asyncio.wait_for(
                                 dispatch_queue.get(), timeout=1.0
                             )
@@ -1511,13 +1614,19 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
+                            # Run under the enqueuer's captured context, not
+                            # this long-lived worker's creation-time context
+                            # — see the matching comment in worker().
+                            exec_task = ctx.run(
+                                asyncio.ensure_future, func(*args, **kwargs)
+                            )
                             if max_execution_timeout is not None:
                                 result = await asyncio.wait_for(
-                                    func(*args, **kwargs),
+                                    exec_task,
                                     timeout=max_execution_timeout,
                                 )
                             else:
-                                result = await func(*args, **kwargs)
+                                result = await exec_task
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -1891,6 +2000,7 @@ def priority_limit_async_func_call(
                         task_state,
                         _args,
                         _kwargs,
+                        _ctx,
                     ) = dispatch_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
@@ -2010,9 +2120,16 @@ def priority_limit_async_func_call(
                     current_count = counter
                     counter += 1
 
+                # Capture the enqueuer's context (e.g. an active OpenTelemetry
+                # span) so the worker executes func() under it instead of the
+                # long-lived worker task's own creation-time context. It rides
+                # as the 6th tuple element; keep the unpack sites in sync
+                # (worker / slot_pump / limited_worker / shutdown drain).
+                ctx = contextvars.copy_context()
+
                 # Unbounded physical queue: put_nowait never blocks, and the
                 # (priority, count, ...) tuple keeps heap ordering intact.
-                queue.put_nowait((_priority, current_count, task_id, args, kwargs))
+                queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
                 work_available.set()
                 await _publish_stats()
@@ -2139,6 +2256,14 @@ def priority_limit_async_func_call(
                     current_count = counter
                     counter += 1
 
+                # Capture the enqueuer's context (e.g. an active
+                # OpenTelemetry span) so the worker executes func() under
+                # it instead of the long-lived worker task's own
+                # creation-time context. It rides as the 6th tuple element;
+                # keep the unpack sites in sync (worker / slot_pump /
+                # limited_worker / shutdown drain).
+                ctx = contextvars.copy_context()
+
                 # Queue the task with timeout handling
                 try:
                     if not accepting_new_tasks:
@@ -2147,13 +2272,13 @@ def priority_limit_async_func_call(
                     if _queue_timeout is not None:
                         await asyncio.wait_for(
                             queue.put(
-                                (_priority, current_count, task_id, args, kwargs)
+                                (_priority, current_count, task_id, args, kwargs, ctx)
                             ),
                             timeout=_queue_timeout,
                         )
                     else:
                         await queue.put(
-                            (_priority, current_count, task_id, args, kwargs)
+                            (_priority, current_count, task_id, args, kwargs, ctx)
                         )
                     submitted_total += 1
                     await _publish_stats()
@@ -2232,7 +2357,7 @@ def priority_limit_async_func_call(
 
         return wait_func
 
-    return final_decro
+    return final_dec
 
 
 def wrap_embedding_func_with_attrs(**kwargs):
@@ -2305,7 +2430,7 @@ def wrap_embedding_func_with_attrs(**kwargs):
         A decorator that wraps the function as an EmbeddingFunc instance
     """
 
-    def final_decro(func) -> EmbeddingFunc:
+    def final_dec(func) -> EmbeddingFunc:
         embedding_kwargs = dict(kwargs)
         # Auto-detect supports_asymmetric from the wrapped function's signature
         # if the caller did not declare it explicitly. Without this, any user or
@@ -2323,14 +2448,19 @@ def wrap_embedding_func_with_attrs(**kwargs):
         new_func = EmbeddingFunc(**embedding_kwargs, func=func)
         return new_func
 
-    return final_decro
+    return final_dec
 
 
 def load_json(file_name):
     if not os.path.exists(file_name):
         return None
     with open(file_name, encoding="utf-8-sig") as f:
-        return json.load(f)
+        content = f.read()
+    # Empty/whitespace existing file: same contract as missing (callers use or {}).
+    if not content.strip():
+        logger.warning("Empty JSON file treated as missing: %s", file_name)
+        return None
+    return json.loads(content)
 
 
 def _sanitize_string_for_json(text: str) -> str:
@@ -2471,23 +2601,286 @@ def write_json(json_obj, file_name):
     return sanitized
 
 
+@dataclass(frozen=True, slots=True)
+class TokenSpan:
+    """A character-offset span into an original string, plus its own token count.
+
+    ``content[start:end]`` is always a verbatim substring of the string that
+    produced this span — never a decoded reconstruction — and independently
+    re-encoding it under the same :class:`Tokenizer` yields exactly
+    ``token_count`` tokens, which is guaranteed to be ``<= max_tokens`` for
+    whatever budget produced the span. See the ``Tokenizer.split_by_token_limit``
+    / ``truncate_by_token_limit`` docstrings for the full contract.
+    """
+
+    start: int
+    end: int
+    token_count: int
+
+
 class TokenizerInterface(Protocol):
     """
     Defines the interface for a tokenizer, requiring encode and decode methods.
+
+    Implementations MUST be safe to call concurrently from multiple OS threads —
+    LightRAG runs token counting in worker threads to keep it off the asyncio
+    event loop, and does not serialize calls on the implementation's behalf. See
+    :class:`Tokenizer` for why serializing here would be the wrong layer.
     """
 
     def encode(self, content: str) -> List[int]:
-        """Encodes a string into a list of tokens."""
+        """Encodes a string into a list of tokens.
+
+        May be called concurrently from multiple threads.
+        """
         ...
 
     def decode(self, tokens: List[int]) -> str:
-        """Decodes a list of tokens into a string."""
+        """Decodes a list of tokens into a string.
+
+        May be called concurrently from multiple threads.
+        """
         ...
+
+
+# ---------------------------------------------------------------------------
+# Bounded submission to a thread pool
+# ---------------------------------------------------------------------------
+#
+# Moving CPU-bound work off the event loop frees the loop to keep accepting
+# requests, which means more work can be in flight at once than before. A
+# ``ThreadPoolExecutor``'s wait queue is unbounded, so submissions need their own
+# ceiling.
+#
+# The subtle part is WHO holds the permit. Writing ``async with sem: await
+# run_in_executor(...)`` is wrong: cancelling the awaiting coroutine returns the
+# permit immediately, but the thread-pool task is not cancelled — an already
+# running ``concurrent.futures.Future.cancel()`` just returns False and the thread
+# runs to completion. A client that repeatedly submits and cancels would hand back
+# permits it is still consuming and rebuild an unbounded queue. The permit
+# therefore belongs to the executor future and is released from its done callback,
+# so permit occupancy tracks actual thread occupancy exactly.
+
+
+def _consume_future_exception(fut: "asyncio.Future") -> None:
+    """Mark a shielded future's exception as retrieved.
+
+    When ``shield`` is cancelled nobody awaits the inner future any more, so an
+    exception raised by the thread would surface as an "exception was never
+    retrieved" traceback at GC time. Retrieving it here only clears that log
+    flag; a caller that is still awaiting still sees the exception.
+    """
+    if not fut.cancelled():
+        fut.exception()
+
+
+async def bounded_submit(
+    executor: ThreadPoolExecutor,
+    semaphore: asyncio.Semaphore,
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run ``fn`` in ``executor`` under a permit owned by the executor future.
+
+    Args:
+        executor: destination pool.
+        semaphore: submission ceiling for this pool, from :func:`get_loop_semaphore`.
+        fn: synchronous callable to run in the pool.
+        *args, **kwargs: forwarded to ``fn``.
+
+    Returns:
+        Whatever ``fn`` returns.
+
+    Cancelling the caller does not cancel the thread: the work runs to completion
+    and only then is the permit returned. That is deliberate — see the module
+    comment above.
+    """
+    await semaphore.acquire()
+    try:
+        concurrent_future: ConcurrentFuture = executor.submit(
+            contextvars.copy_context().run, partial(fn, *args, **kwargs)
+        )
+    except BaseException:
+        semaphore.release()
+        raise
+
+    loop = asyncio.get_running_loop()
+
+    def _release(_done: ConcurrentFuture) -> None:
+        # Runs on the worker thread, so the release has to be posted back to the
+        # loop that owns the semaphore. A closed loop means the semaphore died
+        # with it and there is nothing left to release.
+        try:
+            loop.call_soon_threadsafe(semaphore.release)
+        except RuntimeError:
+            pass
+
+    concurrent_future.add_done_callback(_release)
+
+    async_future = asyncio.wrap_future(concurrent_future)
+    async_future.add_done_callback(_consume_future_exception)
+    return await asyncio.shield(async_future)
+
+
+# Semaphores are per event loop, executors are per process. ``asyncio.Semaphore``
+# binds to the first loop that has to wait on it and raises from any other loop
+# (``asyncio.mixins._LoopBoundMixin``), and the test suite runs one fresh loop per
+# case, so a module-level singleton would fail. Storing it ON the loop makes its
+# lifetime exactly the loop's; a container keyed by the loop would not, because
+# once contended the semaphore holds a strong reference back to its loop and a
+# ``WeakKeyDictionary`` entry whose value references its key never expires.
+_LOOP_SEMAPHORE_ATTR_PREFIX = "_lightrag_submit_semaphore_"
+_LOOP_SEMAPHORE_FALLBACK: dict[int, tuple[Any, dict[str, asyncio.Semaphore]]] = {}
+
+
+def _fallback_semaphore(loop: Any, name: str, capacity: int) -> asyncio.Semaphore:
+    """Per-loop semaphore for loops that reject attribute assignment.
+
+    The entry keeps a strong reference to the loop on purpose. Deriving the loop
+    from the semaphore does not work: ``Semaphore.acquire()`` only binds ``_loop``
+    when it actually has to wait, so an uncontended semaphore never learns which
+    loop it belongs to, leaving nothing to test ``is_closed()`` on and no way to
+    detect ``id()`` reuse. Closed loops are swept on the next call, so a closed
+    loop outlives itself by at most one lookup.
+    """
+    for stale_key, (stale_loop, _) in list(_LOOP_SEMAPHORE_FALLBACK.items()):
+        if stale_loop.is_closed():
+            _LOOP_SEMAPHORE_FALLBACK.pop(stale_key, None)
+    key = id(loop)
+    entry = _LOOP_SEMAPHORE_FALLBACK.get(key)
+    if entry is None or entry[0] is not loop:
+        entry = (loop, {})
+        _LOOP_SEMAPHORE_FALLBACK[key] = entry
+    semaphores = entry[1]
+    semaphore = semaphores.get(name)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(capacity)
+        semaphores[name] = semaphore
+    return semaphore
+
+
+def get_loop_semaphore(name: str, capacity: int) -> asyncio.Semaphore:
+    """Return the running loop's semaphore called ``name``, creating it once.
+
+    ``capacity`` is only used on creation. It is intentionally a fixed constant
+    rather than a per-``LightRAG`` setting: this helper is module level and is
+    called from places that hold no instance, and several instances sharing a loop
+    would otherwise each build their own semaphore and lose the global ceiling.
+    """
+    loop = asyncio.get_running_loop()
+    attr = _LOOP_SEMAPHORE_ATTR_PREFIX + name
+    semaphore = getattr(loop, attr, None)
+    if semaphore is not None:
+        return semaphore
+    semaphore = asyncio.Semaphore(capacity)
+    try:
+        setattr(loop, attr, semaphore)
+    except (AttributeError, TypeError):
+        return _fallback_semaphore(loop, name, capacity)
+    return semaphore
+
+
+# ---------------------------------------------------------------------------
+# Chunking off the event loop
+# ---------------------------------------------------------------------------
+#
+# Chunking is CPU-bound in the document the caller supplied and, for the
+# recursive strategy, in the separator cascade supplied with it. Run inline in an
+# ``async def`` — which is what every branch except V did — it holds the only
+# thread serving HTTP for its whole duration, so one 414 KiB document made an
+# unrelated ``GET /health`` take 63 seconds (GHSA-26pm-px5v-8c4w).
+#
+# One worker. Chunking is serialized by the event loop as things stand — while
+# one document chunks, no other document's coroutine can run — so a single worker
+# preserves that concurrency exactly while freeing the loop, rather than
+# introducing parallelism this change has no reason to introduce.
+#
+# Invariants:
+#   * code running in here calls the SYNCHRONOUS tokenizer API. Awaiting an async
+#     helper from a worker thread would park it on the loop while the loop waits
+#     for the thread.
+#   * no nested submissions. One worker plus a held permit means a task that
+#     submits again deadlocks. Where a chunker calls another chunker (V's
+#     post-processing calls R), it calls it DIRECTLY — it is already in the pool.
+
+_CHUNKING_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_CHUNKING_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_chunking_executor() -> ThreadPoolExecutor:
+    """The process-wide single-worker pool used for chunking."""
+    global _CHUNKING_EXECUTOR
+    if _CHUNKING_EXECUTOR is None:
+        with _CHUNKING_EXECUTOR_GUARD:
+            if _CHUNKING_EXECUTOR is None:
+                _CHUNKING_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-chunking"
+                )
+    return _CHUNKING_EXECUTOR
+
+
+async def run_in_chunking_executor(fn: Callable[..., Any], *args: Any, **kwargs) -> Any:
+    """Run a synchronous, chunking-bound callable off the event loop.
+
+    Bounded like any other submission: the submitters include public SDK entry
+    points (``ainsert_custom_kg``, ``ainsert_custom_chunks``) gated by neither
+    ``max_parallel_insert`` nor the pipeline's busy flag, so "the pipeline limits
+    concurrency" is not a ceiling that actually holds here.
+    """
+    from lightrag.constants import CHUNKING_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("chunking", CHUNKING_SUBMIT_LIMIT)
+    return await bounded_submit(
+        get_chunking_executor(), semaphore, partial(fn, *args, **kwargs)
+    )
 
 
 class Tokenizer:
     """
     A wrapper around a tokenizer to provide a consistent interface for encoding and decoding.
+
+    Thread-safety contract
+    ----------------------
+    ``encode`` and ``decode`` MAY be called concurrently from several OS threads:
+    token counting is CPU-bound and runs in worker threads so it does not block
+    the asyncio event loop. **An injected tokenizer is responsible for its own
+    thread safety** — through immutable state, an internal lock, thread-local
+    state, or whatever its implementation requires. LightRAG does not serialize
+    it, and adding a lock here would be actively harmful: the event loop would
+    then wait on a worker thread holding it, recreating the very freeze that
+    moving this work off the loop exists to remove.
+
+    The built-in :class:`TiktokenTokenizer` satisfies this: ``tiktoken``'s own
+    ``encode_batch`` / ``decode_batch`` fan ``Encoding.encode`` / ``.decode`` of a
+    single instance across a ``ThreadPoolExecutor``, so concurrent use is a
+    supported capability of the library rather than an assumption made here. The
+    dependency floor in ``pyproject.toml`` is pinned to the oldest release for
+    which that holds.
+
+    Note that sharing is the norm, not the exception: ``tiktoken`` caches
+    encodings in a process-wide registry, and ``Encoding.__setstate__`` rebinds a
+    copy's ``__dict__`` to the registered instance's — so every
+    ``TiktokenTokenizer`` in the process, including ones produced by
+    ``copy.deepcopy``, funnels into a single ``CoreBPE``. An injected tokenizer
+    that is not thread-safe cannot be made safe by copying it.
+
+    Deep-copy requirement
+    ---------------------
+    An injected tokenizer must additionally survive ``copy.deepcopy``: ``LightRAG``
+    is a dataclass and ``_build_global_config`` runs ``dataclasses.asdict`` over
+    it, which deep-copies non-dataclass fields. An implementation that achieves
+    thread safety with an internal ``threading.Lock`` would otherwise fail at
+    construction with ``TypeError: cannot pickle '_thread.lock' object``. Such an
+    implementation should define ``__deepcopy__`` returning ``self`` — correct
+    precisely because being thread-safe is what makes it shareable.
+
+    ``_build_global_config`` then restores this object over the copy ``asdict``
+    made, so every consumer reading ``global_config["tokenizer"]`` holds the same
+    instance as ``LightRAG.tokenizer``. That is an identity guarantee, not a
+    saving: ``asdict`` copies the field before the restore can intervene, which is
+    exactly why the deep-copy requirement above still applies.
     """
 
     def __init__(self, model_name: str, tokenizer: TokenizerInterface):
@@ -2496,7 +2889,8 @@ class Tokenizer:
 
         Args:
             model_name: The associated model name for the tokenizer.
-            tokenizer: An instance of a class implementing the TokenizerInterface.
+            tokenizer: An instance of a class implementing the TokenizerInterface,
+                which must be safe to call concurrently from multiple threads.
         """
         self.model_name: str = model_name
         self.tokenizer: TokenizerInterface = tokenizer
@@ -2504,6 +2898,8 @@ class Tokenizer:
     def encode(self, content: str) -> List[int]:
         """
         Encodes a string into a list of tokens using the underlying tokenizer.
+
+        May be called concurrently from multiple threads; see the class docstring.
 
         Args:
             content: The string to encode.
@@ -2534,6 +2930,8 @@ class Tokenizer:
         """
         Decodes a list of tokens into a string using the underlying tokenizer.
 
+        May be called concurrently from multiple threads; see the class docstring.
+
         Args:
             tokens: A list of integer tokens to decode.
 
@@ -2541,6 +2939,158 @@ class Tokenizer:
             The decoded string.
         """
         return self.tokenizer.decode(tokens)
+
+    # -----------------------------------------------------------------------
+    # Safe split/truncate contract
+    # -----------------------------------------------------------------------
+    #
+    # These default implementations rely ONLY on ``encode()`` — never on
+    # ``decode()`` — because ``decode(tokens[:k])`` is not guaranteed to be a
+    # character-exact prefix of the original string for an arbitrary
+    # third-party tokenizer (only tiktoken's ``decode_with_offsets`` gives a
+    # reliable token-to-character mapping; see ``TiktokenTokenizer`` below for
+    # the optimized override). Every candidate here is instead a literal
+    # character-offset slice of the input, so there is no alignment risk, at
+    # the cost of a handful of extra ``encode()`` calls per span compared to
+    # the tiktoken fast path.
+    #
+    # BPE token count is not monotonic in character-prefix length, so this is
+    # a bounded, STRICTLY ONE-DIRECTIONAL retreat: candidate length only ever
+    # decreases (by exponential character steps: 1, 2, 4, 8, ...), never
+    # re-expands. That rules out oscillation and bounds the number of
+    # re-encodes to O(log max_tokens) regardless of how good the initial
+    # char/token ratio estimate turns out to be for a given region of text.
+    #
+    # No cross-call state: nothing here is written back onto ``self``. An
+    # injected tokenizer must remain safe under concurrent calls from
+    # multiple threads and under ``copy.deepcopy`` (see the class docstring),
+    # and any mutable "observed retreat" state would violate both.
+
+    def _bounded_prefix_span(
+        self, content: str, start: int, max_tokens: int, chars_per_token: float
+    ) -> TokenSpan:
+        """Find a safe ``TokenSpan`` starting at character offset ``start``.
+
+        ``chars_per_token`` is a rough estimate (chars per token, from a prior
+        whole-content encode) used only to pick a starting candidate length;
+        the result is always independently verified by encoding the exact
+        candidate substring.
+        """
+        remaining_len = len(content) - start
+        candidate_len = min(remaining_len, max(1, int(max_tokens * chars_per_token)))
+        step = 1
+        while True:
+            candidate = content[start : start + candidate_len]
+            count = len(self.encode(candidate))
+            if count <= max_tokens:
+                return TokenSpan(start, start + candidate_len, count)
+            if candidate_len <= 1:
+                break
+            candidate_len = max(1, candidate_len - step)
+            step *= 2
+
+        first_cp = content[start : start + 1]
+        first_cp_tokens = len(self.encode(first_cp))
+        if first_cp_tokens > max_tokens:
+            raise TokenBudgetError(
+                max_tokens, first_cp_tokens, content[start : start + 80]
+            )
+        return TokenSpan(start, start + 1, first_cp_tokens)
+
+    def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
+        """Return the longest safe prefix of ``content`` that fits ``max_tokens``.
+
+        The result always starts at character offset 0. If the whole string
+        already fits, the returned span covers it entirely. Raises
+        ``ValueError`` for a non-positive budget, and ``TokenBudgetError`` if
+        not even the first complete Unicode code point fits.
+        """
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if not content:
+            return TokenSpan(0, 0, 0)
+
+        full_tokens = len(self.encode(content))
+        if full_tokens <= max_tokens:
+            return TokenSpan(0, len(content), full_tokens)
+
+        chars_per_token = len(content) / full_tokens
+        return self._bounded_prefix_span(content, 0, max_tokens, chars_per_token)
+
+    def split_by_token_limit(
+        self, content: str, max_tokens: int, overlap_tokens: int = 0
+    ) -> List[TokenSpan]:
+        """Split ``content`` into safe, contiguous, optionally-overlapping spans.
+
+        Covers the whole string with no gaps and real forward progress: every
+        non-final span strictly extends the covered range (see the module
+        contract notes above the class). ``overlap_tokens`` is a best-effort
+        target, not a guarantee of the mathematically closest boundary — BPE
+        token count is not monotonic in character length, so this generic
+        implementation only guarantees a safe, progress-making boundary near
+        the target, retreating the target itself (by the same exponential
+        steps) whenever the estimated overlap would fail to make progress.
+        """
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if overlap_tokens < 0:
+            raise ValueError(
+                f"overlap_tokens must be non-negative, got {overlap_tokens}"
+            )
+        if not content:
+            return []
+
+        total_tokens = len(self.encode(content))
+        if total_tokens <= max_tokens:
+            return [TokenSpan(0, len(content), total_tokens)]
+
+        # One global char/token ratio estimate, reused as a local performance
+        # hint for every window and overlap guess in this call only — never
+        # persisted on `self` (see the note above).
+        chars_per_token = len(content) / total_tokens
+
+        spans: List[TokenSpan] = []
+        covered_end = 0
+        total_len = len(content)
+
+        while covered_end < total_len:
+            if covered_end > 0:
+                # Clamp to what the previous window can actually lend before
+                # even trying: an overlap target that dwarfs the previous
+                # window's own token count would otherwise retreat from that
+                # huge starting point step by step, wasting retries on values
+                # that could never have worked.
+                target_overlap = min(overlap_tokens, max(0, spans[-1].token_count - 1))
+            else:
+                target_overlap = 0
+            step = 1
+            span: Optional[TokenSpan] = None
+            while True:
+                overlap_chars = (
+                    int(round(target_overlap * chars_per_token))
+                    if target_overlap > 0
+                    else 0
+                )
+                start = max(0, covered_end - overlap_chars)
+                try:
+                    candidate_span = self._bounded_prefix_span(
+                        content, start, max_tokens, chars_per_token
+                    )
+                except TokenBudgetError:
+                    if target_overlap == 0:
+                        raise
+                    candidate_span = None
+                if candidate_span is not None and (
+                    candidate_span.end > covered_end or target_overlap == 0
+                ):
+                    span = candidate_span
+                    break
+                target_overlap = max(0, target_overlap - step)
+                step *= 2
+            spans.append(span)
+            covered_end = span.end
+
+        return spans
 
 
 class TiktokenTokenizer(Tokenizer):
@@ -2572,6 +3122,183 @@ class TiktokenTokenizer(Tokenizer):
         except KeyError:
             raise ValueError(f"Invalid model_name: {model_name}.")
 
+    # -----------------------------------------------------------------------
+    # Optimized split/truncate: decode_with_offsets fast path
+    # -----------------------------------------------------------------------
+    #
+    # `tiktoken.Encoding.decode_with_offsets` (available since the repo's
+    # declared `tiktoken>=0.7.0` floor) maps each token index to the character
+    # offset where it starts, so a candidate "keep the first k tokens" prefix
+    # can be located in O(1) instead of guessing a char/token ratio. The
+    # candidate substring is still always independently re-encoded via
+    # `self.encode` (never `self.tokenizer.encode` directly, to preserve the
+    # base class's disallowed_special=() fallback) before being trusted,
+    # because BPE re-tokenization of a truncated substring is not guaranteed
+    # to reproduce the same token count.
+    #
+    # Retreat here happens in TOKEN space (1, 2, 4, 8, ... tokens) rather than
+    # character space, which is both more precise and, since consecutive token
+    # counts can map to the same character offset when a multi-byte UTF-8
+    # character's bytes are split across tokens, deduplicated so the same
+    # substring is never re-encoded twice in a row.
+
+    def _prefix_span_via_boundary(
+        self,
+        content: str,
+        start_char: int,
+        start_token: int,
+        max_tokens: int,
+        total_tokens: int,
+        boundary: Callable[[int], int],
+    ) -> tuple[TokenSpan, int]:
+        """Find a safe span starting at ``start_char``/``start_token``.
+
+        ``boundary(k)`` returns the character offset where absolute token
+        index ``k`` starts (``boundary(total_tokens)`` is ``len(content)``).
+        Returns ``(span, end_token)`` — the absolute token index the span's
+        ``end`` corresponds to, so callers can resume from it without
+        re-deriving it via a char-offset search.
+        """
+        remaining_tokens = total_tokens - start_token
+        k = min(remaining_tokens, max_tokens)
+        step = 1
+        last_end: Optional[int] = None
+        while True:
+            end = boundary(start_token + k)
+            if end != last_end:
+                # A token boundary can coincide with start_char (a
+                # continuation-byte-only token reports no character advance —
+                # see decode_with_offsets' docstring); an empty candidate
+                # would trivially satisfy count <= max_tokens without
+                # covering anything, so it must never be accepted here.
+                if end > start_char:
+                    candidate = content[start_char:end]
+                    count = len(self.encode(candidate))
+                    if count <= max_tokens:
+                        return TokenSpan(start_char, end, count), start_token + k
+                last_end = end
+            if k <= 1:
+                break
+            k = max(1, k - step)
+            step *= 2
+
+        # Floor: fall back to a direct check of the first complete Unicode
+        # code point, bypassing token-boundary ambiguity entirely (a single
+        # code point's bytes can themselves be split across tokens).
+        end_char = start_char + 1
+        first_cp = content[start_char:end_char]
+        first_cp_tokens = len(self.encode(first_cp))
+        if first_cp_tokens > max_tokens:
+            raise TokenBudgetError(
+                max_tokens, first_cp_tokens, content[start_char : start_char + 80]
+            )
+        end_token = start_token
+        while end_token < total_tokens and boundary(end_token) < end_char:
+            end_token += 1
+        return TokenSpan(start_char, end_char, first_cp_tokens), end_token
+
+    def truncate_by_token_limit(self, content: str, max_tokens: int) -> TokenSpan:
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if not content:
+            return TokenSpan(0, 0, 0)
+
+        tokens = self.encode(content)
+        total_tokens = len(tokens)
+        if total_tokens <= max_tokens:
+            return TokenSpan(0, len(content), total_tokens)
+
+        try:
+            decoded_text, offsets = self.tokenizer.decode_with_offsets(tokens)
+        except Exception:
+            return super().truncate_by_token_limit(content, max_tokens)
+        if decoded_text != content:
+            # Lossy roundtrip (shouldn't normally happen once special tokens
+            # are handled via self.encode's fallback) — fall back to the
+            # generic, alignment-safe implementation rather than risk an
+            # off-by-however-many char offset.
+            return super().truncate_by_token_limit(content, max_tokens)
+
+        def boundary(k: int) -> int:
+            return offsets[k] if k < total_tokens else len(content)
+
+        span, _ = self._prefix_span_via_boundary(
+            content, 0, 0, max_tokens, total_tokens, boundary
+        )
+        return span
+
+    def split_by_token_limit(
+        self, content: str, max_tokens: int, overlap_tokens: int = 0
+    ) -> List[TokenSpan]:
+        if max_tokens <= 0:
+            raise ValueError(f"max_tokens must be positive, got {max_tokens}")
+        if overlap_tokens < 0:
+            raise ValueError(
+                f"overlap_tokens must be non-negative, got {overlap_tokens}"
+            )
+        if not content:
+            return []
+
+        tokens = self.encode(content)
+        total_tokens = len(tokens)
+        if total_tokens <= max_tokens:
+            return [TokenSpan(0, len(content), total_tokens)]
+
+        try:
+            decoded_text, offsets = self.tokenizer.decode_with_offsets(tokens)
+        except Exception:
+            return super().split_by_token_limit(content, max_tokens, overlap_tokens)
+        if decoded_text != content:
+            return super().split_by_token_limit(content, max_tokens, overlap_tokens)
+
+        def boundary(k: int) -> int:
+            return offsets[k] if k < total_tokens else len(content)
+
+        spans: List[TokenSpan] = []
+        covered_end_char = 0
+        covered_end_token = 0
+        total_len = len(content)
+
+        while covered_end_char < total_len:
+            if covered_end_token > 0:
+                # Clamp before trying: an overlap target that dwarfs the
+                # previous window's own token count would otherwise retreat
+                # from that huge starting point step by step, wasting
+                # retries on values that could never have worked.
+                target_overlap = min(overlap_tokens, max(0, spans[-1].token_count - 1))
+            else:
+                target_overlap = 0
+            step = 1
+            accepted: Optional[tuple[TokenSpan, int]] = None
+            while True:
+                start_token = max(0, covered_end_token - target_overlap)
+                start_char = boundary(start_token)
+                try:
+                    candidate = self._prefix_span_via_boundary(
+                        content,
+                        start_char,
+                        start_token,
+                        max_tokens,
+                        total_tokens,
+                        boundary,
+                    )
+                except TokenBudgetError:
+                    if target_overlap == 0:
+                        raise
+                    candidate = None
+                if candidate is not None and (
+                    candidate[0].end > covered_end_char or target_overlap == 0
+                ):
+                    accepted = candidate
+                    break
+                target_overlap = max(0, target_overlap - step)
+                step *= 2
+            span, covered_end_token = accepted
+            spans.append(span)
+            covered_end_char = span.end
+
+        return spans
+
 
 def pack_user_ass_to_openai_messages(*args: str):
     roles = ["user", "assistant"]
@@ -2589,25 +3316,149 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     return [r.strip() for r in results if r.strip()]
 
 
-def is_float_regex(value: str) -> bool:
-    return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
+# ---------------------------------------------------------------------------
+# Token counting off the event loop
+# ---------------------------------------------------------------------------
+#
+# Tokenizing is CPU-bound and roughly linear in the input the caller chose —
+# about half a second per MiB — so doing it inline in an ``async def`` stops the
+# process from answering anything at all for the duration, /health included
+# (GHSA-r8jh-295g-vv42). These helpers move it to a thread.
+#
+# One worker, deliberately. Query-side tokenizing is serialized by the event loop
+# today, so a single worker preserves that concurrency exactly rather than
+# introducing parallelism this change has no reason to introduce. Thread-safety
+# is NOT what the single worker is for — that is the injected tokenizer's own
+# responsibility (see ``Tokenizer``), and it does not depend on how many pools
+# exist.
+#
+# Invariant: code running inside this executor must call the SYNCHRONOUS
+# tokenizer API. Awaiting these helpers from a worker thread would park that
+# thread on the loop while the loop waits for the thread.
+
+_TOKENIZER_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_TOKENIZER_EXECUTOR_GUARD = threading.Lock()
+
+
+def get_tokenizer_executor() -> ThreadPoolExecutor:
+    """The process-wide single-worker pool used for token counting."""
+    global _TOKENIZER_EXECUTOR
+    if _TOKENIZER_EXECUTOR is None:
+        with _TOKENIZER_EXECUTOR_GUARD:
+            if _TOKENIZER_EXECUTOR is None:
+                _TOKENIZER_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="lightrag-tokenizer"
+                )
+    return _TOKENIZER_EXECUTOR
+
+
+async def run_in_tokenizer_executor(fn: Callable[..., Any], *args: Any) -> Any:
+    """Run a synchronous, tokenizer-bound callable off the event loop.
+
+    Callers that already have a whole loop of encodes should hand over the loop,
+    not each encode: submissions must stay O(1) per request or the executor's
+    queue depth scales with the work instead of with the concurrency.
+    """
+    from lightrag.constants import TOKENIZER_SUBMIT_LIMIT
+
+    semaphore = get_loop_semaphore("tokenizer", TOKENIZER_SUBMIT_LIMIT)
+    return await bounded_submit(get_tokenizer_executor(), semaphore, fn, *args)
+
+
+async def aencode(tokenizer: Tokenizer, content: str) -> List[int]:
+    """Encode ``content`` without occupying the event loop."""
+    return await run_in_tokenizer_executor(tokenizer.encode, content)
+
+
+async def acount_tokens(tokenizer: Tokenizer, content: str) -> int:
+    """Token count of ``content``, computed off the event loop."""
+    return await run_in_tokenizer_executor(_count_tokens_sync, tokenizer, content)
+
+
+def _count_tokens_sync(tokenizer: Tokenizer, content: str) -> int:
+    return len(tokenizer.encode(content))
+
+
+def _rendered_prefix_item_count(
+    rendered: list[str], separator: str, safe_end: int
+) -> int:
+    """Largest ``k`` such that ``separator.join(rendered[:k])`` fits in ``safe_end`` chars."""
+    cumulative = 0
+    sep_len = len(separator)
+    for i, text in enumerate(rendered):
+        cumulative += (sep_len if i > 0 else 0) + len(text)
+        if cumulative > safe_end:
+            return i
+    return len(rendered)
 
 
 def truncate_list_by_token_size(
     list_data: list[Any],
     key: Callable[[Any], str],
+    separator: str,
     max_token_size: int,
     tokenizer: Tokenizer,
-) -> list[int]:
-    """Truncate a list of data by token size"""
-    if max_token_size <= 0:
+) -> list[Any]:
+    """Truncate a list of data by token size, keeping only whole items.
+
+    Counts the real serialized text — every item's ``key(item)`` joined by
+    ``separator`` — so the separator's own tokens are part of the budget
+    (the previous per-item-only count silently missed them; see #3559).
+    Never partially truncates an item: the result is always "keep the first
+    K complete items, drop the rest", never a half-rendered item.
+
+    ``key``/``separator`` must match exactly what the caller will actually
+    render downstream — a mismatch (e.g. truncating on a fuller dict than the
+    one that ends up serialized) reintroduces the same class of undercount.
+    """
+    if max_token_size <= 0 or not list_data:
         return []
-    tokens = 0
-    for i, data in enumerate(list_data):
-        tokens += len(tokenizer.encode(key(data)))
-        if tokens > max_token_size:
-            return list_data[:i]
-    return list_data
+
+    rendered = [key(data) for data in list_data]
+    full_text = separator.join(rendered)
+    try:
+        safe_span = tokenizer.truncate_by_token_limit(full_text, max_token_size)
+    except TokenBudgetError:
+        return []
+
+    k = _rendered_prefix_item_count(rendered, separator, safe_span.end)
+
+    # BPE token count is not monotonic in text length, so the safe prefix
+    # above is not proof that the first k items' OWN serialization (which is
+    # shorter, since it excludes whatever partial item/separator was cut off)
+    # is itself safe — independently re-verify and shrink k if needed.
+    while k > 0:
+        candidate_text = separator.join(rendered[:k])
+        if len(tokenizer.encode(candidate_text)) <= max_token_size:
+            break
+        k -= 1
+
+    return list_data[:k]
+
+
+async def atruncate_list_by_token_size(
+    list_data: list[Any],
+    key: Callable[[Any], str],
+    separator: str,
+    max_token_size: int,
+    tokenizer: Tokenizer,
+) -> list[Any]:
+    """Async :func:`truncate_list_by_token_size`.
+
+    The WHOLE loop is one submission, never one per element. Submitting per
+    element would make the executor's queue depth scale with the list length
+    times the number of in-flight requests, turning a bounded queue into an
+    amplifier — and this loop routinely runs over every retrieved chunk, which is
+    the largest single block of synchronous tokenizing on the query path.
+    """
+    return await run_in_tokenizer_executor(
+        truncate_list_by_token_size,
+        list_data,
+        key,
+        separator,
+        max_token_size,
+        tokenizer,
+    )
 
 
 def normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
@@ -2632,170 +3483,149 @@ def normalize_string_list(raw_values: Any, context: str = "") -> list[str]:
     return result
 
 
-def split_text_units_for_hard_fallback(text: str) -> list[str]:
-    """Split text into sentence/paragraph-like units for fallback chunking."""
-    if not text:
-        return []
-    units: list[str] = []
-    for para in text.split("\n\n"):
-        p = para.strip()
-        if not p:
-            continue
-        for sentence in re.split(r"(?<=[。！？；.!?])", p):
-            s = sentence.strip()
-            if s:
-                units.append(s)
-    return units if units else [text]
-
-
 def split_text_by_token_limit(
     text: str, tokenizer: Tokenizer, max_tokens: int
 ) -> list[str]:
-    """Split text by token limit with sentence-first, token-window fallback."""
-    if not text:
+    """Deprecated: use ``tokenizer.split_by_token_limit`` directly instead.
+
+    Thin compatibility wrapper around the safe ``TokenSpan``-based split
+    contract (zero overlap, no sentence-boundary preservation — overlap is
+    what now carries the "don't lose context at a cut" job the old
+    sentence-first packer used to do; see
+    ``enforce_chunk_token_limit_before_embedding`` for the overlap-bearing
+    caller). Stays permissive on a non-positive ``max_tokens`` (returns ``[]``
+    rather than raising) to match this function's pre-existing contract for
+    any remaining direct callers.
+    """
+    if not text or max_tokens <= 0:
         return []
+    spans = tokenizer.split_by_token_limit(text, max_tokens, overlap_tokens=0)
+    return [text[span.start : span.end] for span in spans]
 
-    try:
-        total_tokens = len(tokenizer.encode(text))
-    except Exception:
-        total_tokens = 0
 
-    if total_tokens > 0 and total_tokens <= max_tokens:
-        return [text]
+def _parent_to_source_projection(
+    source_content: str, parent_start: int, parent_end: int, parent_content: str
+) -> list[int] | None:
+    """Monotonic char-offset map from ``parent_content`` positions to ``source_content``.
 
-    units = split_text_units_for_hard_fallback(text)
-    out: list[str] = []
-    cur_parts: list[str] = []
-    cur_tokens = 0
+    Built once per parent chunk and reused for every hard-split child it
+    produces (an ``O(parent length)`` build shared across ``N`` children,
+    instead of redone per child). ``proj[i]`` for ``0 <= i <= len(parent_content)``
+    is the absolute ``source_content`` offset corresponding to position ``i``
+    in ``parent_content``.
 
-    for unit in units:
-        try:
-            unit_tokens = len(tokenizer.encode(unit))
-        except Exception:
-            unit_tokens = 0
+    Needed because a parent's own ``content`` is not always a byte-verbatim
+    slice of the document text it was extracted from — e.g. the V strategy's
+    ``SemanticChunker`` rejoins sentences with a single space, which can
+    differ from the original whitespace run by more or fewer characters.
+    Returns ``None`` if the two cannot be reconciled even after removing all
+    whitespace (content diverged for some other reason, e.g. a summarizing
+    rewrite) — the caller must not guess in that case.
+    """
+    source_slice = source_content[parent_start:parent_end]
+    if source_slice == parent_content:
+        return list(range(parent_start, parent_end + 1))
 
-        # Sentence itself is oversize: token-window split directly.
-        if unit_tokens > max_tokens:
-            if cur_parts:
-                out.append("\n\n".join(cur_parts))
-                cur_parts = []
-                cur_tokens = 0
+    src_non_ws_positions = [i for i, ch in enumerate(source_slice) if not ch.isspace()]
+    parent_non_ws_positions = [
+        i for i, ch in enumerate(parent_content) if not ch.isspace()
+    ]
+    if len(src_non_ws_positions) != len(parent_non_ws_positions) or [
+        source_slice[i] for i in src_non_ws_positions
+    ] != [parent_content[i] for i in parent_non_ws_positions]:
+        return None
 
-            token_ids = tokenizer.encode(unit)
-            for start in range(0, len(token_ids), max_tokens):
-                piece = tokenizer.decode(token_ids[start : start + max_tokens]).strip()
-                if piece:
-                    out.append(piece)
-            continue
+    proj: list[Optional[int]] = [None] * (len(parent_content) + 1)
+    for p_idx, s_idx in zip(parent_non_ws_positions, src_non_ws_positions):
+        proj[p_idx] = parent_start + s_idx
 
-        if cur_parts and cur_tokens + unit_tokens > max_tokens:
-            out.append("\n\n".join(cur_parts))
-            cur_parts = [unit]
-            cur_tokens = unit_tokens
+    # Whitespace runs (and the trailing end position) inherit the offset of
+    # the next known non-whitespace position, so every index resolves to a
+    # definite, still-monotonic offset.
+    next_val = parent_end
+    for i in range(len(proj) - 1, -1, -1):
+        if proj[i] is None:
+            proj[i] = next_val
         else:
-            cur_parts.append(unit)
-            cur_tokens += unit_tokens
-
-    if cur_parts:
-        out.append("\n\n".join(cur_parts))
-
-    return [x for x in out if x.strip()]
+            next_val = proj[i]
+    return proj  # type: ignore[return-value]
 
 
-def _normalized_child_offsets(
-    parent_content: str,
-    piece: str,
-    search_from: int,
-) -> tuple[int, int] | None:
-    """Locate ``piece`` in ``parent_content`` ignoring all whitespace.
+def _map_child_span(
+    local_start: int,
+    local_end: int,
+    parent_start: int,
+    parent_end: int,
+    projection: list[int] | None,
+) -> dict[str, int] | None:
+    """Map a child's ``[local_start, local_end)`` offset within the parent's own
+    ``content`` to an absolute ``{start, end}`` span into the document text.
 
-    Returns ``(start, end)`` char offsets into ``parent_content`` for the first
-    whitespace-stripped occurrence at/after ``search_from``, or ``None`` if absent.
-    Removing every whitespace char (not collapsing runs) keeps the match exact even
-    when the two sides space the same characters differently — the same monotonic
-    projection :mod:`lightrag.sidecar.backfill` uses.
+    ``projection`` is ``None`` for the direct-arithmetic fast path (parent
+    ``content`` is a verbatim slice of the document, so ``parent_start +``
+    is exact); otherwise it is the per-parent map from
+    :func:`_parent_to_source_projection`.
     """
-    norm_piece = "".join(piece.split())
-    if not norm_piece:
-        return None
-    norm_chars: list[str] = []
-    norm_to_orig: list[int] = []
-    for idx, ch in enumerate(parent_content):
-        if ch.isspace():
-            continue
-        norm_chars.append(ch)
-        norm_to_orig.append(idx)
-    norm_parent = "".join(norm_chars)
-    # First normalized index whose source offset is >= search_from (norm_to_orig is
-    # strictly increasing), so repeated pieces resolve forward in order.
-    norm_start = bisect.bisect_left(norm_to_orig, search_from)
-    pos = norm_parent.find(norm_piece, norm_start)
-    if pos < 0:
-        return None
-    o_start = norm_to_orig[pos]
-    o_end = norm_to_orig[pos + len(norm_piece) - 1] + 1
-    return o_start, o_end
-
-
-def _child_source_span(
-    parent_content: str,
-    parent_span: Any,
-    piece: str,
-    search_from: int,
-) -> tuple[dict[str, int] | None, int]:
-    """Locate a hard-split child ``piece`` inside its parent's source span.
-
-    Pieces are usually verbatim substrings of ``parent_content`` (token-window
-    slices), so an exact forward ``find`` resolves them precisely. But
-    :func:`split_text_by_token_limit` rejoins multiple sentence units with
-    ``"\\n\\n"``, so a multi-unit piece is *not* byte-verbatim when the source
-    separated those sentences with a single space/newline. In that case we fall
-    back to a whitespace-stripped match (the same projection sidecar backfill uses),
-    which stays exact because whitespace removal is monotonic. Without this fallback
-    the child would lose its span and sidecar backfill would wrongly FAIL the
-    document.
-
-    Returns ``(span | None, next_search_from)`` where ``next_search_from`` is a
-    ``parent_content`` offset threaded forward by the caller so repeated pieces
-    resolve in order.
-    """
-    if not isinstance(parent_span, dict):
-        return None, search_from
-    try:
-        parent_start = int(parent_span["start"])
-        parent_end = int(parent_span["end"])
-    except (KeyError, TypeError, ValueError):
-        return None, search_from
-    if parent_start < 0 or parent_end < parent_start:
-        return None, search_from
-
-    search_from = max(0, search_from)
-
-    # Exact: verbatim token-window pieces.
-    local_start = parent_content.find(piece, search_from)
-    if local_start >= 0:
-        local_end = local_start + len(piece)
+    if projection is None:
+        abs_start, abs_end = parent_start + local_start, parent_start + local_end
     else:
-        # Whitespace-normalized fallback: multi-unit pieces rejoined with "\n\n".
-        offsets = _normalized_child_offsets(parent_content, piece, search_from)
-        if offsets is None:
-            return None, search_from
-        local_start, local_end = offsets
-
-    if parent_start + local_end > parent_end:
-        return None, search_from
-    return (
-        {"start": parent_start + local_start, "end": parent_start + local_end},
-        local_end,
-    )
+        abs_start, abs_end = projection[local_start], projection[local_end]
+    if abs_start < parent_start or abs_end > parent_end or abs_end <= abs_start:
+        return None
+    return {"start": abs_start, "end": abs_end}
 
 
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
     max_tokens: int,
+    overlap_tokens: int = 0,
+    source_content: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Hard fallback split before embedding while preserving heading hierarchy."""
+    """Hard fallback split before embedding while preserving heading hierarchy.
+
+    Splits any chunk still over ``max_tokens`` via the safe
+    ``Tokenizer.split_by_token_limit`` contract (see ``lightrag.utils.Tokenizer``),
+    carrying ``overlap_tokens`` of context between consecutive pieces. This no
+    longer preserves sentence/paragraph boundaries — overlap is what now
+    carries the "don't lose context at a cut" job that used to be the
+    sentence-first packer's.
+
+    ``source_content`` is the merged document text the chunker itself
+    received (the same string :mod:`lightrag.sidecar.backfill` reconstructs
+    from ``blocks.jsonl``) — needed to correctly relocate a hard-split
+    child's ``_source_span`` when a parent chunk's ``content`` is not a
+    byte-verbatim slice of it (see :func:`_parent_to_source_projection`).
+    Pass ``None`` only when the caller genuinely has no such text (e.g.
+    ``ainsert_custom_chunks``); a parent that would need the projection in
+    that case just loses its children's ``_source_span`` instead of raising,
+    matching this function's pre-existing behavior for callers with no
+    provenance concept at all. When ``source_content`` IS supplied but a
+    parent's content has diverged from it beyond whitespace, the projection
+    cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
+    than silently emitting a wrong span — the same failure sidecar backfill
+    itself would eventually surface, just earlier and with better context.
+
+    Known limitation -- ``sidecar`` is not re-scoped for pre-sidecar chunks:
+    this function runs BEFORE :func:`lightrag.sidecar.backfill.backfill_chunk_sidecars`
+    in the pipeline (see ``pipeline.py``'s call order around the "Final hard
+    guard before embedding" comment). For the F/R/V strategies that is exactly
+    right: at this point they carry only ``_source_span`` (no ``sidecar`` yet),
+    this function recomputes a correctly-shrunk ``_source_span`` per child, and
+    backfill then derives each child's own ``sidecar`` from that shrunk span
+    afterward. But the P (paragraph_semantic) strategy attaches its ``sidecar``
+    field during chunking itself, upstream of this function, and does not
+    route through backfill at all. If a P chunk is large enough to still need
+    a hard split here, every resulting child is a shallow copy of the parent
+    (see the loop below) and so inherits the *exact same* ``sidecar`` value
+    unmodified -- all children end up pointing at the whole parent's block
+    range instead of each getting a sidecar scoped to its own, smaller slice.
+    ``_source_span`` itself never reaches storage either way (stripped in
+    ``build_chunks_dict_from_chunking_result``); this note is only about the
+    accuracy of the ``sidecar`` field that IS persisted to ``text_chunks``.
+    Follow-up if this needs fixing: shrink/re-derive ``sidecar`` per child for
+    the P case too, analogous to what backfill already does for F/R/V.
+    """
     if max_tokens <= 0:
         return list(chunking_result)
 
@@ -2809,47 +3639,97 @@ def enforce_chunk_token_limit_before_embedding(
         if not isinstance(content, str) or not content.strip():
             continue
 
-        try:
-            token_count = len(tokenizer.encode(content))
-        except Exception:
-            token_count = (
-                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
+        # A single call does both the "is this already within budget" check
+        # AND the split: split_by_token_limit's own fast path returns one
+        # span covering the whole content when it already fits, so there is
+        # no separate pre-check encode here to duplicate the full-content
+        # encode it does internally regardless. TokenBudgetError (content
+        # cannot be safely split at all — not even its first Unicode code
+        # point fits max_tokens) is intentionally NOT caught: swallowing it
+        # here would mean silently re-emitting the original, still-oversized
+        # chunk instead of failing the document — exactly the unsafe
+        # fallback this contract exists to remove.
+        spans = tokenizer.split_by_token_limit(
+            content, max_tokens, overlap_tokens=overlap_tokens
+        )
+
+        if len(spans) == 1:
+            ndp = dict(dp)
+            ndp["tokens"] = spans[0].token_count
+            normalized.append(ndp)
+            continue
+
+        if overlap_tokens > 0 and any(
+            spans[i].start >= spans[i - 1].end for i in range(1, len(spans))
+        ):
+            logger.warning(
+                "Requested embedding_chunk_overlap_token_size=%d could not be "
+                "honored for at least one window of chunk %r (retreated to 0 "
+                "to preserve forward progress)",
+                overlap_tokens,
+                dp.get("chunk_id", dp.get("chunk_order_index")),
             )
-
-        if token_count <= max_tokens:
-            ndp = dict(dp)
-            ndp["tokens"] = token_count if token_count > 0 else ndp.get("tokens", 0)
-            normalized.append(ndp)
-            continue
-
-        pieces = split_text_by_token_limit(content, tokenizer, max_tokens)
-        if not pieces:
-            ndp = dict(dp)
-            ndp["tokens"] = token_count
-            normalized.append(ndp)
-            continue
 
         base_chunk_id = dp.get("chunk_id")
         parent_span = dp.get("_source_span")
-        span_search_from = 0
-        total_parts = len(pieces)
-        for i, piece in enumerate(pieces, 1):
+
+        # Built once per parent, reused for every child below — never redone
+        # per child (that would be O(children x parent length) instead of
+        # O(parent length)).
+        projection: list[int] | None = None
+        parent_start = parent_end = None
+        if isinstance(parent_span, dict):
+            try:
+                parent_start = int(parent_span["start"])
+                parent_end = int(parent_span["end"])
+            except (KeyError, TypeError, ValueError):
+                parent_start = parent_end = None
+            if parent_start is not None and (
+                parent_start < 0 or parent_end < parent_start
+            ):
+                parent_start = parent_end = None
+
+            if parent_start is not None and parent_end - parent_start != len(content):
+                if source_content:
+                    projection = _parent_to_source_projection(
+                        source_content, parent_start, parent_end, content
+                    )
+                    if projection is None:
+                        raise ChunkBlockMatchError(
+                            chunk_order_index=int(dp.get("chunk_order_index", -1)),
+                            chunk_preview=content,
+                            blocks_path=None,
+                        )
+                else:
+                    # No provenance text available: children below fall back
+                    # to dropping _source_span rather than emit a naive,
+                    # possibly-wrong offset (parent_start is cleared so
+                    # _map_child_span is never reached with an untrustworthy
+                    # direct-arithmetic assumption).
+                    parent_start = parent_end = None
+
+        total_parts = len(spans)
+        for i, span in enumerate(spans, 1):
+            piece = content[span.start : span.end]
             new_dp = dict(dp)
             new_dp["content"] = piece
-            try:
-                new_dp["tokens"] = len(tokenizer.encode(piece))
-            except Exception:
-                new_dp["tokens"] = max(1, int(len(piece) * 0.5))
+            new_dp["tokens"] = span.token_count
 
             # Shallow-copy preserves the nested heading dict and sidecar
             # block from the source chunk; only the payload (content/tokens
-            # /chunk_id) is rewritten per split slice.
+            # /chunk_id) is rewritten per split slice. For a P-strategy
+            # parent that already carries a "sidecar" field, this means
+            # every child gets an unmodified copy of the PARENT's sidecar,
+            # not one re-scoped to its own smaller slice -- see the "Known
+            # limitation" paragraph in this function's docstring.
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
-            child_span, span_search_from = _child_source_span(
-                content, parent_span, piece, span_search_from
-            )
+            child_span = None
+            if parent_start is not None:
+                child_span = _map_child_span(
+                    span.start, span.end, parent_start, parent_end, projection
+                )
             if child_span is not None:
                 new_dp["_source_span"] = child_span
             elif "_source_span" in new_dp:
@@ -2871,7 +3751,11 @@ def cosine_similarity(v1, v2):
     dot_product = np.dot(v1, v2)
     norm1 = np.linalg.norm(v1)
     norm2 = np.linalg.norm(v2)
-    return dot_product / (norm1 * norm2)
+    denom = norm1 * norm2
+    # Zero or non-finite vectors are orthogonal to everything in ranking use; avoid NaN/Inf.
+    if denom == 0 or not np.isfinite(denom) or not np.isfinite(dot_product):
+        return 0.0
+    return float(dot_product / denom)
 
 
 async def handle_cache(
@@ -3005,6 +3889,94 @@ async def _cooperative_yield(iteration: int, every: int = 64) -> None:
     """
     if iteration > 0 and iteration % every == 0:
         await asyncio.sleep(0)
+
+
+async def wait_tasks_with_drain(
+    tasks: list[asyncio.Task],
+    *,
+    context: str = "",
+    task_labels: dict[asyncio.Task, str] | None = None,
+) -> list[Any]:
+    """Await *tasks*, guaranteeing none is left running when this returns/raises.
+
+    Concurrent multi-store writers (entity/relation merge, rebuild) must never
+    leave a sibling task writing in the background after a failure — a failed
+    ``gather``/``wait`` does not by itself imply the other write tasks stopped
+    (issue #3400, "incomplete async failure coordination").
+
+    Behavior:
+      - All tasks succeed: returns their results (completion order).
+      - Any task fails: cancels every still-pending sibling, awaits (drains)
+        them ALL so no background write survives, logs every additional
+        exception, then re-raises the FIRST exception observed.
+      - This coroutine itself is cancelled: cancels and drains all tasks
+        before propagating ``CancelledError``.
+
+    Args:
+        tasks: ``asyncio.Task`` objects (already scheduled).
+        context: Optional short label used in log messages.
+        task_labels: Optional per-task display labels for pending-task logging.
+    """
+    if not tasks:
+        return []
+
+    ctx = f" [{context}]" if context else ""
+    results: list[Any] = []
+    first_exception: BaseException | None = None
+
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+        for i, task in enumerate(done, start=1):
+            try:
+                results.append(task.result())
+            except BaseException as e:
+                if first_exception is None:
+                    first_exception = e
+                elif not isinstance(e, asyncio.CancelledError):
+                    logger.error(f"Additional task failure{ctx}: {e}")
+            # NOTE: an await point — external cancellation delivered here is
+            # handled by the enclosing except so still-pending siblings never
+            # keep writing in the background.
+            await _cooperative_yield(i, every=32)
+
+        if pending:
+            if task_labels:
+                pending_labels = [
+                    task_labels.get(task, "<unknown>") for task in pending
+                ]
+                preview = ", ".join(pending_labels[:10])
+                if len(pending_labels) > 10:
+                    preview += f", ... (+{len(pending_labels) - 10} more)"
+                logger.warning(f"Draining pending tasks{ctx}: {preview or '<none>'}")
+            for task in pending:
+                task.cancel()
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, BaseException):
+                    if first_exception is None:
+                        first_exception = result
+                    elif not isinstance(result, asyncio.CancelledError):
+                        logger.error(f"Additional task failure{ctx}: {result}")
+                else:
+                    results.append(result)
+    except asyncio.CancelledError:
+        # External cancellation of THIS waiter, delivered at ANY await point
+        # above — asyncio.wait itself, a cooperative yield while collecting
+        # done results (with siblings still pending after FIRST_EXCEPTION),
+        # or the drain gather. Cancel and drain everything before
+        # propagating so no task keeps writing in the background. Per-task
+        # CancelledError stored in a task's own result is caught by the
+        # inner handler and does NOT take this path.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    if first_exception is not None:
+        raise first_exception
+
+    return results
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -3453,6 +4425,32 @@ async def update_chunk_cache_list(
         )
 
 
+class TruncatedResponse(str):
+    """An LLM response that was cut off by the model's output token limit.
+
+    Behaves exactly like ``str`` so every downstream consumer — tolerant JSON
+    parsing, text sanitization, entity/relation extraction — keeps working on
+    the partial content unchanged. The only added meaning is a signal to the
+    LLM cache layer: a truncated response must NOT be persisted, because a
+    cached partial payload (e.g. cut-off extraction JSON) would be replayed on
+    every later run, even when a larger token budget would have produced the
+    complete output. See ``is_truncated_response`` and the cache-write guards
+    in ``use_llm_func_with_cache`` and ``lightrag.operate``.
+    """
+
+    __slots__ = ()
+
+
+def is_truncated_response(value: Any) -> bool:
+    """Return True if ``value`` is an LLM response flagged as token-limit truncated.
+
+    Safe for any input: non-string values (e.g. streaming async iterators) and
+    plain ``str`` responses from providers that do not emit the marker return
+    False, so callers degrade to the pre-existing "cache everything" behavior.
+    """
+    return isinstance(value, TruncatedResponse)
+
+
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
 
@@ -3600,26 +4598,39 @@ async def use_llm_func_with_cache(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
 
+        # Capture the token-limit truncation flag before remove_think_tags
+        # rebuilds a plain str and drops the TruncatedResponse marker.
+        res_truncated = is_truncated_response(res)
+
         res = remove_think_tags(res)
 
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
-            await save_to_cache(
-                llm_response_cache,
-                CacheData(
-                    args_hash=arg_hash,
-                    content=res,
-                    prompt=_prompt,
-                    cache_type=cache_type,
-                    chunk_id=chunk_id,
-                ),
-            )
+            if res_truncated:
+                # Do not persist truncated extraction output: a cached partial
+                # payload would be replayed on every later run, even when a
+                # larger token budget would have completed the extraction.
+                logger.warning(
+                    f"Skipping LLM cache write for truncated {cache_type} response "
+                    f"(finish_reason=length, chunk_id={chunk_id})"
+                )
+            else:
+                await save_to_cache(
+                    llm_response_cache,
+                    CacheData(
+                        args_hash=arg_hash,
+                        content=res,
+                        prompt=_prompt,
+                        cache_type=cache_type,
+                        chunk_id=chunk_id,
+                    ),
+                )
 
-            # Add cache key to collector if provided
-            if cache_keys_collector is not None:
-                cache_keys_collector.append(cache_key)
+                # Add cache key to collector if provided
+                if cache_keys_collector is not None:
+                    cache_keys_collector.append(cache_key)
 
         return res, current_timestamp
 
@@ -3681,6 +4692,11 @@ def sanitize_and_normalize_extracted_text(
         )
         return normalized_text
     return ""
+
+
+def normalize_entity_name(input_text: str) -> str:
+    """Normalize an entity identifier using the extraction naming contract."""
+    return sanitize_and_normalize_extracted_text(input_text, remove_inner_quotes=True)
 
 
 def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
@@ -3967,6 +4983,188 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
     return obj
 
 
+_CODE_FENCE_PATTERN = re.compile(
+    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL
+)
+
+
+def strip_markdown_code_fence(text: str) -> str:
+    """Strip a surrounding markdown code fence (```json ... ``` or ``` ... ```).
+
+    Why: LLM training priors strongly associate "JSON output" with fenced code
+    blocks, so providers routinely wrap responses despite explicit instructions
+    to the contrary. Stripping here avoids relying on ``json_repair`` and the
+    noisy warning it emits. The ``\\n?`` make the interior newlines optional so
+    single-line fences (```` ```json {...}``` ````) are handled too.
+    """
+
+    match = _CODE_FENCE_PATTERN.match(text)
+    return match.group(1) if match else text
+
+
+def _first_structural_opener(text: str) -> tuple[str | None, int]:
+    """Return the first ``[`` or ``{`` that sits outside a double-quoted string.
+
+    Only ``"`` is treated as a string delimiter: prose apostrophes (``Here's``)
+    are far too common to treat ``'`` as a quote, and leading prose that wraps a
+    ``[`` inside single quotes is rare enough to accept as graceful degradation.
+    The result drives the top-level array-vs-object decision — a leading ``[``
+    means a top-level array (rejected by the caller), a leading ``{`` marks where
+    object recovery starts.
+    """
+    quote_open = False
+    escaped = False
+    for index, char in enumerate(text):
+        if quote_open:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote_open = False
+            continue
+        if char == '"':
+            quote_open = True
+        elif char in "[{":
+            return char, index
+    return None, -1
+
+
+def _first_balanced_object_slice(text: str) -> str:
+    """Return the first brace-balanced ``{...}`` slice; ``text`` starts at ``{``.
+
+    ``"`` always opens a string. ``'`` opens a string only in a value/key
+    position — right after ``{``, ``[``, ``,`` or ``:`` (spaces skipped) — so a
+    bare apostrophe inside an unquoted token (``O'Reilly``, ``it's``) is not
+    mistaken for a string start. Without that guard the scan would run past the
+    object's closing ``}`` and json_repair would fold trailing prose into the
+    last value — a silent, schema-valid but corrupted result. Single quotes are
+    tracked at all because weaker models emit single-quoted JSON strings that can
+    legitimately contain stray braces. Falls back to the whole string when no
+    matching close brace exists so an incomplete object stays repairable.
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    previous_non_space = ""
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char == '"' or (char == "'" and previous_non_space in "{[,:"):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[: index + 1]
+        if not char.isspace():
+            previous_non_space = char
+    return text
+
+
+def tolerant_load_json_dict(text: str) -> dict[str, Any]:
+    """Recover a single JSON object from noisy LLM/VLM text.
+
+    Returns the first genuine JSON *object*, or ``{}`` when the text does not
+    yield exactly one object. ``{}`` is the signal callers act on: multimodal
+    analysis retries once, entity extraction falls back to delimiter parsing.
+
+    Recovered — returns the object (the malformed shapes weak models emit):
+
+    * a clean object, optionally inside a markdown ``json`` code fence, with or
+      without interior newlines: ``{"a": 1}``
+    * leading prose before the object — a label, a ``#`` or ``//`` comment
+      lead-in, a URL, or an apostrophe: ``Here is the result: {"a":1}``,
+      ``Result #1: {"a":1}``, ``Source: http://x//y#z {"a":1}``,
+      ``Here's the note: {"a":1}``
+    * trailing prose after the object, even when it contains braces — the bug
+      this helper exists for, where a greedy ``{...}`` slice over-extends and
+      drops everything: ``{"facts":[...]} trailing {brace}``
+    * object-level slips ``json_repair`` fixes — trailing comma, single quotes,
+      unquoted keys, truncation: ``{"a":1,}``, ``{'a':1}``, ``{a:1}``, ``{"a":1``
+    * a genuine (possibly malformed) object followed by a bracket citation:
+      ``{"a":1,} [1]``
+
+    Rejected — returns ``{}`` so callers retry / fall back rather than accept a
+    non-object:
+
+    * any top-level array, so one element is never mistaken for the whole
+      answer — including prose-prefixed, truncated, single-quoted, and commented
+      arrays: ``[{"a":1},{"b":2}]``, ``Here is the result: [{...}]``,
+      ``['note', {...}]``, ``[/* ] */ {...}]``
+    * a top-level array reached past a broken array shell, an unclosed quote, or
+      pseudo-object prose — never scavenged for an inner object: ``[}{"a":1}]``,
+      ``"oops [}{"a":1}]``, ``{note} [{"a":1}]``
+    * an object behind bracketed prose — indistinguishable from a real array
+      without heuristics and not seen in practice: ``analysis: [draft] {"a":1}``
+
+    Two edge rules worth knowing when extending this:
+
+    * the top-level shape is decided by the first structural opener outside a
+      double-quoted string; ``json_repair`` runs only on the first balanced
+      ``{...}`` slice, never the whole string (it would scavenge a dict across
+      structural boundaries and defeat array rejection).
+    * a single quote is a string delimiter only in a value/key position, so a
+      bare apostrophe in an unquoted token (``O'Reilly``, ``it's``) does not
+      swallow the object's closing brace.
+
+    Not handled here: LaTeX-escape damage in string values — callers apply
+    ``repair_vlm_json_escape_damage_nested`` themselves, keeping that choke
+    point out of this helper.
+    """
+    if not text:
+        return {}
+    candidate = strip_markdown_code_fence(text).strip()
+
+    # Decide the top-level shape from the raw structure FIRST: the first opener
+    # outside a double-quoted string. json_repair is never run over the whole
+    # candidate — it scavenges a dict across structural boundaries (out of a
+    # broken array shell '[}{...}]', or past pseudo-object prose '{note} [..]'),
+    # which would bypass the top-level-array rejection contract.
+    opener, index = _first_structural_opener(candidate)
+    if opener != "{":
+        # '[' is a top-level array. None means the structure is untrusted — e.g.
+        # an unclosed double quote swallows the openers ('"oops [}{"a":1}]').
+        # Reject either way so callers retry (multimodal) / fall back (entity).
+        return {}
+    suffix = candidate[index:]
+
+    # 1) Strict decode of the first object from the opener. A clean object,
+    #    optionally followed by trailing prose, is the answer — raw_decode stops
+    #    at the end of the first value, so "{...} trailing {brace}" is handled.
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(suffix)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # 2) The opener did not start a clean object: a malformed leading object
+    #    (trailing comma / single quotes / unquoted keys), possibly followed by
+    #    trailing text such as a "[1]" citation, must still be recovered. Repair
+    #    the first balanced slice and accept it only if it is itself an object.
+    #    json_repair returns a *list* (not a dict) for pseudo-object prose like
+    #    '{note}', so a real payload of the form '{note} [ {...} ]' falls through
+    #    to {} here — a trailing top-level array is never scavenged for an
+    #    element (repairing only the slice, never the whole candidate, is what
+    #    keeps the array out of reach).
+    slice_ = _first_balanced_object_slice(suffix)
+    try:
+        repaired = json_repair.loads(slice_)
+        if isinstance(repaired, dict):
+            return repaired
+    except Exception:
+        pass
+    return {}
+
+
 def check_storage_env_vars(storage_name: str) -> None:
     """Check if all required environment variables for storage implementation exist
 
@@ -4008,6 +5206,8 @@ def pick_by_weighted_polling(
         List of selected text chunk IDs
     """
     if not entities_or_relations:
+        return []
+    if max_related_chunks <= 0:
         return []
 
     n = len(entities_or_relations)
@@ -4140,15 +5340,34 @@ async def pick_by_vector_similarity(
             f"Vector similarity chunk selection: {len(chunk_vectors)} chunk vectors Retrieved"
         )
 
-        if not chunk_vectors or len(chunk_vectors) != len(all_chunk_ids):
-            if not chunk_vectors:
-                logger.warning(
-                    "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
-                )
-            else:
-                logger.warning(
-                    f"Vector similarity chunk selection: found {len(chunk_vectors)} but expecting {len(all_chunk_ids)}"
-                )
+        if not chunk_vectors:
+            logger.warning(
+                "Vector similarity chunk selection: no vectors retrieved from chunks_vdb"
+            )
+            return []
+
+        if len(chunk_vectors) != len(all_chunk_ids):
+            # A referenced chunk with no stored vector signals an inconsistency
+            # between the graph/text stores and the vector store. Keep the
+            # existing safety behavior: abort vector ranking so callers can fall
+            # back to the WEIGHT method, but make the mismatch easier to observe
+            # and repair by logging counts and a bounded sample of missing IDs.
+            expected = len(all_chunk_ids)
+            retrieved = len(chunk_vectors)
+            missing_ids = [
+                chunk_id for chunk_id in all_chunk_ids if chunk_id not in chunk_vectors
+            ]
+            sample = missing_ids[:5]
+            logger.warning(
+                "Vector similarity chunk selection: data inconsistency detected "
+                "(expected %s, retrieved %s, missing %s). Falling back to WEIGHT method. "
+                "Missing chunk IDs (sample): %s. "
+                "Vector/text storages may be out of sync; consider re-embedding or repairing.",
+                expected,
+                retrieved,
+                expected - retrieved,
+                sample,
+            )
             return []
 
         # Calculate cosine similarities
@@ -4339,6 +5558,7 @@ async def process_chunks_unified(
     global_config: dict,
     source_type: str = "mixed",
     chunk_token_limit: int = None,  # Add parameter for dynamic token limit
+    progress_callback=None,
 ) -> list[dict]:
     """
     Unified processing for text chunks: deduplication, chunk_top_k limiting, reranking, and token truncation.
@@ -4361,6 +5581,8 @@ async def process_chunks_unified(
 
     # 1. Apply reranking if enabled and query is provided
     if query_param.enable_rerank and query and unique_chunks:
+        if progress_callback:
+            await progress_callback("reranking")
         rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
         unique_chunks = await apply_rerank_if_enabled(
             query=query,
@@ -4417,13 +5639,11 @@ async def process_chunks_unified(
 
         original_count = len(unique_chunks)
 
-        unique_chunks = truncate_list_by_token_size(
+        unique_chunks = await run_in_tokenizer_executor(
+            _truncate_chunks_for_unified_context,
             unique_chunks,
-            key=lambda x: "\n".join(
-                json.dumps(item, ensure_ascii=False) for item in [x]
-            ),
-            max_token_size=chunk_token_limit,
-            tokenizer=tokenizer,
+            chunk_token_limit,
+            tokenizer,
         )
 
         logger.debug(
@@ -4673,9 +5893,9 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|> -> <|#|>, <||> -> <|#|>
+    # Fix: <|> -> <|#|>, <||> -> <|#|> (glued only; keep free-text "a <|> b")
     record = re.sub(
-        r"<\|+>",
+        r"(?<=\S)<\|+>(?=\S)",
         tuple_delimiter,
         record,
     )
@@ -4722,9 +5942,13 @@ def fix_tuple_delimiter_corruption(
         record,
     )
 
-    # Fix: <|| -> <|#|>
+    # Fix: <|| -> <|#|> (glued only; keep free-text/code "x <|| y")
+    # Anchor the left side only: "<||" is an unterminated separator whose right
+    # side is the next field's raw content, so a right-hand \S anchor would add
+    # nothing while risking a boundary miss. The left \S is what distinguishes a
+    # glued corruption (name<||type) from a spaced free-text mention (x <|| y).
     record = re.sub(
-        r"<\|\|(?!>)",
+        r"(?<=\S)<\|\|(?!>)",
         tuple_delimiter,
         record,
     )
@@ -4990,6 +6214,82 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+
+def render_chunks_context_text(chunks_with_reference_ids: list[dict]) -> str:
+    """Render the exact chunk-context text sent to the LLM.
+
+    ``chunks_with_reference_ids`` must already carry ``reference_id`` — the
+    second return value of :func:`generate_reference_list_from_chunks`. This
+    is the single place that projects a chunk down to
+    ``{reference_id, content, content_headings?}`` and serializes it, one JSON
+    object per line, so that any token-budget check done against this exact
+    call sequence matches what callers go on to send downstream verbatim.
+    """
+    chunks_context = []
+    for chunk in chunks_with_reference_ids:
+        entry = {
+            "reference_id": chunk["reference_id"],
+            "content": chunk["content"],
+        }
+        if chunk.get("content_headings"):
+            entry["content_headings"] = chunk["content_headings"]
+        chunks_context.append(entry)
+    return "\n".join(
+        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
+    )
+
+
+def _truncate_chunks_for_unified_context(
+    chunks: list[dict], max_token_size: int, tokenizer: "Tokenizer"
+) -> list[dict]:
+    """Two-stage truncation used by :func:`process_chunks_unified`.
+
+    Counting a chunk list's tokens against the chunk dicts themselves (as the
+    single-stage version used to) undercounts: what actually reaches the LLM
+    is the ``{reference_id, content, content_headings?}`` projection built by
+    :func:`generate_reference_list_from_chunks` /
+    :func:`render_chunks_context_text`, and ``reference_id`` itself is
+    recomputed from each survivor's ``file_path`` frequency — which changes
+    with the exact set of chunks kept, not just by a token or two.
+
+    Stage 1 approximates a safe count K from ``{content, content_headings}``
+    alone (``reference_id`` isn't assigned yet, and can't be until the
+    survivor set is known — a chicken-and-egg the real renderer resolves by
+    running after truncation, not before). Stage 2 re-renders that exact
+    candidate list through the real renderer and independently re-verifies
+    (shrinking K if needed), so the K this function returns is guaranteed safe
+    under the SAME rendering the caller will perform afterward on the same
+    list. Both stages run in this one synchronous call — it must always be
+    submitted as a single ``run_in_tokenizer_executor`` job, never split
+    across two round-trips through the event loop.
+    """
+    if max_token_size <= 0 or not chunks:
+        return []
+
+    def _approx_key(chunk: dict) -> str:
+        payload = {"content": chunk.get("content")}
+        if chunk.get("content_headings"):
+            payload["content_headings"] = chunk["content_headings"]
+        return json.dumps(payload, ensure_ascii=False)
+
+    approx = truncate_list_by_token_size(
+        chunks,
+        key=_approx_key,
+        separator="\n",
+        max_token_size=max_token_size,
+        tokenizer=tokenizer,
+    )
+
+    k = len(approx)
+    while k > 0:
+        _, rendered_chunks = generate_reference_list_from_chunks(approx[:k])
+        text = render_chunks_context_text(rendered_chunks)
+        if len(tokenizer.encode(text)) <= max_token_size:
+            break
+        k -= 1
+
+    return approx[:k]
 
 
 def validate_workspace(workspace: str) -> str:

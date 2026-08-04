@@ -207,26 +207,42 @@ def _load_blocks_from_jsonl(blocks_path: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _references_tail_n() -> int:
-    """Trailing-block window for reference detection (live from env).
-
-    Read at chunk time (NOT snapshotted) so changing
-    ``CHUNK_P_REFERENCES_TAIL_N`` takes effect on re-runs of already-enqueued
-    documents.  Falls back to :data:`DEFAULT_P_REFERENCES_TAIL_N`.
-    """
-    raw = os.getenv("CHUNK_P_REFERENCES_TAIL_N")
-    if raw is None:
-        return DEFAULT_P_REFERENCES_TAIL_N
+def _normalize_references_tail_n(raw: object, *, setting: str) -> int:
+    """Parse a non-negative reference scan window, falling back on errors."""
     try:
-        return max(int(raw), 0)
-    except ValueError:
+        value = int(raw)
+    except (TypeError, ValueError):
         logger.warning(
-            "[paragraph_semantic] invalid CHUNK_P_REFERENCES_TAIL_N=%r; "
-            "using default %d",
+            "[paragraph_semantic] invalid %s=%r; using default %d",
+            setting,
             raw,
             DEFAULT_P_REFERENCES_TAIL_N,
         )
         return DEFAULT_P_REFERENCES_TAIL_N
+    if value < 0:
+        logger.warning(
+            "[paragraph_semantic] negative %s=%r; using default %d",
+            setting,
+            raw,
+            DEFAULT_P_REFERENCES_TAIL_N,
+        )
+        return DEFAULT_P_REFERENCES_TAIL_N
+    return value
+
+
+def _references_tail_n() -> int:
+    """Content-block window for reference detection (live from env).
+
+    Read at chunk time (NOT snapshotted) so changing
+    ``CHUNK_P_REFERENCES_TAIL_N`` takes effect on re-runs of already-enqueued
+    documents.  ``0`` scans all content blocks; a positive value restricts
+    detection to the last N blocks.  Invalid or negative values fall back to
+    :data:`DEFAULT_P_REFERENCES_TAIL_N`.
+    """
+    raw = os.getenv("CHUNK_P_REFERENCES_TAIL_N")
+    if raw is None:
+        return DEFAULT_P_REFERENCES_TAIL_N
+    return _normalize_references_tail_n(raw, setting="CHUNK_P_REFERENCES_TAIL_N")
 
 
 def _references_headings() -> list[str]:
@@ -520,6 +536,7 @@ def _new_block(
     table_chunk_role: str,
     tokenizer: Tokenizer,
     blockids: list[str] | None = None,
+    is_title_block: bool = False,
 ) -> dict[str, Any]:
     content = "\n".join(p["text"] for p in paragraphs)
     return {
@@ -530,10 +547,31 @@ def _new_block(
         "content": content,
         "tokens": _count_tokens(tokenizer, content),
         "table_chunk_role": table_chunk_role,
+        # Smart-heading title block: pinned against HeadingGlue/LevelMerge
+        # (see _is_pinned). Only the explicit sidecar flag sets this — a
+        # level of 0 alone does NOT (markdown prefaces are level 0 too).
+        "is_title_block": is_title_block,
         # Ordered list of source blockids (deduped). Empty when the input
         # blocks.jsonl row did not carry a blockid (raw/legacy input).
         "blockids": _dedup_preserving_order(list(blockids or [])),
     }
+
+
+def _is_pinned(block: dict[str, Any]) -> bool:
+    """A pinned block is fixed against SAME-LEVEL merging and gluing.
+
+    Currently only smart-heading title blocks (``is_title_block``) pin. Pinning
+    blocks HeadingGlue and Phase A same-level merging, so adjacent title blocks
+    (e.g. spliced multi-article documents) never fuse and no sibling/tail run
+    crosses a title boundary. It does NOT block Phase B cross-level absorption:
+    a title block is always level 0 (the shallowest node) and may act as the
+    SHALLOW absorber there, pulling its level-1 descendants in — that path
+    checks ``_is_descendant`` and is deliberately not gated on ``_is_pinned``.
+
+    The judgment deliberately ignores ``level == 0``: the markdown parser emits
+    prefaces at level 0 today and those must keep merging exactly as before.
+    """
+    return bool(block.get("is_title_block"))
 
 
 # ---------------------------------------------------------------------------
@@ -980,31 +1018,19 @@ def _expand_block_with_table_splits(
     # disappear after the slice glues with surrounding paragraphs.
     cur_role = "none"
 
-    def flush_cur() -> None:
-        nonlocal cur_role
-        if not cur_paras:
-            cur_role = "none"
-            return
-        out.append(
-            _new_block(
-                heading=block["heading"],
-                parent_headings=block["parent_headings"],
-                level=block["level"],
-                paragraphs=cur_paras,
-                table_chunk_role=cur_role,
-                tokenizer=tokenizer,
-                blockids=block.get("blockids"),
-            )
-        )
-        cur_paras.clear()
-        cur_role = "none"
+    # A split title block loses its coherence as a pin target, but the FIRST
+    # emitted fragment carries the cover (paragraphs before the first oversized
+    # table accumulate in cur_paras and land in the first flush) and must stay
+    # pinned so it separates this block from its neighbours at a title boundary
+    # — otherwise fragments (all ``parent_headings == []``) would look like
+    # siblings of an adjacent title block's fragments and fuse under Phase A.
+    # Every emit routes through append_block so no maintenance path is missed.
+    first_out = [True]
 
-    def _append_bridge_block(
+    def append_block(
         paragraphs: list[dict[str, Any]],
         table_chunk_role: str,
     ) -> None:
-        if not paragraphs:
-            return
         out.append(
             _new_block(
                 heading=block["heading"],
@@ -1014,8 +1040,27 @@ def _expand_block_with_table_splits(
                 table_chunk_role=table_chunk_role,
                 tokenizer=tokenizer,
                 blockids=block.get("blockids"),
+                is_title_block=block.get("is_title_block", False) and first_out[0],
             )
         )
+        first_out[0] = False
+
+    def flush_cur() -> None:
+        nonlocal cur_role
+        if not cur_paras:
+            cur_role = "none"
+            return
+        append_block(cur_paras, cur_role)
+        cur_paras.clear()
+        cur_role = "none"
+
+    def _append_bridge_block(
+        paragraphs: list[dict[str, Any]],
+        table_chunk_role: str,
+    ) -> None:
+        if not paragraphs:
+            return
+        append_block(paragraphs, table_chunk_role)
 
     def _text_paragraph(text: str) -> dict[str, Any] | None:
         if not text or not text.strip():
@@ -1193,17 +1238,7 @@ def _expand_block_with_table_splits(
                 # this middle slice as a standalone block that LevelMerge
                 # MUST keep intact (table_chunk_role == "middle").
                 flush_cur()
-                out.append(
-                    _new_block(
-                        heading=block["heading"],
-                        parent_headings=block["parent_headings"],
-                        level=block["level"],
-                        paragraphs=[chunk_para],
-                        table_chunk_role="middle",
-                        tokenizer=tokenizer,
-                        blockids=block.get("blockids"),
-                    )
-                )
+                append_block([chunk_para], "middle")
 
     flush_cur()
     return out
@@ -1226,6 +1261,7 @@ def _split_long_block(
     target_ideal: int,
     chunk_overlap_token_size: int = 100,
     blockids: list[str] | None = None,
+    is_title_block: bool = False,
 ) -> list[dict[str, Any]]:
     """Split an oversized block into balanced sub-blocks at short-paragraph anchors.
 
@@ -1254,8 +1290,15 @@ def _split_long_block(
                 table_chunk_role=table_chunk_role,
                 tokenizer=tokenizer,
                 blockids=blockids,
+                is_title_block=is_title_block,
             )
         ]
+    # NOTE: an over-cap title block IS split like any other block (no size
+    # exemption). Only the FIRST fragment (carrying the original paragraphs[0]
+    # = the cover) keeps the pinned flag, so it still separates this block from
+    # its neighbours at the title boundary; the body fragments drop the pin and
+    # consolidate normally — a title block that large is no longer one coherent
+    # pin target.
 
     target_blocks = max(
         math.ceil(total / target_ideal),
@@ -1379,6 +1422,7 @@ def _split_long_block(
                     table_chunk_role=table_chunk_role,
                     tokenizer=tokenizer,
                     blockids=blockids,
+                    is_title_block=is_title_block,
                 )
             ]
 
@@ -1400,6 +1444,9 @@ def _split_long_block(
                     table_chunk_role=table_chunk_role if i == 0 else "none",
                     tokenizer=tokenizer,
                     blockids=blockids,
+                    # Keep the pin only on the first fragment (the cover); the
+                    # rest are body — see the over-cap NOTE above.
+                    is_title_block=is_title_block and i == 0,
                 )
             )
         return sub_blocks
@@ -1423,6 +1470,9 @@ def _split_long_block(
     # Only the first sub-block keeps the inbound table_chunk_role; the
     # post-anchor sub-blocks are text-only by construction.
     cur_role = table_chunk_role
+    # Keep the pin only on the first emitted fragment (it carries the original
+    # paragraphs[0] = the title cover); see the over-cap NOTE above.
+    first_frag = True
 
     for anchor in selected:
         split_idx = anchor["index"]
@@ -1437,8 +1487,10 @@ def _split_long_block(
                     table_chunk_role=cur_role,
                     tokenizer=tokenizer,
                     blockids=blockids,
+                    is_title_block=is_title_block and first_frag,
                 )
             )
+            first_frag = False
         # Anchor becomes the first paragraph (and heading) of the next sub-block.
         cur_parents = (
             list(parent_headings) + [heading]
@@ -1460,8 +1512,10 @@ def _split_long_block(
                 table_chunk_role=cur_role,
                 tokenizer=tokenizer,
                 blockids=blockids,
+                is_title_block=is_title_block and first_frag,
             )
         )
+        first_frag = False
 
     # Recursive guard: any sub-block still over target_max is re-split,
     # including single-paragraph subs — the no-anchor branch above honors
@@ -1482,6 +1536,9 @@ def _split_long_block(
                     target_ideal=target_ideal,
                     chunk_overlap_token_size=chunk_overlap_token_size,
                     blockids=sub.get("blockids") or blockids,
+                    # A still-over-cap first fragment keeps the pin on ITS first
+                    # sub-fragment, so the flag stays with paragraphs[0].
+                    is_title_block=sub.get("is_title_block", False),
                 )
             )
         else:
@@ -1561,6 +1618,13 @@ def _merged_pair(
         "content": content,
         "tokens": _count_tokens(tokenizer, content),
         "table_chunk_role": "none",
+        # Inherit the pin from the kept side. Phase A / HeadingGlue never feed
+        # a title block as ``base`` (their _is_pinned gates exclude it), so
+        # this is True only when a level-0 title block absorbs a deeper
+        # descendant in Phase B — keeping the merged result pinned so it stays
+        # at level 0, never merges same-level with an adjacent title block, and
+        # can keep absorbing further descendants.
+        "is_title_block": base.get("is_title_block", False),
         "blockids": merged_blockids,
     }
 
@@ -1734,6 +1798,11 @@ def _glue_heading_only_blocks(
         nxt_role = nxt.get("table_chunk_role", "none")
         if (
             _is_heading_only(cur)
+            # A title block is usually heading-only AND level 0 (strictly
+            # shallower than everything) — without this pin it would glue
+            # into the first body block of its sub-document.
+            and not _is_pinned(cur)
+            and not _is_pinned(nxt)
             and nxt.get("level", 1) > cur.get("level", 1)
             and nxt_role in ("none", "first")
         ):
@@ -1788,13 +1857,14 @@ def _merge_small_blocks(
                 below_ideal = 0 < cur_tokens < target_ideal
                 is_cur_lv = cur_level == current_level
 
-                if below_ideal and is_cur_lv:
+                if below_ideal and is_cur_lv and not _is_pinned(cur):
                     merged = False
 
                     if _can_merge_forward(cur_role) and i + 1 < len(result):
                         nxt = result[i + 1]
                         if (
                             nxt.get("level", 1) == current_level
+                            and not _is_pinned(nxt)
                             and _can_merge_backward(nxt.get("table_chunk_role", "none"))
                             and _same_parent_path(cur, nxt)
                         ):
@@ -1811,6 +1881,7 @@ def _merge_small_blocks(
                         prev = new_result[-1]
                         if (
                             prev.get("level", 1) == current_level
+                            and not _is_pinned(prev)
                             and _can_merge_forward(prev.get("table_chunk_role", "none"))
                             and prev["tokens"] < target_ideal
                             and _same_parent_path(prev, cur)
@@ -1833,7 +1904,12 @@ def _merge_small_blocks(
                     # combined size stays under SMALL_TAIL_THRESHOLD and
                     # fits within target_max — eliminates the document's
                     # trailing sliver of zero-content remainders.
-                    if is_cur_lv and cur_tokens >= target_ideal and cur_role == "none":
+                    if (
+                        is_cur_lv
+                        and cur_tokens >= target_ideal
+                        and cur_role == "none"
+                        and not _is_pinned(cur)
+                    ):
                         tail_total = 0
                         end_idx = i + 1
                         for j in range(i + 1, len(result)):
@@ -1844,6 +1920,9 @@ def _merge_small_blocks(
                             # never pull one into a tail-absorption run, which
                             # would re-merge it and duplicate its header.
                             if nxt.get("table_chunk_role", "none") != "none":
+                                break
+                            # Pinned title blocks end a tail run the same way.
+                            if _is_pinned(nxt):
                                 break
                             # Same-level only is not enough — a sibling under a
                             # different parent would be cross-topic. Stop the run
@@ -1903,6 +1982,14 @@ def _merge_small_blocks(
                 below_ideal = 0 < cur_tokens < target_ideal
                 is_cur_lv = cur_level == current_level
 
+                # A pinned title block MAY act as the SHALLOW absorber in
+                # Phase B (cross-level). It is always level 0 (the shallowest
+                # node), so it can only ever be the shallow side here — the
+                # deep-party gates below (``nxt``, and the backward branch's
+                # ``cur``) still can never be a title block (their level must
+                # be strictly greater than the shallow side's). It stays
+                # excluded from same-level Phase A merging (that gate keeps
+                # ``not _is_pinned``), so adjacent title blocks never fuse.
                 if below_ideal and is_cur_lv:
                     merged = False
 
@@ -1910,6 +1997,7 @@ def _merge_small_blocks(
                         nxt = result[i + 1]
                         if (
                             nxt.get("level", 1) > current_level
+                            and not _is_pinned(nxt)
                             and _can_merge_backward(nxt.get("table_chunk_role", "none"))
                             and _is_descendant(cur, nxt)
                         ):
@@ -1924,6 +2012,8 @@ def _merge_small_blocks(
 
                     if not merged and _can_merge_backward(cur_role) and new_result:
                         prev = new_result[-1]
+                        # ``prev`` may be a pinned title block absorbing its
+                        # level-1 descendant (``_is_descendant`` still gates it).
                         if (
                             prev.get("level", 1) < current_level
                             and _can_merge_forward(prev.get("table_chunk_role", "none"))
@@ -2012,7 +2102,7 @@ def chunking_by_paragraph_semantic(
             (typically ``parsed_data["blocks_path"]``). When ``None``,
             unreadable, or empty, this function falls back to
             :func:`chunking_by_recursive_character` on ``content``
-            (per ``docs/FileProcessingConfiguration-zh.md`` §3).
+            (per ``docs/FileProcessingPipeline.md``).
             That fallback hard-requires ``langchain-text-splitters``;
             an :class:`ImportError` is surfaced rather than silently
             degrading further.
@@ -2021,14 +2111,15 @@ def chunking_by_paragraph_semantic(
             and as the per-side budget for duplicating text between two
             adjacent oversized table chunks. Structural table row splits
             remain row-bounded and non-overlapping.
-        drop_references: When ``True``, drop the trailing reference section
-            (e.g. "References" / "参考文献") before splitting/merging. A block
-            is removed only when it BOTH sits within the last
-            ``references_tail_n`` content blocks AND its heading matches a
-            reference prefix. This is the only reference knob that is
-            snapshotted into ``chunk_options`` (it may come from a per-file
-            hint) and recorded in ``doc_status.metadata['chunk_opts']``.
-        references_tail_n: Trailing-block window for the detection above.
+        drop_references: When ``True``, drop reference blocks (e.g. blocks
+            headed "References" / "参考文献") before splitting/merging. A block
+            is removed when its heading matches a reference prefix and it is
+            inside the configured content-block window. This is the only
+            reference knob that is snapshotted into ``chunk_options`` (it may
+            come from a per-file hint) and recorded in
+            ``doc_status.metadata['chunk_opts']``.
+        references_tail_n: Content-block window for the detection above.
+            ``0`` scans all blocks; a positive value scans only the last N.
             ``None`` (the normal pipeline value) means "read
             ``CHUNK_P_REFERENCES_TAIL_N`` env live at run time, default
             ``DEFAULT_P_REFERENCES_TAIL_N``"; a kwarg is only passed by tests.
@@ -2107,7 +2198,7 @@ def chunking_by_paragraph_semantic(
         # Defer to recursive-character chunking when the sidecar is
         # absent — ensures non-structured documents and edge-case parses
         # still produce chunks instead of silently dropping content.  The
-        # document contract (FileProcessingConfiguration-zh.md §3) is
+        # document contract (FileProcessingPipeline.md) is
         # explicit that P falls back to R; that contract requires
         # langchain-text-splitters to be installed, so an ImportError
         # here is intentional rather than a silent degrade to F.  Lazy
@@ -2130,12 +2221,11 @@ def chunking_by_paragraph_semantic(
             chunk_overlap_token_size=overlap,
         )
 
-    # Drop the trailing reference section before any split/merge runs (operates
-    # on the raw blocks.jsonl content rows — one heading == one block).  A block
-    # is dropped only when it BOTH sits within the last ``tail_n`` rows AND its
-    # heading matches a reference prefix; the tail window is a safety guard so a
-    # mid-document "References" subsection is never removed.  Detection knobs are
-    # read live from env (NOT snapshotted) unless injected via kwargs (tests).
+    # Drop reference blocks before any split/merge runs (operates on the raw
+    # blocks.jsonl content rows — one heading == one block).  Zero scans all
+    # rows; a positive ``tail_n`` restricts detection to the trailing window.
+    # Detection knobs are read live from env (NOT snapshotted) unless injected
+    # via kwargs (tests).
     if drop_references and rows:
         prefixes = (
             list(references_headings)
@@ -2143,43 +2233,39 @@ def chunking_by_paragraph_semantic(
             else _references_headings()
         )
         tail_n = (
-            max(int(references_tail_n), 0)
+            _normalize_references_tail_n(references_tail_n, setting="references_tail_n")
             if references_tail_n is not None
             else _references_tail_n()
         )
-        if tail_n:
-            start = max(0, len(rows) - tail_n)
-            kept: list[dict[str, Any]] = []
-            dropped_headings: list[str] = []
-            for idx, row in enumerate(rows):
-                if idx >= start and _is_reference_heading(
-                    row.get("heading", "") or "", prefixes
-                ):
-                    dropped_headings.append((row.get("heading") or "").strip())
-                else:
-                    kept.append(row)
-            # Protect against an empty document: base the guard on rows that
-            # still carry content (the loop below skips blank-content rows), so
-            # a pathological sidecar whose only kept rows are empty does not
-            # silently produce zero chunks.
-            if dropped_headings and any(
-                (row.get("content") or "").strip() for row in kept
+        start = 0 if tail_n == 0 else max(0, len(rows) - tail_n)
+        kept: list[dict[str, Any]] = []
+        dropped_headings: list[str] = []
+        for idx, row in enumerate(rows):
+            if idx >= start and _is_reference_heading(
+                row.get("heading", "") or "", prefixes
             ):
-                logger.info(
-                    "[paragraph_semantic] removed %d reference block(s) %s "
-                    "from doc_id: %s",
-                    len(dropped_headings),
-                    _format_dropped_headings(dropped_headings),
-                    doc_id or "unknown",
-                )
-                rows = kept
-            elif dropped_headings:
-                logger.warning(
-                    "[paragraph_semantic] dropping reference block(s) %s would "
-                    "leave no content; keeping them from doc_id: %s",
-                    _format_dropped_headings(dropped_headings),
-                    doc_id or "unknown",
-                )
+                dropped_headings.append((row.get("heading") or "").strip())
+            else:
+                kept.append(row)
+        # Protect against an empty document: base the guard on rows that
+        # still carry content (the loop below skips blank-content rows), so
+        # a pathological sidecar whose only kept rows are empty does not
+        # silently produce zero chunks.
+        if dropped_headings and any((row.get("content") or "").strip() for row in kept):
+            logger.info(
+                "[paragraph_semantic] removed %d reference block(s) %s from doc_id: %s",
+                len(dropped_headings),
+                _format_dropped_headings(dropped_headings),
+                doc_id or "unknown",
+            )
+            rows = kept
+        elif dropped_headings:
+            logger.warning(
+                "[paragraph_semantic] dropping reference block(s) %s would "
+                "leave no content; keeping them from doc_id: %s",
+                _format_dropped_headings(dropped_headings),
+                doc_id or "unknown",
+            )
 
     # Build initial blocks (HeadingBlocks output, already persisted).
     initial: list[dict[str, Any]] = []
@@ -2191,15 +2277,20 @@ def chunking_by_paragraph_semantic(
         if not paragraphs:
             continue
         row_blockid = str(row.get("blockid") or "").strip()
+        # Only the explicit sidecar flag pins a row at level 0. A bare
+        # level=0 without the flag (markdown prefaces today) keeps the
+        # historical "0 becomes 1" coercion below.
+        row_is_title_block = bool(row.get("is_title_block"))
         initial.append(
             _new_block(
                 heading=row.get("heading", "") or "",
                 parent_headings=list(row.get("parent_headings") or []),
-                level=int(row.get("level", 1) or 1),
+                level=0 if row_is_title_block else int(row.get("level", 1) or 1),
                 paragraphs=paragraphs,
                 table_chunk_role="none",
                 tokenizer=tokenizer,
                 blockids=[row_blockid] if row_blockid else None,
+                is_title_block=row_is_title_block,
             )
         )
 
@@ -2241,6 +2332,7 @@ def chunking_by_paragraph_semantic(
                     target_ideal=target_ideal,
                     chunk_overlap_token_size=overlap,
                     blockids=split_blk.get("blockids") or blk.get("blockids"),
+                    is_title_block=bool(split_blk.get("is_title_block")),
                 )
             )
         after_c.extend(_apply_part_suffixes(block_after_c))

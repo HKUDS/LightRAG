@@ -9,9 +9,15 @@ import pytest
 import lightrag.lightrag as lightrag_module
 import lightrag.pipeline as pipeline_module
 from lightrag.base import DocStatus
-from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.constants import (
+    GRAPH_FIELD_SEP,
+    KG_WRITE_STATE_METADATA_KEY,
+    KG_WRITE_STATE_PRE_GRAPH,
+)
 from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
 from lightrag.lightrag import LightRAG
+
+from .conftest import request_failed_retry
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
@@ -391,11 +397,22 @@ async def test_extract_failure_before_chunking_clears_stale_chunk_snapshot(
                     "file_path": existing["file_path"],
                     "track_id": existing["track_id"],
                     "error_msg": "previous failure",
-                    "metadata": {"source": "test"},
+                    # kg_write_state is carried across every real status
+                    # transition (it is in the carry-over whitelist), and this
+                    # document failed before merge — so a real FAILED row still
+                    # proves it never reached the graph. The resume purge needs
+                    # that proof to clean up the stale chunk snapshot.
+                    "metadata": {
+                        "source": "test",
+                        KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_PRE_GRAPH,
+                    },
                 }
             }
         )
 
+        # FAILED docs re-enter only via an explicit manual retry request
+        # (the /reprocess_failed semantics).
+        await request_failed_retry(rag)
         await rag.apipeline_process_enqueue_documents()
 
         failed_status = await rag.doc_status.get_by_id(doc_id)
@@ -493,7 +510,12 @@ async def test_delete_rebuild_failure_prunes_chunk_tracking_before_abort(
 
         assert result.status == "fail"
         assert "rebuild fail sentinel" in result.message
-        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+        # Safe destructive ordering: the chunks are deleted only AFTER every
+        # derived contribution is repaired or removed, so a rebuild failure
+        # leaves them in place and the retry can still rebuild from them.
+        # This used to assert the chunk was already gone — the window where
+        # graph objects pointed at chunks that no longer existed (issue #3400).
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
         assert await rag.text_chunks.get_by_id(keep_chunk_id) is not None
         assert failed_status is not None
         assert failed_status["chunks_list"] == [drop_chunk_id]
@@ -618,7 +640,12 @@ async def test_delete_retry_cleans_llm_cache_after_rebuild_failure(
         failed_status = await rag.doc_status.get_by_id(doc_id)
         assert failed_status is not None
         assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
-        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+        # Safe destructive ordering: the chunks are deleted only AFTER every
+        # derived contribution is repaired or removed, so a rebuild failure
+        # leaves them in place and the retry can still rebuild from them.
+        # This used to assert the chunk was already gone — the window where
+        # graph objects pointed at chunks that no longer existed (issue #3400).
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
 
         monkeypatch.setattr(
             lightrag_module,
@@ -673,7 +700,12 @@ async def test_delete_retry_cleans_llm_cache_when_enabled_on_retry(
         failed_status = await rag.doc_status.get_by_id(doc_id)
         assert failed_status is not None
         assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
-        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+        # Safe destructive ordering: the chunks are deleted only AFTER every
+        # derived contribution is repaired or removed, so a rebuild failure
+        # leaves them in place and the retry can still rebuild from them.
+        # This used to assert the chunk was already gone — the window where
+        # graph objects pointed at chunks that no longer existed (issue #3400).
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
 
         monkeypatch.setattr(
             lightrag_module,
@@ -731,7 +763,12 @@ async def test_delete_retry_collects_cache_ids_without_cache_storage(
         failed_status = await rag.doc_status.get_by_id(doc_id)
         assert failed_status is not None
         assert failed_status["metadata"]["deletion_llm_cache_ids"] == cache_ids
-        assert await rag.text_chunks.get_by_id(drop_chunk_id) is None
+        # Safe destructive ordering: the chunks are deleted only AFTER every
+        # derived contribution is repaired or removed, so a rebuild failure
+        # leaves them in place and the retry can still rebuild from them.
+        # This used to assert the chunk was already gone — the window where
+        # graph objects pointed at chunks that no longer existed (issue #3400).
+        assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
 
         rag.llm_response_cache = cache_storage
         monkeypatch.setattr(
@@ -897,7 +934,21 @@ async def test_delete_retry_preserves_cache_cleanup_state_when_cache_storage_una
 
 
 @pytest.mark.asyncio
-async def test_delete_succeeds_when_chunks_list_missing(tmp_path):
+async def test_delete_refuses_when_chunks_list_missing_but_anchors_name_kg(tmp_path):
+    """A chunk-less document whose anchors still name KG objects must be refused.
+
+    Regression for issue #3400. This path used to delete doc_status + full_docs
+    and report success without looking at the graph at all, so the entities and
+    relations the anchors named survived — and removing doc_status destroyed the
+    provenance chain (graph source_id -> text_chunks -> full_doc_id) that was
+    the only remaining way to attribute them. The integrity audit could then
+    only report them as unrecoverable orphans.
+
+    With no chunk ids there is also nothing to subtract from those objects'
+    source lists, so purge cannot classify them: every one would be kept while
+    the anchors were dropped anyway. Hence the dedicated refusal reason rather
+    than a best-effort attempt.
+    """
     rag = await _build_rag(
         tmp_path, "delete_missing_chunks_list_rejected", _deterministic_chunking
     )
@@ -917,10 +968,19 @@ async def test_delete_succeeds_when_chunks_list_missing(tmp_path):
 
         result = await rag.adelete_by_doc_id(doc_id)
 
-        assert result.status == "success"
-        assert "without associated chunks" in result.message
-        assert await rag.doc_status.get_by_id(doc_id) is None
-        assert await rag.full_docs.get_by_id(doc_id) is None
+        assert result.status == "fail"
+        assert result.status_code == 409
+        assert "no chunks to attribute them to" in result.message
+        assert "audit_kg_integrity" in result.message
+        # Nothing was deleted: the document is exactly as it was, so an
+        # operator can repair the anchors and retry.
+        failed_status = await rag.doc_status.get_by_id(doc_id)
+        assert failed_status is not None
+        assert (
+            failed_status["metadata"]["deletion_failure_stage"]
+            == "validate_recovery_anchors"
+        )
+        assert await rag.full_docs.get_by_id(doc_id) is not None
         assert await rag.full_entities.get_by_id(doc_id) is not None
         assert await rag.full_relations.get_by_id(doc_id) is not None
         assert await rag.text_chunks.get_by_id(drop_chunk_id) is not None
@@ -1566,6 +1626,12 @@ async def test_deletion_fully_completed_prevents_success_override_in_finally(
                         }
                     }
                 )
+                # A real PROCESSED document always has both anchor rows, even
+                # with zero chunks: merge writes them in Phase 0 before any
+                # mutation. Present-and-empty is a valid recovery proof — the
+                # distinction fail-closed purge turns on.
+                await rag.full_entities.upsert({doc_id: {"entity_names": []}})
+                await rag.full_relations.upsert({doc_id: {"relation_pairs": []}})
             else:
                 drop_chunk_id = "chunk-drop-fc"
                 await _seed_delete_retry_state(
@@ -1582,9 +1648,13 @@ async def test_deletion_fully_completed_prevents_success_override_in_finally(
             async def fail_later_insert_done():
                 nonlocal insert_done_calls
                 insert_done_calls += 1
-                # Let the first call (persist_pre_rebuild_changes) succeed for the
-                # full path; only fail the finally-block call.
-                if insert_done_calls <= (1 if scenario == "full" else 0):
+                # Let the purge's own persist_pre_rebuild_changes flush succeed
+                # in BOTH scenarios and fail only the finally-block call. The
+                # no-chunk path now runs the same purge primitive as the
+                # chunk-backed one (it has to, in order to fail closed when the
+                # document's KG contributions are unaccounted for), so it makes
+                # that flush too.
+                if insert_done_calls <= 1:
                     await original_insert_done()
                 else:
                     raise RuntimeError("finally insert_done fail sentinel")
@@ -1599,3 +1669,179 @@ async def test_deletion_fully_completed_prevents_success_override_in_finally(
         finally:
             monkeypatch.undo()
             await rag.finalize_storages()
+
+
+async def _seed_no_chunk_smartheading_doc(
+    rag: LightRAG, doc_id: str, cache_ids: list[str]
+) -> None:
+    """Seed a chunk-less doc whose doc_status.metadata records parse-stage
+    smart_heading LLM cache keys, plus the matching cache entries.
+
+    Mirrors the real FAILED state a docx leaves when parse succeeds (writing
+    smart_heading cache) but a later pipeline stage fails before any chunk is
+    produced — the cache keys then live only in doc_status.metadata.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    await rag.full_docs.upsert(
+        {doc_id: {"content": "smart heading doc", "file_path": "sh.docx"}}
+    )
+    await rag.doc_status.upsert(
+        {
+            doc_id: {
+                "status": DocStatus.FAILED,
+                "content_summary": "smart heading",
+                "content_length": 17,
+                "chunks_count": 0,
+                "chunks_list": [],
+                "created_at": now,
+                "updated_at": now,
+                "file_path": "sh.docx",
+                "track_id": f"track-{doc_id}",
+                "error_msg": "parse-stage failure",
+                # No recovery anchors, because the run never reached merge —
+                # the enqueue-time kg_write_state marker is what proves that
+                # and lets deletion clean the row up instead of failing closed.
+                "metadata": {
+                    "smartheading_llm_cache_ids": cache_ids,
+                    KG_WRITE_STATE_METADATA_KEY: KG_WRITE_STATE_PRE_GRAPH,
+                },
+            }
+        }
+    )
+    await rag.llm_response_cache.upsert(
+        {
+            cid: {"cache_type": "smartheading", "return": f"cached-{cid}"}
+            for cid in cache_ids
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_smartheading_metadata_cache_deleted_on_delete_with_no_chunks(tmp_path):
+    """delete_llm_cache=True purges smart_heading cache keys that ride only in
+    doc_status.metadata (no chunk llm_cache_list to carry them).
+
+    Locks the no-chunk deletion branch: the metadata merge in
+    ``adelete_by_doc_id`` (smartheading_llm_cache_ids -> deletion pool) followed
+    by the delete + verify on the chunk-less path.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_no_chunk_cache", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-smartheading-no-chunk"
+        cache_ids = ["default:smartheading:h1", "default:smartheading:h2"]
+        await _seed_no_chunk_smartheading_doc(rag, doc_id, cache_ids)
+
+        result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert result.status == "success"
+        remaining = [await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids]
+        assert all(item is None for item in remaining)
+        assert await rag.doc_status.get_by_id(doc_id) is None
+        assert await rag.full_docs.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_smartheading_metadata_cache_preserved_when_delete_llm_cache_disabled(
+    tmp_path,
+):
+    """delete_llm_cache=False deletes the doc but must leave the smart_heading
+    cache entries intact — proving the flag gates the metadata merge/delete
+    rather than the cache being wiped unconditionally.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_no_chunk_cache_kept", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-smartheading-keep-cache"
+        cache_ids = ["default:smartheading:k1", "default:smartheading:k2"]
+        await _seed_no_chunk_smartheading_doc(rag, doc_id, cache_ids)
+
+        result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=False)
+
+        assert result.status == "success"
+        remaining = [await rag.llm_response_cache.get_by_id(cid) for cid in cache_ids]
+        assert all(item is not None for item in remaining)
+        assert await rag.doc_status.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_smartheading_metadata_cache_deleted_alongside_chunk_cache(
+    tmp_path, monkeypatch
+):
+    """For a chunk-backed doc, delete_llm_cache=True must purge BOTH the
+    parse-stage smart_heading cache (from doc_status.metadata) and the chunk
+    llm_cache_list entries in one deletion.
+
+    Locks the chunk-backed consumption of the metadata merge: the deletion pool
+    is seeded from metadata_cache_ids before chunk llm_cache_list is appended.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_with_chunk_cache", _deterministic_chunking
+    )
+    try:
+        doc_id = "doc-smartheading-chunk-cache"
+        keep_chunk_id = "chunk-keep"
+        drop_chunk_id = "chunk-drop"
+        smartheading_cache_id = "default:smartheading:h3"
+        await _seed_delete_retry_state(
+            rag,
+            doc_id=doc_id,
+            status_chunk_ids=[drop_chunk_id],
+            tracking_chunk_ids=[keep_chunk_id, drop_chunk_id],
+            chunk_owners={keep_chunk_id: "doc-keep", drop_chunk_id: doc_id},
+            metadata={"smartheading_llm_cache_ids": [smartheading_cache_id]},
+        )
+        chunk_cache_ids = await _seed_chunk_cache_entries(
+            rag, [drop_chunk_id], "smartheading-chunk"
+        )
+        await rag.llm_response_cache.upsert(
+            {
+                smartheading_cache_id: {
+                    "cache_type": "smartheading",
+                    "return": "cached-heading",
+                }
+            }
+        )
+
+        monkeypatch.setattr(
+            lightrag_module,
+            "rebuild_knowledge_from_chunks",
+            _succeed_rebuild_from_remaining_chunks,
+        )
+        result = await rag.adelete_by_doc_id(doc_id, delete_llm_cache=True)
+
+        assert result.status == "success"
+        assert await rag.llm_response_cache.get_by_id(smartheading_cache_id) is None
+        assert await rag.llm_response_cache.get_by_id(chunk_cache_ids[0]) is None
+        assert await rag.doc_status.get_by_id(doc_id) is None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_smartheading_cache_cleared_by_aclear_cache(tmp_path):
+    """The 'clear documents + clear cache' UI flow calls aclear_cache() ->
+    drop(), which wipes the whole llm_response_cache regardless of cache_type,
+    so smart_heading entries are cleared too.
+    """
+    rag = await _build_rag(
+        tmp_path, "smartheading_aclear_cache", _deterministic_chunking
+    )
+    try:
+        cache_id = "default:smartheading:hx"
+        await rag.llm_response_cache.upsert(
+            {cache_id: {"cache_type": "smartheading", "return": "cached-heading"}}
+        )
+        assert await rag.llm_response_cache.get_by_id(cache_id) is not None
+
+        await rag.aclear_cache()
+
+        assert await rag.llm_response_cache.get_by_id(cache_id) is None
+    finally:
+        await rag.finalize_storages()

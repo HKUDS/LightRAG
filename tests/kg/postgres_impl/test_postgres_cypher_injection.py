@@ -7,10 +7,11 @@ Apache AGE because ``SET ... += $props`` is not supported.
 """
 
 import json
+import re
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lightrag.kg.postgres_impl import PGGraphStorage
+from lightrag.kg.postgres_impl import PGGraphStorage, _dollar_quote
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,66 @@ class _FakeTransaction:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+def _parse_dollar_quoted(wrapped: str) -> tuple[str, str]:
+    """Decode a single dollar-quoted literal the way PostgreSQL's scanner does.
+
+    Reads the opening ``$tag$`` delimiter, then treats everything up to the
+    *next* occurrence of that exact delimiter as the literal body. Returns
+    ``(content, trailing)`` where ``trailing`` is whatever follows the closing
+    delimiter. A correctly quoted literal round-trips to ``(original, "")``;
+    a broken one (premature close from a seam/interior collision) leaks the
+    remainder into ``trailing``.
+    """
+    assert wrapped.startswith("$"), wrapped
+    tag_close = wrapped.index("$", 1)
+    delim = wrapped[: tag_close + 1]  # e.g. "$AGE1$"
+    body = wrapped[len(delim) :]
+    idx = body.find(delim)
+    assert idx != -1, f"no closing delimiter {delim!r} in {wrapped!r}"
+    return body[:idx], body[idx + len(delim) :]
+
+
+def _strip_dollar_literals(sql: str) -> str:
+    """Remove every dollar-quoted literal, leaving only the SQL skeleton.
+
+    Mirrors PostgreSQL tokenizing: an opening ``$tag$`` (empty or identifier
+    tag) consumes everything through its matching close. Whatever remains is
+    code that the server would actually execute — injection payloads that are
+    correctly contained inside a literal must not appear here.
+    """
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        if sql[i] == "$":
+            j = sql.find("$", i + 1)
+            if j != -1:
+                delim = sql[i : j + 1]
+                tag = delim[1:-1]
+                if tag == "" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tag):
+                    end = sql.find(delim, j + 1)
+                    if end != -1:
+                        i = end + len(delim)
+                        continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
+async def _capture_bfs_subgraph_query(storage: PGGraphStorage, node_label: str) -> str:
+    """Run _bfs_subgraph with a stubbed _query and return the built SQL string."""
+    captured: list[str] = []
+
+    async def fake_query(sql, **kwargs):
+        captured.append(sql)
+        return []  # empty result → _bfs_subgraph returns after the first query
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage._bfs_subgraph(node_label, max_depth=1, max_nodes=10)
+
+    assert captured, "expected _bfs_subgraph to issue at least one query"
+    return captured[0]
 
 
 async def _capture_upsert_edge(storage: PGGraphStorage, src: str, tgt: str, edge_data):
@@ -360,3 +421,120 @@ async def test_query_write_path_passes_params():
 
     assert len(captured_execute_kwargs) == 1
     assert captured_execute_kwargs[0]["data"] == test_params
+
+
+# ---------------------------------------------------------------------------
+# _dollar_quote — round-trip integrity (GHSA-25qj-68xc-22r7 hardening)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "hello",
+        "$",
+        "$$",
+        "$$$",
+        "$AGE1$",
+        "$AGE1$ test",
+        "price is $100 or $$200$$",
+        'MATCH (n:base {entity_id: "x"}) RETURN n',
+        # The exact GHSA-25qj-68xc-22r7 PoC payload embedded in a label.
+        "test$$) AS (a agtype); SELECT version(); --",
+        # Seam-collision regression: content ending in "$" + the candidate tag
+        # used to complete a premature closing delimiter and truncate the body.
+        "ends with $AGE1",
+        "trailing tag $AGE2",
+        "$AGE1",
+    ],
+)
+def test_dollar_quote_round_trips_exactly(payload):
+    """_dollar_quote output must decode back to the original content, nothing more.
+
+    Non-empty trailing text would mean the literal closed early and the rest of
+    the payload leaked into executable SQL — the core of the injection.
+    """
+    content, trailing = _parse_dollar_quoted(_dollar_quote(payload))
+    assert content == payload
+    assert trailing == ""
+
+
+def test_dollar_quote_seam_collision_is_rejected():
+    """A tag whose delimiter would form across the content/closing seam is skipped."""
+    # "ends with $AGE1" ends with "$AGE1" == "$AGE1$"[:-1]; tag AGE1 must be
+    # rejected in favour of a non-colliding tag (AGE2).
+    quoted = _dollar_quote("ends with $AGE1")
+    assert quoted == "$AGE2$ends with $AGE1$AGE2$"
+
+
+def test_dollar_quote_delimiter_never_appears_inside_body():
+    """The chosen delimiter must not occur anywhere inside the quoted content."""
+    payload = "x$AGE1$AGE2$AGE3$y"  # forces several tag bumps
+    quoted = _dollar_quote(payload)
+    close_tag = quoted[: quoted.index("$", 1) + 1]
+    body = quoted[len(close_tag) : -len(close_tag)]
+    assert body == payload
+    assert close_tag not in body
+
+
+# ---------------------------------------------------------------------------
+# get_knowledge_graph / _bfs_subgraph — the GHSA-25qj-68xc-22r7 sink
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bfs_subgraph_label_injection_is_contained():
+    """The `label` read path must carry injection payloads as data, not SQL.
+
+    This is the exact sink reported in GHSA-25qj-68xc-22r7: `/graphs?label=`
+    → get_knowledge_graph → _bfs_subgraph → cypher(...). A `$$`/statement
+    payload must stay inside the dollar-quoted literal.
+    """
+    storage = make_graph_storage()
+    payload = "test$$) AS (a agtype); SELECT version(); --"
+
+    sql = await _capture_bfs_subgraph_query(storage, payload)
+
+    # The dangerous tokens must not survive into the executable SQL skeleton
+    # once the dollar-quoted literals are removed.
+    skeleton = _strip_dollar_literals(sql)
+    assert "SELECT version()" not in skeleton
+    assert "agtype)" in skeleton  # the legitimate AS (...) clause remains
+    assert "version" not in skeleton
+    # Sanity: the payload is present in the full query (carried as data).
+    assert "version()" in sql
+
+
+@pytest.mark.asyncio
+async def test_bfs_subgraph_dollar_tag_collision_label_is_contained():
+    """A label crafted to collide with the AGE tag scheme is still contained."""
+    storage = make_graph_storage()
+    # Attempt to pre-place the delimiter the sink would choose.
+    payload = "$AGE1$ RETURN 1; DROP TABLE users; -- "
+
+    sql = await _capture_bfs_subgraph_query(storage, payload)
+
+    skeleton = _strip_dollar_literals(sql)
+    assert "DROP TABLE" not in skeleton
+    assert "RETURN 1" not in skeleton
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_routes_label_through_dollar_quote():
+    """Non-wildcard get_knowledge_graph must build its query via dollar-quoting."""
+    storage = make_graph_storage()
+    storage.global_config = {"max_graph_nodes": 1000}
+    captured: list[str] = []
+
+    async def fake_query(sql, **kwargs):
+        captured.append(sql)
+        return []
+
+    with patch.object(storage, "_query", side_effect=fake_query):
+        await storage.get_knowledge_graph(node_label="Alice$$; SELECT 1; --")
+
+    assert captured
+    # The starting-node lookup must never use the old `cypher('%s', $$ ... $$)`
+    # static template with the label interpolated.
+    assert "; SELECT 1" not in _strip_dollar_literals(captured[0])

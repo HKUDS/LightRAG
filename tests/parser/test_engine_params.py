@@ -67,6 +67,33 @@ def test_parse_engine_params_bool_coercion():
     assert errors == [] and parsed == {"force_ocr": True}
 
 
+def test_parse_engine_params_bare_bool_flag():
+    # Bare boolean flag: ``native(smart_heading)`` == ``smart_heading=true``.
+    parsed, errors = parse_engine_params("smart_heading", engine="native", label="x")
+    assert errors == [] and parsed == {"smart_heading": True}
+    # Same for docling's force_ocr, including via its alias, mixed with a
+    # key=value parameter in the same block.
+    parsed, errors = parse_engine_params("ocr", engine="docling", label="x")
+    assert errors == [] and parsed == {"force_ocr": True}
+    parsed, errors = parse_engine_params(
+        "language=en,pr=1-3", engine="mineru", label="x"
+    )
+    assert errors == [] and parsed == {"language": "en", "page_range": "1-3"}
+
+
+def test_parse_engine_params_bare_flag_rejected_for_non_bool():
+    _parsed, errors = parse_engine_params("language", engine="mineru", label="x")
+    assert errors and "only boolean flags may be written bare" in errors[0]
+    # A list param is not a flag either.
+    _parsed, errors = parse_engine_params("pr", engine="mineru", label="x")
+    assert errors and "only boolean flags may be written bare" in errors[0]
+
+
+def test_parse_engine_params_bare_unknown_key_reports_unknown_parameter():
+    _parsed, errors = parse_engine_params("smart_heading", engine="docling", label="x")
+    assert errors and "unknown parameter 'smart_heading'" in errors[0]
+
+
 def test_parse_engine_params_multi_segment_official(monkeypatch):
     monkeypatch.setenv("MINERU_API_MODE", "official")
     parsed, errors = parse_engine_params(
@@ -107,7 +134,7 @@ def test_parse_engine_params_local_parse_method_rejected_official(monkeypatch):
     "block,engine,needle",
     [
         ("page_range=1", "legacy", "does not accept parameters"),
-        ("page_range=1", "native", "does not accept parameters"),
+        ("page_range=1", "native", "unknown parameter 'page_range'"),
         ("foo=1", "mineru", "unknown parameter 'foo'"),
         ("local_parse_method=bad", "mineru", "must be one of"),
         ("force_ocr=maybe", "docling", "must be a boolean"),
@@ -129,6 +156,8 @@ def test_normalize_engine_params_coerces_bool_string():
     # A direct caller may pass force_ocr as the string "false" — must coerce.
     norm, errors = normalize_engine_params("docling", {"force_ocr": "false"})
     assert errors == [] and norm == {"force_ocr": False}
+    norm, errors = normalize_engine_params("native", {"smart_heading": "true"})
+    assert errors == [] and norm == {"smart_heading": True}
 
 
 def test_normalize_engine_params_accepts_page_range_list_or_string(monkeypatch):
@@ -195,6 +224,41 @@ def test_resolve_filename_engine_params(monkeypatch):
     assert d.engine_params == {"page_range": "1-3", "language": "en"}
     # selector stays a pure (here empty) string
     assert "(" not in d.process_options
+
+
+def test_resolve_bare_bool_flag_from_hint_and_rule():
+    # Filename hint: ``native(smart_heading)`` resolves like ``=true`` ...
+    d = resolve_parser_directives(
+        "report.[native(smart_heading)].docx",
+        parser_rules="",
+        require_external_endpoint=False,
+    )
+    assert d.engine == "native" and d.engine_params == {"smart_heading": True}
+    # ... and the persisted parse_engine stays canonical, so the shorthand can
+    # never split a cache signature from the explicit form.
+    assert (
+        encode_parse_engine(d.engine, d.engine_params) == "native(smart_heading=true)"
+    )
+    # LIGHTRAG_PARSER rule: same shorthand, same resolution.
+    d = resolve_parser_directives(
+        "a.docx",
+        parser_rules="docx:native(smart_heading)",
+        require_external_endpoint=False,
+    )
+    assert d.engine == "native" and d.engine_params == {"smart_heading": True}
+
+
+def test_validate_rule_bare_bool_flag_ok():
+    validate_parser_routing_config("docx:native(smart_heading);*:legacy-R")
+
+
+def test_upload_validation_raises_on_bare_non_bool_flag():
+    with pytest.raises(FilenameParserHintError, match="only boolean flags"):
+        resolve_file_parser_directives(
+            "x.[mineru(language)].pdf",
+            parser_rules="",
+            require_external_endpoint=False,
+        )
 
 
 def test_resolve_rule_engine_params():
@@ -279,6 +343,17 @@ def test_direct_parse_engine_field_canonicalises(monkeypatch):
     assert (
         _decode_via_parse_engine_at("mineru(page_range=1-3,page_range=5)")
         == "mineru(page_range=1-3,page_range=5)"
+    )
+
+
+def test_direct_parse_engine_field_accepts_bare_bool_flag():
+    # A stored / API-supplied field may use the shorthand; it canonicalises.
+    assert (
+        _decode_via_parse_engine_at("docling(force_ocr)") == "docling(force_ocr=true)"
+    )
+    assert (
+        _decode_via_parse_engine_at("native(smart_heading)")
+        == "native(smart_heading=true)"
     )
 
 

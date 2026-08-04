@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import { backendBaseUrl, popularLabelsDefaultLimit, searchLabelsDefaultLimit } from '@/lib/constants'
+import type { SupportedFileTypes } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
@@ -151,14 +152,6 @@ export type LightragStatus = {
   webui_description?: string
 }
 
-export type LightragDocumentsScanProgress = {
-  is_scanning: boolean
-  current_file: string
-  indexed_count: number
-  total_files: number
-  progress: number
-}
-
 /**
  * Specifies the retrieval mode:
  * - "naive": Performs a basic search without advanced techniques.
@@ -176,6 +169,8 @@ export type Message = {
   thinkingContent?: string
   displayContent?: string
   thinkingTime?: number | null
+  responseTime?: number | null
+  firstTokenTime?: number | null
 }
 
 export type QueryRequest = {
@@ -211,10 +206,13 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** If True, emits retrieval progress events and a final response-time metadata line (streaming only). Default: false. */
+  include_progress?: boolean
 }
 
 export type QueryResponse = {
   response: string
+  response_time?: number
 }
 
 export type EntityUpdateResponse = {
@@ -331,14 +329,12 @@ export type AuthStatusResponse = {
 }
 
 export type PipelineStatusResponse = {
-  autoscanned: boolean
   busy: boolean
   job_name: string
   job_start?: string
   docs: number
   batchs: number
   cur_batch: number
-  request_pending: boolean
   cancellation_requested?: boolean
   latest_message: string
   history_messages?: string[]
@@ -574,6 +570,11 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   return response.data
 }
 
+export const getSupportedFileTypes = async (signal?: AbortSignal): Promise<SupportedFileTypes> => {
+  const response = await axiosInstance.get('/documents/supported_file_types', { signal })
+  return response.data
+}
+
 export const scanNewDocuments = async (): Promise<ScanResponse> => {
   const response = await axiosInstance.post('/documents/scan')
   return response.data
@@ -581,11 +582,6 @@ export const scanNewDocuments = async (): Promise<ScanResponse> => {
 
 export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
   const response = await axiosInstance.post('/documents/reprocess_failed')
-  return response.data
-}
-
-export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanProgress> => {
-  const response = await axiosInstance.get('/documents/scan-progress')
   return response.data
 }
 
@@ -617,7 +613,9 @@ export const isUserAbortError = (
 async function _readNdjsonStream(
   response: Response,
   onChunk: (chunk: string) => void,
-  onError: ((error: string) => void) | undefined
+  onError: ((error: string) => void) | undefined,
+  onResponseTime?: (seconds: number) => void,
+  onProgress?: (event: string) => void
 ): Promise<void> {
   if (!response.body) {
     throw new Error('Response body is null');
@@ -648,6 +646,10 @@ async function _readNdjsonStream(
             onChunk(parsed.response);
           } else if (parsed.error) {
             onError?.(parsed.error);
+          } else if (parsed.response_time !== undefined && onResponseTime) {
+            onResponseTime(parsed.response_time);
+          } else if (parsed.progress && onProgress) {
+            onProgress(parsed.progress);
           }
           // references-only lines are silently consumed —
           // the caller only cares about response chunks and errors.
@@ -675,6 +677,10 @@ async function _readNdjsonStream(
         onChunk(parsed.response);
       } else if (parsed.error) {
         onError?.(parsed.error);
+      } else if (parsed.response_time !== undefined && onResponseTime) {
+        onResponseTime(parsed.response_time);
+      } else if (parsed.progress && onProgress) {
+        onProgress(parsed.progress);
       }
     } catch {
       console.warn('Failed to parse final NDJSON buffer:', buffer.substring(0, 120));
@@ -782,7 +788,9 @@ export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
   onError?: (error: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onResponseTime?: (seconds: number) => void,
+  onProgress?: (event: string) => void
 ) => {
   const headers = _buildStreamHeaders();
 
@@ -861,7 +869,7 @@ export const queryTextStream = async (
     }
 
     // --- Read the NDJSON stream (happy path or refreshed retry) ------------
-    await _readNdjsonStream(activeResponse, onChunk, onError);
+    await _readNdjsonStream(activeResponse, onChunk, onError, onResponseTime, onProgress);
   } catch (error) {
     const classified = _classifyStreamError(error, signal);
     if (classified === null) {

@@ -99,7 +99,7 @@
         "error": "Einige Dateien konnten nicht hochgeladen werden"
       },
       "generalError": "Upload fehlgeschlagen\n{{error}}",
-      "fileTypes": "Unterstützte Typen: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, H, CPP, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Unterstützte Typen: {{types}}",
       "fileUploader": {
         "singleFileLimit": "Es kann nicht mehr als 1 Datei gleichzeitig hochgeladen werden",
         "maxFilesLimit": "Es können nicht mehr als {{count}} Dateien hochgeladen werden",
@@ -138,21 +138,21 @@
       },
       "filters": {
         "all": "Alle",
-        "completed": "Abgeschlossen",
-        "parse": "Extraktion",
+        "completed": "Fertig",
+        "parse": "Parsing",
         "analyze": "Analyse",
-        "process": "Verarbeitung",
-        "failed": "Fehlgeschlagen"
+        "process": "Extraktion",
+        "failed": "Fehler"
       },
       "status": {
         "all": "Alle",
-        "completed": "Abgeschlossen",
+        "completed": "Fertig",
         "preprocessed": "Vorverarbeitet",
-        "parsing": "Wird geparst",
-        "analyzing": "Wird analysiert",
-        "processing": "Verarbeitung",
+        "parsing": "Parsing",
+        "analyzing": "Analyse",
+        "processing": "Extraktion",
         "pending": "Ausstehend",
-        "failed": "Fehlgeschlagen"
+        "failed": "Fehler"
       },
       "errors": {
         "loadFailed": "Dokumente konnten nicht geladen werden\n{{error}}",
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Pipeline-Status",
       "busy": "Pipeline beschäftigt",
-      "requestPending": "Anfrage ausstehend",
       "cancellationRequested": "Stornierung angefordert",
       "jobName": "Auftragsname",
       "startTime": "Startzeit",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "Bearbeiten Sie den Eigenschaftswert im Textbereich unten.",
       "errors": {
         "duplicateName": "Knotenname existiert bereits",
+        "invalidEntityName": "Geben Sie einen gültigen Knotennamen ein",
         "updateFailed": "Knoten konnte nicht aktualisiert werden",
         "tryAgainLater": "Bitte versuchen Sie es später erneut",
         "updateSuccessButMergeFailed": "Eigenschaften aktualisiert, aber Zusammenführung fehlgeschlagen: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "Bitte wählen Sie den Text manuell aus und kopieren Sie ihn",
       "thinking": "Denken...",
       "thinkingTime": "Denkzeit {{time}}s",
-      "thinkingInProgress": "Denken läuft..."
+      "thinkingInProgress": "Denken läuft...",
+      "responseTime": "Antwortzeit {{time}}s",
+      "firstTokenTime": "Erstes Token {{time}}s",
+      "progress": {
+        "extracting_keywords": "Schlüsselwörter werden extrahiert...",
+        "retrieving_entities": "Entitäten werden abgerufen...",
+        "retrieving_relations": "Beziehungen werden abgerufen...",
+        "retrieving_chunks": "Textblöcke werden abgerufen...",
+        "reranking": "Ergebnisse werden neu bewertet...",
+        "generating_response": "Antwort wird generiert..."
+      }
     },
     "retrieval": {
       "startPrompt": "Starten Sie eine Abfrage, indem Sie Ihre Frage unten eingeben",
+      "scrollToBottom": "Zur neuesten Nachricht",
       "clear": "Löschen",
       "send": "Senden",
       "stop": "Stopp",

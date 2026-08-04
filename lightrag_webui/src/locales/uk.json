@@ -99,7 +99,7 @@
         "error": "Деякі файли не вдалося завантажити"
       },
       "generalError": "Завантаження не вдалося\n{{error}}",
-      "fileTypes": "Підтримувані типи: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "Підтримувані типи: {{types}}",
       "fileUploader": {
         "singleFileLimit": "Не можна завантажити більше 1 файлу одночасно",
         "maxFilesLimit": "Не можна завантажити більше {{count}} файлів",
@@ -137,12 +137,12 @@
         "select": "Вибрати"
       },
       "filters": {
-        "all": "Усі",
+        "all": "Всі",
         "completed": "Завершено",
-        "parse": "Видобування",
+        "parse": "Розбір",
         "analyze": "Аналіз",
         "process": "Обробка",
-        "failed": "Помилка"
+        "failed": "Невдало"
       },
       "status": {
         "all": "Всі",
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "Статус пайплайну",
       "busy": "Пайплайн зайнятий",
-      "requestPending": "Запит очікує",
       "cancellationRequested": "Запит на скасування",
       "jobName": "Назва завдання",
       "startTime": "Час початку",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "Редагуйте значення властивості в текстовій області нижче.",
       "errors": {
         "duplicateName": "Ім'я вузла вже існує",
+        "invalidEntityName": "Введіть припустиме ім'я вузла",
         "updateFailed": "Не вдалося оновити вузол",
         "tryAgainLater": "Будь ласка, спробуйте пізніше",
         "updateSuccessButMergeFailed": "Властивості оновлено, але об'єднання не вдалося: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "Будь ласка, виберіть та скопіюйте текст вручну",
       "thinking": "Мислення...",
       "thinkingTime": "Час мислення {{time}}с",
-      "thinkingInProgress": "Мислення в процесі..."
+      "thinkingInProgress": "Мислення в процесі...",
+      "responseTime": "Час відповіді {{time}}с",
+      "firstTokenTime": "Перший токен {{time}}с",
+      "progress": {
+        "extracting_keywords": "Вилучення ключових слів...",
+        "retrieving_entities": "Пошук сутностей...",
+        "retrieving_relations": "Пошук відношень...",
+        "retrieving_chunks": "Пошук фрагментів...",
+        "reranking": "Переранжування...",
+        "generating_response": "Генерування відповіді..."
+      }
     },
     "retrieval": {
       "startPrompt": "Почніть пошук, ввівши ваш запит нижче",
+      "scrollToBottom": "До останнього повідомлення",
       "clear": "Очистити",
       "send": "Відправити",
       "stop": "Зупинити",

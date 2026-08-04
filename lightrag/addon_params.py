@@ -33,7 +33,7 @@ def _emit_deprecated_addon_warnings(params: Mapping[str, Any]) -> None:
             logger.warning(
                 f"addon_params['{key}'] is deprecated and ignored; per-document "
                 f"behaviour is now controlled by filename-hint process_options "
-                f"(see docs/FileProcessingConfiguration-zh.md)."
+                f"(see docs/FileProcessingPipeline.md)."
             )
             _warned_deprecated_keys.add(key)
 
@@ -85,12 +85,22 @@ def normalize_addon_params(addon_params: Mapping[str, Any] | None) -> dict[str, 
         "entity_type_prompt_file",
         get_env_value("ENTITY_TYPE_PROMPT_FILE", "", str),
     )
-    # Build the chunker default lazily — `default_chunker_config()` reads env
-    # vars (e.g. CHUNK_R_SEPARATORS via json.loads) and would raise on a
-    # malformed value, which would prevent an explicit caller-supplied
-    # `chunker` from bypassing a broken environment.
+    # Build the chunker default lazily. An explicit caller-supplied chunker
+    # bypasses the environment entirely, including a malformed environment
+    # value.
     if "chunker" not in normalized:
         normalized["chunker"] = default_chunker_config()
+    elif isinstance(normalized["chunker"], Mapping):
+        from lightrag.parser.routing import normalize_chunker_r_separators
+
+        # Copy semantics on purpose: this runs on a caller-supplied mapping
+        # (``LightRAG(addon_params=...)``), which must not be mutated. The
+        # in-place mode belongs to the live config owned by the instance.
+        normalized_chunker, corrected = normalize_chunker_r_separators(
+            normalized["chunker"], context="addon_params['chunker']"
+        )
+        if corrected:
+            normalized["chunker"] = dict(normalized_chunker)
     return normalized
 
 

@@ -8,9 +8,9 @@ LightRAG 服务器旨在提供 Web 界面和 API 支持。Web 界面便于文档
 
 ![image-20250323123011220](./LightRAG-API-Server.assets/image-20250323123011220.png)
 
-## 从 v1.4.16 升级到 v1.5.0rc2
+## 从 v1.4.16 升级到 v1.5.x
 
-v1.5.0rc2 引入了新的文件处理流水线、解析器路由、多模态分析、基于角色的 LLM/VLM 配置、JSON 实体抽取以及若干 provider / storage 变更。升级生产实例前，请先阅读 [v1.5.0rc2 发布说明](https://github.com/HKUDS/LightRAG/releases/tag/v1.5.0rc2)。
+v1.5.x 引入了新的文件处理流水线、解析器路由、多模态分析、基于角色的 LLM/VLM 配置、JSON 实体抽取以及若干 provider / storage 变更。升级生产实例前，请先阅读 [v1.5.0rc2 发布说明](https://github.com/HKUDS/LightRAG/releases/tag/v1.5.0rc2)。
 
 - 如果希望升级服务器但保持旧版文件处理行为，请设置：
 
@@ -24,6 +24,37 @@ LIGHTRAG_PARSER=*:legacy-F
 - 修改解析器路由（`LIGHTRAG_PARSER`）或文件名 hint 只影响新上传文件。若要把已有文档切换到另一个解析引擎，请先删除该文档再重新上传。
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
 - 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
+
+## 升级到有界请求体
+
+引入分档 `MAX_REQUEST_BODY_BYTES` 的版本把它**默认打开**为 1 MiB——此前它默认关闭，且只覆盖三条摄取路由。对客户端有两处变化：
+
+- **普通路由上超过 1 MiB 的请求体将返回 413**，即 `/query*`、`/api/chat`、`/api/generate` 等既非上传也非文本插入的路由。`/documents/text` 与 `/documents/texts` 保留 50 MiB 上限，`/documents/upload` 由 `MAX_UPLOAD_SIZE` 派生，因此批量摄取不受影响。把 `MAX_REQUEST_BODY_BYTES` 设为任意正值即可用它统一约束所有非上传路由，设为 `0` 则关闭全部上限。
+- **模型侧字段新增固定上限**：单个 query/prompt 64 KiB、单条消息 32 KiB、每请求模型侧文本合计 128 KiB、最多 128 条消息，`top_k` / `chunk_top_k` 最大 1000，`max_*_tokens` 最大 1,000,000。依赖无界 `top_k` 或数 MB 查询文本的客户端需要相应调整。这些上限刻意不做成配置项。
+
+对本就合理控制请求体积的部署，两项变更均无影响；它们限制的是单个未认证请求能让服务端付出多少工作量。
+
+## 升级到有界管线调度
+
+引入 `PIPELINE_SCHEDULING_PAGE_SIZE`、`MAX_PENDING_DOCUMENTS` 和 `MAX_UNACKED_MANUAL_RETRIES`（见 `env.example`）的这个版本，同时改变了各 writer 通过共享状态协调时使用的**并发协议**。这是一次性的原地升级，不写任何 marker、也不写协议版本号，因此存储层无法替你识别出残留的旧 writer。所以这是一条运维要求：
+
+> **在对同一存储、同一 workspace 启动新版本之前，必须先停掉所有旧 writer。** 滚动重启时只要还留着一个旧 worker——或者一个共用同一 Redis/PostgreSQL workspace 的旧实例——就是故障场景，而不只是升级得慢一点。
+
+旧 writer 无法遵守的三件事：
+
+- **manual retry 冻结。** `/documents/reprocess_failed` 不再就地重置 `FAILED` 行。它发布一个 intent、冻结入口、等待管线转为空闲，然后在没有任何 worker 运行的前提下分页把 `FAILED`→`PENDING` 改写回去。旧 writer 不读冻结标志，于是会继续往这个被重置逻辑视为独占的窗口里入队。
+- **调度排序键。** `created_at` 现在是不可变的 `(created_at, id)` keyset 游标，以 UTC ISO-8601 时间戳写入。旧 writer 用其它格式打上的时间戳与之排序不一致，keyset 分页因此可能跳过或重复文档。
+- **派生索引。** 在 Redis 上，status 集合与 source multimap 与文档主记录在同一个事务中维护。旧 writer 只更新主记录，会把索引留成陈旧状态——此后 strict 分页与 strict 活跃计数会静默漏掉这个文档。
+
+推荐顺序：
+
+1. 停止接收新文档，等待管线跑完。在已鉴权的 `/health` 上，没有任何在途工作时 `scheduling.drain_waiting_on_workers` 为 `false`、`scheduling.drain_pending_enqueues` 为 `0`。
+2. 停掉共用该存储与 workspace 的**全部** worker 和实例。
+3. 启动新版本。
+
+不需要做数据迁移。启动后的第一轮 sweep 是一次 strict 全量 sweep，因此旧 writer 留在半途的文档——例如卡在 `PARSING`/`ANALYZING`/`PROCESSING` 但背后已没有 worker 的行——会被自动捡起并重新处理。如果确实无法排空（必须放弃一次运行），基于同样的原因，中途停止也是安全的；不安全的是事后又把旧版本启动回来。
+
+**启动后请检查日志里有没有 strict 能力告警。** 五个内置 `doc_status` 后端（JSON、Redis、PostgreSQL、MongoDB、OpenSearch）都具备全部能力。第三方后端可能不具备，而每一项缺失都是**失败关闭**而非静默降级：admission 返回 503、source-conflict 端点返回 501、scan 会一直重复检查陈旧的 `FAILED` stub。启动日志会逐项列出缺失的能力及其代价，已鉴权的 `/health` 在 `capabilities` 下报告同一份信息。设 `PIPELINE_REQUIRE_STRICT_STORAGE_READS=true` 可把这些缺口变成启动失败。有界分页没有对应旋钮：分页与 typed source 解析方法是抽象方法，缺失的后端根本无法构造。
 
 ## 入门指南
 
@@ -200,7 +231,7 @@ lightrag-gunicorn --workers 4
 
 ### 路径前缀和多站点 WebUI
 
-当一台主机通过反向代理承载多个 LightRAG 实例，并由代理剥离站点前缀后再转发给后端时，请设置 `LIGHTRAG_API_PREFIX` 或 `--api-prefix`：
+当一台主机通过反向代理承载多个 LightRAG 实例时，请设置 `LIGHTRAG_API_PREFIX` 或 `--api-prefix`。两种转发方式都可用：代理既可以在转发给后端之前剥离站点前缀，也可以原样转发。
 
 ```bash
 LIGHTRAG_API_PREFIX=/site01
@@ -208,6 +239,8 @@ lightrag-server --port 9621
 ```
 
 后端会把该值作为 FastAPI 的 `root_path`，并把同一个运行时前缀注入 WebUI。WebUI 在服务端内部始终挂载到 `/webui`，因此同一份前端构建产物可以服务任意前缀。完整的 Nginx、Docker 和 Kubernetes 示例请参阅 [Single-Server Multi-Site Deployment](./MultiSiteDeployment.md)。
+
+> **`WHITELIST_PATHS` 不带前缀书写。** 它的条目是内部路由路径，与路由声明时完全一致。匹配前会先剥离挂载前缀，两种转发方式下都是如此。因此在 `LIGHTRAG_API_PREFIX=/site01` 下，出厂默认的 `WHITELIST_PATHS=/health,/api/*` 本身就是正确的，会豁免浏览器所见的 `/site01/health`。若按浏览器可见形式书写（`WHITELIST_PATHS=/site01/health`），则匹配不到任何路径，反而会让这些路径要求认证。
 
 ### 使用 Docker 启动 LightRAG 服务器
 
@@ -279,6 +312,10 @@ EMBEDDING_DIM=3072
 EMBEDDING_TOKEN_LIMIT=8192
 EMBEDDING_SEND_DIM=false
 EMBEDDING_USE_BASE64=true
+# 分块后若单个 chunk 仍超过 EMBEDDING_TOKEN_LIMIT，embedding 硬回退切分时
+# 从上一片内容尾部借用的重叠 token 数。独立于 CHUNK_OVERLAP_SIZE。
+# 默认 100；0 表示禁用该回退的重叠。
+# EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE=100
 
 ############################
 ### Data storage selection
@@ -454,6 +491,19 @@ server {
    - Nginx 首先验证 `Content-Length` 头
    - LightRAG 在上传过程中执行流式验证
    - 在两层设置适当的限制可确保更好的错误消息和安全性
+6. **服务端请求限制**（见 `env.example`）：
+   - `MAX_REQUEST_BODY_BYTES` 限制**所有路由**的原始请求体字节数，在 ASGI 流式接收过程中累加。与 `MAX_UPLOAD_SIZE`（multipart 解析后限制单个文件）不同，它也能拦住谎报或不报 `Content-Length` 的请求体，在整个 body 读完之前就返回 **413**。由于不同路由合理的请求体大小相差数量级，该上限是分档的：
+
+     | 路由 | 上限 |
+     |---|---|
+     | 普通路由（`/query`、`/api/chat` 等） | `MAX_REQUEST_BODY_BYTES`，默认 **1 MiB** |
+     | `/documents/text`、`/documents/texts` | 未设置 `MAX_REQUEST_BODY_BYTES` 时为内置 **50 MiB** |
+     | `/documents/upload` | `MAX_UPLOAD_SIZE` + 1 MiB multipart 开销 |
+
+     把 `MAX_REQUEST_BODY_BYTES` 设为任意正值时，该值将统一作用于除上传外的所有路由（含摄取路由）——即使该值恰好等于 1 MiB 默认值也是如此，这正是分档出现之前该配置项的行为。设为 `0` 则关闭全部上限（含派生的上传上限），启动时会给出告警。
+   - **输入字段上限**作用于 `/query*`、`/api/chat`、`/api/generate` 的模型侧字段：单个 query/prompt 64 KiB、单条消息 32 KiB、每请求模型侧文本合计 128 KiB、最多 128 条消息，以及 `top_k` / `chunk_top_k`（1000）与 `max_*_tokens`（1,000,000）的上界。这些上限刻意不做成配置项——一个用来阻止未认证调用者决定服务端 CPU 开销的限制，如果可以被配错，就等于没有。`/query*` 超限返回 **422**（FastAPI 原生校验响应），`/api/*` 返回 **413**。
+   - `MAX_TEXTS_PER_REQUEST` 限制单个 `/documents/texts` 请求可携带的文本数量，在任何逐条存储查询之前就返回 **413**。它限制的是单个请求的扇出，因此与下面的容量上限不同，**不是**"稍后重试"类条件：超限的批次无论等多久都不会被接受，必须拆分。
+   - `MAX_PENDING_DOCUMENTS` 限制可同时处于活跃状态（`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`）或被在飞请求预留的文档数。超容量时返回 **429**,带 `Retry-After` 头,detail 里给出当前数量、本次请求数量与容量——且**在 body 传输之前**就拒绝。`/documents/scan` 与人工重试按设计突破该上限;它们产生的文档会让普通上传排队等待。
 
 ### 离线部署
 
@@ -484,13 +534,13 @@ lightrag-server --port 9622 --workspace space2
 命令行的 workspace 参数和`.env`文件中的环境变量`WORKSPACE` 都可以用于指定当前实例的工作空间名字，命令行参数的优先级别更高。下面是不同类型的存储实现工作空间的方式：
 
 - **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
-- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, QdrantVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于 Qdrant 向量数据库，通过基于 payload 的分区实现数据隔离（Qdrant 推荐的多租户方式）：** `QdrantVectorDBStorage` 使用共享 collection 和 payload 过滤，从而支持不限数量的 workspace。
 - **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
+- **对于图数据库，通过 label 实现数据的逻辑隔离：** `Neo4JStorage`、`MemgraphStorage`
+- **对于 OpenSearch，通过索引名称前缀实现数据隔离：** `OpenSearchKVStorage`、`OpenSearchDocStatusStorage`、`OpenSearchGraphStorage`、`OpenSearchVectorDBStorage`
 
-* **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
-* **对于OpenSearch，通过索引名称前缀实现数据隔离**：OpenSearchKVStorage、OpenSearchDocStatusStorage、OpenSearchGraphStorage、OpenSearchVectorDBStorage
-
-为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `OPENSEARCH_WORKSPACE`。
+为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`。
 
 ### Gunicorn + Uvicorn 的多工作进程
 
@@ -519,7 +569,7 @@ lightrag-gunicorn --workers 2
 从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的服务启动定义：
 
 ```text
-# Set Enviroment to your Python virtual enviroment
+# Set environment to your Python virtual environment
 Environment="PATH=/home/netman/lightrag-xyj/venv/bin"
 WorkingDirectory=/home/netman/lightrag-xyj
 # ExecStart=/home/netman/lightrag-xyj/venv/bin/lightrag-server
@@ -599,6 +649,8 @@ WHITELIST_PATHS=/health,/api/*
 ```
 
 > 健康检查和 Ollama 模拟端点默认不进行 API 密钥检查。为了安全原因，如果不需要提供Ollama服务，应该把`/api/*`从WHITELIST_PATHS中移除。`/health` 仍保留在白名单中用作存活探针，但其完整配置仅返回给已认证调用方——未认证请求只会得到存活信号。
+>
+> **条目是内部路由路径，永远不带前缀。** `/*` 后缀按路径分段边界匹配，因此 `/api/*` 只覆盖 `/api` 及 `/api/` 之下的路径，不会覆盖别的。如果设置了 `LIGHTRAG_API_PREFIX`，这里**不要**包含它：匹配前会先剥离该前缀，所以 `WHITELIST_PATHS=/health` 会豁免 `/site01/health`，而 `WHITELIST_PATHS=/site01/health` 什么都豁免不了。参见[路径前缀和多站点 WebUI](#路径前缀和多站点-webui)。
 
 API Key使用的请求头是 `X-API-Key` 。以下是使用API访问LightRAG Server的一个例子：
 
@@ -632,6 +684,8 @@ lightrag-hash-password --username admin
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
 
 如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
+
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
 
 ## Azure OpenAI 后端配置
 
@@ -726,7 +780,7 @@ lightrag-server --embedding-binding gemini --help
 
 > 请使用openai兼容方式访问OpenRouter、vLLM或SLang部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给OpenRouter、vLLM或SGLang推理框架传递额外的参数，实现推理模式的关闭或者其它个性化控制。
 
-设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：
+设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：`LLM_TIMEOUT * llm_output_tokens/second`（例如 `240s * 50 tokens/s = 12000`，此时 max_tokens 应小于 12000）。
 
 ```
 # For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
@@ -764,14 +818,23 @@ QUERY_LLM_MODEL=gpt-5
 VLM_LLM_MODEL=gpt-5-mini
 ```
 
+**按角色的模型推荐：**
+
+- **`EXTRACT`**：实体关系抽取会对每个文本块调用，选择主流的高速模型即可，并**强烈推荐使用非思考模型（关闭 reasoning/thinking 模式）**，以免抽取变慢、变贵。例如国外的 GPT-5.6-luna、Claude Haiku、Gemini-mini，国内的 DeepSeek-V4-lite、Kimi。本地部署最低可考虑 Qwen3-30B-A3B-Instruct。
+- **`QUERY`**：负责在长且嘈杂的上下文上生成最终答案，应选择比 `EXTRACT` 更好的模型，尽量提高回答质量；此处使用带思考能力的模型没有问题。
+- **`KEYWORD`**：检索前生成关键词，属于轻量、对延迟敏感的任务，**一定要选择非思考模型**以降低查询延迟，选用与 `EXTRACT` 相当的高速模型即可。
+- **`VLM`**：主流的多模态模型均可，需支持图片输入；本地部署可考虑 Qwen3.6-35B-A3B。
+- **Embedding / Reranker**：选择主流最新的模型即可。本地部署使用 `BAAI/bge-m3`（embedding）与 `BAAI/bge-reranker-v2-m3`（rerank）即可。
+
+在可接受的时间和价格范围内，优先选择评分（各类公开榜单/基准）越高的模型越好。
+
 跨 provider 规则、`QUERY_OPENAI_LLM_REASONING_EFFORT` 等 provider 专属选项、角色级 Bedrock SigV4 凭据以及队列行为，请参阅 [基于角色的 LLM/VLM 配置指南](./RoleSpecificLLMConfiguration-zh.md)。
 
 ### 多模态分析配置
 
-解析器可以产出图片/绘图、表格和公式 sidecar。VLM 分析只会在两个条件同时满足时运行：
+解析器可以产出图片/绘图、表格和公式 sidecar。某个模态要被分析，需要文档的 `process_options` 包含对应标记（`i` 图片、`t` 表格、`e` 公式），并且对应的 sidecar 存在。
 
-- 文档的 `process_options` 包含对应模态标记：`i` 表示图片，`t` 表示表格，`e` 表示公式。
-- `VLM_PROCESS_ENABLE=true`，且实际生效的 VLM binding 支持图片输入。
+`VLM_PROCESS_ENABLE` **只闸控图片**。表格和公式由 `EXTRACT` 角色分析，不受该开关影响，因此 `*:native-teP` 无需配置任何 VLM 即可工作。若启用了 `i` 而 VLM 不可用，通过了前置过滤（文件存在、栅格格式、长宽均不小于 `VLM_MIN_IMAGE_PIXEL`）的图片会让**该文档失败**而非被跳过：文档进入 `FAILED`，`error_msg` 为 "VLM analysis required but VLM role is not available"。
 
 当前支持视觉输入的 provider 包括 `openai`、`azure_openai`、`gemini`、`bedrock`、`ollama` 和 `anthropic`；`lollms` 不能用于 VLM。典型配置：
 
@@ -820,9 +883,35 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 * GRAPH_STORAGE：实体关系图
 * DOC_STATUS_STORAGE：文档索引状态
 
-每种存储类型都有多种存储实现方式。LightRAG Server 默认的存储实现为内存数据库，数据通过文件持久化保存到 WORKING_DIR 目录。LightRAG 还支持 PostgreSQL、MongoDB、FAISS、Milvus、Qdrant、Neo4j、Memgraph、Redis 和 OpenSearch 等存储实现方式。详细的存储支持方式请参考根目录下的 `README.md` 文件中关于存储的相关内容。
+每种存储类型都有多种存储实现方式。LightRAG Server 默认的存储实现为内存数据库，数据通过文件持久化保存到 WORKING_DIR 目录，适合快速评估项目，但不建议用于生产环境。各存储类型当前可选的实现如下：
 
-**Milvus 索引配置:** LightRAG 现在可通过环境变量支持对 Milvus 向量存储的可配置索引类型（AUTOINDEX、HNSW、HNSW_SQ、IVF_FLAT 等）。HNSW_SQ 需要 Milvus 2.6.8 或更高版本，并能显著节省内存。有关完整的配置选项，请参阅主 README.md 文件中的“使用 Milvus 进行向量存储”部分。
+| 存储类型 | 可选实现（首个为默认实现） |
+|---|---|
+| KV_STORAGE | `JsonKVStorage`、`RedisKVStorage`、`PGKVStorage`、`MongoKVStorage`、`OpenSearchKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`、`MilvusVectorDBStorage`、`PGVectorStorage`、`FaissVectorDBStorage`、`QdrantVectorDBStorage`、`MongoVectorDBStorage`、`OpenSearchVectorDBStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
+
+在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
+
+各存储实现启动时必须配置的环境变量如下（未列出的实现无需额外配置，仅依赖 WORKING_DIR 下的文件持久化）：
+
+| 存储实现 | 必需的环境变量 |
+|---|---|
+| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DATABASE`（另需 `POSTGRES_HOST`、`POSTGRES_PORT`） |
+| `Neo4JStorage` | `NEO4J_URI`、`NEO4J_USERNAME`、`NEO4J_PASSWORD` |
+| `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`、`MONGO_DATABASE`（`MongoVectorDBStorage` 要求该 Mongo 实例支持 Atlas Search / Vector Search） |
+| `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
+| `MilvusVectorDBStorage` | `MILVUS_URI`、`MILVUS_DB_NAME` |
+| `QdrantVectorDBStorage` | `QDRANT_URL`（`QDRANT_API_KEY` 可选） |
+| `MemgraphStorage` | `MEMGRAPH_URI` |
+| `OpenSearchKVStorage` / `OpenSearchVectorDBStorage` / `OpenSearchGraphStorage` / `OpenSearchDocStatusStorage` | `OPENSEARCH_HOSTS` |
+
+此外，`WORKSPACE` 环境变量用于在同一后端上隔离多个 LightRAG 实例的数据（合法字符为 `a-z`、`A-Z`、`0-9` 和 `_`）；各存储后端也提供形如 `POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE` 的专属覆盖变量，仅为兼容旧配置保留，正常情况下应统一使用 `WORKSPACE`。
+
+上表仅列出启动必需的连接参数，每种存储实现还提供大量可选的调优环境变量（连接池大小、SSL、批量写入/删除的分片阈值、向量索引参数等）。完整清单及默认值请参考仓库根目录的 `env.example` 文件，其中按存储后端分组并附有详细注释。
+
+**Milvus 索引配置:** LightRAG 现在可通过环境变量支持对 Milvus 向量存储的可配置索引类型（AUTOINDEX、HNSW、HNSW_SQ、IVF_FLAT 等）。HNSW_SQ 需要 Milvus 2.6.8 或更高版本，并能显著节省内存。有关完整的配置选项，请参阅 [MilvusConfigurationGuide.md](./MilvusConfigurationGuide.md) 文件。
 
 您可以通过环境变量选择存储实现。例如，在首次启动 API 服务器之前，您可以将以下环境变量设置为特定的存储实现名称：
 
@@ -834,6 +923,8 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
 在向 LightRAG 添加文档后，您不能更改存储实现选择。目前尚不支持从一个存储实现迁移到另一个存储实现。更多配置信息请阅读示例 `.env.example` 文件。
+
+> 开发分支 [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) 提供了由社区贡献的 LanceDB 存储实现，支持键值（KV）、向量、图及文档状态四类存储。开发分支 [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) 则提供了社区贡献的 Nebula 图存储实现。欢迎有需求的开发者试用并持续完善上述两项存储方案。
 
 ### 在不同存储类型之间迁移LLM缓存
 
@@ -879,12 +970,21 @@ RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
-以下是使用阿里云提供的 Reranker 服务的示例配置：
+以下是使用阿里云提供的 Reranker 服务的示例配置（`gte-rerank-*` 和 `qwen3-vl-rerank`，它们使用嵌套的 `input`/`parameters` 报文格式）：
 
 ```
 RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+> **阿里云 `qwen3-rerank` 系列：** 与 `gte-rerank-*`、`qwen3-vl-rerank` 不同，`qwen3-rerank` 模型使用扁平的 Cohere 风格报文（`{"model", "query", "documents", "top_n", ...}`），返回顶层的 `results`，并且使用**不同的** Cohere 兼容 endpoint —— `/compatible-api/v1/reranks`，而非上面 `gte`/`vl` 所用的 `.../text-rerank/text-rerank` 路径。由于格式与标准 Cohere 完全一致，因此使用 `RERANK_BINDING=cohere`（而非 `aliyun`）即可，无需单独的 binding。请将 `{WorkspaceId}` 与地域替换为你自己的（参见 [阿里云文本排序 API 文档](https://help.aliyun.com/zh/model-studio/text-rerank-api)）：
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=qwen3-rerank
+RERANK_BINDING_HOST=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
 
@@ -1106,6 +1206,10 @@ notes.[-R].md
 | `P` | 面向结构化 LightRAG Document 内容的段落语义分块；缺少结构化内容时自动回退到 `R` |
 
 每个文件最多选择 `F`、`R`、`V`、`P` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
+
+`V` 策略的句子切分正则是唯一不能按请求设置的 chunker 参数：只能通过 `CHUNK_V_SENTENCE_SPLIT_REGEX`（或 SDK 的 `addon_params`）修改。`/documents/text` 和 `/documents/texts` 会拒绝 `chunking.params` 中的 `sentence_split_regex` 键并返回 HTTP 422。调用方提供的正则会应用于同一请求的文本，而 CPython 正则引擎在回溯时会持有 GIL，因此 `(a+)+$` 之类的模式可能冻结整个 worker 进程——参见 [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84)。文档 `chunk_options` 快照中已经保存的该值也会在处理时被丢弃（并以 `WARNING` 级别记录日志），因此旧版本持久化的模式不会在升级后冻结 worker。
+
+`R` 策略的分隔符级联无论来自何处都限制为最多 64 条、单条最长 256 字符；内置级联为 9 条。请求体超限返回 HTTP 422；非 HTTP 配置值会在缓存时收敛并只记一次 WARNING：`CHUNK_R_SEPARATORS` 在配置装载时，显式提供或整体替换的 `addon_params['chunker']` 会立即处理（为兼容而保留的嵌套原地修改在第一次入队时处理）。规范化后的值会**原地**写回供后续文档复用，因此调用方持有的那个嵌套 `recursive_character` 字典引用仍然生效。直接 SDK 调用和旧版本持久化的按文档快照会保留原值并在执行时静默收敛，避免一个旧值对每篇文档重复告警。若 `separators` 既不是 list/tuple 也不是 `None`，则不做收敛而是**移除该键**并单独告警——因为对裸字符串做边界收敛会把它悄悄变成 64 个单字符分隔符。收敛不等于截短：单条超过 256 字符的分隔符会被**整条丢弃**，列表超过 64 条才**截断**到 64 条（若末尾有字符级 `""` 哨兵则予以保留）。因此一条 300 字符的分隔符是消失，而不是退化成匹配它的前 256 字符，切分点将来自回退级联——各路径分别回退到什么，见[流水线规格](./FileProcessingPipeline-zh.md#r--递归字符)。
 
 完整路由语法、支持扩展名、解析缓存行为、chunker 配置、并发规则以及 Python SDK 差异，请参阅 [文件处理流水线规格](./FileProcessingPipeline-zh.md)。`P` 策略细节请参阅 [段落语义分块](./ParagraphSemanticChunking-zh.md)。如需在索引前调试解析输出，请参阅 [解析器调试 CLI](./ParserDebugCLI-zh.md)。
 

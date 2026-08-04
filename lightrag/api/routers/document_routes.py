@@ -3,36 +3,85 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+import base64
+import binascii
+import math
+import os
 import re
 import shutil
+import sqlite3
+import tempfile
 import time
+from dataclasses import dataclass
+from enum import Enum
 from uuid import uuid4
 from lightrag.utils import (
     logger,
     get_pinyin_sort_key,
     performance_timing_log,
+    safe_log_value,
     validate_workspace,
 )
 import aiofiles
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Literal
+from typing import (
+    Annotated,
+    Dict,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Any,
+    Literal,
+    Sequence,
+)
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
+    Query,
+    Request,
+    Response,
     UploadFile,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from lightrag import LightRAG
-from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.api.utils_api import internal_server_error
+from lightrag.base import (
+    CURSOR_START,
+    CursorAfter,
+    CursorPosition,
+    DocProcessingStatus,
+    DocStatus,
+    SourceAbsent,
+    SourceConflict,
+    SourceUnique,
+)
+from lightrag.exceptions import (
+    PipelineBackpressureError,
+    SourceConflictPrimaryUnusableError,
+    SourceConflictRepairCASError,
+    StorageCapabilityError,
+    StorageControlPlaneError,
+    StorageNotInitializedError,
+)
 from lightrag.constants import (
+    DEFAULT_SCAN_ENQUEUE_BATCH_SIZE,
     FILE_EXTRACTION_SUMMARY_PREFIX,
     FULL_DOCS_FORMAT_PENDING_PARSE,
+    MAX_R_SEPARATOR_CHARS,
+    MAX_R_SEPARATORS,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_FIXED,
@@ -40,12 +89,24 @@ from lightrag.constants import (
     PROCESS_OPTION_CHUNK_RECURSIVE,
     PROCESS_OPTION_CHUNK_VECTOR,
 )
+from lightrag.tools.source_conflict_repair import (
+    refuse_an_unusable_primary,
+    source_conflict_repair_lock,
+    verify_repair_outcome,
+)
+from lightrag.kg.scan_job_store import (
+    SAMPLE_BUCKETS,
+    SCAN_JOB_LEASE_SECONDS,
+    SCAN_JOB_SAMPLE_LIMIT,
+    ScanJobCreateOutcome,
+    ScanJobStatus,
+    ScanJobUpdateConflict,
+)
 from lightrag.parser.routing import (
     FilenameParserHintError,
     canonicalize_parser_hinted_basename,
     chunk_strategy_key,
     encode_parse_engine,
-    filename_parser_hint,
     parse_process_options,
     resolve_chunk_options,
     resolve_parser_directives,
@@ -54,6 +115,9 @@ from lightrag.utils import (
     generate_track_id,
     move_file_to_parsed_dir,
 )
+from lightrag.kg.shared_storage import append_pipeline_history
+from lightrag.utils_pipeline import count_active_documents, read_source_file_basename
+from lightrag.api.admission import adopt_admission_ticket
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -95,6 +159,11 @@ temp_prefix = "__tmp__"
 UNKNOWN_FILE_SOURCE = "unknown_source"
 LEGACY_EMPTY_FILE_PATH_SENTINELS = {"", "no-file-path"}
 ARCHIVED_FILE_SUFFIX_RE = re.compile(r"_(?:\d{3}|\d{10,})$")
+
+# ``Retry-After`` hint on an admission 429. Capacity frees up when a document
+# finishes processing, which is a document-scale wait, not a request-scale one —
+# a value low enough to invite an immediate retry storm would be worse than none.
+_ADMISSION_RETRY_AFTER_SECONDS = 30
 
 
 def normalize_file_path(file_path: str | None) -> str:
@@ -188,6 +257,163 @@ class ScanResponse(BaseModel):
                 "track_id": "scan_20250729_170612_abc123",
             }
         }
+    )
+
+
+class ScanJobSampleBucket(BaseModel):
+    """One bounded sample bucket of a scan job record (LR2 §8.6).
+
+    ``items`` is capped in COUNT (per-bucket limit) and in SIZE (UTF-8 bytes per
+    sample); ``truncated`` marks that at least one retained sample was clipped
+    and ``dropped`` counts samples the store did not retain. There is no
+    unbounded per-file list anywhere in this schema."""
+
+    items: List[str] = Field(
+        default_factory=list, description="Retained sample strings (bounded)"
+    )
+    truncated: bool = Field(
+        default=False, description="At least one retained sample was byte-truncated"
+    )
+    dropped: int = Field(
+        default=0, description="Samples not retained (count or record byte cap)"
+    )
+
+
+class ScanJobStatusResponse(BaseModel):
+    """Bounded status of one scan job (``GET /documents/scan/status/{track_id}``).
+
+    Aggregate counters plus the three fixed sample buckets — never the full file
+    list. ``status`` is ``running`` until the owning task finalises it
+    (``completed`` / ``failed`` / ``cancelled``), or ``abandoned`` when the
+    record's lease expired because its owner died."""
+
+    track_id: str = Field(description="Tracking ID of the scan job")
+    status: Literal["running", "completed", "failed", "cancelled", "abandoned"] = Field(
+        description="Lifecycle status of the scan job"
+    )
+    counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Aggregate classification/progress counters (bounded key set)",
+    )
+    counters_dropped: int = Field(
+        default=0,
+        description=(
+            "Counter deltas the store refused (over-long key, distinct-key cap, "
+            "or the record byte ceiling) — always 0 for an in-tree client"
+        ),
+    )
+    samples: Dict[str, ScanJobSampleBucket] = Field(
+        default_factory=dict,
+        description="Bounded processed / warning / error sample buckets",
+    )
+    created_at: float = Field(description="Job creation time (epoch seconds)")
+    updated_at: float = Field(description="Last update time (epoch seconds)")
+    version: int = Field(description="CAS version of the record")
+    message: str = Field(
+        default="", description="Terminal or latest status message (byte-capped)"
+    )
+
+
+class SourceConflictItem(BaseModel):
+    """One canonical source key claimed by more than one primary document.
+
+    ``candidate_count`` is ``None`` when the backend only proved "at least two"
+    without a cheap exact count; ``sample_doc_ids`` is a fixed-size sample, never
+    the whole conflicting set (LR2 §5.5)."""
+
+    canonical_source_key: str = Field(
+        description="Canonical (hint-stripped) basename shared by the candidates"
+    )
+    candidate_count: Optional[int] = Field(
+        default=None, description="Exact number of primary candidates, when known"
+    )
+    sample_doc_ids: List[str] = Field(
+        default_factory=list, description="Bounded sample of candidate document IDs"
+    )
+
+
+class SourceConflictListResponse(BaseModel):
+    """One page of source conflicts (``GET /documents/source_conflicts``)."""
+
+    conflicts: List[SourceConflictItem] = Field(
+        default_factory=list, description="Conflicts in this page"
+    )
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Opaque cursor for the next page; null when the listing is exhausted"
+        ),
+    )
+
+
+class SourceConflictRepairRequest(BaseModel):
+    """Operator request to resolve one source conflict (LR2 §5.5).
+
+    The winner is never chosen automatically: the operator names
+    ``primary_doc_id``. ``dry_run`` (the default) mutates nothing and returns the
+    ``candidate_count`` / ``fingerprint`` pair that must be echoed back to
+    commit — a compare-and-set token, so a candidate set that changed in between
+    fails the commit instead of being silently overwritten."""
+
+    canonical_source_key: str = Field(
+        min_length=1, description="Canonical source key to repair"
+    )
+    primary_doc_id: str = Field(
+        min_length=1, description="Document ID to keep as the single primary"
+    )
+    expected_candidate_count: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="CAS token from the dry-run; required when dry_run is false",
+    )
+    expected_candidate_fingerprint: Optional[str] = Field(
+        default=None,
+        description="CAS token from the dry-run; required when dry_run is false",
+    )
+    dry_run: bool = Field(
+        default=True, description="Report only (default) instead of committing"
+    )
+
+    @model_validator(mode="after")
+    def _commit_requires_cas_tokens(self) -> "SourceConflictRepairRequest":
+        # A commit without the echoed tokens could not be CAS-checked at all;
+        # refuse it here (422) rather than let a backend compare against a
+        # placeholder. dry-run ignores them by contract.
+        if not self.dry_run and (
+            self.expected_candidate_count is None
+            or not self.expected_candidate_fingerprint
+        ):
+            raise ValueError(
+                "expected_candidate_count and expected_candidate_fingerprint are "
+                "required when dry_run is false; run a dry-run first and echo "
+                "both values back"
+            )
+        return self
+
+
+class SourceConflictRepairResponse(BaseModel):
+    """Outcome of a source-conflict repair, dry-run or committed."""
+
+    canonical_source_key: str = Field(description="Canonical source key")
+    primary_doc_id: str = Field(description="Document ID kept as the single primary")
+    candidate_count: int = Field(
+        description="Primary candidates observed under the repair lock"
+    )
+    fingerprint: str = Field(
+        description=(
+            "Deterministic digest of the candidate IDs — the CAS token to echo "
+            "back on commit"
+        )
+    )
+    demoted_sample_doc_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Bounded sample of the documents that would be / were marked "
+            "metadata.is_duplicate=true (content is never deleted)"
+        ),
+    )
+    committed: bool = Field(
+        description="False for a dry-run, true when the demotions were written"
     )
 
 
@@ -291,11 +517,27 @@ class FixedTokenChunkParams(_OverlapChunkParams):
 
 
 class RecursiveCharacterChunkParams(_OverlapChunkParams):
-    separators: Optional[list[str]] = None
+    # Caller-supplied separators are safe from ReDoS — ``is_separator_regex`` is
+    # not exposed on this model and defaults to False, so every candidate goes
+    # through ``re.escape`` and matches in linear time. What is NOT bounded by
+    # that is the *size* of the cascade: the splitter walks the list per
+    # recursion level, so cost grows as ``len(separators) x len(text)`` with
+    # both factors supplied by one request.
+    #
+    # This model is only the first of the two places that has to hold. The
+    # cascade also arrives from CHUNK_R_SEPARATORS, from addon_params, from
+    # direct SDK calls, and from per-doc snapshots persisted before this cap
+    # existed — none of which pass through here — so
+    # ``lightrag.chunker.recursive_character.normalize_r_separators`` bounds it
+    # again at the chunker, which is the one point all of them share. The
+    # constants are shared with it so the two can never drift.
+    separators: Optional[
+        list[Annotated[str, StringConstraints(max_length=MAX_R_SEPARATOR_CHARS)]]
+    ] = Field(default=None, max_length=MAX_R_SEPARATORS)
 
 
 class ParagraphSemanticChunkParams(_OverlapChunkParams):
-    # Drop the trailing reference section before chunking. ``None`` means
+    # Drop matching reference blocks before chunking. ``None`` means
     # "not supplied — inherit the addon_params/env default at process time".
     # Detection-tuning knobs (tail window / heading prefixes) are env-only and
     # read live by the chunker, so they are intentionally not exposed here.
@@ -315,22 +557,31 @@ class SemanticVectorChunkParams(_StrictChunkParams):
     # normalizing ints to float). Locked by tests in test_document_routes_chunking.
     breakpoint_threshold_amount: Optional[float] = None
     buffer_size: Optional[int] = Field(default=None, ge=1)
-    sentence_split_regex: Optional[str] = None
+    # ``sentence_split_regex`` is deliberately NOT exposed here. The value
+    # reaches ``re.split`` in lightrag/chunker/semantic_vector.py against text
+    # from the same request, and ``re.compile`` only validates syntax, not
+    # running time: a syntactically valid pattern such as ``(a+)+$`` backtracks
+    # exponentially. CPython's regex engine holds the GIL for the whole match,
+    # so the ``asyncio.to_thread`` hop in the chunker does not keep the event
+    # loop alive either — one request froze the worker process, including
+    # /health, until restart (GHSA-32jh-39m7-8x84, CWE-1333).
+    #
+    # The pattern is operator-tunable via the ``CHUNK_V_SENTENCE_SPLIT_REGEX``
+    # env var (see lightrag/parser/routing.py), which comes from the trusted
+    # deployment rather than from a request body. ``extra="forbid"`` on
+    # ``_StrictChunkParams`` turns any request still carrying the key into a
+    # 422. Do not re-add it: bounding this safely needs process isolation with
+    # a timeout, not a stricter pattern filter.
 
-    @field_validator("sentence_split_regex")
+    @field_validator("breakpoint_threshold_amount", mode="before")
     @classmethod
-    def _valid_sentence_split_regex(cls, v: Optional[str]) -> Optional[str]:
-        # The value is fed to LangChain's SemanticChunker and compiled during
-        # split_text. A malformed pattern (e.g. "(") would only blow up in the
-        # background, so compile it here to reject synchronously (HTTP 422).
-        if v is None:
-            return v
-        try:
-            re.compile(v)
-        except re.error as exc:
-            raise ValueError(
-                f"sentence_split_regex is not a valid regular expression: {exc}"
-            ) from exc
+    def _reject_nonfinite_amount(cls, v: Any) -> Any:
+        # JSON decoders may deliver nan/inf as floats. Raising while leaving
+        # those values in ValidationError.input makes FastAPI's JSONResponse
+        # fail (non-compliant floats) and turn the 422 into a 500. Replace
+        # with a JSON-safe marker so strict float typing rejects cleanly.
+        if isinstance(v, float) and not math.isfinite(v):
+            return "non-finite"
         return v
 
     @model_validator(mode="after")
@@ -338,6 +589,9 @@ class SemanticVectorChunkParams(_StrictChunkParams):
         amt = self.breakpoint_threshold_amount
         if amt is None:
             return self
+        # nan comparisons are always False, so reject non-finite before <= / > checks.
+        if not math.isfinite(amt):
+            raise ValueError("breakpoint_threshold_amount must be a finite number")
         # ``> 0`` is type-independent (every threshold type wants a positive
         # magnitude), so it is safe to enforce at parse time.
         if amt <= 0:
@@ -420,7 +674,11 @@ class InsertTextRequest(BaseModel):
     @field_validator("text", mode="after")
     @classmethod
     def strip_text_after(cls, text: str) -> str:
-        return text.strip()
+        # min_length runs before strip; reject whitespace-only so empty docs are not enqueued.
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError("text cannot be empty or whitespace-only")
+        return stripped
 
     @field_validator("file_source", mode="before")
     @classmethod
@@ -469,7 +727,10 @@ class InsertTextsRequest(BaseModel):
     @field_validator("texts", mode="after")
     @classmethod
     def strip_texts_after(cls, texts: list[str]) -> list[str]:
-        return [text.strip() for text in texts]
+        stripped = [text.strip() for text in texts]
+        if any(not text for text in stripped):
+            raise ValueError("texts cannot contain empty or whitespace-only entries")
+        return stripped
 
     @field_validator("file_sources", mode="before")
     @classmethod
@@ -552,6 +813,42 @@ class ClearDocumentsResponse(BaseModel):
     )
 
 
+class ForceResetRecoveryRequest(BaseModel):
+    """Request model for force-clearing a ``recovery_required`` fence.
+
+    The fence is raised when a worker dies mid custom_chunks/delete/clear, which
+    may leave storage partially committed. Clearing it re-opens a possibly-
+    inconsistent workspace, so an explicit ``confirm`` is required.
+    """
+
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "Must be true to force-reset. The workspace may be in a "
+            "partially-committed state; only reset after verifying/repairing it."
+        ),
+    )
+
+
+class ForceResetRecoveryResponse(BaseModel):
+    status: Literal["reset", "no_recovery_required"] = Field(
+        description="reset = fence cleared; no_recovery_required = nothing to clear"
+    )
+    message: str = Field(description="Human-readable result")
+    cancelled_manual_retries: int = Field(
+        default=0,
+        description=(
+            "Queued manual retry requests cancelled along with the fence. A "
+            "sticky request makes /documents/scan refuse its reservation (it may "
+            "not jump the manual FIFO), so clearing the fence without clearing "
+            "these would leave the documented recovery path — force_reset then "
+            "/documents/scan — still blocked. The failed documents are untouched; "
+            "re-issue /documents/reprocess_failed, or let the scan's own FAILED "
+            "reset cover them."
+        ),
+    )
+
+
 class ClearCacheRequest(BaseModel):
     """Request model for clearing cache
 
@@ -631,6 +928,13 @@ class DeleteDocRequest(BaseModel):
         return validated_ids
 
 
+# doc_status.metadata keys that are internal pipeline bookkeeping and must
+# never reach the frontend. smartheading_llm_cache_ids is a deletion-time
+# LLM-cache purge list (written by the parse pipeline at pipeline.py:1748,
+# consumed only by adelete_by_doc_id).
+_INTERNAL_METADATA_KEYS = frozenset({"smartheading_llm_cache_ids"})
+
+
 class DocStatusResponse(BaseModel):
     id: str = Field(description="Document identifier")
     content_summary: str = Field(description="Summary of document content")
@@ -651,6 +955,21 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+
+    @field_validator("metadata", mode="after")
+    @classmethod
+    def _strip_internal_metadata(
+        cls, metadata: Optional[dict[str, Any]]
+    ) -> Optional[dict[str, Any]]:
+        """Never expose internal pipeline bookkeeping to API clients."""
+        if not isinstance(metadata, dict):
+            return metadata  # None / (defensively) non-dict pass through
+        if not _INTERNAL_METADATA_KEYS.intersection(metadata):
+            return metadata  # common case: nothing to strip, no copy
+        # Copy-then-strip — the source DocProcessingStatus.metadata is shared
+        # with the deletion path and carry-over; mutating it in place would
+        # remove the field adelete_by_doc_id needs.
+        return {k: v for k, v in metadata.items() if k not in _INTERNAL_METADATA_KEYS}
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -936,34 +1255,73 @@ class StatusCountsResponse(BaseModel):
     )
 
 
+class SupportedFileTypesResponse(BaseModel):
+    """Response model for the upload allowlist and parser capability matrix
+
+    Attributes:
+        supported_extensions: Dotted lowercase suffixes accepted for a bare
+            (unhinted) filename under the current parser routing rules
+        engines: Usable parser engine -> dotted suffixes it can parse, for
+            pre-validating filenames that carry a ``[engine]`` hint
+    """
+
+    supported_extensions: List[str] = Field(
+        description="Suffixes accepted for an unhinted filename (dotted, lowercase)"
+    )
+    engines: Dict[str, List[str]] = Field(
+        description="Usable parser engine -> dotted suffixes it can parse"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "supported_extensions": [".jpg", ".md", ".pdf", ".txt"],
+                "engines": {
+                    "legacy": [".md", ".pdf", ".txt"],
+                    "mineru": [".jpg", ".pdf", ".png"],
+                    "native": [".docx", ".md", ".textpack"],
+                },
+            }
+        }
+    )
+
+
 class PipelineStatusResponse(BaseModel):
     """Response model for pipeline status
 
     Attributes:
-        autoscanned: Whether auto-scan has started
         busy: Whether the pipeline is currently busy
         job_name: Current job name (e.g., indexing files/indexing texts)
         job_start: Job start time as ISO format string with timezone (optional)
         docs: Total number of documents to be indexed
         batchs: Number of batches for processing documents
         cur_batch: Current processing batch
-        request_pending: Flag for pending request for processing
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
         update_status: Status of update flags for all namespaces
+        recovery_required: Whether the workspace is fenced pending recovery
+            (every mutation is refused with 503 until it is cleared)
+        recovery_kind: Coarse cause of the fence, when one is set
+        recovery_message: Operator-facing explanation of the fence, including the
+            bounded blocker sample where the cause provides one
     """
 
-    autoscanned: bool = False
     busy: bool = False
     job_name: str = "Default Job"
     job_start: Optional[str] = None
     docs: int = 0
     batchs: int = 0
     cur_batch: int = 0
-    request_pending: bool = False
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
     update_status: Optional[dict] = None
+    # Sanitized fence projection (see shared_storage.describe_recovery_fence).
+    # The raw ``recovery_required`` record stays internal — it sits alongside
+    # owner records carrying PIDs and reservation tokens — but an operator still
+    # needs a read-only way to see that the workspace is fenced and why.
+    recovery_required: bool = False
+    recovery_kind: Optional[str] = None
+    recovery_message: Optional[str] = None
 
     @field_validator("job_start", mode="before")
     @classmethod
@@ -1025,34 +1383,73 @@ class DocumentManager:
                 out.append(f".{s}")
         return tuple(out)
 
-    def scan_directory_for_new_files(self) -> List[Path]:
-        """Scan input directory for new, routable files.
+    @property
+    def engine_capabilities(self) -> Dict[str, List[str]]:
+        """Usable engine -> dotted suffixes it can parse, derived live.
 
-        Globs over every *available* engine suffix (capability surface, so a
-        hint-carrying file like ``img.[mineru].png`` is discoverable even
-        when bare ``.png`` is not advertised), then keeps only files whose
-        resolved engine actually supports them (``is_supported_file``).
+        Covers user-selectable engines whose endpoint (if any) is configured
+        — the same gate ``resolve_parser_directives`` applies to a filename
+        hint. Lets the WebUI pre-validate hinted names (``img.[mineru].png``)
+        locally instead of uploading the file only to receive a 400.
+        """
+        from lightrag.parser.registry import (
+            engine_endpoint_configured,
+            suffix_capabilities,
+            supported_parser_engines,
+        )
+
+        return {
+            engine: [f".{s}" for s in sorted(suffix_capabilities(engine))]
+            for engine in sorted(supported_parser_engines())
+            if engine_endpoint_configured(engine)
+        }
+
+    def iter_new_files(self) -> Iterator[Path]:
+        """Yield new, routable input files ONE AT A TIME (LR2 §8.2).
+
+        A single streaming pass: one ``scandir()`` over the input directory, no
+        whole-directory list and no whole-directory sort, so the scan's peak
+        memory is set by its enqueue batch (``SCAN_ENQUEUE_BATCH_SIZE``) rather
+        than by how many files the directory holds. ``Path.iterdir()`` is not
+        suitable here because it uses ``os.listdir()`` and materializes every
+        entry name before yielding the first one. An interrupted scan needs no
+        in-memory resume state — the next scan re-discovers, and the persistent
+        ``doc_status`` rows are the deduplication authority.
+
+        Files are admitted on the *available* engine suffix surface (so a
+        hint-carrying file like ``img.[mineru].png`` is discoverable even when
+        bare ``.png`` is not advertised), then narrowed to those whose resolved
+        engine actually supports them (``is_supported_file``).
+
+        Deliberately unordered (LR2 §8.5): candidates are written one at a time
+        to the disk-backed scan spool, whose mtime index supplies global order
+        without a whole-directory Python list. The old hint-preferring
+        group-by-canonical-name pass was exactly the O(files-in-directory)
+        memory structure this replaces.
         """
         from lightrag.parser.registry import available_engine_suffixes
         from lightrag.parser.routing import FilenameParserHintError
 
-        new_files = []
-        for s in sorted(available_engine_suffixes()):
-            ext = f".{s}"
-            logger.debug(f"Scanning for {ext} files in {self.input_dir}")
-            for file_path in self.input_dir.glob(f"*{ext}"):
+        suffixes = {f".{s}" for s in available_engine_suffixes()}
+        logger.debug(f"Streaming scan of {self.input_dir} for {len(suffixes)} suffixes")
+        with os.scandir(self.input_dir) as entries:
+            for entry in entries:
+                file_path = Path(entry.path)
+                # Suffix comparison is case-sensitive, matching the per-suffix glob
+                # this replaced; ``__parsed__`` and any other directory is skipped.
+                if file_path.suffix not in suffixes or not file_path.is_file():
+                    continue
                 if file_path in self.indexed_files:
                     continue
                 try:
                     if not self.is_supported_file(file_path.name):
                         continue
                 except FilenameParserHintError:
-                    # Malformed hint: pass the file through — the enqueue
-                    # path reports a detailed error document, instead of the
-                    # scan silently ignoring the user's file.
+                    # Malformed hint: pass the file through — the enqueue path
+                    # reports a detailed error document, instead of the scan
+                    # silently ignoring the user's file.
                     pass
-                new_files.append(file_path)
-        return new_files
+                yield file_path
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
@@ -1170,18 +1567,91 @@ async def get_existing_doc_by_file_path_candidates(
     return existing_doc_data
 
 
-async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
+def _admission_capacity(rag: LightRAG) -> int:
+    """``MAX_PENDING_DOCUMENTS`` for this instance; 0 disables admission."""
+    capacity = getattr(rag, "max_pending_documents", 0)
+    return capacity if isinstance(capacity, int) and capacity > 0 else 0
+
+
+async def _strict_active_count(rag: LightRAG) -> int:
+    """Strict count of admission-relevant documents, or 503.
+
+    Fail-closed: a backend that cannot count (capability gap, control-plane
+    failure) must not be read as "there is room" — that is exactly how an
+    admission cap turns into an unbounded backlog.
+    """
+    try:
+        return await count_active_documents(rag.doc_status)
+    except Exception as count_error:
+        logger.error(f"Admission active-document count failed: {count_error}")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Cannot determine how many documents are in flight, so new work "
+                "cannot be admitted. Retry once document storage is healthy."
+            ),
+        )
+
+
+def _backpressure_http_error(error: PipelineBackpressureError) -> HTTPException:
+    """Render admission backpressure as 429 with the numbers a client needs."""
+    return HTTPException(
+        status_code=429,
+        detail=(
+            f"Pipeline is at capacity: {error.current} document(s) already "
+            f"active or reserved, {error.requested} requested, capacity "
+            f"{error.capacity}. Retry once documents finish processing."
+        ),
+        headers={"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)},
+    )
+
+
+# Pipeline states that refuse a NEW ordinary ingress reservation. Re-weighting a
+# reservation taken before one of these appeared is deliberately NOT refused: a
+# request admitted before a freeze is allowed to finish (LR2 §9.2).
+_INGRESS_FENCES: tuple[tuple[str, str], ...] = (
+    (
+        "scanning_exclusive",
+        "Document scan is classifying files. Wait for the classification "
+        "phase to finish before submitting new work.",
+    ),
+    (
+        "destructive_busy",
+        "Pipeline is clearing or deleting documents. Wait for the running "
+        "job to finish before submitting new work.",
+    ),
+    (
+        "manual_freeze_requested",
+        "A retry of failed documents is draining the pipeline. Wait for it "
+        "to finish before submitting new work.",
+    ),
+)
+
+
+async def _reserve_enqueue_slot(
+    rag: LightRAG,
+    token: str,
+    *,
+    weight: int = 1,
+    reject_when: tuple[tuple[str, str], ...] = _INGRESS_FENCES,
+) -> bool:
     """Atomically check exclusive-writer state and reserve a
-    pending-enqueue slot.
+    pending-enqueue slot keyed by ``token``, weighted for admission.
+
+    ``token`` is generated by the caller before any await and added to the
+    ``pending_enqueue_tokens`` set (whose length mirrors ``pending_enqueues``),
+    so the release is idempotent and owner-identified — an endpoint and its
+    background task may both release without over-decrementing a sibling's slot,
+    and a dead owner's token can later be reaped.
 
     Concurrent enqueues are permitted while the processing loop is
-    running — the loop is notified via ``request_pending`` and picks up
-    newly-enqueued docs after its current batch.  This includes the
+    running — the loop is notified via the ingress mailbox and picks up
+    newly-enqueued docs mid-batch or at the batch boundary.  This includes the
     scan task's processing phase: once classification is done, the
     scan transitions to driving the processing pipeline like any
     other enqueuer, and uploads can land alongside it.
 
-    Two states block new uploads/inserts:
+    Three states block new uploads/inserts:
 
     - ``scanning_exclusive``: scan task is in its CLASSIFICATION
       phase — reading doc_status to classify files (PROCESSED →
@@ -1194,6 +1664,11 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
       accepted in this window would write to a storage that is being
       torn down and silently lose the document after the client saw
       success.
+    - ``manual_freeze_requested``: a manual retry (``/reprocess_failed``
+      or ``/scan``) has frozen new ingress while it drains the pipeline
+      to idle and exclusively resets FAILED→PENDING (LR2 §6.1/§7.2).
+      An enqueue reserved BEFORE the freeze is allowed to finish; only
+      new reservations are refused, for the bounded freeze window.
 
     ``pending_enqueues`` is incremented so the scan endpoint can refuse
     while bg tasks are mid-enqueue.  The counter does NOT gate
@@ -1204,6 +1679,14 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
     A workspace whose ``pipeline_status`` has never been initialised
     (mocked test rigs) is treated as idle; no slot is reserved.
 
+    With ``MAX_PENDING_DOCUMENTS > 0`` the same critical section enforces the
+    admission capacity (LR2 §9.1): ``weight`` documents are charged against the
+    strict active count plus every other in-flight reservation's weight, and an
+    over-capacity request is refused with 429 *before* the file is written to
+    disk. ``weight`` is the caller's best estimate at reservation time (1 for
+    ``/upload`` and ``/text``); the enqueue guard later re-weights the same token
+    to the deduped count, and ``/texts`` adjusts it once the body is parsed.
+
     Returns:
         True when a slot was reserved (caller MUST pair with
         ``_release_enqueue_slot``); False when pipeline_status is not
@@ -1211,11 +1694,20 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
 
     Raises:
         HTTPException(409): when
-            ``pipeline_status['scanning_exclusive']`` or
-            ``pipeline_status['destructive_busy']`` is set.
+            ``pipeline_status['scanning_exclusive']``,
+            ``pipeline_status['destructive_busy']`` or
+            ``pipeline_status['manual_freeze_requested']`` is set.
+        HTTPException(429): when the admission capacity is exhausted.
+        HTTPException(503): when the strict active count cannot be taken —
+            admission fails closed rather than assuming there is room.
     """
     from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import (
+        PipelineReservationConflict,
+        acquire_enqueue_reservation,
+        get_namespace_data,
+        get_namespace_lock,
+    )
 
     try:
         pipeline_status = await get_namespace_data(
@@ -1226,27 +1718,28 @@ async def _reserve_enqueue_slot(rag: LightRAG) -> bool:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
-    async with pipeline_status_lock:
-        if pipeline_status.get("scanning_exclusive"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Document scan is classifying files. "
-                    "Wait for the classification phase to finish before "
-                    "submitting new work."
-                ),
-            )
-        if pipeline_status.get("destructive_busy"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Pipeline is clearing or deleting documents. "
-                    "Wait for the running job to finish before submitting "
-                    "new work."
-                ),
-            )
-        pipeline_status["pending_enqueues"] = (
-            pipeline_status.get("pending_enqueues", 0) + 1
+    capacity = _admission_capacity(rag)
+    active_count = await _strict_active_count(rag) if capacity > 0 else None
+    try:
+        result = await acquire_enqueue_reservation(
+            pipeline_status,
+            pipeline_status_lock,
+            token=token,
+            reject_when=reject_when,
+            weight=weight,
+            capacity=capacity,
+            active_count=active_count,
+        )
+    except PipelineBackpressureError as backpressure:
+        raise _backpressure_http_error(backpressure)
+    if not result.acquired:
+        raise HTTPException(
+            status_code=(
+                503
+                if result.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
+                else 409
+            ),
+            detail=result.message,
         )
     return True
 
@@ -1276,7 +1769,12 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     so test rigs without a real shared-storage Manager keep working.
     """
     from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import (
+        PipelineReservationConflict,
+        check_pipeline_status_mutation,
+        get_namespace_data,
+        get_namespace_lock,
+    )
 
     try:
         pipeline_status = await get_namespace_data(
@@ -1287,21 +1785,42 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
-    async with pipeline_status_lock:
-        if pipeline_status.get("busy"):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Pipeline is busy with another operation. "
-                    "Wait for the running job to finish before editing "
-                    "the knowledge graph."
-                ),
-            )
+    result = await check_pipeline_status_mutation(
+        pipeline_status,
+        pipeline_status_lock,
+        reject_when=(
+            (
+                "busy",
+                "Pipeline is busy with another operation. Wait for the running "
+                "job to finish before editing the knowledge graph.",
+            ),
+        ),
+    )
+    if not result.acquired:
+        raise HTTPException(
+            status_code=(
+                503
+                if result.conflict is PipelineReservationConflict.RECOVERY_REQUIRED
+                else 409
+            ),
+            detail=result.message,
+        )
 
 
-async def _acquire_destructive_busy(rag: LightRAG) -> tuple[bool, str | None]:
+async def _acquire_destructive_busy(
+    rag: LightRAG, token: str, *, kind: str, operation_record: dict
+) -> tuple[bool, str | None]:
     """Atomically reserve the destructive busy slot for ``/documents/clear``
     or ``/documents/delete_document``.
+
+    ``kind`` (``"clear"`` / ``"delete"``) and ``operation_record`` (a snapshot of
+    the target, e.g. ``{"kind": "delete", "doc_ids": [...]}``) are stamped with
+    the owner so a dead owner can be fenced (``recovery_required``) — clear/delete
+    may partially drop storages / files and are not safe to blindly re-run.
+
+    ``token`` is generated by the caller BEFORE any await and stored as
+    ``busy_owner`` so the caller's finally can release the slot by owner even if
+    this acquire is cancelled at the lock exit (it never returns the token).
 
     Both jobs DROP storages and (for clear) remove input files.  They
     must serialise against:
@@ -1330,7 +1849,11 @@ async def _acquire_destructive_busy(rag: LightRAG) -> tuple[bool, str | None]:
         returns (True, None) — there is nothing to coordinate against.
     """
     from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import (
+        acquire_reservation,
+        get_namespace_data,
+        get_namespace_lock,
+    )
 
     try:
         pipeline_status = await get_namespace_data(
@@ -1341,81 +1864,179 @@ async def _acquire_destructive_busy(rag: LightRAG) -> tuple[bool, str | None]:
     pipeline_status_lock = get_namespace_lock(
         "pipeline_status", workspace=rag.workspace
     )
-    async with pipeline_status_lock:
-        if pipeline_status.get("busy"):
-            return False, "Pipeline is busy with another operation."
-        if pipeline_status.get("scanning"):
-            return False, (
-                "Document scan is in progress. "
-                "Wait for the scan to complete before clearing or deleting."
-            )
-        if pipeline_status.get("pending_enqueues", 0) > 0:
-            return False, (
-                "Document upload/insert is being enqueued. "
-                "Wait for in-flight work to complete before clearing or "
-                "deleting."
-            )
-        pipeline_status["busy"] = True
-        pipeline_status["destructive_busy"] = True
-    return True, None
+    result = await acquire_reservation(
+        pipeline_status,
+        pipeline_status_lock,
+        owner_key="busy_owner",
+        owner=token,
+        owner_kind=kind,
+        flags={
+            "busy": True,
+            "destructive_busy": True,
+            "operation_record": operation_record,
+        },
+        reject_when=(
+            ("busy", "Pipeline is busy with another operation."),
+            (
+                "scanning",
+                "Document scan is in progress. Wait for the scan to complete "
+                "before clearing or deleting.",
+            ),
+            (
+                "pending_enqueues",
+                "An upload/insert or a source-conflict repair is in flight. "
+                "Wait for it to complete before clearing or deleting.",
+            ),
+        ),
+    )
+    return result.acquired, result.message
 
 
-async def _release_destructive_busy(rag: LightRAG) -> None:
+def _release_destructive_action(status) -> None:
+    status.update(
+        {
+            "busy": False,
+            "destructive_busy": False,
+            "busy_owner": None,
+            "operation_record": None,
+        }
+    )
+
+
+async def _release_destructive_busy(rag: LightRAG, token: str) -> None:
     """Release the destructive busy slot acquired by
-    ``_acquire_destructive_busy``.  Never raises.
+    ``_acquire_destructive_busy``.  Never raises (except a re-raised
+    cancellation after the release has completed).
 
-    Distinct from ``_release_enqueue_slot``: that helper clears
-    ``pending_enqueues`` (the upload/insert reservation), this one
-    clears ``busy + destructive_busy`` (the clear/delete reservation).
+    Owner-checked by ``token`` (a no-op if a later holder took the slot) and
+    cancellation-resistant. Distinct from ``_release_enqueue_slot``: that helper
+    clears ``pending_enqueues`` (the upload/insert reservation), this one clears
+    ``busy + destructive_busy`` (the clear/delete reservation).
+
+    The namespace fetch runs INSIDE ``run_to_completion`` (via
+    ``release_owned_reservation``) so a cancellation delivered during the fetch
+    or lock — e.g. a shutdown cancelling this background release — is
+    retried/completed rather than leaking the slot.
     """
-    from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import release_owned_reservation
 
-    try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
-        return
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
+    await release_owned_reservation(
+        rag.workspace,
+        owner_key="busy_owner",
+        token=token,
+        action=_release_destructive_action,
     )
-    async with pipeline_status_lock:
-        pipeline_status["busy"] = False
-        pipeline_status["destructive_busy"] = False
 
 
-async def _release_enqueue_slot(rag: LightRAG) -> None:
-    """Release a slot reserved by ``_reserve_enqueue_slot``.
+def _adopt_or_new_enqueue_token(http_request: Any) -> tuple[str, bool]:
+    """Resolve this request's pending-enqueue token.
 
-    Pure decrement; the bg task itself drives processing by calling
-    ``apipeline_process_enqueue_documents`` after enqueue (the call is
-    a cheap no-op when the loop is already busy — it just sets
-    ``request_pending``).  Drain coordination across sibling bg tasks
-    is unnecessary in the new contract: each task triggers processing
-    independently and the loop's request_pending mechanism collapses
-    duplicate triggers safely.
+    Returns ``(token, already_reserved)``. When the ASGI admission middleware ran
+    (LR2 §9.3) it already reserved a slot before the body was read, so the route
+    ADOPTS that token — reserving a second one would charge the same request
+    twice. Otherwise the route mints one and reserves it itself, which is what
+    keeps admission correct with the middleware absent (capacity disabled, a
+    non-HTTP caller, or a test rig invoking the endpoint directly).
 
-    Decrement is clamped at 0 so a stray release (e.g. from a workspace
-    whose reservation returned False but whose bg task wrapper still
-    calls release) is harmless.  Never raises.
+    Synchronous on purpose: callers need the token before entering the ``try``
+    whose ``finally`` releases it.
     """
-    from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    ticket = adopt_admission_ticket(http_request)
+    if ticket is not None:
+        return ticket.token, True
+    return uuid4().hex, False
 
-    try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
+
+async def _reweight_enqueue_slot(rag: LightRAG, token: str, weight: int) -> None:
+    """Re-charge an already-held reservation for ``weight`` documents.
+
+    ``/texts`` reserves before the body is parsed (it must, to keep the
+    admission decision atomic) and only then learns how many documents the
+    request carries. Re-registering the same token replaces its weight; the
+    token's own previous weight is excluded from the capacity sum, so this is a
+    replacement rather than an addition.
+
+    A no-op when admission is disabled or ``pipeline_status`` was never
+    bootstrapped (mocked rigs).
+
+    Raises:
+        HTTPException(429): the request does not fit at its true size.
+        HTTPException(503): the strict active count failed.
+    """
+    if _admission_capacity(rag) <= 0:
         return
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
+    await _reserve_enqueue_slot(rag, token, weight=weight, reject_when=())
+
+
+async def _release_enqueue_slot(rag: LightRAG, token: str) -> None:
+    """Release the slot ``token`` reserved by ``_reserve_enqueue_slot``.
+
+    Removes ``token`` from ``pending_enqueue_tokens`` and mirrors the count into
+    ``pending_enqueues`` in a single atomic update. Idempotent (a no-op if the
+    token is absent, so an endpoint and its background task may both release)
+    and cancellation-resistant. The bg task itself drives processing via
+    ``apipeline_process_enqueue_documents`` after enqueue; no cross-task drain
+    coordination is needed. Never raises (except a re-raised cancellation after
+    the release has completed).
+
+    The namespace fetch runs INSIDE ``run_to_completion`` (via
+    ``release_token_set_reservation``) so a cancellation delivered during the
+    fetch or lock — e.g. a shutdown cancelling this background release — is
+    retried/completed rather than leaking the slot.
+    """
+    from lightrag.kg.shared_storage import release_token_set_reservation
+
+    await release_token_set_reservation(
+        rag.workspace,
+        tokens_key="pending_enqueue_tokens",
+        token=token,
     )
-    async with pipeline_status_lock:
-        current = pipeline_status.get("pending_enqueues", 0)
-        if current > 0:
-            pipeline_status["pending_enqueues"] = current - 1
+
+
+def _release_scanning_action(status) -> None:
+    status.update(
+        {"scanning": False, "scanning_exclusive": False, "scanning_owner": None}
+    )
+
+
+async def _release_scanning_reservation(rag: LightRAG, token: str) -> None:
+    """Release the scanning slot reserved by the ``/documents/scan`` endpoint.
+
+    Owner-checked by ``token`` (a no-op if a later scan took the slot) and
+    cancellation-resistant. Used by the endpoint's finally to cover the window
+    between reserving ``scanning``/``scanning_exclusive`` and handing the task
+    off to ``run_scanning_process`` (which otherwise owns the release). Never
+    raises (except a re-raised cancellation after the release has completed).
+
+    The namespace fetch runs INSIDE ``run_to_completion`` (via
+    ``release_owned_reservation``) so a cancellation delivered during the fetch
+    or lock — e.g. a shutdown cancelling ``run_scanning_process`` — is
+    retried/completed rather than leaking the slot.
+    """
+    from lightrag.kg.shared_storage import release_owned_reservation
+
+    await release_owned_reservation(
+        rag.workspace,
+        owner_key="scanning_owner",
+        token=token,
+        action=_release_scanning_action,
+    )
+
+
+def get_managed_background_tasks(request: Request) -> set:
+    """FastAPI dependency returning the app's managed background-task set.
+
+    Reservation-holding background work (scan / delete / enqueue / reprocess) is
+    started via ``start_reserved_background_task`` into this set — a real,
+    tracked ``asyncio`` task rather than a Starlette ``BackgroundTasks`` callback
+    (which runs only AFTER the response body is sent and is not tracked, so a
+    request cancelled mid-send would drop the callback and strand the
+    reservation). The lifespan drains this set on shutdown so every child's
+    finally releases its reservation before shared state is torn down.
+
+    Direct-call tests pass a plain ``set()`` for this argument.
+    """
+    return request.app.state.background_tasks
 
 
 def find_existing_file_by_file_path(input_dir: Path, file_path: str) -> Path | None:
@@ -1575,7 +2196,7 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
         )
         async with pipeline_status_lock:
             pipeline_status["latest_message"] = message
-            pipeline_status["history_messages"].append(message)
+            append_pipeline_history(pipeline_status, message)
     except Exception:
         pass
 
@@ -1584,11 +2205,32 @@ async def record_scan_warning(rag: LightRAG, message: str) -> None:
 # legacy engine now extracts at the worker stage (LegacyParser), not here.
 
 
+class _ScanCandidate(NamedTuple):
+    """One spooled scan candidate: its path plus the size discovery already read.
+
+    Carrying the size forward keeps the enqueue phase from re-``stat``-ing a
+    file the spool just stat'ed — INPUT_DIR is frequently a network mount, where
+    that second metadata round-trip is the expensive part.
+
+    ``size`` is never ``None``: a candidate whose stat failed carries ``0``, the
+    same "size unknown" value ``pipeline_enqueue_file`` has always reported for
+    an unreadable file.  Keeping it an ``int`` is what makes "one metadata read
+    per candidate" true unconditionally — ``None`` would mean "caller supplied
+    nothing" and send the enqueue path back to the filesystem for exactly the
+    vanished files where the second read is most likely to be slow.
+    """
+
+    path: Path
+    size: int
+
+
 async def pipeline_enqueue_file(
     rag: LightRAG,
     file_path: Path,
     track_id: str = None,
     from_scan: bool = False,
+    admission_token: str | None = None,
+    known_file_size: int | None = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -1596,10 +2238,18 @@ async def pipeline_enqueue_file(
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID, if not provided will be generated
+        admission_token: the caller's pending-enqueue reservation, forwarded to
+            the admission guard so it re-weights that token rather than
+            registering a second one (LR2 §9.2)
         from_scan: True only when invoked by the scan-owned background task,
             which already holds ``pipeline_status["scanning"]``.  Forwarded to
             ``apipeline_enqueue_documents`` so the scan can enqueue the files
             it just discovered without tripping the scanning guard there.
+        known_file_size: the size the caller already stat'ed, reused instead of
+            issuing a second metadata read.  Scan supplies the value its
+            candidate spool recorded at discovery time; it feeds error reports
+            only, so a size that went stale between discovery and enqueue costs
+            nothing.
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -1609,14 +2259,17 @@ async def pipeline_enqueue_file(
         track_id = generate_track_id("unknown")
 
     try:
-        file_size = 0
-
-        # Get file size for error reporting
-        try:
-            stat = await asyncio.to_thread(file_path.stat)
-            file_size = stat.st_size
-        except Exception:
-            file_size = 0
+        # File size is used only for error reporting. Scan-time mtime ordering
+        # happens before this function, in the disk-backed candidate spool;
+        # doc_status.created_at always remains the actual first-persist time.
+        if known_file_size is not None:
+            file_size = known_file_size
+        else:
+            try:
+                stat = await asyncio.to_thread(file_path.stat)
+                file_size = stat.st_size
+            except Exception:
+                file_size = 0
 
         try:
             directives = resolve_parser_directives(file_path)
@@ -1692,6 +2345,10 @@ async def pipeline_enqueue_file(
                 "process_options": api_process_options,
                 "from_scan": from_scan,
             }
+            if admission_token is not None:
+                # Only sent when the caller actually holds a reservation; None
+                # is the enqueue's own default and adding it would be noise.
+                enqueue_kwargs["admission_token"] = admission_token
             if hint_chunk_options is not None:
                 enqueue_kwargs["chunk_options"] = hint_chunk_options
             enqueue_result = await rag.apipeline_enqueue_documents("", **enqueue_kwargs)
@@ -1750,16 +2407,26 @@ async def pipeline_enqueue_file(
                 logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = None):
+async def pipeline_index_file(
+    rag: LightRAG,
+    file_path: Path,
+    track_id: str = None,
+    admission_token: str | None = None,
+):
     """Index a file with track_id
 
     Args:
         rag: LightRAG instance
         file_path: Path to the saved file
         track_id: Optional tracking ID
+        admission_token: the endpoint's pending-enqueue reservation, forwarded
+            so the admission guard re-weights THAT token to the deduped count
+            instead of counting this request twice (LR2 §9.2)
     """
     try:
-        success, _ = await pipeline_enqueue_file(rag, file_path, track_id)
+        success, _ = await pipeline_enqueue_file(
+            rag, file_path, track_id, admission_token=admission_token
+        )
         if success:
             await rag.apipeline_process_enqueue_documents()
 
@@ -1768,51 +2435,59 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_files(
+async def pipeline_enqueue_scan_batch(
     rag: LightRAG,
-    file_paths: List[Path],
+    candidates: Sequence[_ScanCandidate],
     track_id: str = None,
-    from_scan: bool = False,
-):
-    """Index multiple files sequentially to avoid high CPU load
+) -> int:
+    """Write ONE mtime-ordered, bounded scan batch — no processing drive (§8.2).
+
+    Discovery first stages candidates in the disposable disk spool; its global
+    mtime index emits batches in order while the scan still holds
+    ``scanning_exclusive``. Processing runs exactly once afterwards, when the
+    fence has dropped (§8.1). Enqueue is therefore separated from driving: a
+    per-batch drive would be refused by that very fence and only set the
+    deferred-processing flag.
+
+    ``from_scan=True`` is implied — this path exists only for the scan-owned
+    background task, whose own ``scanning`` flag would otherwise trip the guard
+    inside ``apipeline_enqueue_documents``.
 
     Args:
         rag: LightRAG instance
-        file_paths: Paths to the files to index
-        track_id: Optional tracking ID to pass to all files
-        from_scan: True only when invoked by the scan-owned background task.
-            Forwarded to ``pipeline_enqueue_file`` so the per-file enqueue
-            calls bypass the scanning guard inside
-            ``apipeline_enqueue_documents`` (whose ``scanning`` flag the
-            scan task itself owns).
+        candidates: the batch's spooled candidates IN ENQUEUE ORDER, bounded by
+            ``SCAN_ENQUEUE_BATCH_SIZE``
+        track_id: tracking ID stamped on every document of this scan
+
+    Returns:
+        How many files actually landed a doc_status row. A per-file rejection
+        (bad filename hint, empty body, content duplicate, ...) is reported by
+        ``pipeline_enqueue_file`` as an error document / archive and does not
+        abort the rest of the batch.
     """
-    if not file_paths:
-        return
+    if not candidates:
+        return 0
+    enqueued = 0
     try:
-        enqueued = False
-
-        # Use get_pinyin_sort_key for Chinese pinyin sorting
-        sorted_file_paths = sorted(
-            file_paths, key=lambda p: get_pinyin_sort_key(str(p))
-        )
-
-        # Process files sequentially with track_id
-        for file_path in sorted_file_paths:
+        # Iterate in the order given. The disk spool emits candidates in global
+        # ``(mtime, path)`` order and created_at=now() records that order into
+        # doc_status one row at a time, so ANY re-sort here (the batch-local
+        # pinyin sort this replaced included) silently breaks oldest-file-first.
+        for candidate in candidates:
             success, _ = await pipeline_enqueue_file(
                 rag,
-                file_path,
+                candidate.path,
                 track_id,
-                from_scan=from_scan,
+                from_scan=True,
+                known_file_size=candidate.size,
             )
             if success:
-                enqueued = True
-
-        # Process the queue only if at least one file was successfully enqueued
-        if enqueued:
-            await rag.apipeline_process_enqueue_documents()
+                enqueued += 1
+        return enqueued
     except Exception as e:
-        logger.error(f"Error indexing files: {str(e)}")
+        logger.error(f"Error enqueuing scan batch: {str(e)}")
         logger.error(traceback.format_exc())
+        return enqueued
 
 
 _STRATEGY_TO_PROCESS_OPTION: Dict[str, str] = {
@@ -1946,6 +2621,7 @@ async def pipeline_index_texts(
     file_sources: List[str] = None,
     track_id: str = None,
     chunking: Optional[TextChunkingConfig] = None,
+    admission_token: str | None = None,
 ):
     """Index a list of texts with track_id
 
@@ -1956,6 +2632,9 @@ async def pipeline_index_texts(
         track_id: Optional tracking ID
         chunking: Optional chunking strategy + params (already validated by
             the request model); when None, default fixed-token chunking is used
+        admission_token: the endpoint's pending-enqueue reservation, forwarded so
+            the admission guard re-weights that token to the deduped count
+            (LR2 §9.2)
     """
     if not texts:
         return
@@ -1970,18 +2649,831 @@ async def pipeline_index_texts(
         raise ValueError("File sources must be unique by filename")
 
     process_options, chunk_options = _resolve_text_chunking(chunking, rag)
-    await rag.apipeline_enqueue_documents(
-        input=texts,
-        file_paths=normalized_file_sources,
-        track_id=track_id,
-        process_options=process_options,
-        chunk_options=chunk_options,
-    )
+    enqueue_kwargs: dict[str, Any] = {
+        "input": texts,
+        "file_paths": normalized_file_sources,
+        "track_id": track_id,
+        "process_options": process_options,
+        "chunk_options": chunk_options,
+    }
+    if admission_token is not None:
+        # See pipeline_enqueue_file: only forwarded when a reservation exists.
+        enqueue_kwargs["admission_token"] = admission_token
+    await rag.apipeline_enqueue_documents(**enqueue_kwargs)
     await rag.apipeline_process_enqueue_documents()
 
 
+# How long a scan may go without touching its job record before it is renewed
+# for its own sake — by ``reporter.renew()`` inside the discovery loop, and by
+# the independent ``_renew_scan_job_lease`` heartbeat during phases that never
+# touch the record. A RUNNING job whose lease expires is reaped to ABANDONED
+# (its owner presumed dead), so this must stay a fraction of the lease — a
+# directory walk over a large tree, let alone a processing run, is easily
+# longer than one lease period.
+_SCAN_JOB_RENEW_SECONDS = SCAN_JOB_LEASE_SECONDS / 3
+
+
+class _ScanJobReporter:
+    """Client half of the bounded scan-job update protocol (LR2 §8.6).
+
+    Submits ONLY ``count deltas + at most one bounded sample + the expected
+    owner token/version`` — never a full record — and every bound is re-validated
+    inside the store, so a bug here cannot write an O(total_files) object into
+    the (possibly Manager-hosted) job map.
+
+    Cost control: counts are accumulated locally and flushed in ONE call per
+    phase (or lease renewal), and each bucket sends at most
+    ``SCAN_JOB_SAMPLE_LIMIT`` samples — everything beyond that is counted into
+    ``<bucket>_samples_suppressed`` instead of costing another RPC. A
+    million-file scan therefore costs a bounded number of store calls.
+
+    Every store call is SYNCHRONOUS (the store is ``threading.Lock``-guarded with
+    no blocking waits), so the finally/cancellation path can still mark a job
+    terminal without awaiting. A reporter with no store or token, or one whose
+    record it no longer owns (job gone / superseded owner / already terminal —
+    e.g. reaped to ABANDONED after a lease expiry), disables itself: progress
+    reporting must never fail the scan.
+    """
+
+    def __init__(self, store: Any, track_id: str | None, owner_token: str | None):
+        self._store = store if (store and track_id and owner_token) else None
+        self._track_id = track_id
+        self._owner_token = owner_token
+        self._version = 1
+        self._counts: Dict[str, int] = {}
+        self._pending_samples: List[tuple[str, str]] = []
+        self._samples_budget = {
+            bucket: SCAN_JOB_SAMPLE_LIMIT for bucket in SAMPLE_BUCKETS
+        }
+        self._last_call = time.monotonic()
+
+    @property
+    def enabled(self) -> bool:
+        return self._store is not None
+
+    def count(self, key: str, delta: int = 1) -> None:
+        """Buffer a counter delta (flushed later)."""
+        if self._store is None:
+            return
+        self._counts[key] = self._counts.get(key, 0) + delta
+
+    def sample(self, bucket: str, text: str) -> None:
+        """Buffer one bounded sample, or count it as suppressed once the bucket's
+        send budget is spent (the store caps retained samples anyway)."""
+        if self._store is None:
+            return
+        if self._samples_budget.get(bucket, 0) <= 0:
+            self.count(f"{bucket}_samples_suppressed")
+            return
+        self._samples_budget[bucket] -= 1
+        self._pending_samples.append((bucket, text))
+
+    def flush(self) -> None:
+        """Send the buffered deltas (one call) and any buffered samples (one call
+        each). Renews the lease as a side effect of every accepted update."""
+        if self._store is None:
+            return
+        counts, samples = self._counts, self._pending_samples
+        self._counts, self._pending_samples = {}, []
+        if not counts and not samples:
+            self._submit(None, None)
+            return
+        first_sample = samples[0] if samples else None
+        self._submit(counts or None, first_sample)
+        for sample in samples[1:]:
+            if self._store is None:  # a submit above disabled us mid-flush
+                return
+            self._submit(None, sample)
+
+    def renew(self) -> None:
+        """Flush if the lease is due for renewal; a cheap no-op otherwise."""
+        if self._store is None:
+            return
+        if time.monotonic() - self._last_call < _SCAN_JOB_RENEW_SECONDS:
+            return
+        self.flush()
+
+    def finish(self, status: ScanJobStatus, message: str = "") -> None:
+        """Flush, then transition the job to a terminal status (owner-checked,
+        CAS'd). A late transition that lost the record (reaped/superseded) is
+        logged and dropped — it must not overwrite a newer state."""
+        if self._store is None:
+            return
+        self.flush()
+        if self._store is None:  # the flush disabled us
+            return
+        for attempt in range(2):
+            try:
+                result = self._store.set_status(
+                    self._track_id,
+                    self._owner_token,
+                    status,
+                    expected_version=self._version,
+                    message=message,
+                )
+            except Exception as store_error:
+                logger.warning(
+                    f"Scan job {self._track_id} terminal transition failed: {store_error}"
+                )
+                break
+            if result.ok:
+                break
+            if (
+                attempt == 0
+                and result.conflict is ScanJobUpdateConflict.VERSION
+                and result.record
+            ):
+                self._version = result.record.get("version", self._version)
+                continue
+            logger.warning(
+                f"Scan job {self._track_id} terminal transition refused "
+                f"({getattr(result.conflict, 'value', result.conflict)})"
+            )
+            break
+        self._store = None
+
+    def _submit(
+        self, counts: Optional[Dict[str, int]], sample: Optional[tuple[str, str]]
+    ) -> None:
+        """One CAS'd update, with a single re-sync retry on a version conflict."""
+        for attempt in range(2):
+            try:
+                result = self._store.update(
+                    self._track_id,
+                    self._owner_token,
+                    count_deltas=counts,
+                    sample=sample,
+                    expected_version=self._version,
+                )
+            except Exception as store_error:
+                logger.warning(
+                    f"Scan job {self._track_id} progress update failed "
+                    f"(reporting disabled): {store_error}"
+                )
+                self._store = None
+                return
+            if result.ok:
+                self._version = (result.record or {}).get("version", self._version + 1)
+                self._last_call = time.monotonic()
+                return
+            if (
+                attempt == 0
+                and result.conflict is ScanJobUpdateConflict.VERSION
+                and result.record
+            ):
+                self._version = result.record.get("version", self._version)
+                continue
+            # NOT_FOUND / OWNER / TERMINAL: this reporter is stale for good.
+            logger.warning(
+                f"Scan job {self._track_id} no longer accepts updates "
+                f"({getattr(result.conflict, 'value', result.conflict)}); "
+                "progress reporting disabled"
+            )
+            self._store = None
+            return
+
+
+async def _renew_scan_job_lease(reporter: _ScanJobReporter, scan_task: Any) -> None:
+    """Renew a scan job's lease from an independent task (LR2 §8.6).
+
+    The reporter only touches the record when the SCAN touches it: once per
+    discovered file, on a batch flush, at a phase boundary. Three phases do
+    neither, and none of them has a bounded duration — the custom-chunk
+    rollback, the exclusive FAILED→PENDING reset, and the final
+    ``apipeline_process_enqueue_documents`` (parse + LLM + index over
+    everything this scan produced, plus the deferred drive in the finally).
+    Any one of them outliving ``SCAN_JOB_LEASE_SECONDS`` let the store reap a
+    perfectly healthy RUNNING job to ABANDONED; the scan's own terminal
+    transition then lost to that state, so a scan that COMPLETED was reported
+    as "owner presumed dead". Only a heartbeat that does not depend on the
+    scan's own progress can distinguish "slow" from "dead".
+
+    Sleeping half the renewal interval bounds the worst-case gap between store
+    calls at 1.5x that interval — half the lease — since ``renew()`` skips a
+    tick that a scan-driven call already covered.
+
+    Exits when ``scan_task`` completes, so a heartbeat can never outlive its
+    owner and keep a dead scan's record alive (that would defeat the very
+    reaper this protects against). The task is also cancelled explicitly before
+    the terminal transition; this check is what holds if the ``finally`` never
+    gets there. Every reporter method is synchronous, so this task can only run
+    BETWEEN them — no flush can be interleaved and no lock is needed.
+    """
+    try:
+        while not scan_task.done():
+            await asyncio.sleep(max(_SCAN_JOB_RENEW_SECONDS / 2, 0.01))
+            reporter.renew()
+    except asyncio.CancelledError:
+        raise
+    except Exception as heartbeat_error:  # never fail the scan over reporting
+        logger.warning(f"Scan job lease heartbeat stopped: {heartbeat_error}")
+
+
+class _ScanFileClass(str, Enum):
+    """The seven mutually exclusive scan classification exits (LR2 §8.3).
+
+    Values double as the scan job's counter keys, so a ``/scan/status`` reader
+    sees the taxonomy verbatim."""
+
+    CLAIMED_NEW = "claimed_new"
+    SOURCE_CONFLICT = "source_conflict"
+    PROCESSED = "processed"
+    STALE_STUB = "stale_stub"
+    SOURCE_IDENTITY_UNKNOWN = "source_identity_unknown"
+    RESUME_SAME_PHYSICAL_SOURCE = "resume_same_physical_source"
+    ALIAS_DUPLICATE = "alias_duplicate"
+
+
+@dataclass(frozen=True)
+class _ScanFileDecision:
+    """One file's classification plus what the caller needs to act on it."""
+
+    kind: _ScanFileClass
+    doc_id: str | None = None
+    detail: str = ""
+    """Operator-facing reason, recorded as a bounded job sample when set."""
+
+
+async def _confirm_full_docs_absent(rag: LightRAG, doc_id: str) -> bool | None:
+    """Is the document's ``full_docs`` content CONFIRMED absent? (LR2 §8.3.D)
+
+    Returns ``True`` (positively absent — the FAILED row is an unprocessable
+    stub), ``False`` (content exists), or ``None`` when absence cannot be
+    confirmed: the backend has no strict point read, or the read failed. Only
+    ``True`` may drive the destructive stub deletion — a best-effort miss
+    (``get_by_id`` swallowing a transport error) would delete the row of a
+    document whose content actually exists.
+    """
+    store = rag.full_docs
+    if not getattr(store, "supports_strict_point_reads", False):
+        logger.warning(
+            f"{type(store).__name__} has no strict point reads; keeping the "
+            f"FAILED row for {doc_id} instead of trusting an unconfirmed miss"
+        )
+        return None
+    try:
+        return await store.get_by_id_strict(doc_id) is None
+    except Exception as read_error:
+        logger.warning(
+            f"Strict full_docs point read failed for {doc_id}; keeping the "
+            f"FAILED row: {read_error}"
+        )
+        return None
+
+
+async def _row_source_file(rag: LightRAG, doc_id: str) -> str | None:
+    """Read ``metadata.source_file`` — the ORIGINAL physical basename (hint
+    included) that created this row — hydrating exactly one record.
+
+    ``None`` means the row carries no source identity (custom-ID / legacy /
+    non-scan-origin inserts) or vanished between resolution and hydration; per
+    §8.3.E that is NOT evidence of a different physical file. A strict
+    hydration failure propagates: identity decisions must fail closed.
+    """
+    rows = await rag.doc_status.get_full_docs_by_ids([doc_id], strict=True)
+    row = rows.get(doc_id)
+    if row is None:
+        return None
+    return read_source_file_basename(getattr(row, "metadata", None) or {})
+
+
+async def classify_scan_file(
+    rag: LightRAG, file_path: Path, canonical_source_key: str
+) -> _ScanFileDecision:
+    """Classify one physical file into the seven §8.3 exits.
+
+    Identity is resolved with ``resolve_doc_source_strict``: the doc ID is the
+    identity every later operation uses, and the canonical basename only LOCATES
+    candidates — it is not assumed unique (custom-ID inserts, legacy ids and
+    historical collisions can share one), which is why two primary candidates
+    are a conflict to repair rather than a row to overwrite.
+
+    Read-only by contract: every destructive consequence (enqueue, archive, stub
+    deletion) is performed by the caller, so a decision can be logged, counted
+    and sampled before anything on disk or in storage changes. The mutually
+    exclusive order is the document's:
+
+    1. ``SourceAbsent`` → CLAIMED_NEW
+    2. ``SourceConflict`` → SOURCE_CONFLICT (never enqueue/delete/archive)
+    3. PROCESSED → PROCESSED (archive the input file)
+    4. FAILED with CONFIRMED-absent content → STALE_STUB (delete, retry as new)
+    5. no ``metadata.source_file`` → SOURCE_IDENTITY_UNKNOWN (keep, warn)
+    6. physical basename == ``source_file`` → RESUME_SAME_PHYSICAL_SOURCE
+    7. otherwise → ALIAS_DUPLICATE (archive the alias, keep the row)
+    """
+    if canonical_source_key == UNKNOWN_FILE_SOURCE:
+        # No usable canonical identity to resolve against (nothing to collide
+        # with either); the enqueue path reports its own error document if the
+        # name turns out to be unusable.
+        return _ScanFileDecision(_ScanFileClass.CLAIMED_NEW)
+
+    resolution = await rag.doc_status.resolve_doc_source_strict(canonical_source_key)
+
+    if isinstance(resolution, SourceAbsent):
+        return _ScanFileDecision(_ScanFileClass.CLAIMED_NEW)
+
+    if isinstance(resolution, SourceConflict):
+        count = resolution.candidate_count
+        return _ScanFileDecision(
+            _ScanFileClass.SOURCE_CONFLICT,
+            detail=(
+                f"{count if count is not None else 'Multiple'} primary documents "
+                f"share canonical source '{canonical_source_key}'; repair them by "
+                "doc id before this file can be classified (sample doc ids: "
+                f"{', '.join(resolution.sample_doc_ids) or 'unavailable'})"
+            ),
+        )
+
+    if not isinstance(resolution, SourceUnique):  # pragma: no cover - typed union
+        raise TypeError(
+            f"resolve_doc_source_strict returned {type(resolution).__name__}; "
+            "expected SourceAbsent | SourceUnique | SourceConflict"
+        )
+
+    doc_id = resolution.doc_id
+    status_value = get_doc_status_value(resolution.doc)
+
+    if status_value == DocStatus.PROCESSED.value:
+        return _ScanFileDecision(_ScanFileClass.PROCESSED, doc_id=doc_id)
+
+    if status_value == DocStatus.FAILED.value:
+        # An extraction-error stub (recorded by apipeline_enqueue_error_documents)
+        # never wrote full_docs, and the consistency validator preserves it for
+        # manual review — the resume path can never advance it. A re-scan of a
+        # fixed file must therefore drop the stub and start over. Only a
+        # CONFIRMED absence may do that; an unconfirmed one falls through to the
+        # non-destructive exits below.
+        if await _confirm_full_docs_absent(rag, doc_id) is True:
+            return _ScanFileDecision(_ScanFileClass.STALE_STUB, doc_id=doc_id)
+
+    source_file = await _row_source_file(rag, doc_id)
+    if source_file is None:
+        return _ScanFileDecision(
+            _ScanFileClass.SOURCE_IDENTITY_UNKNOWN,
+            doc_id=doc_id,
+            detail=(
+                f"Document {doc_id} (status {status_value}) shares canonical "
+                f"source '{canonical_source_key}' but records no source file, so "
+                f"{file_path.name} cannot be proven to be a different physical "
+                "file; keeping it untouched"
+            ),
+        )
+    if source_file == file_path.name:
+        return _ScanFileDecision(
+            _ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE, doc_id=doc_id
+        )
+    return _ScanFileDecision(
+        _ScanFileClass.ALIAS_DUPLICATE,
+        doc_id=doc_id,
+        detail=(
+            f"Archiving alias {file_path.name}: canonical source "
+            f"'{canonical_source_key}' already belongs to document {doc_id} "
+            f"(source file '{source_file}', status {status_value})"
+        ),
+    )
+
+
+def _scan_enqueue_batch_size() -> int:
+    """How many claimed files one streaming scan batch holds (LR2 §8.2).
+
+    Read per scan (not captured at import) so a restart-free config reload takes
+    effect. ``initialize_config`` rejects a non-positive value at startup; the
+    clamp here only covers a rig that bypassed it — never fall back to an
+    unbounded batch, which is precisely what streaming discovery removes.
+    """
+    configured = getattr(global_args, "scan_enqueue_batch_size", None)
+    if not isinstance(configured, int) or configured <= 0:
+        logger.warning(
+            "SCAN_ENQUEUE_BATCH_SIZE is not a positive integer "
+            f"({configured!r}); falling back to {DEFAULT_SCAN_ENQUEUE_BATCH_SIZE}"
+        )
+        return DEFAULT_SCAN_ENQUEUE_BATCH_SIZE
+    return configured
+
+
+_SCAN_SPOOL_PREFIX = "lightrag-scan-sort-"
+
+
+def _scan_spool_base_dir(rag: LightRAG) -> Path | None:
+    """Where this scan creates its disposable candidate spool.
+
+    Resolution order: ``SCAN_SPOOL_DIR`` → ``WORKING_DIR/scan_spool``, each
+    narrowed to a per-workspace subdirectory.  The spool holds
+    O(files-in-INPUT_DIR) ordering rows, so it must land on real, writable,
+    local disk: ``/tmp`` is a RAM-backed tmpfs on many Linux hosts, which would
+    put the very state this design moves OUT of Python memory straight back into
+    memory.  WORKING_DIR is already LightRAG's own writable local state volume,
+    which makes it the right default.
+
+    INPUT_DIR is deliberately NOT a candidate.  It is frequently a network mount
+    (the slowest possible home for the one bulk-insert phase in the pipeline),
+    it is legitimately mounted read-only in "scan but never write" deployments,
+    and it is co-managed by sync tools that would copy or delete the spool
+    mid-scan.
+
+    The workspace subdirectory is what lets the spool have a FIXED name inside
+    it (see :class:`_ScanCandidateSpool`): two workspaces sharing one
+    WORKING_DIR must never reuse or delete each other's file.  That makes the
+    workspace → directory mapping load-bearing, so it is INJECTIVE by
+    construction — ``unnamed/`` for the empty workspace, ``named/<workspace>/``
+    for every other.  A bare sentinel would not be: ``validate_workspace``
+    accepts any single path component, so a workspace literally called
+    ``_default`` would collide with the unnamed one.  The two hold different
+    per-workspace scan locks and can therefore run concurrently, and the loser
+    of that race has its live database deleted out from under it.
+
+    Returns ``None`` only when no working directory can be determined at all —
+    a test rig, never a real ``LightRAG``, whose ``working_dir`` always defaults
+    to ``./rag_storage``.  There is no operator-chosen placement to honour in
+    that case, so the caller falls back to the OS temp dir.
+    """
+    configured = getattr(global_args, "scan_spool_dir", None)
+    if isinstance(configured, str) and configured.strip():
+        base = Path(configured.strip())
+    else:
+        working_dir = getattr(rag, "working_dir", None)
+        if not isinstance(working_dir, str) or not working_dir.strip():
+            return None
+        base = Path(working_dir.strip()) / "scan_spool"
+
+    workspace = getattr(rag, "workspace", "") or ""
+    if not workspace:
+        return base / "unnamed"
+    # Reuses the storage layer's rule rather than sanitizing: a workspace that
+    # could escape its directory is a configuration error everywhere else too.
+    return base / "named" / validate_workspace(workspace)
+
+
+class _ScanCandidateSpool:
+    """Disk-backed, globally mtime-ordered scan candidates.
+
+    Exact oldest-file-first ordering over an unordered directory iterator needs
+    O(number of files) state somewhere. Keeping that state in Python memory
+    would undo LR2's bounded scan, while overloading ``doc_status.created_at``
+    with the file's mtime makes a persistence timestamp lie. This disposable
+    SQLite spool is the separation point:
+
+    * discovery/classification inserts one lightweight row at a time;
+    * a UNIQUE canonical key preserves first-physical-claim-wins before any
+      candidate has reached doc_status;
+    * an on-disk ``(mtime, path, sequence)`` index provides the global order;
+    * :meth:`ordered_batches` fetches at most K candidates into Python memory;
+    * once a path is enqueued, doc_status stamps its real creation time and the
+      filesystem timestamp has no further role.
+
+    A missing mtime does not lose the candidate. It sorts after every readable
+    timestamp and the enqueue path reports a vanished/unreadable file normally.
+
+    **Lifetime.** The database is rebuildable coordination state, never
+    persistent LightRAG storage. It is deleted when the scan ends, and a process
+    death simply leaves the source files for the next scan to rediscover. But it
+    lives on a PERSISTENT volume, where nothing reclaims what ``kill -9`` leaves
+    behind — so its name inside the per-workspace directory is FIXED rather than
+    randomized, and the next scan deletes any leftover before opening its own.
+    Residue is therefore capped at one spool, not one per crash. Reusing a fixed
+    name is safe because ``scanning_exclusive`` already admits a single scan per
+    workspace, which is the same guarantee that keeps two scans from fighting
+    over INPUT_DIR.
+
+    **Placement is fail-closed.** If the operator's directory cannot be used,
+    the scan fails instead of quietly relocating to the OS temp dir. That
+    fallback is not a degraded-but-correct mode: on a host where ``/tmp`` is
+    tmpfs it silently restores the O(number of files) RAM cost this whole design
+    exists to remove, and the symptom is an OOM kill halfway through a large
+    scan rather than an error naming the misconfiguration.
+    """
+
+    _DB_NAME = "candidates.sqlite3"
+
+    def __init__(self, commit_interval: int, base_dir: Path | None = None):
+        self._spool_dir, self._temp_dir = self._prepare_dir(base_dir)
+        self._db_path = self._spool_dir / self._DB_NAME
+        try:
+            self._discard_database_files()
+        except OSError as residue_error:
+            # Opening on top of residue we could not remove would mean reading
+            # another scan's rows, so this is fail-closed like placement itself.
+            raise RuntimeError(
+                f"Scan candidate spool {self._db_path} could not be reclaimed "
+                f"({residue_error}); refusing to reuse another scan's database."
+            ) from residue_error
+        self._connection = sqlite3.connect(self._db_path)
+        # Bound SQLite's page cache and force any query scratch space to disk.
+        # The database is disposable, so fsync durability buys nothing: a
+        # process death simply makes the next /scan rediscover the source files.
+        self._connection.execute("PRAGMA cache_size = -2048")
+        self._connection.execute("PRAGMA temp_store = FILE")
+        self._connection.execute("PRAGMA synchronous = OFF")
+        self._connection.executescript(
+            """
+            CREATE TABLE candidates (
+                sequence INTEGER PRIMARY KEY,
+                canonical_key TEXT,
+                file_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                mtime_missing INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                path_sort_key TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX candidates_canonical
+                ON candidates(canonical_key);
+            CREATE INDEX candidates_schedule
+                ON candidates(
+                    mtime_missing,
+                    mtime_ns,
+                    path_sort_key,
+                    sequence
+                );
+            """
+        )
+        self._commit_interval = max(1, int(commit_interval))
+        self._pending_writes = 0
+
+    @staticmethod
+    def _prepare_dir(
+        base_dir: Path | None,
+    ) -> tuple[Path, tempfile.TemporaryDirectory | None]:
+        """Resolve the spool directory, or raise (see "Placement is fail-closed").
+
+        ``base_dir is None`` means no placement was determinable at all (a test
+        rig without a ``working_dir``); there is nothing to honour, so a
+        self-cleaning OS temp dir is used and returned for disposal.
+        """
+        if base_dir is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix=_SCAN_SPOOL_PREFIX)
+            return Path(temp_dir.name), temp_dir
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as spool_error:
+            raise RuntimeError(
+                f"Scan candidate spool directory {base_dir} is unusable "
+                f"({spool_error}). Point SCAN_SPOOL_DIR at a writable local "
+                "disk; the scan is refused rather than relocated, because the "
+                "OS temp dir is a RAM-backed tmpfs on many hosts and would "
+                "silently restore the memory cost the spool exists to avoid."
+            ) from spool_error
+        return base_dir, None
+
+    def _discard_database_files(self) -> None:
+        """Delete this workspace's spool database and any SQLite side files.
+
+        Called before opening (reclaiming a crashed scan's residue) and after
+        closing (ordinary disposal).
+        """
+        for path in self._spool_dir.glob(f"{self._DB_NAME}*"):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    async def claim(
+        self,
+        file_path: Path,
+        canonical_key: str,
+        sequence: int,
+    ) -> str | None:
+        """Stage one candidate; return the earlier claimer's path on conflict."""
+
+        try:
+            # INPUT_DIR may be a network mount. Keep its metadata read off the
+            # event loop so scan-job heartbeats and cancellation remain live.
+            # This is the ONLY stat of the file: the size travels with the
+            # candidate so the enqueue phase does not repeat the round-trip.
+            stat = await asyncio.to_thread(file_path.stat)
+            mtime_missing = 0
+            # NOT ``getattr(stat, "st_mtime_ns", <fallback>)``: Python evaluates
+            # a getattr default eagerly, so the fallback would read st_mtime on
+            # every call and an object exposing only st_mtime_ns would raise.
+            mtime_ns = getattr(stat, "st_mtime_ns", None)
+            if mtime_ns is None:
+                mtime_ns = int(stat.st_mtime * 1_000_000_000)
+            file_size = stat.st_size
+        except Exception:
+            mtime_missing = 1
+            mtime_ns = 0
+            # 0, not NULL: the candidate's size is always "already read", so the
+            # enqueue path never re-stats. 0 is exactly how pipeline_enqueue_file
+            # has always reported a size it could not read, and the field feeds
+            # error reports only.
+            file_size = 0
+
+        # SQLite UNIQUE permits multiple NULLs, matching unknown_source's
+        # "identity cannot be claimed" semantics: every such candidate is
+        # staged, none of them claims the others' slot.
+        stored_canonical = (
+            None if canonical_key == UNKNOWN_FILE_SOURCE else canonical_key
+        )
+        cursor = self._connection.execute(
+            """
+            INSERT OR IGNORE INTO candidates(
+                sequence,
+                canonical_key,
+                file_path,
+                file_size,
+                mtime_missing,
+                mtime_ns,
+                path_sort_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sequence,
+                stored_canonical,
+                str(file_path),
+                file_size,
+                mtime_missing,
+                int(mtime_ns),
+                get_pinyin_sort_key(str(file_path)),
+            ),
+        )
+        if cursor.rowcount == 0:
+            # OR IGNORE swallows EVERY constraint violation, so a row that did
+            # not land is only a duplicate canonical claim when we can name the
+            # claimer. Anything else (a reused sequence, a NOT NULL breach)
+            # would silently drop a discovered file — raise instead.
+            row = (
+                self._connection.execute(
+                    "SELECT file_path FROM candidates WHERE canonical_key = ?",
+                    (stored_canonical,),
+                ).fetchone()
+                if stored_canonical is not None
+                else None
+            )
+            if row is None:
+                raise RuntimeError(
+                    f"scan candidate {file_path} (sequence {sequence}) was "
+                    "rejected by the spool without a canonical claim to blame"
+                )
+            return str(row[0])
+
+        self._pending_writes += 1
+        if self._pending_writes >= self._commit_interval:
+            self._connection.commit()
+            self._pending_writes = 0
+        return None
+
+    def ordered_batches(self, batch_size: int) -> Iterator[list[_ScanCandidate]]:
+        """Yield globally oldest-first batches, each bounded by ``batch_size``."""
+
+        self._connection.commit()
+        self._pending_writes = 0
+        cursor = self._connection.execute(
+            """
+            SELECT file_path, file_size
+            FROM candidates
+            ORDER BY
+                mtime_missing ASC,
+                mtime_ns ASC,
+                path_sort_key ASC,
+                sequence ASC
+            """
+        )
+        while rows := cursor.fetchmany(batch_size):
+            yield [_ScanCandidate(Path(str(row[0])), int(row[1])) for row in rows]
+
+    def close(self) -> None:
+        try:
+            self._connection.close()
+        finally:
+            try:
+                self._discard_database_files()
+            except OSError as cleanup_error:
+                # The scan itself is done; leftover bytes are reclaimed by the
+                # next scan's pre-open discard, so this must not fail the run.
+                logger.warning(
+                    f"Could not delete scan spool {self._db_path} "
+                    f"({cleanup_error}); the next scan will reclaim it."
+                )
+            if self._temp_dir is not None:
+                self._temp_dir.cleanup()
+
+    def __enter__(self) -> "_ScanCandidateSpool":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback_value) -> None:
+        self.close()
+
+
+def _enforce_texts_per_request(count: int) -> None:
+    """Refuse an oversized ``/documents/texts`` batch with 413 (LR2 §11).
+
+    Read per request (not captured at import) so a config reload applies, and
+    checked BEFORE the endpoint's per-text existence reads — those are one
+    storage round-trip each, so a 100k-text batch would otherwise do 100k of them
+    on its way to being refused.
+
+    413 rather than 429: ``MAX_PENDING_DOCUMENTS`` says "the pipeline is full,
+    come back later", but a request that carries more documents than one request
+    may carry will never fit, however long the client waits. A non-positive or
+    non-integer setting disables the check — ``initialize_config`` already
+    rejects a negative one, and refusing every batch because a knob is malformed
+    would be worse than not enforcing it.
+    """
+    limit = getattr(global_args, "max_texts_per_request", None)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        return
+    if count > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Too many texts in one request: {count} (maximum {limit}). "
+                "Split the batch into smaller requests."
+            ),
+        )
+
+
+# Upper bound on one source-conflict listing page. The projection is bounded
+# per key (count + fixed sample), so this only caps the response size.
+_SOURCE_CONFLICT_PAGE_MAX = 200
+
+
+def _encode_source_conflict_cursor(position: CursorPosition) -> Optional[str]:
+    """Wrap a backend continuation token as a client-facing opaque cursor.
+
+    The backend's token is its own private format (JSON for some backends). It
+    is base64url-wrapped here for two reasons: it keeps storage internals out of
+    the query string, and it lets the endpoint reject a garbled cursor as a 400
+    instead of letting the backend raise a control-plane error that would be
+    reported as an unavailable service (503).
+    """
+    if not isinstance(position, CursorAfter):
+        return None
+    return base64.urlsafe_b64encode(position.opaque.encode("utf-8")).decode("ascii")
+
+
+def _decode_source_conflict_cursor(raw: Optional[str]) -> CursorPosition:
+    """Inverse of :func:`_encode_source_conflict_cursor`; 400 on a bad cursor.
+
+    Boundary: only the envelope is validated here. A well-formed envelope whose
+    payload the backend cannot parse (e.g. a cursor minted by a different
+    backend) still surfaces as that backend's control-plane error.
+    """
+    if raw is None or raw == "":
+        return CURSOR_START
+    try:
+        opaque = base64.b64decode(
+            raw.encode("ascii"), altchars=b"-_", validate=True
+        ).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError) as decode_error:
+        logger.warning(
+            f"Rejected malformed source-conflict cursor "
+            f"'{safe_log_value(raw, 64)}': {decode_error}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Malformed cursor; pass back the next_cursor value verbatim.",
+        )
+    if not opaque:
+        raise HTTPException(
+            status_code=400,
+            detail="Malformed cursor; pass back the next_cursor value verbatim.",
+        )
+    return CursorAfter(opaque)
+
+
+def _resolve_scan_job_store(rag: LightRAG) -> Any:
+    """Resolve this workspace's scan job store, or None when unavailable.
+
+    Mocked rigs (and any path running before shared storage is initialised) have
+    no store; the scan must still run, just without a job record."""
+    try:
+        from lightrag.kg.shared_storage import get_scan_job_store
+
+        return get_scan_job_store(getattr(rag, "workspace", ""))
+    except Exception as store_error:
+        logger.debug(f"Scan job store unavailable: {store_error}")
+        return None
+
+
+def _cancel_scan_job(
+    rag: LightRAG, track_id: str | None, owner_token: str | None
+) -> None:
+    """Owner-checked cancel of a job this endpoint created but never handed off.
+
+    Part of the §8.6 reverse compensation chain: a job whose child never took
+    over has nobody to finalise it. Owner-checked, so a late compensation can
+    never cancel a SUCCESSOR's job; idempotent for a missing/terminal record."""
+    if not track_id or not owner_token:
+        return
+    store = _resolve_scan_job_store(rag)
+    if store is None:
+        return
+    try:
+        store.cancel(
+            track_id,
+            owner_token,
+            message="scan startup aborted before the background task took over",
+        )
+    except Exception as cancel_error:
+        logger.warning(f"Scan job {track_id} startup cancel failed: {cancel_error}")
+
+
 async def run_scanning_process(
-    rag: LightRAG, doc_manager: DocumentManager, track_id: str = None
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    track_id: str = None,
+    scanning_token: str | None = None,
+    manual_request_id: str | None = None,
+    job_owner_token: str | None = None,
 ):
     """Background task to scan and index documents
 
@@ -1989,6 +3481,25 @@ async def run_scanning_process(
         rag: LightRAG instance
         doc_manager: DocumentManager instance
         track_id: Optional tracking ID to pass to all scanned files
+        manual_request_id: The sticky manual retry request the scan endpoint
+            published for this scan (None on legacy/mocked paths). It is served
+            BEFORE any file is discovered, by the shared exclusive FAILED reset
+            (LR2 §8.1) — the only path that pulls FAILED documents back in — so
+            a file that fails during THIS scan cannot be absorbed by this
+            scan's own request. When the reset does not complete, discovery is
+            skipped entirely and the request stays sticky for the standard
+            drain path. Either way the finally drives the queue once if no
+            branch above did, so the reset PENDING rows / the unserved request
+            do not wait for an unrelated trigger; on ANY cancellation the drive
+            is skipped and whatever was reset simply stays PENDING for the next
+            trigger (a shutdown must not start a full processing run, and a
+            cancellation's origin cannot be told apart here).
+        job_owner_token: Owner token of the bounded scan job record the endpoint
+            created before handing this task the reservation (None on
+            legacy/mocked paths). This task owns that record from takeover on:
+            it reports bounded progress into it and finalises it in the finally
+            (COMPLETED / FAILED / CANCELLED), so the endpoint's compensation
+            chain never has to (LR2 §8.6).
     """
     # The scan endpoint set ``scanning=True`` AND
     # ``scanning_exclusive=True`` synchronously before scheduling this
@@ -2002,226 +3513,404 @@ async def run_scanning_process(
     # test rigs), the flags were never set so there's nothing to
     # clear — track that here to skip the namespace fetch.
     from lightrag.exceptions import PipelineNotInitializedError
-    from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_namespace_lock,
+        has_scan_deferred_processing,
+        transition_scanning_reservation,
+    )
 
     pipeline_status = None
     pipeline_status_lock = None
+    # Distinguish a normal exit from a cancellation (server shutdown / task
+    # cancel): a cancelled scan MUST NOT kick off a full processing run in its
+    # finally. Shutdown is waiting for THIS task to exit, and one cancel injects
+    # CancelledError only once, so a post-release ``await`` here would otherwise
+    # run parse/LLM/index to completion and stall the shutdown.
+    was_cancelled = False
+    # True once any drive branch below invoked the processing queue: the
+    # manual-intent fallback in the finally only fires when EVERY branch was
+    # skipped or classification failed — a drive that ran had its chance to
+    # consume the scan's sticky request (and a busy-refused drive leaves it
+    # for the running loop's quiescence peek).
+    queue_drive_attempted = False
+    # Bounded job-record reporting (LR2 §8.6). Disabled (no-op) when this task
+    # owns no record — legacy/mocked paths and any run before shared storage is
+    # initialised. The terminal transition happens in the finally; the default
+    # below covers an exit path that sets nothing (it never leaves a RUNNING
+    # record behind for the lease reaper to guess about).
+    reporter = _ScanJobReporter(
+        _resolve_scan_job_store(rag) if job_owner_token else None,
+        track_id,
+        job_owner_token,
+    )
+    job_status = ScanJobStatus.FAILED
+    job_message = "scan ended without reporting an outcome"
+    # Lease heartbeat, independent of scan progress: the phases below (rollback,
+    # exclusive FAILED reset, processing) can each outlast the lease without
+    # touching the record. Cancelled just before the terminal transition, after
+    # the deferred drive in the finally — see _renew_scan_job_lease.
+    lease_heartbeat = (
+        asyncio.create_task(_renew_scan_job_lease(reporter, asyncio.current_task()))
+        if reporter.enabled
+        else None
+    )
     try:
-        pipeline_status = await get_namespace_data(
-            "pipeline_status", workspace=rag.workspace
-        )
-        pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=rag.workspace
-        )
-    except PipelineNotInitializedError:
-        pass
-
-    try:
-        new_files = doc_manager.scan_directory_for_new_files()
-        total_files = len(new_files)
-        logger.info(f"Found {total_files} files to index.")
-
-        if new_files:
-            # Group canonical-equivalent files so we can prefer hint-bearing
-            # variants over plain ones. Within each group sort order is
-            # preserved as a deterministic tiebreaker.
-            files_by_canonical_name: dict[str, list[Path]] = {}
-            for file_path in sorted(
-                new_files, key=lambda p: get_pinyin_sort_key(str(p))
-            ):
-                canonical_name = normalize_file_path(str(file_path))
-                files_by_canonical_name.setdefault(canonical_name, []).append(file_path)
-
-            unique_files: list[Path] = []
-            for canonical_name, group in files_by_canonical_name.items():
-                # Prefer the first file carrying a supported parser hint so
-                # the user's explicit engine choice wins over plain variants;
-                # otherwise fall back to the first sorted entry.
-                chosen = next(
-                    (f for f in group if filename_parser_hint(f.name) is not None),
-                    group[0],
-                )
-                unique_files.append(chosen)
-                for duplicate in group:
-                    if duplicate is chosen:
-                        continue
-                    warning = (
-                        "Skipping duplicate file in scan batch: "
-                        f"{duplicate.name} duplicates {chosen.name} "
-                        f"(canonical: {canonical_name})"
-                    )
-                    await record_scan_warning(rag, warning)
-                    try:
-                        await move_file_to_parsed_dir(duplicate)
-                    except Exception as move_error:
-                        logger.error(
-                            f"Failed to move duplicate scan file {duplicate.name} to {PARSED_DIR_NAME}: {move_error}"
-                        )
-
-            # Partition unique_files into:
-            #   * processed_files — already PROCESSED, archived and skipped.
-            #   * resume_files    — same canonical basename matches an existing
-            #                       non-PROCESSED doc_status row (PARSING /
-            #                       FAILED / PROCESSING / ANALYZING / PENDING).
-            #                       These must NOT go through pipeline_enqueue_file
-            #                       because apipeline_enqueue_documents would
-            #                       treat the same canonical name as a duplicate
-            #                       (returning None) and pipeline_enqueue_file
-            #                       would then archive the source as if it were
-            #                       a duplicate — corrupting pending-parse cases
-            #                       that still need the source on disk.  The
-            #                       pipeline's resume logic, triggered via
-            #                       apipeline_process_enqueue_documents, will
-            #                       advance them based on their existing
-            #                       doc_status row.
-            #   * new_files       — no existing record; standard enqueue path.
-            new_files: list[Path] = []
-            resume_files: list[Path] = []
-            processed_files: list[str] = []
-
-            for file_path in unique_files:
-                filename = file_path.name
-                # Inline the canonical-basename lookup so we keep both the
-                # doc_id and the data: the FAILED-without-full_docs sub-case
-                # below needs the doc_id to delete the stale stub.
-                basename = normalize_file_path(str(file_path))
-                existing_match = (
-                    await rag.doc_status.get_doc_by_file_basename(basename)
-                    if basename != UNKNOWN_FILE_SOURCE
-                    else None
-                )
-                existing_doc_id, existing_doc_data = (
-                    existing_match if existing_match else (None, None)
-                )
-
-                if (
-                    existing_doc_data
-                    and get_doc_status_value(existing_doc_data)
-                    == DocStatus.PROCESSED.value
-                ):
-                    # File is already PROCESSED, skip it with warning and archive it.
-                    processed_files.append(filename)
-                    warning = f"Skipping already processed file: {filename}"
-                    await record_scan_warning(rag, warning)
-                    try:
-                        await move_file_to_parsed_dir(file_path)
-                    except Exception as move_error:
-                        logger.error(
-                            f"Failed to move already processed file {filename} to {PARSED_DIR_NAME}: {move_error}"
-                        )
-                elif existing_doc_data:
-                    # FAILED rows recorded by apipeline_enqueue_error_documents
-                    # never write a full_docs entry — extraction blew up before
-                    # any content was stored.  _validate_and_fix_document_consistency
-                    # preserves them for manual review and removes them from the
-                    # processing list, so the resume path can never advance them.
-                    # When the user fixes the file and re-scans we want a real
-                    # retry: drop the stale stub and treat the file as new so
-                    # the standard enqueue path re-extracts content.
-                    status_value = get_doc_status_value(existing_doc_data)
-                    if status_value == DocStatus.FAILED.value:
-                        full_doc = await rag.full_docs.get_by_id(existing_doc_id)
-                        if full_doc is None:
-                            try:
-                                await rag.doc_status.delete([existing_doc_id])
-                            except Exception as delete_error:
-                                logger.error(
-                                    "Failed to delete stale failed-extraction "
-                                    f"doc_status stub {existing_doc_id} "
-                                    f"({filename}): {delete_error}"
-                                )
-                                # Fall through to resume — at worst the row
-                                # remains preserved (current behaviour) rather
-                                # than re-enqueued.
-                                resume_files.append(file_path)
-                                continue
-                            logger.info(
-                                "Retrying previously failed extraction; "
-                                f"removed stale doc_status stub: {filename} "
-                                f"(doc_id: {existing_doc_id})"
-                            )
-                            new_files.append(file_path)
-                            continue
-                    logger.info(
-                        "Resuming previously unfinished file from scan: "
-                        f"{filename} (Status: {status_value})"
-                    )
-                    resume_files.append(file_path)
-                else:
-                    new_files.append(file_path)
-
-            # Classification phase complete — release ``scanning_exclusive``
-            # so concurrent uploads/inserts can land in doc_status while
-            # the scan-driven processing finishes.  ``scanning`` stays
-            # True for the rest of the task lifecycle (releases in
-            # finally) so the /scan endpoint still refuses overlapping
-            # scans.  Any per-file enqueue or duplicate detected during
-            # the processing phase is handled by
-            # apipeline_enqueue_documents' in-batch dedup, identical to
-            # the upload-during-busy case.
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["scanning_exclusive"] = False
-
-            # New files take the standard enqueue + process path.  When at
-            # least one new file is successfully enqueued, pipeline_index_files
-            # internally invokes apipeline_process_enqueue_documents, which
-            # selects work by doc_status state and so will also pick up any
-            # resume_files in the same run.
-            if new_files:
-                await pipeline_index_files(
-                    rag,
-                    new_files,
-                    track_id,
-                    from_scan=True,
-                )
-
-            # Resume targets must always trigger the pipeline explicitly:
-            # pipeline_index_files only runs apipeline_process_enqueue_documents
-            # after at least one new file successfully enqueues, so when every
-            # new file is rejected (unsupported extension, empty body, content
-            # / filename duplicate, ...) the resume rows would otherwise stay
-            # stuck until an unrelated indexing run.  When new files DID
-            # enqueue, the inner call already drained the queue and this is a
-            # cheap no-op that returns "No documents to process".
-            if resume_files:
-                await rag.apipeline_process_enqueue_documents()
-
-            total_active = len(new_files) + len(resume_files)
-            if total_active or processed_files:
-                summary_parts: list[str] = []
-                if total_active:
-                    summary_parts.append(f"{total_active} files Processed")
-                if processed_files:
-                    summary_parts.append(f"{len(processed_files)} skipped")
-                logger.info(f"Scanning process completed: {' '.join(summary_parts)}.")
-            else:
-                logger.info(
-                    "No files to process after filtering already processed files."
-                )
-        else:
-            # No new files to index — classification is trivially done;
-            # release ``scanning_exclusive`` before driving the queue so
-            # concurrent uploads can land while process_enqueue runs.
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["scanning_exclusive"] = False
-            logger.info(
-                "No upload file found, check if there are any documents in the queue..."
+        # Fetch INSIDE the release try: the scan endpoint already reserved
+        # ``scanning``/``scanning_exclusive`` before scheduling us, so a
+        # cancellation delivered at this await must still reach the finally and
+        # release. PipelineNotInitializedError = mocked test rig (nothing to
+        # clear); a real CancelledError propagates to the finally.
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
             )
-            await rag.apipeline_process_enqueue_documents()
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
+        except PipelineNotInitializedError:
+            pass
 
+        # Roll back failed/stale custom-chunk operations FIRST, while the
+        # classification phase still holds ``scanning_exclusive`` (issue
+        # #3400 Phase 4). Discovery is storage-driven — SDK operations may
+        # have no scan-visible input file — and a failed rollback keeps the
+        # journal/FAILED row for the next scan without aborting this one.
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            try:
+                await rag.arollback_failed_custom_chunk_patches(
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+            except Exception as rollback_error:
+                logger.error(
+                    f"Scan-time custom-chunk rollback failed: {rollback_error}"
+                )
+
+        # LR2 §8.1: retry the FAILED documents that already existed BEFORE this
+        # scan discovers or enqueues anything. Running the exclusive
+        # FAILED→PENDING reset first is what keeps a file that fails DURING this
+        # scan out of this scan's own manual request (it would otherwise be
+        # retried immediately, by the very request that admitted it). The reset
+        # reuses the /reprocess_failed helper under this scan's owner token and
+        # ACKs the request itself, so the drive below no longer consumes it.
+        if manual_request_id is not None and pipeline_status is not None:
+            if not await rag.apipeline_reset_failed_for_scan(
+                manual_request_id, scan_owner_token=scanning_token
+            ):
+                # No reset, no discovery: enqueuing new files now would put them
+                # ahead of a still-sticky manual request, which is exactly the
+                # ordering §8.1 forbids. The finally releases the reservations and
+                # drives the queue once so the standard drain path serves the
+                # request; the next scan discovers the files.
+                abort_message = (
+                    "Scan aborted before file discovery: the exclusive FAILED "
+                    "reset did not complete (manual request "
+                    f"{manual_request_id[:8]} stays pending)"
+                )
+                logger.error(abort_message)
+                job_status = ScanJobStatus.FAILED
+                job_message = abort_message
+                reporter.sample("error", abort_message)
+                return
+
+        # ---- streaming discovery + disk-backed ordering (LR2 §8.2/§8.4) -----
+        # Discovery/classification stays a single pass with O(K) Python memory,
+        # but exact global mtime order needs O(number of files) ordering state
+        # somewhere. The disposable SQLite spool keeps that state on disk and
+        # yields at most ``SCAN_ENQUEUE_BATCH_SIZE`` paths at a time after
+        # discovery. Only then are rows written to doc_status, in oldest-file-
+        # first order, with created_at stamped at the actual write time.
+        #
+        # The cost of global ordering: nothing is persisted until discovery
+        # finishes, so an interrupted scan enqueues NOTHING (the source files
+        # stay in INPUT_DIR for the next scan to rediscover). The one thing that
+        # does not come back is a STALE_STUB row deleted below — the file is
+        # re-enqueued as new next time, but its preserved-for-review FAILED stub
+        # is gone.
+        batch_size = _scan_enqueue_batch_size()
+        discovered = 0
+        enqueued_count = 0
+        resumed_count = 0
+        processed_count = 0
+
+        async def _archive(file_path: Path, warning: str, counter_key: str) -> None:
+            """Archive an input file (never delete it) and record the reason."""
+            await record_scan_warning(rag, warning)
+            reporter.count(counter_key)
+            reporter.sample("warning", warning)
+            try:
+                await move_file_to_parsed_dir(file_path)
+            except Exception as move_error:
+                archive_error = (
+                    f"Failed to move scan file {file_path.name} "
+                    f"to {PARSED_DIR_NAME}: {move_error}"
+                )
+                logger.error(archive_error)
+                reporter.count("errors")
+                reporter.sample("error", archive_error)
+
+        async def _claim_new_file(
+            spool: _ScanCandidateSpool,
+            file_path: Path,
+            canonical_key: str,
+            counter_key: str,
+            sequence: int,
+        ) -> None:
+            """Stage one file under the scan-wide first canonical claim (§8.4)."""
+
+            claimer = await spool.claim(file_path, canonical_key, sequence)
+            if claimer is not None:
+                # Full paths, not basenames: two same-named files in different
+                # subdirectories share a canonical key, and "a.docx duplicates
+                # a.docx" tells an operator nothing about which one won.
+                await _archive(
+                    file_path,
+                    "Skipping duplicate file in scan: "
+                    f"{file_path} duplicates {claimer} "
+                    f"(canonical: {canonical_key})",
+                    _ScanFileClass.ALIAS_DUPLICATE.value,
+                )
+                return
+            reporter.count(counter_key)
+
+        with _ScanCandidateSpool(
+            batch_size, _scan_spool_base_dir(rag)
+        ) as candidate_spool:
+            for file_path in doc_manager.iter_new_files():
+                discovered += 1
+                # Classifying a large tree can outlast the job lease; renewing here
+                # (time-based, a no-op most iterations) keeps the record from being
+                # reaped to ABANDONED under a live owner.
+                reporter.renew()
+                filename = file_path.name
+                canonical_key = normalize_file_path(str(file_path))
+                decision = await classify_scan_file(rag, file_path, canonical_key)
+
+                if decision.kind is _ScanFileClass.CLAIMED_NEW:
+                    await _claim_new_file(
+                        candidate_spool,
+                        file_path,
+                        canonical_key,
+                        _ScanFileClass.CLAIMED_NEW.value,
+                        discovered,
+                    )
+                    continue
+
+                if decision.kind is _ScanFileClass.SOURCE_CONFLICT:
+                    # §8.3.B: no enqueue, no doc_status delete, NO archive — the
+                    # file stays put and an operator repairs the historical
+                    # collision by doc id.
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.SOURCE_CONFLICT.value)
+                    reporter.sample("warning", decision.detail)
+                    continue
+
+                if decision.kind is _ScanFileClass.PROCESSED:
+                    processed_count += 1
+                    await _archive(
+                        file_path,
+                        f"Skipping already processed file: {filename}",
+                        _ScanFileClass.PROCESSED.value,
+                    )
+                    reporter.sample("processed", filename)
+                    continue
+
+                if decision.kind is _ScanFileClass.STALE_STUB:
+                    # §8.3.D: content confirmed absent, so this FAILED row can
+                    # never be resumed — drop it and retry the fixed file as new.
+                    try:
+                        await rag.doc_status.delete([decision.doc_id])
+                    except Exception as delete_error:
+                        stub_error = (
+                            "Failed to delete stale failed-extraction doc_status "
+                            f"stub {decision.doc_id} ({filename}): {delete_error}"
+                        )
+                        logger.error(stub_error)
+                        reporter.count("errors")
+                        reporter.sample("error", stub_error)
+                        continue
+                    logger.info(
+                        "Retrying previously failed extraction; removed stale "
+                        f"doc_status stub: {filename} (doc_id: {decision.doc_id})"
+                    )
+                    await _claim_new_file(
+                        candidate_spool,
+                        file_path,
+                        canonical_key,
+                        _ScanFileClass.STALE_STUB.value,
+                        discovered,
+                    )
+                    continue
+
+                if decision.kind is _ScanFileClass.SOURCE_IDENTITY_UNKNOWN:
+                    # §8.3.E: missing source_file is not evidence of a different
+                    # physical file; keep both file and row for review.
+                    await record_scan_warning(rag, decision.detail)
+                    reporter.count(_ScanFileClass.SOURCE_IDENTITY_UNKNOWN.value)
+                    reporter.sample("warning", decision.detail)
+                    continue
+
+                if decision.kind is _ScanFileClass.ALIAS_DUPLICATE:
+                    # §8.3.G: same canonical key, different physical file.
+                    await _archive(
+                        file_path,
+                        decision.detail,
+                        _ScanFileClass.ALIAS_DUPLICATE.value,
+                    )
+                    continue
+
+                # §8.3.F RESUME_SAME_PHYSICAL_SOURCE: the same physical file
+                # behind an unfinished row. Resume it from persistent state.
+                logger.info(
+                    f"Resuming previously unfinished file from scan: {filename} "
+                    f"(doc_id: {decision.doc_id})"
+                )
+                resumed_count += 1
+                reporter.count(_ScanFileClass.RESUME_SAME_PHYSICAL_SOURCE.value)
+
+            # Discovery is complete. Iterate the on-disk mtime index in bounded
+            # pages; each successful enqueue stamps doc_status.created_at=now().
+            for ordered_batch in candidate_spool.ordered_batches(batch_size):
+                enqueued_count += await pipeline_enqueue_scan_batch(
+                    rag, ordered_batch, track_id
+                )
+                # Publish this batch's counters/samples and renew the job lease.
+                reporter.flush()
+
+        reporter.count("discovered", discovered)
+        reporter.flush()
+
+        # Classification + enqueue complete — release ``scanning_exclusive`` so
+        # concurrent uploads/inserts can land in doc_status while the scan-driven
+        # processing finishes. ``scanning`` stays True for the rest of the task
+        # lifecycle (released in the finally) so the /scan endpoint still refuses
+        # overlapping scans. Any duplicate detected during the processing phase is
+        # handled by apipeline_enqueue_documents' in-batch dedup, identical to the
+        # upload-during-busy case.
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            if scanning_token is not None:
+                await transition_scanning_reservation(
+                    pipeline_status,
+                    pipeline_status_lock,
+                    token=scanning_token,
+                )
+            else:
+                async with pipeline_status_lock:
+                    pipeline_status["scanning_exclusive"] = False
+
+        # §8.1 final step: ONE processing run covers everything this scan
+        # produced — the enqueued batches, the resume targets, and the FAILED rows
+        # the pre-discovery reset turned into PENDING. Unconditional: a scan that
+        # enqueued nothing may still have resume targets or reset rows with no
+        # other trigger, and an empty queue makes this a cheap no-op.
+        queue_drive_attempted = True
+        await rag.apipeline_process_enqueue_documents()
+
+        summary = (
+            f"Scanning process completed: {discovered} discovered, "
+            f"{enqueued_count} enqueued, {resumed_count} resuming, "
+            f"{processed_count} already processed."
+        )
+        logger.info(summary)
+        job_status = ScanJobStatus.COMPLETED
+        job_message = summary
+
+    except asyncio.CancelledError:
+        # Shutdown / task cancel: skip the deferred drive below and leave
+        # ``scan_deferred_processing`` set for the next scan / trigger.
+        was_cancelled = True
+        job_status = ScanJobStatus.CANCELLED
+        job_message = "Scan cancelled (shutdown or explicit cancellation)."
+        raise
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
+        job_status = ScanJobStatus.FAILED
+        job_message = f"Scan failed: {e}"
+        reporter.sample("error", f"Scan failed: {e}")
     finally:
-        # Always release both scanning flags so future uploads / scans
-        # are not blocked by a crashed task.  Skip when pipeline_status
-        # was never initialised for this workspace (test rigs).
-        if pipeline_status is not None and pipeline_status_lock is not None:
+        # Always release both scanning flags so future uploads / scans are not
+        # blocked by a crashed / cancelled task.
+        if scanning_token is not None:
+            # Real scans: owner-checked + cancellation-resistant release that
+            # fetches status FRESH, so a cancellation during the initial
+            # namespace fetch above (which leaves pipeline_status_lock None)
+            # still releases scanning. A no-op if a later scan took the slot or
+            # the workspace was never initialised.
+            await _release_scanning_reservation(rag, scanning_token)
+        elif pipeline_status is not None and pipeline_status_lock is not None:
+            # Legacy/test path (no token): best-effort in-place clear.
             async with pipeline_status_lock:
-                pipeline_status["scanning"] = False
-                pipeline_status["scanning_exclusive"] = False
+                pipeline_status.update(
+                    {
+                        "scanning": False,
+                        "scanning_exclusive": False,
+                        "scanning_owner": None,
+                    }
+                )
+
+        # If this scan's ``scanning_exclusive`` fence turned away a concurrent
+        # processing request that no run then picked up, its PENDING doc has no
+        # other trigger — the branches above drive the queue only for new/resume
+        # files or an empty scan directory, so an all-already-processed scan or a
+        # classification error would strand it. Drain the queue once now that
+        # scanning has fully released. The check is READ-ONLY; the drive's own
+        # acquire clears the deferred flag, so a failed drive leaves it set for
+        # the next scan to honour. Empty queue → silent no-op.
+        #
+        # Skipped on cancellation: a cancelled scan must not start a full
+        # processing run while shutdown waits for it. The flag is never checked
+        # or cleared here, so it stays set for the next scan / trigger.
+        if (
+            not was_cancelled
+            and pipeline_status is not None
+            and pipeline_status_lock is not None
+        ):
+            drive_needed = await has_scan_deferred_processing(
+                pipeline_status, pipeline_status_lock
+            )
+            if (
+                not drive_needed
+                and manual_request_id is not None
+                and not queue_drive_attempted
+            ):
+                # Manual-intent fallback: every drive branch above was skipped or
+                # refused, so nothing has processed what this scan produced.
+                # Either outcome of the pre-discovery reset needs one drive:
+                #   * it completed — the FAILED rows are now PENDING with no
+                #     other trigger (classification may then have raised, or
+                #     found nothing to enqueue);
+                #   * it did not — the request is still sticky and the drive's
+                #     start peek runs the standard drain → reset → ACK path.
+                # A drive with nothing to do is a cheap no-op ("No documents to
+                # process"), so this needs no mailbox pre-check.
+                drive_needed = True
+            if drive_needed:
+                try:
+                    await rag.apipeline_process_enqueue_documents()
+                except Exception as drive_error:
+                    logger.error(
+                        f"Deferred post-scan queue drive failed: {drive_error}"
+                    )
+                    job_status = ScanJobStatus.FAILED
+                    job_message = f"Post-scan queue drive failed: {drive_error}"
+                    reporter.sample("error", job_message)
+
+        # The heartbeat has covered every phase including the deferred drive
+        # above; stop it before the terminal transition so the record's last
+        # write is the terminal one. Not awaited: the cancellation path must not
+        # await here (one cancel is injected once), and the task's own
+        # ``scan_task.done()`` check retires it regardless.
+        if lease_heartbeat is not None:
+            lease_heartbeat.cancel()
+
+        # Finalise the job record LAST, so the terminal status covers the whole
+        # task including the deferred drive above (LR2 §8.6). Synchronous — safe
+        # even on the cancellation path, which must not await. A record that was
+        # reaped or taken over meanwhile refuses this transition rather than
+        # overwriting a newer state.
+        reporter.finish(job_status, job_message)
 
 
 async def background_delete_documents(
@@ -2230,51 +3919,62 @@ async def background_delete_documents(
     doc_ids: List[str],
     delete_file: bool = False,
     delete_llm_cache: bool = False,
+    token: str | None = None,
 ):
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
         get_namespace_data,
         get_namespace_lock,
-    )
-
-    pipeline_status = await get_namespace_data(
-        "pipeline_status", workspace=rag.workspace
-    )
-    pipeline_status_lock = get_namespace_lock(
-        "pipeline_status", workspace=rag.workspace
+        get_pipeline_ingress,
+        release_owned_reservation,
     )
 
     total_docs = len(doc_ids)
     successful_deletions = []
     failed_deletions = []
-
-    # The /documents/delete_document endpoint has already reserved the
-    # destructive slot synchronously: ``busy=True`` and
-    # ``destructive_busy=True`` were set before the client got
-    # ``deletion_started``, after checking busy + scanning +
-    # pending_enqueues>0 atomically.  Here we only update the
-    # job-info fields; the busy reservation was acquired by the
-    # endpoint and is released in the finally block below.
-    async with pipeline_status_lock:
-        pipeline_status.update(
-            {
-                # Job name can not be changed, it's verified in adelete_by_doc_id()
-                "job_name": f"Deleting {total_docs} Documents",
-                "job_start": datetime.now().isoformat(),
-                "docs": total_docs,
-                "batchs": total_docs,
-                "cur_batch": 0,
-                "latest_message": "Starting document deletion process",
-            }
-        )
-        # Use slice assignment to clear the list in place
-        pipeline_status["history_messages"][:] = ["Starting document deletion process"]
-        if delete_llm_cache:
-            pipeline_status["history_messages"].append(
-                "LLM cache cleanup requested for this deletion job"
-            )
+    pipeline_status = None
+    pipeline_status_lock = None
 
     try:
+        # Fetch + initial job-status write INSIDE the release try: the delete
+        # endpoint already reserved busy + destructive_busy (owner=token) before
+        # scheduling us, so a cancellation delivered at these awaits must still
+        # reach the finally and release the slot.
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+
+        # The /documents/delete_document endpoint has already reserved the
+        # destructive slot synchronously: ``busy=True`` and
+        # ``destructive_busy=True`` were set before the client got
+        # ``deletion_started``, after checking busy + scanning +
+        # pending_enqueues>0 atomically.  Here we only update the
+        # job-info fields; the busy reservation was acquired by the
+        # endpoint and is released in the finally block below.
+        async with pipeline_status_lock:
+            pipeline_status.update(
+                {
+                    # Job name can not be changed, it's verified in adelete_by_doc_id()
+                    "job_name": f"Deleting {total_docs} Documents",
+                    "job_start": datetime.now().isoformat(),
+                    "docs": total_docs,
+                    "batchs": total_docs,
+                    "cur_batch": 0,
+                    "latest_message": "Starting document deletion process",
+                }
+            )
+            # Use slice assignment to clear the list in place
+            pipeline_status["history_messages"][:] = [
+                "Starting document deletion process"
+            ]
+            if delete_llm_cache:
+                append_pipeline_history(
+                    pipeline_status, "LLM cache cleanup requested for this deletion job"
+                )
+
         # Loop through each document ID and delete them one by one
         for i, doc_id in enumerate(doc_ids, 1):
             # Check for cancellation at the start of each document deletion
@@ -2283,7 +3983,7 @@ async def background_delete_documents(
                     cancel_msg = f"Deletion cancelled by user at document {i}/{total_docs}. {len(successful_deletions)} deleted, {total_docs - i + 1} remaining."
                     logger.info(cancel_msg)
                     pipeline_status["latest_message"] = cancel_msg
-                    pipeline_status["history_messages"].append(cancel_msg)
+                    append_pipeline_history(pipeline_status, cancel_msg)
                     # Add remaining documents to failed list with cancellation reason
                     failed_deletions.extend(
                         doc_ids[i - 1 :]
@@ -2292,9 +3992,8 @@ async def background_delete_documents(
 
                 start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
                 logger.info(start_msg)
-                pipeline_status["cur_batch"] = i
-                pipeline_status["latest_message"] = start_msg
-                pipeline_status["history_messages"].append(start_msg)
+                pipeline_status.update({"cur_batch": i, "latest_message": start_msg})
+                append_pipeline_history(pipeline_status, start_msg)
 
             file_path = "#"
             try:
@@ -2311,7 +4010,7 @@ async def background_delete_documents(
                     )
                     logger.info(success_msg)
                     async with pipeline_status_lock:
-                        pipeline_status["history_messages"].append(success_msg)
+                        append_pipeline_history(pipeline_status, success_msg)
 
                     # Handle file deletion if requested and source information is available
                     if (
@@ -2332,8 +4031,8 @@ async def background_delete_documents(
                                     pipeline_status["latest_message"] = (
                                         file_delete_error
                                     )
-                                    pipeline_status["history_messages"].append(
-                                        file_delete_error
+                                    append_pipeline_history(
+                                        pipeline_status, file_delete_error
                                     )
 
                             if deleted_files:
@@ -2344,8 +4043,8 @@ async def background_delete_documents(
                                 logger.info(file_delete_msg)
                                 async with pipeline_status_lock:
                                     pipeline_status["latest_message"] = file_delete_msg
-                                    pipeline_status["history_messages"].append(
-                                        file_delete_msg
+                                    append_pipeline_history(
+                                        pipeline_status, file_delete_msg
                                     )
                             else:
                                 file_error_msg = (
@@ -2355,8 +4054,8 @@ async def background_delete_documents(
                                 logger.warning(file_error_msg)
                                 async with pipeline_status_lock:
                                     pipeline_status["latest_message"] = file_error_msg
-                                    pipeline_status["history_messages"].append(
-                                        file_error_msg
+                                    append_pipeline_history(
+                                        pipeline_status, file_error_msg
                                     )
 
                         except Exception as file_error:
@@ -2364,9 +4063,7 @@ async def background_delete_documents(
                             logger.error(file_error_msg)
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = file_error_msg
-                                pipeline_status["history_messages"].append(
-                                    file_error_msg
-                                )
+                                append_pipeline_history(pipeline_status, file_error_msg)
                     elif delete_file:
                         no_file_msg = (
                             f"File deletion skipped, missing file path: {doc_id}"
@@ -2374,14 +4071,14 @@ async def background_delete_documents(
                         logger.warning(no_file_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = no_file_msg
-                            pipeline_status["history_messages"].append(no_file_msg)
+                            append_pipeline_history(pipeline_status, no_file_msg)
                 else:
                     failed_deletions.append(doc_id)
                     error_msg = f"Failed to delete {i}/{total_docs}: {doc_id}[{file_path}] - {result.message}"
                     logger.error(error_msg)
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = error_msg
-                        pipeline_status["history_messages"].append(error_msg)
+                        append_pipeline_history(pipeline_status, error_msg)
 
             except Exception as e:
                 failed_deletions.append(doc_id)
@@ -2390,29 +4087,81 @@ async def background_delete_documents(
                 logger.error(traceback.format_exc())
                 async with pipeline_status_lock:
                     pipeline_status["latest_message"] = error_msg
-                    pipeline_status["history_messages"].append(error_msg)
+                    append_pipeline_history(pipeline_status, error_msg)
 
     except Exception as e:
         error_msg = f"Critical error during batch deletion: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
-        async with pipeline_status_lock:
-            pipeline_status["history_messages"].append(error_msg)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                append_pipeline_history(pipeline_status, error_msg)
     finally:
-        # Final summary and check for pending requests
-        async with pipeline_status_lock:
-            pipeline_status["busy"] = False
-            pipeline_status["destructive_busy"] = False
-            pipeline_status["pending_requests"] = False  # Reset pending requests flag
-            pipeline_status["cancellation_requested"] = (
-                False  # Always reset cancellation flag
-            )
-            completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
-            pipeline_status["latest_message"] = completion_msg
-            pipeline_status["history_messages"].append(completion_msg)
+        # Final summary + release the destructive slot, owner-checked +
+        # cancellation-resistant so a cancel here cannot wedge the slot or
+        # clobber a later holder. Returns whether an indexing request is pending.
 
-            # Check if there are pending document indexing requests
-            has_pending_request = pipeline_status.get("request_pending", False)
+        # Resolve the ingress handle BEFORE the release: the pending-work
+        # probe runs inside the owner-checked critical section below, and a
+        # Manager RPC handle must never be resolved lazily while the status
+        # lock is held.  A resolution failure fails TOWARD driving — a
+        # spurious drive is a busy-gated cheap no-op, while skipping it would
+        # silently defer work that arrived during the delete to the next
+        # unrelated trigger.  This await precedes the cancellation-resistant
+        # release — safe only because get_pipeline_ingress is suspension-free
+        # by contract (see its docstring), so a pending re-cancellation
+        # cannot be delivered here and skip the release.
+        try:
+            delete_exit_ingress = await get_pipeline_ingress(rag.workspace)
+        except Exception as ingress_error:
+            delete_exit_ingress = None
+            logger.warning(
+                "batch-delete exit: pipeline ingress unavailable; failing "
+                f"toward the post-delete queue drive: {ingress_error}"
+            )
+
+        def _delete_release(status):
+            completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
+            status.update(
+                {
+                    "busy": False,
+                    "destructive_busy": False,
+                    "busy_owner": None,
+                    "operation_record": None,
+                    "cancellation_requested": False,
+                    "latest_message": completion_msg,
+                }
+            )
+            append_pipeline_history(status, completion_msg)
+            # Probe the mailbox INSIDE the same critical section that releases
+            # the slot: a processing request refused while we held busy armed
+            # the auto-rescan flag under this very lock, so it is either seen
+            # here (drive below) or was armed after busy=False — in which case
+            # the arming caller's own process call takes the slot itself.
+            if delete_exit_ingress is None:
+                return True  # fail toward driving
+            try:
+                return bool(delete_exit_ingress.has_work())
+            except Exception as probe_error:
+                logger.warning(
+                    "batch-delete exit: ingress has_work probe failed; "
+                    f"failing toward the post-delete queue drive: {probe_error}"
+                )
+                return True
+
+        # Release the destructive slot with the fetch, lock and owner-checked
+        # write ALL inside run_to_completion (release_owned_reservation), so a
+        # cancellation delivered during the release — including a re-cancellation
+        # of the namespace fetch after the initial fetch was already cancelled —
+        # is retried rather than leaving busy/destructive_busy stuck. Returns the
+        # pending-work probe result (or None when uninitialised / a later holder
+        # owns it).
+        has_pending_request = await release_owned_reservation(
+            rag.workspace,
+            owner_key="busy_owner",
+            token=token,
+            action=_delete_release,
+        )
 
         # If there are pending requests, start document processing pipeline
         if has_pending_request:
@@ -2440,7 +4189,9 @@ def create_document_routes(
     @router.post(
         "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
     )
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        managed_tasks: set = Depends(get_managed_background_tasks),
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -2456,22 +4207,97 @@ def create_document_routes(
           /text or /texts endpoint has reserved a slot whose bg task
           has not yet written to doc_status; starting a scan now would
           race scan's classification reads against that pending write.
+        - ``pipeline_status["manual_freeze_requested"]`` — a manual
+          retry is draining the pipeline for its exclusive reset.
+        - an earlier un-ACKed manual retry request is still queued in
+          the ingress mailbox: a scan runs its OWN exclusive FAILED
+          reset, so starting it now would jump the manual FIFO and
+          deadlock that request (the scan fence refuses its run) —
+          LR2 §8.1. Boundary: a request whose driving task died
+          (worker SIGKILL under a live Manager) stays queued until
+          SOME processing run peeks it, so scans keep refusing until
+          then; ``/documents/reprocess_failed`` both publishes and
+          drives, and a run serves the EARLIEST request first, so it
+          is the one-call recovery for that state.
 
         Both ``scanning`` and ``scanning_exclusive`` are acquired
         synchronously here so a subsequent fast-follow request hits the
         guard rather than racing against the not-yet-started task.
-        ``run_scanning_process`` clears ``scanning_exclusive`` once
-        classification is done, allowing concurrent uploads to land
-        while the scan-driven processing finishes.
+        ``run_scanning_process`` runs the exclusive FAILED reset and
+        classification under ``scanning_exclusive``, then clears it,
+        allowing concurrent uploads to land while the scan-driven
+        processing finishes.
+
+        Startup order (LR2 §8.6), each step compensating the previous
+        ones if it fails: reservation → bounded job record → sticky
+        manual intent → managed child (start barrier) → ``track_id``.
+        The record exists BEFORE the response, so an immediate
+        ``/documents/scan/status/{track_id}`` cannot 404. Once the
+        child has taken over it owns the record and finalises it; the
+        endpoint never cancels a job from that point on.
 
         Returns:
             ScanResponse: A response object containing the scanning status and track_id
+
+        Raises:
+            HTTPException: 429 when the scan job store is at capacity
+                (all records are valid RUNNING jobs), 409 on a track-id
+                collision, 503 when the job store is unavailable.
         """
         from lightrag.exceptions import PipelineNotInitializedError
-        from lightrag.kg.shared_storage import get_namespace_data, get_namespace_lock
+        from lightrag.kg.pipeline_ingress import (
+            ManualRetryPublishResult,
+            PipelineIngressMessage,
+        )
+        from lightrag.kg.shared_storage import (
+            ManualIntentRefusal,
+            ManualIntentRefused,
+            PipelineReservationConflict,
+            acquire_reservation,
+            get_namespace_data,
+            get_namespace_lock,
+            get_pipeline_ingress,
+            start_committed_background_task,
+            start_reserved_background_task,
+        )
 
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
+        # Owner token for the scanning reservation, generated before any await.
+        scanning_token = uuid4().hex
+        # The scan's manual retry intent: published ONLY after the scan
+        # reservation is granted (a refused scan must have zero side effects),
+        # inside the committed-startup child. The scan itself serves it — the
+        # exclusive FAILED reset runs before file discovery and ACKs the request
+        # (LR2 §8.1) — and it is the only path pulling FAILED docs back into the
+        # pipeline. Un-ACKed (reset abandoned / crash), it stays sticky for the
+        # standard drain path.
+        manual_request_id = uuid4().hex
+        # Owner token of the bounded scan job record. Held by the endpoint until
+        # the child takes over, so a startup that aborts can owner-checked cancel
+        # exactly the record it created (never a successor's).
+        job_owner_token = uuid4().hex
+        job_created = False
+        # Endpoint-visible mirror of the commit state: set synchronously with
+        # the publish, so the finally below knows ownership transferred even
+        # when the caller was cancelled right after the commit.
+        takeover = {"committed": False}
+
+        async def _legacy_scan_work(started):
+            # Mocked-rig path (no pipeline_status): started.set() first so the
+            # start-barrier confirms takeover; no reservation, no ingress.
+            started.set()
+            await run_scanning_process(rag, doc_manager, track_id, scanning_token)
+
+        async def _scan_backstop():
+            # Reverse compensation (LR2 §8.6), owner-checked + idempotent, and
+            # only ever reached when the child did NOT take over: the job record
+            # this endpoint created has nobody left to finalise it, so cancel it
+            # before releasing the reservation. Both carry their owner token, so
+            # a late compensation can never clean up a successor's job/scan.
+            if job_created:
+                _cancel_scan_job(rag, track_id, job_owner_token)
+            await _release_scanning_reservation(rag, scanning_token)
 
         try:
             pipeline_status = await get_namespace_data(
@@ -2481,7 +4307,10 @@ def create_document_routes(
             # Workspace pipeline_status not yet bootstrapped (e.g. mocked
             # test rigs).  Treat as idle and allow the scan to proceed; the
             # scanning flag has nowhere to live so it is effectively skipped.
-            background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
+            # Still start it as a managed task so shutdown can drain it.
+            await start_reserved_background_task(
+                managed_tasks, work=_legacy_scan_work, backstop_release=_scan_backstop
+            )
             return ScanResponse(
                 status="scanning_started",
                 message="Scanning process has been initiated in the background",
@@ -2502,69 +4331,583 @@ def create_document_routes(
         #     pending-enqueue slot (see _reserve_enqueue_slot): the bg
         #     task has not yet written doc_status and we would otherwise
         #     race with its mid-flight write.
-        async with pipeline_status_lock:
-            if pipeline_status.get("busy"):
-                logger.warning(
-                    "Scan request skipped: pipeline is busy processing documents"
-                )
+        #   * a manual retry holds the enqueue freeze, or an earlier
+        #     un-ACKed manual request is queued in the mailbox (LR2
+        #     §8.1): this scan runs its own exclusive FAILED reset and
+        #     must not jump that FIFO.
+        #
+        # Resolved BEFORE the reservation: the manual-FIFO check is one mailbox
+        # call made inside the acquire's critical section, which must never
+        # trigger a lazy Manager lookup while the status lock is held. A
+        # resolution failure aborts with zero side effects (nothing reserved).
+        ingress = await get_pipeline_ingress(rag.workspace)
+        reserved = False
+        handed_off = False
+        try:
+            # Pre-arm owner-checked cleanup before acquire: cancellation at the
+            # helper's lock exit may occur after the reservation update but before
+            # the result is returned.
+            reserved = True
+            result = await acquire_reservation(
+                pipeline_status,
+                pipeline_status_lock,
+                owner_key="scanning_owner",
+                owner=scanning_token,
+                owner_kind="scan",
+                flags={"scanning": True, "scanning_exclusive": True},
+                reject_when=(
+                    (
+                        "busy",
+                        "Pipeline is currently busy processing documents. Wait for "
+                        "the running job to finish before triggering another scan.",
+                    ),
+                    (
+                        "scanning",
+                        "Another scan is already in progress. Wait for it to finish "
+                        "before triggering a new one.",
+                    ),
+                    (
+                        "pending_enqueues",
+                        "An upload/insert or a source-conflict repair is in "
+                        "flight. Wait for it to complete before triggering a scan.",
+                    ),
+                    (
+                        "manual_freeze_requested",
+                        "A manual retry is draining the pipeline for its exclusive "
+                        "reset. Wait for it to finish before triggering a scan.",
+                    ),
+                ),
+                pipeline_ingress=ingress,
+                refuse_when_manual_pending=True,
+            )
+            if not result.acquired:
+                reserved = False
+                if result.conflict is PipelineReservationConflict.BUSY:
+                    logger.warning(
+                        "Scan request skipped: pipeline is busy processing documents"
+                    )
+                elif result.conflict is PipelineReservationConflict.SCANNING:
+                    logger.warning(
+                        "Scan request skipped: another scan is already in progress"
+                    )
+                elif result.conflict is PipelineReservationConflict.PENDING_ENQUEUE:
+                    pending_enqueues = (result.snapshot or {}).get(
+                        "pending_enqueues", 0
+                    )
+                    logger.warning(
+                        "Scan request skipped: "
+                        f"{pending_enqueues} pending enqueue(s) reserved by "
+                        "upload/insert endpoints"
+                    )
+                elif result.conflict is PipelineReservationConflict.MANUAL_FREEZE:
+                    logger.warning(f"Scan request skipped: {result.message}")
                 return ScanResponse(
                     status="scanning_skipped_pipeline_busy",
-                    message=(
-                        "Pipeline is currently busy processing documents. "
-                        "Wait for the running job to finish before triggering another scan."
-                    ),
+                    message=result.message or "Pipeline reservation is unavailable.",
                     track_id=track_id,
                 )
-            if pipeline_status.get("scanning"):
-                logger.warning(
-                    "Scan request skipped: another scan is already in progress"
-                )
-                return ScanResponse(
-                    status="scanning_skipped_pipeline_busy",
-                    message=(
-                        "Another scan is already in progress. "
-                        "Wait for it to finish before triggering a new one."
-                    ),
-                    track_id=track_id,
-                )
-            pending_enqueues = pipeline_status.get("pending_enqueues", 0)
-            if pending_enqueues > 0:
-                logger.warning(
-                    "Scan request skipped: "
-                    f"{pending_enqueues} pending enqueue(s) reserved by "
-                    "upload/insert endpoints"
-                )
-                return ScanResponse(
-                    status="scanning_skipped_pipeline_busy",
-                    message=(
-                        "Document upload/insert is being enqueued. "
-                        "Wait for in-flight work to complete before triggering a scan."
-                    ),
-                    track_id=track_id,
-                )
-            # ``scanning`` covers the whole scan task lifecycle (used by
-            # this endpoint to refuse overlapping scans).
-            # ``scanning_exclusive`` is True only during the
-            # classification phase: run_scanning_process clears it once
-            # classification is done so concurrent uploads can land
-            # while the scan-driven processing finishes.
-            pipeline_status["scanning"] = True
-            pipeline_status["scanning_exclusive"] = True
 
-        # Start the scanning process in the background with track_id.  The
-        # task is responsible for clearing both flags in its finally block.
-        background_tasks.add_task(run_scanning_process, rag, doc_manager, track_id)
-        return ScanResponse(
-            status="scanning_started",
-            message="Scanning process has been initiated in the background",
-            track_id=track_id,
+            # Create the bounded job record BEFORE publishing the manual intent
+            # or starting the child (LR2 §8.6): the track_id we return must be
+            # queryable immediately, and a refusal here must leave no intent and
+            # no child behind. Store unavailable → 503; capacity exhausted (every
+            # record a valid RUNNING job) → 429; a track-id collision → 409. The
+            # finally releases the reservation for all three.
+            try:
+                job_store = _resolve_scan_job_store(rag)
+                if job_store is None:
+                    raise RuntimeError("scan job store is not initialised")
+                create_result = job_store.create(track_id, job_owner_token)
+            except Exception as job_error:
+                logger.error(f"Scan job record could not be created: {job_error}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Scan job store is unavailable; retry shortly.",
+                )
+            if create_result.outcome is ScanJobCreateOutcome.CAPACITY_EXCEEDED:
+                logger.warning(
+                    "Scan request refused: the scan job store is at capacity "
+                    "(all records are running jobs)"
+                )
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many scan jobs are in flight; retry once one finishes.",
+                )
+            if create_result.outcome is ScanJobCreateOutcome.INVALID_IDENTIFIER:
+                # Unreachable from here (both identifiers are generated), but the
+                # store validates server-side on principle, so map its refusal
+                # instead of treating it as success.
+                logger.error(
+                    f"Scan job record refused: {create_result.message or 'invalid identifier'}"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="internal_server_error",
+                )
+            if create_result.outcome is ScanJobCreateOutcome.ALREADY_EXISTS:
+                # Unreachable for a freshly minted track id; a future caller
+                # reusing one must be refused rather than silently adopting (and
+                # then finalising) somebody else's job record.
+                logger.error(
+                    f"Scan job {track_id} already exists; refusing to reuse a track id"
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="A scan job with this track id already exists.",
+                )
+            job_created = True
+
+            # Hand the reservation to a managed background task via the
+            # two-state committed startup: the child publishes the scan's
+            # sticky manual retry intent (commit) and only then runs the scan.
+            # A cancellation BEFORE the commit cancels the child and releases
+            # the reservation with zero side effects (and cancels the job record
+            # via the backstop); AFTER the commit the child is never cancelled —
+            # it owns the reservation (released in run_scanning_process's
+            # finally, owner-checked by scanning_token), the published intent AND
+            # the job record (finalised in that same finally).
+
+            async def _scan_commit(state):
+                # Fence already passed — this endpoint holds the scanning
+                # reservation. The commit only publishes the intent; the
+                # committed marker is set synchronously with the publish so a
+                # cancellation landing in the lock release already counts as
+                # committed on both sides.
+                async with pipeline_status_lock:
+                    publish = ingress.request_manual_retry(
+                        manual_request_id,
+                        PipelineIngressMessage(
+                            kind="rescan",
+                            retry_failed=True,
+                            request_id=manual_request_id,
+                        ),
+                    )
+                    if publish is not ManualRetryPublishResult.ACCEPTED:
+                        # Nothing was published, so nothing is owned: refuse the
+                        # commit instead of starting a scan whose FAILED reset
+                        # would never be acknowledged (LR2 §10.1). The endpoint's
+                        # compensation chain releases the scanning reservation and
+                        # cancels the job record because ``handed_off`` stays
+                        # False.
+                        return ManualIntentRefusal(
+                            "Could not queue this scan's retry intent "
+                            f"({publish.value}); no scan was started.",
+                            capacity_exceeded=(
+                                publish is ManualRetryPublishResult.CAPACITY_EXCEEDED
+                            ),
+                        )
+                    state["committed"] = True
+                    takeover["committed"] = True
+                return None
+
+            async def _scan_run():
+                await run_scanning_process(
+                    rag,
+                    doc_manager,
+                    track_id,
+                    scanning_token,
+                    manual_request_id=manual_request_id,
+                    job_owner_token=job_owner_token,
+                )
+
+            await start_committed_background_task(
+                managed_tasks,
+                commit=_scan_commit,
+                work=_scan_run,
+                backstop_release=_scan_backstop,
+            )
+            # Ownership of the slot transferred to the bg task — it releases in
+            # its finally. The endpoint's finally must NOT release it again.
+            handed_off = True
+            return ScanResponse(
+                status="scanning_started",
+                message="Scanning process has been initiated in the background",
+                track_id=track_id,
+            )
+        except ManualIntentRefused as refusal:
+            # The commit refused BEFORE publishing, so nothing is owned and the
+            # finally below undoes the reservation and the job record. Capacity is
+            # the one refusal worth retrying unchanged.
+            raise HTTPException(
+                status_code=429 if refusal.capacity_exceeded else 503,
+                detail=str(refusal),
+                headers=(
+                    {"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)}
+                    if refusal.capacity_exceeded
+                    else None
+                ),
+            )
+        finally:
+            # Release the scanning slot if we reserved it but a cancellation
+            # arrived before the managed task took over (e.g. at the
+            # pipeline_status_lock __aexit__ await, before hand-off). Owner-
+            # checked + idempotent, so a no-op once the task owns it (or the
+            # start helper's own backstop already released it). A commit that
+            # already happened (takeover mirror) means the child owns the slot
+            # even if the caller was cancelled before ``handed_off`` was set.
+            #
+            # The job record follows the SAME ownership rule: not handed off means
+            # nobody will finalise it, so cancel it here too (owner-checked and
+            # idempotent — the startup helper's backstop may already have done it;
+            # after the commit the child owns it and this must not fire).
+            if reserved and not handed_off and not takeover["committed"]:
+                if job_created:
+                    _cancel_scan_job(rag, track_id, job_owner_token)
+                await _release_scanning_reservation(rag, scanning_token)
+
+    @router.get(
+        "/scan/status/{track_id}",
+        response_model=ScanJobStatusResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_scan_job_status(track_id: str):
+        """
+        Report the bounded status of one scan job (LR2 §8.6).
+
+        ``/documents/scan`` returns as soon as the job record exists and the
+        background task has taken over, long before the directory walk, the
+        FAILED reset and document processing finish. This endpoint reports that
+        job's progress from the SAME bounded schema the store enforces —
+        aggregate counters plus three capped sample buckets, never an
+        ``O(total_files)`` file list.
+
+        A job whose owner died stays ``running`` only until its lease expires and
+        the store reaps it to ``abandoned``. Terminal records are kept for a TTL
+        (and evicted under capacity pressure), so an old track_id eventually 404s.
+
+        Raises:
+            HTTPException: 404 when no job record exists for ``track_id``; 503
+                when the job store is unavailable.
+        """
+        store = _resolve_scan_job_store(rag)
+        if store is None:
+            raise HTTPException(
+                status_code=503, detail="Scan job store is unavailable."
+            )
+        try:
+            record = store.get(track_id)
+        except Exception as store_error:
+            logger.error(f"Scan job status lookup failed: {store_error}")
+            raise HTTPException(
+                status_code=503, detail="Scan job store is unavailable."
+            )
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail=f"No scan job found for track_id {track_id}"
+            )
+        return ScanJobStatusResponse(**record)
+
+    @router.get(
+        "/source_conflicts",
+        response_model=SourceConflictListResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def list_source_conflicts(
+        limit: int = Query(
+            50,
+            ge=1,
+            le=_SOURCE_CONFLICT_PAGE_MAX,
+            description="Maximum conflicts to return in this page",
+        ),
+        cursor: Optional[str] = Query(
+            None, description="next_cursor from a previous page (opaque)"
+        ),
+    ):
+        """
+        List canonical source keys claimed by more than one primary document.
+
+        A scan classifies such a file as ``source_conflict``: it is never
+        enqueued, no record is deleted and the file is left in place, because
+        picking a winner automatically could silently retire the wrong document
+        (LR2 §5.5). This endpoint enumerates the conflicts an operator has to
+        settle, and ``POST /documents/source_conflicts/repair`` settles them.
+
+        The projection is bounded per key — an exact candidate count when the
+        backend can produce one cheaply, plus a fixed-size sample of candidate
+        doc IDs — so a workspace with a pathological conflict never materialises
+        an unbounded ID list into the response.
+
+        Raises:
+            HTTPException: 400 for a malformed cursor; 501 when the configured
+                doc_status backend cannot enumerate conflicts (no strict source
+                resolution); 503 when the storage control plane is unavailable
+                (e.g. a derived index still rebuilding).
+        """
+        position = _decode_source_conflict_cursor(cursor)
+        try:
+            page = await rag.doc_status.list_source_conflicts_page(
+                limit=limit, position=position
+            )
+        except StorageCapabilityError as capability_error:
+            logger.warning(f"Source-conflict listing unsupported: {capability_error}")
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "The configured doc_status backend cannot enumerate source "
+                    "conflicts (no strict source resolution)."
+                ),
+            )
+        except (StorageControlPlaneError, StorageNotInitializedError) as storage_error:
+            logger.error(f"Source-conflict listing failed: {storage_error}")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Document status storage is unavailable; retry once it is ready."
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Error listing source conflicts: {e}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+        return SourceConflictListResponse(
+            conflicts=[
+                SourceConflictItem(
+                    canonical_source_key=summary.canonical_source_key,
+                    candidate_count=summary.candidate_count,
+                    sample_doc_ids=list(summary.sample_doc_ids),
+                )
+                for summary in page.conflicts
+            ],
+            next_cursor=_encode_source_conflict_cursor(page.next_position),
+        )
+
+    @router.post(
+        "/source_conflicts/repair",
+        response_model=SourceConflictRepairResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def repair_source_conflict(
+        payload: SourceConflictRepairRequest,
+        http_request: Request,
+    ):
+        """
+        Settle one source conflict by naming the document that keeps the source.
+
+        Two-step, compare-and-set protocol (LR2 §5.5):
+
+        1. ``dry_run=true`` (the default) mutates nothing and returns the
+           current ``candidate_count`` and ``fingerprint`` — a digest over the
+           candidate doc IDs in stable order.
+        2. Echo both back with ``dry_run=false`` to commit. The backend re-reads
+           the candidate set and refuses (409) when it changed in between, so a
+           concurrent enqueue/delete is never silently overwritten. The commit
+           runs under the canonical-key + enqueue-serialize locks, which is what
+           keeps a NEW primary from being inserted between that re-read and the
+           demotions (no backend can block that phantom on its own — see
+           ``DocStatusStorage.repair_source_conflict``), and what orders the
+           commit against the processing stage's duplicate marking, which takes
+           the same canonical-key lock.
+
+        The commit marks every candidate other than ``primary_doc_id`` with
+        ``metadata.is_duplicate=true`` and ``original_doc_id=<primary>``. Content
+        is never deleted and the demoted rows keep their own status — they only
+        lose their claim on the canonical source, which is what makes the strict
+        resolver return a single primary afterwards.
+
+        Repeat safety: a committed repair leaves exactly one primary, so
+        replaying the SAME request 409s (its token is stale) while a fresh
+        dry-run → commit converges to a no-op. A repair that dies mid-way is
+        resumed the same way — the finished rows already express ``duplicate``
+        and the unfinished ones still resolve as a conflict; there is no repair
+        marker to reconcile.
+
+        Every call is audited: dry-runs at INFO, commits and refusals at WARNING,
+        with the caller's address and the operator-supplied identifiers.
+
+        Raises:
+            HTTPException: 409 when ``primary_doc_id`` is not a current primary
+                candidate or the CAS tokens are stale; 501 when the backend
+                cannot repair conflicts; 503 when storage is unavailable; 422
+                when a commit omits the CAS tokens.
+        """
+        actor = http_request.client.host if http_request.client else "unknown"
+        audit_key = safe_log_value(payload.canonical_source_key)
+        audit_primary = safe_log_value(payload.primary_doc_id)
+        action = "dry-run" if payload.dry_run else "COMMIT"
+        try:
+            if payload.dry_run:
+                result = await rag.doc_status.repair_source_conflict(
+                    payload.canonical_source_key,
+                    primary_doc_id=payload.primary_doc_id,
+                    expected_candidate_count=(
+                        payload.expected_candidate_count
+                        if payload.expected_candidate_count is not None
+                        else 0
+                    ),
+                    expected_candidate_fingerprint=(
+                        payload.expected_candidate_fingerprint or ""
+                    ),
+                    dry_run=True,
+                )
+            else:
+                # Only the COMMIT needs the locks: the operator's two requests
+                # are bridged by the CAS token, so what must be serialized is
+                # the backend's internal re-read → demote span, not the gap
+                # between the two HTTP calls.
+                async with source_conflict_repair_lock(
+                    rag.workspace, payload.canonical_source_key
+                ):
+                    # Two primaries can never keep the source: a stub with no
+                    # content (a scan would delete it out from under the
+                    # demotions) and one whose content already lives under
+                    # another document (processing will mark it a duplicate).
+                    # Refuse inside the lock, where the answers cannot go stale.
+                    await refuse_an_unusable_primary(
+                        rag.doc_status,
+                        rag.full_docs,
+                        payload.canonical_source_key,
+                        payload.primary_doc_id,
+                    )
+                    result = await rag.doc_status.repair_source_conflict(
+                        payload.canonical_source_key,
+                        primary_doc_id=payload.primary_doc_id,
+                        expected_candidate_count=(
+                            payload.expected_candidate_count
+                            if payload.expected_candidate_count is not None
+                            else 0
+                        ),
+                        expected_candidate_fingerprint=(
+                            payload.expected_candidate_fingerprint or ""
+                        ),
+                        dry_run=False,
+                    )
+                    # Verify the end state inside the locks rather than reporting
+                    # a settled key on the strength of "the demotions landed".
+                    # The locks exclude every in-deployment writer of this
+                    # candidate set — enqueue, clear/delete + scan classification
+                    # + manual reset (the reservation), and the processing
+                    # stage's duplicate marking (the keyed source lock it takes
+                    # too) — so this is a backstop for what stays outside them: a
+                    # second deployment writing the same database. It raises when
+                    # the key came out Absent or still conflicting.
+                    await verify_repair_outcome(
+                        rag.doc_status,
+                        payload.canonical_source_key,
+                        payload.primary_doc_id,
+                        result,
+                    )
+        except SourceConflictPrimaryUnusableError as unusable_primary:
+            # A DIFFERENT 409 from the one below: this primary IS a candidate, it
+            # just cannot own the source. Reporting it as "not a candidate" would
+            # send the operator to re-list a conflict that has not changed. The
+            # detail is built here from sanitized values rather than forwarded
+            # from the exception text — so it must branch on the exception's
+            # REASON, or it states the wrong cause with total confidence (it used
+            # to answer "has no full_docs content" for a document whose content
+            # was fine and simply belonged to another document).
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {unusable_primary}"
+            )
+            if (
+                unusable_primary.reason
+                == SourceConflictPrimaryUnusableError.REASON_CONTENT_ELSEWHERE
+            ):
+                holder = safe_log_value(unusable_primary.holder_doc_id)
+                detail = (
+                    f"Document {audit_primary} holds the same content as "
+                    f"{holder or 'another document'}, which claims a different "
+                    f"source, so it cannot own '{audit_key}': processing marks a "
+                    "content duplicate FAILED and deletes its content, leaving "
+                    "the source with no primary. Choose another primary, or "
+                    "settle that document first."
+                )
+            else:
+                detail = (
+                    f"Document {audit_primary} has no full_docs content, so it "
+                    f"cannot own source '{audit_key}'. Choose a primary that has "
+                    "content."
+                )
+            raise HTTPException(status_code=409, detail=detail)
+        except ValueError as not_a_candidate:
+            # The named primary is not currently a primary candidate: either a
+            # typo or a view that went stale. Same recovery either way — list the
+            # conflict again — so it is a state conflict, not a 400.
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {not_a_candidate}"
+            )
+            # Built from the (sanitized) request values rather than the storage
+            # message: the exception text is not guaranteed to be client-safe.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Document {audit_primary} is not a current primary candidate "
+                    f"for source '{audit_key}'; list the conflict again to see the "
+                    "current candidates."
+                ),
+            )
+        except SourceConflictRepairCASError as cas_error:
+            # Subclass of StorageControlPlaneError, so it MUST be caught first:
+            # the state here is known (the candidate set moved), which is a 409,
+            # not the parent's "state unknown" 503.
+            logger.warning(
+                f"[source-conflict repair] {action} REFUSED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {cas_error}"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The candidate set changed since the dry-run; re-run the "
+                    "dry-run and commit with the new count/fingerprint."
+                ),
+            )
+        except StorageCapabilityError as capability_error:
+            logger.warning(f"Source-conflict repair unsupported: {capability_error}")
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "The configured doc_status backend cannot repair source "
+                    "conflicts (no strict source resolution)."
+                ),
+            )
+        except (StorageControlPlaneError, StorageNotInitializedError) as storage_error:
+            logger.error(
+                f"[source-conflict repair] {action} FAILED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {storage_error}"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Document status storage is unavailable; retry once it is ready."
+                ),
+            )
+        except Exception as e:
+            logger.error(
+                f"[source-conflict repair] {action} ERRORED by {actor}: "
+                f"key='{audit_key}' primary={audit_primary}: {e}"
+            )
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+        audit_line = (
+            f"[source-conflict repair] {action} by {actor}: key='{audit_key}' "
+            f"primary={audit_primary} candidates={result.candidate_count} "
+            f"fingerprint={result.fingerprint} "
+            f"demoted_sample={list(result.demoted_sample_doc_ids)}"
+        )
+        if result.committed:
+            logger.warning(audit_line)
+        else:
+            logger.info(audit_line)
+
+        return SourceConflictRepairResponse(
+            canonical_source_key=result.canonical_source_key,
+            primary_doc_id=result.primary_doc_id,
+            candidate_count=result.candidate_count,
+            fingerprint=result.fingerprint,
+            demoted_sample_doc_ids=list(result.demoted_sample_doc_ids),
+            committed=result.committed,
         )
 
     @router.post(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        managed_tasks: set = Depends(get_managed_background_tasks),
+        file: UploadFile = File(...),
+        http_request: Request = None,
     ):
         """
         Upload a file to the input directory and index it.
@@ -2623,10 +4966,12 @@ def create_document_routes(
           processing phase (``scanning=True`` with
           ``scanning_exclusive=False``), do NOT block uploads — uploads
           are accepted concurrently and the running pipeline picks them
-          up via its ``request_pending`` mechanism.
+          up via the ingress mailbox.
 
         Args:
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
 
         Returns:
@@ -2638,7 +4983,10 @@ def create_document_routes(
                 conflict or scan-classifying / destructive job in
                 flight, 413 file too large, 500 other errors.
         """
-        slot_reserved = False
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
+        enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
+        handed_off = False
         try:
             # Reject upload while a scan is in its CLASSIFICATION
             # phase or a destructive job (clear / per-doc delete) is
@@ -2648,9 +4996,10 @@ def create_document_routes(
             # processing (``busy=True``) and a scan in its processing
             # phase (``scanning=True`` with
             # ``scanning_exclusive=False``) are permitted: the running
-            # loop's ``request_pending`` mechanism picks up our doc
-            # after the current batch.
-            slot_reserved = await _reserve_enqueue_slot(rag)
+            # loop picks up our doc via the ingress mailbox, mid-batch
+            # or at the batch boundary.
+            if not admission_adopted:
+                await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
@@ -2773,20 +5122,36 @@ def create_document_routes(
             # ``pipeline_index_file`` does both: it calls
             # ``pipeline_enqueue_file`` (writes doc_status / full_docs) and
             # then ``apipeline_process_enqueue_documents``.  The latter is
-            # safe to invoke even when the loop is already busy — it
-            # collapses to a ``request_pending=True`` nudge and returns,
+            # safe to invoke even when the loop is already busy — its
+            # refused reservation arms the auto-rescan flag and returns,
             # so concurrent uploads/inserts cooperate via the running
-            # loop's request_pending mechanism.
-            async def _indexing_task():
+            # loop's quiescence decision.
+            async def _indexing_work(started):
+                # started.set() first (no await before it) so the endpoint's
+                # start-barrier confirms takeover before returning; a body-send
+                # cancellation therefore cannot strand the enqueue slot.
+                started.set()
                 try:
-                    await pipeline_index_file(rag, file_path, track_id)
+                    await pipeline_index_file(
+                        rag,
+                        file_path,
+                        track_id,
+                        admission_token=enqueue_token,
+                    )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot(rag, enqueue_token)
 
-            background_tasks.add_task(_indexing_task)
+            async def _enqueue_backstop():
+                await _release_enqueue_slot(rag, enqueue_token)
+
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_indexing_work,
+                backstop_release=_enqueue_backstop,
+            )
             # Ownership of the slot transferred to the bg task — the
             # finally block below must NOT release it again.
-            slot_reserved = False
+            handed_off = True
 
             return InsertResponse(
                 status="success",
@@ -2800,20 +5165,22 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
             # If we reserved a slot but never scheduled the bg task
             # (e.g. early validation rejection or streaming-write
             # failure), release here.  No drain coordination needed —
             # any sibling bg task triggers its own processing pass.
-            if slot_reserved:
-                await _release_enqueue_slot(rag)
+            if not handed_off:
+                await _release_enqueue_slot(rag, enqueue_token)
 
     @router.post(
         "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
-        request: InsertTextRequest, background_tasks: BackgroundTasks
+        request: InsertTextRequest,
+        managed_tasks: set = Depends(get_managed_background_tasks),
+        http_request: Request = None,
     ):
         """
         Insert text into the RAG system.
@@ -2828,11 +5195,13 @@ def create_document_routes(
           (clear / per-doc delete is in flight) is set.  ``busy=True``
           from the processing loop, and a scan in its processing phase,
           do NOT block — the running pipeline picks up the new doc via
-          ``request_pending``.
+          the ingress mailbox.
 
         Args:
             request (InsertTextRequest): The request body containing the text to be inserted.
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
 
         Returns:
             InsertResponse: A response object containing the status of the operation.
@@ -2841,11 +5210,15 @@ def create_document_routes(
             HTTPException: 400 invalid file_source, 409 same-name conflict
                 or scan/destructive job in flight, 500 other errors.
         """
-        slot_reserved = False
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
+        enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
+        handed_off = False
         try:
             # Reject text insertion while a scan is in progress AND reserve
             # a pending-enqueue slot — see /upload for the rationale.
-            slot_reserved = await _reserve_enqueue_slot(rag)
+            if not admission_adopted:
+                await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Check if file_source already exists in doc_status storage
             if not is_valid_file_source(request.file_source):
@@ -2876,12 +5249,22 @@ def create_document_routes(
             try:
                 _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                # Controlled chunking-config validation message (numeric sizes
+                # only, no internal detail); kept as client-facing 422 feedback
+                # but wrapped so it is never a bare raw-exception passthrough.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
+                )
 
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
-            async def _indexing_task():
+            async def _indexing_work(started):
+                # started.set() first (no await before it) so the endpoint's
+                # start-barrier confirms takeover before returning; a body-send
+                # cancellation therefore cannot strand the enqueue slot.
+                started.set()
                 try:
                     await pipeline_index_texts(
                         rag,
@@ -2889,12 +5272,20 @@ def create_document_routes(
                         file_sources=[normalized_file_source],
                         track_id=track_id,
                         chunking=request.chunking,
+                        admission_token=enqueue_token,
                     )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot(rag, enqueue_token)
 
-            background_tasks.add_task(_indexing_task)
-            slot_reserved = False
+            async def _enqueue_backstop():
+                await _release_enqueue_slot(rag, enqueue_token)
+
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_indexing_work,
+                backstop_release=_enqueue_backstop,
+            )
+            handed_off = True
 
             return InsertResponse(
                 status="success",
@@ -2906,10 +5297,10 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
-            if slot_reserved:
-                await _release_enqueue_slot(rag)
+            if not handed_off:
+                await _release_enqueue_slot(rag, enqueue_token)
 
     @router.post(
         "/texts",
@@ -2917,7 +5308,9 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
-        request: InsertTextsRequest, background_tasks: BackgroundTasks
+        request: InsertTextsRequest,
+        managed_tasks: set = Depends(get_managed_background_tasks),
+        http_request: Request = None,
     ):
         """
         Insert multiple texts into the RAG system.
@@ -2932,25 +5325,36 @@ def create_document_routes(
           (clear / per-doc delete is in flight) is set.  ``busy=True``
           from the processing loop, and a scan in its processing phase,
           do NOT block — the running pipeline picks up the new docs via
-          ``request_pending``.
+          the ingress mailbox.
 
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
 
         Returns:
             InsertResponse: A response object containing the status of the operation.
 
         Raises:
             HTTPException: 400 invalid file_sources, 409 same-name
-                conflict or scan/destructive job in flight, 500 other
-                errors.
+                conflict or scan/destructive job in flight, 413 more texts
+                than ``MAX_TEXTS_PER_REQUEST`` allows, 500 other errors.
         """
-        slot_reserved = False
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
+        enqueue_token, admission_adopted = _adopt_or_new_enqueue_token(http_request)
+        handed_off = False
         try:
+            # Before anything that costs a storage round-trip or a reservation:
+            # a batch over the per-request ceiling is refused on its shape alone,
+            # independent of pipeline state.
+            _enforce_texts_per_request(len(request.texts))
+
             # Reject batch text insertion while a scan is in progress AND
             # reserve a pending-enqueue slot — see /upload for the rationale.
-            slot_reserved = await _reserve_enqueue_slot(rag)
+            if not admission_adopted:
+                await _reserve_enqueue_slot(rag, enqueue_token)
 
             # Check if any file_sources already exist in doc_status storage
             if not request.file_sources or len(request.file_sources) != len(
@@ -3000,12 +5404,29 @@ def create_document_routes(
             try:
                 _resolve_text_chunking(request.chunking, rag)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+                # Controlled chunking-config validation message (numeric sizes
+                # only, no internal detail); kept as client-facing 422 feedback
+                # but wrapped so it is never a bare raw-exception passthrough.
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid chunking configuration: {exc}",
+                )
+
+            # The reservation was taken for a single document before the body
+            # was known; this request actually brings N. Re-weight the SAME
+            # token now (LR2 §9.3 item 5) so a batch that does not fit is
+            # refused here with 429 instead of being accepted and then
+            # rejected inside a background task the client cannot observe.
+            await _reweight_enqueue_slot(rag, enqueue_token, len(request.texts))
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
-            async def _indexing_task():
+            async def _indexing_work(started):
+                # started.set() first (no await before it) so the endpoint's
+                # start-barrier confirms takeover before returning; a body-send
+                # cancellation therefore cannot strand the enqueue slot.
+                started.set()
                 try:
                     await pipeline_index_texts(
                         rag,
@@ -3013,12 +5434,20 @@ def create_document_routes(
                         file_sources=normalized_file_sources,
                         track_id=track_id,
                         chunking=request.chunking,
+                        admission_token=enqueue_token,
                     )
                 finally:
-                    await _release_enqueue_slot(rag)
+                    await _release_enqueue_slot(rag, enqueue_token)
 
-            background_tasks.add_task(_indexing_task)
-            slot_reserved = False
+            async def _enqueue_backstop():
+                await _release_enqueue_slot(rag, enqueue_token)
+
+            await start_reserved_background_task(
+                managed_tasks,
+                work=_indexing_work,
+                backstop_release=_enqueue_backstop,
+            )
+            handed_off = True
 
             return InsertResponse(
                 status="success",
@@ -3030,10 +5459,10 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
         finally:
-            if slot_reserved:
-                await _release_enqueue_slot(rag)
+            if not handed_off:
+                await _release_enqueue_slot(rag, enqueue_token)
 
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
@@ -3074,6 +5503,7 @@ def create_document_routes(
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_namespace_lock,
+            get_pipeline_ingress,
         )
 
         # Get pipeline status and lock
@@ -3092,28 +5522,85 @@ def create_document_routes(
         # remove every input file, so a concurrent upload accepted in
         # this window would write to storages mid-drop and silently
         # lose the document.
-        acquired, reason = await _acquire_destructive_busy(rag)
-        if not acquired:
-            return ClearDocumentsResponse(status="busy", message=reason)
-        async with pipeline_status_lock:
-            pipeline_status.update(
-                {
-                    "job_name": "Clearing Documents",
-                    "job_start": datetime.now().isoformat(),
-                    "docs": 0,
-                    "batchs": 0,
-                    "cur_batch": 0,
-                    "request_pending": False,  # Clear any previous request
-                    "latest_message": "Starting document clearing process",
-                }
-            )
-            # Cleaning history_messages without breaking it as a shared list object
-            del pipeline_status["history_messages"][:]
-            pipeline_status["history_messages"].append(
-                "Starting document clearing process"
-            )
-
+        destructive_token = uuid4().hex
+        # Acquire INSIDE the try/finally so a cancellation delivered while
+        # ``_acquire_destructive_busy`` is exiting its own lock — busy /
+        # destructive_busy / busy_owner already written but ``acquired`` not yet
+        # assigned — still runs the owner-checked release in ``finally`` (which
+        # also covers the status-init lock await below). Mirrors the delete
+        # endpoint. Release is owner-checked + idempotent: a no-op when the
+        # acquire returned busy and never stamped our token.
         try:
+            acquired, reason = await _acquire_destructive_busy(
+                rag,
+                destructive_token,
+                kind="clear",
+                operation_record={"kind": "clear", "scope": "all"},
+            )
+            if not acquired:
+                return ClearDocumentsResponse(status="busy", message=reason)
+            async with pipeline_status_lock:
+                pipeline_status.update(
+                    {
+                        "job_name": "Clearing Documents",
+                        "job_start": datetime.now().isoformat(),
+                        "docs": 0,
+                        "batchs": 0,
+                        "cur_batch": 0,
+                        "latest_message": "Starting document clearing process",
+                    }
+                )
+                # Cleaning history_messages without breaking it as a shared list object
+                del pipeline_status["history_messages"][:]
+                append_pipeline_history(
+                    pipeline_status, "Starting document clearing process"
+                )
+
+            # We own busy+destructive: every document the mailbox refers to is
+            # about to be dropped, so clear the ingress alongside the
+            # job-status reset above — un-ACKed manual retry requests
+            # are retired as CANCELLED_BY_CLEAR (a delayed replay of the same
+            # request id is refused), and the document/auto channels are
+            # emptied.  ``destructive_busy`` already refuses new enqueues, so
+            # nothing repopulates the mailbox during the drop.  Clearing
+            # BEFORE the drops means a later partial drop failure has already
+            # retired manual requests for still-live FAILED docs — acceptable
+            # under the destructive intent and surfaced via partial_success.
+            # A failure here only degrades: residual stale messages are
+            # compacted by the next run's consumption idempotence, and a
+            # surviving sticky request strict-scans the emptied doc_status and
+            # ACKs harmlessly.
+            try:
+                ingress = await get_pipeline_ingress(rag.workspace)
+                ingress.clear()
+            except Exception as ingress_clear_error:
+                logger.warning(
+                    "/documents/clear: failed to clear the pipeline ingress "
+                    "mailbox; safe to continue — residual document messages "
+                    "are compacted by the next run and a surviving manual "
+                    "retry request ACKs harmlessly against the emptied "
+                    f"doc_status: {ingress_clear_error}"
+                )
+
+            # Scan job records describe documents that are about to be dropped,
+            # so retire the ones nobody owns: only TERMINAL (and lease-expired →
+            # ABANDONED, which the snapshot reaps first) records are removed. A
+            # still-valid RUNNING job is never removed out from under its owner
+            # (LR2 §8.6) — a live scan cannot even coexist with this clear, since
+            # the destructive reservation refuses while ``scanning`` is held.
+            try:
+                job_store = _resolve_scan_job_store(rag)
+                if job_store is not None:
+                    for record in job_store.snapshot():
+                        if record.get("status") != ScanJobStatus.RUNNING.value:
+                            job_store.remove_terminal(record["track_id"])
+            except Exception as job_clear_error:
+                logger.warning(
+                    "/documents/clear: failed to retire finished scan job "
+                    "records; safe to continue — they expire by TTL and are "
+                    f"evicted under capacity pressure: {job_clear_error}"
+                )
+
             # Use drop method to clear all data
             drop_tasks = []
             storages = [
@@ -3131,10 +5618,9 @@ def create_document_routes(
             ]
 
             # Log storage drop start
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting to drop storage components"
-                )
+            append_pipeline_history(
+                pipeline_status, "Starting to drop storage components"
+            )
 
             for storage in storages:
                 if storage is not None:
@@ -3176,29 +5662,50 @@ def create_document_routes(
                     storage_success_count += 1
 
             # Log storage drop results
-            if "history_messages" in pipeline_status:
-                if storage_error_count > 0:
-                    pipeline_status["history_messages"].append(
-                        f"Dropped {storage_success_count} storage components with {storage_error_count} errors"
-                    )
-                else:
-                    pipeline_status["history_messages"].append(
-                        f"Successfully dropped all {storage_success_count} storage components"
+            if storage_error_count > 0:
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Dropped {storage_success_count} storage components with {storage_error_count} errors",
+                )
+            else:
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Successfully dropped all {storage_success_count} storage components",
+                )
+
+            # Some backends (OpenSearch) drop the doc_status index as a whole
+            # physical container rather than just its rows, and gate every
+            # subsequent STRICT read behind a readiness flag that only a
+            # write path clears back to healthy. /documents/scan's very first
+            # doc_status touch is a strict READ (the custom-chunk rollback,
+            # then the exclusive FAILED->PENDING reset) — neither is a write,
+            # so nothing would ever re-create the dropped index before the
+            # first scan tries to read it, permanently wedging every scan on
+            # this workspace until the process restarts. re-run the public,
+            # idempotent initialize() right away so the backend is exactly as
+            # ready as it was right after server startup; a backend without
+            # this gap (Postgres/Mongo/Redis/JSON row-level drop) just no-ops.
+            if rag.doc_status is not None:
+                try:
+                    await rag.doc_status.initialize()
+                except Exception as reinit_error:
+                    logger.error(
+                        f"/documents/clear: failed to re-initialize doc_status "
+                        f"after drop; the next /documents/scan may fail until "
+                        f"a write recreates it: {reinit_error}"
                     )
 
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
                 logger.error(error_message)
-                if "history_messages" in pipeline_status:
-                    pipeline_status["history_messages"].append(error_message)
+                append_pipeline_history(pipeline_status, error_message)
                 return ClearDocumentsResponse(status="fail", message=error_message)
 
             # Log file deletion start
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting to delete files in input directory"
-                )
+            append_pipeline_history(
+                pipeline_status, "Starting to delete files in input directory"
+            )
 
             # Delete only files in the current directory, preserve files in subdirectories
             deleted_files_count = 0
@@ -3214,16 +5721,16 @@ def create_document_routes(
                         file_errors_count += 1
 
             # Log file deletion results
-            if "history_messages" in pipeline_status:
-                if file_errors_count > 0:
-                    pipeline_status["history_messages"].append(
-                        f"Deleted {deleted_files_count} files with {file_errors_count} errors"
-                    )
-                    errors.append(f"Failed to delete {file_errors_count} files")
-                else:
-                    pipeline_status["history_messages"].append(
-                        f"Successfully deleted {deleted_files_count} files"
-                    )
+            if file_errors_count > 0:
+                append_pipeline_history(
+                    pipeline_status,
+                    f"Deleted {deleted_files_count} files with {file_errors_count} errors",
+                )
+                errors.append(f"Failed to delete {file_errors_count} files")
+            else:
+                append_pipeline_history(
+                    pipeline_status, f"Successfully deleted {deleted_files_count} files"
+                )
 
             # Prepare final result message
             final_message = ""
@@ -3235,8 +5742,7 @@ def create_document_routes(
                 status = "success"
 
             # Log final result
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(final_message)
+            append_pipeline_history(pipeline_status, final_message)
 
             # Return response based on results
             return ClearDocumentsResponse(status=status, message=final_message)
@@ -3244,19 +5750,35 @@ def create_document_routes(
             error_msg = f"Error clearing documents: {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(error_msg)
-            raise HTTPException(status_code=500, detail=str(e))
+            append_pipeline_history(pipeline_status, error_msg)
+            raise internal_server_error(e)
         finally:
             # Reset busy + destructive_busy after completion so the next
-            # reservation / scan sees an idle pipeline.
-            async with pipeline_status_lock:
-                pipeline_status["busy"] = False
-                pipeline_status["destructive_busy"] = False
+            # reservation / scan sees an idle pipeline. Owner-checked +
+            # cancellation-resistant so a cancel here cannot leave the slot
+            # wedged and cannot clobber a later holder.
+            from lightrag.kg.shared_storage import with_reservation_lock
+
+            def _clear_release(status):
                 completion_msg = "Document clearing process completed"
-                pipeline_status["latest_message"] = completion_msg
-                if "history_messages" in pipeline_status:
-                    pipeline_status["history_messages"].append(completion_msg)
+                status.update(
+                    {
+                        "busy": False,
+                        "destructive_busy": False,
+                        "busy_owner": None,
+                        "operation_record": None,
+                        "latest_message": completion_msg,
+                    }
+                )
+                append_pipeline_history(status, completion_msg)
+
+            await with_reservation_lock(
+                pipeline_status,
+                pipeline_status_lock,
+                owner_key="busy_owner",
+                token=destructive_token,
+                action=_clear_release,
+            )
 
     @router.get(
         "/pipeline_status",
@@ -3272,14 +5794,12 @@ def create_document_routes(
 
         Returns:
             PipelineStatusResponse: A response object containing:
-                - autoscanned (bool): Whether auto-scan has started
                 - busy (bool): Whether the pipeline is currently busy
                 - job_name (str): Current job name (e.g., indexing files/indexing texts)
                 - job_start (str, optional): Job start time as ISO format string
                 - docs (int): Total number of documents to be indexed
                 - batchs (int): Number of batches for processing documents
                 - cur_batch (int): Current processing batch
-                - request_pending (bool): Flag for pending request for processing
                 - latest_message (str): Latest message from pipeline processing
                 - history_messages (List[str], optional): List of history messages (limited to latest 1000 entries,
                   with truncation message if more than 1000 messages exist)
@@ -3317,16 +5837,40 @@ def create_document_routes(
                 processed_update_status[namespace] = processed_flags
 
             async with pipeline_status_lock:
-                # Convert to regular dict if it's a Manager.dict
-                status_dict = dict(pipeline_status)
+                # DictProxy.copy() is one Manager RPC; dict(proxy) may fetch
+                # values individually through the mapping protocol.
+                status_dict = pipeline_status.copy()
+
+            # Sanitized fence projection BEFORE the internal fields are dropped
+            # (``recovery_required`` is one of them): an operator needs a
+            # read-only way to see that the workspace is fenced, its coarse cause
+            # and the bounded blocker sample, without the PIDs / tokens / raw
+            # operation_record the internal record carries.
+            from lightrag.kg.shared_storage import (
+                _INTERNAL_PIPELINE_STATUS_FIELDS,
+                describe_recovery_fence,
+            )
+
+            fence_view = describe_recovery_fence(status_dict)
+
+            # Drop internal reservation-ownership / dead-process-recovery
+            # bookkeeping: these carry raw owner tokens, PIDs and per-token sets
+            # that must never be exposed on the API (PipelineStatusResponse is
+            # extra="allow", so unknown keys would otherwise pass through).
+            for _internal_field in _INTERNAL_PIPELINE_STATUS_FIELDS:
+                status_dict.pop(_internal_field, None)
+
+            status_dict.update(fence_view)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
 
-            # Convert history_messages to a regular list if it's a Manager.list
-            # and limit to latest 1000 entries with truncation message if needed
+            # Materialize history_messages to a regular list if it's a Manager
+            # ListProxy, then limit to latest 1000 with a truncation banner. A
+            # slice is one Manager RPC; list(proxy) walks the sequence protocol
+            # with one __getitem__ RPC per element (history can hold 10k lines).
             if "history_messages" in status_dict:
-                history_list = list(status_dict["history_messages"])
+                history_list = status_dict["history_messages"][:]
                 total_count = len(history_list)
 
                 if total_count > 1000:
@@ -3356,7 +5900,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error getting pipeline status: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     # TODO: Deprecated, use /documents/paginated instead
     @router.get(
@@ -3460,7 +6004,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     class DeleteDocByIdResponse(BaseModel):
         """Response model for single document deletion operation."""
@@ -3479,7 +6023,7 @@ def create_document_routes(
     )
     async def delete_document(
         delete_request: DeleteDocRequest,
-        background_tasks: BackgroundTasks,
+        managed_tasks: set = Depends(get_managed_background_tasks),
     ) -> DeleteDocByIdResponse:
         """
         Delete documents and all their associated data by their IDs using background processing.
@@ -3502,7 +6046,9 @@ def create_document_routes(
 
         Args:
             delete_request (DeleteDocRequest): The request containing the document IDs and deletion options.
-            background_tasks: FastAPI BackgroundTasks for async processing
+            managed_tasks: injected managed background-task set
+                (see get_managed_background_tasks) — the reservation-holding work
+                runs as a tracked asyncio task, not a Starlette callback
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
@@ -3514,9 +6060,35 @@ def create_document_routes(
             HTTPException:
               - 500: If an unexpected internal error occurs during initialization.
         """
+        from lightrag.kg.shared_storage import start_reserved_background_task
+
         doc_ids = delete_request.doc_ids
 
-        slot_acquired = False
+        # Owner token for the destructive slot, generated before any await so the
+        # finally can release it by owner even if the acquire is cancelled.
+        destructive_token = uuid4().hex
+
+        async def _delete_work(started):
+            # started.set() first (no await before it) so the endpoint's
+            # start-barrier confirms takeover before returning; a body-send
+            # cancellation therefore cannot strand the reservation.
+            # background_delete_documents releases busy + destructive_busy
+            # (owner-checked by destructive_token) in its own finally.
+            started.set()
+            await background_delete_documents(
+                rag,
+                doc_manager,
+                doc_ids,
+                delete_request.delete_file,
+                delete_request.delete_llm_cache,
+                destructive_token,
+            )
+
+        async def _delete_backstop():
+            # Owner-checked + idempotent; runs only if the child never took over.
+            await _release_destructive_busy(rag, destructive_token)
+
+        handed_off = False
         try:
             # Atomically reserve the destructive slot BEFORE returning
             # ``deletion_started``.  Without this, the bg task would set
@@ -3525,27 +6097,29 @@ def create_document_routes(
             # the client has already received success.  The check
             # covers busy + scanning + pending_enqueues>0 in a single
             # critical section.
-            acquired, reason = await _acquire_destructive_busy(rag)
+            acquired, reason = await _acquire_destructive_busy(
+                rag,
+                destructive_token,
+                kind="delete",
+                operation_record={"kind": "delete", "doc_ids": doc_ids},
+            )
             if not acquired:
                 return DeleteDocByIdResponse(
                     status="busy",
                     message=reason or "Cannot delete documents while pipeline is busy",
                     doc_id=", ".join(doc_ids),
                 )
-            slot_acquired = True
 
-            background_tasks.add_task(
-                background_delete_documents,
-                rag,
-                doc_manager,
-                doc_ids,
-                delete_request.delete_file,
-                delete_request.delete_llm_cache,
+            # Hand the reservation to a managed background task. The start
+            # barrier guarantees takeover (started.set) before we return, so a
+            # cancellation while sending the response body cannot strand
+            # busy/destructive_busy.
+            await start_reserved_background_task(
+                managed_tasks, work=_delete_work, backstop_release=_delete_backstop
             )
-            # Ownership of the slot transferred to the bg task — it
-            # will release in its finally.  The endpoint's finally
-            # below must NOT release it again.
-            slot_acquired = False
+            # Ownership of the slot transferred to the bg task — it releases in
+            # its finally. The endpoint's finally must NOT release it again.
+            handed_off = True
 
             return DeleteDocByIdResponse(
                 status="deletion_started",
@@ -3557,13 +6131,16 @@ def create_document_routes(
             error_msg = f"Error initiating document deletion for {delete_request.doc_ids}: {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=error_msg)
+            raise internal_server_error(e)
         finally:
-            # If we reserved but never scheduled the bg task (e.g. an
-            # unexpected error between acquire and add_task), release
-            # so the next reservation / scan / enqueue can proceed.
-            if slot_acquired:
-                await _release_destructive_busy(rag)
+            # Release by the pre-generated token unless the managed task took
+            # over. Covers a cancellation delivered while _acquire_destructive_busy
+            # was exiting its lock (flags + owner already written, but ``acquired``
+            # not yet assigned) or before hand-off: release is owner-checked +
+            # idempotent, so it frees the slot we took and is a no-op if we never
+            # acquired (or the start helper's backstop already released it).
+            if not handed_off:
+                await _release_destructive_busy(rag, destructive_token)
 
     @router.post(
         "/clear_cache",
@@ -3597,7 +6174,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.get(
         "/track_status/{track_id}",
@@ -3671,7 +6248,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error getting track status for {track_id}: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.post(
         "/paginated",
@@ -3852,7 +6429,7 @@ def create_document_routes(
             )
             logger.error(f"Error getting paginated documents: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     @router.get(
         "/status_counts",
@@ -3879,53 +6456,368 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error getting document status counts: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
+
+    @router.get(
+        "/supported_file_types",
+        response_model=SupportedFileTypesResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def get_supported_file_types(
+        response: Response,
+    ) -> SupportedFileTypesResponse:
+        """
+        Get the upload allowlist and the parser capability matrix.
+
+        ``supported_extensions`` is the live allowlist for bare (unhinted)
+        filenames — derived from the parser registry plus the current
+        ``LIGHTRAG_PARSER`` routing rules, the same source the upload
+        endpoint's 400 detail quotes. ``engines`` maps every usable engine
+        (user-selectable, endpoint configured) to the suffixes it can parse,
+        so the WebUI can pre-validate hinted filenames like
+        ``img.[mineru].png`` without uploading the file first.
+
+        Derived from process-level configuration today; when per-workspace
+        parser rules land, this endpoint resolves the ``LIGHTRAG-WORKSPACE``
+        header internally — the response contract stays unchanged (hence the
+        ``Vary`` header, declared ahead of time so caches never reuse a
+        response across workspaces).
+        """
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Vary"] = "LIGHTRAG-WORKSPACE"
+        return SupportedFileTypesResponse(
+            supported_extensions=list(doc_manager.supported_extensions),
+            engines=doc_manager.engine_capabilities,
+        )
 
     @router.post(
         "/reprocess_failed",
         response_model=ReprocessResponse,
         dependencies=[Depends(combined_auth)],
     )
-    async def reprocess_failed_documents(background_tasks: BackgroundTasks):
+    async def reprocess_failed_documents(
+        managed_tasks: set = Depends(get_managed_background_tasks),
+    ):
         """
-        Reprocess failed and pending documents.
+        Reprocess existing failed, pending, or interrupted document records
+        without scanning the input directory for new files.
 
-        This endpoint triggers the document processing pipeline which automatically
-        picks up and reprocesses documents in the following statuses:
-        - FAILED: Documents that failed during previous processing attempts
-        - PENDING: Documents waiting to be processed
-        - PROCESSING: Documents with abnormally terminated processing (e.g., server crashes)
+        Pure storage-driven recovery: this endpoint publishes a sticky manual
+        retry request into the workspace ingress and drives the processing
+        pipeline. FAILED documents re-enter the pipeline ONLY through such an
+        explicit request — each request grants at most ONE retry attempt per
+        FAILED document; a document that fails again stays FAILED until the
+        next explicit request. PENDING and interrupted documents
+        (PROCESSING/PARSING/ANALYZING left by a crash) are picked up as well.
 
-        This is useful for recovering from server crashes, network errors, LLM service
-        outages, or other temporary failures that caused document processing to fail.
+        This endpoint does NOT discover new files, archive anything, or run
+        scan classification; a FAILED document with an unfinished
+        custom-chunk journal is skipped and still requires ``/documents/scan``
+        to roll back.
 
-        The processing happens in the background and can be monitored by checking the
-        pipeline status. The reprocessed documents retain their original track_id from
-        initial upload, so use their original track_id to monitor progress.
+        If the pipeline is busy, the request is NOT lost: it stays queued in
+        the workspace ingress and executes when the current run reaches its
+        next quiescence point. The processing happens in the background and
+        can be monitored via the pipeline status; reprocessed documents
+        retain their original track_id from initial upload.
 
         Returns:
             ReprocessResponse: Response with status and message.
-                track_id is always empty string because reprocessed documents retain
-                their original track_id from initial upload.
+                track_id is always empty string because reprocessed documents
+                retain their original track_id from initial upload.
 
         Raises:
-            HTTPException: If an error occurs while initiating reprocessing (500).
+            HTTPException: 503 when the workspace is fenced (recovery
+                required, or a clear/delete is dropping storages); 500 on
+                unexpected errors while initiating reprocessing.
         """
-        try:
-            # Start the reprocessing in the background
-            # Note: Reprocessed documents retain their original track_id from initial upload
-            background_tasks.add_task(rag.apipeline_process_enqueue_documents)
-            logger.info("Reprocessing of failed documents initiated")
+        from lightrag.exceptions import PipelineNotInitializedError
+        from lightrag.kg.shared_storage import (
+            ManualIntentRefused,
+            commit_manual_retry_request,
+            get_namespace_data,
+            get_namespace_lock,
+            get_pipeline_ingress,
+            start_committed_background_task,
+            start_reserved_background_task,
+        )
 
-            return ReprocessResponse(
-                status="reprocessing_started",
-                message="Reprocessing of failed documents has been initiated in background. Documents retain their original track_id.",
+        request_id = uuid4().hex
+
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+        except PipelineNotInitializedError:
+            pipeline_status = None
+
+        if pipeline_status is None:
+            # Workspace pipeline_status not bootstrapped (mocked test rigs):
+            # there is no fence and no ingress to publish into — fall back to
+            # a plain managed drive.
+            async def _legacy_work(started):
+                started.set()
+                await rag.apipeline_process_enqueue_documents()
+
+            async def _noop_backstop():
+                return None
+
+            try:
+                await start_reserved_background_task(
+                    managed_tasks, work=_legacy_work, backstop_release=_noop_backstop
+                )
+                return ReprocessResponse(
+                    status="reprocessing_started",
+                    message="Reprocessing of failed documents has been initiated "
+                    "in background. Documents retain their original track_id.",
+                )
+            except Exception as e:
+                logger.error(f"Error initiating reprocessing: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise internal_server_error(e)
+
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        # Resolve the ingress BEFORE any critical section (never lazily while
+        # the pipeline status lock is held inside the commit).
+        ingress = await get_pipeline_ingress(rag.workspace)
+
+        # Two-state startup: the fence recheck and the sticky publish happen
+        # in ONE pipeline_status_lock critical section inside the child
+        # (commit), so a destructive clear cannot slip its reservation in
+        # between; once committed, an endpoint cancellation no longer cancels
+        # the child — the published intent has an owner driving it. Reprocess
+        # holds no reservation of its own (apipeline_process_enqueue_documents
+        # acquires/releases busy itself), so the backstop is a no-op.
+        async def _commit(state):
+            return await commit_manual_retry_request(
+                pipeline_status,
+                pipeline_status_lock,
+                ingress,
+                request_id,
+                state,
             )
 
+        async def _work():
+            await rag.apipeline_process_enqueue_documents()
+
+        async def _noop_backstop():
+            return None
+
+        try:
+            await start_committed_background_task(
+                managed_tasks,
+                commit=_commit,
+                work=_work,
+                backstop_release=_noop_backstop,
+            )
+            logger.info(
+                f"Reprocessing of failed documents initiated (request {request_id})"
+            )
+            return ReprocessResponse(
+                status="reprocessing_started",
+                message="Reprocessing of failed documents has been initiated in "
+                "background (one retry attempt per failed document). If the "
+                "pipeline is busy the request executes at its next quiescence "
+                "point. Documents retain their original track_id.",
+            )
+        except ManualIntentRefused as refusal:
+            # 429 only for a full manual channel (retry later works); every other
+            # refusal — fence held, id already finalized — is 503 (LR2 §10.1).
+            raise HTTPException(
+                status_code=429 if refusal.capacity_exceeded else 503,
+                detail=str(refusal),
+                headers=(
+                    {"Retry-After": str(_ADMISSION_RETRY_AFTER_SECONDS)}
+                    if refusal.capacity_exceeded
+                    else None
+                ),
+            )
         except Exception as e:
             logger.error(f"Error initiating reprocessing of failed documents: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
+
+    @router.post(
+        "/recovery/force_reset",
+        response_model=ForceResetRecoveryResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def force_reset_recovery(
+        request: ForceResetRecoveryRequest,
+    ) -> ForceResetRecoveryResponse:
+        """Force-clear a ``recovery_required`` fence (UNSAFE, manual).
+
+        The fence is raised when a worker is killed mid custom_chunks / delete /
+        clear (Linux multi-worker), which may have left storage partially
+        committed, or when a manual retry's drain cannot reach idle — so every
+        mutation is refused until the workspace is recovered. This endpoint does
+        NOT repair anything; it only drops the fence (and any lingering
+        reservation flags), re-opening a possibly-inconsistent workspace. Requires
+        ``confirm=true``. A true idempotent replay of the interrupted operation is
+        a separate concern (core atomicity / #3400).
+
+        It ALSO cancels the workspace's queued manual retry requests, and that is
+        load-bearing rather than housekeeping: a sticky un-ACKed request makes
+        ``/documents/scan`` refuse its reservation (a scan runs its own exclusive
+        FAILED reset and may not jump the manual FIFO — LR2 §8.1). For the
+        blocked-drain fence, ``/documents/scan`` is the remedy, so clearing the
+        fence alone would leave the recovery path just as blocked as before. The
+        failed documents are untouched by the cancellation — the scan's own FAILED
+        reset covers them, or ``/documents/reprocess_failed`` can be re-issued —
+        and the cancelled ids are retired as terminal, so a delayed replay of one
+        cannot silently re-queue.
+
+        Because both halves are required, this endpoint is **fail-closed and
+        atomic**: the ingress is resolved first and a failure there returns 503
+        with the fence untouched, then the cancellation and the fence drop happen
+        in ONE ``pipeline_status_lock`` critical section with the cancellation
+        first. A cancellation failure also returns 503 and keeps the fence. The
+        only partial state this admits is "intents cancelled, fence still up",
+        which a retry completes; the opposite order would admit "fence down,
+        intents still queued", where ``/scan`` stays refused and nothing says so.
+        """
+        from lightrag.exceptions import PipelineNotInitializedError
+        from lightrag.kg.shared_storage import (
+            MANUAL_PHASE_IDLE,
+            get_namespace_data,
+            get_namespace_lock,
+            get_pipeline_ingress,
+        )
+
+        if not request.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Set confirm=true to force-reset. The workspace may be in a "
+                    "partially-committed state after a worker died mid "
+                    "custom_chunks/delete/clear; verify or repair it first."
+                ),
+            )
+        try:
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+        except PipelineNotInitializedError:
+            return ForceResetRecoveryResponse(
+                status="no_recovery_required",
+                message="Pipeline status is not initialized; nothing to reset.",
+            )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        # Resolved BEFORE the critical section (a Manager RPC handle must never be
+        # looked up lazily while pipeline_status_lock is held) and FAIL CLOSED if
+        # it cannot be reached. Cancelling the queued intents is one HALF of this
+        # recovery, so a force-reset that cannot do it must not drop the fence and
+        # report success: that leaves the sticky request in place, keeps
+        # /documents/scan refused, and recreates the silent dead end this endpoint
+        # exists to close. Keeping the fence is safely retryable; a false "reset"
+        # is not.
+        try:
+            ingress = await get_pipeline_ingress(rag.workspace)
+        except Exception as ingress_error:
+            logger.error(
+                "Force-reset refused: cannot reach the ingress mailbox to cancel "
+                f"the queued manual retries ({ingress_error}); the fence is kept "
+                "so the recovery can be retried rather than reported as done."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Cannot reach the ingress mailbox to cancel queued manual "
+                    "retries; the recovery fence is unchanged. Retry shortly."
+                ),
+            )
+
+        cancelled = 0
+        async with pipeline_status_lock:
+            if not pipeline_status.get("recovery_required"):
+                return ForceResetRecoveryResponse(
+                    status="no_recovery_required",
+                    message="No recovery_required fence is set.",
+                )
+
+            # Cancel the queued intents FIRST, and inside the SAME critical
+            # section that drops the fence. Two reasons, and the order is the
+            # whole point:
+            #
+            # * failure atomicity — if the cancellation succeeds but the status
+            #   update below fails, the workspace is left "intents cancelled,
+            #   fence still up", which is safely retryable. The reverse order
+            #   leaves "fence down, intents still queued": /scan stays refused
+            #   and nothing says so.
+            # * no window — dropping the fence and then cancelling outside the
+            #   lock let a new processing run acquire ``busy`` in between, peek
+            #   the still-sticky request and claim it in ``_begin_manual_drain``.
+            #   That run holds the request id, so it could go on to run
+            #   FAILED → PENDING for a request the operator had just cancelled.
+            #   Both mutations under one lock hold close it: when the lock is
+            #   released the fence is gone AND the mailbox is empty.
+            #
+            # The mailbox call is a single already-resolved RPC under the lock —
+            # the same shape as the scan endpoint's publish and the reservation
+            # helpers' manual-pending peek.
+            try:
+                cancelled = int(ingress.cancel_manual_retries() or 0)
+            except Exception as cancel_error:
+                logger.error(
+                    "Force-reset refused: the recovery fence is kept because the "
+                    "queued manual retries could not be cancelled "
+                    f"({cancel_error}); clearing the fence alone would leave "
+                    "/documents/scan refused."
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Could not cancel the queued manual retries; the recovery "
+                        "fence is unchanged. Retry shortly."
+                    ),
+                )
+
+            # Drop the fence and any lingering reservation state in one atomic
+            # update. This is deliberately owner-agnostic — it is a manual
+            # override, not a normal owner-checked release. The manual freeze goes
+            # with it: it is held BY a run that this reset is abandoning, so
+            # leaving it would wedge every upload behind an owner that is gone.
+            pipeline_status.update(
+                {
+                    "recovery_required": None,
+                    "operation_record": None,
+                    "busy": False,
+                    "destructive_busy": False,
+                    "busy_owner": None,
+                    "scanning": False,
+                    "scanning_exclusive": False,
+                    "scanning_owner": None,
+                    "manual_freeze_requested": False,
+                    "manual_freeze_started_at": None,
+                    "manual_resetting": False,
+                    "manual_phase": MANUAL_PHASE_IDLE,
+                    "manual_owner": None,
+                }
+            )
+
+        logger.warning(
+            "recovery_required fence force-reset (unsafe manual override) for "
+            f"workspace {rag.workspace}; cancelled {cancelled} queued manual "
+            "retry request(s)"
+        )
+        return ForceResetRecoveryResponse(
+            status="reset",
+            cancelled_manual_retries=cancelled,
+            message=(
+                "recovery_required fence cleared"
+                + (
+                    f" and {cancelled} queued manual retry request(s) cancelled"
+                    if cancelled
+                    else ""
+                )
+                + ". The workspace may still be "
+                "partially committed — reprocess/verify affected documents."
+            ),
+        )
 
     @router.post(
         "/cancel_pipeline",
@@ -3974,11 +6866,15 @@ def create_document_routes(
                     )
 
                 # Set cancellation flag
-                pipeline_status["cancellation_requested"] = True
                 cancel_msg = "Pipeline cancellation requested by user"
                 logger.info(cancel_msg)
-                pipeline_status["latest_message"] = cancel_msg
-                pipeline_status["history_messages"].append(cancel_msg)
+                pipeline_status.update(
+                    {
+                        "cancellation_requested": True,
+                        "latest_message": cancel_msg,
+                    }
+                )
+                append_pipeline_history(pipeline_status, cancel_msg)
 
             return CancelPipelineResponse(
                 status="cancellation_requested",
@@ -3988,6 +6884,6 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error requesting pipeline cancellation: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
+            raise internal_server_error(e)
 
     return router

@@ -42,7 +42,7 @@ Two contracts coexist intentionally:
         missing or unreadable.
 
 See ``docs/ParagraphSemanticChunking-zh.md`` for the algorithm behind
-the ``"P"`` strategy and ``docs/FileProcessingConfiguration-zh.md`` for
+the ``"P"`` strategy and ``docs/FileProcessingPipeline.md`` for
 how ``process_options`` and the new ``chunk_options`` snapshot drive
 chunker selection per document.
 """

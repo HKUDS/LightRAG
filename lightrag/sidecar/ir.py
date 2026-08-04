@@ -126,7 +126,13 @@ class IRTable:
 
 @dataclass
 class IRDrawing:
-    """Spec §四. ``asset_ref`` points to an :class:`AssetSpec` in IRDoc."""
+    """Spec §四. ``asset_ref`` points to an :class:`AssetSpec` in IRDoc.
+
+    ``path`` is local-only: ``asset_ref=""`` ⇒ the writer renders
+    ``path=""``. ``src`` carries the original reference (remote URL /
+    docx external link target) as metadata only — it is never resolved
+    to disk.
+    """
 
     placeholder_key: str
     asset_ref: str
@@ -139,14 +145,6 @@ class IRDrawing:
     # omits the field. Used for traceability back to ``.docling_raw/``.
     self_ref: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
-    # Optional verbatim path. When set, the writer emits this string in
-    # both the ``blocks.jsonl`` ``<drawing path>`` attribute and the
-    # ``drawings.json`` ``path`` field as-is — bypassing
-    # ``asset_paths`` resolution and the ``block_drawing_path_style``
-    # transformation. Used for linked / external image references (e.g.
-    # ``<drawing path="https://…/img.png" />``) that point at bytes not
-    # materialized into ``<base>.blocks.assets/``.
-    path_override: str | None = None
 
 
 @dataclass
@@ -184,6 +182,10 @@ class IRBlock:
     session_type: str = "body"
     table_slice: str = "none"
     table_header: str | None = None
+    # Smart-heading title block (docx smart_heading): level=0 root whose
+    # heading is the document title compound. The chunker pins such blocks
+    # (no merge/absorb). Written to the sidecar row only when True.
+    is_title_block: bool = False
     positions: list[IRPosition] = field(default_factory=list)
     tables: list[IRTable] = field(default_factory=list)
     drawings: list[IRDrawing] = field(default_factory=list)

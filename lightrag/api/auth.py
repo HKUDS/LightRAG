@@ -7,12 +7,37 @@ from pydantic import BaseModel
 
 from ..utils import logger
 from .config import DEFAULT_TOKEN_SECRET, global_args
-from .passwords import verify_password
+from .passwords import BCRYPT_PASSWORD_PREFIX, verify_password
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+# A syntactically valid bcrypt spec used only to equalize login timing (see
+# AuthHandler.verify_password). It is a bcrypt hash of a throwaway value that
+# never matches any real password, and it is not a secret. Every login path
+# runs exactly one bcrypt verification (a real one for {bcrypt} accounts, this
+# dummy for unknown usernames and for plaintext accounts) so response time does
+# not reveal whether an account exists or whether it is stored as plaintext
+# (username enumeration via the ~100 ms bcrypt delay, CWE-208).
+#
+# The cost factor is 12, matching hash_password()/bcrypt.gensalt() defaults.
+# Accounts stored with a hand-chosen, different bcrypt cost will still differ
+# somewhat; fully closing that gap requires enforcing a uniform cost (or
+# dropping plaintext support altogether). See GHSA-c759-cx9p-mrwq.
+_DUMMY_VERIFY_SPEC = (
+    BCRYPT_PASSWORD_PREFIX
+    + "$2b$12$ilI0sY2jGfy4h0AVtn6WuutU6BFwzZq5MVvrQYY9fbyQ59NI2NBKa"
+)
+
+
+# Upper bound on the JWT "sub" (username) claim accepted by validate_token.
+# Deliberately generous: real subjects are either the literal "guest" or a key
+# of AUTH_ACCOUNTS, both far shorter. The bound exists so an attacker-forged
+# claim cannot be used as an arbitrarily large payload downstream -- see the
+# comment in validate_token.
+MAX_TOKEN_SUBJECT_LENGTH = 256
 
 
 class TokenPayload(BaseModel):
@@ -47,20 +72,42 @@ class AuthHandler:
         self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
         invalid_accounts = []
+        oversized_username_lengths = []
         if auth_accounts:
             for account in auth_accounts.split(","):
                 try:
                     username, password = account.split(":", 1)
                     if not username or not password:
                         raise ValueError
-                    self.accounts[username] = password
                 except ValueError:
                     invalid_accounts.append(account)
+                    continue
+                if len(username) > MAX_TOKEN_SUBJECT_LENGTH:
+                    # Rejected at configuration time, not at login. create_token
+                    # signs the username into the "sub" claim and validate_token
+                    # caps that claim at the same bound, so accepting the account
+                    # here would let it authenticate at /login and then fail every
+                    # subsequent request with 401 -- an unusable account and a
+                    # baffling symptom. Both ends of the claim share one constant.
+                    oversized_username_lengths.append(len(username))
+                    continue
+                self.accounts[username] = password
         if invalid_accounts:
             invalid_entries = ", ".join(invalid_accounts)
             logger.error(f"Invalid account format in AUTH_ACCOUNTS: {invalid_entries}")
             raise ValueError(
                 "AUTH_ACCOUNTS must use comma-separated user:password pairs."
+            )
+        if oversized_username_lengths:
+            # Only the lengths are logged: the offending entry carries a password.
+            logger.error(
+                f"AUTH_ACCOUNTS contains {len(oversized_username_lengths)} username(s) "
+                f"longer than {MAX_TOKEN_SUBJECT_LENGTH} characters "
+                f"(lengths: {oversized_username_lengths})"
+            )
+            raise ValueError(
+                "AUTH_ACCOUNTS usernames must be at most "
+                f"{MAX_TOKEN_SUBJECT_LENGTH} characters."
             )
 
     def verify_password(self, username: str, plain_password: str) -> bool:
@@ -74,10 +121,25 @@ class AuthHandler:
         Returns:
             bool: True if password is correct, False otherwise
         """
-        if username not in self.accounts:
+        # Every branch performs exactly one bcrypt verification so response time
+        # cannot be used to enumerate usernames or distinguish plaintext from
+        # bcrypt accounts (CWE-208). See _DUMMY_VERIFY_SPEC.
+        stored_password = self.accounts.get(username)
+
+        if stored_password is None:
+            # Unknown username: run the dummy bcrypt, then fail.
+            verify_password(plain_password, _DUMMY_VERIFY_SPEC)
             return False
 
-        stored_password = self.accounts[username]
+        if not stored_password.startswith(BCRYPT_PASSWORD_PREFIX):
+            # Known plaintext account: the constant-time plaintext compare is
+            # only microseconds, so add one dummy bcrypt to match the cost of an
+            # unknown username and a {bcrypt} account. Keep the real result.
+            password_matches = verify_password(plain_password, stored_password)
+            verify_password(plain_password, _DUMMY_VERIFY_SPEC)
+            return password_matches
+
+        # Known {bcrypt} account: the real verification already costs one bcrypt.
         return verify_password(plain_password, stored_password)
 
     def create_token(
@@ -139,8 +201,43 @@ class AuthHandler:
                     detail="Insecure JWT algorithm configuration",
                 )
             payload = jwt.decode(token, self.secret, algorithms=allowed_algorithms)
-            expire_timestamp = payload["exp"]
-            expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
+
+            # Claim validation. In any profile that runs on DEFAULT_TOKEN_SECRET
+            # (no AUTH_ACCOUNTS, see __init__) the whole payload is attacker-
+            # forgeable, so every claim read below is untrusted input. This method
+            # is the single choke point all authenticated paths pass through, so
+            # bounding the claims here lets callers treat "username" as a short,
+            # well-typed string. A malformed claim is an invalid token, not a
+            # server error: the previous bare payload["sub"] / payload["exp"]
+            # raised KeyError, which jwt.PyJWTError does not cover, so a
+            # signature-valid token missing either claim surfaced as HTTP 500.
+            username = payload.get("sub")
+            if not isinstance(username, str) or not username:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+            if len(username) > MAX_TOKEN_SUBJECT_LENGTH:
+                # Bounds every downstream use of the claim at once: the renewal
+                # cache key, the renewal log line, and the cost of re-signing it.
+                # Without this an attacker mints a ~100 KB "sub" per request
+                # (CWE-770 / CWE-117, GHSA-3wg5-5w54-3rfm).
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+
+            expire_timestamp = payload.get("exp")
+            if expire_timestamp is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
+            try:
+                # jwt.decode already rejects a non-numeric "exp", but a numeric
+                # one far outside the datetime range reaches here intact.
+                expire_time = datetime.fromtimestamp(expire_timestamp, timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                )
 
             if datetime.now(timezone.utc) > expire_time:
                 raise HTTPException(
@@ -149,7 +246,7 @@ class AuthHandler:
 
             # Return complete payload instead of just username
             return {
-                "username": payload["sub"],
+                "username": username,
                 "role": payload.get("role", "user"),
                 "metadata": payload.get("metadata", {}),
                 "exp": expire_time,

@@ -45,6 +45,8 @@ class MyParser(BaseParser):
 
 `ParseResult` fields: `doc_id` / `file_path` / `parse_format` (`"raw"` or `"lightrag"`) / `content` / `blocks_path` (`""` when there is no sidecar) / `parse_engine` / `parse_stage_skipped` (skipped scenarios such as cache hits) / `parse_warnings` (non-fatal warnings, persisted to `doc_status.metadata`).
 
+> Note: `parse_warnings → doc_status.metadata` is the general contract for every parser — the pipeline mirrors whatever a parser returns, without inspecting key names. The built-in native DOCX smart-heading engine is the one exception: it diverts *its own* `smart_`/`title_block_`-prefixed diagnostics to the sidecar `<base>.smart_audit.json` (under a `parse_warnings` key) instead of doc_status, and returns only the remaining non-smart warnings. This is a private policy of that engine, not a global prefix rule — a third-party parser returning `smart_*` warnings still gets them written to `doc_status.metadata`.
+
 ### 2.2 Three Implementation Paths (Choose a Base Class by Engine Type)
 
 **A. Plain-text engine (no sidecar) - inherit `BaseParser` directly**
@@ -96,7 +98,7 @@ class MyNativeParser(NativeParserBase):
         """blocks -> IRDoc (handed to the shared sidecar writer)."""
 ```
 
-Optional overrides: `validate_source` (by default only requires the file to exist), `surface_warnings` (maps extraction warnings to `parse_warnings`). Reference implementation: `lightrag/parser/docx/parser.py`.
+Optional overrides: `validate_source` (by default only requires the file to exist); `surface_warnings` (maps extraction warnings to `parse_warnings`); and `finalize_parse_warnings` (full control, runs after `extract` so it sees the complete warnings dict — an engine may divert a subset of warnings to sidecar audit artifacts and return only the remainder for doc_status; the default just calls `surface_warnings`). Reference implementation: `lightrag/parser/docx/parser.py`, whose `finalize_parse_warnings` writes the smart-heading `<base>.smart_audit.json`.
 
 **C. External parsing service (download raw bundle + cache) - inherit `ExternalParserBase`** (`lightrag/parser/external/_base.py`)
 
@@ -142,7 +144,8 @@ register_parser(ParserSpec(
 |---|---|---|
 | `engine_name` | yes | Registry key; also the engine name used by `--engine`, filename hints, and `LIGHTRAG_PARSER`. **Registering the same name as an existing engine overwrites the previous registration** (including built-in engines). Avoid colliding with `native/legacy/mineru/docling` unless you intentionally want to replace that implementation. |
 | `impl` | yes | `"module:Class"` string. The registry imports it only when a document is actually parsed. **The implementation must never be imported early during registration** (capability queries must stay import-cheap; this is a registry design invariant). |
-| `suffixes` | yes | File extensions the engine can handle (lowercase, no dot). Used for routing validation and worker-side suffix guarding. |
+| `suffixes` | yes | File extensions the engine can handle (lowercase, no dot). Used for routing validation and worker-side suffix guarding. A plain `set` is accepted and frozen on assignment. When `extra_suffixes_env` is set, reading this field returns the declared set **unioned with** that variable's suffixes, so consumers never have to know a deployment override exists. |
+| `extra_suffixes_env` | | Name of an env var whose comma-separated suffixes extend `suffixes` (e.g. docling's `DOCLING_ADDITIONAL_SUFFIXES`). For engines whose real format coverage depends on optional packages installed **on the service side, not in LightRAG** — declare the always-available baseline in `suffixes` and let each deployment opt the rest in. Resolved on every read (never baked in at registration), so it works whether the operator exports it or puts it in `.env`. Malformed entries make the server refuse to start. |
 | `queue_group` | | Concurrency-pool group. Defaults to `"native"` (sharing the native pool). Use a unique group name for a dedicated pool. |
 | `concurrency` | | Number of workers for this group (only needed for the group's sole owner). Environment-variable overrides are **baked by the registration code at registration time** (as in the `int(os.getenv(...))` example above); the registered value is authoritative. |
 | `endpoint_configured` / `endpoint_requirement` | | Zero-argument closures (read env only, no network calls). The former returns whether the external service required by this engine is configured; the latter returns the configuration item name to show users when it is missing. Local engines do not need these fields (available by default). |

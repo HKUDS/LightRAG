@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing import List, Dict, Any, Optional, Type
 from lightrag.utils import logger
+import threading
 import time
 import json
 import re
@@ -9,9 +10,19 @@ from enum import Enum
 from fastapi.responses import StreamingResponse
 import asyncio
 from lightrag import LightRAG, QueryParam
-from lightrag.constants import DEFAULT_QUERY_PRIORITY
-from lightrag.utils import TiktokenTokenizer
-from lightrag.api.utils_api import get_combined_auth_dependency
+from lightrag.api.input_limits import count_conversation_input_chars
+from lightrag.constants import (
+    DEFAULT_QUERY_PRIORITY,
+    MAX_IMAGES_PER_MESSAGE,
+    MAX_MESSAGE_CHARS,
+    MAX_MESSAGES_PER_REQUEST,
+    MAX_MODEL_NAME_CHARS,
+    MAX_QUERY_CHARS,
+    MAX_REQUEST_TEXT_CHARS,
+    MAX_ROLE_CHARS,
+)
+from lightrag.utils import TiktokenTokenizer, acount_tokens
+from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
 from fastapi import Depends
 
 
@@ -26,18 +37,60 @@ class SearchMode(str, Enum):
     context = "context"
 
 
+class PayloadTooLargeError(ValueError):
+    """Marks a validation failure that should answer 413 rather than 400.
+
+    Raised by the aggregate size checks below. A dedicated type keeps
+    ``parse_request_body`` from having to match on error strings, which would
+    silently stop working the next time a message is reworded.
+    """
+
+
+def _bound_input_chars(total: int) -> None:
+    """Reject an already-measured normalized model-input budget."""
+    if total > MAX_REQUEST_TEXT_CHARS:
+        raise PayloadTooLargeError(
+            f"total request text is {total} characters, over the "
+            f"{MAX_REQUEST_TEXT_CHARS} character limit"
+        )
+
+
 class OllamaMessage(BaseModel):
-    role: str
-    content: str
-    images: Optional[List[str]] = None
+    role: str = Field(max_length=MAX_ROLE_CHARS)
+    content: str = Field(max_length=MAX_MESSAGE_CHARS)
+    images: Optional[List[str]] = Field(default=None, max_length=MAX_IMAGES_PER_MESSAGE)
+
+
+def _split_chat_messages(
+    messages: List[OllamaMessage],
+) -> tuple[str, list[dict[str, str]]]:
+    """Return the exact query/history split the chat handler forwards downstream."""
+    if not messages:
+        return "", []
+    return (
+        messages[-1].content,
+        [
+            {"role": message.role, "content": message.content}
+            for message in messages[:-1]
+        ],
+    )
 
 
 class OllamaChatRequest(BaseModel):
-    model: str
-    messages: List[OllamaMessage]
+    model: str = Field(max_length=MAX_MODEL_NAME_CHARS)
+    messages: List[OllamaMessage] = Field(max_length=MAX_MESSAGES_PER_REQUEST)
     stream: bool = True
     options: Optional[Dict[str, Any]] = None
-    system: Optional[str] = None
+    system: Optional[str] = Field(default=None, max_length=MAX_MESSAGE_CHARS)
+
+    @model_validator(mode="after")
+    def _bound_aggregate_text(self) -> "OllamaChatRequest":
+        # The final message becomes the query; preceding messages become the
+        # history passed to the LLM. Count that exact normalized representation
+        # to match QueryRequest's aggregate budget.
+        query, history = _split_chat_messages(self.messages)
+        _bound_input_chars(count_conversation_input_chars(query, self.system, history))
+        return self
 
 
 class OllamaChatResponse(BaseModel):
@@ -48,11 +101,18 @@ class OllamaChatResponse(BaseModel):
 
 
 class OllamaGenerateRequest(BaseModel):
-    model: str
-    prompt: str
-    system: Optional[str] = None
+    model: str = Field(max_length=MAX_MODEL_NAME_CHARS)
+    prompt: str = Field(max_length=MAX_QUERY_CHARS)
+    system: Optional[str] = Field(default=None, max_length=MAX_MESSAGE_CHARS)
     stream: bool = False
     options: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def _bound_aggregate_text(self) -> "OllamaGenerateRequest":
+        _bound_input_chars(
+            count_conversation_input_chars(self.prompt, self.system, None)
+        )
+        return self
 
 
 class OllamaGenerateResponse(BaseModel):
@@ -151,16 +211,70 @@ async def parse_request_body(
         return model_class(**body)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    except ValidationError as e:
+        # Size failures answer 413 so an operator can tell "you sent too much"
+        # apart from "you sent the wrong shape". The detail names the offending
+        # fields only; echoing the input back would defeat the point of refusing
+        # to hold it.
+        if _is_size_violation(e):
+            fields = ", ".join(
+                ".".join(str(part) for part in error["loc"]) or "body"
+                for error in e.errors()
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=f"Request payload exceeds the allowed size ({fields}).",
+            )
+        raise HTTPException(status_code=400, detail=f"Invalid request body: {e!s}")
     except Exception as e:
         raise HTTPException(
             status_code=400, detail=f"Error parsing request body: {str(e)}"
         )
 
 
+_SIZE_ERROR_TYPES = frozenset({"string_too_long", "too_long"})
+
+
+def _is_size_violation(error: ValidationError) -> bool:
+    for detail in error.errors():
+        if detail.get("type") in _SIZE_ERROR_TYPES:
+            return True
+        if isinstance(detail.get("ctx", {}).get("error"), PayloadTooLargeError):
+            return True
+    return False
+
+
+# Built once, on first use. ``TiktokenTokenizer()`` runs
+# ``tiktoken.encoding_for_model`` on construction — which used to happen on every
+# single token estimate — but building it at import time would move tiktoken's
+# BPE fetch into module import, where an offline or air-gapped install would trip
+# over it before the server ever handles a request.
+_ESTIMATE_TOKENIZER: Optional[TiktokenTokenizer] = None
+_ESTIMATE_TOKENIZER_LOCK = threading.Lock()
+
+
+def _estimate_tokenizer() -> TiktokenTokenizer:
+    global _ESTIMATE_TOKENIZER
+    if _ESTIMATE_TOKENIZER is None:
+        with _ESTIMATE_TOKENIZER_LOCK:
+            if _ESTIMATE_TOKENIZER is None:
+                _ESTIMATE_TOKENIZER = TiktokenTokenizer()
+    return _ESTIMATE_TOKENIZER
+
+
 def estimate_tokens(text: str) -> int:
-    """Estimate the number of tokens in text using tiktoken"""
-    tokens = TiktokenTokenizer().encode(text)
-    return len(tokens)
+    """Estimate the number of tokens in text using tiktoken.
+
+    Synchronous; kept for callers outside the request path. Handlers must use
+    :func:`aestimate_tokens` — this is CPU-bound and blocks the event loop for
+    roughly half a second per MiB.
+    """
+    return len(_estimate_tokenizer().encode(text))
+
+
+async def aestimate_tokens(text: str) -> int:
+    """Estimate tokens without occupying the event loop."""
+    return await acount_tokens(_estimate_tokenizer(), text)
 
 
 def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
@@ -169,14 +283,17 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
 
     Examples:
     - "/local[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.local, False, "use mermaid format for diagrams")
-    - "/[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.hybrid, False, "use mermaid format for diagrams")
+    - "/[use mermaid format for diagrams] query string" -> (cleaned_query, SearchMode.mix, False, "use mermaid format for diagrams")
     - "/local  query string" -> (cleaned_query, SearchMode.local, False, None)
+    - "/local[use mermaid format for diagrams]" -> ("", SearchMode.local, False, "use mermaid format for diagrams")
     """
     # Initialize user_prompt as None
     user_prompt = None
 
-    # First check if there's a bracket format for user prompt
-    bracket_pattern = r"^/([a-z]*)\[(.*?)\](.*)"
+    # First check if there's a bracket format for user prompt. The trailing
+    # group spans newlines so a multi-line question is not truncated at the
+    # first one; the prompt group stays single-line, as before.
+    bracket_pattern = r"^/([a-z]*)\[(.*?)\]([\s\S]*)"
     bracket_match = re.match(bracket_pattern, query)
 
     if bracket_match:
@@ -184,8 +301,9 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
         user_prompt = bracket_match.group(2)
         remaining_query = bracket_match.group(3).lstrip()
 
-        # Reconstruct query, removing the bracket part
-        query = f"/{mode_prefix} {remaining_query}".strip()
+        # Reconstruct query, removing the bracket part. Keep the separator the
+        # space-suffixed mode keys match on, and emit no bare "/" without a mode.
+        query = f"/{mode_prefix} {remaining_query}" if mode_prefix else remaining_query
 
     # Unified handling of mode and only_need_context determination
     mode_map = {
@@ -298,7 +416,7 @@ class OllamaAPI:
 
                 query = request.prompt
                 start_time = time.time_ns()
-                prompt_tokens = estimate_tokens(query)
+                prompt_tokens = await aestimate_tokens(query)
 
                 role_kwargs = (
                     dict(self.rag.role_llm_kwargs["query"])
@@ -336,7 +454,7 @@ class OllamaAPI:
                             }
                             yield f"{json.dumps(data, ensure_ascii=False)}\n"
 
-                            completion_tokens = estimate_tokens(total_response)
+                            completion_tokens = await aestimate_tokens(total_response)
                             total_time = last_chunk_time - start_time
                             prompt_eval_time = first_chunk_time - start_time
                             eval_time = last_chunk_time - first_chunk_time
@@ -403,7 +521,7 @@ class OllamaAPI:
                                 return
                             if first_chunk_time is None:
                                 first_chunk_time = start_time
-                            completion_tokens = estimate_tokens(total_response)
+                            completion_tokens = await aestimate_tokens(total_response)
                             total_time = last_chunk_time - start_time
                             prompt_eval_time = first_chunk_time - start_time
                             eval_time = last_chunk_time - first_chunk_time
@@ -448,7 +566,7 @@ class OllamaAPI:
                     if not response_text:
                         response_text = "No response generated"
 
-                    completion_tokens = estimate_tokens(str(response_text))
+                    completion_tokens = await aestimate_tokens(str(response_text))
                     total_time = last_chunk_time - start_time
                     prompt_eval_time = first_chunk_time - start_time
                     eval_time = last_chunk_time - first_chunk_time
@@ -467,9 +585,16 @@ class OllamaAPI:
                         "eval_count": completion_tokens,
                         "eval_duration": eval_time,
                     }
+            except HTTPException:
+                # Deliberate client-facing statuses — the 413 of an oversized
+                # payload, the 400 of a malformed one — must reach the caller.
+                # The catch-all below is for genuinely unexpected failures, and
+                # relabelling these as 500 both misleads the client and hides the
+                # refusal from anything watching status codes.
+                raise
             except Exception as e:
                 logger.error(f"Ollama generate error: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+                raise internal_server_error(e)
 
         @self.router.post(
             "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
@@ -495,12 +620,7 @@ class OllamaAPI:
                         status_code=400, detail="Last message must be from user role"
                     )
 
-                # Get the last message as query and previous messages as history
-                query = messages[-1].content
-                # Convert OllamaMessage objects to dictionaries
-                conversation_history = [
-                    {"role": msg.role, "content": msg.content} for msg in messages[:-1]
-                ]
+                query, conversation_history = _split_chat_messages(messages)
 
                 # Check for query prefix
                 cleaned_query, mode, only_need_context, user_prompt = parse_query_mode(
@@ -508,7 +628,7 @@ class OllamaAPI:
                 )
 
                 start_time = time.time_ns()
-                prompt_tokens = estimate_tokens(cleaned_query)
+                prompt_tokens = await aestimate_tokens(cleaned_query)
 
                 param_dict = {
                     "mode": mode.value,
@@ -570,7 +690,7 @@ class OllamaAPI:
                             }
                             yield f"{json.dumps(data, ensure_ascii=False)}\n"
 
-                            completion_tokens = estimate_tokens(total_response)
+                            completion_tokens = await aestimate_tokens(total_response)
                             total_time = last_chunk_time - start_time
                             prompt_eval_time = first_chunk_time - start_time
                             eval_time = last_chunk_time - first_chunk_time
@@ -653,7 +773,7 @@ class OllamaAPI:
 
                             if first_chunk_time is None:
                                 first_chunk_time = start_time
-                            completion_tokens = estimate_tokens(total_response)
+                            completion_tokens = await aestimate_tokens(total_response)
                             total_time = last_chunk_time - start_time
                             prompt_eval_time = first_chunk_time - start_time
                             eval_time = last_chunk_time - first_chunk_time
@@ -720,7 +840,7 @@ class OllamaAPI:
                     if not response_text:
                         response_text = "No response generated"
 
-                    completion_tokens = estimate_tokens(str(response_text))
+                    completion_tokens = await aestimate_tokens(str(response_text))
                     total_time = last_chunk_time - start_time
                     prompt_eval_time = first_chunk_time - start_time
                     eval_time = last_chunk_time - first_chunk_time
@@ -742,6 +862,13 @@ class OllamaAPI:
                         "eval_count": completion_tokens,
                         "eval_duration": eval_time,
                     }
+            except HTTPException:
+                # Deliberate client-facing statuses — the 413 of an oversized
+                # payload, the 400 of a malformed one — must reach the caller.
+                # The catch-all below is for genuinely unexpected failures, and
+                # relabelling these as 500 both misleads the client and hides the
+                # refusal from anything watching status codes.
+                raise
             except Exception as e:
                 logger.error(f"Ollama chat error: {str(e)}", exc_info=True)
-                raise HTTPException(status_code=500, detail=str(e))
+                raise internal_server_error(e)

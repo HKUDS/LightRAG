@@ -51,6 +51,7 @@ import {
   type StatusBucket,
   type StatusFilter
 } from '@/features/documentStatusFilters'
+import { hasDocumentWarning } from '@/features/documentRecoveryWarnings'
 
 type StatusDisplayConfig = {
   labelKey: string
@@ -260,7 +261,7 @@ const DocumentStatusDetailsDialog = ({ doc }: { doc: DocStatusResponse }) => {
           side="top"
           aria-label={openLabel}
         >
-          {doc.error_msg ? (
+          {hasDocumentWarning(doc) ? (
             <AlertTriangle className="h-4 w-4 text-yellow-500" />
           ) : (
             <Info className="h-4 w-4 text-blue-500" />

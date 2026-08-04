@@ -11,6 +11,7 @@ This document describes the **LightRAG Sidecar** file format that content parsin
 | Table objects | `<doc>.tables.json` | Table objects extracted from the file | Sent to an LLM for analysis; analysis results are written back |
 | Equation objects | `<doc>.equations.json` | Equation objects extracted from the file | Sent to an LLM for analysis; analysis results are written back |
 | Original image assets | `<doc>.blocks.assets/` | Original image files extracted from the document | Sent to a VLM for image analysis |
+| Audit extension (optional) | `<doc>.smart_audit.json` | Smart-heading audit ledger + diverted `parse_warnings` | **Native DOCX smart-heading only** — not produced by other engines. Consumed by no pipeline stage; see [§10](#10-smart_auditjson-optional-native-docx) |
 
 Design intent of sidecars:
 
@@ -25,6 +26,7 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
 ├── <canonical filename>.drawings.json       drawing sidecar (dict container, key = drawing id)
 ├── <canonical filename>.tables.json         table sidecar
 ├── <canonical filename>.equations.json      equation sidecar
+├── <canonical filename>.smart_audit.json    optional; native DOCX smart-heading audit only (see §10)
 └── <canonical filename>.blocks.assets/      original asset directory (image files referenced by drawings.json live here)
     ├── image1.wmf
     ├── image2.wmf
@@ -76,7 +78,7 @@ inputs/space1/__parsed__/<canonical filename>.parsed/
 | `doc_id` | `"doc-<md5>"` | Global document ID. Sidecar item IDs (`im-/tb-/eq-`) use the hash portion of `doc_id` with the `doc-` prefix removed, in order to shorten the placeholder tags embedded in body text. |
 | `parse_engine` | `str` | Parsing engine `native/mineru/docling/legacy` |
 | `parse_time` | `str` | Parse completion time; format: ISO-8601 UTC |
-| `doc_title` | `str` | Document title (usually the first H1); optional |
+| `doc_title` | `str` | Document title (usually the first H1); optional. Under docx smart_heading it is the LLM-identified title-block main title, and an empty string when no title block was identified |
 | `doc_summary` | `str` | Document summary; optional |
 | `doc_attributes` | `object` | Document extended attributes object; optional |
 | `bbox_attributes` | `object` | Global bbox position attributes; see [§8](#8-positions) |
@@ -131,7 +133,7 @@ To let the P chunking strategy split body text without breaking multimodal objec
 | Tag | Meaning | Tag attributes |
 |---|---|---|
 | `<table id="tb-…" format="json">…</table>` | Table placeholder; the body is the raw table JSON / HTML | `id` points to the corresponding item in `tables.json`; `format` ∈ `json` / `html` |
-| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | Self-closing drawing placeholder | `id` points to `drawings.json`; `path` is relative to the `*.parsed/` directory; `src` is the reference name in the original document |
+| `<drawing id="im-…" format="png" path="…" src="…" caption="…" />` | Self-closing drawing placeholder | `id` points to `drawings.json`; `path` is relative to the `*.parsed/` directory — empty string `""` when the image bytes were not materialized (external link not downloaded / download failed); `src` is the original reference from the source document (remote URL, external link target) |
 | `<equation id="eq-…" format="latex" caption="…">…</equation>` | Equation placeholder | Inline equations also use `<equation format="latex">`, but **without** `id`, and are not written to the sidecar; only block equations (occupying one or more entire lines) carry an `id` |
 
 When the text is fed to the LLM during entity/relation extraction, internal attributes such as `id / path / src` are stripped, but key attributes (`format / caption`) are preserved. The goal is to avoid extracting entities that are invisible in the article and injecting too much noise into the extraction results.
@@ -190,8 +192,8 @@ The top level is a dict container of the form `{"version": "1.0", "drawings": { 
 | `heading` | The section heading the drawing belongs to |
 | `parent_headings` | String array: the top-down list of ancestor headings, excluding the current `heading` (mirrors the `blocks.jsonl` field of the same name on the block this drawing belongs to) |
 | `format` | Original extension (no dot): `png` / `jpeg` / `gif` / `webp` / `wmf` / `emf` / … |
-| `path` | Resource path relative to the `*.parsed/` directory; **always** points to a file inside `*.blocks.assets/` |
-| `src` | The reference alias of the drawing in the original document (empty in most cases) |
+| `path` | Resource path relative to the `*.parsed/` directory; when non-empty it **always** points to a file inside `*.blocks.assets/`. Empty string `""` ⇒ the image bytes were not cached locally (external link not downloaded / download failed) |
+| `src` | The original reference of the drawing in the source document (remote URL, external link target); empty in most cases |
 | `caption` | Visible caption (the parser may leave it empty) |
 | `footnotes` | List of footnote strings |
 | `surrounding` | Context object: see [§7](#7-surrounding) |
@@ -400,3 +402,28 @@ Additional notes:
 - Items for enabled modalities are recomputed on each `analyze_multimodal` run, and the current run overwrites any prior `llm_analyze_result` (`success`, `skipped`, or `failure`). This allows operators to fix VLM/EXTRACT configuration and retry without manually clearing stale sidecar results. LLM calls still use the analysis cache: if the cache key matches, the provider is not called and semantic fields usually remain the same, though runtime fields such as `analyze_time` are rewritten. A cache miss, for example after changing the effective role model/binding/host, prompt inputs, or image metadata, can produce different saved content.
 
 Drawing `type` is constrained to a 12-value enum (see [`IMAGE_TYPE_ENUM`](../lightrag/prompt_multimodal.py): `Photo / Illustration / Screenshot / Icon / Chart / Table / Infographic / Flowchart / Chat Log / Wireframe / Texture / Other`); values returned by the model outside the enum are normalized to `Other` rather than failing.
+
+## 10. `smart_audit.json` (optional, native DOCX)
+
+An **optional** audit artifact written **only** by the built-in native DOCX engine when smart-heading is active. Other engines (markdown, mineru, docling, legacy) never produce it, so consumers must treat its absence as normal. No LightRAG pipeline stage reads it — it exists purely for post-mortem inspection of the smart-heading decisions.
+
+It is written deterministically: `ensure_ascii=False, indent=2, sort_keys=True`, no timestamps, so re-parsing the same document (with the entity-extract cache on) yields a byte-identical file (the I4 determinism property).
+
+The file is a single JSON object. Its keys are the smart-heading audit ledger (breaker ledgers, `shadow_diff`, `fallback_sub_documents`, demotion/anchor records, … — internal diagnostics, subject to change) plus one well-known key:
+
+| Field | Type | Description |
+|---|---|---|
+| `parse_warnings` | `object` | The document's smart-heading warning counters (keys prefixed `smart_` / `title_block_`, e.g. `smart_cb1_tripped`, `smart_toc_removed_lines`, `smart_i4_cache_disabled`). These are **diverted here instead of `doc_status.metadata`**; non-smart warnings (`missing_paraid_count`, `heading_softbreak_split_count`, …) stay on doc_status. Absent when the run produced no smart-heading warnings. |
+
+Example:
+
+```json
+{
+  "fallback_sub_documents": [],
+  "parse_warnings": {
+    "smart_cb1_tripped": 2,
+    "smart_toc_removed_lines": 5
+  },
+  "shadow_diff": { }
+}
+```

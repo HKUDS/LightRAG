@@ -3,23 +3,23 @@
   "drawings": {
     "im-1111aaaa2222bbbb1111aaaa2222bbbb-0001": {
       "id": "im-1111aaaa2222bbbb1111aaaa2222bbbb-0001",
-      "blockid": "42b4dd9bfb50ba8f1c4b60229ea4605a",
+      "blockid": "269c91a69ce1d034db0f22c10bd17429",
       "heading": "Linked",
       "parent_headings": [],
       "format": "png",
-      "path": "https://example.com/diagrams/architecture.png",
-      "src": "docx://external",
+      "path": "",
+      "src": "https://example.com/diagrams/architecture.png",
       "caption": "",
       "footnotes": []
     },
     "im-1111aaaa2222bbbb1111aaaa2222bbbb-0002": {
       "id": "im-1111aaaa2222bbbb1111aaaa2222bbbb-0002",
-      "blockid": "42b4dd9bfb50ba8f1c4b60229ea4605a",
+      "blockid": "269c91a69ce1d034db0f22c10bd17429",
       "heading": "Linked",
       "parent_headings": [],
       "format": "gif",
-      "path": "../images/legacy.gif",
-      "src": "docx://legacy",
+      "path": "",
+      "src": "../images/legacy.gif",
       "caption": "",
       "footnotes": []
     }

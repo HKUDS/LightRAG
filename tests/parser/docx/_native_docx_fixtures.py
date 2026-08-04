@@ -4,8 +4,9 @@ Each scenario describes:
 
 - ``blocks``      — what ``extract_docx_blocks`` would return (the synthetic
   block dicts that the adapter consumes).
-- ``parse_metadata`` — the dict the upstream parser fills in (only
-  ``first_heading`` is currently consumed by the adapter).
+- ``parse_metadata`` — the dict the upstream parser fills in (the adapter
+  consumes ``first_heading``, and ``doc_title`` — the smart assembler's
+  explicit verdict, empty string allowed — when the key is present).
 - ``assets``      — files the upstream extractor would have written into
   ``<base>.blocks.assets/`` before the IR builder runs. Maps relative names
   inside the asset dir → byte content.
@@ -265,18 +266,19 @@ SCENARIOS: list[Scenario] = [
     # --- 7: external / linked image references ------------------------
     # DOCX can carry ``<a:blip r:link="rId…"/>`` references to image
     # targets that live outside the package — the upstream extractor
-    # then emits ``<drawing path="<external URL or unresolved path>" />``
-    # WITHOUT writing bytes into ``<base>.blocks.assets/``. The adapter
-    # must pass those paths through verbatim (both in ``blocks.jsonl``
-    # and ``drawings.json``); turning them into AssetSpecs with
-    # ``source=None`` would make the writer warn-and-skip → ``path=""``,
-    # losing the only reference downstream consumers have.
+    # does NOT download them; it emits the link target as the ``src``
+    # attribute and no ``path`` at all (nothing was materialized).
+    # ``path`` is local-only: the adapter renders it as ``""`` for these
+    # drawings while ``src`` passes through verbatim (blocks.jsonl and
+    # drawings.json alike). This deliberately replaces the earlier
+    # "preserve the external path verbatim" contract — an external
+    # reference must never masquerade as a local cache path.
     Scenario(
         name="external_image_link",
         doc_id="doc-1111aaaa2222bbbb1111aaaa2222bbbb",
         file_path="linked.docx",
         parse_metadata={"first_heading": "Linked"},
-        # No on-disk assets — the path points elsewhere.
+        # No on-disk assets — nothing was materialized.
         assets={},
         blocks=[
             _block(
@@ -287,13 +289,11 @@ SCENARIOS: list[Scenario] = [
             ),
             _block(
                 "See the diagram online:\n"
-                '<drawing id="z" format="png" '
-                'path="https://example.com/diagrams/architecture.png" '
-                'src="docx://external" />\n'
-                "And a relative-but-not-asset path:\n"
-                '<drawing id="z2" format="gif" '
-                'path="../images/legacy.gif" '
-                'src="docx://legacy" />',
+                '<drawing id="z" name="ext1" format="png" '
+                'src="https://example.com/diagrams/architecture.png" />\n'
+                "And a relative-but-not-asset reference:\n"
+                '<drawing id="z2" name="ext2" format="gif" '
+                'src="../images/legacy.gif" />',
                 heading="Linked",
                 level=1,
                 uuid="p1",

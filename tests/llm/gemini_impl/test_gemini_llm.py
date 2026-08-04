@@ -22,6 +22,10 @@ def _load_gemini_module(monkeypatch, request):
     fake_types = SimpleNamespace(
         GenerateContentConfig=FakeGenerateContentConfig,
         HttpOptions=FakeHttpOptions,
+        # gemini.py compares candidates[0].finish_reason against this enum on
+        # the non-streaming path (truncation marker); string sentinels stand in
+        # for the real google.genai enum members.
+        FinishReason=SimpleNamespace(MAX_TOKENS="MAX_TOKENS", STOP="STOP"),
     )
     fake_genai = SimpleNamespace(Client=lambda **kwargs: SimpleNamespace(kwargs=kwargs))
     fake_google_module = ModuleType("google")
@@ -76,7 +80,7 @@ def _load_gemini_module(monkeypatch, request):
     return importlib.import_module("lightrag.llm.gemini")
 
 
-def _make_fake_gemini_response(regular_text="", thought_text=""):
+def _make_fake_gemini_response(regular_text="", thought_text="", finish_reason=None):
     parts = []
     if thought_text:
         parts.append(SimpleNamespace(text=thought_text, thought=True))
@@ -85,7 +89,10 @@ def _make_fake_gemini_response(regular_text="", thought_text=""):
 
     return SimpleNamespace(
         candidates=[
-            SimpleNamespace(content=SimpleNamespace(parts=parts)),
+            SimpleNamespace(
+                content=SimpleNamespace(parts=parts),
+                finish_reason=finish_reason,
+            ),
         ],
         usage_metadata=SimpleNamespace(
             prompt_token_count=1,
@@ -231,3 +238,61 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, requ
         chunks.append(chunk)
 
     assert "".join(chunks) == '{"answer":"ok"}'
+
+
+def _make_nonstreaming_client(fake_response):
+    async def _fake_generate_content(**kwargs):
+        return fake_response
+
+    return SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_fake_generate_content)
+        )
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_max_tokens_finish_reason_marks_result_truncated(
+    monkeypatch, request
+):
+    """MAX_TOKENS truncation is returned for salvage but flagged uncacheable."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    from lightrag.utils import is_truncated_response
+
+    raw_json = '{"entities":[{"name":"Ali'
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(regular_text=raw_json, finish_reason="MAX_TOKENS")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Extract entities",
+        api_key="test-key",
+    )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_stop_finish_reason_is_not_marked_truncated(monkeypatch, request):
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    from lightrag.utils import is_truncated_response
+
+    raw_json = '{"entities":[]}'
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(regular_text=raw_json, finish_reason="STOP")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Extract entities",
+        api_key="test-key",
+    )
+
+    assert result == raw_json
+    assert is_truncated_response(result) is False

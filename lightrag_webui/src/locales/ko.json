@@ -99,7 +99,7 @@
         "error": "일부 파일 업로드 실패"
       },
       "generalError": "업로드 실패\n{{error}}",
-      "fileTypes": "지원되는 유형: TXT, MD, TEXTPACK, MDX, DOCX, PDF, PPTX, XLSX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, H, HPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileTypes": "지원되는 유형: {{types}}",
       "fileUploader": {
         "singleFileLimit": "한 번에 1개의 파일만 업로드할 수 있습니다",
         "maxFilesLimit": "{{count}}개 이상의 파일은 업로드할 수 없습니다",
@@ -139,9 +139,9 @@
       "filters": {
         "all": "전체",
         "completed": "완료",
-        "parse": "추출",
-        "analyze": "분석",
-        "process": "처리",
+        "parse": "파싱 중",
+        "analyze": "분석 중",
+        "process": "처리 중",
         "failed": "실패"
       },
       "status": {
@@ -177,7 +177,6 @@
     "pipelineStatus": {
       "title": "파이프라인 상태",
       "busy": "파이프라인 작업 중",
-      "requestPending": "요청 대기 중",
       "cancellationRequested": "취소 요청됨",
       "jobName": "작업 이름",
       "startTime": "시작 시간",
@@ -330,6 +329,7 @@
       "editPropertyDescription": "아래 텍스트 영역에서 속성 값을 수정하세요.",
       "errors": {
         "duplicateName": "노드 이름이 이미 존재합니다",
+        "invalidEntityName": "올바른 노드 이름을 입력하세요",
         "updateFailed": "노드 업데이트 실패",
         "tryAgainLater": "나중에 다시 시도해주세요",
         "updateSuccessButMergeFailed": "속성이 업데이트되었으나 병합 실패: {{error}}",
@@ -410,10 +410,21 @@
       "copyManualInstruction": "텍스트를 직접 선택하여 복사하세요",
       "thinking": "생각 중...",
       "thinkingTime": "생각 소요 시간 {{time}}초",
-      "thinkingInProgress": "생각 진행 중..."
+      "thinkingInProgress": "생각 진행 중...",
+      "responseTime": "응답 시간 {{time}}초",
+      "firstTokenTime": "첫 토큰 {{time}}초",
+      "progress": {
+        "extracting_keywords": "키워드 추출 중...",
+        "retrieving_entities": "엔티티 검색 중...",
+        "retrieving_relations": "관계 검색 중...",
+        "retrieving_chunks": "텍스트 청크 검색 중...",
+        "reranking": "재랭킹 중...",
+        "generating_response": "응답 생성 중..."
+      }
     },
     "retrieval": {
       "startPrompt": "아래에 질문을 입력하여 검색을 시작하세요",
+      "scrollToBottom": "최신 메시지로 이동",
       "clear": "지우기",
       "send": "전송",
       "stop": "중지",

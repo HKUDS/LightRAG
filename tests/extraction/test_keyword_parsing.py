@@ -73,6 +73,25 @@ def test_parse_keywords_payload_extracts_json_from_wrapped_text():
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        '```json\n{"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]}\n```',
+        '```json {"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]}```',
+    ],
+    ids=["multiline-fence", "single-line-fence"],
+)
+def test_parse_keywords_payload_strips_markdown_fence(result):
+    """Keyword parsing shares utils.strip_markdown_code_fence; both multi-line
+    and single-line (no interior newline) fences must be stripped."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI", "Agents"]
+    assert ll_keywords == ["RAG", "LightRAG"]
+
+
+@pytest.mark.offline
 def test_parse_keywords_payload_warns_when_json_repair_is_used():
     broken_result = (
         '{"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]'

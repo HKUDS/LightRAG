@@ -177,6 +177,17 @@ def _get_env_int(key: str, default: int) -> int:
     return default
 
 
+def _escape_milvus_str(val: str) -> str:
+    """Escape a value embedded in a double-quoted Milvus filter literal."""
+    return (
+        val.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
 @dataclass
 class MilvusIndexConfig:
     """
@@ -2646,7 +2657,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             self._ensure_collection_loaded()
 
-            expr = f'src_id == "{entity_name}" or tgt_id == "{entity_name}"'
+            safe_name = _escape_milvus_str(entity_name)
+            expr = f'src_id == "{safe_name}" or tgt_id == "{safe_name}"'
             results = self._client.query(
                 collection_name=self.final_namespace,
                 filter=expr,
@@ -2706,7 +2718,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             result = self._client.query(
                 collection_name=self.final_namespace,
-                filter=f'id == "{id}"',
+                filter=f'id == "{_escape_milvus_str(id)}"',
                 output_fields=output_fields,
             )
 
@@ -2749,7 +2761,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 # Include all meta_fields (created_at is now always included) plus id
                 output_fields = list(self.meta_fields) + ["id"]
 
-                id_list = '", "'.join(remaining)
+                id_list = '", "'.join(_escape_milvus_str(i) for i in remaining)
                 filter_expr = f'id in ["{id_list}"]'
 
                 result = self._client.query(
@@ -2842,7 +2854,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         try:
             self._ensure_collection_loaded()
 
-            id_list = '", "'.join(remaining)
+            id_list = '", "'.join(_escape_milvus_str(i) for i in remaining)
             filter_expr = f'id in ["{id_list}"]'
 
             rows = self._client.query(
@@ -2867,18 +2879,34 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             return result
 
     async def finalize(self):
-        """Flush pending vector ops; surface unflushed data as RuntimeError.
+        """Flush pending vector ops, then release the Milvus gRPC channel.
 
-        Milvus has no client connection to release (the MilvusClient is
-        stateless from the storage layer's perspective), but we still need
-        to fail loudly when a transient bulk error left writes buffered —
-        the caller must not believe storage finalized cleanly.
+        Every other server-backed storage releases its client here (Neo4j
+        driver, Postgres pool, Mongo client, OpenSearch ClientManager); the
+        MilvusClient owns a gRPC channel that should be closed explicitly
+        too — ``close()`` is already used for that purpose by
+        ``_rebuild_milvus_client``. We still fail loudly when a transient
+        bulk error left writes buffered — the caller must not believe
+        storage finalized cleanly.
         """
         flush_error: Exception | None = None
         try:
             await self._flush_pending_vector_ops()
         except Exception as e:
             flush_error = e
+
+        # Release the gRPC channel after the flush so the flush can still use
+        # the client. Best-effort: close() on a dead channel is a no-op (see
+        # _rebuild_milvus_client). The connection is freed on every exit path,
+        # matching the close-on-release pattern of the other server-backed
+        # storages (Neo4j / Postgres / Mongo / OpenSearch).
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception as close_error:
+                logger.warning(
+                    f"[{self.workspace}] Failed to close Milvus client: {close_error}"
+                )
 
         # Read the residual buffer sizes under the flush lock so the
         # snapshot is consistent with any racing late-arriving mutator
