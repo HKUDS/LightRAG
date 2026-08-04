@@ -41,7 +41,7 @@ jobs:
       POSTGRES_DATABASE: lightrag_test
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
