@@ -427,13 +427,18 @@ class ChunkTokenLimitExceededError(ValueError):
 
 
 class ChunkBlockMatchError(ValueError):
-    """Raised when a chunk cannot be located in the document's blocks.jsonl.
+    """Raised when a chunk's provenance cannot be located in the source document.
 
     Sidecar backfill (``lightrag.sidecar.backfill``) maps F/R/V chunks back to
     their source block(s) by matching chunk content against the parse-time
     ``*.blocks.jsonl`` merged text. When a sidecar-less chunk cannot be located,
     this is raised so the pipeline marks the document FAILED rather than
     persisting chunks with missing/incorrect provenance.
+
+    Also raised earlier, by ``lightrag.utils.enforce_chunk_token_limit_before_embedding``,
+    when a hard-split child chunk's parent content has diverged from the
+    document text beyond whitespace — the same class of failure sidecar
+    backfill would otherwise surface downstream, just with less context.
     """
 
     def __init__(

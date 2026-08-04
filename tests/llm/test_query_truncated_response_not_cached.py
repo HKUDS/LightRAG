@@ -2,15 +2,19 @@ import pytest
 
 from lightrag.base import QueryParam
 from lightrag.operate import naive_query
-from lightrag.utils import TruncatedResponse
+from lightrag.utils import Tokenizer, TruncatedResponse
 
 
-class _FakeTokenizer:
+class _FakeTokenizerImpl:
     def encode(self, content: str) -> list[int]:
         return [ord(ch) for ch in content]
 
     def decode(self, tokens: list[int]) -> str:
         return "".join(chr(token) for token in tokens)
+
+
+def _FakeTokenizer() -> Tokenizer:
+    return Tokenizer("fake", _FakeTokenizerImpl())
 
 
 class _FakeKVStorage:

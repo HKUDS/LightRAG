@@ -4798,9 +4798,10 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         seen_nodes.add(start_label)
         result.nodes.append(self._construct_graph_node(start_label, start_node))
 
+        truncated_by_cap = False
         current_level = [start_label]
         for _ in range(max_depth):
-            if not current_level or len(seen_nodes) >= max_nodes:
+            if not current_level:
                 break
 
             # Batch fetch all edges for current level
@@ -4821,35 +4822,52 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # the subgraph while is_truncated stays False (looks complete).
             resp = await self.client.search(index=self._edges_index, body=body)
 
-            next_level = set()
+            # Ordered + deduped (mget needs a JSON-serializable list, and a
+            # candidate must be excluded from seen_nodes here at construction
+            # time -- not "later" -- or an already-collected node reachable
+            # via a reverse edge would resurface next round and re-trip the
+            # cap check below on a node that isn't actually new).
+            next_level_candidates = []
+            next_level_seen = set()
             for hit in resp["hits"]["hits"]:
                 src = hit["_source"]["source_node_id"]
                 tgt = hit["_source"]["target_node_id"]
-                if src not in seen_nodes:
-                    next_level.add(src)
-                if tgt not in seen_nodes:
-                    next_level.add(tgt)
+                for candidate in (src, tgt):
+                    if candidate not in seen_nodes and candidate not in next_level_seen:
+                        next_level_seen.add(candidate)
+                        next_level_candidates.append(candidate)
 
-            # Limit to max_nodes
-            new_ids = []
-            for nid in next_level:
-                if len(seen_nodes) + len(new_ids) >= max_nodes:
-                    break
-                new_ids.append(nid)
-
-            if new_ids:
-                # Batch fetch node data
+            # Resolve which candidates are real nodes before making any
+            # capacity decision: an edge only guarantees its source node
+            # exists (see upsert_edge), so a candidate may be a dangling
+            # target with no node document. Deciding truncation/capacity from
+            # raw edge endpoints would let a dangling id steal a real node's
+            # slot, or falsely report truncation when nothing real was cut.
+            real_docs = []
+            if next_level_candidates:
                 node_resp = await self.client.mget(
-                    index=self._nodes_index, body={"ids": new_ids}
+                    index=self._nodes_index, body={"ids": next_level_candidates}
                 )
-                for doc in node_resp["docs"]:
-                    if doc.get("found"):
-                        seen_nodes.add(doc["_id"])
-                        result.nodes.append(
-                            self._construct_graph_node(doc["_id"], doc["_source"])
-                        )
+                real_docs = [
+                    doc
+                    for doc in node_resp["docs"]
+                    if doc.get("found") and doc["_id"] not in seen_nodes
+                ]
 
-            current_level = new_ids
+            new_docs = []
+            for doc in real_docs:
+                if len(seen_nodes) + len(new_docs) >= max_nodes:
+                    truncated_by_cap = True
+                    break
+                new_docs.append(doc)
+
+            for doc in new_docs:
+                seen_nodes.add(doc["_id"])
+                result.nodes.append(
+                    self._construct_graph_node(doc["_id"], doc["_source"])
+                )
+
+            current_level = [doc["_id"] for doc in new_docs]
 
         # Fetch all edges between seen nodes using PIT scrolling
         all_ids = list(seen_nodes)
@@ -4859,7 +4877,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             # (but small) subgraph.
             await self._append_edges_between_nodes(all_ids, result)
 
-        result.is_truncated = len(seen_nodes) >= max_nodes
+        result.is_truncated = truncated_by_cap
         return result
 
     async def get_all_nodes(self) -> list[dict]:

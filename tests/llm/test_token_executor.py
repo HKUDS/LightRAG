@@ -73,7 +73,11 @@ async def test_atruncate_does_not_block_the_loop():
     data = [{"text": "abcde"} for _ in range(10)]
     _, beats = await _count_beats_during(
         lr_utils.atruncate_list_by_token_size(
-            data, key=lambda x: x["text"], max_token_size=12, tokenizer=tokenizer
+            data,
+            key=lambda x: x["text"],
+            separator="",
+            max_token_size=12,
+            tokenizer=tokenizer,
         )
     )
     assert beats > 1
@@ -103,10 +107,18 @@ async def test_atruncate_matches_the_sync_result(budget):
     data = [{"text": "abcde"} for _ in range(6)]
 
     expected = lr_utils.truncate_list_by_token_size(
-        data, key=lambda x: x["text"], max_token_size=budget, tokenizer=tokenizer
+        data,
+        key=lambda x: x["text"],
+        separator="",
+        max_token_size=budget,
+        tokenizer=tokenizer,
     )
     actual = await lr_utils.atruncate_list_by_token_size(
-        data, key=lambda x: x["text"], max_token_size=budget, tokenizer=tokenizer
+        data,
+        key=lambda x: x["text"],
+        separator="",
+        max_token_size=budget,
+        tokenizer=tokenizer,
     )
     assert actual == expected
 
@@ -137,7 +149,11 @@ async def test_truncating_a_long_list_is_a_single_submission(monkeypatch):
     tokenizer = _wrap(_SlowTokenizer())
     data = [{"text": "abcde"} for _ in range(1000)]
     await lr_utils.atruncate_list_by_token_size(
-        data, key=lambda x: x["text"], max_token_size=10_000, tokenizer=tokenizer
+        data,
+        key=lambda x: x["text"],
+        separator="",
+        max_token_size=10_000,
+        tokenizer=tokenizer,
     )
 
     assert submissions == 1
