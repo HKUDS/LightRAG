@@ -14,6 +14,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
+            "PGTableGraphStorage",
             "MongoGraphStorage",
             "MemgraphStorage",
             "OpenSearchGraphStorage",
@@ -80,6 +81,11 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "POSTGRES_PASSWORD",
         "POSTGRES_DATABASE",
     ],
+    "PGTableGraphStorage": [
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+    ],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorage": [
@@ -136,6 +142,7 @@ STORAGES = {
     "PGVectorStorage": ".kg.postgres_impl",
     "AGEStorage": ".kg.age_impl",
     "PGGraphStorage": ".kg.postgres_impl",
+    "PGTableGraphStorage": ".kg.pgtable_impl",
     "PGDocStatusStorage": ".kg.postgres_impl",
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
