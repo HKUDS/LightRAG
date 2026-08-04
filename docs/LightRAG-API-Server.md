@@ -8,9 +8,9 @@ The LightRAG Server is designed to provide a Web UI and API support. The Web UI 
 
 ![image-20250323123011220](./LightRAG-API-Server.assets/image-20250323123011220.png)
 
-## Upgrading from v1.4.16 to v1.5.0rc2
+## Upgrading from v1.4.16 to v1.5.x
 
-The v1.5.0rc2 release adds the new file-processing pipeline, parser routing, multimodal analysis, role-specific LLM/VLM configuration, JSON entity extraction, and several provider/storage changes. Review the [v1.5.0rc2 release notes](https://github.com/HKUDS/LightRAG/releases/tag/v1.5.0rc2) before upgrading a production instance.
+LightRAG v1.5.x adds the new file-processing pipeline, parser routing, multimodal analysis, role-specific LLM/VLM configuration, JSON entity extraction, and several provider/storage changes. Review the [v1.5.0rc2 release notes](https://github.com/HKUDS/LightRAG/releases/tag/v1.5.0rc2) before upgrading a production instance.
 
 - To keep the old file-processing behavior while upgrading the server, set:
 
@@ -492,12 +492,7 @@ server {
    - LightRAG performs streaming validation during upload
    - Setting appropriate limits at both layers ensures better error messages and security
 6. **Server-side request limits** (see `env.example`):
-   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of **every** route, counted as
-     it streams through ASGI. Unlike `MAX_UPLOAD_SIZE` (which bounds one uploaded
-     file after multipart parsing), it also stops a body that understates or
-     omits its `Content-Length`, answering **413** before the whole body is read.
-     It is layered, because routes differ by orders of magnitude in what they
-     legitimately carry:
+   - `MAX_REQUEST_BODY_BYTES` bounds the raw body of **every** route, counted as it streams through ASGI. Unlike `MAX_UPLOAD_SIZE` (which bounds one uploaded file after multipart parsing), it also stops a body that understates or omits its `Content-Length`, answering **413** before the whole body is read. It is layered, because routes differ by orders of magnitude in what they legitimately carry:
 
      | Route | Ceiling |
      |---|---|
@@ -505,32 +500,10 @@ server {
      | `/documents/text`, `/documents/texts` | **50 MiB**, built in, when `MAX_REQUEST_BODY_BYTES` is not set |
      | `/documents/upload` | `MAX_UPLOAD_SIZE` + 1 MiB of multipart overhead |
 
-     Setting `MAX_REQUEST_BODY_BYTES` to any positive value makes it govern
-     every non-upload route, ingestion included — including when that value
-     happens to equal the 1 MiB default, which is the behaviour this knob had
-     before the tiers existed. Setting it to `0` turns off every ceiling,
-     including the derived upload one, and the server warns at startup.
-   - **Input field ceilings** apply to the model-facing fields of `/query*`,
-     `/api/chat` and `/api/generate`: 64 KiB per query or prompt, 32 KiB per
-     message, 128 KiB of model-facing text per request, 128 messages, and upper
-     bounds on `top_k` / `chunk_top_k` (1000) and the `max_*_tokens` budgets
-     (1,000,000). These are fixed rather than configurable — a limit that keeps
-     an unauthenticated caller from choosing how much CPU the server spends is
-     worth nothing if it can be misconfigured away. `/query*` answers **422** for
-     an over-limit field (FastAPI's own validation response); `/api/*` answers
-     **413**.
-   - `MAX_TEXTS_PER_REQUEST` bounds how many texts one `/documents/texts` request
-     may carry, answering **413** before any per-text storage lookup. It bounds
-     the fan-out of a single request, so — unlike the capacity limit below — it is
-     not a "retry later" condition: an oversized batch never fits and must be
-     split.
-   - `MAX_PENDING_DOCUMENTS` bounds how many documents may be active
-     (`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`) or reserved by an in-flight
-     request. Over capacity the server answers **429** with a `Retry-After`
-     header and a detail naming the current count, the requested count and the
-     capacity — refused *before* the body is transferred. `/documents/scan` and
-     manual retries exceed the cap on purpose; the documents they create make
-     ordinary uploads wait.
+     Setting `MAX_REQUEST_BODY_BYTES` to any positive value makes it govern every non-upload route, ingestion included — including when that value happens to equal the 1 MiB default, which is the behaviour this knob had before the tiers existed. Setting it to `0` turns off every ceiling, including the derived upload one, and the server warns at startup.
+   - **Input field ceilings** apply to the model-facing fields of `/query*`, `/api/chat` and `/api/generate`: 64 KiB per query or prompt, 32 KiB per message, 128 KiB of model-facing text per request, 128 messages, and upper bounds on `top_k` / `chunk_top_k` (1000) and the `max_*_tokens` budgets (1,000,000). These are fixed rather than configurable — a limit that keeps an unauthenticated caller from choosing how much CPU the server spends is worth nothing if it can be misconfigured away. `/query*` answers **422** for an over-limit field (FastAPI's own validation response); `/api/*` answers **413**.
+   - `MAX_TEXTS_PER_REQUEST` bounds how many texts one `/documents/texts` request may carry, answering **413** before any per-text storage lookup. It bounds the fan-out of a single request, so — unlike the capacity limit below — it is not a "retry later" condition: an oversized batch never fits and must be split.
+   - `MAX_PENDING_DOCUMENTS` bounds how many documents may be active (`PENDING`/`PARSING`/`ANALYZING`/`PROCESSING`) or reserved by an in-flight request. Over capacity the server answers **429** with a `Retry-After` header and a detail naming the current count, the requested count and the capacity — refused *before* the body is transferred. `/documents/scan` and manual retries exceed the cap on purpose; the documents they create make ordinary uploads wait.
 
 ### Offline Deployment
 
@@ -910,9 +883,35 @@ LightRAG uses 4 types of storage for different purposes:
 * GRAPH_STORAGE: entity relation graph
 * DOC_STATUS_STORAGE: document indexing status
 
-LightRAG Server offers various storage implementations, with the default being an in-memory database that persists data to the WORKING_DIR directory. Additionally, LightRAG supports a wide range of storage solutions including PostgreSQL, MongoDB, FAISS, Milvus, Qdrant, Neo4j, Memgraph, Redis, and OpenSearch. For detailed information on supported storage options, please refer to the storage section in the README.md file located in the root directory.
+Each storage type offers multiple implementations. By default, LightRAG Server uses in-memory databases with data persisted to the WORKING_DIR directory. This is suitable for quickly evaluating the project but is not recommended for production. The implementations currently available for each storage type are listed below:
 
-**Milvus Index Configuration:** LightRAG now supports configurable index types for Milvus vector storage (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.) through environment variables. HNSW_SQ requires Milvus 2.6.8+ and provides significant memory savings. See the "Using Milvus for Vector Storage" section in the main README.md for complete configuration options.
+| Storage Type | Available Implementations (Default First) |
+|---|---|
+| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
+
+For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
+
+The environment variables required at startup for each storage implementation are listed below. Implementations not listed require no additional configuration and rely only on file persistence under WORKING_DIR.
+
+| Storage Implementation | Required Environment Variables |
+|---|---|
+| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` (plus `POSTGRES_HOST` and `POSTGRES_PORT`) |
+| `Neo4JStorage` | `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
+| `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`, `MONGO_DATABASE` (`MongoVectorDBStorage` requires a MongoDB deployment that supports Atlas Search / Vector Search) |
+| `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
+| `MilvusVectorDBStorage` | `MILVUS_URI`, `MILVUS_DB_NAME` |
+| `QdrantVectorDBStorage` | `QDRANT_URL` (`QDRANT_API_KEY` is optional) |
+| `MemgraphStorage` | `MEMGRAPH_URI` |
+| `OpenSearchKVStorage` / `OpenSearchVectorDBStorage` / `OpenSearchGraphStorage` / `OpenSearchDocStatusStorage` | `OPENSEARCH_HOSTS` |
+
+The `WORKSPACE` environment variable isolates data for multiple LightRAG instances on the same backend (valid characters are `a-z`, `A-Z`, `0-9`, and `_`). Each storage backend also provides a backend-specific override such as `POSTGRES_WORKSPACE` or `NEO4J_WORKSPACE`. These overrides are retained only for compatibility with legacy configurations; under normal circumstances, use `WORKSPACE` consistently.
+
+The table above lists only the connection parameters required at startup. Each storage implementation also provides many optional tuning environment variables, including connection pool sizes, SSL settings, sharding thresholds for batch writes and deletions, and vector index parameters. For the complete list and default values, see the repository's root-level `env.example`, where the variables are grouped by storage backend and include detailed comments.
+
+**Milvus Index Configuration:** LightRAG now supports configurable index types for Milvus vector storage (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.) through environment variables. HNSW_SQ requires Milvus 2.6.8+ and provides significant memory savings. For the complete configuration options, see [MilvusConfigurationGuide.md](./MilvusConfigurationGuide.md).
 
 You can select the storage implementation by configuring environment variables. For instance, prior to the initial launch of the API server, you can set the following environment variable to specify your desired storage implementation:
 
@@ -924,6 +923,8 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 ```
 
 You cannot change storage implementation selection after adding documents to LightRAG. Data migration from one storage implementation to another is not supported yet. For further information, please read the sample `.env.example` file.
+
+> The [dev-lancedb](https://github.com/HKUDS/LightRAG/tree/dev-lancedb) development branch provides community-contributed LanceDB storage implementations for all four storage types: key-value (KV), vector, graph, and document status. The [dev-nebula-graph](https://github.com/HKUDS/LightRAG/tree/dev-nebula-graph) development branch provides a community-contributed Nebula graph storage implementation. Developers who need these storage options are welcome to try them and help improve them.
 
 ### LLM Cache Migration Between Storage Types
 
