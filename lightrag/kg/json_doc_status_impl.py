@@ -411,17 +411,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                     continue
 
                 try:
-                    # Prepare document data
-                    data = doc_data.copy()
-                    data.pop("content", None)
-                    if not data.get("file_path"):
-                        data["file_path"] = "no-file-path"
-                    if "metadata" not in data:
-                        data["metadata"] = {}
-                    if "error_msg" not in data:
-                        data["error_msg"] = None
-
-                    doc_status = DocProcessingStatus(**data)
+                    doc_status = self._doc_processing_status_from_row(doc_data)
 
                     # Add sort key for sorting
                     if sort_field == "id":
@@ -562,7 +552,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 if doc_data.get("file_path") == basename and not self._is_duplicate_row(
                     doc_data
                 ):
-                    return doc_id, doc_data
+                    return doc_id, copy.deepcopy(doc_data)
         return None
 
     async def resolve_doc_source_strict(
@@ -729,11 +719,18 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Normalise a raw doc_status row into a FULL DocProcessingStatus.
 
         Single source of the raw → status construction shared by
-        ``get_docs_by_statuses`` and the ``get_full_docs_by_ids`` hydration
-        path. Raises ``KeyError``/``TypeError`` on a malformed row; the caller
-        decides strict (raise) vs relaxed (skip).
+        ``get_docs_by_statuses``, ``get_docs_paginated`` and the
+        ``get_full_docs_by_ids`` hydration path. Raises ``KeyError``/
+        ``TypeError`` on a malformed row; the caller decides strict (raise)
+        vs relaxed (skip).
+
+        Deep-copies ``row`` before use: the returned ``DocProcessingStatus``
+        carries nested mutable fields (``metadata``, ``chunks_list``) that
+        must not alias the live storage row, or a caller mutating them would
+        corrupt persisted state without going through ``upsert`` — the same
+        class of bug fixed for the other read paths.
         """
-        data = dict(row)
+        data = copy.deepcopy(row)
         data.pop("content", None)  # deprecated inline content, never a status field
         if not data.get("file_path"):
             data["file_path"] = "no-file-path"

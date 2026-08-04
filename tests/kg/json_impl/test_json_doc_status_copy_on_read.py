@@ -1,6 +1,7 @@
 """Unit tests verifying that JsonDocStatusStorage read methods return deep copies to prevent internal state mutation of nested status fields."""
 
 import pytest
+from lightrag.base import DocStatus
 from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
 
@@ -125,6 +126,118 @@ async def test_get_by_ids_returns_deep_copy(tmp_path):
     docs[0]["chunks_list"].append("c3")
 
     stored = await storage.get_by_id_strict("doc3")
+    assert stored is not None
+    assert stored["metadata"]["kg_purge"]["phase"] == "prepared"
+    assert stored["chunks_list"] == ["c1", "c2"]
+
+
+@pytest.mark.asyncio
+async def test_get_doc_by_file_basename_returns_copy(tmp_path):
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        workspace="test",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc4": {
+                "status": "pending",
+                "file_path": "basename.pdf",
+                "metadata": {"key": "original"},
+            }
+        }
+    )
+
+    result = await storage.get_doc_by_file_basename("basename.pdf")
+    assert result is not None
+    doc_id, doc = result
+    assert doc_id == "doc4"
+
+    # Mutate returned dictionary top-level and nested fields
+    doc["status"] = "modified_externally"
+    doc["metadata"]["key"] = "modified_nested"
+
+    stored = await storage.get_by_id_strict("doc4")
+    assert stored is not None
+    assert stored["status"] == "pending"
+    assert stored["metadata"]["key"] == "original"
+
+
+@pytest.mark.asyncio
+async def test_get_docs_paginated_returns_copy(tmp_path):
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        workspace="test",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc5": {
+                "status": "pending",
+                "file_path": "paginated.pdf",
+                "content_summary": "summary",
+                "content_length": 100,
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "metadata": {"kg_purge": {"phase": "prepared"}},
+                "chunks_list": ["c1", "c2"],
+            }
+        }
+    )
+
+    docs, total = await storage.get_docs_paginated()
+    assert total == 1
+    doc_id, doc_status = docs[0]
+    assert doc_id == "doc5"
+
+    # Mutate the returned DocProcessingStatus's nested mutable fields
+    doc_status.metadata["kg_purge"]["phase"] = "corrupted"
+    doc_status.chunks_list.append("c3")
+
+    stored = await storage.get_by_id_strict("doc5")
+    assert stored is not None
+    assert stored["metadata"]["kg_purge"]["phase"] == "prepared"
+    assert stored["chunks_list"] == ["c1", "c2"]
+
+
+@pytest.mark.asyncio
+async def test_get_docs_by_statuses_returns_copy(tmp_path):
+    storage = JsonDocStatusStorage(
+        namespace="doc_status",
+        workspace="test",
+        global_config={"working_dir": str(tmp_path)},
+        embedding_func=_DummyEmbeddingFunc(),
+    )
+    await storage.initialize()
+
+    await storage.upsert(
+        {
+            "doc6": {
+                "status": "pending",
+                "file_path": "bystatus.pdf",
+                "content_summary": "summary",
+                "content_length": 100,
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "metadata": {"kg_purge": {"phase": "prepared"}},
+                "chunks_list": ["c1", "c2"],
+            }
+        }
+    )
+
+    result = await storage.get_docs_by_statuses([DocStatus.PENDING])
+    doc_status = result["doc6"]
+
+    doc_status.metadata["kg_purge"]["phase"] = "corrupted"
+    doc_status.chunks_list.append("c3")
+
+    stored = await storage.get_by_id_strict("doc6")
     assert stored is not None
     assert stored["metadata"]["kg_purge"]["phase"] == "prepared"
     assert stored["chunks_list"] == ["c1", "c2"]
