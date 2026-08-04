@@ -329,6 +329,7 @@
       "editPropertyDescription": "下のテキストエリアでプロパティ値を編集してください。",
       "errors": {
         "duplicateName": "ノード名が既に存在します",
+        "invalidEntityName": "有効なノード名を入力してください",
         "updateFailed": "ノードの更新に失敗しました",
         "tryAgainLater": "後でもう一度お試しください",
         "updateSuccessButMergeFailed": "プロパティは更新されましたが、マージに失敗しました: {{error}}",

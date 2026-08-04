@@ -5,6 +5,7 @@ import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/light
 import { useGraphStore } from '@/stores/graph'
 import { useSettingsStore } from '@/stores/settings'
 import { SearchHistoryManager } from '@/utils/SearchHistoryManager'
+import { normalizeEntityName } from '@/utils/entityName'
 import { PropertyName, EditIcon, PropertyValue } from './PropertyRowComponents'
 import PropertyEditDialog from './PropertyEditDialog'
 import MergeDialog from './MergeDialog'
@@ -93,14 +94,36 @@ const EditablePropertyRow = ({
   }
 
   const handleSave = async () => {
-    const value = draftValue.trim()
+    const trimmedValue = draftValue.trim()
     const allowMerge = draftAllowMerge
 
-    if (value === '') {
+    if (trimmedValue === '') {
+      if (name === 'entity_id') {
+        const errorMsg = t('graphPanel.propertiesView.errors.invalidEntityName')
+        setErrorMessage(errorMsg)
+        toast.error(errorMsg)
+      }
       return
     }
 
-    if (isSubmitting || value === String(currentValue)) {
+    if (isSubmitting || trimmedValue === String(currentValue)) {
+      setIsEditing(false)
+      setErrorMessage(null)
+      return
+    }
+
+    const value = name === 'entity_id' ? normalizeEntityName(trimmedValue) : trimmedValue
+    if (name === 'entity_id' && value === '') {
+      const errorMsg = t('graphPanel.propertiesView.errors.invalidEntityName')
+      setErrorMessage(errorMsg)
+      toast.error(errorMsg)
+      return
+    }
+    if (name === 'entity_id' && value !== trimmedValue) {
+      setDraftValue(value)
+    }
+
+    if (value === String(currentValue)) {
       setIsEditing(false)
       setErrorMessage(null)
       return

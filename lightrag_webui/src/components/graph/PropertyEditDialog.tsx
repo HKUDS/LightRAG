@@ -85,10 +85,7 @@ const PropertyEditDialog = ({
   };
 
   const handleSave = async () => {
-    const trimmedValue = value.trim()
-    if (trimmedValue !== '') {
-      await onSave()
-    }
+    await onSave()
   }
 
   return (

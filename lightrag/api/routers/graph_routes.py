@@ -563,10 +563,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 entity_name=request.entity_name,
                 entity_data=request.entity_data,
             )
+            created_entity_name = result.get("entity_name", request.entity_name)
 
             return {
                 "status": "success",
-                "message": f"Entity '{request.entity_name}' created successfully",
+                "message": f"Entity '{created_entity_name}' created successfully",
                 "data": result,
             }
         except HTTPException:

@@ -329,6 +329,7 @@
       "editPropertyDescription": "قم بتحرير قيمة الخاصية في منطقة النص أدناه.",
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",
+        "invalidEntityName": "أدخل اسم عقدة صالحًا",
         "updateFailed": "فشل تحديث العقدة",
         "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا",
         "updateSuccessButMergeFailed": "تم تحديث الخصائص، لكن الدمج فشل: {{error}}",

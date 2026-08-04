@@ -329,6 +329,7 @@
       "editPropertyDescription": "Chỉnh sửa giá trị thuộc tính trong vùng văn bản bên dưới.",
       "errors": {
         "duplicateName": "Tên nút đã tồn tại",
+        "invalidEntityName": "Hãy nhập tên nút hợp lệ",
         "updateFailed": "Cập nhật nút thất bại",
         "tryAgainLater": "Vui lòng thử lại sau",
         "updateSuccessButMergeFailed": "Đã cập nhật thuộc tính, nhưng hợp nhất thất bại: {{error}}",

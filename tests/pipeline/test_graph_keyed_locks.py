@@ -8,7 +8,7 @@ exclude any concurrent edge write that names the same entity in
 `sorted([src, tgt])` — no need to enumerate incident edges here.
 
 These tests pin:
-- `aedit_entity` locks {old, new} on rename, {entity_name} otherwise.
+- `aedit_entity` locks exact and canonical source/target candidates.
 - `adelete_by_entity` locks {entity_name}.
 - `ainsert_custom_kg` locks every entity name plus every relationship
   endpoint that the batch will write, sharing the doc-ingest namespace.
@@ -192,6 +192,34 @@ async def test_aedit_entity_non_rename_locks_single_entity_name():
     # Empty workspace falls back to the bare "GraphDB" namespace.
     assert captured[0]["namespace"] == "GraphDB"
     graph.get_node_edges.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_aedit_entity_locks_exact_and_normalized_name_candidates():
+    """Normalization resolution stays inside the complete candidate lock set."""
+    from lightrag import utils_graph
+
+    spy, captured = _make_keyed_lock_spy()
+    graph = _make_graph_mock(existing_entity="A公司")
+    entities_vdb = _make_vdb_mock(workspace="ws1")
+    relationships_vdb = _make_vdb_mock(workspace="ws1")
+
+    graph.upsert_node.side_effect = RuntimeError("stop after lock acquisition")
+
+    with patch.object(utils_graph, "get_storage_keyed_lock", spy):
+        with pytest.raises(RuntimeError, match="stop after lock acquisition"):
+            await utils_graph.aedit_entity(
+                chunk_entity_relation_graph=graph,
+                entities_vdb=entities_vdb,
+                relationships_vdb=relationships_vdb,
+                entity_name="“Ａ 公 司”",
+                updated_data={"entity_name": "“Ｂ 公 司”", "description": "renamed"},
+                allow_rename=True,
+            )
+
+    assert len(captured) == 1
+    assert captured[0]["keys"] == ["A公司", "B公司", "“Ａ 公 司”", "“Ｂ 公 司”"]
+    assert captured[0]["namespace"] == "ws1:GraphDB"
 
 
 # ---------------------------------------------------------------------------
