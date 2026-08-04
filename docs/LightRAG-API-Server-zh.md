@@ -889,7 +889,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 |---|---|
 | KV_STORAGE | `JsonKVStorage`、`RedisKVStorage`、`PGKVStorage`、`MongoKVStorage`、`OpenSearchKVStorage` |
 | VECTOR_STORAGE | `NanoVectorDBStorage`、`MilvusVectorDBStorage`、`PGVectorStorage`、`FaissVectorDBStorage`、`QdrantVectorDBStorage`、`MongoVectorDBStorage`、`OpenSearchVectorDBStorage` |
-| GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGGraphStorage`、`PGTableGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
 
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
@@ -898,7 +898,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 
 | 存储实现 | 必需的环境变量 |
 |---|---|
-| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DATABASE`（另需 `POSTGRES_HOST`、`POSTGRES_PORT`） |
+| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGTableGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DATABASE`（另需 `POSTGRES_HOST`、`POSTGRES_PORT`） |
 | `Neo4JStorage` | `NEO4J_URI`、`NEO4J_USERNAME`、`NEO4J_PASSWORD` |
 | `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`、`MONGO_DATABASE`（`MongoVectorDBStorage` 要求该 Mongo 实例支持 Atlas Search / Vector Search） |
 | `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |

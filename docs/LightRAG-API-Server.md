@@ -889,7 +889,7 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 |---|---|
 | KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
 | VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage` |
-| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGGraphStorage`, `PGTableGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
 | DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
 
 For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
@@ -898,7 +898,7 @@ The environment variables required at startup for each storage implementation ar
 
 | Storage Implementation | Required Environment Variables |
 |---|---|
-| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` (plus `POSTGRES_HOST` and `POSTGRES_PORT`) |
+| `PGKVStorage` / `PGVectorStorage` / `PGGraphStorage` / `PGTableGraphStorage` / `PGDocStatusStorage` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE` (plus `POSTGRES_HOST` and `POSTGRES_PORT`) |
 | `Neo4JStorage` | `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` |
 | `MongoKVStorage` / `MongoVectorDBStorage` / `MongoGraphStorage` / `MongoDocStatusStorage` | `MONGO_URI`, `MONGO_DATABASE` (`MongoVectorDBStorage` requires a MongoDB deployment that supports Atlas Search / Vector Search) |
 | `RedisKVStorage` / `RedisDocStatusStorage` | `REDIS_URI` |
