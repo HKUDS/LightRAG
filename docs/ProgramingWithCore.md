@@ -1053,6 +1053,16 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 })
 ```
 
+Entity names supplied to `create_entity` and new names supplied during
+`edit_entity` renames use the same normalization rules as extracted entity
+names. When editing an existing entity, LightRAG first preserves an exact
+legacy name match and otherwise falls back to the normalized name.
+`insert_custom_kg` applies the same rules to declared entity names and both
+endpoints of every relationship before writing any custom KG data.
+`merge_entities` resolves existing exact legacy source/target names first and
+otherwise uses normalized names. The target may be an existing entity or a
+new normalized name created by the merge.
+
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 * Insert Custom KG

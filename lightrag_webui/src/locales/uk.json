@@ -329,6 +329,7 @@
       "editPropertyDescription": "Редагуйте значення властивості в текстовій області нижче.",
       "errors": {
         "duplicateName": "Ім'я вузла вже існує",
+        "invalidEntityName": "Введіть припустиме ім'я вузла",
         "updateFailed": "Не вдалося оновити вузол",
         "tryAgainLater": "Будь ласка, спробуйте пізніше",
         "updateSuccessButMergeFailed": "Властивості оновлено, але об'єднання не вдалося: {{error}}",

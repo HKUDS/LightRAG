@@ -424,6 +424,157 @@ class TestAinsertCustomKgBatchPath:
 
     @pytest.mark.offline
     @pytest.mark.asyncio
+    async def test_ainsert_custom_kg_normalizes_names_before_dedup_and_upsert(self):
+        """Graph and vector writes must share extraction-normalized identifiers."""
+        from lightrag import LightRAG
+
+        custom_kg = {
+            "chunks": [],
+            "entities": [
+                {
+                    "entity_name": "  <p>“Ａ 公 司”</p>  ",
+                    "entity_type": "ORGANIZATION",
+                    "description": "first declaration",
+                },
+                {
+                    "entity_name": "A公司",
+                    "entity_type": "ORGANIZATION",
+                    "description": "latest declaration",
+                },
+            ],
+            "relationships": [
+                {
+                    "src_id": "Ａ 公 司",
+                    "tgt_id": "《Ｂ 项 目》",
+                    "description": "old relation",
+                    "keywords": "old",
+                },
+                {
+                    "src_id": "B项目",
+                    "tgt_id": "A公司",
+                    "description": "latest relation",
+                    "keywords": "latest",
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.delete = AsyncMock()
+
+            await rag.ainsert_custom_kg(custom_kg)
+
+            graph = rag.chunk_entity_relation_graph
+            assert await graph.has_node("A公司")
+            assert await graph.has_node("B项目")
+            assert not await graph.has_node("  <p>“Ａ 公 司”</p>  ")
+            assert await graph.has_edge("A公司", "B项目")
+
+            entity = await graph.get_node("A公司")
+            assert entity is not None
+            assert entity["description"] == "latest declaration"
+
+            edge = await graph.get_edge("A公司", "B项目")
+            assert edge is not None
+            assert edge["description"] == "latest relation"
+
+            entity_vdb_payload = rag.entities_vdb.upsert.await_args.args[0]
+            assert len(entity_vdb_payload) == 1
+            only_entity = next(iter(entity_vdb_payload.values()))
+            assert only_entity["entity_name"] == "A公司"
+
+            relation_vdb_payload = rag.relationships_vdb.upsert.await_args.args[0]
+            assert len(relation_vdb_payload) == 1
+            only_relation = next(iter(relation_vdb_payload.values()))
+            assert only_relation["src_id"] == "A公司"
+            assert only_relation["tgt_id"] == "B项目"
+
+            # The public input remains reusable and unchanged.
+            assert custom_kg["entities"][0]["entity_name"] == ("  <p>“Ａ 公 司”</p>  ")
+            assert custom_kg["relationships"][0]["src_id"] == "Ａ 公 司"
+            assert custom_kg["relationships"][0]["tgt_id"] == "《Ｂ 项 目》"
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("custom_kg", "invalid_field"),
+        [
+            (
+                {
+                    "chunks": [{"content": "text", "source_id": "s1"}],
+                    "entities": [{"entity_name": "1"}],
+                    "relationships": [],
+                },
+                r"entities\[0\]\.entity_name",
+            ),
+            (
+                {
+                    "chunks": [{"content": "text", "source_id": "s1"}],
+                    "entities": [],
+                    "relationships": [
+                        {
+                            "src_id": "1.2",
+                            "tgt_id": "ValidEntity",
+                            "description": "relation",
+                            "keywords": "keyword",
+                        }
+                    ],
+                },
+                r"relationships\[0\]\.src_id",
+            ),
+        ],
+    )
+    async def test_ainsert_custom_kg_rejects_invalid_names_before_storage_writes(
+        self,
+        custom_kg,
+        invalid_field,
+    ):
+        from lightrag import LightRAG
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rag = LightRAG(
+                working_dir=tmp,
+                llm_model_func=AsyncMock(return_value=""),
+                embedding_func=mock_embedding_func,
+            )
+            await rag.initialize_storages()
+
+            rag.chunks_vdb.upsert = AsyncMock()
+            rag.text_chunks.upsert = AsyncMock()
+            rag.entities_vdb.upsert = AsyncMock()
+            rag.relationships_vdb.upsert = AsyncMock()
+            rag.chunk_entity_relation_graph.upsert_nodes_batch = AsyncMock()
+            rag.chunk_entity_relation_graph.upsert_edges_batch = AsyncMock()
+            rag._insert_done_with_cleanup = AsyncMock()
+
+            with pytest.raises(
+                ValueError,
+                match=rf"Custom KG {invalid_field} cannot be empty after normalization",
+            ):
+                await rag.ainsert_custom_kg(custom_kg)
+
+            rag.chunks_vdb.upsert.assert_not_awaited()
+            rag.text_chunks.upsert.assert_not_awaited()
+            rag.entities_vdb.upsert.assert_not_awaited()
+            rag.relationships_vdb.upsert.assert_not_awaited()
+            rag.chunk_entity_relation_graph.upsert_nodes_batch.assert_not_awaited()
+            rag.chunk_entity_relation_graph.upsert_edges_batch.assert_not_awaited()
+            rag._insert_done_with_cleanup.assert_not_awaited()
+
+            await rag.finalize_storages()
+
+    @pytest.mark.offline
+    @pytest.mark.asyncio
     async def test_ainsert_custom_kg_no_hasattr_needed(self):
         """
         The batch methods are always available on the base class, so no

@@ -13,6 +13,7 @@ from .utils import (
     compute_mdhash_id,
     logger,
     make_relation_vdb_ids,
+    normalize_entity_name,
     safe_vdb_operation_with_exception,
 )
 from .base import StorageNameSpace
@@ -25,6 +26,13 @@ def _require_non_empty_description(
         raise ValueError(
             f"{object_type.capitalize()} description cannot be empty for {operation} operation"
         )
+
+
+def _normalize_manual_entity_name(entity_name: Any) -> str:
+    """Apply the extraction naming contract to a manual entity identifier."""
+    if not isinstance(entity_name, str):
+        raise ValueError("Entity name must be a string")
+    return normalize_entity_name(entity_name)
 
 
 async def _persist_graph_updates(
@@ -622,32 +630,78 @@ async def aedit_entity(
             updated_data.get("description"), operation="edit", object_type="entity"
         )
 
-    new_entity_name = updated_data.get("entity_name", entity_name)
-    is_renaming = new_entity_name != entity_name
+    requested_entity_name = entity_name
+    normalized_entity_name = _normalize_manual_entity_name(requested_entity_name)
+    updated_data = dict(updated_data)
 
-    # Lock the (old, new) entity names. The doc-ingest pipeline acquires
+    has_new_entity_name = "entity_name" in updated_data
+    requested_new_entity_name = updated_data.get("entity_name")
+    normalized_new_entity_name = (
+        _normalize_manual_entity_name(requested_new_entity_name)
+        if has_new_entity_name
+        else None
+    )
+
+    # Lock every exact/canonical source and target candidate before resolving
+    # legacy manual names. The doc-ingest pipeline acquires
     # edge locks as sorted([src, tgt]) in the same namespace, and
     # get_storage_keyed_lock takes one mutex per key — so locking the
     # entity name already mutually excludes any concurrent edge write that
     # touches it, no need to enumerate incident edges here.
-    lock_keys = sorted({entity_name, new_entity_name}) if is_renaming else [entity_name]
+    lock_keys = {requested_entity_name}
+    if normalized_entity_name:
+        lock_keys.add(normalized_entity_name)
+    if has_new_entity_name:
+        lock_keys.add(requested_new_entity_name)
+        if normalized_new_entity_name:
+            lock_keys.add(normalized_new_entity_name)
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
-    operation_summary: dict[str, Any] = {
-        "merged": False,
-        "merge_status": "not_attempted",
-        "merge_error": None,
-        "operation_status": "success",
-        "target_entity": None,
-        "final_entity": new_entity_name if is_renaming else entity_name,
-        "renamed": is_renaming,
-    }
     async with get_storage_keyed_lock(
-        lock_keys, namespace=namespace, enable_logging=False
+        sorted(lock_keys), namespace=namespace, enable_logging=False
     ):
         try:
+            # Prefer an exact legacy key when it exists. Otherwise resolve the
+            # caller's spelling to the extraction-normalized identifier.
+            if (
+                requested_entity_name != normalized_entity_name
+                and await chunk_entity_relation_graph.has_node(requested_entity_name)
+            ):
+                entity_name = requested_entity_name
+            elif normalized_entity_name:
+                entity_name = normalized_entity_name
+            else:
+                raise ValueError("Entity name cannot be empty after normalization")
+
+            if has_new_entity_name:
+                if (
+                    requested_new_entity_name != normalized_new_entity_name
+                    and await chunk_entity_relation_graph.has_node(
+                        requested_new_entity_name
+                    )
+                ):
+                    new_entity_name = requested_new_entity_name
+                elif normalized_new_entity_name:
+                    new_entity_name = normalized_new_entity_name
+                else:
+                    raise ValueError("Entity name cannot be empty after normalization")
+                updated_data["entity_name"] = new_entity_name
+            else:
+                new_entity_name = entity_name
+
+            is_renaming = new_entity_name != entity_name
+            operation_summary: dict[str, Any] = {
+                "merged": False,
+                "merge_status": "not_attempted",
+                "merge_error": None,
+                "operation_status": "success",
+                "target_entity": None,
+                "final_entity": new_entity_name if is_renaming else entity_name,
+                "renamed": is_renaming,
+            }
+
             if is_renaming and not allow_rename:
                 raise ValueError(
                     "Entity renaming is not allowed. Set allow_rename=True to enable this feature"
@@ -1009,14 +1063,28 @@ async def acreate_entity(
         entity_data.get("description"), operation="create", object_type="entity"
     )
 
-    # Use keyed lock for entity to ensure atomic graph and vector db operations
+    requested_entity_name = entity_name
+    entity_name = _normalize_manual_entity_name(requested_entity_name)
+    if not entity_name:
+        raise ValueError("Entity name cannot be empty after normalization")
+
+    # Lock both spellings so an existing pre-normalization manual entity cannot
+    # race a canonical create and become a semantic duplicate.
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
     async with get_storage_keyed_lock(
-        [entity_name], namespace=namespace, enable_logging=False
+        sorted({requested_entity_name, entity_name}),
+        namespace=namespace,
+        enable_logging=False,
     ):
         try:
-            # Check if entity already exists
+            if (
+                requested_entity_name != entity_name
+                and await chunk_entity_relation_graph.has_node(requested_entity_name)
+            ):
+                raise ValueError(f"Entity '{requested_entity_name}' already exists")
+
+            # Check if the normalized entity already exists.
             existing_node = await chunk_entity_relation_graph.has_node(entity_name)
             if existing_node:
                 raise ValueError(f"Entity '{entity_name}' already exists")
@@ -1381,14 +1449,12 @@ async def _merge_entities_impl(
                     edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
                     all_relations.append((src, tgt, edge_data))
 
-    # 5. Create or update the target entity
+    # 5. Create or update the target entity. A missing target is intentional:
+    # spelling-repair merges may consolidate sources into a new canonical name.
     merged_entity_data["entity_id"] = target_entity
-    if not target_exists:
-        await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
-        logger.info(f"Entity Merge: created target '{target_entity}'")
-    else:
-        await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
-        logger.info(f"Entity Merge: Updated target '{target_entity}'")
+    await chunk_entity_relation_graph.upsert_node(target_entity, merged_entity_data)
+    target_action = "updated" if target_exists else "created"
+    logger.info(f"Entity Merge: {target_action} target '{target_entity}'")
 
     # 6. Recreate all relations pointing to the target entity in KG
     # Also collect chunk tracking information in the same loop
@@ -1812,10 +1878,26 @@ async def amerge_entities(
     Returns:
         Dictionary containing the merged entity information
     """
-    # Collect all entities involved (source + target) and lock them all in sorted order
-    all_entities = set(source_entities)
-    all_entities.add(target_entity)
-    lock_keys = sorted(all_entities)
+    if not source_entities:
+        raise ValueError("At least one source entity is required for merge")
+
+    requested_source_entities = list(source_entities)
+    normalized_source_entities = [
+        _normalize_manual_entity_name(entity_name)
+        for entity_name in requested_source_entities
+    ]
+    requested_target_entity = target_entity
+    normalized_target_entity = _normalize_manual_entity_name(requested_target_entity)
+
+    # Lock every exact/canonical candidate before resolving legacy keys. This
+    # shares the extraction pipeline's canonical locks while preserving access
+    # to historical manually-created names.
+    lock_key_set = set(requested_source_entities)
+    lock_key_set.update(name for name in normalized_source_entities if name)
+    lock_key_set.add(requested_target_entity)
+    if normalized_target_entity:
+        lock_key_set.add(normalized_target_entity)
+    lock_keys = sorted(lock_key_set)
 
     workspace = entities_vdb.global_config.get("workspace", "")
     namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
@@ -1823,11 +1905,49 @@ async def amerge_entities(
         lock_keys, namespace=namespace, enable_logging=False
     ):
         try:
+            resolved_source_entities: list[str] = []
+            seen_source_entities: set[str] = set()
+            for requested_name, normalized_name in zip(
+                requested_source_entities,
+                normalized_source_entities,
+                strict=True,
+            ):
+                if (
+                    requested_name != normalized_name
+                    and await chunk_entity_relation_graph.has_node(requested_name)
+                ):
+                    resolved_name = requested_name
+                elif normalized_name:
+                    resolved_name = normalized_name
+                else:
+                    raise ValueError(
+                        "Source entity name cannot be empty after normalization"
+                    )
+
+                # Multiple caller spellings may resolve to one canonical node.
+                # Merge it once so relations, vectors, and deletion are not
+                # processed repeatedly.
+                if resolved_name not in seen_source_entities:
+                    seen_source_entities.add(resolved_name)
+                    resolved_source_entities.append(resolved_name)
+
+            if (
+                requested_target_entity != normalized_target_entity
+                and await chunk_entity_relation_graph.has_node(requested_target_entity)
+            ):
+                target_entity = requested_target_entity
+            elif normalized_target_entity:
+                target_entity = normalized_target_entity
+            else:
+                raise ValueError(
+                    "Target entity name cannot be empty after normalization"
+                )
+
             return await _merge_entities_impl(
                 chunk_entity_relation_graph,
                 entities_vdb,
                 relationships_vdb,
-                source_entities,
+                resolved_source_entities,
                 target_entity,
                 merge_strategy=merge_strategy,
                 target_entity_data=target_entity_data,

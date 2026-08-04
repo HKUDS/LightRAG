@@ -20,6 +20,7 @@ from lightrag.utils import (
     compute_mdhash_id,
     Tokenizer,
     TokenBudgetError,
+    normalize_entity_name,
     sanitize_and_normalize_extracted_text,
     sanitize_text_for_encoding,
     repair_vlm_json_escape_damage_nested,
@@ -625,9 +626,7 @@ def _handle_single_entity_extraction(
         return None
 
     try:
-        entity_name = sanitize_and_normalize_extracted_text(
-            record_attributes[1], remove_inner_quotes=True
-        )
+        entity_name = normalize_entity_name(record_attributes[1])
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
@@ -714,12 +713,8 @@ def _handle_single_relationship_extraction(
         return None
 
     try:
-        source = sanitize_and_normalize_extracted_text(
-            record_attributes[1], remove_inner_quotes=True
-        )
-        target = sanitize_and_normalize_extracted_text(
-            record_attributes[2], remove_inner_quotes=True
-        )
+        source = normalize_entity_name(record_attributes[1])
+        target = normalize_entity_name(record_attributes[2])
 
         # Validate entity names after all cleaning steps
         if not source:
@@ -875,9 +870,7 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            entity_name = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("name", "")), remove_inner_quotes=True
-            )
+            entity_name = normalize_entity_name(str(entity_data.get("name", "")))
             if not entity_name or not entity_name.strip():
                 logger.info(
                     f"{chunk_key}: Empty entity name found after sanitization in JSON result"
@@ -943,12 +936,8 @@ async def _process_json_extraction_result(
             continue
 
         try:
-            source = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("source", "")), remove_inner_quotes=True
-            )
-            target = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("target", "")), remove_inner_quotes=True
-            )
+            source = normalize_entity_name(str(rel_data.get("source", "")))
+            target = normalize_entity_name(str(rel_data.get("target", "")))
 
             if not source:
                 logger.info(

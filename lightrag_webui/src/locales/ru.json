@@ -329,6 +329,7 @@
       "editPropertyDescription": "Отредактируйте значение свойства в текстовой области ниже.",
       "errors": {
         "duplicateName": "Имя узла уже существует",
+        "invalidEntityName": "Введите допустимое имя узла",
         "updateFailed": "Не удалось обновить узел",
         "tryAgainLater": "Пожалуйста, попробуйте позже",
         "updateSuccessButMergeFailed": "Свойства обновлены, но слияние не удалось: {{error}}",

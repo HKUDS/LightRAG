@@ -4694,6 +4694,11 @@ def sanitize_and_normalize_extracted_text(
     return ""
 
 
+def normalize_entity_name(input_text: str) -> str:
+    """Normalize an entity identifier using the extraction naming contract."""
+    return sanitize_and_normalize_extracted_text(input_text, remove_inner_quotes=True)
+
+
 def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     """Normalize entity/relation names and description with the following rules:
     - Clean HTML tags (paragraph and line break tags)
