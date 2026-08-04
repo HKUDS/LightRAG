@@ -312,6 +312,10 @@ EMBEDDING_DIM=3072
 EMBEDDING_TOKEN_LIMIT=8192
 EMBEDDING_SEND_DIM=false
 EMBEDDING_USE_BASE64=true
+# Overlap (in tokens) the embedding hard fallback borrows from the previous
+# chunk's tail when a chunk still exceeds EMBEDDING_TOKEN_LIMIT after
+# chunking. Independent of CHUNK_OVERLAP_SIZE. Default 100; 0 disables it.
+# EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE=100
 
 ############################
 ### Data storage selection

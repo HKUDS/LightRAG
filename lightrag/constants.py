@@ -601,6 +601,13 @@ DEFAULT_MM_IMAGE_MIN_PIXEL = 64
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
+# Overlap (in tokens) borrowed from the previous chunk's tail when the
+# embedding hard fallback has to token-window-split a chunk that is still
+# over the embedding model's context limit after chunking. Independent from
+# the semantic chunker's own `chunk_overlap_token_size` — see
+# `LightRAG.embedding_chunk_overlap_token_size`.
+DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE = 100
+
 # Gunicorn worker timeout
 DEFAULT_TIMEOUT = 300
 

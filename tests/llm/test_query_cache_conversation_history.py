@@ -18,18 +18,23 @@ import pytest
 from lightrag.base import QueryContextResult, QueryParam
 from lightrag.operate import kg_query, naive_query
 from lightrag.utils import (
+    Tokenizer,
     compute_args_hash,
     get_llm_cache_identity,
     serialize_llm_cache_identity,
 )
 
 
-class _FakeTokenizer:
+class _FakeTokenizerImpl:
     def encode(self, content: str) -> list[int]:
         return [ord(ch) for ch in content]
 
     def decode(self, tokens: list[int]) -> str:
         return "".join(chr(token) for token in tokens)
+
+
+def _FakeTokenizer() -> Tokenizer:
+    return Tokenizer("fake", _FakeTokenizerImpl())
 
 
 class _FakeKVStorage:

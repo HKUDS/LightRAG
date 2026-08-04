@@ -7,6 +7,7 @@ from typing import Any, cast
 from .base import DeletionResult
 from .kg.shared_storage import get_storage_keyed_lock
 from .constants import GRAPH_FIELD_SEP
+from .operate import _truncate_vdb_content
 from .utils import (
     VectorStorageConsistencyError,
     compute_mdhash_id,
@@ -365,25 +366,40 @@ async def _edit_entity_impl(
             source_id = edge_data.get("source_id", "")
             weight = float(edge_data.get("weight", 1.0))
 
-            content = f"{normalized_src}\t{normalized_tgt}\n{keywords}\n{description}"
-
             relation_id = compute_mdhash_id(
                 normalized_src + normalized_tgt, prefix="rel-"
             )
 
-            relation_data = {
-                relation_id: {
-                    "content": content,
-                    "src_id": normalized_src,
-                    "tgt_id": normalized_tgt,
-                    "source_id": source_id,
-                    "description": description,
-                    "keywords": keywords,
-                    "weight": weight,
+            # The graph rename cascade above already mutated this edge; a
+            # truncation failure here is the same "graph updated, VDB
+            # payload could not be completed" class of failure.
+            try:
+                content = _truncate_vdb_content(
+                    f"{normalized_src}\t{normalized_tgt}\n{keywords}\n{description}",
+                    relationships_vdb.global_config,
+                    f"relation:{normalized_src}-{normalized_tgt}",
+                )
+                relation_data = {
+                    relation_id: {
+                        "content": content,
+                        "src_id": normalized_src,
+                        "tgt_id": normalized_tgt,
+                        "source_id": source_id,
+                        "description": description,
+                        "keywords": keywords,
+                        "weight": weight,
+                    }
                 }
-            }
-
-            await relationships_vdb.upsert(relation_data)
+                await relationships_vdb.upsert(relation_data)
+            except Exception as e:
+                raise VectorStorageConsistencyError(
+                    f"Vector storage upsert failed for relation `{normalized_src}`~`{normalized_tgt}` "
+                    f"while renaming entity `{original_entity_name}` to `{new_entity_name}`: {e}. "
+                    "The knowledge graph was already updated, so it may now be inconsistent "
+                    "with the vector storage. No data is lost (the graph is the authoritative "
+                    "source). Stop the LightRAG server and run the offline rebuild tool "
+                    "(lightrag-rebuild-vdb) to restore consistency."
+                ) from e
 
         entity_name = new_entity_name
     else:
@@ -392,21 +408,35 @@ async def _edit_entity_impl(
     description = new_node_data.get("description", "")
     source_id = new_node_data.get("source_id", "")
     entity_type = new_node_data.get("entity_type", "")
-    content = entity_name + "\n" + description
-
     entity_id = compute_mdhash_id(entity_name, prefix="ent-")
 
-    entity_data = {
-        entity_id: {
-            "content": content,
-            "entity_name": entity_name,
-            "source_id": source_id,
-            "description": description,
-            "entity_type": entity_type,
+    # The graph node was already updated above; a truncation failure here is
+    # the same "graph updated, VDB payload could not be completed" class of
+    # failure as an upsert failure.
+    try:
+        content = _truncate_vdb_content(
+            entity_name + "\n" + description,
+            entities_vdb.global_config,
+            f"entity:{entity_name}",
+        )
+        entity_data = {
+            entity_id: {
+                "content": content,
+                "entity_name": entity_name,
+                "source_id": source_id,
+                "description": description,
+                "entity_type": entity_type,
+            }
         }
-    }
-
-    await entities_vdb.upsert(entity_data)
+        await entities_vdb.upsert(entity_data)
+    except Exception as e:
+        raise VectorStorageConsistencyError(
+            f"Vector storage upsert failed for entity `{entity_name}` during entity edit: "
+            f"{e}. The knowledge graph was already updated, so it may now be inconsistent "
+            "with the vector storage. No data is lost (the graph is the authoritative "
+            "source). Stop the LightRAG server and run the offline rebuild tool "
+            "(lightrag-rebuild-vdb) to restore consistency."
+        ) from e
 
     if entity_chunks_storage is not None or relation_chunks_storage is not None:
         from .utils import make_relation_chunk_key, compute_incremental_chunk_ids
@@ -806,38 +836,29 @@ async def aedit_relation(
             edge_data = await chunk_entity_relation_graph.get_edge(
                 source_entity, target_entity
             )
-            # Important: First delete the old relation record from the vector database
-            # Delete both permutations to handle relationships created before normalization
-            rel_ids_to_delete = [
-                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
-                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
-            ]
-            await relationships_vdb.delete(rel_ids_to_delete)
-            logger.debug(
-                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
-            )
-
-            # 2. Update relation information in the graph
+            # 2. Recalculate relation's vector representation. Construct and
+            # verify the VDB payload BEFORE any mutation below: if truncation
+            # fails (a deterministic, non-retryable content-shape problem),
+            # nothing has been touched yet. The actual VDB delete/upsert I/O
+            # calls happen strictly after the graph write below, so a
+            # transient VDB I/O failure (unlike a truncation failure) still
+            # leaves the normal recoverable (graph-updated, VDB-stale)
+            # window -- the new relation content is never lost.
             new_edge_data = {**edge_data, **updated_data}
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, new_edge_data
-            )
-
-            # 3. Recalculate relation's vector representation and update vector database
             description = new_edge_data.get("description", "")
             keywords = new_edge_data.get("keywords", "")
             source_id = new_edge_data.get("source_id", "")
             weight = float(new_edge_data.get("weight", 1.0))
 
-            # Create content for embedding
-            content = f"{source_entity}\t{target_entity}\n{keywords}\n{description}"
+            content = _truncate_vdb_content(
+                f"{source_entity}\t{target_entity}\n{keywords}\n{description}",
+                relationships_vdb.global_config,
+                f"relation:{source_entity}-{target_entity}",
+            )
 
-            # Calculate relation ID
             relation_id = compute_mdhash_id(
                 source_entity + target_entity, prefix="rel-"
             )
-
-            # Prepare data for vector database update
             relation_data = {
                 relation_id: {
                     "content": content,
@@ -849,6 +870,23 @@ async def aedit_relation(
                     "weight": weight,
                 }
             }
+
+            # 3. Update relation information in the graph
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, new_edge_data
+            )
+
+            # Delete the old relation record from the vector database.
+            # Delete both permutations to handle relationships created
+            # before normalization.
+            rel_ids_to_delete = [
+                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+            ]
+            await relationships_vdb.delete(rel_ids_to_delete)
+            logger.debug(
+                f"Relation Delete: delete vdb for `{source_entity}`~`{target_entity}`"
+            )
 
             # Update vector database
             await relationships_vdb.upsert(relation_data)
@@ -993,14 +1031,22 @@ async def acreate_entity(
                 "created_at": int(time.time()),
             }
 
-            # Add entity to knowledge graph
-            await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
-
-            # Prepare content for entity
+            # Prepare content for entity. Construct and verify the VDB
+            # payload BEFORE the first graph mutation below: if truncation
+            # fails (a deterministic, non-retryable content-shape problem
+            # that a rebuild would hit identically), nothing has been
+            # written yet. The actual VDB I/O call still happens after the
+            # graph write below -- only this cheap verification step is
+            # front-loaded, so a transient VDB I/O failure still leaves a
+            # recoverable (graph updated, VDB stale) window.
             description = node_data.get("description", "")
             source_id = node_data.get("source_id", "")
             entity_type = node_data.get("entity_type", "")
-            content = entity_name + "\n" + description
+            content = _truncate_vdb_content(
+                entity_name + "\n" + description,
+                entities_vdb.global_config,
+                f"entity:{entity_name}",
+            )
 
             # Calculate entity ID
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
@@ -1016,6 +1062,9 @@ async def acreate_entity(
                     "file_path": entity_data.get("file_path", "manual_creation"),
                 }
             }
+
+            # Add entity to knowledge graph
+            await chunk_entity_relation_graph.upsert_node(entity_name, node_data)
 
             # Update vector database
             await entities_vdb.upsert(entity_data_for_vdb)
@@ -1125,14 +1174,15 @@ async def acreate_relation(
                 "created_at": int(time.time()),
             }
 
-            # Add relation to knowledge graph
-            await chunk_entity_relation_graph.upsert_edge(
-                source_entity, target_entity, edge_data
+            # Normalize entity order for the VDB record's identity — kept
+            # separate from source_entity/target_entity used for the graph
+            # edge write below, which must use the caller's original
+            # direction.
+            vdb_src, vdb_tgt = (
+                (target_entity, source_entity)
+                if source_entity > target_entity
+                else (source_entity, target_entity)
             )
-
-            # Normalize entity order for undirected relation vector (ensures consistent key generation)
-            if source_entity > target_entity:
-                source_entity, target_entity = target_entity, source_entity
 
             # Prepare content for embedding
             description = edge_data.get("description", "")
@@ -1140,20 +1190,26 @@ async def acreate_relation(
             source_id = edge_data.get("source_id", "")
             weight = edge_data.get("weight", 1.0)
 
-            # Create content for embedding
-            content = f"{keywords}\t{source_entity}\n{target_entity}\n{description}"
+            # Construct and verify the VDB payload BEFORE the first graph
+            # mutation below: if truncation fails (a deterministic,
+            # non-retryable content-shape problem), nothing has been
+            # written yet. The actual VDB I/O call still happens after the
+            # graph write below.
+            content = _truncate_vdb_content(
+                f"{keywords}\t{vdb_src}\n{vdb_tgt}\n{description}",
+                relationships_vdb.global_config,
+                f"relation:{vdb_src}-{vdb_tgt}",
+            )
 
             # Calculate relation ID
-            relation_id = compute_mdhash_id(
-                source_entity + target_entity, prefix="rel-"
-            )
+            relation_id = compute_mdhash_id(vdb_src + vdb_tgt, prefix="rel-")
 
             # Prepare data for vector database update
             relation_data_for_vdb = {
                 relation_id: {
                     "content": content,
-                    "src_id": source_entity,
-                    "tgt_id": target_entity,
+                    "src_id": vdb_src,
+                    "tgt_id": vdb_tgt,
                     "source_id": source_id,
                     "description": description,
                     "keywords": keywords,
@@ -1162,6 +1218,11 @@ async def acreate_relation(
                 }
             }
 
+            # Add relation to knowledge graph
+            await chunk_entity_relation_graph.upsert_edge(
+                source_entity, target_entity, edge_data
+            )
+
             # Update vector database
             await relationships_vdb.upsert(relation_data_for_vdb)
 
@@ -1169,9 +1230,7 @@ async def acreate_relation(
             if relation_chunks_storage is not None:
                 from .utils import make_relation_chunk_key
 
-                # Normalize entity order for consistent key generation
-                normalized_src, normalized_tgt = sorted([source_entity, target_entity])
-                storage_key = make_relation_chunk_key(normalized_src, normalized_tgt)
+                storage_key = make_relation_chunk_key(vdb_src, vdb_tgt)
 
                 source_id = edge_data.get("source_id", "")
                 chunk_ids = [cid for cid in source_id.split(GRAPH_FIELD_SEP) if cid]
@@ -1186,7 +1245,7 @@ async def acreate_relation(
                         }
                     )
                     logger.info(
-                        f"Relation Create: tracked {len(chunk_ids)} chunks for `{source_entity}`~`{target_entity}`"
+                        f"Relation Create: tracked {len(chunk_ids)} chunks for `{vdb_src}`~`{vdb_tgt}`"
                     )
 
             # Save changes
@@ -1197,13 +1256,13 @@ async def acreate_relation(
             )
 
             logger.info(
-                f"Relation Create: `{source_entity}`~`{target_entity}` successfully created"
+                f"Relation Create: `{vdb_src}`~`{vdb_tgt}` successfully created"
             )
             return await get_relation_info(
                 chunk_entity_relation_graph,
                 relationships_vdb,
-                source_entity,
-                target_entity,
+                vdb_src,
+                vdb_tgt,
                 include_vector_data=False,
             )
         except Exception as e:
@@ -1475,24 +1534,31 @@ async def _merge_entities_impl(
         keywords = edge_data.get("keywords", "")
         source_id = edge_data.get("source_id", "")
         weight = float(edge_data.get("weight", 1.0))
-
-        # Use normalized order for content and relation ID
-        content = f"{keywords}\t{normalized_src}\n{normalized_tgt}\n{description}"
         relation_id = compute_mdhash_id(normalized_src + normalized_tgt, prefix="rel-")
 
-        relation_data_for_vdb = {
-            relation_id: {
-                "content": content,
-                "src_id": normalized_src,
-                "tgt_id": normalized_tgt,
-                "source_id": source_id,
-                "description": description,
-                "keywords": keywords,
-                "weight": weight,
-                "file_path": edge_data.get("file_path", ""),
-            }
-        }
+        # The graph was already updated above (step 6); a truncation failure
+        # here is the same class of "graph updated, VDB payload could not be
+        # completed" failure as a VDB-operation failure below, so it gets the
+        # same VectorStorageConsistencyError treatment.
         try:
+            # Use normalized order for content and relation ID
+            content = _truncate_vdb_content(
+                f"{keywords}\t{normalized_src}\n{normalized_tgt}\n{description}",
+                entities_vdb.global_config,
+                f"relation:{normalized_src}-{normalized_tgt}",
+            )
+            relation_data_for_vdb = {
+                relation_id: {
+                    "content": content,
+                    "src_id": normalized_src,
+                    "tgt_id": normalized_tgt,
+                    "source_id": source_id,
+                    "description": description,
+                    "keywords": keywords,
+                    "weight": weight,
+                    "file_path": edge_data.get("file_path", ""),
+                }
+            }
             await safe_vdb_operation_with_exception(
                 operation=lambda payload=relation_data_for_vdb: (
                     relationships_vdb.upsert(payload)
@@ -1521,20 +1587,28 @@ async def _merge_entities_impl(
     description = merged_entity_data.get("description", "")
     source_id = merged_entity_data.get("source_id", "")
     entity_type = merged_entity_data.get("entity_type", "")
-    content = target_entity + "\n" + description
-
     entity_id = compute_mdhash_id(target_entity, prefix="ent-")
-    entity_data_for_vdb = {
-        entity_id: {
-            "content": content,
-            "entity_name": target_entity,
-            "source_id": source_id,
-            "description": description,
-            "entity_type": entity_type,
-            "file_path": merged_entity_data.get("file_path", ""),
-        }
-    }
+
+    # The graph was already updated above (step 5); a truncation failure here
+    # is the same class of "graph updated, VDB payload could not be
+    # completed" failure as a VDB-operation failure below, so it gets the
+    # same VectorStorageConsistencyError treatment.
     try:
+        content = _truncate_vdb_content(
+            target_entity + "\n" + description,
+            entities_vdb.global_config,
+            f"entity:{target_entity}",
+        )
+        entity_data_for_vdb = {
+            entity_id: {
+                "content": content,
+                "entity_name": target_entity,
+                "source_id": source_id,
+                "description": description,
+                "entity_type": entity_type,
+                "file_path": merged_entity_data.get("file_path", ""),
+            }
+        }
         await safe_vdb_operation_with_exception(
             operation=lambda payload=entity_data_for_vdb: entities_vdb.upsert(payload),
             operation_name="merge_entity_upsert",
