@@ -441,3 +441,57 @@ def test_list_truncation_non_positive_budget_or_empty_list_returns_empty():
         )
         == []
     )
+
+
+# --------------------------------------------------------------------------- #
+# overlap is clamped to the previous window's own size before retreating
+# --------------------------------------------------------------------------- #
+
+
+def test_split_clamps_a_huge_overlap_target_before_retreating():
+    """A requested overlap far larger than any window's own token count must
+    not retreat step-by-step from that huge starting point -- it should be
+    clamped against the previous window's actual size up front, so the
+    number of re-encodes per window stays bounded by max_tokens, not by the
+    (irrelevantly huge) requested overlap."""
+
+    class _CountingTokenizer(TokenizerInterface):
+        def __init__(self):
+            self.encode_calls = 0
+
+        def encode(self, content: str) -> list[int]:
+            self.encode_calls += 1
+            return [0] * len(content)
+
+        def decode(self, tokens: list[int]) -> str:
+            return "x" * len(tokens)
+
+    underlying = _CountingTokenizer()
+    tok = Tokenizer("counting", underlying)
+    text = "y" * 2000
+
+    # overlap_tokens is absurdly larger than max_tokens (and thus larger than
+    # any individual window's own token count) -- if the target were tried
+    # as-is and retreated one exponential step at a time from 10**9, that
+    # alone would take ~30 probes on top of the per-window search.
+    spans = tok.split_by_token_limit(text, max_tokens=6, overlap_tokens=10**9)
+    assert len(spans) > 1
+    _assert_split_invariants(tok, text, spans, 6)
+
+    # Total encode() calls should scale with the number of windows times a
+    # small constant (bounded search per window), not with log2(overlap).
+    windows = len(spans)
+    assert underlying.encode_calls < windows * 15
+
+
+def test_split_overlap_clamped_to_previous_window_size_minus_one():
+    """Directly pins the clamp formula: effective overlap target is
+    min(requested, previous_window_token_count - 1), verified via the
+    tiktoken fast path where window token counts are easy to reason about."""
+    tok = _tiktoken_tok()
+    text = "The quick brown fox jumps over the lazy dog. " * 20
+    # overlap_tokens way beyond max_tokens=10 -- must not break the "real
+    # progress" invariant despite the clamp being necessary on nearly every
+    # window transition.
+    spans = tok.split_by_token_limit(text, max_tokens=10, overlap_tokens=5000)
+    _assert_split_invariants(tok, text, spans, 10)

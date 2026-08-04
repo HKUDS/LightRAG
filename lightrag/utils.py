@@ -3054,7 +3054,15 @@ class Tokenizer:
         total_len = len(content)
 
         while covered_end < total_len:
-            target_overlap = overlap_tokens if covered_end > 0 else 0
+            if covered_end > 0:
+                # Clamp to what the previous window can actually lend before
+                # even trying: an overlap target that dwarfs the previous
+                # window's own token count would otherwise retreat from that
+                # huge starting point step by step, wasting retries on values
+                # that could never have worked.
+                target_overlap = min(overlap_tokens, max(0, spans[-1].token_count - 1))
+            else:
+                target_overlap = 0
             step = 1
             span: Optional[TokenSpan] = None
             while True:
@@ -3252,7 +3260,14 @@ class TiktokenTokenizer(Tokenizer):
         total_len = len(content)
 
         while covered_end_char < total_len:
-            target_overlap = overlap_tokens if covered_end_token > 0 else 0
+            if covered_end_token > 0:
+                # Clamp before trying: an overlap target that dwarfs the
+                # previous window's own token count would otherwise retreat
+                # from that huge starting point step by step, wasting
+                # retries on values that could never have worked.
+                target_overlap = min(overlap_tokens, max(0, spans[-1].token_count - 1))
+            else:
+                target_overlap = 0
             step = 1
             accepted: Optional[tuple[TokenSpan, int]] = None
             while True:
@@ -3604,30 +3619,36 @@ def enforce_chunk_token_limit_before_embedding(
         if not isinstance(content, str) or not content.strip():
             continue
 
-        try:
-            token_count = len(tokenizer.encode(content))
-        except Exception:
-            token_count = (
-                dp.get("tokens", 0) if isinstance(dp.get("tokens"), int) else 0
-            )
+        # A single call does both the "is this already within budget" check
+        # AND the split: split_by_token_limit's own fast path returns one
+        # span covering the whole content when it already fits, so there is
+        # no separate pre-check encode here to duplicate the full-content
+        # encode it does internally regardless. TokenBudgetError (content
+        # cannot be safely split at all — not even its first Unicode code
+        # point fits max_tokens) is intentionally NOT caught: swallowing it
+        # here would mean silently re-emitting the original, still-oversized
+        # chunk instead of failing the document — exactly the unsafe
+        # fallback this contract exists to remove.
+        spans = tokenizer.split_by_token_limit(
+            content, max_tokens, overlap_tokens=overlap_tokens
+        )
 
-        if token_count <= max_tokens:
+        if len(spans) == 1:
             ndp = dict(dp)
-            ndp["tokens"] = token_count if token_count > 0 else ndp.get("tokens", 0)
+            ndp["tokens"] = spans[0].token_count
             normalized.append(ndp)
             continue
 
-        try:
-            spans = tokenizer.split_by_token_limit(
-                content, max_tokens, overlap_tokens=overlap_tokens
+        if overlap_tokens > 0 and any(
+            spans[i].start >= spans[i - 1].end for i in range(1, len(spans))
+        ):
+            logger.warning(
+                "Requested embedding_chunk_overlap_token_size=%d could not be "
+                "honored for at least one window of chunk %r (retreated to 0 "
+                "to preserve forward progress)",
+                overlap_tokens,
+                dp.get("chunk_id", dp.get("chunk_order_index")),
             )
-        except TokenBudgetError:
-            spans = []
-        if not spans:
-            ndp = dict(dp)
-            ndp["tokens"] = token_count
-            normalized.append(ndp)
-            continue
 
         base_chunk_id = dp.get("chunk_id")
         parent_span = dp.get("_source_span")

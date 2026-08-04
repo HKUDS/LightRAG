@@ -246,3 +246,71 @@ def test_overlap_tokens_produce_real_overlap_and_still_pass_backfill():
         backfill_chunk_sidecars(out, blocks_path)
         for dp in out:
             assert dp["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
+
+
+def test_unsplittable_oversized_chunk_raises_token_budget_error():
+    """A chunk that cannot be safely split at all (not even its first
+    Unicode code point fits max_tokens) must fail the document loudly --
+    swallowing TokenBudgetError here and re-emitting the original, still
+    oversized chunk unchanged would silently defeat the whole safety
+    contract this function exists to enforce."""
+    from lightrag.utils import TokenBudgetError, TokenizerInterface
+
+    class _HeavyTokenizer(TokenizerInterface):
+        def encode(self, content: str) -> list[int]:
+            return [0] * (2 * len(content))
+
+        def decode(self, tokens: list[int]) -> str:
+            return "x" * (len(tokens) // 2)
+
+    tok = Tokenizer("heavy", _HeavyTokenizer())
+    chunking_result = [
+        {
+            "content": "abc",
+            "tokens": 6,
+            "chunk_order_index": 0,
+            "chunk_id": "c0",
+        }
+    ]
+
+    with pytest.raises(TokenBudgetError):
+        enforce_chunk_token_limit_before_embedding(
+            chunking_result, tok, max_tokens=1, overlap_tokens=0
+        )
+
+
+def test_oversized_chunk_is_encoded_only_once_for_the_full_content():
+    """The oversized-check and the split must not each independently encode
+    the full chunk content -- split_by_token_limit's own fast-path check
+    covers "is this within budget", so there is no separate pre-check encode
+    call for content that turns out to fit, and exactly one full-content
+    encode for content that does not."""
+
+    class _CountingTokenizer(TokenizerInterface):
+        def __init__(self):
+            self.full_content_encode_calls = 0
+            self._content_len = None
+
+        def encode(self, content: str) -> list[int]:
+            if self._content_len is not None and len(content) == self._content_len:
+                self.full_content_encode_calls += 1
+            return [ord(ch) % 1000 for ch in content]
+
+        def decode(self, tokens: list[int]) -> str:
+            return "".join(chr(t) for t in tokens)
+
+    content = "abcdefghij" * 100  # 1000 chars
+    underlying = _CountingTokenizer()
+    underlying._content_len = len(content)
+    tok = Tokenizer("counting", underlying)
+
+    chunking_result = [
+        {"content": content, "tokens": 1000, "chunk_order_index": 0, "chunk_id": "c0"}
+    ]
+    out = enforce_chunk_token_limit_before_embedding(
+        chunking_result, tok, max_tokens=100, overlap_tokens=0
+    )
+    assert len(out) > 1
+    # Exactly one call encoded the entire original content -- the single
+    # fast-path check inside split_by_token_limit, not a separate pre-check.
+    assert underlying.full_content_encode_calls == 1

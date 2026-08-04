@@ -137,6 +137,7 @@ from lightrag.namespace import NameSpace
 from lightrag.chunker import chunking_by_token_size
 from lightrag.operate import (
     KGRebuildReport,
+    _truncate_vdb_content,
     collect_kg_merge_candidates,
     extract_entities,
     kg_query,
@@ -3374,6 +3375,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
             async def _do_graph_and_vdb_writes() -> None:
+                # Construct and verify the entity VDB payload BEFORE the
+                # first graph mutation below (entity_nodes batch upsert): if
+                # truncation fails, nothing has been written yet. Skipped
+                # entirely when there is nothing to insert (e.g. a
+                # chunks-only custom_kg) — _build_global_config is real work
+                # callers with no entities/relationships should not pay for.
+                # Shared with the relationship VDB payload built further
+                # below in this same function, so it is built at most once
+                # per call.
+                global_config: dict[str, Any] | None = None
+                data_for_entities_vdb: dict[str, Any] = {}
+                if all_entities_data or deduped_relationships:
+                    global_config = self._build_global_config()
+                if all_entities_data:
+                    data_for_entities_vdb = {
+                        compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                            "content": _truncate_vdb_content(
+                                dp["entity_name"] + "\n" + dp["description"],
+                                global_config,
+                                f"entity:{dp['entity_name']}",
+                            ),
+                            "entity_name": dp["entity_name"],
+                            "source_id": dp["source_id"],
+                            "description": dp["description"],
+                            "entity_type": dp["entity_type"],
+                            "file_path": dp.get("file_path", "custom_kg"),
+                        }
+                        for dp in all_entities_data
+                    }
+
                 # Batch insert entities (reduces N serial awaits to 1)
                 if entity_nodes:
                     await self.chunk_entity_relation_graph.upsert_nodes_batch(
@@ -3452,6 +3483,34 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         }
                     )
 
+                # Construct and verify the relationship VDB payload BEFORE
+                # the graph mutations below (missing-node + edge batch
+                # upserts): if truncation fails, nothing has been written
+                # yet. Reuses the entity-side global_config built above via
+                # closure — that guard (`all_entities_data or
+                # deduped_relationships`) already covers this branch, since
+                # non-empty all_relationships_data implies non-empty
+                # deduped_relationships.
+                data_for_rels_vdb: dict[str, Any] = {}
+                if all_relationships_data:
+                    data_for_rels_vdb = {
+                        compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+                            "src_id": dp["src_id"],
+                            "tgt_id": dp["tgt_id"],
+                            "source_id": dp["source_id"],
+                            "content": _truncate_vdb_content(
+                                f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
+                                global_config,
+                                f"relation:{dp['src_id']}-{dp['tgt_id']}",
+                            ),
+                            "keywords": dp["keywords"],
+                            "description": dp["description"],
+                            "weight": dp["weight"],
+                            "file_path": dp.get("file_path", "custom_kg"),
+                        }
+                        for dp in all_relationships_data
+                    }
+
                 # Batch insert missing placeholder nodes
                 if missing_nodes:
                     await self.chunk_entity_relation_graph.upsert_nodes_batch(
@@ -3461,33 +3520,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # Batch insert edges
                 if edge_list:
                     await self.chunk_entity_relation_graph.upsert_edges_batch(edge_list)
-
-                # Insert entities and relationships into vector storage (parallel)
-                data_for_entities_vdb = {
-                    compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                        "content": dp["entity_name"] + "\n" + dp["description"],
-                        "entity_name": dp["entity_name"],
-                        "source_id": dp["source_id"],
-                        "description": dp["description"],
-                        "entity_type": dp["entity_type"],
-                        "file_path": dp.get("file_path", "custom_kg"),
-                    }
-                    for dp in all_entities_data
-                }
-
-                data_for_rels_vdb = {
-                    compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                        "src_id": dp["src_id"],
-                        "tgt_id": dp["tgt_id"],
-                        "source_id": dp["source_id"],
-                        "content": f"{dp['keywords']}\t{dp['src_id']}\n{dp['tgt_id']}\n{dp['description']}",
-                        "keywords": dp["keywords"],
-                        "description": dp["description"],
-                        "weight": dp["weight"],
-                        "file_path": dp.get("file_path", "custom_kg"),
-                    }
-                    for dp in all_relationships_data
-                }
 
                 legacy_rel_ids_to_delete = sorted(
                     {
