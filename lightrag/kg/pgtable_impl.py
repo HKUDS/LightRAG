@@ -303,6 +303,16 @@ class PGTableGraphStorage(BaseGraphStorage):
         O(every id matching the query). _search_score is the reference definition
         and the pg_smoke suite pins the SQL to it.
 
+    Flush-time batching:
+        upsert_nodes_batch / upsert_edges_batch split their payload by
+        POSTGRES_UPSERT_MAX_PAYLOAD_BYTES (primary) and
+        POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH; remove_nodes / remove_edges split by
+        POSTGRES_DELETE_MAX_RECORDS_PER_BATCH. Same variables, same defaults and
+        same splitter as every other PostgreSQL write path. Upsert chunks are
+        separate statements (bounded lock/WAL footprint, idempotent on replay);
+        delete chunks all share ONE transaction, preserving the all-or-nothing
+        semantics the pre-chunking single statement had.
+
     Configuration note:
         global_config["vector_storage"] selects the pool's vector support. An
         absent/empty value falls back to this class's own name rather than None,
@@ -312,6 +322,11 @@ class PGTableGraphStorage(BaseGraphStorage):
     """
 
     db: Any | None = field(default=None, init=False, repr=False)
+    # Populated on first use by _batch_limits(); see that method for why it is not
+    # resolved in __post_init__ like the sibling PG storages do.
+    _cached_batch_limits: tuple[int, int, int] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         validate_workspace(self.workspace)
@@ -323,6 +338,93 @@ class PGTableGraphStorage(BaseGraphStorage):
                 "PGTableGraphStorage not initialized — call initialize() first"
             )
         return self.db
+
+    # ------------------------------------------------------------------
+    # Flush-time batching limits
+    # ------------------------------------------------------------------
+
+    def _batch_limits(self) -> tuple[int, int, int]:
+        """``(upsert_payload_bytes, upsert_records, delete_records)`` from env.
+
+        Uses the same ``_resolve_pg_batch_limits`` helper — hence the same
+        POSTGRES_UPSERT_MAX_PAYLOAD_BYTES / POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH /
+        POSTGRES_DELETE_MAX_RECORDS_PER_BATCH variables and the same defaults — as
+        every other PostgreSQL write path, so one deployment-wide setting bounds
+        them all.
+
+        Resolved on first use and cached, rather than in __post_init__ like the
+        sibling storages, for two reasons: postgres_impl must stay lazily imported
+        (importing it installs and imports asyncpg at module scope — see
+        _is_transient_error), and batch writes only run after initialize(), which
+        imports postgres_impl anyway, so this is a cache hit there. getattr()
+        rather than a plain attribute read because callers legitimately build this
+        storage without __init__ (object.__new__ in the offline test suites).
+        """
+        limits = getattr(self, "_cached_batch_limits", None)
+        if limits is None:
+            from .postgres_impl import _resolve_pg_batch_limits
+
+            limits = _resolve_pg_batch_limits()
+            self._cached_batch_limits = limits
+        return limits
+
+    @staticmethod
+    def _chunk_writes(
+        items: list[Any], size_of: Callable[[Any], int], limits: tuple[int, int, int]
+    ) -> list[list[Any]]:
+        """Split an upsert payload with the shared byte/record budget splitter.
+
+        Delegates to postgres_impl._chunk_by_budget so the byte accounting (JSON
+        array overhead, separator overhead, oversized-single-item passthrough) is
+        identical to the other PG storages instead of a second approximation.
+        """
+        from .postgres_impl import _chunk_by_budget
+
+        payload_bytes, records, _delete_records = limits
+        return [
+            chunk
+            for chunk, _bytes in _chunk_by_budget(
+                items, size_of, payload_bytes, records
+            )
+        ]
+
+    async def _chunked_delete(
+        self,
+        sql: str,
+        items: list[Any],
+        to_args: Callable[[list[Any]], tuple[Any, ...]],
+        label: str,
+    ) -> None:
+        """Run one DELETE per POSTGRES_DELETE_MAX_RECORDS_PER_BATCH-sized chunk.
+
+        Unlike the upsert paths, every chunk runs inside ONE transaction: the
+        pre-chunking implementation was a single statement, so it was
+        all-or-nothing, and a caller deleting a set of nodes must not be left with
+        half of them gone. This mirrors PGGraphStorage's delete batching exactly.
+        _run_with_retry replays the whole closure on transient errors, which is
+        safe because DELETE is idempotent.
+
+        ``to_args`` maps a chunk to the positional parameters after
+        (workspace, namespace) — one array for nodes, two parallel arrays for edge
+        pairs. A non-positive cap disables chunking.
+        """
+        _payload_bytes, _records, delete_records = self._batch_limits()
+        chunk_size = delete_records if delete_records > 0 else len(items)
+        if len(items) > chunk_size:
+            logger.info(
+                f"[{self.workspace}] {self.namespace}: {label} delete of "
+                f"{len(items)} items split into chunks (chunk={chunk_size})"
+            )
+
+        async def _batch_delete(conn: Any) -> None:
+            async with conn.transaction():
+                for start in range(0, len(items), chunk_size):
+                    chunk = items[start : start + chunk_size]
+                    await conn.execute(
+                        sql, self.workspace, self.namespace, *to_args(chunk)
+                    )
+
+        await self._with_retry(lambda: self._db._run_with_retry(_batch_delete))
 
     # ------------------------------------------------------------------
     # Query helpers — thin wrappers over PostgreSQLDB.query / execute
@@ -679,11 +781,12 @@ class PGTableGraphStorage(BaseGraphStorage):
         if not nodes:
             return
         # Incident edges cascade — same guarantee as delete_node().
-        await self._execute(
-            "DELETE FROM lightrag_graph_nodes WHERE workspace = $1 AND namespace = $2 AND id = ANY($3)",
-            self.workspace,
-            self.namespace,
+        await self._chunked_delete(
+            "DELETE FROM lightrag_graph_nodes "
+            "WHERE workspace = $1 AND namespace = $2 AND id = ANY($3)",
             nodes,
+            lambda chunk: (chunk,),
+            label="node",
         )
 
     # ------------------------------------------------------------------
@@ -753,19 +856,17 @@ class PGTableGraphStorage(BaseGraphStorage):
             return
         if not all(isinstance(e[0], str) and isinstance(e[1], str) for e in edges):
             raise ValueError("Edge node IDs must be non-None strings")
-        srcs = [min(e[0], e[1]) for e in edges]
-        tgts = [max(e[0], e[1]) for e in edges]
-        await self._execute(
+        pairs = [(min(e[0], e[1]), max(e[0], e[1])) for e in edges]
+        await self._chunked_delete(
             """
             DELETE FROM lightrag_graph_edges
             WHERE workspace = $1
               AND namespace = $2
               AND (src_id, tgt_id) IN (SELECT * FROM unnest($3::text[], $4::text[]))
             """,
-            self.workspace,
-            self.namespace,
-            srcs,
-            tgts,
+            pairs,
+            lambda chunk: ([p[0] for p in chunk], [p[1] for p in chunk]),
+            label="edge",
         )
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -1355,25 +1456,42 @@ class PGTableGraphStorage(BaseGraphStorage):
             node_props = dict(node_data)
             node_props["entity_id"] = node_id
             deduped[node_id] = node_props
-        sorted_ids = sorted(deduped)
-        props = [json.dumps(deduped[node_id]) for node_id in sorted_ids]
-        await self._execute(
-            """
-            INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
-            SELECT $1, $2, u.id, u.props::jsonb, now()
-            FROM unnest($3::text[], $4::text[]) AS u(id, props)
-            ORDER BY u.id
-            ON CONFLICT (workspace, namespace, id)
-            DO UPDATE SET
-                -- Merge (not replace), same as upsert_node — see note there.
-                properties = lightrag_graph_nodes.properties || EXCLUDED.properties,
-                updated_at = now()
-            """,
-            self.workspace,
-            self.namespace,
-            sorted_ids,
-            props,
+        # (id, props_json) pairs in id order, then split so no single statement
+        # carries an unbounded payload. Chunks are applied sequentially and each is
+        # its own statement (hence its own implicit transaction), matching
+        # PGGraphStorage.upsert_nodes_batch — deliberately NOT one transaction over
+        # all chunks, which would reintroduce the unbounded lock/WAL footprint the
+        # chunking exists to avoid. Node upsert is idempotent (jsonb merge to the
+        # same payload), so a partially-applied batch is safe to replay.
+        items = [(node_id, json.dumps(deduped[node_id])) for node_id in sorted(deduped)]
+        chunks = self._chunk_writes(
+            items,
+            lambda pair: len(pair[0].encode("utf-8")) + len(pair[1].encode("utf-8")),
+            self._batch_limits(),
         )
+        if len(chunks) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace}: node upsert split into "
+                f"{len(chunks)} chunks for {len(items)} nodes"
+            )
+        for chunk in chunks:
+            await self._execute(
+                """
+                INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
+                SELECT $1, $2, u.id, u.props::jsonb, now()
+                FROM unnest($3::text[], $4::text[]) AS u(id, props)
+                ORDER BY u.id
+                ON CONFLICT (workspace, namespace, id)
+                DO UPDATE SET
+                    -- Merge (not replace), same as upsert_node — see note there.
+                    properties = lightrag_graph_nodes.properties || EXCLUDED.properties,
+                    updated_at = now()
+                """,
+                self.workspace,
+                self.namespace,
+                [item[0] for item in chunk],
+                [item[1] for item in chunk],
+            )
 
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -1385,35 +1503,53 @@ class PGTableGraphStorage(BaseGraphStorage):
         for src, tgt, edge_data in edges:
             key = (min(src, tgt), max(src, tgt))
             deduped[key] = edge_data
-        sorted_keys = sorted(deduped.keys())
-        srcs = [k[0] for k in sorted_keys]
-        tgts = [k[1] for k in sorted_keys]
-        props = [json.dumps(deduped[k]) for k in sorted_keys]
-        endpoint_ids = sorted({nid for key in sorted_keys for nid in key})
-        await self._execute(
-            """
-            WITH endpoints AS (
-                INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
-                SELECT $1, $2, u.id, jsonb_build_object('entity_id', u.id), now()
-                FROM unnest($6::text[]) AS u(id)
-                ON CONFLICT (workspace, namespace, id) DO NOTHING
-                RETURNING id
+        # (src, tgt, props_json) triples in canonical pair order, then split so no
+        # single statement carries an unbounded payload. Per-chunk statements, like
+        # upsert_nodes_batch and PGGraphStorage — see the note there.
+        #
+        # Each chunk stays self-consistent under the FK: it creates the endpoints
+        # for its OWN edges inside the same statement, so no chunk can insert an
+        # edge whose endpoint another chunk was going to create.
+        items = [(key[0], key[1], json.dumps(deduped[key])) for key in sorted(deduped)]
+        chunks = self._chunk_writes(
+            items,
+            lambda triple: (
+                len(triple[0].encode("utf-8"))
+                + len(triple[1].encode("utf-8"))
+                + len(triple[2].encode("utf-8"))
             ),
-            endpoint_write AS (
-                SELECT COUNT(*) AS inserted_count FROM endpoints
-            )
-            INSERT INTO lightrag_graph_edges (workspace, namespace, src_id, tgt_id, properties, updated_at)
-            SELECT $1, $2, u.src, u.tgt, u.props::jsonb, now()
-            FROM unnest($3::text[], $4::text[], $5::text[]) AS u(src, tgt, props)
-            CROSS JOIN endpoint_write
-            ORDER BY u.src, u.tgt
-            ON CONFLICT (workspace, namespace, src_id, tgt_id)
-            DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
-            """,
-            self.workspace,
-            self.namespace,
-            srcs,
-            tgts,
-            props,
-            endpoint_ids,
+            self._batch_limits(),
         )
+        if len(chunks) > 1:
+            logger.info(
+                f"[{self.workspace}] {self.namespace}: edge upsert split into "
+                f"{len(chunks)} chunks for {len(items)} edges"
+            )
+        for chunk in chunks:
+            await self._execute(
+                """
+                WITH endpoints AS (
+                    INSERT INTO lightrag_graph_nodes (workspace, namespace, id, properties, updated_at)
+                    SELECT $1, $2, u.id, jsonb_build_object('entity_id', u.id), now()
+                    FROM unnest($6::text[]) AS u(id)
+                    ON CONFLICT (workspace, namespace, id) DO NOTHING
+                    RETURNING id
+                ),
+                endpoint_write AS (
+                    SELECT COUNT(*) AS inserted_count FROM endpoints
+                )
+                INSERT INTO lightrag_graph_edges (workspace, namespace, src_id, tgt_id, properties, updated_at)
+                SELECT $1, $2, u.src, u.tgt, u.props::jsonb, now()
+                FROM unnest($3::text[], $4::text[], $5::text[]) AS u(src, tgt, props)
+                CROSS JOIN endpoint_write
+                ORDER BY u.src, u.tgt
+                ON CONFLICT (workspace, namespace, src_id, tgt_id)
+                DO UPDATE SET properties = EXCLUDED.properties, updated_at = now()
+                """,
+                self.workspace,
+                self.namespace,
+                [item[0] for item in chunk],
+                [item[1] for item in chunk],
+                [item[2] for item in chunk],
+                sorted({nid for item in chunk for nid in (item[0], item[1])}),
+            )

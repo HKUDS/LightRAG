@@ -1080,3 +1080,188 @@ async def test_get_all_edges_returns_source_target_keys():
     assert edges[0]["weight"] == 1.0
     assert "src_id" not in edges[0]
     assert "tgt_id" not in edges[0]
+
+
+# ---------------------------------------------------------------------------
+# flush-time batching — POSTGRES_UPSERT_* / POSTGRES_DELETE_* caps
+# ---------------------------------------------------------------------------
+
+
+class _FakeConn:
+    """Records execute() calls and the transaction nesting they ran under."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, tuple, int]] = []
+        self.depth = 0
+        self.max_depth = 0
+
+    def transaction(self):
+        outer = self
+
+        class _Txn:
+            async def __aenter__(self):
+                outer.depth += 1
+                outer.max_depth = max(outer.max_depth, outer.depth)
+
+            async def __aexit__(self, *exc):
+                outer.depth -= 1
+                return False
+
+        return _Txn()
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args, self.depth))
+
+
+def _wire_delete_capture(storage) -> _FakeConn:
+    """Record every statement a delete path emits, whichever route it takes.
+
+    Both the transactional `_run_with_retry` route and a plain `_execute` land in
+    the same recorder, so the assertions are about observable behaviour — how many
+    statements, and whether they ran inside a transaction — rather than about which
+    private helper happens to exist. A single-statement implementation shows up as
+    one call at depth 0.
+    """
+    conn = _FakeConn()
+
+    async def _run(fn):
+        return await fn(conn)
+
+    async def _execute(sql, *args):
+        await conn.execute(sql, *args)
+
+    storage.db._run_with_retry = _run
+    storage._execute = _execute
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_splits_by_record_cap(monkeypatch):
+    """A large node batch must not go out as one unbounded statement."""
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "3")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "16777216")
+    storage = make_storage()
+    nodes = [(f"n{i:02d}", {"entity_id": f"n{i:02d}"}) for i in range(7)]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_nodes_batch(nodes)
+
+    assert execute.await_count == 3, "7 nodes at cap 3 must be 3 statements"
+    per_chunk_ids = [call.args[3] for call in execute.await_args_list]
+    assert [len(ids) for ids in per_chunk_ids] == [3, 3, 1]
+    # Every node written exactly once, in id order, with parallel props arrays.
+    assert [nid for ids in per_chunk_ids for nid in ids] == [n[0] for n in nodes]
+    for call in execute.await_args_list:
+        assert len(call.args[3]) == len(call.args[4])
+
+
+@pytest.mark.asyncio
+async def test_upsert_nodes_batch_splits_by_payload_bytes(monkeypatch):
+    """The byte budget is the primary limiter, independent of the record cap."""
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "1000")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "400")
+    storage = make_storage()
+    # ~300 bytes of properties each, so only one fits per chunk.
+    nodes = [
+        (f"n{i}", {"entity_id": f"n{i}", "description": "x" * 300}) for i in range(4)
+    ]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_nodes_batch(nodes)
+
+    assert execute.await_count == 4, "byte cap must split even under the record cap"
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_chunk_carries_its_own_endpoints(monkeypatch):
+    """Each edge chunk must create the endpoints for its OWN edges.
+
+    Chunks are separate statements, so an edge whose endpoint node was only going
+    to be created by a different chunk would violate the FK.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "2")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "16777216")
+    storage = make_storage()
+    edges = [(f"s{i}", f"t{i}", {"weight": 1.0}) for i in range(5)]
+
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_edges_batch(edges)
+
+    assert execute.await_count == 3
+    for call in execute.await_args_list:
+        srcs, tgts, props, endpoint_ids = call.args[3:7]
+        assert len(srcs) == len(tgts) == len(props)
+        # endpoint_ids is exactly this chunk's endpoint set — no more, no less.
+        assert set(endpoint_ids) == set(srcs) | set(tgts)
+
+
+@pytest.mark.asyncio
+async def test_remove_nodes_chunks_inside_one_transaction(monkeypatch):
+    """Delete chunking must stay all-or-nothing across chunks."""
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "2")
+    storage = make_storage()
+    conn = _wire_delete_capture(storage)
+
+    await storage.remove_nodes([f"n{i}" for i in range(5)])
+
+    assert len(conn.calls) == 3, "5 ids at cap 2 must be 3 statements"
+    assert conn.max_depth == 1, "all chunks must run in ONE transaction"
+    for sql, args, depth in conn.calls:
+        assert depth == 1, "every chunk must execute inside the transaction"
+        assert args[0] == "test" and args[1] == GRAPH_NAMESPACE
+    assert [len(args[2]) for _sql, args, _d in conn.calls] == [2, 2, 1]
+    assert [nid for _s, args, _d in conn.calls for nid in args[2]] == [
+        f"n{i}" for i in range(5)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remove_edges_chunks_canonically_inside_one_transaction(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "2")
+    storage = make_storage()
+    conn = _wire_delete_capture(storage)
+
+    # Mixed orientation: canonicalization must survive chunking.
+    await storage.remove_edges([("z", "a"), ("b", "y"), ("m", "c")])
+
+    assert len(conn.calls) == 2
+    assert conn.max_depth == 1
+    pairs = [pair for _sql, args, _d in conn.calls for pair in zip(args[2], args[3])]
+    assert pairs == [("a", "z"), ("b", "y"), ("c", "m")]
+
+
+@pytest.mark.asyncio
+async def test_non_positive_caps_disable_chunking(monkeypatch):
+    """A non-positive cap means "one statement", matching the sibling storages."""
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "0")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "0")
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "0")
+
+    storage = make_storage()
+    with patch.object(storage, "_execute", new=AsyncMock()) as execute:
+        await storage.upsert_nodes_batch(
+            [(f"n{i}", {"entity_id": f"n{i}"}) for i in range(50)]
+        )
+    assert execute.await_count == 1
+
+    delete_storage = make_storage()
+    conn = _wire_delete_capture(delete_storage)
+    await delete_storage.remove_nodes([f"n{i}" for i in range(50)])
+    assert len(conn.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_limits_come_from_the_shared_pg_resolver(monkeypatch):
+    """The caps must be the shared POSTGRES_* ones, not a private re-read.
+
+    Guards against this backend growing its own env names or defaults and
+    drifting from the rest of the PostgreSQL write paths.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "12345")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "67")
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "89")
+
+    from lightrag.kg.postgres_impl import _resolve_pg_batch_limits
+
+    assert make_storage()._batch_limits() == _resolve_pg_batch_limits()
+    assert make_storage()._batch_limits() == (12345, 67, 89)

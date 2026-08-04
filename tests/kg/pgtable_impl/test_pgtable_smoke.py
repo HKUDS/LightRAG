@@ -840,3 +840,99 @@ async def test_orphan_sweep_still_runs_when_foreign_keys_are_missing(store):
     assert await store._db._run_with_retry(_count_fks) == 2, (
         "both foreign keys must be recreated after the sweep"
     )
+
+
+# ---------------------------------------------------------------------------
+# flush-time batching against a real server
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chunked_batch_writes_and_deletes_round_trip(store, monkeypatch):
+    """Multi-chunk upserts and deletes must be indistinguishable from single ones.
+
+    Caps are set absurdly low so every batch path splits, then the full data set is
+    read back. This is the live counterpart to the offline chunking tests: it proves
+    the per-chunk statements are valid SQL, that each edge chunk satisfies the
+    endpoint foreign keys on its own, and that a chunked delete removes exactly the
+    requested set.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "4")
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_PAYLOAD_BYTES", "512")
+    monkeypatch.setenv("POSTGRES_DELETE_MAX_RECORDS_PER_BATCH", "3")
+    # The fixture may already have cached the default caps.
+    store._cached_batch_limits = None
+
+    nodes = [f"n{i:03d}" for i in range(37)]
+    # Chain plus a few cross edges, all endpoints among `nodes`.
+    edges = [(nodes[i], nodes[i + 1]) for i in range(len(nodes) - 1)]
+    edges += [(nodes[0], nodes[20]), (nodes[5], nodes[30])]
+
+    await store.upsert_nodes_batch([(n, _node(n)) for n in nodes])
+    await store.upsert_edges_batch([(s, t, _edge()) for s, t in edges])
+
+    fetched = await store.get_nodes_batch(nodes)
+    assert set(fetched) == set(nodes), "every node must survive chunked upsert"
+    for n in nodes:
+        assert fetched[n]["description"] == f"smoke node {n}"
+
+    all_edges = await store.get_all_edges()
+    expected_pairs = {(min(s, t), max(s, t)) for s, t in edges}
+    assert {(e["source"], e["target"]) for e in all_edges} == expected_pairs
+
+    # Chunked edge delete removes exactly the requested pairs.
+    to_drop = edges[:7]
+    await store.remove_edges(list(to_drop))
+    remaining = {(e["source"], e["target"]) for e in await store.get_all_edges()}
+    assert remaining == expected_pairs - {(min(s, t), max(s, t)) for s, t in to_drop}
+
+    # Chunked node delete removes exactly the requested nodes (and cascades edges).
+    await store.remove_nodes(nodes[:11])
+    still_there = await store.get_nodes_batch(nodes)
+    assert set(still_there) == set(nodes[11:])
+    for edge in await store.get_all_edges():
+        assert edge["source"] in still_there and edge["target"] in still_there, (
+            "cascade must not leave an edge pointing at a deleted node"
+        )
+
+
+@pytest.mark.asyncio
+async def test_failed_upsert_chunk_leaves_no_edge_without_endpoints(store, monkeypatch):
+    """A chunk failure mid-batch must not strand an edge without its endpoints.
+
+    Upsert chunks are separate statements, so a crash between them leaves earlier
+    chunks committed. That is acceptable only because each chunk creates its own
+    endpoints in the same statement: the partial result must still satisfy the
+    foreign keys, and replaying the whole batch must converge (upsert is
+    idempotent). Without the per-chunk endpoint set, a later chunk's edge could
+    reference a node an earlier failed chunk never wrote.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "2")
+    store._cached_batch_limits = None
+
+    edges = [(f"s{i}", f"t{i}", _edge()) for i in range(6)]
+    real_execute = store._execute
+    seen = {"count": 0}
+
+    async def _flaky(sql, *args):
+        seen["count"] += 1
+        if seen["count"] == 2:
+            raise RuntimeError("injected chunk failure")
+        return await real_execute(sql, *args)
+
+    store._execute = _flaky
+    with pytest.raises(RuntimeError, match="injected chunk failure"):
+        await store.upsert_edges_batch(edges)
+    store._execute = real_execute
+
+    persisted_nodes = {n["id"] for n in await store.get_all_nodes()}
+    partial = await store.get_all_edges()
+    assert partial, "the chunk before the failure must have committed"
+    for edge in partial:
+        assert (
+            edge["source"] in persisted_nodes and edge["target"] in persisted_nodes
+        ), "a committed chunk left an edge whose endpoint node is missing"
+
+    # Replaying the full batch converges on the complete edge set.
+    await store.upsert_edges_batch(edges)
+    assert len(await store.get_all_edges()) == len(edges)
