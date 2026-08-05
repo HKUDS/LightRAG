@@ -233,6 +233,27 @@ DOCX_SMART_HEADING=true
 
 グローバルスイッチが有効な場合（または `LIGHTRAG_PARSER` ルールに `native(smart_heading=true)` が含まれる場合）、サーバーは起動時にモデルの存在を検証し、欠落していればインストール手順を示して即座に失敗します（fail-fast）。smart_heading を一切使わないデプロイメントにはモデルは不要です。Docker のメインイメージにはモデルが同梱されています（lite イメージには含まれません）。オフライン環境については[オフラインデプロイメントガイド](./docs/OfflineDeployment.md)を参照してください。
 
+### オプション：SVG ラスタライズ用の libcairo（native md/textpack）
+
+Native markdown/textpack パーサーは、埋め込まれた SVG 画像を `cairosvg` 経由で PNG にラスタライズします。`cairosvg` は cairo への cffi バインディングです：`pip install cairosvg`（`api` extra に含まれる）は常に成功しますが、実際にレンダリングが動作するのは、ネイティブの `libcairo` 共有ライブラリもホストに存在する場合に限られます — pip/uv はシステムライブラリをインストールできません。欠落している場合、ラスタライズは実行時に失敗し、該当の SVG はスキップされます（ドキュメントの他の部分には影響しません）。サーバーは起動時にこの機能を検証し、欠落していれば目立つ黄色の警告を表示するため、この問題がドキュメント処理時まで気づかれずに隠れてしまうことを防ぎます。
+
+各プラットフォーム向けのシステムパッケージをインストールしてください：
+
+```bash
+# Debian / Ubuntu（公式 Docker イメージには既に含まれています）
+apt-get install -y libcairo2
+
+# RHEL / Fedora
+dnf install -y cairo
+
+# macOS（Homebrew）
+brew install cairo
+
+# Windows：libcairo-2.dll を同梱する GTK3 ランタイムをインストールしてください
+```
+
+埋め込み SVG を含む markdown/textpack ドキュメントを処理しないデプロイメントでは、この起動時の警告は無視して構いません。
+
 ## LightRAG について
 
 ### 軽量なグラフベース RAG フレームワーク

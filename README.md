@@ -233,6 +233,27 @@ DOCX_SMART_HEADING=true
 
 When the global switch is on (or a `LIGHTRAG_PARSER` rule carries `native(smart_heading=true)`), the server verifies the models at startup and fails fast with install guidance if they are missing. Deployments that never enable smart_heading need no models. The main Docker image ships the models pre-installed (the lite image does not); for air-gapped hosts see the [Offline Deployment Guide](./docs/OfflineDeployment.md).
 
+### Optional: libcairo for SVG Rasterization (native md/textpack)
+
+The native markdown/textpack parser rasterizes embedded SVG images to PNG via `cairosvg`. `cairosvg` is a cffi binding: `pip install cairosvg` (pulled in by the `api` extra) always succeeds, but rendering only works if the native `libcairo` shared library is *also* present on the host — `pip`/`uv` cannot install system libraries. Without it, rasterization fails at runtime and the affected SVG is skipped (the rest of the document is unaffected); the server logs a warning at startup so the gap is visible before it shows up as a per-document warning later.
+
+Install the system package for your platform:
+
+```bash
+# Debian / Ubuntu (the official Docker image already includes this)
+apt-get install -y libcairo2
+
+# RHEL / Fedora
+dnf install -y cairo
+
+# macOS (Homebrew)
+brew install cairo
+
+# Windows: install the GTK3 runtime, which bundles libcairo-2.dll
+```
+
+Deployments that never process markdown/textpack documents with embedded SVGs can ignore the startup warning.
+
 ## About LightRAG
 
 ### A Lightweight, Graph-Based RAG Framework
