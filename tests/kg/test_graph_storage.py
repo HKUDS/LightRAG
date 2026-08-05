@@ -22,11 +22,18 @@ second execution path:
     pytest tests/kg/test_graph_storage.py::test_graph_basic --run-integration
     ./scripts/test.sh tests/kg/test_graph_storage.py --run-integration
 
-    # via the command line — no interactive prompts, exit code is pytest's
+    # via the command line — exit code is pytest's; non-interactive under CI/a
+    # pipe (skips the confirmation below automatically), or pass -y anywhere
     python tests/kg/test_graph_storage.py                 # every test
     python tests/kg/test_graph_storage.py basic advanced   # a subset
     python tests/kg/test_graph_storage.py --list           # show the names
     python tests/kg/test_graph_storage.py basic -- -x --tb=long   # extra pytest args
+
+When run from an actual terminal, the CLI pauses once up front to name the
+backend under test (LIGHTRAG_GRAPH_STORAGE, defaulting to NetworkXStorage) and
+which tests are about to run, and repeats the backend name at the end next to
+the pass/fail result — pytest's own summary says nothing about which backend
+just ran. -y/--yes, or stdin not being a TTY, skips the pause.
 
 No CI workflow runs the tests in this module. Its coverage of the
 PGTableGraphStorage contract has been ported into
@@ -1686,6 +1693,33 @@ def _summary(func) -> str:
     return doc.splitlines()[0].strip() if doc else ""
 
 
+def _confirm_backend(graph_storage_type: str, selected: list[str], skip: bool) -> bool:
+    """Pause for a one-time confirmation naming the backend under test.
+
+    Mirrors check_env_file()'s old isatty() guard: the prompt only fires when a
+    human is actually watching a terminal. Under CI, a pipe, or -y/--yes it just
+    prints the same line and returns True immediately — this must never become a
+    second thing that can hang a non-interactive run, which is why the earlier
+    input()-based menu had to go in the first place.
+    """
+    names = ", ".join(selected)
+    if skip or not sys.stdin.isatty():
+        # ASCIIColors runs printed text through rich-style markup parsing, where
+        # a literal "[...]" is a (silently-dropped) markup tag, not text — so this
+        # cannot follow the "Tests: ..." line below through the same brackets.
+        ASCIIColors.magenta(f"\nTesting backend: {graph_storage_type} (tests: {names})")
+        return True
+
+    ASCIIColors.magenta(f"\nAbout to test backend: {graph_storage_type}")
+    ASCIIColors.white(f"Tests: {names}")
+    try:
+        response = input("Press Enter to continue, or type 'n' to abort: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return response.strip().lower() not in ("n", "no")
+
+
 @pytest.mark.offline
 def test_cli_can_trigger_every_test_in_this_module():
     """Every test here must be reachable from the command line as well as pytest.
@@ -1718,8 +1752,10 @@ def test_cli_can_trigger_every_test_in_this_module():
 def main(argv: list[str] | None = None) -> int:
     """Run the selected tests through pytest; return pytest's exit code.
 
-    Deliberately non-interactive: no menu, no input() prompt, so the script is
-    usable from CI, a Makefile, or a non-TTY shell.
+    Non-interactive under CI/a pipe/a Makefile (stdin is not a TTY): no prompt,
+    runs straight through. When a human is actually watching a terminal, pauses
+    once up front so the backend under test is impossible to miss — see
+    `_confirm_backend` — skippable with -y/--yes.
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     # Everything after a literal "--" is forwarded to pytest verbatim. Split it off
@@ -1744,6 +1780,8 @@ def main(argv: list[str] | None = None) -> int:
             "  %(prog)s basic advanced        run a subset\n"
             "  %(prog)s --list                list the test names\n"
             "  %(prog)s basic -- -x --tb=long forward extra args to pytest\n"
+            "  %(prog)s -y                    skip the confirmation prompt\n"
+            "  %(prog)s -- -s                 show each test's live print() output\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1757,6 +1795,12 @@ def main(argv: list[str] | None = None) -> int:
         "--list",
         action="store_true",
         help="list the available test names and exit",
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="skip the confirmation prompt (implied when stdin is not a TTY)",
     )
     args = parser.parse_args(argv)
 
@@ -1782,18 +1826,21 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv(dotenv_path=".env", override=False)
 
     graph_storage_type = os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
-    ASCIIColors.magenta(
-        f"\nCurrently configured graph storage type: {graph_storage_type}"
-    )
     ASCIIColors.white(
         f"Supported graph storage types: {', '.join(STORAGE_IMPLEMENTATIONS['GRAPH_STORAGE']['implementations'])}"
     )
 
     selected = args.tests or list(CLI_TESTS)
+    if not _confirm_backend(graph_storage_type, selected, skip=args.yes):
+        ASCIIColors.red("Aborted.")
+        return 1
+
     # --run-integration is mandatory here: these tests carry the integration
     # marker, so without it conftest skips every one and the script would exit 0
-    # having run nothing. -s keeps the tests' own progress output visible, which is
-    # the point of driving them by hand.
+    # having run nothing. No -s by default: pytest captures each test's print()
+    # output and only replays it on failure, which is far less noisy than the
+    # live firehose these old print()-heavy tests produce — pass "-- -s" to get
+    # that firehose back.
     pytest_argv = [
         *(
             f"{os.path.abspath(__file__)}::{CLI_TESTS[name].__name__}"
@@ -1801,14 +1848,19 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "--run-integration",
         "-v",
-        "-s",
         *forwarded,
     ]
     ASCIIColors.yellow(f"\n$ pytest {' '.join(pytest_argv)}\n")
 
     # The fixture drops the graph before and after each test, so no cleanup pass
     # is needed here.
-    return pytest.main(pytest_argv)
+    exit_code = pytest.main(pytest_argv)
+
+    # Repeated at the end, next to the result, because pytest's own summary line
+    # (and everything above it) says nothing about which backend just ran —
+    # exactly the ambiguity the confirmation prompt above exists to head off.
+    ASCIIColors.magenta(f"\nBackend tested: {graph_storage_type}")
+    return exit_code
 
 
 if __name__ == "__main__":
