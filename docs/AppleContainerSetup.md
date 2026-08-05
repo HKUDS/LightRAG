@@ -147,14 +147,14 @@ container from another project.
 | milvus-minio | `minio/minio:RELEASE.2025-09-07T16-13-09Z` |
 | lightrag | `ghcr.io/hkuds/lightrag:latest` |
 
-Two deviations from `docker-compose-full.yml` / `scripts/setup/templates/`, both
-forced by Apple Silicon:
+Two deviations from `docker-compose-full.yml` / `scripts/setup/templates/`:
 
-- **Postgres** uses `pgvector/pgvector:pg18` (multi-arch) instead of the setup
-  template's `gzdaniel/postgres-for-rag:pg18-age-pgvector`, which is **amd64-only**
-  (no arm64 manifest). The Apache AGE graph extension it adds is not needed here:
-  graph storage is Neo4j and vector storage is Milvus, so Postgres only serves
-  `PGKVStorage` + `PGDocStatusStorage`.
+- **Postgres** uses `pgvector/pgvector:pg18` instead of the setup template's
+  `gzdaniel/postgres-for-rag:pg18-age-pgvector`. Both publish a linux/arm64
+  manifest, so this is not an architecture constraint — the Apache AGE graph
+  extension the template image adds is simply not needed here: graph storage is
+  Neo4j and vector storage is Milvus, so Postgres only serves `PGKVStorage` +
+  `PGDocStatusStorage`.
 - **Milvus** uses the CPU tag `milvusdb/milvus:v2.6.11`, **not** the
   `…-gpu` tag from `docker-compose-full.yml` (which is amd64 + CUDA and cannot run
   on Apple Silicon).
