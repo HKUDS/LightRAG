@@ -5,6 +5,7 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 import base64
 import binascii
+import errno
 import math
 import os
 import re
@@ -5164,15 +5165,21 @@ def create_document_routes(
 
             except OSError as e:
                 if not opened:
-                    # Open-time failure: the O_EXCL/O_NOFOLLOW conflict this
-                    # opener exists to enforce. No file was created.
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"Input directory already contains '{safe_filename}' or the "
-                            "upload path is unsafe. Remove it before re-uploading."
-                        ),
-                    ) from e
+                    if isinstance(e, FileExistsError) or e.errno == errno.ELOOP:
+                        # The O_EXCL/O_NOFOLLOW conflict this opener exists to
+                        # enforce (name already taken, or refused to follow a
+                        # symlink). No file was created.
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Input directory already contains '{safe_filename}' or the "
+                                "upload path is unsafe. Remove it before re-uploading."
+                            ),
+                        ) from e
+                    # A genuine server-side open failure (permission denied,
+                    # ENOSPC/EDQUOT, read-only filesystem, ...) rather than a
+                    # name conflict. No file was created, nothing to clean up.
+                    raise
                 # Failure after the file was already created (e.g. ENOSPC/EIO
                 # during write or close) is a server-side fault, not a
                 # client-fixable conflict -- clean up the partial file so a

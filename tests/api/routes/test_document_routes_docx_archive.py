@@ -1272,6 +1272,46 @@ async def test_upload_opener_construction_failure_returns_500_not_409(
     assert not (tmp_path / "safe.pdf").exists()
 
 
+async def test_upload_open_time_permission_error_returns_500_not_409(
+    tmp_path, monkeypatch
+):
+    """A non-conflict OSError raised while the opener actually creates the
+    file (permission denied, ENOSPC, read-only filesystem, ...) is a
+    server-side fault, not the O_EXCL/O_NOFOLLOW name conflict the 409 branch
+    exists for -- only FileExistsError/ELOOP should map to 409."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="safe.pdf", file=BytesIO(b"content")
+    )
+
+    def _permission_denied_opener(_input_dir):
+        def opener(path, flags):
+            raise PermissionError(13, "Permission denied")
+
+        return opener
+
+    monkeypatch.setattr(
+        _document_routes, "upload_file_opener", _permission_denied_opener
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 500
+    assert "Permission denied" not in str(excinfo.value.detail)
+    assert not (tmp_path / "safe.pdf").exists()
+
+
 async def test_upload_write_failure_cleans_up_partial_file_and_returns_500(
     tmp_path, monkeypatch
 ):
