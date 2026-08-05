@@ -32,7 +32,7 @@ HOMOPHONE_ENTITY_LABELS = frozenset({"DATE", "TIME", "MONEY", "PERCENT", "QUANTI
 _INSTALL_HINT = (
     "smart_heading requires spaCy and its pinned language models. Install "
     "with: pip install lightrag-hku[api] && lightrag-download-cache "
-    "--spacy --spacy-install (offline: see requirements-offline-smart-heading.txt)"
+    "--spacy-install (offline: see requirements-offline-smart-heading.txt)"
 )
 
 

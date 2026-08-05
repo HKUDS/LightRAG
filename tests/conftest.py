@@ -109,7 +109,7 @@ def _reset_r_separator_caches():
 #:   captured BEFORE the per-test ``_hermetic_mineru_env`` fixture pins the var
 #:   to "false" — so opt-in drives spaCy test selection while routing/API tests
 #:   still see a neutral value.
-_SPACY_DOWNLOAD_HINT = "lightrag-download-cache --spacy --spacy-install"
+_SPACY_DOWNLOAD_HINT = "lightrag-download-cache --spacy-install"
 
 
 def pytest_configure(config):

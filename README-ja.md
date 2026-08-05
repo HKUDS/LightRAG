@@ -220,7 +220,7 @@ make env-security-check # 任意: 現在の .env のセキュリティリスク�
 Native docx パーサーのオプトイン式エンジンパラメータ `smart_heading` は、文分割 / NER のヒューリスティック判定に spaCy を使用します。spaCy ランタイムは `api` extra に含まれています — 追加で必要なのは、バージョン固定された 2 つの言語モデル（`zh_core_web_sm` / `en_core_web_sm` 3.8.0、PyPI 未公開の GitHub release wheel）のインストールだけです：
 
 ```bash
-lightrag-download-cache --spacy --spacy-install
+lightrag-download-cache --spacy-install
 ```
 
 smart_heading はファイル / ルール単位（例：`LIGHTRAG_PARSER=docx:native(smart_heading=true)`）でも、`.env` でグローバルにも有効化できます：
@@ -541,7 +541,7 @@ default モードのキャッシュ（抽出・要約・マルチモーダル解
 
 同一の正規 source key を主張するドキュメントを一覧表示し、運用者が選ばなかった候補を重複としてマークします。ツールが勝者を自動で決めることはなく、内容を削除することもありません。
 
-**`download_cache.py`** — `lightrag-download-cache [--spacy --spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
+**`download_cache.py`** — `lightrag-download-cache [--spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
 
 オフラインデプロイおよび docx の `smart_heading` エンジンパラメータに必要な tiktoken エンコーディングとバージョン固定済み spaCy モデルを事前ダウンロードします。
 
