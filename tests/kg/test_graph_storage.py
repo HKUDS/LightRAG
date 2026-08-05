@@ -180,7 +180,7 @@ async def initialize_graph_storage():
 
 
 @pytest.fixture
-async def storage():
+async def storage(capfd):
     """
     Pytest fixture for graph storage integration tests.
 
@@ -192,6 +192,16 @@ async def storage():
     storage_instance = await initialize_graph_storage()
     if storage_instance is None:
         pytest.skip("Graph storage backend is not configured for integration tests")
+
+    # Lives here, not only in the CLI: a bare `pytest tests/kg/test_graph_storage.py
+    # -m integration --run-integration` is an equally valid entry point and must
+    # get the same visibility. capfd.disabled() bypasses pytest's default output
+    # capture, so this shows up without -s and regardless of pass/fail — under
+    # both a real terminal and a CI log (piped, non-TTY; verified to survive
+    # that). Read off the constructed instance's own class rather than
+    # LIGHTRAG_GRAPH_STORAGE again, so it reports what actually got built.
+    with capfd.disabled():
+        ASCIIColors.magenta(f"\nTesting backend: {type(storage_instance).__name__}")
 
     try:
         await storage_instance.drop()
@@ -1669,22 +1679,46 @@ async def test_graph_undirected_property(storage):
 # ---------------------------------------------------------------------------
 # Command-line entry point
 #
-# Maps a short CLI name to the test function itself, so the command line can only
-# ever run tests that pytest also collects — there is no second copy of the test
-# list to drift (test_cli_can_trigger_every_test_in_this_module pins that), and no
-# second execution path: main() hands the selection to pytest.main().
+# CLI_TESTS maps a short CLI name to the test function itself, derived by
+# introspection rather than hand-maintained — there is no second list that can
+# drift out of sync with what pytest actually collects, so a test added to this
+# module later is automatically reachable from the CLI too, with no extra step
+# and nothing to check for staleness. main() hands the selection to
+# pytest.main(), so both entry points still run through the same fixture.
 # ---------------------------------------------------------------------------
 
-CLI_TESTS = {
-    "basic": test_graph_basic,
-    "advanced": test_graph_advanced,
-    "batch-operations": test_graph_batch_operations,
-    "batch-upsert": test_graph_batch_upsert,
-    "query-helpers": test_graph_query_helpers,
-    "special-characters": test_graph_special_characters,
-    "string-escaping": test_graph_string_escaping_regressions,
-    "undirected": test_graph_undirected_property,
-}
+
+def _cli_name(test_name: str) -> str:
+    """Derive a short CLI name from a test function's name.
+
+    Strips the "test_graph_" prefix shared by this module's contract tests
+    (falling back to a bare "test_" strip for anything named differently) and
+    swaps underscores for hyphens: test_graph_batch_upsert -> batch-upsert.
+    """
+    stem = test_name.removeprefix("test_graph_")
+    if stem == test_name:
+        stem = test_name.removeprefix("test_")
+    return stem.replace("_", "-")
+
+
+def _discover_cli_tests() -> dict[str, object]:
+    """Every test_*(storage) function in this module, keyed by its CLI name.
+
+    Taking the ``storage`` fixture — not a name prefix — is what makes a test
+    one of the backend contract tests, so a differently-named test is still
+    picked up.
+    """
+    candidates = {
+        name: obj
+        for name, obj in globals().items()
+        if name.startswith("test_")
+        and callable(obj)
+        and "storage" in inspect.signature(obj).parameters
+    }
+    return {_cli_name(name): func for name, func in candidates.items()}
+
+
+CLI_TESTS = _discover_cli_tests()
 
 
 def _summary(func) -> str:
@@ -1718,35 +1752,6 @@ def _confirm_backend(graph_storage_type: str, selected: list[str], skip: bool) -
         print()
         return False
     return response.strip().lower() not in ("n", "no")
-
-
-@pytest.mark.offline
-def test_cli_can_trigger_every_test_in_this_module():
-    """Every test here must be reachable from the command line as well as pytest.
-
-    Guards the requirement that both entry points cover the same set: a test added
-    to this module without a CLI_TESTS entry would be runnable only under pytest,
-    which is exactly the drift the mapping exists to prevent.
-
-    Membership is decided by taking the ``storage`` fixture, not by a name prefix —
-    that is what makes a test one of the backend contract tests, so a new one is
-    caught whatever it is called. This meta-test takes no fixture and is therefore
-    not itself expected in the mapping.
-    """
-    defined = {
-        name
-        for name, obj in globals().items()
-        if name.startswith("test_")
-        and callable(obj)
-        and "storage" in inspect.signature(obj).parameters
-    }
-    exposed = {func.__name__ for func in CLI_TESTS.values()}
-
-    assert exposed == defined, (
-        "CLI_TESTS is out of sync with the tests defined in this module: "
-        f"missing from the CLI {sorted(defined - exposed)}, "
-        f"unknown to pytest {sorted(exposed - defined)}"
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
