@@ -27,6 +27,15 @@ second execution path:
     python tests/kg/test_graph_storage.py basic advanced   # a subset
     python tests/kg/test_graph_storage.py --list           # show the names
     python tests/kg/test_graph_storage.py basic -- -x --tb=long   # extra pytest args
+
+No CI workflow runs the tests in this module. Its coverage of the
+PGTableGraphStorage contract has been ported into
+tests/kg/pgtable_impl/test_pgtable_smoke.py, which pg-smoke.yml runs against a
+live PostgreSQL server on every push/PR — see that module's docstring for the
+merge. This file remains the manual entry point for the *other* five backends
+(NetworkXStorage, Neo4JStorage, MongoDBStorage, PGGraphStorage,
+MemgraphStorage): point `.env` at a live instance and run it by hand, via
+either trigger above, whenever you touch a backend it covers.
 """
 
 import argparse
