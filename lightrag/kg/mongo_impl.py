@@ -2169,7 +2169,13 @@ class MongoGraphStorage(BaseGraphStorage):
 
         Returns:
             list[tuple[str, str]]: List of (source_label, target_label) tuples representing edges
-            None: If no edges found
+            None: If the node does not exist
+
+        An existing node with no relations returns ``[]``, NOT ``None`` — the
+        BaseGraphStorage contract, as implemented by NetworkXStorage. Returning
+        an empty list for both cases would make a deleted entity look identical
+        to an isolated one to callers such as the entity-edit flows in
+        ``utils_graph``.
         """
         cursor = self.edge_collection.find(
             {
@@ -2181,9 +2187,15 @@ class MongoGraphStorage(BaseGraphStorage):
             {"source_node_id": 1, "target_node_id": 1},
         )
 
-        return [
+        edges = [
             (e.get("source_node_id"), e.get("target_node_id")) async for e in cursor
         ]
+        # The existence lookup only runs when the scan came back empty: any edge
+        # naming the node already proves the node side of the graph knows it, so
+        # the common (connected) case keeps its single round trip.
+        if not edges and not await self.has_node(source_node_id):
+            return None
+        return edges
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         result = {}
@@ -3074,11 +3086,35 @@ class MongoGraphStorage(BaseGraphStorage):
             List of labels(entity names) sorted by degree (highest first)
         """
         try:
-            # Use aggregation pipeline to count edges per node and sort by degree
+            # The pipeline runs on the NODE collection, not the edge collection:
+            # degrees derived purely from edges have no entry at all for an
+            # isolated entity, so ranking from the edge side silently excluded
+            # every degree-0 node. NetworkXStorage ranks every node
+            # (dict(graph.degree()) covers the whole node set), so a graph whose
+            # entities carry no relations must not report an empty list here.
+            #
+            # Each node contributes a degree-0 baseline row, then the two
+            # $unionWith stages add the (indexed, cheap) per-endpoint edge counts
+            # on top — a per-node $lookup would instead run one subquery per
+            # entity. Self-loops count twice, as they did before.
             pipeline = [
+                # Baseline: every entity, degree 0
+                {"$project": {"_id": 1, "degree": {"$literal": 0}}},
                 # Count outbound edges
-                {"$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}},
-                # Union with inbound edges count
+                {
+                    "$unionWith": {
+                        "coll": self._edge_collection_name,
+                        "pipeline": [
+                            {
+                                "$group": {
+                                    "_id": "$source_node_id",
+                                    "degree": {"$sum": 1},
+                                }
+                            }
+                        ],
+                    }
+                },
+                # Count inbound edges
                 {
                     "$unionWith": {
                         "coll": self._edge_collection_name,
@@ -3086,26 +3122,14 @@ class MongoGraphStorage(BaseGraphStorage):
                             {
                                 "$group": {
                                     "_id": "$target_node_id",
-                                    "in_degree": {"$sum": 1},
+                                    "degree": {"$sum": 1},
                                 }
                             }
                         ],
                     }
                 },
                 # Group by node_id and sum degrees
-                {
-                    "$group": {
-                        "_id": "$_id",
-                        "total_degree": {
-                            "$sum": {
-                                "$add": [
-                                    {"$ifNull": ["$out_degree", 0]},
-                                    {"$ifNull": ["$in_degree", 0]},
-                                ]
-                            }
-                        },
-                    }
-                },
+                {"$group": {"_id": "$_id", "total_degree": {"$sum": "$degree"}}},
                 # Sort by degree descending, then by label ascending
                 {"$sort": {"total_degree": -1, "_id": 1}},
                 # Limit results
@@ -3114,7 +3138,7 @@ class MongoGraphStorage(BaseGraphStorage):
                 {"$project": {"_id": 1}},
             ]
 
-            cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
+            cursor = await self.collection.aggregate(pipeline, allowDiskUse=True)
             labels = []
             async for doc in cursor:
                 if doc.get("_id"):

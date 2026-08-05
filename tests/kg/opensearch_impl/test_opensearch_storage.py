@@ -5286,3 +5286,167 @@ class TestEmbeddingBatchNumDiagnosis:
         assert embed16.call_count == math.ceil(100 / 16) == 7
         assert embed32.call_count == math.ceil(100 / 32) == 4
         assert embed16.call_count != embed32.call_count
+
+
+# ---------------------------------------------------------------------------
+# Graph read contracts shared with the other backends
+# ---------------------------------------------------------------------------
+
+
+class TestGraphReadContract:
+    """Isolated entities must still be ranked, and an absent node must be
+    distinguishable from an isolated one.
+
+    Both used to answer with a value that means something else: the degree
+    ranking was derived purely from the edge index (where an entity with no
+    relations has no document at all), and get_node_edges returned ``[]`` for a
+    node that does not exist -- the same value an existing isolated node yields.
+    """
+
+    def _make(self, global_config, embed_func, workspace="test"):
+        return OpenSearchGraphStorage(
+            namespace="chunk_entity_relation",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    @staticmethod
+    def _aggs(src_buckets, tgt_buckets):
+        return {
+            "hits": {"hits": [], "total": {"value": 0}},
+            "aggregations": {
+                "src": {"buckets": src_buckets},
+                "tgt": {"buckets": tgt_buckets},
+                "status_counts": {"buckets": []},
+            },
+        }
+
+    @staticmethod
+    def _node_page(ids):
+        return {
+            "hits": {
+                "hits": [{"_id": i, "sort": [i]} for i in ids],
+                "total": {"value": len(ids)},
+            }
+        }
+
+    # -- get_popular_labels -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_backfills_isolated_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        """Degree-0 entities fill the remaining slots instead of vanishing.
+
+        Regression: the ranking came only from the edge index aggregation, so a
+        graph of entities with no relations reported an empty popular-label
+        list even though every one of those entities exists.
+        """
+        mock_client.search = AsyncMock(
+            side_effect=[
+                self._aggs(
+                    [{"key": "A", "doc_count": 5}], [{"key": "B", "doc_count": 2}]
+                ),
+                self._node_page(["A", "B", "Orphan1", "Orphan2"]),
+            ]
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=10)
+
+        # Connected entities first (by degree), then the isolated ones in label
+        # order -- and the already-ranked ids are not repeated.
+        assert labels == ["A", "B", "Orphan1", "Orphan2"]
+        mock_client.create_pit.assert_awaited_once()
+        mock_client.delete_pit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_skips_node_scan_when_limit_already_filled(
+        self, global_config, embed_func, mock_client
+    ):
+        """A large graph must not pay for the isolated-node scan: every slot is
+        already taken by an entity with degree >= 1."""
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [{"key": "A", "doc_count": 5}, {"key": "B", "doc_count": 2}], []
+            )
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=2)
+
+        assert labels == ["A", "B"]
+        mock_client.create_pit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_breaks_degree_ties_on_label(
+        self, global_config, embed_func, mock_client
+    ):
+        """Equal degrees sort by label ascending, like the SQL/Cypher backends,
+        instead of falling back to aggregation bucket order."""
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [{"key": "Zeta", "doc_count": 1}, {"key": "Alpha", "doc_count": 1}], []
+            )
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_popular_labels(limit=2) == ["Alpha", "Zeta"]
+
+    # -- get_node_edges -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_none_for_missing_node(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(
+            return_value={"hits": {"hits": [], "total": {"value": 0}}}
+        )
+        mock_client.exists = AsyncMock(return_value=False)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_node_edges("NoSuchEntity") is None
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_empty_list_for_isolated_node(
+        self, global_config, embed_func, mock_client
+    ):
+        mock_client.search = AsyncMock(
+            return_value={"hits": {"hits": [], "total": {"value": 0}}}
+        )
+        mock_client.exists = AsyncMock(return_value=True)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_node_edges("Lonely") == []
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_skips_existence_check_when_edges_found(
+        self, global_config, embed_func, mock_client
+    ):
+        """Any edge naming the node already proves it exists."""
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "e1",
+                            "_source": {"source_node_id": "A", "target_node_id": "B"},
+                            "sort": [1],
+                        }
+                    ],
+                    "total": {"value": 1},
+                }
+            }
+        )
+        mock_client.exists = AsyncMock(return_value=True)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_node_edges("A") == [("A", "B")]
+            mock_client.exists.assert_not_awaited()

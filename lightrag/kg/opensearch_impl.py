@@ -3804,7 +3804,13 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        """Get all (source, target) edge tuples connected to a node."""
+        """Get all (source, target) edge tuples connected to a node.
+
+        Returns None if the node does not exist; an existing node with no
+        relations returns ``[]``. Answering ``[]`` for both would make a deleted
+        entity indistinguishable from an isolated one, which is exactly what the
+        BaseGraphStorage contract (and NetworkXStorage) uses the distinction for.
+        """
         if not self._indices_ready:
             return None
         try:
@@ -3855,6 +3861,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     await self.client.delete_pit(body={"pit_id": [pit_id]})
                 except Exception:
                     pass
+            # The existence check only runs when the scan came back empty: any
+            # edge naming the node already proves it exists, so the common
+            # (connected) case keeps its round-trip count unchanged.
+            if not edges and not await self.has_node(source_node_id):
+                return None
             return edges
         except OpenSearchException as e:
             if _is_missing_index_error(e):
@@ -4975,9 +4986,66 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error getting all edges: {e}")
             raise
 
+    async def _collect_isolated_labels(
+        self, needed: int, connected: set[str]
+    ) -> list[str]:
+        """Scan the node index in label order for entities that have no edges.
+
+        Only reached when the connected entities do not already fill the caller's
+        limit, so a large graph never pays for this pass. The scan stops as soon
+        as ``needed`` labels are collected — the node index is sorted on
+        ``entity_id``, which is the same ascending label order every backend uses
+        to break degree ties.
+        """
+        if needed <= 0:
+            return []
+        await self._refresh_graph_indices_if_dirty(refresh_nodes=True)
+        isolated: list[str] = []
+        pit = await self.client.create_pit(
+            index=self._nodes_index, params={"keep_alive": "1m"}
+        )
+        pit_id = pit["pit_id"]
+        try:
+            search_after = None
+            while len(isolated) < needed:
+                body = {
+                    "query": {"match_all": {}},
+                    "_source": False,
+                    "size": 10000,
+                    "pit": {"id": pit_id, "keep_alive": "1m"},
+                    "sort": _pit_sort_with_field("entity_id"),
+                }
+                if search_after:
+                    body["search_after"] = search_after
+                response = await self.client.search(body=body)
+                hits = response["hits"]["hits"]
+                if not hits:
+                    break
+                for hit in hits:
+                    if hit["_id"] not in connected:
+                        isolated.append(hit["_id"])
+                        if len(isolated) >= needed:
+                            break
+                search_after = hits[-1]["sort"]
+                if len(hits) < 10000:
+                    break
+        finally:
+            try:
+                await self.client.delete_pit(body={"pit_id": [pit_id]})
+            except Exception:
+                pass
+        return isolated
+
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get node labels ranked by edge degree (most connected first)."""
-        if not self._indices_ready:
+        """Get node labels ranked by edge degree (most connected first).
+
+        Isolated (degree-0) entities rank last but are still returned: the
+        degree aggregation runs on the edge index, where an entity with no
+        relations has no document at all, so ranking from the edge side alone
+        silently excluded them. NetworkXStorage ranks the whole node set, and a
+        graph whose entities carry no relations must not report an empty list.
+        """
+        if not self._indices_ready or limit <= 0:
             return []
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
@@ -4998,7 +5066,20 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 degree_map[bucket["key"]] = (
                     degree_map.get(bucket["key"], 0) + bucket["doc_count"]
                 )
-            sorted_labels = sorted(degree_map, key=degree_map.get, reverse=True)[:limit]
+            # Ties break on the label, ascending — the ordering the SQL and
+            # Cypher backends use, rather than aggregation bucket order.
+            sorted_labels = sorted(
+                degree_map, key=lambda label: (-degree_map[label], label)
+            )[:limit]
+            if len(sorted_labels) >= limit:
+                # Every remaining slot would go to a degree-0 node anyway, and
+                # there are none left to fill: skip the node scan entirely.
+                return sorted_labels
+            sorted_labels.extend(
+                await self._collect_isolated_labels(
+                    limit - len(sorted_labels), set(degree_map)
+                )
+            )
             return sorted_labels
         except OpenSearchException as e:
             if _is_missing_index_error(e):

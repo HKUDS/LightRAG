@@ -962,3 +962,133 @@ class TestMongoDocStatusLookup:
 
         with pytest.raises(PyMongoError):
             await storage.get_doc_by_content_hash("abc123")
+
+
+class TestMongoGraphReadContract:
+    """Read-path contracts MongoGraphStorage shares with the other backends.
+
+    Both cases used to answer with a value that means something else:
+    ``get_popular_labels`` ranked only nodes that appear in the edge collection,
+    so isolated entities were missing entirely, and ``get_node_edges`` returned
+    ``[]`` for an entity that does not exist -- indistinguishable from one that
+    exists with no relations.
+    """
+
+    def _make_storage(self):
+        s = MongoGraphStorage.__new__(MongoGraphStorage)
+        s.workspace = "test"
+        s.namespace = "chunk_entity_relation"
+        s._edge_collection_name = "test_edges"
+        s.collection = SimpleNamespace()
+        s.edge_collection = SimpleNamespace()
+        return s
+
+    # -- get_popular_labels -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_aggregates_over_nodes_not_edges(self):
+        """The node collection must drive the ranking.
+
+        Regression: the pipeline ran on the edge collection, grouping outbound
+        and inbound endpoints. An entity with no relations contributes no edge
+        document, so it had no group to land in and never appeared in the
+        result -- the WebUI entity picker showed nothing at all for a graph of
+        unconnected entities.
+        """
+        s = self._make_storage()
+        s.collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
+        s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
+
+        await s.get_popular_labels(limit=5)
+
+        s.collection.aggregate.assert_awaited_once()
+        s.edge_collection.aggregate.assert_not_awaited()
+
+        pipeline = s.collection.aggregate.call_args[0][0]
+        # Stage 1 gives every node a degree-0 baseline row.
+        assert pipeline[0] == {"$project": {"_id": 1, "degree": {"$literal": 0}}}
+        # Edge counts are unioned on top, keyed by each endpoint field.
+        union_keys = [
+            stage["$unionWith"]["pipeline"][0]["$group"]["_id"]
+            for stage in pipeline
+            if "$unionWith" in stage
+        ]
+        assert union_keys == ["$source_node_id", "$target_node_id"]
+        assert all(
+            stage["$unionWith"]["coll"] == "test_edges"
+            for stage in pipeline
+            if "$unionWith" in stage
+        )
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_sums_degrees_and_keeps_ranking_stages(self):
+        """Degrees still sum across both endpoint unions, ordered and capped."""
+        s = self._make_storage()
+        s.collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
+
+        await s.get_popular_labels(limit=42)
+
+        pipeline = s.collection.aggregate.call_args[0][0]
+        assert {
+            "$group": {"_id": "$_id", "total_degree": {"$sum": "$degree"}}
+        } in pipeline
+        assert {"$sort": {"total_degree": -1, "_id": 1}} in pipeline
+        assert {"$limit": 42} in pipeline
+        assert s.collection.aggregate.call_args.kwargs == {"allowDiskUse": True}
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_returns_labels_in_ranked_order(self):
+        s = self._make_storage()
+        s.collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor(
+                [{"_id": "Alpha"}, {"_id": "Beta"}, {"_id": "Orphan"}]
+            )
+        )
+
+        assert await s.get_popular_labels() == ["Alpha", "Beta", "Orphan"]
+
+    # -- get_node_edges -----------------------------------------------------
+
+    def _stub_edges(self, s, docs):
+        s.edge_collection.find = MagicMock(
+            side_effect=lambda query, projection=None: _AsyncCursor(docs)
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_none_for_missing_node(self):
+        """Regression: an absent entity answered ``[]``, the same value an
+        existing-but-isolated entity yields. The contract (NetworkXStorage) is
+        ``None``."""
+        s = self._make_storage()
+        self._stub_edges(s, [])
+        s.collection.find_one = AsyncMock(return_value=None)
+
+        assert await s.get_node_edges("NoSuchEntity") is None
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_empty_list_for_isolated_node(self):
+        s = self._make_storage()
+        self._stub_edges(s, [])
+        s.collection.find_one = AsyncMock(return_value={"_id": "Lonely"})
+
+        assert await s.get_node_edges("Lonely") == []
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_skips_existence_lookup_when_edges_found(self):
+        """Any edge naming the node already proves it exists, so the connected
+        case must keep its single round trip."""
+        s = self._make_storage()
+        self._stub_edges(
+            s,
+            [
+                {"source_node_id": "Alpha", "target_node_id": "Beta"},
+                {"source_node_id": "Gamma", "target_node_id": "Alpha"},
+            ],
+        )
+        s.collection.find_one = AsyncMock(return_value={"_id": "Alpha"})
+
+        assert await s.get_node_edges("Alpha") == [
+            ("Alpha", "Beta"),
+            ("Gamma", "Alpha"),
+        ]
+        s.collection.find_one.assert_not_awaited()
