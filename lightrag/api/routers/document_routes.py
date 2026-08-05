@@ -216,6 +216,14 @@ def sanitize_filename(filename: str, input_dir: Path) -> str:
     if "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Unsafe filename detected")
 
+    # ':' lets a name be parsed as an NTFS alternate-data-stream reference
+    # (``safe.pdf:payload``) or a drive-relative path (``C:report.pdf``); the
+    # rest are the other Windows-reserved path characters. Rejecting them
+    # keeps the "single literal basename" invariant this function enforces
+    # true on every platform, not just the one running this process.
+    if any(c in filename for c in '<>:"|?*'):
+        raise HTTPException(status_code=400, detail="Unsafe filename detected")
+
     if filename in {".", ".."}:
         raise HTTPException(status_code=400, detail="Unsafe filename detected")
 

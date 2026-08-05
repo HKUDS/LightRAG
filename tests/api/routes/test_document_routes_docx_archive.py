@@ -3302,6 +3302,23 @@ def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path):
         assert exc.value.status_code == 400
 
 
+def test_sanitize_filename_rejects_windows_reserved_path_characters(tmp_path):
+    for filename in (
+        "safe.pdf:payload.pdf",  # NTFS alternate-data-stream reference
+        "C:report.pdf",  # drive-relative, not a literal basename
+        'bad"name.pdf',
+        "bad|name.pdf",
+        "bad?name.pdf",
+        "bad*name.pdf",
+        "bad<name.pdf",
+        "bad>name.pdf",
+    ):
+        with pytest.raises(_document_routes.HTTPException) as exc:
+            _document_routes.sanitize_filename(filename, tmp_path)
+
+        assert exc.value.status_code == 400
+
+
 def test_sanitize_filename_allows_non_traversal_dot_sequences(tmp_path):
     filename = "report..final.pdf"
 
