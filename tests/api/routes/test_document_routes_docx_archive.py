@@ -1235,6 +1235,43 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     assert not (tmp_path / "existing.[native].docx").exists()
 
 
+async def test_upload_opener_construction_failure_returns_500_not_409(
+    tmp_path, monkeypatch
+):
+    """upload_file_opener() raising means the input directory itself could
+    not be opened (permissions, removed mid-request, etc.) -- a server-side
+    fault, not a client-fixable name conflict. Before the fix this hit the
+    same try/except as the real O_EXCL conflict and returned a misleading
+    409; it must now propagate to the endpoint's internal_server_error(e)
+    500 path instead."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="safe.pdf", file=BytesIO(b"content")
+    )
+
+    def _raise_oserror(_input_dir):
+        raise OSError("input directory unavailable")
+
+    monkeypatch.setattr(_document_routes, "upload_file_opener", _raise_oserror)
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 500
+    assert "input directory unavailable" not in str(excinfo.value.detail)
+    assert not (tmp_path / "safe.pdf").exists()
+
+
 async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     """A malformed filename hint fails the upload synchronously with the
     detailed hint error in the 400 body (it used to be accepted and only
@@ -3212,6 +3249,37 @@ def test_upload_file_opener_creates_new_file_with_private_permissions(tmp_path):
 
     assert path.read_bytes() == b"content"
     assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_upload_file_opener_falls_back_when_dir_fd_unsupported(tmp_path, monkeypatch):
+    """Simulates Windows: os.open() cannot bind a directory fd there at all,
+    so the opener must skip that step entirely rather than crash on it."""
+    monkeypatch.setattr(_document_routes, "_UPLOAD_DIR_FD_SUPPORTED", False)
+
+    real_open = _document_routes.os.open
+    directory_open_attempts = []
+
+    def spying_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None or str(path) == str(tmp_path):
+            directory_open_attempts.append((str(path), dir_fd))
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(_document_routes.os, "open", spying_open)
+
+    path = tmp_path / "safe.pdf"
+    opener = _document_routes.upload_file_opener(tmp_path)
+    with open(path, "xb", opener=opener) as fh:
+        fh.write(b"content")
+
+    assert path.read_bytes() == b"content"
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert directory_open_attempts == []
+
+    with pytest.raises(FileExistsError):
+        with open(path, "xb", opener=_document_routes.upload_file_opener(tmp_path)):
+            pass
 
 
 def test_sanitize_filename_preserves_safe_parser_hint_filename(tmp_path):

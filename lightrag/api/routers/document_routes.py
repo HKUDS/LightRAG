@@ -231,6 +231,9 @@ def sanitize_filename(filename: str, input_dir: Path) -> str:
     return filename
 
 
+_UPLOAD_DIR_FD_SUPPORTED = os.open in os.supports_dir_fd
+
+
 def upload_file_opener(input_dir: Path):
     """Return an opener that creates uploads safely below ``input_dir``.
 
@@ -238,7 +241,23 @@ def upload_file_opener(input_dir: Path):
     creation must also be fail-closed. Opening relative to a directory file
     descriptor with exclusive creation prevents symlink-following overwrites
     and closes the check/write race between duplicate detection and streaming.
+
+    dir_fd-relative opens require openat() (os.supports_dir_fd); Windows has
+    neither that nor a way to os.open() a directory at all, so on platforms
+    without the capability this falls back to opening the full path directly
+    with O_CREAT | O_EXCL (+ O_NOFOLLOW where available) and no directory
+    binding.
     """
+
+    if not _UPLOAD_DIR_FD_SUPPORTED:
+
+        def opener(path: str, flags: int) -> int:
+            open_flags = flags | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags |= os.O_NOFOLLOW
+            return os.open(path, open_flags, 0o600)
+
+        return opener
 
     directory_flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
@@ -5117,17 +5136,8 @@ def create_document_routes(
             chunk_size = 1024 * 1024  # 1MB chunks
             needs_cleanup = False
 
-            try:
-                upload_opener = upload_file_opener(doc_manager.input_dir)
-                out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
-            except OSError as e:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Input directory already contains '{safe_filename}' or the "
-                        "upload path is unsafe. Remove it before re-uploading."
-                    ),
-                ) from e
+            upload_opener = upload_file_opener(doc_manager.input_dir)
+            out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
 
             try:
                 async with out_file_context as out_file:
