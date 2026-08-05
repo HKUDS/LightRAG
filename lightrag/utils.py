@@ -5520,19 +5520,34 @@ async def apply_rerank_if_enabled(
 
         # Process rerank results based on return format
         if rerank_results and len(rerank_results) > 0:
+            first_object = next(
+                (result for result in rerank_results if isinstance(result, dict)),
+                None,
+            )
             # Check if results are in the new index-based format
-            if isinstance(rerank_results[0], dict) and "index" in rerank_results[0]:
+            if first_object is not None and "index" in first_object:
                 # New format: [{"index": 0, "relevance_score": 0.85}, ...]
                 reranked_docs = []
                 for result in rerank_results:
-                    index = result["index"]
-                    relevance_score = result["relevance_score"]
+                    normalized_result, _ = normalize_rerank_result(
+                        result, len(retrieved_docs)
+                    )
+                    if normalized_result is None:
+                        continue
+
+                    index = normalized_result["index"]
+                    relevance_score = normalized_result["relevance_score"]
 
                     # Get original document and add rerank score
-                    if 0 <= index < len(retrieved_docs):
-                        doc = retrieved_docs[index].copy()
-                        doc["rerank_score"] = relevance_score
-                        reranked_docs.append(doc)
+                    doc = retrieved_docs[index].copy()
+                    doc["rerank_score"] = relevance_score
+                    reranked_docs.append(doc)
+
+                if not reranked_docs:
+                    logger.warning(
+                        "Rerank returned no usable results, using original chunks"
+                    )
+                    return retrieved_docs
 
                 logger.info(
                     f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"
@@ -5549,6 +5564,38 @@ async def apply_rerank_if_enabled(
     except Exception as e:
         logger.error(f"Error during reranking: {e}, using original chunks")
         return retrieved_docs
+
+
+def normalize_rerank_result(
+    result: Any, max_index: int
+) -> tuple[dict[str, int | float] | None, str | None]:
+    """Validate one provider result and return the public rerank shape.
+
+    Providers, compatible proxies, and custom rerank functions can return mixed
+    result lists. Centralizing validation keeps provider adapters, chunk score
+    aggregation, and the final query boundary consistent.
+    """
+    if not isinstance(result, dict):
+        return None, "not an object"
+
+    index = result.get("index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        return None, "invalid index"
+    if not 0 <= index < max_index:
+        return None, "index out of range"
+
+    score_value = result.get("relevance_score")
+    if isinstance(score_value, bool):
+        return None, "invalid relevance score"
+
+    try:
+        score = float(score_value)
+    except (TypeError, ValueError, OverflowError):
+        return None, "invalid relevance score"
+    if not math.isfinite(score):
+        return None, "non-finite relevance score"
+
+    return {"index": index, "relevance_score": score}, None
 
 
 async def process_chunks_unified(

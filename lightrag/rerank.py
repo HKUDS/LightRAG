@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from collections import Counter
-from math import isfinite
 import os
+from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple
+
 import aiohttp
-from typing import Any, List, Dict, Optional, Tuple
+from dotenv import load_dotenv
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
-from .utils import logger, run_in_tokenizer_executor
 
-from dotenv import load_dotenv
+from .utils import logger, normalize_rerank_result, run_in_tokenizer_executor
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -31,39 +31,6 @@ DEFAULT_RERANK_MAX_TOKENS_PER_DOC = 4096
 # payload and the number of scores to aggregate. Configured values below this are
 # accepted but warned about at startup rather than silently degrading query latency.
 MIN_PRACTICAL_RERANK_MAX_TOKENS = 64
-
-
-def _normalize_rerank_result(
-    result: Any, max_index: int
-) -> tuple[dict[str, int | float] | None, str | None]:
-    """Validate one provider result and return the public rerank shape.
-
-    Providers and compatible proxies occasionally return mixed ``results`` lists.
-    Keeping the validation here lets the HTTP boundary and chunk aggregation reject
-    the same malformed entries without leaking invalid indices or non-finite scores
-    into callers.
-    """
-    if not isinstance(result, dict):
-        return None, "not an object"
-
-    index = result.get("index")
-    if isinstance(index, bool) or not isinstance(index, int):
-        return None, "invalid index"
-    if not 0 <= index < max_index:
-        return None, "index out of range"
-
-    score_value = result.get("relevance_score")
-    if isinstance(score_value, bool):
-        return None, "invalid relevance score"
-
-    try:
-        score = float(score_value)
-    except (TypeError, ValueError, OverflowError):
-        return None, "invalid relevance score"
-    if not isfinite(score):
-        return None, "non-finite relevance score"
-
-    return {"index": index, "relevance_score": score}, None
 
 
 def chunk_documents_for_rerank(
@@ -213,7 +180,7 @@ def aggregate_chunk_scores(
     doc_scores: Dict[int, List[float]] = {i: [] for i in range(num_original_docs)}
 
     for result in chunk_results:
-        normalized_result, _ = _normalize_rerank_result(result, len(doc_indices))
+        normalized_result, _ = normalize_rerank_result(result, len(doc_indices))
         if normalized_result is None:
             continue
 
@@ -429,7 +396,7 @@ async def generic_rerank_api(
             invalid_results = Counter()
             standardized_results = []
             for result in results:
-                normalized_result, invalid_reason = _normalize_rerank_result(
+                normalized_result, invalid_reason = normalize_rerank_result(
                     result, len(documents)
                 )
                 if normalized_result is None:
