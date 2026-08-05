@@ -574,6 +574,19 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             A list of (source_id, target_id) tuples representing edges,
             or None if the node doesn't exist
+
+        Three outcomes, three answers — implementations must not merge them:
+
+        * ``[]``   — the node exists and has no relations.
+        * ``None`` — the node is **confirmed absent**.
+        * raise    — the backend could not answer. A transport/server error is
+          neither of the above; reporting it as ``[]`` or ``None`` turns an
+          unknown into a fact that callers (entity merge/dedup, graph edits)
+          act on. Same rule as :meth:`BaseKVStorage.get_by_id_strict`.
+
+        ``get_nodes_edges_batch`` cannot express the middle case (it returns a
+        dict of lists) and flattens ``None`` to ``[]`` by design; callers that
+        need the distinction must use this single-node form.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
@@ -820,6 +833,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             List of labels sorted by degree (highest first)
+
+        Ranks the WHOLE node set. An isolated (degree-0) entity ranks last, but
+        it still ranks: implementations that derive degrees from their edge
+        store must not let a node absent from that store fall out of the result
+        (LEFT JOIN / union in a degree-0 baseline / backfill from the node
+        store). Ties break on the label, ascending.
+
+        An empty list means the graph holds no entities. A backend error MUST
+        raise instead — ``/graph/label/popular`` renders both, and the two are
+        indistinguishable to the user once the error is swallowed.
         """
 
     @abstractmethod
@@ -832,6 +855,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             List of matching labels sorted by relevance
+
+        As with :meth:`get_popular_labels`, an empty list means "nothing
+        matched" — a backend error MUST raise rather than return it. A blank
+        query is a real empty result, not an error.
         """
 
 

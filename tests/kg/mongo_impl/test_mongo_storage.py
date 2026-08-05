@@ -1092,3 +1092,65 @@ class TestMongoGraphReadContract:
             ("Gamma", "Alpha"),
         ]
         s.collection.find_one.assert_not_awaited()
+
+
+class TestMongoLabelHelpersFailLoud:
+    """A database error in the label helpers must propagate.
+
+    Returning [] reports a dead database as "this graph has no entities" --
+    and /graph/label/popular already turns an exception into a 500, so the
+    swallow was the only thing standing between the user and an accurate error.
+    """
+
+    def _make_storage(self):
+        s = MongoGraphStorage.__new__(MongoGraphStorage)
+        s.workspace = "test"
+        s.namespace = "chunk_entity_relation"
+        s._collection_name = "test_nodes"
+        s._edge_collection_name = "test_edges"
+        s.collection = SimpleNamespace()
+        s.edge_collection = SimpleNamespace()
+        return s
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_raises_on_aggregation_error(self):
+        s = self._make_storage()
+        s.collection.aggregate = AsyncMock(side_effect=PyMongoError("boom"))
+
+        with pytest.raises(PyMongoError):
+            await s.get_popular_labels(limit=10)
+
+    @pytest.mark.asyncio
+    async def test_search_labels_raises_when_node_count_fails(self):
+        """The pre-flight count is an optimisation, not a verdict: a failed
+        count is not "the graph is empty"."""
+        s = self._make_storage()
+        s.collection.count_documents = AsyncMock(side_effect=PyMongoError("boom"))
+
+        with pytest.raises(PyMongoError):
+            await s.search_labels("alpha")
+
+    @pytest.mark.asyncio
+    async def test_search_labels_raises_when_regex_fallback_fails(self):
+        """Atlas Search may legitimately be unavailable and fall through to the
+        regex scan -- but if that last resort fails too, no answer was produced.
+        """
+        s = self._make_storage()
+        s.collection.count_documents = AsyncMock(return_value=3)
+        s._try_atlas_text_search = AsyncMock(side_effect=PyMongoError("no atlas"))
+        s._try_atlas_autocomplete_search = AsyncMock(
+            side_effect=PyMongoError("no atlas")
+        )
+        s._try_atlas_compound_search = AsyncMock(side_effect=PyMongoError("no atlas"))
+        s.collection.find = MagicMock(side_effect=PyMongoError("scan failed"))
+
+        with pytest.raises(PyMongoError):
+            await s.search_labels("alpha")
+
+    @pytest.mark.asyncio
+    async def test_search_labels_still_returns_empty_for_an_empty_graph(self):
+        """A confirmed-empty node collection is a real "no labels", not an error."""
+        s = self._make_storage()
+        s.collection.count_documents = AsyncMock(return_value=0)
+
+        assert await s.search_labels("alpha") == []

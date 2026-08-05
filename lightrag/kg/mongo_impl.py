@@ -3150,8 +3150,12 @@ class MongoGraphStorage(BaseGraphStorage):
             )
             return labels
         except Exception as e:
+            # Raise, never return []: an empty list here is indistinguishable
+            # from "the graph has no entities". /graph/label/popular already
+            # turns an exception into a 500, so swallowing it handed the WebUI a
+            # 200 with an empty entity picker while the database was down.
             logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
-            return []
+            raise
 
     async def _try_atlas_text_search(self, query_strip: str, limit: int) -> list[str]:
         """Try Atlas Search using simple text search."""
@@ -3303,11 +3307,15 @@ class MongoGraphStorage(BaseGraphStorage):
             return labels
 
         except Exception as e:
+            # Last resort in the progressive chain: the Atlas methods are allowed
+            # to fail (they may simply be unavailable) and fall through to here,
+            # but if the regex scan itself fails the search produced no answer at
+            # all. Returning [] would report that as "nothing matched".
             logger.error(f"[{self.workspace}] Regex fallback search failed: {e}")
             import traceback
 
             logger.error(f"[{self.workspace}] Traceback: {traceback.format_exc()}")
-            return []
+            raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
@@ -3330,8 +3338,10 @@ class MongoGraphStorage(BaseGraphStorage):
                 )
                 return []
         except PyMongoError as e:
+            # A failed count is not "the graph is empty" — that shortcut would
+            # report a transport blip as "no labels match".
             logger.error(f"[{self.workspace}] Error counting nodes: {e}")
-            return []
+            raise
 
         # Progressive search strategy
         search_methods = [

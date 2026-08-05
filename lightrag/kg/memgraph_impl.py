@@ -369,7 +369,9 @@ class MemgraphStorage(BaseGraphStorage):
 
         Returns:
             list[tuple[str, str]]: List of (source_label, target_label) tuples representing edges
-            None: If no edges found
+            None: If the node does not exist. An existing node with no relations
+                returns ``[]`` — the BaseGraphStorage contract, as implemented by
+                NetworkXStorage. A query error is neither value: it propagates.
 
         Raises:
             Exception: If there is an error executing the query
@@ -394,7 +396,14 @@ class MemgraphStorage(BaseGraphStorage):
                     results = await session.run(query, entity_id=source_node_id)
 
                     edges = []
+                    # Any row at all means the anchor MATCH bound n, i.e. the
+                    # node exists: an isolated node still yields exactly one row
+                    # (via OPTIONAL MATCH) carrying a NULL connected_entity_id.
+                    # Zero rows is the only "no such node" signal, and it must
+                    # not be reported as an empty edge list.
+                    node_matched = False
                     async for record in results:
+                        node_matched = True
                         node_entity_id = record["node_entity_id"]
                         connected_entity_id = record["connected_entity_id"]
                         start_entity_id = record["start_entity_id"]
@@ -409,7 +418,7 @@ class MemgraphStorage(BaseGraphStorage):
                             edges.append((connected_entity_id, node_entity_id))
 
                     await results.consume()  # Ensure results are consumed
-                    return edges
+                    return edges if node_matched else None
                 except Exception as e:
                     logger.error(
                         f"[{self.workspace}] Error getting edges for node {source_node_id}: {str(e)}"
@@ -1283,10 +1292,14 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 return labels
         except Exception as e:
+            # Raise, never return []: an empty list here is indistinguishable
+            # from "the graph has no entities". /graph/label/popular already
+            # turns an exception into a 500, so swallowing it handed the WebUI a
+            # 200 with an empty entity picker while the database was down.
             logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
             if result is not None:
                 await result.consume()
-            return []
+            raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """Search labels(entity names) with fuzzy matching
@@ -1341,7 +1354,9 @@ class MemgraphStorage(BaseGraphStorage):
                 )
                 return labels
         except Exception as e:
+            # Same reasoning as get_popular_labels: "no match" and "the query
+            # failed" must not share a return value.
             logger.error(f"[{self.workspace}] Error searching labels: {str(e)}")
             if result is not None:
                 await result.consume()
-            return []
+            raise

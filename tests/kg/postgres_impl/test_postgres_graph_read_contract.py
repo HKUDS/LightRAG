@@ -16,7 +16,7 @@ import re
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from lightrag.kg.postgres_impl import PGGraphStorage
+from lightrag.kg.postgres_impl import PGGraphQueryException, PGGraphStorage
 
 
 def make_graph_storage() -> PGGraphStorage:
@@ -94,6 +94,48 @@ async def test_get_popular_labels_returns_labels_in_query_order():
     )
 
     assert await storage.get_popular_labels() == ["Alpha", "Beta", "Isolated"]
+
+
+# ---------------------------------------------------------------------------
+# Label helpers: a database error is not "no labels"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_popular_labels_raises_on_query_error():
+    """A failed query must not be reported as an empty graph.
+
+    Regression: the handler logged and returned []. The
+    ``/graph/label/popular`` route already converts an exception into a 500, so
+    swallowing it here handed the WebUI a 200 with an empty entity picker while
+    the database was unreachable — indistinguishable from a graph that really
+    holds no entities.
+    """
+    storage = make_graph_storage()
+    boom = PGGraphQueryException({"message": "connection reset"})
+    storage._query = AsyncMock(side_effect=boom)
+
+    with pytest.raises(PGGraphQueryException):
+        await storage.get_popular_labels(limit=10)
+
+
+@pytest.mark.asyncio
+async def test_search_labels_raises_on_query_error():
+    """Same reasoning: "no match" and "the query failed" are different answers."""
+    storage = make_graph_storage()
+    storage._query = AsyncMock(side_effect=PGGraphQueryException({"message": "boom"}))
+
+    with pytest.raises(PGGraphQueryException):
+        await storage.search_labels("alpha")
+
+
+@pytest.mark.asyncio
+async def test_search_labels_still_short_circuits_on_blank_query():
+    """An empty query is a real "nothing to match", not an error."""
+    storage = make_graph_storage()
+    storage._query = AsyncMock(side_effect=AssertionError("must not be reached"))
+
+    assert await storage.search_labels("   ") == []
 
 
 # ---------------------------------------------------------------------------
