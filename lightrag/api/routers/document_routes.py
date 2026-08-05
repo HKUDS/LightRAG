@@ -5,6 +5,7 @@ This module contains all document-related routes for the LightRAG API.
 import asyncio
 import base64
 import binascii
+import errno
 import math
 import os
 import re
@@ -186,47 +187,111 @@ def is_valid_file_source(file_source: str | None) -> bool:
 
 def sanitize_filename(filename: str, input_dir: Path) -> str:
     """
-    Sanitize uploaded filename to prevent Path Traversal attacks.
+    Validate an uploaded filename and return it unchanged when safe.
+
+    Uploaded filenames are document identifiers as well as on-disk names, so
+    unsafe names must be rejected rather than rewritten. Rewriting values such
+    as ``../report.pdf`` to ``report.pdf`` can hide malicious input, collide
+    with a legitimate document, and make audit logs misleading.
 
     Args:
         filename: The original filename from the upload
         input_dir: The target input directory
 
     Returns:
-        str: Sanitized filename that is safe to use
+        str: The original filename after safety validation
 
     Raises:
         HTTPException: If the filename is unsafe or invalid
     """
-    # Basic validation
     if not filename or not filename.strip():
         raise HTTPException(status_code=400, detail="Filename cannot be empty")
 
-    # Remove path separators and traversal sequences
-    clean_name = filename.replace("/", "").replace("\\", "")
-    clean_name = clean_name.replace("..", "")
+    if filename != filename.strip():
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Remove control characters and null bytes
-    clean_name = "".join(c for c in clean_name if ord(c) >= 32 and c != "\x7f")
+    if any(ord(c) < 32 or c == "\x7f" for c in filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Remove leading/trailing whitespace and dots
-    clean_name = clean_name.strip().strip(".")
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Unsafe filename detected")
 
-    # Check if anything is left after sanitization
-    if not clean_name:
-        raise HTTPException(
-            status_code=400, detail="Invalid filename after sanitization"
-        )
+    # ':' lets a name be parsed as an NTFS alternate-data-stream reference
+    # (``safe.pdf:payload``) or a drive-relative path (``C:report.pdf``),
+    # breaking the "single literal basename" invariant this function
+    # enforces. The other Windows-reserved path characters don't carry that
+    # same reinterpretation risk in this codebase (filenames are never
+    # shelled out to, and glob() call sites already use glob.escape()), so
+    # they're left alone rather than rejected pre-emptively.
+    if ":" in filename:
+        raise HTTPException(status_code=400, detail="Unsafe filename detected")
 
-    # Verify the final path stays within the input directory
+    if filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Unsafe filename detected")
+
+    # Verify the final path stays within the input directory. This is a
+    # defense-in-depth check for platform-specific path parsing edge cases.
     try:
-        final_path = (input_dir / clean_name).resolve()
-        if not final_path.is_relative_to(input_dir.resolve()):
+        input_root = input_dir.resolve()
+        final_path = (input_root / filename).resolve()
+        if final_path.parent != input_root or not final_path.is_relative_to(input_root):
             raise HTTPException(status_code=400, detail="Unsafe filename detected")
     except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    return clean_name
+    return filename
+
+
+_UPLOAD_DIR_FD_SUPPORTED = os.open in os.supports_dir_fd
+
+
+def upload_file_opener(input_dir: Path):
+    """Return an opener that creates uploads safely below ``input_dir``.
+
+    The upload path is pre-validated as a single basename, but the final file
+    creation must also be fail-closed. Opening relative to a directory file
+    descriptor with exclusive creation prevents symlink-following overwrites
+    and closes the check/write race between duplicate detection and streaming.
+
+    dir_fd-relative opens require openat() (os.supports_dir_fd); Windows has
+    neither that nor a way to os.open() a directory at all, so on platforms
+    without the capability this falls back to opening the full path directly
+    with O_CREAT | O_EXCL (+ O_NOFOLLOW where available) and no directory
+    binding.
+    """
+
+    if not _UPLOAD_DIR_FD_SUPPORTED:
+
+        def opener(path: str, flags: int) -> int:
+            open_flags = flags | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags |= os.O_NOFOLLOW
+            return os.open(path, open_flags, 0o600)
+
+        return opener
+
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    dir_fd = os.open(input_dir, directory_flags)
+
+    def opener(path: str, flags: int) -> int:
+        nonlocal dir_fd
+        try:
+            open_flags = flags | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags |= os.O_NOFOLLOW
+            return os.open(
+                os.path.basename(path),
+                open_flags,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        finally:
+            os.close(dir_fd)
+            dir_fd = -1
+
+    return opener
 
 
 class ScanResponse(BaseModel):
@@ -5082,25 +5147,62 @@ def create_document_routes(
             chunk_size = 1024 * 1024  # 1MB chunks
             needs_cleanup = False
 
-            async with aiofiles.open(file_path, "wb") as out_file:
-                while True:
-                    # Read chunk from upload stream
-                    chunk = await file.read(chunk_size)
-                    if not chunk:
-                        break
+            upload_opener = upload_file_opener(doc_manager.input_dir)
+            out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
 
-                    # Check size limit during streaming (if not checked before)
-                    if (
-                        global_args.max_upload_size is not None
-                        and global_args.max_upload_size > 0
-                    ):
-                        bytes_written += len(chunk)
-                        if bytes_written > global_args.max_upload_size:
-                            needs_cleanup = True
+            opened = False
+            try:
+                async with out_file_context as out_file:
+                    opened = True
+                    while True:
+                        # Read chunk from upload stream
+                        chunk = await file.read(chunk_size)
+                        if not chunk:
                             break
 
-                    # Write chunk to file
-                    await out_file.write(chunk)
+                        # Check size limit during streaming (if not checked before)
+                        if (
+                            global_args.max_upload_size is not None
+                            and global_args.max_upload_size > 0
+                        ):
+                            bytes_written += len(chunk)
+                            if bytes_written > global_args.max_upload_size:
+                                needs_cleanup = True
+                                break
+
+                        # Write chunk to file
+                        await out_file.write(chunk)
+
+            except OSError as e:
+                if not opened:
+                    if isinstance(e, FileExistsError) or e.errno == errno.ELOOP:
+                        # The O_EXCL/O_NOFOLLOW conflict this opener exists to
+                        # enforce (name already taken, or refused to follow a
+                        # symlink). No file was created.
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Input directory already contains '{safe_filename}' or the "
+                                "upload path is unsafe. Remove it before re-uploading."
+                            ),
+                        ) from e
+                    # A genuine server-side open failure (permission denied,
+                    # ENOSPC/EDQUOT, read-only filesystem, ...) rather than a
+                    # name conflict. No file was created, nothing to clean up.
+                    raise
+                # Failure after the file was already created (e.g. ENOSPC/EIO
+                # during write or close) is a server-side fault, not a
+                # client-fixable conflict -- clean up the partial file so a
+                # retry isn't permanently blocked by the exclusive-create
+                # check, then let it propagate to the endpoint's
+                # internal_server_error(e) path.
+                try:
+                    file_path.unlink()
+                except OSError as cleanup_error:
+                    logger.error(
+                        f"Error cleaning up partially written file {safe_filename}: {cleanup_error}"
+                    )
+                raise
 
             # Cleanup after file is closed
             if needs_cleanup:

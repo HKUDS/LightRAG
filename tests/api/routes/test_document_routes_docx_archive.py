@@ -1235,6 +1235,125 @@ async def test_upload_rejects_parser_hinted_filesystem_duplicate(tmp_path, monke
     assert not (tmp_path / "existing.[native].docx").exists()
 
 
+async def test_upload_opener_construction_failure_returns_500_not_409(
+    tmp_path, monkeypatch
+):
+    """upload_file_opener() raising means the input directory itself could
+    not be opened (permissions, removed mid-request, etc.) -- a server-side
+    fault, not a client-fixable name conflict. Before the fix this hit the
+    same try/except as the real O_EXCL conflict and returned a misleading
+    409; it must now propagate to the endpoint's internal_server_error(e)
+    500 path instead."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="safe.pdf", file=BytesIO(b"content")
+    )
+
+    def _raise_oserror(_input_dir):
+        raise OSError("input directory unavailable")
+
+    monkeypatch.setattr(_document_routes, "upload_file_opener", _raise_oserror)
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 500
+    assert "input directory unavailable" not in str(excinfo.value.detail)
+    assert not (tmp_path / "safe.pdf").exists()
+
+
+async def test_upload_open_time_permission_error_returns_500_not_409(
+    tmp_path, monkeypatch
+):
+    """A non-conflict OSError raised while the opener actually creates the
+    file (permission denied, ENOSPC, read-only filesystem, ...) is a
+    server-side fault, not the O_EXCL/O_NOFOLLOW name conflict the 409 branch
+    exists for -- only FileExistsError/ELOOP should map to 409."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="safe.pdf", file=BytesIO(b"content")
+    )
+
+    def _permission_denied_opener(_input_dir):
+        def opener(path, flags):
+            raise PermissionError(13, "Permission denied")
+
+        return opener
+
+    monkeypatch.setattr(
+        _document_routes, "upload_file_opener", _permission_denied_opener
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 500
+    assert "Permission denied" not in str(excinfo.value.detail)
+    assert not (tmp_path / "safe.pdf").exists()
+
+
+async def test_upload_write_failure_cleans_up_partial_file_and_returns_500(
+    tmp_path, monkeypatch
+):
+    """An OSError raised after the exclusive-create opener already succeeded
+    (e.g. ENOSPC mid-stream) is a server-side fault, not the O_EXCL/O_NOFOLLOW
+    conflict the 409 branch exists for. It must delete the partial file (so a
+    retry isn't permanently blocked by the exact-file precheck) and surface as
+    a 500 that doesn't echo the raw OSError text."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="safe.pdf", file=BytesIO(b"content")
+    )
+
+    call_count = 0
+
+    async def _read_then_fail(_size):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return b"partial content"
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(upload_file, "read", _read_then_fail)
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 500
+    assert "No space left on device" not in str(excinfo.value.detail)
+    assert not (tmp_path / "safe.pdf").exists()
+
+
 async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     """A malformed filename hint fails the upload synchronously with the
     detailed hint error in the 400 body (it used to be accepted and only
@@ -3166,6 +3285,115 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
     # All lightrag rows route to the internal reuse handler (reuse the stored
     # sidecar without re-parsing) regardless of the originating engine.
     assert engine == "reuse"
+
+
+def test_sanitize_filename_rejects_traversal_instead_of_rewriting(tmp_path):
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        _document_routes.sanitize_filename("../report.pdf", tmp_path)
+
+    assert exc.value.status_code == 400
+
+
+def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path):
+    for filename in ("nested/report.pdf", "nested\\report.pdf", "report.pdf\x00"):
+        with pytest.raises(_document_routes.HTTPException) as exc:
+            _document_routes.sanitize_filename(filename, tmp_path)
+
+        assert exc.value.status_code == 400
+
+
+def test_sanitize_filename_rejects_colon(tmp_path):
+    for filename in (
+        "safe.pdf:payload.pdf",  # NTFS alternate-data-stream reference
+        "C:report.pdf",  # drive-relative, not a literal basename
+    ):
+        with pytest.raises(_document_routes.HTTPException) as exc:
+            _document_routes.sanitize_filename(filename, tmp_path)
+
+        assert exc.value.status_code == 400
+
+
+def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path):
+    """Unlike ':', these don't let the name be reinterpreted as a different
+    path (no shell-out or unescaped glob() call site uses upload filenames in
+    this codebase), so they're accepted rather than pre-emptively rejected."""
+    for filename in (
+        'quoted"name.pdf',
+        "piped|name.pdf",
+        "glob?name.pdf",
+        "glob*name.pdf",
+        "less<than.pdf",
+        "greater>than.pdf",
+    ):
+        assert _document_routes.sanitize_filename(filename, tmp_path) == filename
+
+
+def test_sanitize_filename_allows_non_traversal_dot_sequences(tmp_path):
+    filename = "report..final.pdf"
+
+    assert _document_routes.sanitize_filename(filename, tmp_path) == filename
+
+
+def test_upload_file_opener_refuses_existing_symlink(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    link = tmp_path / "safe.pdf"
+    link.symlink_to(outside)
+
+    opener = _document_routes.upload_file_opener(tmp_path)
+    with pytest.raises(FileExistsError):
+        with open(link, "xb", opener=opener):
+            pass
+
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_upload_file_opener_creates_new_file_with_private_permissions(tmp_path):
+    path = tmp_path / "safe.pdf"
+
+    opener = _document_routes.upload_file_opener(tmp_path)
+    with open(path, "xb", opener=opener) as fh:
+        fh.write(b"content")
+
+    assert path.read_bytes() == b"content"
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_upload_file_opener_falls_back_when_dir_fd_unsupported(tmp_path, monkeypatch):
+    """Simulates Windows: os.open() cannot bind a directory fd there at all,
+    so the opener must skip that step entirely rather than crash on it."""
+    monkeypatch.setattr(_document_routes, "_UPLOAD_DIR_FD_SUPPORTED", False)
+
+    real_open = _document_routes.os.open
+    directory_open_attempts = []
+
+    def spying_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None or str(path) == str(tmp_path):
+            directory_open_attempts.append((str(path), dir_fd))
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(_document_routes.os, "open", spying_open)
+
+    path = tmp_path / "safe.pdf"
+    opener = _document_routes.upload_file_opener(tmp_path)
+    with open(path, "xb", opener=opener) as fh:
+        fh.write(b"content")
+
+    assert path.read_bytes() == b"content"
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert directory_open_attempts == []
+
+    with pytest.raises(FileExistsError):
+        with open(path, "xb", opener=_document_routes.upload_file_opener(tmp_path)):
+            pass
+
+
+def test_sanitize_filename_preserves_safe_parser_hint_filename(tmp_path):
+    filename = "report.[native].docx"
+
+    assert _document_routes.sanitize_filename(filename, tmp_path) == filename
 
 
 def test_default_allowlist_equals_local_engine_suffixes(tmp_path, monkeypatch):
