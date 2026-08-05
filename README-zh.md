@@ -220,7 +220,7 @@ make env-security-check # 可选：审计当前 .env 中的安全风险
 Native docx 解析器的可选引擎参数 `smart_heading` 使用 spaCy 做分句/NER 启发式判断。spaCy 运行时已包含在 `api` extra 中——只有两个钉定版本的语言模型（`zh_core_web_sm` / `en_core_web_sm` 3.8.0，GitHub release wheel，未发布到 PyPI）需要额外一步安装：
 
 ```bash
-lightrag-download-cache --spacy --spacy-install
+lightrag-download-cache --spacy-install
 ```
 
 可以按文件/规则启用 smart_heading（如 `LIGHTRAG_PARSER=docx:native(smart_heading=true)`），也可以在 `.env` 中全局启用：
@@ -541,7 +541,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 列出争用同一个规范 source key 的文档，并把运维人员未选中的候选降级为重复项。工具本身从不自行裁定胜者，也从不删除内容。
 
-**`download_cache.py`** — `lightrag-download-cache [--spacy --spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
+**`download_cache.py`** — `lightrag-download-cache [--spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
 
 预先下载离线部署及 docx `smart_heading` 引擎参数所需的 tiktoken 编码与钉版 spaCy 模型。
 

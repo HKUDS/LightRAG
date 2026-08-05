@@ -220,53 +220,70 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Download to default location (~/.tiktoken_cache)
+  # Download tiktoken cache to default location (~/.tiktoken_cache)
   lightrag-download-cache
 
-  # Download to specific directory
-  lightrag-download-cache --cache-dir ./offline_cache/tiktoken
+  # Same, explicitly (equivalent to the default when no spaCy flag is given)
+  lightrag-download-cache --tiktoken
 
-  # Download specific models only
+  # --cache-dir/--models are tiktoken-specific: giving either is enough to
+  # select the tiktoken download, no need to also pass --tiktoken
+  lightrag-download-cache --cache-dir ./offline_cache/tiktoken
   lightrag-download-cache --models gpt-4o-mini gpt-4
 
-  # Additionally download the pinned spaCy model wheels for the native docx
-  # smart_heading engine parameter (to ./spacy_models by default)
+  # Download the pinned spaCy model wheels for the native docx smart_heading
+  # engine parameter (to ./spacy_models by default) — tiktoken is untouched
   lightrag-download-cache --spacy
 
-  # Install the spaCy models straight into the current environment
-  lightrag-download-cache --spacy --spacy-install
+  # Install the spaCy models straight into the current environment —
+  # tiktoken is untouched
+  lightrag-download-cache --spacy-install
+
+  # Want both, without giving any directory overrides: combine --tiktoken
+  # with --spacy/--spacy-install explicitly
+  lightrag-download-cache --tiktoken --spacy-install
 
 For more information, visit: https://github.com/HKUDS/LightRAG
         """,
     )
 
     parser.add_argument(
+        "--tiktoken",
+        action="store_true",
+        help="Download the tiktoken cache. This is the default when neither "
+        "--spacy nor --spacy-install is given; pass it explicitly to combine "
+        "with a spaCy flag",
+    )
+    parser.add_argument(
         "--cache-dir",
-        help="Cache directory path (default: ~/.tiktoken_cache)",
+        help="Cache directory path (default: ~/.tiktoken_cache). Selects the "
+        "tiktoken download on its own, same as --tiktoken",
         default=None,
     )
     parser.add_argument(
         "--models",
         nargs="+",
-        help="Specific models to download (default: common models)",
+        help="Specific models to download (default: common models). Selects "
+        "the tiktoken download on its own, same as --tiktoken",
         default=None,
     )
     parser.add_argument(
         "--spacy",
         action="store_true",
-        help="Also download the pinned spaCy model wheels used by the native "
-        "docx smart_heading engine parameter",
+        help="Download the pinned spaCy model wheels used by the native docx "
+        "smart_heading engine parameter, independently of tiktoken",
     )
     parser.add_argument(
         "--spacy-dir",
-        help="Directory for the spaCy model wheels (default: ./spacy_models)",
+        help="Directory for the spaCy model wheels (default: ./spacy_models). "
+        "Selects the spaCy download on its own, same as --spacy",
         default=None,
     )
     parser.add_argument(
         "--spacy-install",
         action="store_true",
         help="pip install the spaCy models into the current environment "
-        "instead of downloading wheels (implies --spacy)",
+        "instead of downloading wheels, independently of tiktoken",
     )
     parser.add_argument(
         "--version", action="version", version="%(prog)s (LightRAG cache downloader)"
@@ -274,16 +291,23 @@ For more information, visit: https://github.com/HKUDS/LightRAG
 
     args = parser.parse_args()
 
+    tiktoken_detail_given = args.cache_dir is not None or args.models is not None
+    spacy_detail_given = args.spacy_dir is not None
+    want_spacy = args.spacy or args.spacy_install or spacy_detail_given
+    want_tiktoken = args.tiktoken or tiktoken_detail_given or not want_spacy
+
     print("=" * 70)
     print("LightRAG Offline Cache Downloader")
     print("=" * 70)
 
     try:
-        success_count, failed_models = download_tiktoken_cache(
-            args.cache_dir, args.models
+        success_count, failed_models = (
+            download_tiktoken_cache(args.cache_dir, args.models)
+            if want_tiktoken
+            else (0, [])
         )
 
-        if args.spacy or args.spacy_install:
+        if want_spacy:
             spacy_success, spacy_failed = download_spacy_models(
                 args.spacy_dir, install=args.spacy_install
             )

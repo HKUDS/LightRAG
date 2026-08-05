@@ -1285,7 +1285,7 @@ def create_app(args):
         ASCIIColors.red(exc.problem, markup=False)
         ASCIIColors.red("\nInstall with:", markup=False)
         ASCIIColors.cyan(
-            "    pip install lightrag-hku[api] && lightrag-download-cache --spacy --spacy-install",
+            "    pip install lightrag-hku[api] && lightrag-download-cache --spacy-install",
             markup=False,
         )
         ASCIIColors.red(

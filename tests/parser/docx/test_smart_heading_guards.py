@@ -1,7 +1,7 @@
 """G5 defensive-judgment tests: strong-body features, homophone vetoes, P3.
 
 Positive-path cases need the real pinned spaCy models (installed in dev via
-``lightrag-download-cache --spacy --spacy-install``); they skip when the
+``lightrag-download-cache --spacy-install``); they skip when the
 models are absent (e.g. a bare CI). The missing-model hard-error contract
 (G12-1) is tested with mocks and always runs.
 """

@@ -187,11 +187,13 @@ pip install lightrag-hku[api]
 # For offline transfer: download runtime + model wheels to ./packages
 pip download -r requirements-offline-smart-heading.txt -d ./packages
 
-# Or download only the pinned model wheels (to ./spacy_models by default)
-lightrag-download-cache --spacy --spacy-dir ./spacy_models
+# Or download only the pinned model wheels (to ./spacy_models by default) —
+# --spacy is independent of the tiktoken cache download, so this never
+# touches tiktoken
+lightrag-download-cache --spacy-dir ./spacy_models
 
 # Or install them straight into the current environment
-lightrag-download-cache --spacy --spacy-install
+lightrag-download-cache --spacy-install
 ```
 
 ### Install in Offline Environment

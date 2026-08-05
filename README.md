@@ -220,7 +220,7 @@ For full description of every target see [docs/InteractiveSetup.md](./docs/Inter
 The native docx parser's opt-in `smart_heading` engine parameter uses spaCy for sentence/NER heuristics. The spaCy runtime is already included in the `api` extra — only the two pinned language models (`zh_core_web_sm` / `en_core_web_sm` 3.8.0, GitHub release wheels not published on PyPI) need one extra step:
 
 ```bash
-lightrag-download-cache --spacy --spacy-install
+lightrag-download-cache --spacy-install
 ```
 
 Enable smart_heading per file/rule (e.g. `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), or globally in `.env`:
@@ -541,7 +541,7 @@ Audits the whole graph for contributions missing from the `full_entities` / `ful
 
 Lists documents that claim the same canonical source key, and demotes the candidates the operator did not choose to duplicates. It never picks a winner on its own and never deletes content.
 
-**`download_cache.py`** — `lightrag-download-cache [--spacy --spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
+**`download_cache.py`** — `lightrag-download-cache [--spacy-install]` — [OfflineDeployment.md](./docs/OfflineDeployment.md)
 
 Pre-downloads the tiktoken encodings and the pinned spaCy models required for offline deployment and the docx `smart_heading` engine parameter.
 

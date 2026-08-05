@@ -63,7 +63,7 @@ RUN --mount=type=cache,target=/root/.local/share/uv \
 # pinned spaCy model wheels for the docx smart_heading engine parameter.
 # Use uv run to execute commands from the virtual environment
 RUN mkdir -p /app/data/tiktoken \
-    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken --spacy --spacy-dir /app/spacy_models || status=$?; \
+    && uv run lightrag-download-cache --cache-dir /app/data/tiktoken --spacy-dir /app/spacy_models || status=$?; \
     if [ -n "${status:-}" ] && [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then exit "$status"; fi
 
 # Final stage
