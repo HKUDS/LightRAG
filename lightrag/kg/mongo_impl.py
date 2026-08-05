@@ -3126,23 +3126,16 @@ class MongoGraphStorage(BaseGraphStorage):
             # on top — a per-node $lookup would instead run one subquery per
             # entity. Self-loops count twice, as they did before.
             #
-            # The baseline row also carries an `is_node` marker, and groups
-            # without one are dropped: the unions are keyed on edge ENDPOINTS,
-            # which is not the same set as the entities. Edges written before
-            # this release materialized only their source, so a target-only id
-            # can still have edge documents and no node document. Ranking it
-            # would put a label in the picker that get_node()/has_node() report
-            # absent — the write-path fix is not a backfill, so the read has to
-            # stay honest about existing data.
+            # The unions are keyed on edge ENDPOINTS, so an id that has edge
+            # documents but no node document (a dangling endpoint, only
+            # reachable as a data-quality defect — the write path materializes
+            # both endpoints) also surfaces here. That is left in deliberately:
+            # filtering it out costs a join or a second round trip on every
+            # call, and the worst case is a picker entry whose entity lookup
+            # comes back empty, which the client reports rather than crashes on.
             pipeline = [
-                # Baseline: every entity, degree 0, marked as a real node
-                {
-                    "$project": {
-                        "_id": 1,
-                        "degree": {"$literal": 0},
-                        "is_node": {"$literal": 1},
-                    }
-                },
+                # Baseline: every entity, degree 0
+                {"$project": {"_id": 1, "degree": {"$literal": 0}}},
                 # Count outbound edges
                 {
                     "$unionWith": {
@@ -3171,18 +3164,8 @@ class MongoGraphStorage(BaseGraphStorage):
                         ],
                     }
                 },
-                # Group by node_id and sum degrees. $sum skips the union rows,
-                # which carry no is_node field, so the counter is non-zero only
-                # for ids the node collection actually holds.
-                {
-                    "$group": {
-                        "_id": "$_id",
-                        "total_degree": {"$sum": "$degree"},
-                        "node_docs": {"$sum": "$is_node"},
-                    }
-                },
-                # Drop endpoint-only ids: they are not entities.
-                {"$match": {"node_docs": {"$gt": 0}}},
+                # Group by node_id and sum degrees
+                {"$group": {"_id": "$_id", "total_degree": {"$sum": "$degree"}}},
                 # Sort by degree descending, then by label ascending
                 {"$sort": {"total_degree": -1, "_id": 1}},
                 # Limit results

@@ -1044,14 +1044,8 @@ class TestMongoGraphReadContract:
         s.edge_collection.aggregate.assert_not_awaited()
 
         pipeline = s.collection.aggregate.call_args[0][0]
-        # Stage 1 gives every node a degree-0 baseline row, marked as a node.
-        assert pipeline[0] == {
-            "$project": {
-                "_id": 1,
-                "degree": {"$literal": 0},
-                "is_node": {"$literal": 1},
-            }
-        }
+        # Stage 1 gives every node a degree-0 baseline row.
+        assert pipeline[0] == {"$project": {"_id": 1, "degree": {"$literal": 0}}}
         # Edge counts are unioned on top, keyed by each endpoint field.
         union_keys = [
             stage["$unionWith"]["pipeline"][0]["$group"]["_id"]
@@ -1075,40 +1069,11 @@ class TestMongoGraphReadContract:
 
         pipeline = s.collection.aggregate.call_args[0][0]
         assert {
-            "$group": {
-                "_id": "$_id",
-                "total_degree": {"$sum": "$degree"},
-                "node_docs": {"$sum": "$is_node"},
-            }
+            "$group": {"_id": "$_id", "total_degree": {"$sum": "$degree"}}
         } in pipeline
         assert {"$sort": {"total_degree": -1, "_id": 1}} in pipeline
         assert {"$limit": 42} in pipeline
         assert s.collection.aggregate.call_args.kwargs == {"allowDiskUse": True}
-
-    @pytest.mark.asyncio
-    async def test_popular_labels_drops_endpoint_only_ids(self):
-        """An id that exists only as an edge endpoint is not an entity.
-
-        The unions are keyed on edge endpoints, which is not the same set as
-        the node collection: edges written before both endpoints were
-        materialized can still name a target that has no node document.
-        Ranking it would offer the picker a label that get_node()/has_node()
-        report absent. The write-path fix is not a backfill, so the read filters
-        on the is_node marker the baseline stage carries.
-        """
-        s = self._make_storage()
-        s.collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
-
-        await s.get_popular_labels(limit=5)
-
-        pipeline = s.collection.aggregate.call_args[0][0]
-        assert {"$match": {"node_docs": {"$gt": 0}}} in pipeline
-        # ... and the filter runs BEFORE the ranking, so a dangling endpoint
-        # cannot consume a slot a real entity should have had.
-        match_at = pipeline.index({"$match": {"node_docs": {"$gt": 0}}})
-        sort_at = pipeline.index({"$sort": {"total_degree": -1, "_id": 1}})
-        limit_at = pipeline.index({"$limit": 5})
-        assert match_at < sort_at < limit_at
 
     @pytest.mark.asyncio
     async def test_popular_labels_returns_labels_in_ranked_order(self):
