@@ -3808,8 +3808,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         Returns None if the node does not exist; an existing node with no
         relations returns ``[]``. Answering ``[]`` for both would make a deleted
-        entity indistinguishable from an isolated one, which is exactly what the
-        BaseGraphStorage contract (and NetworkXStorage) uses the distinction for.
+        entity indistinguishable from an isolated one — the BaseGraphStorage
+        contract keeps them apart, even though no in-tree caller reads the
+        distinction today. A transport error is neither value: it propagates,
+        so "no neighbours" stays a positively confirmed fact (see
+        test_opensearch_strict_reads).
         """
         if not self._indices_ready:
             return None

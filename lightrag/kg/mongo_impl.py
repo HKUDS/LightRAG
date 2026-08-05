@@ -2172,10 +2172,11 @@ class MongoGraphStorage(BaseGraphStorage):
             None: If the node does not exist
 
         An existing node with no relations returns ``[]``, NOT ``None`` — the
-        BaseGraphStorage contract, as implemented by NetworkXStorage. Returning
-        an empty list for both cases would make a deleted entity look identical
-        to an isolated one to callers such as the entity-edit flows in
-        ``utils_graph``.
+        BaseGraphStorage contract, as implemented by NetworkXStorage. No in-tree
+        caller reads the distinction today (they all guard with ``if edges:``),
+        so this restores the declared contract rather than fixing a live caller;
+        collapsing the two here is what makes the information unrecoverable for
+        a caller that needs it. A backend error is neither value: it propagates.
         """
         cursor = self.edge_collection.find(
             {

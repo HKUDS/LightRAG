@@ -7312,8 +7312,12 @@ class PGGraphStorage(BaseGraphStorage):
             # MATCH still yields exactly one row, with connected_id NULL, which
             # the loop below filters into an empty list. Returning [] here too
             # would collapse "node absent" into "node isolated" and diverge from
-            # every other backend (callers such as the entity-edit flows in
-            # utils_graph rely on the distinction).
+            # NetworkXStorage/PGOpsGraphStorage. No in-tree caller reads the
+            # distinction today — they all guard with `if edges:` — so this
+            # restores the declared contract rather than fixing a live caller;
+            # collapsing the two here is what makes it unrecoverable for one
+            # that needs it (an error, by contrast, must raise, never return
+            # either value — see get_node_edges on the other backends).
             return None
         edges = []
         for record in results:
