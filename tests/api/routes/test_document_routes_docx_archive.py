@@ -575,8 +575,14 @@ async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
 async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
     tmp_path, monkeypatch
 ):
-    """Filename hint ``[native-iet]`` flows into apipeline_enqueue_documents."""
+    """Filename hint ``[native-iet]`` flows into apipeline_enqueue_documents.
+
+    Runs with the server VLM switch on so the hint's ``i`` survives the
+    VLM-availability gate (VLM off drops ``i`` — covered by
+    ``test_pipeline_enqueue_drops_image_option_when_vlm_disabled``).
+    """
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    monkeypatch.setattr(_document_routes.global_args, "vlm_process_enable", True)
     file_path = tmp_path / "report.[native-iet].docx"
     file_path.write_bytes(b"docx-bytes")
     rag = _FakeRag()
@@ -631,8 +637,13 @@ async def test_pipeline_enqueue_rejects_invalid_filename_hint(tmp_path, monkeypa
 async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
     tmp_path, monkeypatch
 ):
-    """LIGHTRAG_PARSER ``docx:native-iet`` becomes the default ``process_options``."""
+    """LIGHTRAG_PARSER ``docx:native-iet`` becomes the default ``process_options``.
+
+    Runs with the server VLM switch on so the rule's ``i`` survives the
+    VLM-availability gate (see the VLM-disabled regression test).
+    """
     monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
+    monkeypatch.setattr(_document_routes.global_args, "vlm_process_enable", True)
     file_path = tmp_path / "rule_default.docx"
     file_path.write_bytes(b"docx-bytes")
     rag = _FakeRag()
@@ -644,6 +655,34 @@ async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
     enqueued = rag.enqueued[0]
     assert enqueued["parse_engine"] == "native"
     assert enqueued["process_options"] == "iet"
+
+
+async def test_pipeline_enqueue_drops_image_option_when_vlm_disabled(
+    tmp_path, monkeypatch, caplog
+):
+    """With the server VLM switch off, an ``i`` opt-in must be dropped at
+    enqueue time instead of reaching the pipeline where the analyze worker
+    would hard-fail the whole document (VLM role unavailable).
+    Tables/equations survive because they run through the EXTRACT role.
+    """
+    import logging
+
+    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
+    monkeypatch.setattr(_document_routes.global_args, "vlm_process_enable", False)
+    file_path = tmp_path / "with_images.docx"
+    file_path.write_bytes(b"docx-bytes")
+    rag = _FakeRag()
+
+    with caplog.at_level(logging.WARNING):
+        success, _ = await pipeline_enqueue_file(
+            rag, file_path, "track-vlm-off", forced_process_options="ite"
+        )
+
+    assert success is True
+    assert len(rag.enqueued) == 1
+    enqueued = rag.enqueued[0]
+    assert enqueued["process_options"] == "et"
+    assert "vlm_process_enable" in caplog.text or "VLM_PROCESS_ENABLE" in caplog.text
 
 
 async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(

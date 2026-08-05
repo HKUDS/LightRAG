@@ -1024,6 +1024,7 @@ async def openai_embed(
     elif context == "document" and document_prefix:
         texts = [document_prefix + text for text in texts]
     # Apply text truncation if max_token_size is provided
+    encoding = None
     if max_token_size is not None and max_token_size > 0:
         encoding = _get_tiktoken_encoding_for_model(model)
         truncated_texts = []
@@ -1052,6 +1053,40 @@ async def openai_embed(
 
         texts = truncated_texts
 
+    # Split into token-bounded batches to stay under per-request total token
+    # limits imposed by some providers (e.g. Zhipu embedding-2 has a ~20000
+    # token cap per request).  When max_token_size is known, each batch is
+    # capped at max_token_size * 2 total tokens (~16384 for 8192), which
+    # keeps us safely under the ~20000 limit while still allowing reasonable
+    # batching for short texts (entities/relationships).
+    _batches_for_embedding: list[list[str]] = [texts]
+    if max_token_size is not None and max_token_size > 0 and len(texts) > 1:
+        if encoding is None:
+            encoding = _get_tiktoken_encoding_for_model(model)
+        batch_token_limit = max_token_size * 2
+        token_batches: list[list[str]] = []
+        current_batch: list[str] = []
+        current_tokens = 0
+        for text in texts:
+            if not text:
+                continue
+            t = len(encoding.encode(text))
+            if current_batch and current_tokens + t > batch_token_limit:
+                token_batches.append(current_batch)
+                current_batch = [text]
+                current_tokens = t
+            else:
+                current_batch.append(text)
+                current_tokens += t
+        if current_batch:
+            token_batches.append(current_batch)
+        if len(token_batches) > 1:
+            _batches_for_embedding = token_batches
+            logger.info(
+                f"Split {len(texts)} texts into {len(token_batches)} "
+                f"token-bounded batches (limit={batch_token_limit})"
+            )
+
     # Create the OpenAI client (supports both OpenAI and Azure)
     openai_async_client = create_openai_async_client(
         api_key=api_key,
@@ -1067,10 +1102,9 @@ async def openai_embed(
         # For Azure OpenAI, we must use the deployment name instead of the model name
         api_model = azure_deployment if use_azure and azure_deployment else model
 
-        # Prepare API call parameters
+        # Prepare API call parameters (shared base, input varies per batch)
         api_params = {
             "model": api_model,
-            "input": texts,
         }
 
         # Add encoding_format parameter (some providers like Yandex don't support base64)
@@ -1081,24 +1115,32 @@ async def openai_embed(
         if embedding_dim is not None:
             api_params["dimensions"] = embedding_dim
 
-        # Make API call
-        response = await openai_async_client.embeddings.create(**api_params)
+        # Send each batch and collect results
+        all_embeddings: list[np.ndarray] = []
+        for batch_idx, batch_texts in enumerate(_batches_for_embedding):
+            api_params["input"] = batch_texts
+            response = await openai_async_client.embeddings.create(**api_params)
 
-        if token_tracker and hasattr(response, "usage"):
-            token_counts = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                "total_tokens": getattr(response.usage, "total_tokens", 0),
-            }
-            token_tracker.add_usage(token_counts)
+            if token_tracker and hasattr(response, "usage"):
+                token_counts = {
+                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                    "total_tokens": getattr(response.usage, "total_tokens", 0),
+                }
+                token_tracker.add_usage(token_counts)
 
-        return np.array(
-            [
-                np.array(dp.embedding, dtype=np.float32)
-                if isinstance(dp.embedding, list)
-                else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
-                for dp in response.data
-            ]
-        )
+            batch_embeddings = np.array(
+                [
+                    np.array(dp.embedding, dtype=np.float32)
+                    if isinstance(dp.embedding, list)
+                    else np.frombuffer(
+                        base64.b64decode(dp.embedding), dtype=np.float32
+                    )
+                    for dp in response.data
+                ]
+            )
+            all_embeddings.append(batch_embeddings)
+
+        return np.concatenate(all_embeddings, axis=0)
 
 
 # Azure OpenAI wrapper functions for backward compatibility

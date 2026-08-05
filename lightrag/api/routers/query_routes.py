@@ -5,17 +5,18 @@ This module contains all query-related routes for the LightRAG API.
 import asyncio
 import json
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency, internal_server_error
+from lightrag.prompt import PROMPTS
 from lightrag.utils import logger
 from pydantic import BaseModel, Field, field_validator
 
 
 class QueryRequest(BaseModel):
     query: str = Field(
-        min_length=3,
+        min_length=1,
         description="The query text",
     )
 
@@ -120,13 +121,18 @@ class QueryRequest(BaseModel):
         description="If True, enables streaming output. Defaults to False for /query, True for /query/stream.",
     )
 
+    workspace: Optional[str] = Field(
+        default=None,
+        description="Knowledge base (workspace) to query. When omitted, every knowledge base is queried and the answers are merged.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
-        # min_length runs before strip; re-check so pads cannot shrink below 3 chars.
+        # min_length runs before strip; re-check so pads cannot shrink to empty.
         stripped = query.strip()
-        if len(stripped) < 3:
-            raise ValueError("query must be at least 3 characters after stripping")
+        if len(stripped) < 1:
+            raise ValueError("query must not be empty after stripping")
         return stripped
 
     @field_validator("conversation_history", mode="after")
@@ -153,7 +159,12 @@ class QueryRequest(BaseModel):
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
             exclude_none=True,
-            exclude={"query", "include_chunk_content", "include_progress"},
+            exclude={
+                "query",
+                "workspace",
+                "include_chunk_content",
+                "include_progress",
+            },
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -235,12 +246,86 @@ class StreamChunkResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+async def _kb_stream_lines(
+    kb_id: str,
+    result: dict[str, Any],
+    include_references: bool,
+) -> AsyncIterator[str]:
+    """Yield NDJSON lines for one knowledge base's result in multi-KB mode.
+
+    Empty / no-context results are skipped entirely. Answers are prefixed
+    with a ``**[<kb_id>]**`` heading so merged streams stay readable, and
+    reference ids are prefixed with the knowledge base id so citations from
+    different knowledge bases cannot collide.
+    """
+    llm_response = result.get("llm_response", {}) or {}
+    is_streaming = llm_response.get("is_streaming")
+    if is_streaming:
+        response_iterator = llm_response.get("response_iterator")
+        if response_iterator is None:
+            return
+    else:
+        content = llm_response.get("content") or ""
+        if not content or content == PROMPTS["fail_response"]:
+            return
+
+    if include_references:
+        refs = []
+        for ref in (result.get("data", {}) or {}).get("references", []) or []:
+            ref_copy = dict(ref)
+            ref_copy["reference_id"] = f"{kb_id}:{ref_copy.get('reference_id', '')}"
+            refs.append(ref_copy)
+        if refs:
+            yield f"{json.dumps({'references': refs})}\n"
+
+    if is_streaming:
+        yield f"{json.dumps({'response': f'**[{kb_id}]**\n\n'})}\n"
+        async for chunk in llm_response.get("response_iterator"):
+            if chunk:
+                yield f"{json.dumps({'response': chunk})}\n"
+    else:
+        content = llm_response.get("content") or ""
+        yield f"{json.dumps({'response': f'**[{kb_id}]**\n\n{content}\n\n'})}\n"
+
+
+def create_query_routes(
+    rag,
+    api_key: Optional[str] = None,
+    top_k: int = 60,
+    build_rag_instance=None,
+):
     # Fresh router per call. A module-level instance would accumulate
     # duplicate routes when the factory is invoked more than once in the
     # same process (e.g. across tests), which triggers FastAPI's
     # "Duplicate Operation ID" warnings.
     router = APIRouter(tags=["query"])
+
+    async def _resolve_query_rags(
+        workspace: Optional[str], *, bypass: bool = False
+    ) -> list[tuple[Optional[str], Any]]:
+        """Resolve the ``(kb_id, rag)`` pairs a query should run against.
+
+        ``build_rag_instance`` is None → the primary rag only (legacy mode).
+        A non-empty ``workspace`` → that single knowledge base. Otherwise →
+        every discovered knowledge base; falls back to the primary rag when
+        no knowledge bases exist. ``bypass`` mode never uses retrieval, so it
+        always resolves to the primary rag.
+        """
+        if build_rag_instance is None or bypass:
+            return [(None, rag)]
+        # Local import: knowledge_base_routes pulls in lightrag_server helpers,
+        # so a module-level import here would create a cycle.
+        from .knowledge_base_routes import _discover_kbs, _get_rag
+
+        if workspace:
+            return [(workspace, await _get_rag(workspace, build_rag_instance))]
+        kb_ids = _discover_kbs()
+        if not kb_ids:
+            return [(None, rag)]
+        pairs = []
+        for kb_id in kb_ids:
+            pairs.append((kb_id, await _get_rag(kb_id, build_rag_instance)))
+        return pairs
 
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -457,18 +542,75 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             param.stream = False
             # Unified approach: always use aquery_llm for both cases
             start_time = time.perf_counter()
-            result = await rag.aquery_llm(request.query, param=param)
-            response_time = round(time.perf_counter() - start_time, 3)
+            pairs = await _resolve_query_rags(
+                request.workspace, bypass=(param.mode == "bypass")
+            )
+            if len(pairs) == 1 and pairs[0][0] is None:
+                # Single primary rag (legacy behaviour).
+                result = await rag.aquery_llm(request.query, param=param)
+                response_time = round(time.perf_counter() - start_time, 3)
 
-            # Extract LLM response and references from unified result
-            llm_response = result.get("llm_response", {})
-            data = result.get("data", {})
-            references = data.get("references", [])
+                # Extract LLM response and references from unified result
+                llm_response = result.get("llm_response", {})
+                data = result.get("data", {})
+                references = data.get("references", [])
+                chunks = data.get("chunks", [])
 
-            # Get the non-streaming response content
-            response_content = llm_response.get("content", "")
-            if not response_content:
-                response_content = "No relevant context found for the query."
+                # Get the non-streaming response content
+                response_content = llm_response.get("content", "")
+                if not response_content:
+                    response_content = "No relevant context found for the query."
+            else:
+                # Multi-knowledge-base: run the query against every knowledge
+                # base and merge the non-empty answers. Reference ids are
+                # prefixed with the knowledge base id so citations from
+                # different knowledge bases cannot collide.
+                segments: list[tuple[str, str]] = []
+                references = []
+                chunks = []
+                for kb_id, kb_rag in pairs:
+                    try:
+                        kb_result = await kb_rag.aquery_llm(
+                            request.query, param=param
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            f"Query failed for knowledge base '{kb_id}': {exc}",
+                            exc_info=True,
+                        )
+                        continue
+                    kb_content = (
+                        (kb_result.get("llm_response", {}) or {}).get("content", "")
+                        or ""
+                    )
+                    if not kb_content or kb_content == PROMPTS["fail_response"]:
+                        continue
+                    segments.append((kb_id, kb_content))
+                    for ref in (kb_result.get("data", {}) or {}).get(
+                        "references", []
+                    ) or []:
+                        ref_copy = dict(ref)
+                        ref_copy["reference_id"] = (
+                            f"{kb_id}:{ref_copy.get('reference_id', '')}"
+                        )
+                        references.append(ref_copy)
+                    for chunk in (kb_result.get("data", {}) or {}).get(
+                        "chunks", []
+                    ) or []:
+                        chunk_copy = dict(chunk)
+                        if chunk_copy.get("reference_id"):
+                            chunk_copy["reference_id"] = (
+                                f"{kb_id}:{chunk_copy['reference_id']}"
+                            )
+                        chunks.append(chunk_copy)
+                if segments:
+                    response_content = "\n\n---\n\n".join(
+                        f"**[{kb_id}]**\n\n{content}"
+                        for kb_id, content in segments
+                    )
+                else:
+                    response_content = "No relevant context found for the query."
+                response_time = round(time.perf_counter() - start_time, 3)
 
             # Enrich references with chunk content if requested
             if request.include_references and request.include_chunk_content:
@@ -829,6 +971,16 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # the exact protocol order: references → response chunks → time.
             include_progress = request.include_progress or False
 
+            # Multi-knowledge-base mode: every discovered KB is queried and its
+            # answer streamed as a separate ``**[<kb_id>]**``-headed segment.
+            pairs = await _resolve_query_rags(
+                request.workspace, bypass=(param.mode == "bypass")
+            )
+            # Only the primary rag (no discovered knowledge base) counts as
+            # single-rag mode; a sole knowledge base still needs the merged
+            # path so it is queried through its workspace-isolated instance.
+            multi_kb = not (len(pairs) == 1 and pairs[0][0] is None)
+
             if include_progress:
                 progress_queue: asyncio.Queue = asyncio.Queue()
                 # Sentinel enqueued once the query task settles, so the generator
@@ -841,18 +993,39 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     await progress_queue.put(event)
 
                 async def run_query():
-                    # Wrap aquery_llm so the sentinel is enqueued exactly once the
+                    # Wrap the query so the sentinel is enqueued exactly once the
                     # query settles — on success, error, or cancellation. The
                     # finally runs after every progress event the callback awaited
                     # inside aquery_llm, so the sentinel is always the last queue
                     # item. put_nowait never blocks on the unbounded queue, which
                     # keeps the finally safe even while a CancelledError propagates.
                     try:
-                        return await rag.aquery_llm(
-                            request.query,
-                            param=param,
-                            progress_callback=progress_callback,
-                        )
+                        if multi_kb:
+                            results = []
+                            for kb_id, kb_rag in pairs:
+                                if kb_id:
+                                    await progress_callback(f"kb:{kb_id}")
+                                results.append(
+                                    (
+                                        kb_id,
+                                        await kb_rag.aquery_llm(
+                                            request.query,
+                                            param=param,
+                                            progress_callback=progress_callback,
+                                        ),
+                                    )
+                                )
+                            return results
+                        return [
+                            (
+                                None,
+                                await rag.aquery_llm(
+                                    request.query,
+                                    param=param,
+                                    progress_callback=progress_callback,
+                                ),
+                            )
+                        ]
                     finally:
                         progress_queue.put_nowait(done_sentinel)
 
@@ -888,15 +1061,23 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             return
 
                         # Yield references + LLM response chunks + response_time.
-                        stream_gen = _build_stream_generator(
-                            result=result,
-                            include_references=include_references,
-                            include_chunk_content=include_chunk_content,
-                            include_response_time=True,
-                            start_time=start_time,
-                        )
-                        async for line in stream_gen():
-                            yield line
+                        if multi_kb:
+                            for kb_id, kb_result in result:
+                                async for line in _kb_stream_lines(
+                                    kb_id, kb_result, include_references
+                                ):
+                                    yield line
+                            yield f"{json.dumps({'response_time': round(time.perf_counter() - start_time, 3)})}\n"
+                        else:
+                            stream_gen = _build_stream_generator(
+                                result=result[0][1],
+                                include_references=include_references,
+                                include_chunk_content=include_chunk_content,
+                                include_response_time=True,
+                                start_time=start_time,
+                            )
+                            async for line in stream_gen():
+                                yield line
                     finally:
                         if not query_task.done():
                             query_task.cancel()
@@ -916,6 +1097,35 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 )
             else:
                 # Default path: no progress events, original protocol order preserved.
+                if multi_kb:
+                    async def stream_generator():
+                        for kb_id, kb_rag in pairs:
+                            try:
+                                kb_result = await kb_rag.aquery_llm(
+                                    request.query, param=param
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.error(
+                                    f"Query failed for knowledge base '{kb_id}': {exc}",
+                                    exc_info=True,
+                                )
+                                continue
+                            async for line in _kb_stream_lines(
+                                kb_id, kb_result, request.include_references
+                            ):
+                                yield line
+
+                    return StreamingResponse(
+                        stream_generator(),
+                        media_type="application/x-ndjson",
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "Content-Type": "application/x-ndjson",
+                            "X-Accel-Buffering": "no",
+                        },
+                    )
+
                 result = await rag.aquery_llm(request.query, param=param)
                 stream_gen = _build_stream_generator(
                     result=result,
@@ -1340,19 +1550,70 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         try:
             param = request.to_query_params(False)  # No streaming for data endpoint
-            response = await rag.aquery_data(request.query, param=param)
+            pairs = await _resolve_query_rags(
+                request.workspace, bypass=(param.mode == "bypass")
+            )
+            if len(pairs) == 1 and pairs[0][0] is None:
+                response = await rag.aquery_data(request.query, param=param)
 
-            # aquery_data returns the new format with status, message, data, and metadata
-            if isinstance(response, dict):
-                return QueryDataResponse(**response)
-            else:
-                # Handle unexpected response format
-                return QueryDataResponse(
-                    status="failure",
-                    message="Invalid response type",
-                    data={},
-                    metadata={},
-                )
+                # aquery_data returns the new format with status, message, data, and metadata
+                if isinstance(response, dict):
+                    return QueryDataResponse(**response)
+                else:
+                    # Handle unexpected response format
+                    return QueryDataResponse(
+                        status="failure",
+                        message="Invalid response type",
+                        data={},
+                        metadata={},
+                    )
+
+            # Multi-knowledge-base: merge the structured results from every
+            # knowledge base. Reference ids are prefixed with the knowledge
+            # base id so citations from different knowledge bases cannot
+            # collide.
+            merged_data = {
+                "entities": [],
+                "relationships": [],
+                "chunks": [],
+                "references": [],
+            }
+            merged_metadata = {}
+            for kb_id, kb_rag in pairs:
+                try:
+                    kb_resp = await kb_rag.aquery_data(request.query, param=param)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        f"Data query failed for knowledge base '{kb_id}': {exc}",
+                        exc_info=True,
+                    )
+                    continue
+                if not isinstance(kb_resp, dict):
+                    continue
+                data = kb_resp.get("data") or {}
+                for key in ("entities", "relationships", "chunks"):
+                    for item in data.get(key, []) or []:
+                        item_copy = dict(item)
+                        if item_copy.get("reference_id"):
+                            item_copy["reference_id"] = (
+                                f"{kb_id}:{item_copy['reference_id']}"
+                            )
+                        merged_data[key].append(item_copy)
+                for ref in data.get("references", []) or []:
+                    ref_copy = dict(ref)
+                    ref_copy["reference_id"] = (
+                        f"{kb_id}:{ref_copy.get('reference_id', '')}"
+                    )
+                    merged_data["references"].append(ref_copy)
+                meta = kb_resp.get("metadata") or {}
+                if isinstance(meta, dict) and not merged_metadata:
+                    merged_metadata = meta
+            return QueryDataResponse(
+                status="success",
+                message="Query executed successfully (merged across knowledge bases)",
+                data=merged_data,
+                metadata=merged_metadata,
+            )
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
             raise internal_server_error(e)

@@ -18,6 +18,7 @@ import { getPopularLabels, searchLabels } from '@/api/lightrag'
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
+  const graphWorkspace = useSettingsStore.use.graphWorkspace()
   const dropdownRefreshTrigger = useSettingsStore.use.searchLabelDropdownRefreshTrigger()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
@@ -41,25 +42,48 @@ const GraphLabels = () => {
     }
   }, [label, t, isRefreshing])
 
-  // Initialize search history on component mount
+  // Initialize search history on component mount / workspace switch
+  const prevWorkspaceRef = useRef(graphWorkspace)
   useEffect(() => {
-    const initializeHistory = async () => {
-      const history = SearchHistoryManager.getHistory()
+    const workspaceChanged = prevWorkspaceRef.current !== graphWorkspace
+    prevWorkspaceRef.current = graphWorkspace
 
-      if (history.length === 0) {
-        // If no history exists, fetch popular labels and initialize
-        try {
-          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
-          await SearchHistoryManager.initializeWithDefaults(popularLabels)
-        } catch (error) {
-          console.error('Failed to initialize search history:', error)
-          // No fallback needed, API is the source of truth
+    const initializeHistory = async () => {
+      // A workspace switch invalidates the previous workspace's label
+      // selection and search history — start fresh on the new one.
+      SearchHistoryManager.clearHistory()
+
+      if (workspaceChanged) {
+        const state = useSettingsStore.getState()
+        if (state.queryLabel && state.queryLabel !== '*') {
+          state.setQueryLabel('*')
         }
+        // Reset graph data fetch status so the new workspace's graph loads
+        useGraphStore.getState().setGraphDataFetchAttempted(false)
+        useGraphStore.getState().setLastSuccessfulQueryLabel('')
+        useGraphStore.getState().incrementGraphDataVersion()
+      }
+
+      try {
+        const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, graphWorkspace)
+        await SearchHistoryManager.initializeWithDefaults(popularLabels)
+
+        // Clean up persisted queryLabel (settings-storage) when the backend
+        // has no entities — the last-selected label may reference a deleted
+        // entity and would otherwise survive across reloads.
+        if (popularLabels.length === 0) {
+          const currentLabel = useSettingsStore.getState().queryLabel
+          if (currentLabel && currentLabel !== '*') {
+            useSettingsStore.getState().setQueryLabel('*')
+          }
+        }
+      } catch (error) {
+        console.error('Failed to initialize search history:', error)
       }
     }
 
     initializeHistory()
-  }, [])
+  }, [graphWorkspace])
 
   // Force AsyncSelect to re-render when label or dropdownRefreshTrigger changes.
   // Uses render-time previous-value comparison to avoid cascading renders from
@@ -92,25 +116,16 @@ const GraphLabels = () => {
 
     console.log('Reloading popular labels (triggered by pipeline idle)')
     try {
-      const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
-      SearchHistoryManager.clearHistory()
-
-      if (popularLabels.length === 0) {
-        const fallbackLabels = ['entity', 'relationship', 'document', 'concept']
-        await SearchHistoryManager.initializeWithDefaults(fallbackLabels)
-      } else {
-        await SearchHistoryManager.initializeWithDefaults(popularLabels)
-      }
+      const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, graphWorkspace)
+      // initializeWithDefaults now merges: replaces popular-label entries
+      // while keeping user-entered history.  No need to clearHistory first.
+      await SearchHistoryManager.initializeWithDefaults(popularLabels)
     } catch (error) {
       console.error('Failed to reload popular labels:', error)
-      const fallbackLabels = ['entity', 'relationship', 'document']
-      SearchHistoryManager.clearHistory()
-      await SearchHistoryManager.initializeWithDefaults(fallbackLabels)
     } finally {
-      // Always clear the flag
       shouldRefreshPopularLabelsRef.current = false
     }
-  }, [])
+  }, [graphWorkspace])
 
   // Helper: Bump dropdown data to trigger refresh
   const bumpDropdownData = useCallback(({ forceSelectKey = false } = {}) => {
@@ -129,7 +144,11 @@ const GraphLabels = () => {
       } else {
         // Non-empty query: call backend search API
         try {
-          const apiResults = await searchLabels(query.trim(), searchLabelsDefaultLimit)
+          const apiResults = await searchLabels(
+            query.trim(),
+            searchLabelsDefaultLimit,
+            graphWorkspace
+          )
           results = apiResults.length <= dropdownDisplayLimit
             ? apiResults
             : [...apiResults.slice(0, dropdownDisplayLimit), '...']
@@ -150,7 +169,7 @@ const GraphLabels = () => {
       return finalResults;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refreshTrigger] // Intentionally added to trigger re-creation when data changes
+    [refreshTrigger, graphWorkspace] // Intentionally added to trigger re-creation when data changes
   )
 
   const handleRefresh = useCallback(async () => {
@@ -195,7 +214,7 @@ const GraphLabels = () => {
 
         try {
           // Re-fetch popular labels and update search history (if not already done)
-          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit)
+          const popularLabels = await getPopularLabels(popularLabelsDefaultLimit, graphWorkspace)
           SearchHistoryManager.clearHistory()
 
           if (popularLabels.length === 0) {
@@ -232,7 +251,7 @@ const GraphLabels = () => {
     } finally {
       setIsRefreshing(false)
     }
-  }, [label, reloadPopularLabels, bumpDropdownData])
+  }, [label, reloadPopularLabels, bumpDropdownData, graphWorkspace])
 
   // Handle dropdown before open - reload popular labels if needed
   const handleDropdownBeforeOpen = useCallback(async () => {

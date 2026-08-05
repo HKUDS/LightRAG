@@ -9,6 +9,13 @@ import {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/Dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/Select'
 import FileUploader from '@/components/ui/FileUploader'
 import { toast } from 'sonner'
 import { supportedFileTypes } from '@/lib/constants'
@@ -20,9 +27,9 @@ import {
   type FileTypesState
 } from '@/lib/fileTypes'
 import { errorMessage } from '@/lib/utils'
-import { getSupportedFileTypes, uploadDocument } from '@/api/lightrag'
+import { getSupportedFileTypes, uploadDocument, uploadKnowledgeBaseDocument, type KnowledgeBaseSummary } from '@/api/lightrag'
 
-import { UploadIcon } from 'lucide-react'
+import { UploadIcon, Database } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 interface UploadDocumentsDialogProps {
@@ -33,11 +40,17 @@ interface UploadDocumentsDialogProps {
    * than waiting for the whole sequential batch to finish).
    */
   onUploadBatchAccepted?: () => void
+  /** Knowledge base id to upload into; global upload when omitted */
+  kbId?: string
+  /** List of available knowledge bases for the selector */
+  kbList?: KnowledgeBaseSummary[]
 }
 
 export default function UploadDocumentsDialog({
   onDocumentsUploaded,
-  onUploadBatchAccepted
+  onUploadBatchAccepted,
+  kbId,
+  kbList = []
 }: UploadDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -45,6 +58,8 @@ export default function UploadDocumentsDialog({
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
   const [fileTypes, setFileTypes] = useState<FileTypesState>({ status: 'idle' })
+  // Selected knowledge base id for upload; defaults to the parent's kbId or empty for global upload
+  const [selectedKbId, setSelectedKbId] = useState(kbId || '')
 
   // Fetch the live allowlist + engine capability matrix while the dialog is
   // open. `loading` is entered synchronously in onOpenChange (not here) so
@@ -136,13 +151,25 @@ export default function UploadDocumentsDialog({
               [file.name]: 0
             }))
 
-            const result = await uploadDocument(file, (percentCompleted: number) => {
-              console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
+            let result: { status: string; message: string }
+            if (selectedKbId) {
+              // KB uploads are accepted asynchronously (track_id based), so
+              // mark the file as transferred right away; ingestion happens in
+              // the background on the server.
               setProgresses((pre) => ({
                 ...pre,
-                [file.name]: percentCompleted
+                [file.name]: 100
               }))
-            })
+              result = await uploadKnowledgeBaseDocument(selectedKbId, file)
+            } else {
+              result = await uploadDocument(file, (percentCompleted: number) => {
+                console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
+                setProgresses((pre) => ({
+                  ...pre,
+                  [file.name]: percentCompleted
+                }))
+              })
+            }
 
             if (result.status !== 'success') {
               uploadErrors[file.name] = result.message
@@ -179,7 +206,7 @@ export default function UploadDocumentsDialog({
                 // server detail so users can tell why they were rejected.
                 if (
                   typeof detail === 'string' &&
-                  (/already contains/i.test(detail) || /Status:/i.test(detail))
+                  (/already contains/i.test(detail) || /already exists/i.test(detail) || /Status:/i.test(detail))
                 ) {
                   errorMsg = duplicateFileMsg
                 } else {
@@ -236,7 +263,7 @@ export default function UploadDocumentsDialog({
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, onUploadBatchAccepted]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded, onUploadBatchAccepted, selectedKbId]
   )
 
   const uploaderInputs = deriveUploaderInputs(fileTypes)
@@ -257,6 +284,7 @@ export default function UploadDocumentsDialog({
           setProgresses({})
           setFileErrors({})
           setFileTypes({ status: 'idle' })
+          setSelectedKbId(kbId || '')
         }
         setOpen(nextOpen)
       }}
@@ -273,6 +301,33 @@ export default function UploadDocumentsDialog({
             {t('documentPanel.uploadDocuments.description')}
           </DialogDescription>
         </DialogHeader>
+        {kbList.length > 0 && (
+          <div className="mb-4">
+            <label className="text-sm font-medium mb-1.5 block">
+              {t('documentPanel.uploadDocuments.selectKb')}
+            </label>
+            <Select
+              value={selectedKbId}
+              onValueChange={setSelectedKbId}
+              disabled={isUploading}
+            >
+              <SelectTrigger className="w-full h-9 gap-1">
+                <Database className="h-4 w-4 shrink-0" />
+                <SelectValue placeholder={t('documentPanel.uploadDocuments.kbPlaceholder')} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">
+                  {t('documentPanel.uploadDocuments.kbPlaceholder')}
+                </SelectItem>
+                {kbList.map(kb => (
+                  <SelectItem key={kb.id} value={kb.id}>
+                    {kb.name || kb.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <FileUploader
           maxFileCount={Infinity}
           maxSize={200 * 1024 * 1024}

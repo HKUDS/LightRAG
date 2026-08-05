@@ -11,10 +11,14 @@ import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 import { ZapIcon } from 'lucide-react'
 
+import AppSidebar from '@/features/AppSidebar'
+import DashboardView from '@/features/DashboardView'
 import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalView from '@/features/RetrievalView'
-import ApiSite from '@/features/ApiSite'
+import KnowledgeBaseList from '@/features/KnowledgeBaseList'
+import KnowledgeBaseView from '@/features/KnowledgeBaseView'
+import UserManagement from '@/features/UserManagement'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
@@ -23,6 +27,9 @@ function App() {
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
+  const [kbView, setKbView] = useState<{ mode: 'list' | 'detail'; id?: string }>({
+    mode: 'list'
+  })
   const [initializing, setInitializing] = useState(true) // Add initializing state
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
   const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
@@ -112,22 +119,28 @@ function App() {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
         const status = await getAuthStatus();
 
-        // If auth is not configured and a new token is returned, use the new token
-        if (!status.auth_configured && status.access_token) {
+        // If auth is not configured and a new token is returned, use the new token.
+        // Only do this when there is no existing token — never overwrite a real
+        // user token (e.g. admin from .user_data.json) with a guest token.
+        if (!status.auth_configured && status.access_token && !token) {
           useAuthStore.getState().login(
             status.access_token, // Use the new token
             true, // Guest mode
+            null, // permissions
             status.core_version,
             status.api_version,
             status.webui_title || null,
             status.webui_description || null
           );
         } else if (token && (status.core_version || status.api_version || status.webui_title || status.webui_description)) {
-          // Otherwise use the old token (if it exists)
-          const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode;
+          // Update metadata only — preserve existing auth state (token, guest
+          // mode, permissions) so a real user login is never downgraded.
+          const authStore = useAuthStore.getState()
+          const isGuestMode = status.auth_mode === 'disabled' || authStore.isGuestMode;
           useAuthStore.getState().login(
             token,
             isGuestMode,
+            authStore.permissions, // preserve existing permissions
             status.core_version,
             status.api_version,
             status.webui_title || null,
@@ -197,27 +210,51 @@ function App() {
             </div>
           </div>
         ) : (
-          // Main content after initialization
+          // Main content after initialization: fixed sidebar + contextual header + content
           <main className="flex h-screen w-screen overflow-hidden">
+            {/*
+              Tabs is controlled by `currentTab` (not `defaultValue`) so that the
+              sidebar — which writes the tab into the settings store — actually
+              drives which panel is mounted.
+            */}
             <Tabs
-              defaultValue={currentTab}
-              className="!m-0 flex grow flex-col !p-0 overflow-hidden"
+              value={currentTab}
+              className="!m-0 flex h-full w-full grow flex-row gap-0 overflow-hidden !p-0"
               onValueChange={handleTabChange}
             >
-              <SiteHeader />
-              <div className="relative grow">
-                <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
-                  <DocumentManager />
-                </TabsContent>
-                <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <GraphViewer />
-                </TabsContent>
-                <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <RetrievalView />
-                </TabsContent>
-                <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
-                  <ApiSite />
-                </TabsContent>
+              <AppSidebar />
+
+              <div className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden">
+                <SiteHeader />
+                <div className="relative grow overflow-hidden">
+                  <TabsContent value="dashboard" className="h-full overflow-auto">
+                    <DashboardView />
+                  </TabsContent>
+                  <TabsContent value="documents" className="h-full overflow-auto">
+                    <DocumentManager />
+                  </TabsContent>
+                  <TabsContent value="knowledge-base" className="h-full overflow-auto">
+                    {kbView.mode === 'detail' && kbView.id ? (
+                      <KnowledgeBaseView
+                        kbId={kbView.id}
+                        onBack={() => setKbView({ mode: 'list' })}
+                      />
+                    ) : (
+                      <KnowledgeBaseList
+                        onOpen={(id) => setKbView({ mode: 'detail', id })}
+                      />
+                    )}
+                  </TabsContent>
+                  <TabsContent value="knowledge-graph" className="h-full overflow-hidden">
+                    <GraphViewer />
+                  </TabsContent>
+                  <TabsContent value="retrieval" className="h-full overflow-hidden">
+                    <RetrievalView />
+                  </TabsContent>
+                  <TabsContent value="users" className="h-full overflow-auto">
+                    <UserManagement />
+                  </TabsContent>
+                </div>
               </div>
             </Tabs>
             {enableHealthCheck && <StatusIndicator />}

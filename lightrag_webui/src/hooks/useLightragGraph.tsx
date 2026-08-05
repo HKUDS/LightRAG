@@ -145,7 +145,12 @@ export type EdgeType = {
   hidden?: boolean
 }
 
-const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
+const fetchGraph = async (
+  label: string,
+  maxDepth: number,
+  maxNodes: number,
+  workspace: string
+) => {
   let rawData: any
 
   // Trigger GraphLabels component to check if the label is valid
@@ -157,7 +162,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
   try {
     console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`)
-    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes)
+    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes, workspace)
   } catch (e) {
     // Record the backend error, then RETHROW so the caller's .catch() runs its
     // bounded-retry path. Returning null here would resolve the promise
@@ -326,6 +331,7 @@ const createSigmaGraph = async (rawGraph: RawGraph | null): Promise<UndirectedGr
 const useLightrangeGraph = () => {
   const { t } = useTranslation()
   const queryLabel = useSettingsStore.use.queryLabel()
+  const graphWorkspace = useSettingsStore.use.graphWorkspace()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
@@ -410,7 +416,7 @@ const useLightrangeGraph = () => {
       // with an identical signature, some code path reset
       // graphDataFetchAttempted after a completed fetch — refetching would
       // start an infinite request loop against the backend.
-      const fetchSignature = `${queryLabel}|${maxQueryDepth}|${maxNodes}|v${graphDataVersion}`
+      const fetchSignature = `${queryLabel}|${maxQueryDepth}|${maxNodes}|${graphWorkspace}|v${graphDataVersion}`
       if (lastFetchSignatureRef.current === fetchSignature) {
         console.warn(
           '[useLightragGraph] Suppressed duplicate graph fetch:',
@@ -454,6 +460,7 @@ const useLightrangeGraph = () => {
       const currentQueryLabel = queryLabel
       const currentMaxQueryDepth = maxQueryDepth
       const currentMaxNodes = maxNodes
+      const currentWorkspace = graphWorkspace
 
       // Declare a variable to store data promise
       let dataPromise: Promise<{
@@ -463,7 +470,12 @@ const useLightrangeGraph = () => {
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
-        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes)
+        dataPromise = fetchGraph(
+          currentQueryLabel,
+          currentMaxQueryDepth,
+          currentMaxNodes,
+          currentWorkspace
+        )
       } else {
         // 2. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
@@ -659,7 +671,7 @@ const useLightrangeGraph = () => {
           }
         })
     }
-  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, retryNonce])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t, graphDataVersion, retryNonce, graphWorkspace])
 
   // Clean up any pending backoff retry timer on unmount.
   useEffect(() => {
@@ -696,7 +708,12 @@ const useLightrangeGraph = () => {
         }
 
         // Fetch the extended subgraph with depth 2
-        const extendedGraph = await queryGraphs(label, 2, 1000)
+        const extendedGraph = await queryGraphs(
+          label,
+          2,
+          1000,
+          useSettingsStore.getState().graphWorkspace
+        )
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph')

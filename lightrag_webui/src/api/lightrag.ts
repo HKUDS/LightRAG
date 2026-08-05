@@ -275,6 +275,8 @@ export type DocStatusResponse = {
   error_msg?: string
   metadata?: Record<string, any>
   file_path: string
+  /** Knowledge base (workspace) the document belongs to; set by aggregated queries */
+  kb_id?: string
 }
 
 export type DocsStatusesResponse = {
@@ -295,6 +297,8 @@ export type DocumentsRequest = {
   page_size: number
   sort_field: 'created_at' | 'updated_at' | 'id' | 'file_path'
   sort_direction: 'asc' | 'desc'
+  /** Optional workspace / knowledge base id to scope the query */
+  workspace?: string
 }
 
 export type PaginationInfo = {
@@ -341,11 +345,45 @@ export type PipelineStatusResponse = {
   update_status?: Record<string, any>
 }
 
+export type DashboardStatsResponse = {
+  knowledge_base_count: number
+  document_count: number
+  processed_count: number
+  processing_count: number
+  pending_count: number
+  failed_count: number
+  entity_count: number
+  relation_count: number
+  chunk_count: number
+  status_counts: Record<string, number>
+  pipeline_busy: boolean
+  workspace: string
+  generated_at: number
+}
+
+export type SystemInfoResponse = {
+  workspace: string
+  core_version?: string | null
+  api_version?: string | null
+  llm_binding?: string | null
+  llm_model?: string | null
+  embedding_binding?: string | null
+  embedding_model?: string | null
+  kv_storage?: string | null
+  vector_storage?: string | null
+  graph_storage?: string | null
+  doc_status_storage?: string | null
+  max_parallel_insert?: number | null
+  chunk_size?: number | null
+  chunk_overlap_size?: number | null
+}
+
 export type LoginResponse = {
   access_token: string
   token_type: string
   auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
   message?: string                    // Optional message
+  permissions?: string[]              // User menu permissions
   core_version?: string
   api_version?: string
   webui_title?: string
@@ -393,6 +431,7 @@ const silentRefreshGuestToken = async (): Promise<string> => {
         useAuthStore.getState().login(
           newToken,
           true,
+          response.data.permissions || null,
           response.data.core_version,
           response.data.api_version,
           response.data.webui_title || null,
@@ -530,24 +569,43 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  maxNodes: number
+  maxNodes: number,
+  workspace?: string
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  const params = new URLSearchParams({
+    label,
+    max_depth: String(maxDepth),
+    max_nodes: String(maxNodes)
+  })
+  if (workspace) params.set('workspace', workspace)
+  const response = await axiosInstance.get(`/graphs?${params.toString()}`)
   return response.data
 }
 
-export const getGraphLabels = async (): Promise<string[]> => {
-  const response = await axiosInstance.get('/graph/label/list')
+export const getGraphLabels = async (workspace?: string): Promise<string[]> => {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.get(`/graph/label/list${params}`)
   return response.data
 }
 
-export const getPopularLabels = async (limit: number = popularLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/popular?limit=${limit}`)
+export const getPopularLabels = async (
+  limit: number = popularLabelsDefaultLimit,
+  workspace?: string
+): Promise<string[]> => {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (workspace) params.set('workspace', workspace)
+  const response = await axiosInstance.get(`/graph/label/popular?${params.toString()}`)
   return response.data
 }
 
-export const searchLabels = async (query: string, limit: number = searchLabelsDefaultLimit): Promise<string[]> => {
-  const response = await axiosInstance.get(`/graph/label/search?q=${encodeURIComponent(query)}&limit=${limit}`)
+export const searchLabels = async (
+  query: string,
+  limit: number = searchLabelsDefaultLimit,
+  workspace?: string
+): Promise<string[]> => {
+  const params = new URLSearchParams({ q: query, limit: String(limit) })
+  if (workspace) params.set('workspace', workspace)
+  const response = await axiosInstance.get(`/graph/label/search?${params.toString()}`)
   return response.data
 }
 
@@ -575,13 +633,15 @@ export const getSupportedFileTypes = async (signal?: AbortSignal): Promise<Suppo
   return response.data
 }
 
-export const scanNewDocuments = async (): Promise<ScanResponse> => {
-  const response = await axiosInstance.post('/documents/scan')
+export const scanNewDocuments = async (workspace?: string): Promise<ScanResponse> => {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.post(`/documents/scan${params}`)
   return response.data
 }
 
-export const reprocessFailedDocuments = async (): Promise<ReprocessFailedResponse> => {
-  const response = await axiosInstance.post('/documents/reprocess_failed')
+export const reprocessFailedDocuments = async (workspace?: string): Promise<ReprocessFailedResponse> => {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.post(`/documents/reprocess_failed${params}`)
   return response.data
 }
 
@@ -942,10 +1002,16 @@ export const clearCache = async (): Promise<{
 export const deleteDocuments = async (
   docIds: string[],
   deleteFile: boolean = false,
-  deleteLLMCache: boolean = false
+  deleteLLMCache: boolean = false,
+  workspace?: string
 ): Promise<DeleteDocResponse> => {
   const response = await axiosInstance.delete('/documents/delete_document', {
-    data: { doc_ids: docIds, delete_file: deleteFile, delete_llm_cache: deleteLLMCache }
+    data: {
+      doc_ids: docIds,
+      delete_file: deleteFile,
+      delete_llm_cache: deleteLLMCache,
+      workspace
+    }
   })
   return response.data
 }
@@ -1008,8 +1074,24 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
   }
 }
 
-export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
-  const response = await axiosInstance.get('/documents/pipeline_status')
+export const getPipelineStatus = async (workspace?: string): Promise<PipelineStatusResponse> => {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.get(`/documents/pipeline_status${params}`)
+  return response.data
+}
+
+export const getDashboardStats = async (): Promise<DashboardStatsResponse> => {
+  const response = await axiosInstance.get('/dashboard/stats')
+  return response.data
+}
+
+export const getSystemInfo = async (): Promise<SystemInfoResponse> => {
+  const response = await axiosInstance.get('/dashboard/system')
+  return response.data
+}
+
+export const getKnowledgeBases = async (): Promise<KnowledgeBaseSummary[]> => {
+  const response = await axiosInstance.get('/knowledge_bases')
   return response.data
 }
 
@@ -1034,6 +1116,108 @@ export const loginToServer = async (username: string, password: string): Promise
   return response.data;
 }
 
+// ---------------------------------------------------------------------------
+// User Management API
+// ---------------------------------------------------------------------------
+
+export interface UserInfo {
+  username: string
+  role: string
+  locked: boolean
+  permissions: string[]
+  created_at: string
+}
+
+export interface UserListResponse {
+  users: UserInfo[]
+  total: number
+  available_menus: string[]
+}
+
+export const AVAILABLE_MENU_ITEMS = [
+  'dashboard',
+  'knowledge-base',
+  'documents',
+  'knowledge-graph',
+  'retrieval',
+  'users',
+]
+
+export const getUsers = async (): Promise<UserListResponse> => {
+  const response = await axiosInstance.get('/users')
+  return response.data
+}
+
+export const createUser = async (data: {
+  username: string
+  password: string
+  role?: string
+  permissions?: string[]
+}): Promise<UserInfo> => {
+  const response = await axiosInstance.post('/users', data)
+  return response.data
+}
+
+export const updateUser = async (
+  username: string,
+  data: { password?: string; role?: string }
+): Promise<UserInfo> => {
+  const response = await axiosInstance.put(`/users/${encodeURIComponent(username)}`, data)
+  return response.data
+}
+
+export const deleteUser = async (username: string): Promise<{ status: string; username: string }> => {
+  const response = await axiosInstance.delete(`/users/${encodeURIComponent(username)}`)
+  return response.data
+}
+
+export const toggleLockUser = async (
+  username: string,
+  locked: boolean
+): Promise<UserInfo> => {
+  const response = await axiosInstance.put(
+    `/users/${encodeURIComponent(username)}/lock`,
+    { locked }
+  )
+  return response.data
+}
+
+export const updateUserPermissions = async (
+  username: string,
+  permissions: string[]
+): Promise<UserInfo> => {
+  const response = await axiosInstance.put(
+    `/users/${encodeURIComponent(username)}/permissions`,
+    { permissions }
+  )
+  return response.data
+}
+
+/** Response from POST /graph/sweep_orphans */
+export interface SweepOrphansResponse {
+  status: string
+  total_entities_removed: number
+  total_relations_removed: number
+  workspaces: Array<{
+    workspace: string
+    entities_removed?: number
+    relations_removed?: number
+    error?: string
+  }>
+}
+
+/**
+ * Sweep orphan entities and relations with no remaining chunk data.
+ * @param workspace Optional workspace to sweep; omit or '*' for all workspaces.
+ */
+export const sweepOrphans = async (
+  workspace?: string
+): Promise<SweepOrphansResponse> => {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.post(`/graph/sweep_orphans${params}`)
+  return response.data
+}
+
 /**
  * Updates an entity's properties in the knowledge graph
  * @param entityName The name of the entity to update
@@ -1046,9 +1230,11 @@ export const updateEntity = async (
   entityName: string,
   updatedData: Record<string, any>,
   allowRename: boolean = false,
-  allowMerge: boolean = false
+  allowMerge: boolean = false,
+  workspace?: string
 ): Promise<EntityUpdateResponse> => {
-  const response = await axiosInstance.post('/graph/entity/edit', {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.post(`/graph/entity/edit${params}`, {
     entity_name: entityName,
     updated_data: updatedData,
     allow_rename: allowRename,
@@ -1067,9 +1253,11 @@ export const updateEntity = async (
 export const updateRelation = async (
   sourceEntity: string,
   targetEntity: string,
-  updatedData: Record<string, any>
+  updatedData: Record<string, any>,
+  workspace?: string
 ): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/graph/relation/edit', {
+  const params = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
+  const response = await axiosInstance.post(`/graph/relation/edit${params}`, {
     source_id: sourceEntity,
     target_id: targetEntity,
     updated_data: updatedData
@@ -1082,9 +1270,14 @@ export const updateRelation = async (
  * @param entityName The entity name to check
  * @returns Promise with boolean indicating if the entity exists
  */
-export const checkEntityNameExists = async (entityName: string): Promise<boolean> => {
+export const checkEntityNameExists = async (
+  entityName: string,
+  workspace?: string
+): Promise<boolean> => {
   try {
-    const response = await axiosInstance.get(`/graph/entity/exists?name=${encodeURIComponent(entityName)}`)
+    const params = new URLSearchParams({ name: entityName })
+    if (workspace) params.set('workspace', workspace)
+    const response = await axiosInstance.get(`/graph/entity/exists?${params.toString()}`)
     return response.data.exists
   } catch (error) {
     console.error('Error checking entity name:', error)
@@ -1186,6 +1379,184 @@ const subscribeToPaginatedDocumentsRequest = (
   }
 }
 
+// ---------------------------------------------------------------------------
+// Knowledge Base API
+// ---------------------------------------------------------------------------
+
+export interface KnowledgeBaseSummary {
+  id: string
+  name?: string
+  description?: string | null
+  document_count: number
+  created_at?: string | null
+  is_default: boolean
+}
+
+export interface KnowledgeBaseDetail extends KnowledgeBaseSummary {
+  status_distribution: Record<string, number>
+  storage: Record<string, string>
+}
+
+export interface KnowledgeBaseDocument {
+  id: string
+  file_name: string
+  status: string
+  chunk_count: number
+  size: number
+  updated_at?: string | null
+  multimodal: boolean
+}
+
+export interface KnowledgeBaseDocumentList {
+  items: KnowledgeBaseDocument[]
+  total: number
+  page: number
+  page_size: number
+  status_counts: Record<string, number>
+}
+
+export interface KnowledgeBaseTaskItem {
+  track_id: string
+  doc_id: string
+  file_name: string
+  status: string
+  updated_at?: string | null
+}
+
+export interface KnowledgeBaseCreatePayload {
+  id: string
+  description?: string
+}
+
+/**
+ * Create a new knowledge base.
+ */
+export const createKnowledgeBase = async (
+  payload: KnowledgeBaseCreatePayload
+): Promise<KnowledgeBaseSummary> => {
+  const response = await axiosInstance.post('/knowledge_bases', payload)
+  return response.data
+}
+
+/**
+ * Get detail for a single knowledge base.
+ */
+export const getKnowledgeBase = async (
+  kbId: string
+): Promise<KnowledgeBaseDetail> => {
+  const response = await axiosInstance.get(`/knowledge_bases/${kbId}`)
+  return response.data
+}
+
+/**
+ * Rename a knowledge base (display name only; storage id stays fixed).
+ */
+export const renameKnowledgeBase = async (
+  kbId: string,
+  name: string
+): Promise<KnowledgeBaseSummary> => {
+  const response = await axiosInstance.patch(`/knowledge_bases/${kbId}`, { name })
+  return response.data
+}
+
+/**
+ * Delete a knowledge base.
+ */
+export const deleteKnowledgeBase = async (kbId: string): Promise<void> => {
+  await axiosInstance.delete(`/knowledge_bases/${kbId}`)
+}
+
+/**
+ * List documents inside a knowledge base (paginated / searchable / filterable).
+ */
+export const getKnowledgeBaseDocuments = async (
+  kbId: string,
+  params: {
+    page?: number
+    pageSize?: number
+    status?: string
+    search?: string
+    sortField?: string
+    sortDirection?: string
+  } = {}
+): Promise<KnowledgeBaseDocumentList> => {
+  const search = new URLSearchParams()
+  search.set('page', String(params.page ?? 1))
+  search.set('page_size', String(params.pageSize ?? 10))
+  if (params.status) search.set('status', params.status)
+  if (params.search) search.set('search', params.search)
+  if (params.sortField) search.set('sort_field', params.sortField)
+  if (params.sortDirection) search.set('sort_direction', params.sortDirection)
+  const response = await axiosInstance.get(
+    `/knowledge_bases/${kbId}/documents?${search.toString()}`
+  )
+  return response.data
+}
+
+/**
+ * Upload a document into a knowledge base.
+ */
+export const uploadKnowledgeBaseDocument = async (
+  kbId: string,
+  file: File,
+  options: {
+    parser?: string
+    imageProcessing?: boolean
+    tableProcessing?: boolean
+    formulaProcessing?: boolean
+    enableVlm?: boolean
+  } = {}
+): Promise<{ status: string; message: string; track_id: string }> => {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('parser', options.parser ?? 'auto')
+  form.append('image_processing', String(options.imageProcessing ?? false))
+  form.append('table_processing', String(options.tableProcessing ?? false))
+  form.append('formula_processing', String(options.formulaProcessing ?? false))
+  form.append('enable_vlm', String(options.enableVlm ?? false))
+  const response = await axiosInstance.post(
+    `/knowledge_bases/${kbId}/documents/upload`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  )
+  return response.data
+}
+
+/**
+ * Get recent ingestion task history for a knowledge base.
+ */
+export const getKnowledgeBaseTaskHistory = async (
+  kbId: string,
+  limit = 20
+): Promise<KnowledgeBaseTaskItem[]> => {
+  const response = await axiosInstance.get(
+    `/knowledge_bases/${kbId}/task_history?limit=${limit}`
+  )
+  return response.data
+}
+
+/**
+ * Delete documents from a knowledge base (routes through the shared document
+ * module's destructive pipeline contract).
+ */
+export const deleteKnowledgeBaseDocuments = async (
+  kbId: string,
+  documentIds: string[],
+  force = false,
+  options: { deleteFile?: boolean; deleteLlmCache?: boolean } = {}
+): Promise<{ status: string; message: string }> => {
+  const response = await axiosInstance.post(
+    `/knowledge_bases/${kbId}/documents/delete`,
+    {
+      document_ids: documentIds,
+      force,
+      delete_file: options.deleteFile ?? false,
+      delete_llm_cache: options.deleteLlmCache ?? false
+    }
+  )
+  return response.data
+}
+
 const defaultPaginatedDocumentsPost = async (
   request: DocumentsRequest,
   controller: AbortController
@@ -1244,6 +1615,45 @@ export const getDocumentsPaginatedWithTimeout = (
   timeoutMs: number = 30000,
   errorMsg: string = 'Document fetch timeout'
 ): Promise<PaginatedDocsResponse> => {
+  // When scoped to a specific knowledge base (but not the '*' aggregated
+  // mode), use the KB-specific endpoint
+  if (request.workspace && request.workspace !== '*') {
+    return getKnowledgeBaseDocuments(request.workspace, {
+      page: request.page,
+      pageSize: request.page_size,
+      status: request.status_filter || (request.status_filters?.join(',')),
+      sortField: request.sort_field,
+      sortDirection: request.sort_direction,
+    }).then(data => ({
+      documents: data.items.map(item => ({
+        id: item.id,
+        file_path: item.file_name,
+        status: item.status as DocStatus,
+        chunk_count: item.chunk_count,
+        size: item.size,
+        updated_at: item.updated_at || '',
+        multimodal: item.multimodal,
+        content_length: item.chunk_count,
+        content_summary: '',
+        kb_id: request.workspace,
+        // Fields not available in KB doc list, set defaults
+        created_at: item.updated_at || '',
+        error_msg: '',
+        pipeline_message: '',
+        track_id: '',
+      })),
+      pagination: {
+        page: data.page,
+        page_size: data.page_size,
+        total_count: data.total,
+        total_pages: Math.max(1, Math.ceil(data.total / data.page_size)),
+        has_next: data.page * data.page_size < data.total,
+        has_prev: data.page > 1,
+      },
+      status_counts: data.status_counts as any,
+    }))
+  }
+
   const { requestEntry, release } = subscribeToPaginatedDocumentsRequest(request)
 
   return new Promise<PaginatedDocsResponse>((resolve, reject) => {

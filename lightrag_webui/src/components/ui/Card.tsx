@@ -2,11 +2,30 @@ import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => (
+export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  /**
+   * Surface treatment.
+   * - `solid` (default): the original opaque card, kept for backward compatibility.
+   * - `glass`: translucent glassmorphism panel driven by the `--glass-*` tokens.
+   * - `glass-strong`: less transparent glass, for panels that sit over busy content.
+   */
+  variant?: 'solid' | 'glass' | 'glass-strong'
+  /** Adds a hover lift + accent border. Use only for clickable cards. */
+  interactive?: boolean
+}
+
+const Card = React.forwardRef<HTMLDivElement, CardProps>(
+  ({ className, variant = 'solid', interactive = false, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn('bg-card text-card-foreground rounded-xl border shadow', className)}
+      className={cn(
+        'text-card-foreground rounded-xl',
+        variant === 'solid' && 'bg-card border shadow',
+        variant === 'glass' && 'glass-panel',
+        variant === 'glass-strong' && 'glass-panel-strong',
+        interactive && 'glass-card-hover cursor-pointer',
+        className
+      )}
       {...props}
     />
   )

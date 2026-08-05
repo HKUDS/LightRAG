@@ -19,6 +19,13 @@ import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
 import PaginationControls from '@/components/ui/PaginationControls'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/Select'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -31,18 +38,20 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   scanNewDocuments,
   getDocumentsPaginatedWithTimeout,
+  getKnowledgeBases,
   DocsStatusesResponse,
   DocStatus,
   DocStatusResponse,
   DocumentsRequest,
-  PaginationInfo
+  PaginationInfo,
+  type KnowledgeBaseSummary
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 import { copyToClipboard } from '@/utils/clipboard'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, CopyIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, RotateCcwIcon, CheckSquareIcon, XIcon, AlertTriangle, Info, CopyIcon, Database, SearchIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 import {
   getStatusBucket,
@@ -369,7 +378,7 @@ type RefreshRequest =
     requestVersion: number;
   };
 
-export default function DocumentManager() {
+export default function DocumentManager({ workspace }: { workspace?: string } = {}) {
   // Track component mount status
   const isMountedRef = useRef(true);
 
@@ -401,8 +410,6 @@ export default function DocumentManager() {
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
   const currentTab = useSettingsStore.use.currentTab()
-  const showFileName = useSettingsStore.use.showFileName()
-  const setShowFileName = useSettingsStore.use.setShowFileName()
   const documentsPageSize = useSettingsStore.use.documentsPageSize()
   const setDocumentsPageSize = useSettingsStore.use.setDocumentsPageSize()
 
@@ -433,6 +440,46 @@ export default function DocumentManager() {
   // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
+  // Search filter by file name
+  const [search, setSearch] = useState('')
+
+  // Knowledge-base scope filter: '*' aggregates every knowledge base, a
+  // specific id scopes the document list to that knowledge base only.
+  const [kbFilter, setKbFilter] = useState('*')
+  const [kbList, setKbList] = useState<KnowledgeBaseSummary[]>([])
+  const [kbLoaded, setKbLoaded] = useState(false)
+
+  // Load the knowledge base catalogue once on mount for the scope selector.
+  useEffect(() => {
+    let cancelled = false
+
+    const run = async () => {
+      try {
+        const kbs = await getKnowledgeBases()
+        if (cancelled) return
+        setKbList(kbs)
+      } catch (err) {
+        console.error('Failed to load knowledge bases:', err)
+      } finally {
+        if (!cancelled) setKbLoaded(true)
+      }
+    }
+
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // id → display-name lookup for the aggregated document list's KB column
+  // (docs belonging to the hidden default workspace fall back to their raw
+  // workspace id since it is not part of the KB catalogue).
+  const kbNameById = useMemo(() => {
+    return Object.fromEntries(kbList.map(kb => [kb.id, kb.name || kb.id]))
+  }, [kbList])
+
+  const activeKbId = kbFilter === '*' ? undefined : kbFilter
+
   // State to store page number for each status filter
   const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
     all: 1,
@@ -446,6 +493,16 @@ export default function DocumentManager() {
   // State for document selection
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
   const isSelectionMode = selectedDocIds.length > 0
+
+  // Build a doc_id → kb_id mapping from the current page so the delete
+  // dialog can route each document to its correct knowledge base.
+  const docKbIds = useMemo(() => {
+    const map: Record<string, string | undefined> = {}
+    for (const doc of currentPageDocs) {
+      if (doc.id) map[doc.id] = doc.kb_id
+    }
+    return map
+  }, [currentPageDocs])
 
   // Add refs to track previous pipelineActive state and current interval
   const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
@@ -497,12 +554,9 @@ export default function DocumentManager() {
 
   // Handle sort column click
   const handleSort = (field: SortField) => {
-    let actualField = field;
-
-    // When clicking the first column, determine the actual sort field based on showFileName
-    if (field === 'id') {
-      actualField = showFileName ? 'file_path' : 'id';
-    }
+    // The first column always displays the file name, so sorting by it
+    // uses file_path regardless of which column cell was clicked.
+    const actualField = field === 'id' ? 'file_path' : field;
 
     const newDirection = (sortField === actualField && sortDirection === 'desc') ? 'asc' : 'desc';
 
@@ -528,13 +582,11 @@ export default function DocumentManager() {
     return [...documents].sort((a, b) => {
       let valueA, valueB;
 
-      // Special handling for ID field based on showFileName setting
-      if (sortField === 'id' && showFileName) {
+      // The first column always displays the file name, so the legacy
+      // id/file_path sort fields both compare by file name.
+      if (sortField === 'id' || sortField === 'file_path') {
         valueA = getDisplayFileName(a);
         valueB = getDisplayFileName(b);
-      } else if (sortField === 'id') {
-        valueA = a.id;
-        valueB = b.id;
       } else {
         // Date fields
         valueA = new Date(a[sortField]).getTime();
@@ -551,7 +603,7 @@ export default function DocumentManager() {
         return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
       }
     });
-  }, [sortField, sortDirection, showFileName]);
+  }, [sortField, sortDirection]);
 
   // Define a new type that includes status information
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
@@ -598,13 +650,23 @@ export default function DocumentManager() {
   }, [])
 
   const filteredAndSortedDocs = useMemo(() => {
+    // Helper to check if a doc matches the current search term
+    const matchesSearch = (doc: DocStatusResponse): boolean => {
+      if (!search.trim()) return true
+      const needle = search.toLowerCase().trim()
+      const fileName = getDisplayFileName(doc, 999).toLowerCase()
+      return fileName.includes(needle)
+    }
+
     // Use currentPageDocs directly if available (from paginated API)
     // This preserves the backend's sort order and prevents status grouping
     if (currentPageDocs && currentPageDocs.length > 0) {
-      return currentPageDocs.map(doc => ({
-        ...doc,
-        status: doc.status as DocStatus
-      })) as DocStatusWithStatus[];
+      return currentPageDocs
+        .filter(matchesSearch)
+        .map(doc => ({
+          ...doc,
+          status: doc.status as DocStatus
+        })) as DocStatusWithStatus[];
     }
 
     // Fallback to legacy docs structure for backward compatibility
@@ -619,7 +681,7 @@ export default function DocumentManager() {
       for (const doc of documents ?? []) {
         const documentStatus = doc.status ?? fallbackStatus
 
-        if (matchesStatusFilter(documentStatus, statusFilter)) {
+        if (matchesStatusFilter(documentStatus, statusFilter) && matchesSearch(doc)) {
           allDocuments.push({
             ...doc,
             status: documentStatus
@@ -634,7 +696,7 @@ export default function DocumentManager() {
     }
 
     return allDocuments;
-  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments]);
+  }, [currentPageDocs, docs, sortField, sortDirection, statusFilter, sortDocuments, search]);
 
   // Calculate current page selection state (after filteredAndSortedDocs is defined)
   const currentPageDocIds = useMemo(() => {
@@ -739,8 +801,9 @@ export default function DocumentManager() {
     page,
     page_size: query.pageSize,
     sort_field: query.sortField,
-    sort_direction: query.sortDirection
-  }), [])
+    sort_direction: query.sortDirection,
+    workspace: workspace || (kbFilter === '*' ? '*' : kbFilter || undefined)
+  }), [workspace, kbFilter])
 
   // Utility function to update component state
   const updateComponentState = useCallback((response: any) => {
@@ -1147,11 +1210,17 @@ export default function DocumentManager() {
     try {
       if (!isMountedRef.current) return;
 
-      const { status, message } = await scanNewDocuments();
+      const { status } = await scanNewDocuments(
+        kbFilter === '*' ? '*' : activeKbId
+      );
 
       if (!isMountedRef.current) return;
 
-      toast.message(message || status);
+      if (status === 'scanning_skipped_pipeline_busy') {
+        toast.info(t('documentPanel.documentManager.scanSkipped'));
+      } else {
+        toast.message(t('documentPanel.documentManager.scanStarted'));
+      }
 
       if (status === 'scanning_started') {
         // Activity probe drives /health bursts + throttled document refreshes.
@@ -1272,6 +1341,22 @@ export default function DocumentManager() {
     setPagination(prev => ({ ...prev, page: newPage }));
   }, [statusFilter, pagination.page, pageByStatus]);
 
+  // Handle knowledge base scope change - reset pagination and re-fetch
+  const handleKbFilterChange = useCallback((value: string) => {
+    if (value === kbFilter) return;
+
+    setKbFilter(value);
+    setPageByStatus({
+      all: 1,
+      completed: 1,
+      parse: 1,
+      analyze: 1,
+      process: 1,
+      failed: 1,
+    });
+    setPagination(prev => ({ ...prev, page: 1 }));
+  }, [kbFilter]);
+
   // Handle documents deleted callback
   const handleDocumentsDeleted = useCallback(async () => {
     setSelectedDocIds([])
@@ -1317,35 +1402,25 @@ export default function DocumentManager() {
   }, [clearPollingInterval, setStatusCounts, fetchDocuments, currentTab, health, startPollingInterval])
 
 
-  // Handle showFileName change - switch sort field if currently sorting by first column.
-  // Render-time comparison avoids cascading renders flagged by react-hooks/set-state-in-effect.
-  const [previousShowFileName, setPreviousShowFileName] = useState(showFileName)
-  if (showFileName !== previousShowFileName) {
-    setPreviousShowFileName(showFileName)
-    if (sortField === 'id' || sortField === 'file_path') {
-      const newSortField = showFileName ? 'file_path' : 'id';
-      if (sortField !== newSortField) {
-        setSortField(newSortField);
-      }
-    }
-  }
-
-  // Reset selection state when page, status filter, or sort changes (render-time comparison).
+  // Reset selection state when page, status filter, search, or sort changes (render-time comparison).
   const [previousSelectionDeps, setPreviousSelectionDeps] = useState({
     page: pagination.page,
     statusFilter,
+    search,
     sortField,
     sortDirection
   })
   if (
     previousSelectionDeps.page !== pagination.page ||
     previousSelectionDeps.statusFilter !== statusFilter ||
+    previousSelectionDeps.search !== search ||
     previousSelectionDeps.sortField !== sortField ||
     previousSelectionDeps.sortDirection !== sortDirection
   ) {
     setPreviousSelectionDeps({
       page: pagination.page,
       statusFilter,
+      search,
       sortField,
       sortDirection
     })
@@ -1399,6 +1474,23 @@ export default function DocumentManager() {
             </Button>
           </div>
 
+          {/* Search input */}
+          <div className="bg-muted/40 flex items-center gap-2 rounded-md px-3 py-1.5">
+            <SearchIcon className="text-muted-foreground size-4" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  setPageByStatus(prev => ({ ...prev, [statusFilter]: 1 }));
+                  setPagination(prev => ({ ...prev, page: 1 }));
+                }
+              }}
+              placeholder={t('documentPanel.documentManager.searchPlaceholder', 'Search file name')}
+              className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 w-[180px]"
+            />
+          </div>
+
           {/* Pagination Controls in the middle */}
           {pagination.total_pages > 1 && (
             <PaginationControls
@@ -1414,10 +1506,33 @@ export default function DocumentManager() {
           )}
 
           <div className="flex gap-2">
+            {kbLoaded && kbList.length > 0 && (
+              <Select value={kbFilter} onValueChange={handleKbFilterChange}>
+                <SelectTrigger
+                  className="h-8 w-auto min-w-[150px] max-w-[220px] gap-1"
+                  aria-label={t('documentPanel.documentManager.kbScopeTooltip')}
+                >
+                  <Database className="h-4 w-4 shrink-0" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="*">
+                    {t('documentPanel.documentManager.kbScopeAll')}
+                  </SelectItem>
+                  {kbList.map(kb => (
+                    <SelectItem key={kb.id} value={kb.id}>
+                      {kb.name || kb.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             {isSelectionMode && (
               <DeleteDocumentsDialog
                 selectedDocIds={selectedDocIds}
+                docKbIds={activeKbId ? undefined : docKbIds}
                 onDocumentsDeleted={handleDocumentsDeleted}
+                kbId={activeKbId}
               />
             )}
             {isSelectionMode && hasCurrentPageSelection ? (
@@ -1437,16 +1552,19 @@ export default function DocumentManager() {
                   </Button>
                 );
               })()
-            ) : !isSelectionMode ? (
+            ) : !isSelectionMode && kbFilter === '*' ? (
               <ClearDocumentsDialog onDocumentsCleared={handleDocumentsCleared} />
             ) : null}
             <UploadDocumentsDialog
               onUploadBatchAccepted={() => startActivityProbe('upload')}
               onDocumentsUploaded={async () => { refreshDocumentsThrottled() }}
+              kbId={activeKbId}
+              kbList={kbList}
             />
             <PipelineStatusDialog
               open={showPipelineStatus}
               onOpenChange={setShowPipelineStatus}
+              workspace={kbFilter === '*' ? undefined : activeKbId}
             />
           </div>
         </div>
@@ -1540,26 +1658,6 @@ export default function DocumentManager() {
                   <RotateCcwIcon className="h-4 w-4" />
                 </Button>
               </div>
-              <div className="flex items-center gap-2">
-                <label
-                  htmlFor="toggle-filename-btn"
-                  className="text-sm text-gray-500"
-                >
-                  {t('documentPanel.documentManager.fileNameLabel')}
-                </label>
-                <Button
-                  id="toggle-filename-btn"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowFileName(!showFileName)}
-                  className="border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
-                >
-                  {showFileName
-                    ? t('documentPanel.documentManager.hideButton')
-                    : t('documentPanel.documentManager.showButton')
-                  }
-                </Button>
-              </div>
             </div>
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
@@ -1585,11 +1683,8 @@ export default function DocumentManager() {
                             className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                           >
                             <div className="flex items-center">
-                              {showFileName
-                                ? t('documentPanel.documentManager.columns.fileName')
-                                : t('documentPanel.documentManager.columns.id')
-                              }
-                              {((sortField === 'id' && !showFileName) || (sortField === 'file_path' && showFileName)) && (
+                              {t('documentPanel.documentManager.columns.fileName')}
+                              {(sortField === 'file_path' || sortField === 'id') && (
                                 <span className="ml-1">
                                   {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                                 </span>
@@ -1626,6 +1721,11 @@ export default function DocumentManager() {
                               )}
                             </div>
                           </TableHead>
+                          {kbFilter === '*' && (
+                            <TableHead>
+                              {t('documentPanel.documentManager.columns.knowledgeBase')}
+                            </TableHead>
+                          )}
                           <TableHead className="w-16 text-center">
                             {t('documentPanel.documentManager.columns.select')}
                           </TableHead>
@@ -1635,32 +1735,17 @@ export default function DocumentManager() {
                         {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
-                              {showFileName ? (
-                                <>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <div className="truncate">
-                                        {getDisplayFileName(doc, 30)}
-                                      </div>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top" className="max-w-2xl">
-                                      {doc.file_path}
-                                    </TooltipContent>
-                                  </Tooltip>
-                                  <div className="text-xs text-gray-500">{doc.id}</div>
-                                </>
-                              ) : (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <div className="truncate">
-                                      {doc.id}
-                                    </div>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top" className="max-w-2xl">
-                                    {doc.file_path}
-                                  </TooltipContent>
-                                </Tooltip>
-                              )}
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="truncate">
+                                    {getDisplayFileName(doc, 30)}
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-2xl">
+                                  {doc.file_path}
+                                </TooltipContent>
+                              </Tooltip>
+                              <div className="text-xs text-gray-500 truncate">{doc.id}</div>
                             </TableCell>
                             <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
                               <Tooltip>
@@ -1696,6 +1781,21 @@ export default function DocumentManager() {
                             <TableCell className="truncate">
                               {new Date(doc.updated_at).toLocaleString()}
                             </TableCell>
+                            {kbFilter === '*' && (
+                              <TableCell className="truncate max-w-[140px]">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex items-center gap-1 truncate">
+                                      <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                      {kbNameById[doc.kb_id || ''] || doc.kb_id || '-'}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top">
+                                    {doc.kb_id || '-'}
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TableCell>
+                            )}
                             <TableCell className="text-center">
                               <Checkbox
                                 checked={selectedDocIds.includes(doc.id)}

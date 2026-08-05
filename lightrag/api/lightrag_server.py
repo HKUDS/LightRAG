@@ -66,7 +66,12 @@ from lightrag.parser.routing import (
 from lightrag.parser.external.mineru.cache import MinerUParserOptions
 from lightrag.api.routers.query_routes import create_query_routes
 from lightrag.api.routers.graph_routes import create_graph_routes
+from lightrag.api.routers.dashboard_routes import create_dashboard_routes
+from lightrag.api.routers.knowledge_base_routes import (
+    create_knowledge_base_routes,
+)
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.routers.user_routes import create_user_routes
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -83,6 +88,8 @@ from lightrag.utils_pipeline import describe_doc_status_capabilities
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 from lightrag.api.login_rate_limit import LoginRateLimiter
+from lightrag.api.passwords import verify_password as verify_bcrypt_password
+from lightrag.api.routers.user_routes import _user_data_path
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -2219,11 +2226,14 @@ def create_app(args):
         for spec in ROLES
     }
 
-    # Initialize RAG with unified configuration
-    try:
-        rag = LightRAG(
+    # Initialize RAG with unified configuration.
+    # Build is wrapped in a factory so the knowledge-base routes can spin up
+    # additional workspace-isolated LightRAG instances on demand (each KB is a
+    # distinct ``workspace`` namespace over the same storage backends).
+    def build_rag_instance(workspace: str) -> LightRAG:
+        return LightRAG(
             working_dir=args.working_dir,
-            workspace=args.workspace,
+            workspace=workspace,
             llm_model_func=create_llm_model_func(args.llm_binding),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
@@ -2283,6 +2293,9 @@ def create_app(args):
                 for spec in ROLES
             },
         )
+
+    try:
+        rag = build_rag_instance(args.workspace)
     except Exception as e:
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
@@ -2299,9 +2312,16 @@ def create_app(args):
     # Add routes
     # root_path is set on the app for reverse proxy support;
     # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
-    app.include_router(create_document_routes(rag, doc_manager, api_key))
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
-    app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_document_routes(rag, doc_manager, api_key, build_rag_instance))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, build_rag_instance))
+    app.include_router(create_graph_routes(rag, api_key, build_rag_instance))
+    app.include_router(create_dashboard_routes(rag, api_key, args, build_rag_instance))
+    app.include_router(
+        create_knowledge_base_routes(rag, api_key, args, build_rag_instance)
+    )
+
+    # Add user management routes
+    app.include_router(create_user_routes(api_key=api_key))
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)
@@ -2387,22 +2407,60 @@ def create_app(args):
 
     @app.post("/login")
     async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
-        if not auth_handler.accounts:
-            # Authentication not configured, return guest token
-            guest_token = auth_handler.create_token(
-                username="guest", role="guest", metadata={"auth_mode": "disabled"}
-            )
-            return {
-                "access_token": guest_token,
-                "token_type": "bearer",
-                "auth_mode": "disabled",
-                "message": "Authentication is disabled. Using guest access.",
-                "core_version": core_version,
-                "api_version": api_version_display,
-                "webui_title": webui_title,
-                "webui_description": webui_description,
-            }
         username = form_data.username
+
+        if not auth_handler.accounts:
+            # No AUTH_ACCOUNTS configured. Check .user_data.json for
+            # users created via the user management API (so they can log in
+            # even without AUTH_ACCOUNTS).
+            user_data_path = _user_data_path()
+            if user_data_path.exists():
+                try:
+                    import json
+
+                    raw = json.loads(user_data_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, list):
+                        for u in raw:
+                            if u.get("username") == username:
+                                stored_pw = u.get("password", "")
+                                if stored_pw and await asyncio.to_thread(
+                                    verify_bcrypt_password,
+                                    form_data.password,
+                                    stored_pw,
+                                ):
+                                    if u.get("locked", False):
+                                        raise HTTPException(
+                                            status_code=401,
+                                            detail="Account is locked",
+                                        )
+                                    user_role = u.get("role", "user")
+                                    user_permissions = u.get(
+                                        "permissions",
+                                        ["dashboard", "knowledge-base", "documents", "knowledge-graph", "retrieval", "users"],
+                                    )
+                                    user_token = auth_handler.create_token(
+                                        username=username,
+                                        role=user_role,
+                                        metadata={"auth_mode": "enabled"},
+                                    )
+                                    return {
+                                        "access_token": user_token,
+                                        "token_type": "bearer",
+                                        "auth_mode": "enabled",
+                                        "permissions": user_permissions,
+                                        "core_version": core_version,
+                                        "api_version": api_version_display,
+                                        "webui_title": webui_title,
+                                        "webui_description": webui_description,
+                                    }
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.error(f"Failed to read user data file: {e}")
+
+            # No match found — user submitted credentials that don't match
+            # any .user_data.json entry; reject instead of falling back to guest.
+            raise HTTPException(status_code=401, detail="Incorrect credentials")
         # Rate-limit key is client IP + username. X-Forwarded-For is NOT trusted
         # (spoofable); behind a reverse proxy all clients may share the proxy IP,
         # so buckets are separated by username to avoid one attacker locking out
@@ -2433,6 +2491,40 @@ def create_app(args):
             password_ok = await asyncio.to_thread(
                 auth_handler.verify_password, username, form_data.password
             )
+
+            # Fallback: check .user_data.json for users created via the user
+            # management API (not present in AUTH_ACCOUNTS env var).
+            if not password_ok:
+                user_data_path = _user_data_path()
+                if user_data_path.exists():
+                    try:
+                        import json
+
+                        raw = json.loads(user_data_path.read_text(encoding="utf-8"))
+                        if isinstance(raw, list):
+                            for u in raw:
+                                if u.get("username") == username:
+                                    stored_pw = u.get("password", "")
+                                    if stored_pw and await asyncio.to_thread(
+                                        verify_bcrypt_password,
+                                        form_data.password,
+                                        stored_pw,
+                                    ):
+                                        if u.get("locked", False):
+                                            login_rate_limiter.commit_failure(
+                                                rate_limit_key
+                                            )
+                                            raise HTTPException(
+                                                status_code=401,
+                                                detail="Account is locked",
+                                            )
+                                        password_ok = True
+                                        # Store the user's role for token creation
+                                        user_role = u.get("role", "user")
+                                    break
+                    except Exception as e:
+                        logger.error(f"Failed to read user data file: {e}")
+
             # Record the outcome BEFORE releasing the reservation, so the entry
             # still carries the failure (release removes a now-idle entry).
             if not password_ok:
@@ -2447,14 +2539,38 @@ def create_app(args):
             # key is fully idle, e.g. after a successful login).
             login_rate_limiter.release(rate_limit_key)
 
+        # Determine the user's role and permissions for the token
+        import json
+
+        user_role = "user"
+        user_permissions = [
+            "dashboard", "knowledge-base", "documents", "knowledge-graph", "retrieval", "users",
+        ]
+        user_data_path = _user_data_path()
+        if user_data_path.exists():
+            try:
+                raw = json.loads(user_data_path.read_text(encoding="utf-8"))
+                if isinstance(raw, list):
+                    for u in raw:
+                        if u.get("username") == username:
+                            user_role = u.get("role", "user")
+                            user_permissions = u.get(
+                                "permissions",
+                                ["dashboard", "knowledge-base", "documents", "knowledge-graph", "retrieval", "users"],
+                            )
+                            break
+            except Exception:
+                pass
+
         # Regular user login
         user_token = auth_handler.create_token(
-            username=username, role="user", metadata={"auth_mode": "enabled"}
+            username=username, role=user_role, metadata={"auth_mode": "enabled"}
         )
         return {
             "access_token": user_token,
             "token_type": "bearer",
             "auth_mode": "enabled",
+            "permissions": user_permissions,
             "core_version": core_version,
             "api_version": api_version_display,
             "webui_title": webui_title,

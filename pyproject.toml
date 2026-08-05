@@ -40,6 +40,10 @@ dependencies = [
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
+    "fastapi>=0.136.1",
+    "uvicorn>=0.46.0",
+    "pyjwt>=2.8.0",
+    "bcrypt>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -94,10 +98,12 @@ api = [
     "gunicorn",
     # Document processing dependencies (required for API document upload functionality)
     "openpyxl>=3.0.0,<4.0.0",      # XLSX processing
+    "xlrd>=2.0.0,<3.0.0",          # XLS processing
     "pycryptodome>=3.0.0,<4.0.0",  # PDF encryption support
     "pypdf>=6.1.0",                 # PDF processing
     "python-docx>=0.8.11,<2.0.0",  # DOCX processing
     "python-pptx>=0.6.21,<2.0.0",  # PPTX processing
+    "xlwt>=1.3.0,<2.0.0",          # XLS test data creation (used by tests/parser/test_legacy_extractors.py)
     "cairosvg>=2.5.0,<3.0.0",      # SVG->PNG rasterization for native markdown images
     "defusedxml>=0.7.0,<1.0.0",    # Safer XML parser used by parser/docx
     # Chunking strategies (process_options=R / V); lazy-imported by lightrag.chunker

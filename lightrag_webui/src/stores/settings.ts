@@ -6,7 +6,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi'
-type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Tab = 'dashboard' | 'knowledge-base' | 'documents' | 'knowledge-graph' | 'retrieval' | 'users'
 
 interface SettingsState {
   // Document manager settings
@@ -53,6 +53,10 @@ interface SettingsState {
   queryLabel: string
   setQueryLabel: (queryLabel: string) => void
 
+  // Knowledge graph workspace (knowledge base) selector
+  graphWorkspace: string
+  setGraphWorkspace: (workspace: string) => void
+
   retrievalHistory: Message[]
   setRetrievalHistory: (history: Message[]) => void
 
@@ -76,6 +80,11 @@ interface SettingsState {
   currentTab: Tab
   setCurrentTab: (tab: Tab) => void
 
+  // Collapsed state of the main navigation sidebar
+  sidebarCollapsed: boolean
+  setSidebarCollapsed: (collapsed: boolean) => void
+  toggleSidebar: () => void
+
   // Search label dropdown refresh trigger (non-persistent, runtime only)
   searchLabelDropdownRefreshTrigger: number
   triggerSearchLabelDropdownRefresh: () => void
@@ -85,7 +94,7 @@ const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
       theme: 'system',
-      language: 'en',
+      language: 'zh',
       showPropertyPanel: true,
       showNodeSearchBar: true,
       showLegend: false,
@@ -105,12 +114,14 @@ const useSettingsStoreBase = create<SettingsState>()(
       backendMaxGraphNodes: null,
 
       queryLabel: defaultQueryLabel,
+      graphWorkspace: '*',
 
       enableHealthCheck: true,
 
       apiKey: null,
 
-      currentTab: 'documents',
+      currentTab: 'dashboard',
+      sidebarCollapsed: false,
       showFileName: false,
       documentsPageSize: 10,
 
@@ -142,6 +153,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         set({
           queryLabel
         }),
+
+      setGraphWorkspace: (graphWorkspace: string) => set({ graphWorkspace }),
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
 
@@ -176,6 +189,10 @@ const useSettingsStoreBase = create<SettingsState>()(
       setApiKey: (apiKey: string | null) => set({ apiKey }),
 
       setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
+
+      setSidebarCollapsed: (collapsed: boolean) => set({ sidebarCollapsed: collapsed }),
+
+      toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
       setRetrievalHistory: (history: Message[]) => set({ retrievalHistory: history }),
 
@@ -229,7 +246,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 20,
+      version: 22,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -341,6 +358,19 @@ const useSettingsStoreBase = create<SettingsState>()(
             ...existing,
             ...suggestedUserPrompts.filter((p: string) => !existing.includes(p))
           ]
+        }
+        if (version < 21) {
+          // Sidebar navigation + dashboard page introduced. Seed the new
+          // sidebar state and land existing users on the new dashboard so the
+          // feature is discoverable; persisted tabs from older versions remain
+          // valid values of the widened Tab union.
+          state.sidebarCollapsed = false
+          state.currentTab = 'dashboard'
+        }
+        if (version < 22) {
+          // Knowledge graph workspace selector introduced; default to the
+          // primary (default) workspace.
+          state.graphWorkspace = 'default'
         }
         return state
       }

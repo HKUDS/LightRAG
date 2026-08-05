@@ -20,11 +20,14 @@ type DialogPosition = 'left' | 'center' | 'right'
 interface PipelineStatusDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Knowledge base (workspace) whose pipeline status to show. */
+  workspace?: string
 }
 
 export default function PipelineStatusDialog({
   open,
-  onOpenChange
+  onOpenChange,
+  workspace
 }: PipelineStatusDialogProps) {
   const { t } = useTranslation()
   const [status, setStatus] = useState<PipelineStatusResponse | null>(null)
@@ -75,7 +78,7 @@ export default function PipelineStatusDialog({
 
     const fetchStatus = async () => {
       try {
-        const data = await getPipelineStatus()
+        const data = await getPipelineStatus(workspace)
         setStatus(data)
       } catch (err) {
         toast.error(t('documentPanel.pipelineStatus.errors.fetchFailed', { error: errorMessage(err) }))
@@ -203,20 +206,28 @@ export default function PipelineStatusDialog({
 
           {/* Job Information */}
           <div className="rounded-md border p-3 space-y-2">
-            <div>{t('documentPanel.pipelineStatus.jobName')}: {status?.job_name || '-'}</div>
-            <div className="flex justify-between">
-              <span>{t('documentPanel.pipelineStatus.startTime')}: {status?.job_start
-                ? new Date(status.job_start).toLocaleString(undefined, {
-                  year: 'numeric',
-                  month: 'numeric',
-                  day: 'numeric',
-                  hour: 'numeric',
-                  minute: 'numeric',
-                  second: 'numeric'
-                })
-                : '-'}</span>
-              <span>{t('documentPanel.pipelineStatus.progress')}: {status ? `${status.cur_batch}/${status.batchs} ${t('documentPanel.pipelineStatus.unit')}` : '-'}</span>
-            </div>
+            {status && !status.busy ? (
+              <div className="text-center text-muted-foreground py-4">
+                {t('documentPanel.pipelineStatus.pipelineNotRunning')}
+              </div>
+            ) : (
+              <>
+                <div>{t('documentPanel.pipelineStatus.jobName')}: {status?.job_name || '-'}</div>
+                <div className="flex justify-between">
+                  <span>{t('documentPanel.pipelineStatus.startTime')}: {status?.job_start
+                    ? new Date(status.job_start).toLocaleString(undefined, {
+                      year: 'numeric',
+                      month: 'numeric',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: 'numeric',
+                      second: 'numeric'
+                    })
+                    : '-'}</span>
+                  <span>{t('documentPanel.pipelineStatus.progress')}: {status ? `${status.cur_batch}/${status.batchs} ${t('documentPanel.pipelineStatus.unit')}` : '-'}</span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* History Messages */}

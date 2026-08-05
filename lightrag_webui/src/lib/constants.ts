@@ -25,7 +25,7 @@ export const labelListLimit = 100
 
 // Search History Configuration
 export const searchHistoryMaxItems = 500
-export const searchHistoryVersion = '1.0'
+export const searchHistoryVersion = '2.0'
 
 // API Request Limits
 export const popularLabelsDefaultLimit = 300
@@ -85,11 +85,12 @@ export const supportedFileTypes = {
   'application/pdf': ['.pdf'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'application/vnd.ms-excel': ['.xls']
 }
 
 export const SiteInfo = {
-  name: 'LightRAG',
+  name: 'RAG知识库',
   home: '/',
   github: 'https://github.com/HKUDS/LightRAG'
 }

@@ -4067,6 +4067,19 @@ class PGVectorStorage(BaseVectorStorage):
         )
         return upsert_sql, values
 
+    async def count(self) -> int:
+        """Count vectors persisted for this workspace.
+
+        Used by the dashboard to surface text-chunk totals; degrades to 0 when
+        the table does not exist yet (the storage is not initialized) — the
+        dashboard treats that as "no data".
+        """
+        if self.db is None:
+            return 0
+        count_query = f"SELECT COUNT(*) as count FROM {self.table_name} WHERE workspace = $1"
+        result = await self.db.query(count_query, [self.workspace])
+        return int(result.get("count", 0)) if result else 0
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Buffer vector docs for embedding and batched flush.
 

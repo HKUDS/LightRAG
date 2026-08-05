@@ -153,7 +153,7 @@ class RelationCreateRequest(BaseModel):
         return _require_nonempty_entity_name(entity_name)
 
 
-def create_graph_routes(rag, api_key: Optional[str] = None):
+def create_graph_routes(rag, api_key: Optional[str] = None, build_rag_instance=None):
     # Fresh router per call. A module-level instance would accumulate
     # duplicate routes when the factory is invoked more than once in the
     # same process (e.g. across tests), which triggers FastAPI's
@@ -162,16 +162,60 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
 
     combined_auth = get_combined_auth_dependency(api_key)
 
+    async def _resolve_rag(workspace: Optional[str]):
+        """Resolve the LightRAG instance for a ``workspace`` query parameter.
+
+        A missing/blank ``workspace`` (or a caller that did not wire up
+        ``build_rag_instance``) falls back to the primary instance; a named
+        workspace goes through the knowledge-base cache so each KB reads and
+        writes its own workspace-isolated graph storage.
+        """
+        if not workspace or build_rag_instance is None:
+            return rag
+        from .knowledge_base_routes import _get_rag  # local import: avoid module cycle
+
+        return await _get_rag(workspace, build_rag_instance)
+
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
-    async def get_graph_labels():
+    async def get_graph_labels(
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Get all graph labels
+
+        Args:
+            workspace (str, optional): Knowledge base (workspace) name
 
         Returns:
             List[str]: List of graph labels
         """
         try:
-            return await rag.get_graph_labels()
+            if workspace == "*" and build_rag_instance is not None:
+                from .knowledge_base_routes import _discover_kbs, _get_rag
+
+                kb_ids = _discover_kbs()
+                all_labels: set[str] = set()
+                for kb_id in kb_ids:
+                    try:
+                        kb_rag = await _get_rag(kb_id, build_rag_instance)
+                        labels = await kb_rag.get_graph_labels()
+                        all_labels.update(labels)
+                    except Exception as kb_err:
+                        logger.error(
+                            f"Failed to get labels for KB '{kb_id}': {kb_err}"
+                        )
+                # Also include primary workspace labels
+                try:
+                    primary_labels = await rag.get_graph_labels()
+                    all_labels.update(primary_labels)
+                except Exception:
+                    pass
+                return sorted(all_labels)
+
+            kb_rag = await _resolve_rag(workspace)
+            return await kb_rag.get_graph_labels()
         except Exception as e:
             logger.error(f"Error getting graph labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -182,18 +226,45 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         limit: int = Query(
             300, description="Maximum number of popular labels to return", ge=1, le=1000
         ),
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
     ):
         """
         Get popular labels by node degree (most connected entities)
 
         Args:
             limit (int): Maximum number of labels to return (default: 300, max: 1000)
+            workspace (str, optional): Knowledge base (workspace) name
 
         Returns:
             List[str]: List of popular labels sorted by degree (highest first)
         """
         try:
-            return await rag.chunk_entity_relation_graph.get_popular_labels(limit)
+            if workspace == "*" and build_rag_instance is not None:
+                from .knowledge_base_routes import _discover_kbs, _get_rag
+
+                kb_ids = _discover_kbs()
+                all_labels: set[str] = set()
+                for kb_id in kb_ids:
+                    try:
+                        kb_rag = await _get_rag(kb_id, build_rag_instance)
+                        labels = await kb_rag.chunk_entity_relation_graph.get_popular_labels(limit)
+                        all_labels.update(labels)
+                    except Exception as kb_err:
+                        logger.error(
+                            f"Failed to get popular labels for KB '{kb_id}': {kb_err}"
+                        )
+                # Also include primary workspace labels
+                try:
+                    primary_labels = await rag.chunk_entity_relation_graph.get_popular_labels(limit)
+                    all_labels.update(primary_labels)
+                except Exception:
+                    pass
+                return sorted(all_labels)[:limit]
+
+            kb_rag = await _resolve_rag(workspace)
+            return await kb_rag.chunk_entity_relation_graph.get_popular_labels(limit)
         except Exception as e:
             logger.error(f"Error getting popular labels: {str(e)}")
             logger.error(traceback.format_exc())
@@ -205,6 +276,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         limit: int = Query(
             50, description="Maximum number of search results to return", ge=1, le=100
         ),
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
     ):
         """
         Search labels with fuzzy matching
@@ -212,12 +286,14 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Args:
             q (str): Search query string
             limit (int): Maximum number of results to return (default: 50, max: 100)
+            workspace (str, optional): Knowledge base (workspace) name
 
         Returns:
             List[str]: List of matching labels sorted by relevance
         """
         try:
-            return await rag.chunk_entity_relation_graph.search_labels(q, limit)
+            kb_rag = await _resolve_rag(workspace)
+            return await kb_rag.chunk_entity_relation_graph.search_labels(q, limit)
         except Exception as e:
             logger.error(f"Error searching labels with query '{q}': {str(e)}")
             logger.error(traceback.format_exc())
@@ -228,6 +304,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
         max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
     ):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified label.
@@ -239,6 +318,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             label (str): Label of the starting node
             max_depth (int, optional): Maximum depth of the subgraph,Defaults to 3
             max_nodes: Maxiumu nodes to return
+            workspace (str, optional): Knowledge base (workspace) name
 
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
@@ -249,7 +329,70 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 f"get_knowledge_graph called with label: '{label}' (length: {len(label)}, repr: {repr(label)})"
             )
 
-            return await rag.get_knowledge_graph(
+            # workspace='*': aggregate graph data from every discovered
+            # knowledge base, merging nodes/edges into a single response.
+            if workspace == "*":
+                if build_rag_instance is None:
+                    kb_rag = rag
+                    return await kb_rag.get_knowledge_graph(
+                        node_label=label,
+                        max_depth=max_depth,
+                        max_nodes=max_nodes,
+                    )
+                from .knowledge_base_routes import _discover_kbs, _get_rag
+
+                kb_ids = _discover_kbs()
+                if not kb_ids:
+                    return await rag.get_knowledge_graph(
+                        node_label=label,
+                        max_depth=max_depth,
+                        max_nodes=max_nodes,
+                    )
+
+                all_nodes: dict[str, dict] = {}
+                all_edges: dict[tuple[str, str], dict] = {}
+                is_truncated = False
+
+                for kb_id in kb_ids:
+                    try:
+                        kb_rag = await _get_rag(kb_id, build_rag_instance)
+                        result = await kb_rag.get_knowledge_graph(
+                            node_label=label,
+                            max_depth=max_depth,
+                            max_nodes=max_nodes,
+                        )
+                        if getattr(result, "is_truncated", False):
+                            is_truncated = True
+                        for node in getattr(result, "nodes", []):
+                            nid = getattr(node, "id", "") if hasattr(node, "id") else node.get("id", "")
+                            if nid:
+                                all_nodes[nid] = node if hasattr(node, "id") else node
+                        for edge in getattr(result, "edges", []):
+                            src = getattr(edge, "source", "") if hasattr(edge, "source") else edge.get("source", "")
+                            tgt = getattr(edge, "target", "") if hasattr(edge, "target") else edge.get("target", "")
+                            if src and tgt:
+                                all_edges[(src, tgt)] = edge if hasattr(edge, "source") else edge
+                    except Exception as kb_err:
+                        logger.error(
+                            f"Failed to get graph for KB '{kb_id}': {kb_err}"
+                        )
+
+                merged_nodes = list(all_nodes.values())
+                merged_edges = list(all_edges.values())
+
+                # Respect max_nodes limit after merge
+                if len(merged_nodes) > max_nodes:
+                    merged_nodes = merged_nodes[:max_nodes]
+                    is_truncated = True
+
+                return {
+                    "nodes": merged_nodes,
+                    "edges": merged_edges,
+                    "is_truncated": is_truncated,
+                }
+
+            kb_rag = await _resolve_rag(workspace)
+            return await kb_rag.get_knowledge_graph(
                 node_label=label,
                 max_depth=max_depth,
                 max_nodes=max_nodes,
@@ -262,18 +405,23 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
         name: str = Query(..., description="Entity name to check"),
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
     ):
         """
         Check if an entity with the given name exists in the knowledge graph
 
         Args:
             name (str): Name of the entity to check
+            workspace (str, optional): Knowledge base (workspace) name
 
         Returns:
             Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
         """
         try:
-            exists = await rag.chunk_entity_relation_graph.has_node(name)
+            kb_rag = await _resolve_rag(workspace)
+            exists = await kb_rag.chunk_entity_relation_graph.has_node(name)
             return {"exists": exists}
         except Exception as e:
             logger.error(f"Error checking entity existence for '{name}': {str(e)}")
@@ -281,7 +429,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise internal_server_error(e)
 
     @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
-    async def update_entity(request: EntityUpdateRequest):
+    async def update_entity(
+        request: EntityUpdateRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Update an entity's properties in the knowledge graph
 
@@ -416,8 +569,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.aedit_entity(
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
+            result = await kb_rag.aedit_entity(
                 entity_name=request.entity_name,
                 updated_data=request.updated_data,
                 allow_rename=request.allow_rename,
@@ -472,7 +626,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise internal_server_error(e)
 
     @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
-    async def update_relation(request: RelationUpdateRequest):
+    async def update_relation(
+        request: RelationUpdateRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """Update a relation's properties in the knowledge graph
 
         Args:
@@ -482,8 +641,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             Dict: Updated relation information
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.aedit_relation(
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
+            result = await kb_rag.aedit_relation(
                 source_entity=request.source_id,
                 target_entity=request.target_id,
                 updated_data=request.updated_data,
@@ -508,7 +668,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise internal_server_error(e)
 
     @router.post("/graph/entity/create", dependencies=[Depends(combined_auth)])
-    async def create_entity(request: EntityCreateRequest):
+    async def create_entity(
+        request: EntityCreateRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Create a new entity in the knowledge graph
 
@@ -553,13 +718,14 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
             # Use the proper acreate_entity method which handles:
             # - Graph lock for concurrency
             # - Vector embedding creation in entities_vdb
             # - Metadata population and defaults
             # - Index consistency via _edit_entity_done
-            result = await rag.acreate_entity(
+            result = await kb_rag.acreate_entity(
                 entity_name=request.entity_name,
                 entity_data=request.entity_data,
             )
@@ -582,7 +748,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise internal_server_error(e)
 
     @router.post("/graph/relation/create", dependencies=[Depends(combined_auth)])
-    async def create_relation(request: RelationCreateRequest):
+    async def create_relation(
+        request: RelationCreateRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Create a new relationship between two entities in the knowledge graph
 
@@ -639,14 +810,15 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             }
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
             # Use the proper acreate_relation method which handles:
             # - Graph lock for concurrency
             # - Entity existence validation
             # - Duplicate relation checks
             # - Vector embedding creation in relationships_vdb
             # - Index consistency via _edit_relation_done
-            result = await rag.acreate_relation(
+            result = await kb_rag.acreate_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
                 relation_data=request.relation_data,
@@ -672,7 +844,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise internal_server_error(e)
 
     @router.post("/graph/entities/merge", dependencies=[Depends(combined_auth)])
-    async def merge_entities(request: EntityMergeRequest):
+    async def merge_entities(
+        request: EntityMergeRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Merge multiple entities into a single entity, preserving all relationships
 
@@ -729,8 +906,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             - This operation cannot be undone, so verify entity names before merging
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.amerge_entities(
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
+            result = await kb_rag.amerge_entities(
                 source_entities=request.entities_to_change,
                 target_entity=request.entity_to_change_into,
             )
@@ -758,7 +936,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         response_model=DeletionResult,
         dependencies=[Depends(combined_auth)],
     )
-    async def delete_entity(request: DeleteEntityRequest):
+    async def delete_entity(
+        request: DeleteEntityRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Delete an entity and all its relationships from the knowledge graph.
 
@@ -772,8 +955,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             HTTPException: If the entity is not found (404) or an error occurs (500).
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.adelete_by_entity(entity_name=request.entity_name)
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
+            result = await kb_rag.adelete_by_entity(entity_name=request.entity_name)
             if result.status == "not_found":
                 raise HTTPException(status_code=404, detail=result.message)
             if result.status == "fail":
@@ -794,7 +978,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         response_model=DeletionResult,
         dependencies=[Depends(combined_auth)],
     )
-    async def delete_relation(request: DeleteRelationRequest):
+    async def delete_relation(
+        request: DeleteRelationRequest,
+        workspace: Optional[str] = Query(
+            None, description="Knowledge base (workspace) name; defaults to the primary workspace"
+        ),
+    ):
         """
         Delete a relationship between two entities from the knowledge graph.
 
@@ -808,8 +997,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             HTTPException: If the relation is not found (404) or an error occurs (500).
         """
         try:
-            await check_pipeline_busy_or_raise(rag)
-            result = await rag.adelete_by_relation(
+            kb_rag = await _resolve_rag(workspace)
+            await check_pipeline_busy_or_raise(kb_rag)
+            result = await kb_rag.adelete_by_relation(
                 source_entity=request.source_entity,
                 target_entity=request.target_entity,
             )
@@ -824,6 +1014,118 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise
         except Exception as e:
             error_msg = f"Error deleting relation from '{request.source_entity}' to '{request.target_entity}': {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+
+    @router.post(
+        "/graph/sweep_orphans",
+        dependencies=[Depends(combined_auth)],
+        summary="Remove orphan entities and relations with no remaining chunk data",
+    )
+    async def sweep_orphans(
+        workspace: Optional[str] = Query(
+            None,
+            description=(
+                "Knowledge base (workspace) to sweep. Omit or set to '*' to sweep "
+                "all knowledge bases plus the primary workspace."
+            ),
+        ),
+    ):
+        """Sweep and remove orphan graph nodes whose chunk-tracking entries are empty or missing.
+
+        When a document is deleted, associated entities and relations should be
+        removed. However, failed or interrupted deletions (and entity merges)
+        can leave behind orphan nodes. This endpoint performs a safety sweep to
+        remove them.
+
+        Returns a summary of entities and relations removed per workspace.
+        """
+        try:
+            from .knowledge_base_routes import _discover_kbs, _get_rag
+
+            results: list[dict[str, Any]] = []
+            total_entities = 0
+            total_relations = 0
+
+            if workspace and workspace != "*":
+                kb_rag = await _resolve_rag(workspace)
+                await check_pipeline_busy_or_raise(kb_rag)
+                sweep_result = await kb_rag._sweep_orphaned_graph_nodes()
+                results.append({
+                    "workspace": workspace,
+                    "entities_removed": sweep_result["entities_removed"],
+                    "relations_removed": sweep_result["relations_removed"],
+                })
+                total_entities += sweep_result["entities_removed"]
+                total_relations += sweep_result["relations_removed"]
+            else:
+                # Sweep all knowledge bases plus the primary workspace
+                kb_ids = set(_discover_kbs())
+                kb_ids.discard("default")
+                all_workspaces = sorted(kb_ids)
+
+                for kb_id in all_workspaces:
+                    try:
+                        kb_rag = await _get_rag(kb_id, build_rag_instance)
+                        await check_pipeline_busy_or_raise(kb_rag)
+                        sweep_result = await kb_rag._sweep_orphaned_graph_nodes()
+                        results.append({
+                            "workspace": kb_id,
+                            "entities_removed": sweep_result["entities_removed"],
+                            "relations_removed": sweep_result["relations_removed"],
+                        })
+                        total_entities += sweep_result["entities_removed"]
+                        total_relations += sweep_result["relations_removed"]
+                    except Exception as kb_err:
+                        logger.error(f"Failed to sweep orphans for KB '{kb_id}': {kb_err}")
+                        results.append({
+                            "workspace": kb_id,
+                            "error": str(kb_err),
+                        })
+
+                # Sweep primary workspace if not already covered
+                primary_ws = getattr(rag, "workspace", "") or ""
+                if primary_ws and primary_ws not in kb_ids:
+                    try:
+                        await check_pipeline_busy_or_raise(rag)
+                        sweep_result = await rag._sweep_orphaned_graph_nodes()
+                        results.append({
+                            "workspace": primary_ws or "(primary)",
+                            "entities_removed": sweep_result["entities_removed"],
+                            "relations_removed": sweep_result["relations_removed"],
+                        })
+                        total_entities += sweep_result["entities_removed"]
+                        total_relations += sweep_result["relations_removed"]
+                    except Exception as primary_err:
+                        logger.error(f"Failed to sweep orphans for primary workspace: {primary_err}")
+                        results.append({
+                            "workspace": primary_ws or "(primary)",
+                            "error": str(primary_err),
+                        })
+
+                if not all_workspaces and not primary_ws:
+                    # No KBs found, just sweep the primary rag
+                    await check_pipeline_busy_or_raise(rag)
+                    sweep_result = await rag._sweep_orphaned_graph_nodes()
+                    results.append({
+                        "workspace": "(primary)",
+                        "entities_removed": sweep_result["entities_removed"],
+                        "relations_removed": sweep_result["relations_removed"],
+                    })
+                    total_entities += sweep_result["entities_removed"]
+                    total_relations += sweep_result["relations_removed"]
+
+            return {
+                "status": "success",
+                "total_entities_removed": total_entities,
+                "total_relations_removed": total_relations,
+                "workspaces": results,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error sweeping orphans: {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise internal_server_error(e)

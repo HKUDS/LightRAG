@@ -12,7 +12,7 @@ import {
 import Input from '@/components/ui/Input'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
-import { deleteDocuments } from '@/api/lightrag'
+import { deleteDocuments, deleteKnowledgeBaseDocuments } from '@/api/lightrag'
 
 import { TrashIcon, AlertTriangleIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -35,10 +35,19 @@ const Label = ({
 
 interface DeleteDocumentsDialogProps {
   selectedDocIds: string[]
+  /** Per-document KB id mapping so deletes route to the correct workspace */
+  docKbIds?: Record<string, string | undefined>
   onDocumentsDeleted?: () => Promise<void>
+  /** Knowledge base id to scope the delete to; global delete when omitted */
+  kbId?: string
 }
 
-export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDeleted }: DeleteDocumentsDialogProps) {
+export default function DeleteDocumentsDialog({
+  selectedDocIds,
+  docKbIds,
+  onDocumentsDeleted,
+  kbId
+}: DeleteDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
@@ -63,41 +72,71 @@ export default function DeleteDocumentsDialog({ selectedDocIds, onDocumentsDelet
 
     setIsDeleting(true)
     try {
-      const result = await deleteDocuments(selectedDocIds, deleteFile, deleteLLMCache)
-
-      if (result.status === 'deletion_started') {
-        toast.success(t('documentPanel.deleteDocuments.success', { count: selectedDocIds.length }))
-      } else if (result.status === 'busy') {
-        toast.error(t('documentPanel.deleteDocuments.busy'))
-        setConfirmText('')
-        setIsDeleting(false)
-        return
-      } else if (result.status === 'not_allowed') {
-        toast.error(t('documentPanel.deleteDocuments.notAllowed'))
-        setConfirmText('')
-        setIsDeleting(false)
-        return
-      } else {
+      // Scoped deletes route through the KB endpoint so the destructive
+      // pipeline slot is reserved for that KB's workspace; global deletes keep
+      // the original /documents/delete_document behaviour.
+      if (kbId) {
+        const result = await deleteKnowledgeBaseDocuments(kbId, selectedDocIds, false, {
+          deleteFile,
+          deleteLlmCache: deleteLLMCache
+        })
+        if (result.status === 'deletion_started') {
+          toast.success(t('documentPanel.deleteDocuments.success', { count: selectedDocIds.length }))
+          if (onDocumentsDeleted) {
+            onDocumentsDeleted().catch(console.error)
+          }
+          handleOpenChange(false)
+          return
+        }
         toast.error(t('documentPanel.deleteDocuments.failed', { message: result.message }))
         setConfirmText('')
         setIsDeleting(false)
         return
       }
 
-      // Refresh document list if provided
+      // Global view: group selected docs by kb_id, send a KB-scoped
+      // delete for each group.
+      const byKb = new Map<string, string[]>()
+      for (const docId of selectedDocIds) {
+        const docKb = (docKbIds || {})[docId] || ''
+        const existing = byKb.get(docKb)
+        if (existing) {
+          existing.push(docId)
+        } else {
+          byKb.set(docKb, [docId])
+        }
+      }
+      let anyFailed = false
+      for (const [workspace, ids] of byKb) {
+        const result = workspace
+          ? await deleteKnowledgeBaseDocuments(workspace, ids, false, {
+              deleteFile,
+              deleteLlmCache: deleteLLMCache
+            })
+          : await deleteDocuments(ids, deleteFile, deleteLLMCache, workspace)
+        if (result.status !== 'deletion_started' && result.status !== 'busy') {
+          anyFailed = true
+          toast.error(t('documentPanel.deleteDocuments.failed', { message: result.message }))
+        }
+      }
+      if (anyFailed) {
+        setConfirmText('')
+        setIsDeleting(false)
+        return
+      }
+      toast.success(t('documentPanel.deleteDocuments.success', { count: selectedDocIds.length }))
       if (onDocumentsDeleted) {
         onDocumentsDeleted().catch(console.error)
       }
-
-      // Close dialog after successful operation
       handleOpenChange(false)
+      return
     } catch (err) {
       toast.error(t('documentPanel.deleteDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
     } finally {
       setIsDeleting(false)
     }
-  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, handleOpenChange, t, onDocumentsDeleted])
+  }, [isConfirmEnabled, selectedDocIds, deleteFile, deleteLLMCache, kbId, handleOpenChange, t, onDocumentsDeleted])
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

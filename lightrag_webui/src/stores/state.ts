@@ -32,12 +32,13 @@ interface AuthState {
   coreVersion: string | null;
   apiVersion: string | null;
   username: string | null; // login username
+  permissions: string[] | null; // User menu permissions
   webuiTitle: string | null; // Custom title
   webuiDescription: string | null; // Title description
   lastTokenRenewal: string | null; // Human-readable local time of last token renewal (for debugging and monitoring)
   tokenExpiresAt: number | null; // Token expiration timestamp (extracted from JWT)
 
-  login: (token: string, isGuest?: boolean, coreVersion?: string | null, apiVersion?: string | null, webuiTitle?: string | null, webuiDescription?: string | null) => void;
+  login: (token: string, isGuest?: boolean, permissions?: string[] | null, coreVersion?: string | null, apiVersion?: string | null, webuiTitle?: string | null, webuiDescription?: string | null) => void;
   logout: () => void;
   setVersion: (coreVersion: string | null, apiVersion: string | null) => void;
   setCustomTitle: (webuiTitle: string | null, webuiDescription: string | null) => void;
@@ -192,7 +193,7 @@ const getUsernameFromToken = (token: string): string | null => {
   return payload.sub || null;
 };
 
-const isGuestToken = (token: string): boolean => {
+export const isGuestToken = (token: string): boolean => {
   const payload = parseTokenPayload(token);
   return payload.role === 'guest';
 };
@@ -202,7 +203,7 @@ const getTokenExpiresAt = (token: string): number | null => {
   return payload.exp ? payload.exp * 1000 : null; // Convert to milliseconds
 };
 
-const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
+const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null; username: string | null; permissions: string[] | null; webuiTitle: string | null; webuiDescription: string | null; lastTokenRenewal: string | null; tokenExpiresAt: number | null } => {
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
   const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
@@ -212,6 +213,9 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
   const username = token ? getUsernameFromToken(token) : null;
   const tokenExpiresAt = token ? getTokenExpiresAt(token) : null;
 
+  const permissionsRaw = localStorage.getItem('LIGHTRAG-USER-PERMISSIONS');
+  const permissions = permissionsRaw ? (() => { try { return JSON.parse(permissionsRaw); } catch { return null; } })() : null;
+
   if (!token) {
     return {
       isAuthenticated: false,
@@ -219,6 +223,7 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
       coreVersion: coreVersion,
       apiVersion: apiVersion,
       username: null,
+      permissions: null,
       webuiTitle: webuiTitle,
       webuiDescription: webuiDescription,
       lastTokenRenewal: null,
@@ -232,6 +237,7 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
     coreVersion: coreVersion,
     apiVersion: apiVersion,
     username: username,
+    permissions: permissions,
     webuiTitle: webuiTitle,
     webuiDescription: webuiDescription,
     lastTokenRenewal: lastTokenRenewal,
@@ -251,11 +257,22 @@ export const useAuthStore = create<AuthState>(set => {
     username: initialState.username,
     webuiTitle: initialState.webuiTitle,
     webuiDescription: initialState.webuiDescription,
+    permissions: initialState.permissions,
     lastTokenRenewal: initialState.lastTokenRenewal,
     tokenExpiresAt: initialState.tokenExpiresAt,
 
-    login: (token, isGuest = false, coreVersion = null, apiVersion = null, webuiTitle = null, webuiDescription = null) => {
+    login: (token, isGuest = false, permissions = null, coreVersion = null, apiVersion = null, webuiTitle = null, webuiDescription = null) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
+
+      if (permissions != null) {
+        if (permissions.length > 0) {
+          localStorage.setItem('LIGHTRAG-USER-PERMISSIONS', JSON.stringify(permissions));
+        } else {
+          localStorage.removeItem('LIGHTRAG-USER-PERMISSIONS');
+        }
+      }
+      // When permissions is null/undefined, preserve whatever is already stored
+      // so metadata-only refresh calls don't accidentally clear permissions.
 
       if (coreVersion) {
         localStorage.setItem('LIGHTRAG-CORE-VERSION', coreVersion);
@@ -288,6 +305,7 @@ export const useAuthStore = create<AuthState>(set => {
         isAuthenticated: true,
         isGuestMode: isGuest,
         username: username,
+        permissions: permissions,
         coreVersion: coreVersion,
         apiVersion: apiVersion,
         webuiTitle: webuiTitle,
@@ -310,6 +328,7 @@ export const useAuthStore = create<AuthState>(set => {
         isAuthenticated: false,
         isGuestMode: false,
         username: null,
+        permissions: null,
         coreVersion: coreVersion,
         apiVersion: apiVersion,
         webuiTitle: webuiTitle,

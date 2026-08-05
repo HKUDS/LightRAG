@@ -4428,6 +4428,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.error(f"[purge] Failed to persist rebuilt knowledge: {e}")
                 raise Exception(f"Failed to persist rebuilt knowledge: {e}") from e
 
+        # ---- 6b. Sweep orphaned graph nodes (safety net) ----
+        try:
+            await self._sweep_orphaned_graph_nodes()
+        except Exception as sweep_err:
+            logger.error("Orphan sweep error (non-fatal): %s", sweep_err)
+
         # ---- 7. Delete chunks themselves ----
         # Deleted only AFTER every derived graph/vector/tracking contribution
         # has been repaired or removed AND flushed (issue #3400: unsafe
@@ -4467,6 +4473,180 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 ) from e
 
         return rebuild_report
+
+    async def _sweep_orphaned_graph_nodes(self) -> dict[str, int]:
+        """Remove graph nodes whose chunk-tracking KV entries are empty or missing.
+
+        Normal deletion discovers candidates from per-doc ``full_entities`` /
+        ``full_relations`` anchor rows.  Entity merges (and a few secondary
+        paths) can leave node names that never appear in a document's anchor
+        rows — these are never candidates during ordinary deletion and remain
+        in the graph forever.  This sweep queries the graph for all labels,
+        then removes every node whose chunk-tracking row is absent or empty.
+
+        Runs as a non-fatal safety net: errors are logged but never raised.
+
+        Returns:
+            dict[str, int]: ``{"entities_removed": N, "relations_removed": M}``
+        """
+        entities_removed = 0
+        relations_removed = 0
+        try:
+            # ── 1. Sweep orphaned entities ──
+            if self.entity_chunks:
+                all_entities = (
+                    await self.chunk_entity_relation_graph.get_all_labels()
+                )
+                if all_entities:
+                    # Batch-read entity_chunks to avoid N+1 queries
+                    entity_rows = await self.entity_chunks.get_by_ids(all_entities)
+                    orphan_entities: list[str] = []
+                    # Entities whose entity_chunks row is missing need a
+                    # second opinion: check the graph node's source_id.
+                    # If source_id is not empty, the entity still references
+                    # valid chunks and must NOT be swept (the KV row may
+                    # have been lost to a transient write failure).
+                    missing_chunk_tracking: list[str] = []
+                    for name, row in zip(all_entities, entity_rows):
+                        if not row:
+                            missing_chunk_tracking.append(name)
+                        elif not row.get("chunk_ids"):
+                            orphan_entities.append(name)
+
+                    # Second-chance check: read graph nodes for entities
+                    # whose entity_chunks row is absent.
+                    if missing_chunk_tracking:
+                        node_data = (
+                            await self.chunk_entity_relation_graph.get_nodes_batch(
+                                missing_chunk_tracking
+                            )
+                        )
+                        source_id_key = "source_id"
+                        for name in missing_chunk_tracking:
+                            nd = node_data.get(name)
+                            if not nd:
+                                # No graph node either → safe to remove
+                                orphan_entities.append(name)
+                            elif not nd.get(source_id_key):
+                                # Node exists but has no source_id → orphan
+                                orphan_entities.append(name)
+                            # else: node has a non-empty source_id →
+                            # still references chunks; skip (not orphan)
+
+                    if orphan_entities:
+                        # Confirm they actually exist in the graph
+                        existing = (
+                            await self.chunk_entity_relation_graph.has_nodes_batch(
+                                orphan_entities
+                            )
+                        )
+                        truly_orphaned = [
+                            n for n in orphan_entities if n in existing
+                        ]
+                        if truly_orphaned:
+                            logger.info(
+                                "Orphan sweep: removing %d entities "
+                                "with empty chunk-tracking from graph",
+                                len(truly_orphaned),
+                            )
+                            await self.chunk_entity_relation_graph.remove_nodes(
+                                truly_orphaned
+                            )
+                            entity_vdb_ids = [
+                                compute_mdhash_id(e, prefix="ent-")
+                                for e in truly_orphaned
+                            ]
+                            await self.entities_vdb.delete(entity_vdb_ids)
+                            await self.entity_chunks.delete(truly_orphaned)
+                            entities_removed = len(truly_orphaned)
+                            logger.info(
+                                "Orphan sweep: removed %d entities",
+                                entities_removed,
+                            )
+
+            # ── 2. Sweep orphaned relations ──
+            if self.relation_chunks:
+                all_edges_raw = (
+                    await self.chunk_entity_relation_graph.get_all_edges()
+                )
+                if all_edges_raw:
+                    # Deduplicate: get_all_edges returns one row per directed
+                    # edge; normalise to sorted (src, tgt) tuples.
+                    edge_pairs: set[tuple[str, str]] = set()
+                    for e in all_edges_raw:
+                        src = (e.get("source") or "").strip('"')
+                        tgt = (e.get("target") or "").strip('"')
+                        if src and tgt:
+                            edge_pairs.add(tuple(sorted((src, tgt))))  # type: ignore[arg-type]
+                    all_edges = list(edge_pairs)
+
+                    edge_by_key: dict[str, tuple[str, str]] = {}
+                    for pair in all_edges:
+                        edge_by_key[make_relation_chunk_key(*pair)] = pair
+
+                    all_keys = list(edge_by_key.keys())
+                    rel_rows = await self.relation_chunks.get_by_ids(all_keys)
+                    orphan_edges: list[tuple[str, str]] = []
+                    missing_rel_tracking: list[tuple[str, str]] = []
+                    for key_str, row in zip(all_keys, rel_rows):
+                        if not row:
+                            missing_rel_tracking.append(edge_by_key[key_str])
+                        elif not row.get("chunk_ids"):
+                            orphan_edges.append(edge_by_key[key_str])
+
+                    # Second-chance check for edges whose relation_chunks
+                    # row is missing: verify against the graph edge's own
+                    # source_id.
+                    if missing_rel_tracking:
+                        edge_dicts = [
+                            {"src": s, "tgt": t} for s, t in missing_rel_tracking
+                        ]
+                        existing_edges = (
+                            await self.chunk_entity_relation_graph.get_edges_batch(
+                                edge_dicts
+                            )
+                        )
+                        for pair in missing_rel_tracking:
+                            key = tuple(sorted(pair))
+                            edge_data = existing_edges.get(key)
+                            if not edge_data:
+                                orphan_edges.append(pair)
+                            elif not edge_data.get("source_id"):
+                                orphan_edges.append(pair)
+
+                    if orphan_edges:
+                        logger.info(
+                            "Orphan sweep: removing %d relations "
+                            "with empty chunk-tracking from graph",
+                            len(orphan_edges),
+                        )
+                        await self.chunk_entity_relation_graph.remove_edges(
+                            orphan_edges
+                        )
+                        rel_ids: list[str] = []
+                        for src, tgt in orphan_edges:
+                            rel_ids.extend([
+                                compute_mdhash_id(src + tgt, prefix="rel-"),
+                                compute_mdhash_id(tgt + src, prefix="rel-"),
+                            ])
+                        await self.relationships_vdb.delete(rel_ids)
+                        rel_chunk_del_keys = [
+                            make_relation_chunk_key(src, tgt)
+                            for src, tgt in orphan_edges
+                        ]
+                        await self.relation_chunks.delete(rel_chunk_del_keys)
+                        relations_removed = len(orphan_edges)
+                        logger.info(
+                            "Orphan sweep: removed %d relations",
+                            relations_removed,
+                        )
+        except Exception as e:
+            # Non-fatal — the normal deletion path already ran
+            logger.error("Orphan sweep failed (non-fatal): %s", e)
+        return {
+            "entities_removed": entities_removed,
+            "relations_removed": relations_removed,
+        }
 
     async def adelete_by_doc_id(
         self, doc_id: str, delete_llm_cache: bool = False
@@ -4523,6 +4703,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         # the finally releases it by owner (never clobbering a later holder).
         we_acquired_pipeline = False
         token = uuid.uuid4().hex
+        _persistence_failure_result: DeletionResult | None = None
 
         # Initialized BEFORE the try so the finally can always read them, even
         # when the acquire itself (or the post-acquire status logging) raises.
@@ -5308,6 +5489,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     logger.error(f"Failed to rebuild knowledge from chunks: {e}")
                     raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
 
+            # 8b. Sweep orphaned graph nodes (safety net for entities/relations
+            #      whose anchor rows were not updated, e.g. after entity merges).
+            try:
+                deletion_stage = "sweep_orphans"
+                await self._sweep_orphaned_graph_nodes()
+            except Exception as sweep_err:
+                logger.error("Orphan sweep error (non-fatal): %s", sweep_err)
+
             # 9. Delete LLM cache while the document status still exists so a failure
             # remains retryable via the same doc_id.
             log_message = f"Document {doc_id} successfully deleted"
@@ -5524,7 +5713,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         elif original_exception is None:
                             # Deletion stages were in-flight but the try-block return was never
                             # reached; treat the persistence failure as the primary error.
-                            return DeletionResult(
+                            _persistence_failure_result = DeletionResult(
                                 status="fail",
                                 doc_id=doc_id,
                                 message=f"Deletion completed but failed to persist changes: {persistence_error}",
@@ -5576,6 +5765,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             token=token,
                             action=_terminal_release,
                         )
+
+
+
+        # After the outer finally completes, return the persistence failure
+        # result if one was recorded during cleanup.
+        if _persistence_failure_result is not None:
+            return _persistence_failure_result
 
     async def _raise_if_recovery_required(self) -> None:
         """Refuse a graph/data mutation while the workspace is fenced for

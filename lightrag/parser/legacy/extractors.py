@@ -94,6 +94,61 @@ def _extract_pptx(file_bytes: bytes) -> str:
     return content
 
 
+def _extract_xls(file_bytes: bytes) -> str:
+    """Extract legacy XLS (BIFF) content in tab-delimited format with sheet separators.
+
+    Uses xlrd (the de-facto standard reader for .xls). The extraction style
+    mirrors _extract_xlsx: tab-delimited rows, sheet separators, empty-cell
+    preservation.
+    """
+    import xlrd  # type: ignore
+
+    workbook = xlrd.open_workbook(file_contents=file_bytes)
+
+    def escape_cell(cell_value: str | int | float | None) -> str:
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        return (
+            text.replace("\\", "\\\\")
+            .replace("\t", "\\t")
+            .replace("\r\n", "\\n")
+            .replace("\r", "\\n")
+            .replace("\n", "\\n")
+        )
+
+    def escape_sheet_title(title: str) -> str:
+        return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
+
+    content_parts: list[str] = []
+    sheet_separator = "=" * 20
+
+    for idx in range(workbook.nsheets):
+        sheet = workbook.sheet_by_index(idx)
+        if idx > 0:
+            content_parts.append("")
+        safe_title = escape_sheet_title(sheet.name)
+        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
+
+        for row_idx in range(sheet.nrows):
+            row_parts = []
+            row_has_content = False
+            for col_idx in range(sheet.ncols):
+                cell = sheet.cell(row_idx, col_idx)
+                cell_text = escape_cell(cell.value)
+                row_parts.append(cell_text)
+                if cell_text:
+                    row_has_content = True
+            if not row_has_content:
+                content_parts.append("")
+            else:
+                content_parts.append("\t".join(row_parts))
+
+    content_parts.append(sheet_separator)
+    return "\n".join(content_parts)
+
+
+
 def _extract_xlsx(file_bytes: bytes) -> str:
     """Extract XLSX content in tab-delimited format with sheet separators.
 
@@ -165,6 +220,7 @@ _BINARY_EXTRACTORS = {
     "pdf": _extract_pdf_pypdf,
     "docx": _extract_docx,
     "pptx": _extract_pptx,
+    "xls": _extract_xls,
     "xlsx": _extract_xlsx,
 }
 

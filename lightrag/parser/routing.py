@@ -1272,6 +1272,7 @@ def resolve_parser_directives(
     *,
     parser_rules: str | None = None,
     require_external_endpoint: bool = True,
+    forced_engine: str | None = None,
 ) -> ParserDirectives:
     """Resolve engine, process options and per-file parameters for a file.
 
@@ -1281,6 +1282,13 @@ def resolve_parser_directives(
            for whichever of engine / options the filename hint did not
            specify.
         3. Default engine ``legacy`` with empty options.
+
+    ``forced_engine`` (e.g. from a WebUI parser picker) overrides the engine
+    chosen by the filename hint / rules / default.  Pass ``None`` or
+    ``"auto"`` to keep the automatic resolution.  A forced engine must be
+    usable for this file (supported, suffix-capable, endpoint configured) or
+    :class:`FilenameParserHintError` is raised; the filename hint's *options*
+    (``i/t/e/...``) are still honoured even when its engine is overridden.
 
     Selector (``i/t/e/!/FRVP``) keeps the legacy "filename options wholesale
     override rule options" behaviour.  Chunk parameters overlay per selector
@@ -1324,7 +1332,23 @@ def resolve_parser_directives(
     ):
         default_engine = None
 
-    engine = hinted_engine or rule_engine or default_engine or PARSER_ENGINE_LEGACY
+    forced = (
+        normalize_parser_engine(forced_engine)
+        if forced_engine and forced_engine.strip().lower() not in ("", "auto")
+        else None
+    )
+    if forced is not None:
+        if not _engine_is_usable(
+            forced, suffix, require_external_endpoint=require_external_endpoint
+        ):
+            supported = ", ".join(sorted(supported_parser_engines()))
+            raise FilenameParserHintError(
+                f"parser engine {forced_engine!r} is not usable for suffix "
+                f"{suffix!r}: it must be a supported engine ({supported}) with "
+                "the suffix capability and a configured endpoint"
+            )
+
+    engine = forced or hinted_engine or rule_engine or default_engine or PARSER_ENGINE_LEGACY
     options_str = hinted_options or rule_options
 
     # Overlay chunk params per selector char: rule first, filename-hint wins.

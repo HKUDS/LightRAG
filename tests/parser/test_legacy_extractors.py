@@ -9,7 +9,7 @@ from xml.etree import ElementTree as ET
 import pytest
 from openpyxl import Workbook
 
-from lightrag.parser.legacy.extractors import extract_text
+from lightrag.parser.legacy.extractors import extract_text, _extract_xls
 
 
 _NS_URI = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -150,3 +150,103 @@ def test_extract_text_xlsx_handles_multiple_sheets_and_string_results():
     # String cached result preferred over the concatenation formula text.
     assert "foobar" in text
     assert '=A1&"bar"' not in text
+
+
+# ---------------------------------------------------------------------------
+# XLS helpers (xlwt creates .xls BIFF files for test purposes)
+# ---------------------------------------------------------------------------
+
+
+def _make_xls_bytes() -> bytes:
+    """Two-sheet workbook with numbers, strings, and a header row."""
+    import xlwt  # type: ignore
+
+    wb = xlwt.Workbook(encoding="utf-8")
+    ws1 = wb.add_sheet("Numbers")
+    ws1.write(0, 0, "A")
+    ws1.write(0, 1, "B")
+    ws1.write(1, 0, 42)
+    ws1.write(1, 1, 3.14)
+    ws1.write(2, 0, "hello")
+    ws1.write(2, 1, "world")
+
+    ws2 = wb.add_sheet("Data")
+    ws2.write(0, 0, "ID")
+    ws2.write(0, 1, "Name")
+    ws2.write(1, 0, 1)
+    ws2.write(1, 1, "Alice")
+    ws2.write(2, 0, 2)
+    ws2.write(2, 1, "Bob")
+
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# XLS tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+def test_extract_text_xls_basic_extraction():
+    """Verify two-sheet .xls extraction produces sheet separators and data."""
+    file_bytes = _make_xls_bytes()
+    text = _extract_xls(file_bytes)
+
+    assert "Sheet: Numbers" in text
+    assert "Sheet: Data" in text
+    assert "A\tB" in text
+    assert "ID\tName" in text
+    # xlwt stores integers as floats in BIFF format
+    assert "42.0\t3.14" in text
+    assert "hello\tworld" in text
+    assert "1.0\tAlice" in text
+    assert "2.0\tBob" in text
+    assert "====================" in text
+
+
+@pytest.mark.offline
+def test_extract_text_xls_via_dispatch():
+    """Verify extract_text dispatches 'xls' suffix to _extract_xls."""
+    file_bytes = _make_xls_bytes()
+    text = extract_text(file_bytes, "xls")
+    assert "Sheet: Numbers" in text
+    assert "42.0\t3.14" in text
+
+
+@pytest.mark.offline
+def test_extract_text_xls_empty_cells():
+    """Verify empty cells produce empty-string columns (tab separators)."""
+    import xlwt
+
+    wb = xlwt.Workbook(encoding="utf-8")
+    ws = wb.add_sheet("Sheet1")
+    ws.write(0, 0, "left")
+    ws.write(0, 2, "right")  # col 1 is empty
+    bio = BytesIO()
+    wb.save(bio)
+    text = _extract_xls(bio.getvalue())
+
+    assert "left" in text
+    assert "right" in text
+    lines = [l for l in text.split("\n") if "left" in l]
+    assert len(lines) == 1
+    assert "left\t\tright" in lines[0]
+
+
+@pytest.mark.offline
+def test_extract_text_xls_special_chars():
+    """Verify newlines and tabs in cell values are escaped."""
+    import xlwt
+
+    wb = xlwt.Workbook(encoding="utf-8")
+    ws = wb.add_sheet("Sheet1")
+    ws.write(0, 0, "line1\nline2")
+    ws.write(0, 1, "col1\tcol2")
+    bio = BytesIO()
+    wb.save(bio)
+    text = _extract_xls(bio.getvalue())
+
+    assert "line1\\nline2" in text
+    assert "col1\\tcol2" in text

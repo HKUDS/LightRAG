@@ -130,30 +130,45 @@ export class SearchHistoryManager {
   }
 
   /**
-   * Initialize history with default popular labels if empty
-   * @param popularLabels Array of popular labels to use as defaults
+   * Refresh the search-history dropdown with the latest popular labels from
+   * the backend, while preserving user-entered search entries (accessCount > 0).
+   *
+   * - On first load (empty history): initialise with popular labels only.
+   * - On subsequent loads: keep user-typed entries, replace the popular-label
+   *   section (accessCount === 0) with fresh API data.
+   * - When the API returns an empty list (all documents deleted), the popular
+   *   section becomes empty — stale entity names from deleted docs are purged.
    */
   static async initializeWithDefaults(popularLabels: string[]): Promise<void> {
-    const history = this.getHistory()
+    try {
+      const now = Date.now()
+      const popularItems: SearchHistoryItem[] = popularLabels.map((label, index) => ({
+        label: label.trim(),
+        lastAccessed: now - index,
+        accessCount: 0, // 0 = API-populated defaults, >0 = user-entered
+      }))
 
-    if (history.length === 0 && popularLabels.length > 0) {
-      try {
-        const now = Date.now()
-        const defaultItems: SearchHistoryItem[] = popularLabels.map((label, index) => ({
-          label: label.trim(),
-          lastAccessed: now - index, // Ensure proper ordering
-          accessCount: 0 // Mark as default/popular items
-        }))
-
-        const data: SearchHistoryData = {
-          items: defaultItems,
-          version: this.VERSION
-        }
-
+      const history = this.getHistory()
+      if (history.length === 0) {
+        // First load — just write the popular labels directly.
+        const data: SearchHistoryData = { items: popularItems, version: this.VERSION }
         localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data))
-      } catch (error) {
-        console.error('Error initializing search history with defaults:', error)
+        return
       }
+
+      // Merge: keep user-entered items, replace popular-label items with
+      // the latest API data.  This is the key fix — stale entity names
+      // from deleted documents are purged because they no longer appear
+      // in the API response.
+      const userItems = history.filter((item) => item.accessCount > 0)
+      const merged = [...popularItems, ...userItems]
+        .sort((a, b) => b.lastAccessed - a.lastAccessed)
+        .slice(0, searchHistoryMaxItems)
+
+      const data: SearchHistoryData = { items: merged, version: this.VERSION }
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data))
+    } catch (error) {
+      console.error('Error initializing search history with defaults:', error)
     }
   }
 

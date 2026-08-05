@@ -44,39 +44,73 @@
   --sidebar-ring: hsl(217.2 91.2% 59.8%);
 }
 
+/* Dark theme — deep navy "glassmorphism" palette.
+   Surfaces are intentionally desaturated blue (222-224 hue) rather than the
+   previous neutral grey, so translucent panels read as glass over the ambient
+   gradient backdrop instead of looking like flat grey boxes. */
 .dark {
-  --background: hsl(240 10% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  --card: hsl(240 10% 3.9%);
-  --card-foreground: hsl(0 0% 98%);
-  --popover: hsl(240 10% 3.9%);
-  --popover-foreground: hsl(0 0% 98%);
-  --primary: hsl(0 0% 98%);
-  --primary-foreground: hsl(240 5.9% 10%);
-  --secondary: hsl(240 3.7% 15.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  --muted: hsl(240 3.7% 15.9%);
-  --muted-foreground: hsl(240 5% 64.9%);
-  --accent: hsl(240 3.7% 15.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
+  --background: hsl(222 47% 7%);
+  --foreground: hsl(210 40% 98%);
+  --card: hsl(222 44% 11%);
+  --card-foreground: hsl(210 40% 98%);
+  --popover: hsl(222 45% 9%);
+  --popover-foreground: hsl(210 40% 98%);
+  --primary: hsl(189 94% 55%);
+  --primary-foreground: hsl(222 47% 8%);
+  --secondary: hsl(222 33% 18%);
+  --secondary-foreground: hsl(210 40% 98%);
+  --muted: hsl(222 33% 16%);
+  --muted-foreground: hsl(215 20% 68%);
+  --accent: hsl(222 33% 18%);
+  --accent-foreground: hsl(210 40% 98%);
+  --destructive: hsl(0 72% 51%);
   --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(240 3.7% 15.9%);
-  --input: hsl(240 3.7% 15.9%);
-  --ring: hsl(240 4.9% 83.9%);
-  --chart-1: hsl(220 70% 50%);
-  --chart-2: hsl(160 60% 45%);
-  --chart-3: hsl(30 80% 55%);
-  --chart-4: hsl(280 65% 60%);
-  --chart-5: hsl(340 75% 55%);
-  --sidebar-background: hsl(240 5.9% 10%);
-  --sidebar-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-primary: hsl(224.3 76.3% 48%);
-  --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(240 3.7% 15.9%);
-  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-border: hsl(240 3.7% 15.9%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+  --border: hsl(216 34% 22%);
+  --input: hsl(216 34% 20%);
+  --ring: hsl(189 94% 55%);
+  --chart-1: hsl(189 94% 55%);
+  --chart-2: hsl(258 90% 66%);
+  --chart-3: hsl(217 91% 60%);
+  --chart-4: hsl(160 84% 45%);
+  --chart-5: hsl(38 92% 60%);
+  --sidebar-background: hsl(222 47% 9%);
+  --sidebar-foreground: hsl(215 25% 80%);
+  --sidebar-primary: hsl(189 94% 55%);
+  --sidebar-primary-foreground: hsl(222 47% 8%);
+  --sidebar-accent: hsl(222 33% 16%);
+  --sidebar-accent-foreground: hsl(210 40% 98%);
+  --sidebar-border: hsl(216 34% 20%);
+  --sidebar-ring: hsl(189 94% 55%);
+
+  /* Glass surface tokens (dark) */
+  --glass-bg: hsl(222 44% 13% / 0.62);
+  --glass-bg-strong: hsl(222 44% 15% / 0.82);
+  --glass-border: hsl(210 40% 98% / 0.10);
+  --glass-highlight: hsl(210 40% 98% / 0.06);
+  --glass-shadow: 0 8px 32px hsl(222 60% 3% / 0.55);
+
+  /* Semantic status accents, shared by cards, badges and charts */
+  --status-success: hsl(160 84% 45%);
+  --status-warning: hsl(38 92% 60%);
+  --status-danger: hsl(0 72% 58%);
+  --status-info: hsl(217 91% 62%);
+  --status-neutral: hsl(215 20% 65%);
+}
+
+/* Light theme glass tokens: same variable contract, tuned for light surfaces
+   so components can reference them unconditionally. */
+:root {
+  --glass-bg: hsl(0 0% 100% / 0.72);
+  --glass-bg-strong: hsl(0 0% 100% / 0.9);
+  --glass-border: hsl(240 10% 20% / 0.10);
+  --glass-highlight: hsl(0 0% 100% / 0.6);
+  --glass-shadow: 0 8px 28px hsl(240 20% 40% / 0.12);
+
+  --status-success: hsl(160 84% 34%);
+  --status-warning: hsl(32 92% 45%);
+  --status-danger: hsl(0 72% 48%);
+  --status-info: hsl(217 91% 52%);
+  --status-neutral: hsl(240 4% 46%);
 }
 
 @theme inline {
@@ -116,9 +150,38 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar-background);
+  --color-status-success: var(--status-success);
+  --color-status-warning: var(--status-warning);
+  --color-status-danger: var(--status-danger);
+  --color-status-info: var(--status-info);
+  --color-status-neutral: var(--status-neutral);
+  --color-glass: var(--glass-bg);
+  --color-glass-strong: var(--glass-bg-strong);
+  --color-glass-border: var(--glass-border);
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-fade-in-up: fade-in-up 0.35s ease-out both;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+}
 
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
 }
 
 @layer base {
@@ -127,6 +190,95 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Ambient aurora backdrop. Fixed + non-interactive so it never affects
+     layout or scroll height; only rendered in dark mode where the glass
+     surfaces need something behind them to refract. */
+  .dark body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(60rem 40rem at 12% -10%, hsl(189 94% 55% / 0.10), transparent 60%),
+      radial-gradient(50rem 36rem at 90% 0%, hsl(258 90% 66% / 0.10), transparent 55%),
+      radial-gradient(48rem 34rem at 70% 100%, hsl(217 91% 60% / 0.08), transparent 60%);
+  }
+}
+
+@layer components {
+  /* Core glass surface. Uses the --glass-* token contract so it adapts
+     between light and dark without per-component conditionals. */
+  .glass-panel {
+    background-color: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+  }
+
+  .glass-panel-strong {
+    background-color: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(22px) saturate(170%);
+    -webkit-backdrop-filter: blur(22px) saturate(170%);
+  }
+
+  /* Interactive lift for clickable glass cards. */
+  .glass-card-hover {
+    transition:
+      transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.22s ease,
+      box-shadow 0.22s ease;
+  }
+
+  .glass-card-hover:hover {
+    transform: translateY(-2px);
+    border-color: hsl(189 94% 55% / 0.35);
+  }
+
+  /* Top highlight edge that sells the "glass" read on stat cards. */
+  .glass-sheen {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .glass-sheen::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--glass-highlight),
+      transparent
+    );
+  }
+
+  .text-gradient-brand {
+    background: linear-gradient(
+      92deg,
+      hsl(189 94% 60%),
+      hsl(217 91% 66%),
+      hsl(258 90% 70%)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* Respect users who ask for reduced motion: disable the decorative
+   transforms/animations introduced by the glass system. */
+@media (prefers-reduced-motion: reduce) {
+  .glass-card-hover,
+  .glass-card-hover:hover {
+    transition: none;
+    transform: none;
   }
 }
 

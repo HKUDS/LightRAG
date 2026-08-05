@@ -307,11 +307,14 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 # it here would let a forged guest token bypass the X-API-Key check
                 # below (GHSA-f4vv-55c2-5789 / GHSA-xr5c-v5r6-c9f9). Instead, fall
                 # through so the API key stays mandatory in that mode.
-                if not auth_configured and token_info.get("role") == "guest":
+                if not auth_configured:
                     if not api_key_configured:
+                        # Fully open mode: accept any valid token (guest or real user)
                         return
-                    # API-key-only mode: ignore the guest token; the X-API-Key check
-                    # below is the sole authority. Fall through (no return, no raise).
+                    # API-key-only mode: accept non-guest tokens (real users from
+                    # .user_data.json login) but reject guest tokens (forgeable).
+                    if token_info.get("role") != "guest":
+                        return
                 elif auth_configured and token_info.get("role") != "guest":
                     # Accept non-guest token if password auth is configured
                     return

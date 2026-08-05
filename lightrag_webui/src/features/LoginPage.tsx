@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/stores/state'
+import { useAuthStore, isGuestToken } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import { toast } from 'sonner'
@@ -25,7 +25,7 @@ const LoginPage = () => {
     console.log('LoginPage mounted')
   }, []);
 
-  // Check if authentication is configured, skip login if not
+  // Check auth status and show login form regardless of configuration
   useEffect(() => {
 
     const checkAuthConfig = async () => {
@@ -42,39 +42,21 @@ const LoginPage = () => {
           return
         }
 
-        // Check auth status
+        // Check auth status for version info
         const status = await getAuthStatus()
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
           sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
         }
-
-        if (!status.auth_configured && status.access_token) {
-          // If auth is not configured, use the guest token and redirect
-          login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
-          if (status.message) {
-            toast.info(status.message)
-          }
-          navigate('/')
-          return
-        }
-
-        // Only set checkingAuth to false if we need to show the login page
-        setCheckingAuth(false);
-
-      } catch (error) {
-        console.error('Failed to check auth configuration:', error)
-        // Also set checkingAuth to false in case of error
+      } finally {
         setCheckingAuth(false);
       }
-      // Removed finally block as we're setting checkingAuth earlier
     }
 
     // Execute immediately
     checkAuthConfig()
 
-    // Cleanup function to prevent state updates after unmount
     return () => {
     }
   }, [isAuthenticated, login, navigate])
@@ -113,9 +95,11 @@ const LoginPage = () => {
       // Update previous username
       localStorage.setItem('LIGHTRAG-PREVIOUS-USER', username)
 
-      // Check authentication mode
-      const isGuestMode = response.auth_mode === 'disabled'
-      login(response.access_token, isGuestMode, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null)
+      // Determine guest mode from the JWT token role, not from the server's
+      // auth_mode flag. A token with role='guest' is a guest regardless of
+      // whether the server has auth enabled or disabled.
+      const isGuestMode = isGuestToken(response.access_token)
+      login(response.access_token, isGuestMode, response.permissions || null, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null)
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
@@ -153,14 +137,11 @@ const LoginPage = () => {
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
-              <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
+              <img src="logo.svg" alt="RAG知识库 Logo" className="h-12 w-12" />
               <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
             </div>
             <div className="text-center space-y-2">
-              <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
-              <p className="text-muted-foreground text-sm">
-                {t('login.description')}
-              </p>
+              <h1 className="text-3xl font-bold tracking-tight">RAG知识库</h1>
             </div>
           </div>
         </CardHeader>
@@ -201,6 +182,7 @@ const LoginPage = () => {
               {loading ? t('login.loggingIn') : t('login.loginButton')}
             </Button>
           </form>
+
         </CardContent>
       </Card>
     </div>

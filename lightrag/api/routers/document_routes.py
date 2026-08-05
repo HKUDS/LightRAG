@@ -91,6 +91,7 @@ from lightrag.parser.routing import (
     parse_process_options,
     resolve_chunk_options,
     resolve_parser_directives,
+    sanitize_process_options,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -875,6 +876,13 @@ class DeleteDocRequest(BaseModel):
         default=False,
         description="Whether to delete cached LLM extraction results for the documents.",
     )
+    workspace: Optional[str] = Field(
+        default=None,
+        description=(
+            "Knowledge base (workspace) the document ids belong to. Omit to use the "
+            "primary workspace."
+        ),
+    )
 
     @field_validator("doc_ids", mode="after")
     @classmethod
@@ -902,6 +910,46 @@ class DeleteDocRequest(BaseModel):
 _INTERNAL_METADATA_KEYS = frozenset({"smartheading_llm_cache_ids"})
 
 
+async def _collect_workspace_documents(kb_rag, request) -> tuple[list, dict]:
+    """Fetch every document (paged past the page_size cap) plus status counts.
+
+    Used by the aggregated ``/documents/paginated`` mode so per-knowledge-base
+    results can be merged, globally sorted and re-paginated by the caller.
+    """
+    all_docs: list = []
+    page = 1
+    page_size = 200  # backend page_size cap
+    while True:
+        docs, total = await kb_rag.doc_status.get_docs_paginated(
+            status_filter=request.status_filter,
+            status_filters=request.status_filters,
+            page=page,
+            page_size=page_size,
+            sort_field=request.sort_field,
+            sort_direction=request.sort_direction,
+        )
+        all_docs.extend(docs)
+        if len(all_docs) >= total or not docs:
+            break
+        page += 1
+    counts = await kb_rag.doc_status.get_all_status_counts()
+    return all_docs, counts
+
+
+def _doc_sort_key(doc_id: str, doc, field: str):
+    """Cross-workspace sort key for the aggregated documents view."""
+    if field == "id":
+        return doc_id
+    if field == "file_path":
+        return normalize_file_path(doc.file_path)
+    value = getattr(doc, field, None)
+    if value is None:
+        return 0.0
+    if hasattr(value, "timestamp"):
+        return value.timestamp()
+    return value
+
+
 class DocStatusResponse(BaseModel):
     id: str = Field(description="Document identifier")
     content_summary: str = Field(description="Summary of document content")
@@ -922,6 +970,13 @@ class DocStatusResponse(BaseModel):
         default=None, description="Additional metadata about the document"
     )
     file_path: str = Field(description="Path to the document file")
+    kb_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Knowledge base (workspace) the document belongs to; set when the "
+            "response was produced by a knowledge-base-scoped or aggregated query."
+        ),
+    )
 
     @field_validator("metadata", mode="after")
     @classmethod
@@ -1095,6 +1150,14 @@ class DocumentsRequest(BaseModel):
     )
     sort_direction: Literal["asc", "desc"] = Field(
         default="desc", description="Sort direction"
+    )
+    workspace: Optional[str] = Field(
+        default=None,
+        description=(
+            "Knowledge base (workspace) to query: '*' merges every discovered "
+            "knowledge base, a specific id queries only that knowledge base, and "
+            "omitting it queries the primary workspace."
+        ),
     )
 
     model_config = ConfigDict(
@@ -2198,6 +2261,8 @@ async def pipeline_enqueue_file(
     from_scan: bool = False,
     admission_token: str | None = None,
     known_file_size: int | None = None,
+    forced_engine: str | None = None,
+    forced_process_options: str | None = None,
 ) -> tuple[bool, str]:
     """Add a file to the queue for processing
 
@@ -2217,6 +2282,12 @@ async def pipeline_enqueue_file(
             candidate spool recorded at discovery time; it feeds error reports
             only, so a size that went stale between discovery and enqueue costs
             nothing.
+        forced_engine: explicit parser engine override (e.g. from the WebUI
+            parser picker). ``None`` / ``"auto"`` keep automatic resolution
+            via filename hint / LIGHTRAG_PARSER rules / defaults.
+        forced_process_options: extra process-option selector chars (e.g.
+            ``"i"`` / ``"t"`` / ``"e"`` for image / table / equation
+            analysis) merged into the resolved options.
     Returns:
         tuple: (success: bool, track_id: str)
     """
@@ -2239,7 +2310,9 @@ async def pipeline_enqueue_file(
                 file_size = 0
 
         try:
-            directives = resolve_parser_directives(file_path)
+            directives = resolve_parser_directives(
+                file_path, forced_engine=forced_engine
+            )
         except FilenameParserHintError as e:
             error_files = [
                 {
@@ -2258,6 +2331,25 @@ async def pipeline_enqueue_file(
 
         extraction_engine = directives.engine
         process_options = directives.process_options
+        if forced_process_options:
+            # Merge caller-supplied selector chars (i/t/e/...) with the
+            # resolved options, deduped so repeated chars stay harmless.
+            merged = process_options + sanitize_process_options(forced_process_options)
+            process_options = "".join(dict.fromkeys(merged))
+        # Image analysis is gated by the server's VLM master switch. When it is
+        # off, drop the caller's 'i' opt-in here — before the pipeline worker
+        # can hard-fail the document — and warn once. Tables/equations keep
+        # flowing through the EXTRACT role, so only drawings are affected.
+        if "i" in process_options and not getattr(
+            global_args, "vlm_process_enable", False
+        ):
+            logger.warning(
+                f"[File Extraction]{file_path.name}: image analysis requested "
+                "but VLM_PROCESS_ENABLE is off on the server; dropping the "
+                "'i' process option so the document still processes "
+                "(tables/formulas unaffected)."
+            )
+            process_options = process_options.replace("i", "")
         api_process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
 
         # Overlay any per-file chunk parameters (from the filename hint or a
@@ -2379,6 +2471,8 @@ async def pipeline_index_file(
     file_path: Path,
     track_id: str = None,
     admission_token: str | None = None,
+    forced_engine: str | None = None,
+    forced_process_options: str | None = None,
 ):
     """Index a file with track_id
 
@@ -2389,10 +2483,19 @@ async def pipeline_index_file(
         admission_token: the endpoint's pending-enqueue reservation, forwarded
             so the admission guard re-weights THAT token to the deduped count
             instead of counting this request twice (LR2 §9.2)
+        forced_engine: explicit parser engine override (e.g. from the WebUI
+            parser picker). ``None`` / ``"auto"`` keep automatic resolution.
+        forced_process_options: extra process-option selector chars (e.g.
+            ``"i"`` / ``"t"`` / ``"e"``) merged into the resolved options.
     """
     try:
         success, _ = await pipeline_enqueue_file(
-            rag, file_path, track_id, admission_token=admission_token
+            rag,
+            file_path,
+            track_id,
+            admission_token=admission_token,
+            forced_engine=forced_engine,
+            forced_process_options=forced_process_options,
         )
         if success:
             await rag.apipeline_process_enqueue_documents()
@@ -4142,7 +4245,10 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    api_key: Optional[str] = None,
+    build_rag_instance=None,
 ):
     # Fresh router per call — see the note above the temp_prefix constant.
     router = APIRouter(
@@ -4158,6 +4264,13 @@ def create_document_routes(
     )
     async def scan_for_new_documents(
         managed_tasks: set = Depends(get_managed_background_tasks),
+        workspace: Optional[str] = Query(
+            None,
+            description=(
+                "Knowledge base (workspace) to scan. Omit to scan the primary "
+                "workspace."
+            ),
+        ),
     ):
         """
         Trigger the scanning process for new documents.
@@ -4228,6 +4341,49 @@ def create_document_routes(
             start_reserved_background_task,
         )
 
+        # Resolve workspace(s) to scan:
+        #   workspace='*'          → scan every KB + primary workspace
+        #   workspace='<name>'     → scan only that single KB
+        #   workspace=None         → scan primary workspace only
+        if workspace and workspace != "*":
+            # Scan a single named KB workspace
+            if build_rag_instance is not None:
+                from .knowledge_base_routes import _get_rag
+
+                scan_targets: list[tuple[Any, DocumentManager]] = [
+                    (
+                        await _get_rag(workspace, build_rag_instance),
+                        DocumentManager(global_args.input_dir, workspace=workspace),
+                    )
+                ]
+            else:
+                scan_targets = [(rag, doc_manager)]
+        elif workspace == "*" and build_rag_instance is not None:
+            # Scan all knowledge bases + primary workspace
+            from .knowledge_base_routes import _discover_kbs, _get_rag
+
+            kb_ids = _discover_kbs()
+            scan_targets = []
+            for kb_id in kb_ids:
+                try:
+                    kb_rag = await _get_rag(kb_id, build_rag_instance)
+                    scan_targets.append(
+                        (kb_rag, DocumentManager(global_args.input_dir, workspace=kb_id))
+                    )
+                except Exception as kb_err:
+                    logger.error(f"Failed to resolve KB '{kb_id}' for scan: {kb_err}")
+            # Primary workspace last
+            scan_targets.append((rag, doc_manager))
+            if not scan_targets:
+                scan_targets = [(rag, doc_manager)]
+        else:
+            scan_targets = [(rag, doc_manager)]
+
+        # Use the first target for all reservation / pipeline-status checks.
+        # The _scan_run inner function iterates over ALL targets.
+        target_rag = scan_targets[0][0]
+        target_doc_manager = scan_targets[0][1]
+
         # Generate track_id with "scan" prefix for scanning operation
         track_id = generate_track_id("scan")
         # Owner token for the scanning reservation, generated before any await.
@@ -4254,7 +4410,8 @@ def create_document_routes(
             # Mocked-rig path (no pipeline_status): started.set() first so the
             # start-barrier confirms takeover; no reservation, no ingress.
             started.set()
-            await run_scanning_process(rag, doc_manager, track_id, scanning_token)
+            for _scan_rag, _scan_dm in scan_targets:
+                await run_scanning_process(_scan_rag, _scan_dm, track_id, scanning_token)
 
         async def _scan_backstop():
             # Reverse compensation (LR2 §8.6), owner-checked + idempotent, and
@@ -4263,12 +4420,12 @@ def create_document_routes(
             # before releasing the reservation. Both carry their owner token, so
             # a late compensation can never clean up a successor's job/scan.
             if job_created:
-                _cancel_scan_job(rag, track_id, job_owner_token)
-            await _release_scanning_reservation(rag, scanning_token)
+                _cancel_scan_job(target_rag, track_id, job_owner_token)
+            await _release_scanning_reservation(target_rag, scanning_token)
 
         try:
             pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=target_rag.workspace
             )
         except PipelineNotInitializedError:
             # Workspace pipeline_status not yet bootstrapped (e.g. mocked
@@ -4284,7 +4441,7 @@ def create_document_routes(
                 track_id=track_id,
             )
         pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=rag.workspace
+            "pipeline_status", workspace=target_rag.workspace
         )
 
         # Atomically acquire the scanning flag.  Scan is the exclusive
@@ -4307,7 +4464,7 @@ def create_document_routes(
         # call made inside the acquire's critical section, which must never
         # trigger a lazy Manager lookup while the status lock is held. A
         # resolution failure aborts with zero side effects (nothing reserved).
-        ingress = await get_pipeline_ingress(rag.workspace)
+        ingress = await get_pipeline_ingress(target_rag.workspace)
         reserved = False
         handed_off = False
         try:
@@ -4381,7 +4538,7 @@ def create_document_routes(
             # record a valid RUNNING job) → 429; a track-id collision → 409. The
             # finally releases the reservation for all three.
             try:
-                job_store = _resolve_scan_job_store(rag)
+                job_store = _resolve_scan_job_store(target_rag)
                 if job_store is None:
                     raise RuntimeError("scan job store is not initialised")
                 create_result = job_store.create(track_id, job_owner_token)
@@ -4468,14 +4625,17 @@ def create_document_routes(
                 return None
 
             async def _scan_run():
-                await run_scanning_process(
-                    rag,
-                    doc_manager,
-                    track_id,
-                    scanning_token,
-                    manual_request_id=manual_request_id,
-                    job_owner_token=job_owner_token,
-                )
+                # Run the scan for every resolved target (workspace='*' may
+                # produce multiple KBs plus the primary workspace).
+                for _scan_rag, _scan_dm in scan_targets:
+                    await run_scanning_process(
+                        _scan_rag,
+                        _scan_dm,
+                        track_id,
+                        scanning_token,
+                        manual_request_id=manual_request_id,
+                        job_owner_token=job_owner_token,
+                    )
 
             await start_committed_background_task(
                 managed_tasks,
@@ -4519,8 +4679,8 @@ def create_document_routes(
             # after the commit the child owns it and this must not fire).
             if reserved and not handed_off and not takeover["committed"]:
                 if job_created:
-                    _cancel_scan_job(rag, track_id, job_owner_token)
-                await _release_scanning_reservation(rag, scanning_token)
+                    _cancel_scan_job(target_rag, track_id, job_owner_token)
+                await _release_scanning_reservation(target_rag, scanning_token)
 
     @router.get(
         "/scan/status/{track_id}",
@@ -5752,7 +5912,15 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
         response_model=PipelineStatusResponse,
     )
-    async def get_pipeline_status() -> PipelineStatusResponse:
+    async def get_pipeline_status(
+        workspace: Optional[str] = Query(
+            None,
+            description=(
+                "Knowledge base (workspace) whose pipeline status to fetch. "
+                "Omit to query the primary workspace."
+            ),
+        ),
+    ) -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
 
@@ -5781,15 +5949,23 @@ def create_document_routes(
                 get_all_update_flags_status,
             )
 
+            # Resolve the workspace for pipeline status queries.
+            if workspace and build_rag_instance is not None:
+                from .knowledge_base_routes import _get_rag
+
+                target_rag = await _get_rag(workspace, build_rag_instance)
+            else:
+                target_rag = rag
+
             pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=target_rag.workspace
             )
             pipeline_status_lock = get_namespace_lock(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=target_rag.workspace
             )
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status(workspace=rag.workspace)
+            update_status = await get_all_update_flags_status(workspace=target_rag.workspace)
 
             # Convert MutableBoolean objects to regular boolean values
             processed_update_status = {}
@@ -6035,6 +6211,17 @@ def create_document_routes(
         # finally can release it by owner even if the acquire is cancelled.
         destructive_token = uuid4().hex
 
+        # Resolve the target LightRAG instance: use the workspace-specific
+        # instance when the request scopes to a knowledge base, otherwise the
+        # primary instance. The frontend groups documents by KB before sending
+        # delete requests, so each call targets exactly one workspace.
+        if delete_request.workspace and build_rag_instance is not None:
+            from .knowledge_base_routes import _get_rag
+
+            target_rag = await _get_rag(delete_request.workspace, build_rag_instance)
+        else:
+            target_rag = rag
+
         async def _delete_work(started):
             # started.set() first (no await before it) so the endpoint's
             # start-barrier confirms takeover before returning; a body-send
@@ -6043,7 +6230,7 @@ def create_document_routes(
             # (owner-checked by destructive_token) in its own finally.
             started.set()
             await background_delete_documents(
-                rag,
+                target_rag,
                 doc_manager,
                 doc_ids,
                 delete_request.delete_file,
@@ -6053,7 +6240,7 @@ def create_document_routes(
 
         async def _delete_backstop():
             # Owner-checked + idempotent; runs only if the child never took over.
-            await _release_destructive_busy(rag, destructive_token)
+            await _release_destructive_busy(target_rag, destructive_token)
 
         handed_off = False
         try:
@@ -6065,7 +6252,7 @@ def create_document_routes(
             # covers busy + scanning + pending_enqueues>0 in a single
             # critical section.
             acquired, reason = await _acquire_destructive_busy(
-                rag,
+                target_rag,
                 destructive_token,
                 kind="delete",
                 operation_record={"kind": "delete", "doc_ids": doc_ids},
@@ -6292,49 +6479,59 @@ def create_document_routes(
                 )
                 return result
 
-            query_task_create_start = time.perf_counter()
-            docs_task = asyncio.create_task(
-                _timed_call(
-                    "get_docs_paginated",
-                    rag.doc_status.get_docs_paginated(
-                        status_filter=request.status_filter,
-                        status_filters=request.status_filters,
-                        page=request.page,
-                        page_size=request.page_size,
-                        sort_field=request.sort_field,
-                        sort_direction=request.sort_direction,
-                    ),
-                )
-            )
-            status_counts_task = asyncio.create_task(
-                _timed_call(
-                    "get_all_status_counts",
-                    rag.doc_status.get_all_status_counts(),
-                )
-            )
-            query_task_create_elapsed = time.perf_counter() - query_task_create_start
-            performance_timing_log(
-                "[documents/paginated][%s] Query tasks created in %.4fs",
-                trace_id,
-                query_task_create_elapsed,
-            )
-
-            query_await_start = time.perf_counter()
-            (documents_with_ids, total_count), status_counts = await asyncio.gather(
-                docs_task, status_counts_task
-            )
-            query_await_elapsed = time.perf_counter() - query_await_start
-            performance_timing_log(
-                "[documents/paginated][%s] Query tasks awaited in %.4fs",
-                trace_id,
-                query_await_elapsed,
-            )
-
-            # Convert documents to response format
             response_assembly_start = time.perf_counter()
-            doc_responses = []
-            for doc_id, doc in documents_with_ids:
-                doc_responses.append(
+            if request.workspace == "*":
+                # Aggregated mode: query every discovered knowledge base and
+                # merge the results into one globally sorted, re-paginated
+                # list. Each document carries its owning ``kb_id`` so the
+                # client can route per-row actions back to the right KB.
+                if build_rag_instance is None:
+                    pairs = [(workspace, rag)]
+                else:
+                    from .knowledge_base_routes import _discover_kbs, _get_rag
+
+                    kb_ids = _discover_kbs()
+                    pairs = (
+                        [
+                            (kb_id, await _get_rag(kb_id, build_rag_instance))
+                            for kb_id in kb_ids
+                        ]
+                        if kb_ids
+                        else [(workspace, rag)]
+                    )
+                outcomes = await asyncio.gather(
+                    *(
+                        _collect_workspace_documents(kb_rag, request)
+                        for _, kb_rag in pairs
+                    ),
+                    return_exceptions=True,
+                )
+                merged: list = []
+                status_counts: dict = {}
+                for (kb_id, _), outcome in zip(pairs, outcomes):
+                    if isinstance(outcome, BaseException):
+                        logger.error(
+                            f"Documents query failed for knowledge base '{kb_id}': {outcome}",
+                            exc_info=True,
+                        )
+                        continue
+                    docs, counts = outcome
+                    for doc_id, doc in docs:
+                        merged.append((doc_id, doc, kb_id))
+                    for key, value in (counts or {}).items():
+                        status_counts[str(key)] = (
+                            status_counts.get(str(key), 0) + int(value)
+                        )
+                merged.sort(
+                    key=lambda item: _doc_sort_key(
+                        item[0], item[1], request.sort_field
+                    ),
+                    reverse=(request.sort_direction == "desc"),
+                )
+                total_count = len(merged)
+                start = (request.page - 1) * request.page_size
+                page_items = merged[start : start + request.page_size]
+                doc_responses = [
                     DocStatusResponse(
                         id=doc_id,
                         content_summary=doc.content_summary,
@@ -6347,8 +6544,79 @@ def create_document_routes(
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=normalize_file_path(doc.file_path),
+                        kb_id=kb_id,
+                    )
+                    for doc_id, doc, kb_id in page_items
+                ]
+            else:
+                # Single workspace: the primary rag (legacy behaviour) or the
+                # explicitly requested knowledge base instance.
+                if request.workspace and build_rag_instance is not None:
+                    from .knowledge_base_routes import _get_rag
+
+                    kb_rag = await _get_rag(request.workspace, build_rag_instance)
+                    kb_id = request.workspace
+                else:
+                    kb_rag = rag
+                    kb_id = None
+
+                query_task_create_start = time.perf_counter()
+                docs_task = asyncio.create_task(
+                    _timed_call(
+                        "get_docs_paginated",
+                        kb_rag.doc_status.get_docs_paginated(
+                            status_filter=request.status_filter,
+                            status_filters=request.status_filters,
+                            page=request.page,
+                            page_size=request.page_size,
+                            sort_field=request.sort_field,
+                            sort_direction=request.sort_direction,
+                        ),
                     )
                 )
+                status_counts_task = asyncio.create_task(
+                    _timed_call(
+                        "get_all_status_counts",
+                        kb_rag.doc_status.get_all_status_counts(),
+                    )
+                )
+                query_task_create_elapsed = time.perf_counter() - query_task_create_start
+                performance_timing_log(
+                    "[documents/paginated][%s] Query tasks created in %.4fs",
+                    trace_id,
+                    query_task_create_elapsed,
+                )
+
+                query_await_start = time.perf_counter()
+                (documents_with_ids, total_count), status_counts = await asyncio.gather(
+                    docs_task, status_counts_task
+                )
+                query_await_elapsed = time.perf_counter() - query_await_start
+                performance_timing_log(
+                    "[documents/paginated][%s] Query tasks awaited in %.4fs",
+                    trace_id,
+                    query_await_elapsed,
+                )
+
+                # Convert documents to response format
+                doc_responses = []
+                for doc_id, doc in documents_with_ids:
+                    doc_responses.append(
+                        DocStatusResponse(
+                            id=doc_id,
+                            content_summary=doc.content_summary,
+                            content_length=doc.content_length,
+                            status=doc.status,
+                            created_at=format_datetime(doc.created_at),
+                            updated_at=format_datetime(doc.updated_at),
+                            track_id=doc.track_id,
+                            chunks_count=doc.chunks_count,
+                            error_msg=doc.error_msg,
+                            metadata=doc.metadata,
+                            file_path=normalize_file_path(doc.file_path),
+                            kb_id=kb_id,
+                        )
+                    )
 
             # Calculate pagination info
             total_pages = (total_count + request.page_size - 1) // request.page_size
@@ -6464,6 +6732,13 @@ def create_document_routes(
     )
     async def reprocess_failed_documents(
         managed_tasks: set = Depends(get_managed_background_tasks),
+        workspace: Optional[str] = Query(
+            None,
+            description=(
+                "Knowledge base (workspace) whose failed documents to reprocess. "
+                "Omit to reprocess documents in the primary workspace."
+            ),
+        ),
     ):
         """
         Reprocess existing failed, pending, or interrupted document records
@@ -6509,11 +6784,42 @@ def create_document_routes(
             start_reserved_background_task,
         )
 
+        # Resolve workspace(s) to reprocess:
+        #   workspace='*'          → reprocess every KB + primary workspace
+        #   workspace='<name>'     → reprocess only that single KB
+        #   workspace=None         → reprocess primary workspace only
+        if workspace and workspace != "*" and build_rag_instance is not None:
+            from .knowledge_base_routes import _get_rag
+
+            reprocess_targets = [
+                await _get_rag(workspace, build_rag_instance)
+            ]
+        elif workspace == "*" and build_rag_instance is not None:
+            from .knowledge_base_routes import _discover_kbs, _get_rag
+
+            kb_ids = _discover_kbs()
+            reprocess_targets = []
+            for kb_id in kb_ids:
+                try:
+                    reprocess_targets.append(
+                        await _get_rag(kb_id, build_rag_instance)
+                    )
+                except Exception as kb_err:
+                    logger.error(
+                        f"Failed to resolve KB '{kb_id}' for reprocess: {kb_err}"
+                    )
+            reprocess_targets.append(rag)
+            if not reprocess_targets:
+                reprocess_targets = [rag]
+        else:
+            reprocess_targets = [rag]
+
         request_id = uuid4().hex
 
         try:
+            target_rag = reprocess_targets[0]
             pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
+                "pipeline_status", workspace=target_rag.workspace
             )
         except PipelineNotInitializedError:
             pipeline_status = None
@@ -6524,7 +6830,8 @@ def create_document_routes(
             # a plain managed drive.
             async def _legacy_work(started):
                 started.set()
-                await rag.apipeline_process_enqueue_documents()
+                for _rag in reprocess_targets:
+                    await _rag.apipeline_process_enqueue_documents()
 
             async def _noop_backstop():
                 return None
@@ -6544,11 +6851,11 @@ def create_document_routes(
                 raise internal_server_error(e)
 
         pipeline_status_lock = get_namespace_lock(
-            "pipeline_status", workspace=rag.workspace
+            "pipeline_status", workspace=target_rag.workspace
         )
         # Resolve the ingress BEFORE any critical section (never lazily while
         # the pipeline status lock is held inside the commit).
-        ingress = await get_pipeline_ingress(rag.workspace)
+        ingress = await get_pipeline_ingress(target_rag.workspace)
 
         # Two-state startup: the fence recheck and the sticky publish happen
         # in ONE pipeline_status_lock critical section inside the child
@@ -6567,7 +6874,8 @@ def create_document_routes(
             )
 
         async def _work():
-            await rag.apipeline_process_enqueue_documents()
+            for _rag in reprocess_targets:
+                await _rag.apipeline_process_enqueue_documents()
 
         async def _noop_backstop():
             return None
