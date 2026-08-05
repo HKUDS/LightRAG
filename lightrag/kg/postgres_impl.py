@@ -8822,28 +8822,32 @@ class PGGraphStorage(BaseGraphStorage):
         return edges
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get popular labels by node degree (most connected entities) using native SQL for performance."""
+        """Get popular labels by node degree (most connected entities) using native SQL for performance.
+
+        Two phases, and the second one usually does not run. Phase 1 ranks the
+        entities that HAVE edges, straight off the edge-derived degrees — the
+        cheap plan, and on any graph with more than ``limit`` connected entities
+        it fills every slot on its own. Only when it comes up short does phase 2
+        top the result up from the isolated (degree-0) entities, which is
+        exactly the case the original inner join got wrong by returning nothing
+        at all for a graph whose entities carry no relations.
+
+        Driving the whole ranking off the vertex table instead (one LEFT JOIN)
+        would be simpler, but it forces a full vertex scan on every call — on a
+        large graph, to produce a result phase 1 already had.
+        """
         try:
             # Native SQL query to calculate node degrees directly from AGE's underlying tables
             # This is significantly faster than using the cypher() function wrapper.
             #
-            # The vertex table is the DRIVING side of a LEFT JOIN (not the inner
-            # side of a JOIN against the edge-derived degrees): isolated nodes
-            # have no row in ``node_degrees`` at all, and an inner join dropped
-            # them from the result entirely. A degree-0 entity is still an
-            # entity — NetworkXStorage ranks every node via dict(graph.degree())
-            # and PGOpsGraphStorage does the same LEFT JOIN + COALESCE — so a
-            # graph whose entities carry no relations must not report an empty
-            # popular-label list. Scanning the vertex table instead of only the
-            # edge endpoints is the cost of that correctness; the LIMIT still
-            # bounds what crosses the wire.
-            #
             # Self-loops count twice (start_id and end_id both contribute),
             # matching node_degree() and the other backends. COLLATE "C" makes
             # the tie-break a byte-order comparison so it matches Python's
-            # code-point sort — with degree-0 nodes included, ties are now the
-            # common case and decide which labels survive the LIMIT.
-            query = f"""
+            # code-point sort. The ranking columns live in a derived table
+            # because ORDER BY cannot apply COLLATE to a bare output alias
+            # (a sub-SELECT, not a CTE: CTEs are an optimization fence before
+            # PostgreSQL 12).
+            connected_query = f"""
             WITH node_degrees AS (
                 SELECT
                     node_id,
@@ -8854,31 +8858,63 @@ class PGGraphStorage(BaseGraphStorage):
                     SELECT end_id AS node_id FROM {self.graph_name}._ag_label_edge
                 ) AS all_edges
                 GROUP BY node_id
-            ),
-            labeled_nodes AS (
+            )
+            SELECT label FROM (
                 SELECT
                     (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label,
-                    COALESCE(d.degree, 0) AS degree
+                    d.degree AS degree
                 FROM
-                    {self.graph_name}._ag_label_vertex v
-                LEFT JOIN
-                    node_degrees d ON d.node_id = v.id
+                    node_degrees d
+                JOIN
+                    {self.graph_name}._ag_label_vertex v ON d.node_id = v.id
                 WHERE
                     ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
-            )
-            SELECT
-                label
-            FROM
-                labeled_nodes
+            ) AS connected
             ORDER BY
                 degree DESC,
                 label COLLATE "C" ASC
             LIMIT $1;
             """
-            results = await self._query(query, params={"limit": limit})
+            results = await self._query(connected_query, params={"limit": limit})
             labels = [
                 result["label"] for result in results if result and "label" in result
             ]
+
+            if len(labels) < limit:
+                # Phase 1 returned fewer than `limit`, and its aggregate is
+                # exact, so the connected set is now known in full: every
+                # remaining entity has no edge at all. Top up in label order,
+                # bounded by the shortfall — never more than `limit` rows, so
+                # even a sequential vertex scan stays cheap.
+                isolated_query = f"""
+                SELECT label FROM (
+                    SELECT
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
+                    FROM
+                        {self.graph_name}._ag_label_vertex v
+                    WHERE
+                        ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {self.graph_name}._ag_label_edge e
+                            WHERE e.start_id = v.id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {self.graph_name}._ag_label_edge e
+                            WHERE e.end_id = v.id
+                        )
+                ) AS isolated
+                ORDER BY
+                    label COLLATE "C" ASC
+                LIMIT $1;
+                """
+                isolated_results = await self._query(
+                    isolated_query, params={"limit": limit - len(labels)}
+                )
+                labels.extend(
+                    result["label"]
+                    for result in isolated_results
+                    if result and "label" in result
+                )
 
             logger.debug(
                 f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"

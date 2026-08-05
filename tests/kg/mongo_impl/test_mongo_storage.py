@@ -1024,65 +1024,94 @@ class TestMongoGraphReadContract:
 
     # -- get_popular_labels -------------------------------------------------
 
-    @pytest.mark.asyncio
-    async def test_popular_labels_aggregates_over_nodes_not_edges(self):
-        """The node collection must drive the ranking.
+    @staticmethod
+    def _stub_isolated(s, ids):
+        """Stub the phase-2 node-collection top-up (find().sort().limit())."""
+        captured = {}
 
-        Regression: the pipeline ran on the edge collection, grouping outbound
-        and inbound endpoints. An entity with no relations contributes no edge
-        document, so it had no group to land in and never appeared in the
-        result -- the WebUI entity picker showed nothing at all for a graph of
-        unconnected entities.
+        def _find(query, projection=None):
+            captured["query"] = query
+            cursor = _AsyncCursor([{"_id": i} for i in ids])
+            cursor.sort = lambda *a, **k: cursor
+            return cursor
+
+        s.collection.find = Mock(side_effect=_find)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_ranks_from_edges_without_touching_the_nodes(self):
+        """Phase 1 is the cheap edge-side aggregation, and on a graph with
+        enough connected entities it is the ONLY thing that runs.
+
+        The node collection holds far more entities than `limit` in any real
+        graph, so making it drive the ranking would mean a full pass over it on
+        every call to produce a result the edge aggregation already had.
         """
         s = self._make_storage()
-        s.collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
-        s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
-
-        await s.get_popular_labels(limit=5)
-
-        s.collection.aggregate.assert_awaited_once()
-        s.edge_collection.aggregate.assert_not_awaited()
-
-        pipeline = s.collection.aggregate.call_args[0][0]
-        # Stage 1 gives every node a degree-0 baseline row.
-        assert pipeline[0] == {"$project": {"_id": 1, "degree": {"$literal": 0}}}
-        # Edge counts are unioned on top, keyed by each endpoint field.
-        union_keys = [
-            stage["$unionWith"]["pipeline"][0]["$group"]["_id"]
-            for stage in pipeline
-            if "$unionWith" in stage
-        ]
-        assert union_keys == ["$source_node_id", "$target_node_id"]
-        assert all(
-            stage["$unionWith"]["coll"] == "test_edges"
-            for stage in pipeline
-            if "$unionWith" in stage
+        s.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": f"E{i}"} for i in range(5)])
         )
+        s.collection.aggregate = AsyncMock()
+        s.collection.find = Mock()
+
+        labels = await s.get_popular_labels(limit=5)
+
+        assert labels == [f"E{i}" for i in range(5)]
+        s.edge_collection.aggregate.assert_awaited_once()
+        # Limit filled by connected entities: the node collection is untouched.
+        s.collection.find.assert_not_called()
+        s.collection.aggregate.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_popular_labels_sums_degrees_and_keeps_ranking_stages(self):
-        """Degrees still sum across both endpoint unions, ordered and capped."""
+        """Degrees sum across both endpoint groups, ordered and capped."""
         s = self._make_storage()
-        s.collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
+        s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
+        self._stub_isolated(s, [])
 
         await s.get_popular_labels(limit=42)
 
-        pipeline = s.collection.aggregate.call_args[0][0]
-        assert {
-            "$group": {"_id": "$_id", "total_degree": {"$sum": "$degree"}}
-        } in pipeline
+        pipeline = s.edge_collection.aggregate.call_args[0][0]
+        assert pipeline[0] == {
+            "$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}
+        }
+        union = next(stage for stage in pipeline if "$unionWith" in stage)
+        assert union["$unionWith"]["coll"] == "test_edges"
+        assert union["$unionWith"]["pipeline"][0]["$group"]["_id"] == "$target_node_id"
         assert {"$sort": {"total_degree": -1, "_id": 1}} in pipeline
         assert {"$limit": 42} in pipeline
-        assert s.collection.aggregate.call_args.kwargs == {"allowDiskUse": True}
+        assert s.edge_collection.aggregate.call_args.kwargs == {"allowDiskUse": True}
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_tops_up_from_isolated_entities_when_short(self):
+        """Regression: a graph whose entities carry no relations reported an
+        EMPTY picker, because an entity with no edge document has no group to
+        land in. Phase 1 coming up short is exactly that signal -- and since its
+        aggregation is exact, every node outside the result is isolated.
+        """
+        s = self._make_storage()
+        s.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "Connected"}])
+        )
+        captured = self._stub_isolated(s, ["Aardvark", "Orphan"])
+
+        labels = await s.get_popular_labels(limit=3)
+
+        # Connected first, then isolated in label order.
+        assert labels == ["Connected", "Aardvark", "Orphan"]
+        # The top-up excludes what phase 1 already returned...
+        assert captured["query"] == {"_id": {"$nin": ["Connected"]}}
+        # ... and asks only for the shortfall, so it can never scan the whole
+        # collection: at most `limit` rows, ordered by the _id index.
+        assert s.collection.find.call_args[0][1] == {"_id": 1}
 
     @pytest.mark.asyncio
     async def test_popular_labels_returns_labels_in_ranked_order(self):
         s = self._make_storage()
-        s.collection.aggregate = AsyncMock(
-            return_value=_AsyncCursor(
-                [{"_id": "Alpha"}, {"_id": "Beta"}, {"_id": "Orphan"}]
-            )
+        s.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "Alpha"}, {"_id": "Beta"}])
         )
+        self._stub_isolated(s, ["Orphan"])
 
         assert await s.get_popular_labels() == ["Alpha", "Beta", "Orphan"]
 
@@ -1170,7 +1199,7 @@ class TestMongoLabelHelpersFailLoud:
     @pytest.mark.asyncio
     async def test_popular_labels_raises_on_aggregation_error(self):
         s = self._make_storage()
-        s.collection.aggregate = AsyncMock(side_effect=PyMongoError("boom"))
+        s.edge_collection.aggregate = AsyncMock(side_effect=PyMongoError("boom"))
 
         with pytest.raises(PyMongoError):
             await s.get_popular_labels(limit=10)

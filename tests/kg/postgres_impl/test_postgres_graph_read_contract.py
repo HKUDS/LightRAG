@@ -3,10 +3,11 @@ graph backends.
 
 Covers two divergences from ``BaseGraphStorage`` / ``NetworkXStorage``:
 
-1. ``get_popular_labels`` used to rank nodes by inner-joining the vertex table
-   against degrees derived from the edge table, so an entity with no relations
-   (degree 0) had no row to join against and vanished from the ranking
-   entirely.
+1. ``get_popular_labels`` ranked nodes purely from edge-derived degrees, so an
+   entity with no relations (degree 0) had no row to join against and vanished
+   from the ranking entirely — a graph of unconnected entities reported an
+   empty picker. It now tops the result up from the isolated entities, but only
+   when the connected ones come up short of ``limit``.
 2. ``get_node_edges`` returned ``[]`` for a node that does not exist, which is
    the same value an existing-but-isolated node yields — collapsing "no such
    node" into "no edges". The contract (and NetworkX/PGOps) is ``None``.
@@ -36,53 +37,93 @@ def _normalize(sql: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# get_popular_labels: isolated (degree-0) nodes must be ranked, not dropped
+# get_popular_labels: connected first, isolated (degree-0) nodes to top up
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_get_popular_labels_left_joins_degrees_onto_all_vertices():
-    """The vertex table must drive the join so degree-0 nodes survive.
+async def test_popular_labels_ranks_from_edges_without_scanning_the_vertices():
+    """Phase 1 is the cheap edge-derived ranking, and on a graph with enough
+    connected entities it is the ONLY query that runs.
 
-    Regression: the previous query was ``FROM node_degrees d JOIN
-    _ag_label_vertex v``. ``node_degrees`` is built purely from the edge table,
-    so a node with no relations has no row there and the inner join dropped it.
-    A graph of entities with no relations reported ZERO popular labels, while
-    NetworkXStorage (dict(graph.degree())) and PGOpsGraphStorage (LEFT JOIN +
-    COALESCE) rank every node.
+    Any real graph holds far more entities than `limit`, so driving the whole
+    ranking off the vertex table (one LEFT JOIN) would mean a full vertex scan
+    on every call to produce a result phase 1 already had.
     """
     storage = make_graph_storage()
-    storage._query = AsyncMock(return_value=[])
+    storage._query = AsyncMock(return_value=[{"label": f"E{i}"} for i in range(7)])
 
-    await storage.get_popular_labels(limit=7)
+    labels = await storage.get_popular_labels(limit=7)
+
+    assert labels == [f"E{i}" for i in range(7)]
+    assert storage._query.await_count == 1, "the limit was filled; no second query"
 
     sql = _normalize(storage._query.await_args.args[0])
-
-    # Vertex table is the driving (outer) side, degrees are the optional side.
-    assert "FROM test_graph._ag_label_vertex v LEFT JOIN node_degrees d" in sql, sql
-    # Nodes absent from node_degrees rank as degree 0 rather than disappearing.
-    assert "COALESCE(d.degree, 0) AS degree" in sql
-    # ... and no inner join back onto the degree set anywhere.
-    assert not re.search(r"(?<!LEFT )JOIN node_degrees", sql), sql
+    # Degrees drive the join, and the vertex table is only probed for the ids
+    # that actually have edges.
+    assert "FROM node_degrees d JOIN test_graph._ag_label_vertex v" in sql, sql
+    assert "LIMIT $1" in sql
+    assert storage._query.await_args.kwargs["params"] == {"limit": 7}
 
 
 @pytest.mark.asyncio
-async def test_get_popular_labels_orders_by_degree_then_bytewise_label():
-    """Ties break on a byte-order label sort, matching Python's code-point sort.
+async def test_popular_labels_tops_up_from_isolated_when_short():
+    """Regression: a graph whose entities carry no relations reported ZERO
+    popular labels, because an entity with no edge has no row in node_degrees
+    and the inner join dropped it.
 
-    With degree-0 nodes included, ties are the common case and decide which
-    labels survive the LIMIT — so the tie-break has to agree with the other
-    backends instead of following the database's locale collation.
+    Phase 1 coming up short is exactly that signal — its aggregate is exact, so
+    every remaining vertex is isolated — and the top-up is bounded by the
+    shortfall, so even a sequential vertex scan stays cheap.
     """
     storage = make_graph_storage()
-    storage._query = AsyncMock(return_value=[])
+    storage._query = AsyncMock(
+        side_effect=[
+            [{"label": "Connected"}],
+            [{"label": "Aardvark"}, {"label": "Orphan"}],
+        ]
+    )
+
+    labels = await storage.get_popular_labels(limit=3)
+
+    # Connected first, then isolated in label order.
+    assert labels == ["Connected", "Aardvark", "Orphan"]
+    assert storage._query.await_count == 2
+
+    isolated_sql = _normalize(storage._query.await_args_list[1].args[0])
+    # Isolated == no edge names it, at either end.
+    assert (
+        "NOT EXISTS ( SELECT 1 FROM test_graph._ag_label_edge e WHERE e.start_id = v.id )"
+        in isolated_sql
+    ), isolated_sql
+    assert (
+        "NOT EXISTS ( SELECT 1 FROM test_graph._ag_label_edge e WHERE e.end_id = v.id )"
+        in isolated_sql
+    ), isolated_sql
+    # Only the shortfall is requested.
+    assert storage._query.await_args_list[1].kwargs["params"] == {"limit": 2}
+
+
+@pytest.mark.asyncio
+async def test_popular_labels_orders_by_degree_then_bytewise_label():
+    """Ties break on a byte-order label sort, matching Python's code-point sort.
+
+    With degree-0 entities able to fill the tail, ties at the cutoff decide
+    which labels survive the LIMIT — so the tie-break has to agree with the
+    other backends instead of following the database's locale collation.
+    """
+    storage = make_graph_storage()
+    storage._query = AsyncMock(return_value=[{"label": f"E{i}"} for i in range(3)])
 
     await storage.get_popular_labels(limit=3)
 
     sql = _normalize(storage._query.await_args.args[0])
     assert 'ORDER BY degree DESC, label COLLATE "C" ASC' in sql
-    assert "LIMIT $1" in sql
-    assert storage._query.await_args.kwargs["params"] == {"limit": 3}
+    # The isolated top-up orders on the label alone (every row is degree 0).
+    storage._query = AsyncMock(side_effect=[[], []])
+    await storage.get_popular_labels(limit=3)
+    isolated_sql = _normalize(storage._query.await_args_list[1].args[0])
+    assert 'ORDER BY label COLLATE "C" ASC' in isolated_sql
 
 
 @pytest.mark.asyncio
@@ -93,7 +134,7 @@ async def test_get_popular_labels_returns_labels_in_query_order():
         return_value=[{"label": "Alpha"}, {"label": "Beta"}, {"label": "Isolated"}]
     )
 
-    assert await storage.get_popular_labels() == ["Alpha", "Beta", "Isolated"]
+    assert await storage.get_popular_labels(limit=3) == ["Alpha", "Beta", "Isolated"]
 
 
 # ---------------------------------------------------------------------------

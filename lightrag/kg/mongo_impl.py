@@ -3112,45 +3112,26 @@ class MongoGraphStorage(BaseGraphStorage):
 
         Returns:
             List of labels(entity names) sorted by degree (highest first)
+
+        Two phases, and the second one usually does not run. Phase 1 ranks the
+        entities that HAVE edges, straight off the edge collection — the cheap
+        aggregation, and on any graph with more than ``limit`` connected
+        entities it fills every slot on its own. Only when it comes up short
+        does phase 2 top the result up from the isolated (degree-0) entities,
+        which is exactly the case the edge-only ranking got wrong by returning
+        nothing at all for a graph whose entities carry no relations.
+
+        Giving every node a degree-0 baseline row inside the aggregation instead
+        would be simpler, but it forces a full pass over the node collection on
+        every call — on a large graph, to produce a result phase 1 already had.
         """
         try:
-            # The pipeline runs on the NODE collection, not the edge collection:
-            # degrees derived purely from edges have no entry at all for an
-            # isolated entity, so ranking from the edge side silently excluded
-            # every degree-0 node. NetworkXStorage ranks every node
-            # (dict(graph.degree()) covers the whole node set), so a graph whose
-            # entities carry no relations must not report an empty list here.
-            #
-            # Each node contributes a degree-0 baseline row, then the two
-            # $unionWith stages add the (indexed, cheap) per-endpoint edge counts
-            # on top — a per-node $lookup would instead run one subquery per
-            # entity. Self-loops count twice, as they did before.
-            #
-            # The unions are keyed on edge ENDPOINTS, so an id that has edge
-            # documents but no node document (a dangling endpoint, only
-            # reachable as a data-quality defect — the write path materializes
-            # both endpoints) also surfaces here. That is left in deliberately:
-            # filtering it out costs a join or a second round trip on every
-            # call, and the worst case is a picker entry whose entity lookup
-            # comes back empty, which the client reports rather than crashes on.
+            # Self-loops count twice (the source and target groups each see the
+            # document), matching the other backends.
             pipeline = [
-                # Baseline: every entity, degree 0
-                {"$project": {"_id": 1, "degree": {"$literal": 0}}},
                 # Count outbound edges
-                {
-                    "$unionWith": {
-                        "coll": self._edge_collection_name,
-                        "pipeline": [
-                            {
-                                "$group": {
-                                    "_id": "$source_node_id",
-                                    "degree": {"$sum": 1},
-                                }
-                            }
-                        ],
-                    }
-                },
-                # Count inbound edges
+                {"$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}},
+                # Union with inbound edges count
                 {
                     "$unionWith": {
                         "coll": self._edge_collection_name,
@@ -3158,14 +3139,26 @@ class MongoGraphStorage(BaseGraphStorage):
                             {
                                 "$group": {
                                     "_id": "$target_node_id",
-                                    "degree": {"$sum": 1},
+                                    "in_degree": {"$sum": 1},
                                 }
                             }
                         ],
                     }
                 },
                 # Group by node_id and sum degrees
-                {"$group": {"_id": "$_id", "total_degree": {"$sum": "$degree"}}},
+                {
+                    "$group": {
+                        "_id": "$_id",
+                        "total_degree": {
+                            "$sum": {
+                                "$add": [
+                                    {"$ifNull": ["$out_degree", 0]},
+                                    {"$ifNull": ["$in_degree", 0]},
+                                ]
+                            }
+                        },
+                    }
+                },
                 # Sort by degree descending, then by label ascending
                 {"$sort": {"total_degree": -1, "_id": 1}},
                 # Limit results
@@ -3174,11 +3167,29 @@ class MongoGraphStorage(BaseGraphStorage):
                 {"$project": {"_id": 1}},
             ]
 
-            cursor = await self.collection.aggregate(pipeline, allowDiskUse=True)
+            cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
             labels = []
             async for doc in cursor:
                 if doc.get("_id"):
                     labels.append(doc["_id"])
+
+            if len(labels) < limit:
+                # Phase 1 returned fewer than `limit`, and its aggregation is
+                # exact, so the connected set is now known in full: every node
+                # outside it has no edge at all. Top up in label order, bounded
+                # by the shortfall — the sort rides the _id index, so this stops
+                # as soon as it has enough rather than scanning the collection.
+                # list(labels), not labels: the cursor is consumed below while
+                # appending to the same list, and handing the driver a live
+                # reference makes the filter depend on when it serializes.
+                isolated_cursor = (
+                    self.collection.find({"_id": {"$nin": list(labels)}}, {"_id": 1})
+                    .sort("_id", 1)
+                    .limit(limit - len(labels))
+                )
+                async for doc in isolated_cursor:
+                    if doc.get("_id"):
+                        labels.append(doc["_id"])
 
             logger.debug(
                 f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
