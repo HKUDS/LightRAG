@@ -180,11 +180,19 @@ async def initialize_graph_storage():
 
 
 @pytest.fixture
-async def storage(capfd):
+async def storage():
     """
     Pytest fixture for graph storage integration tests.
 
     Each test gets an initialized storage instance with a clean graph state.
+
+    Deliberately silent about which backend it initialized: a bare `pytest
+    tests/kg/test_graph_storage.py -m integration --run-integration` is the
+    CI-equivalent path — its backend is a config fact (a CI job's env: block, or
+    a developer's own just-set env var), not something this fixture needs to
+    remind anyone of on every test. That reminder is the CLI's job (see
+    _confirm_backend and main()), for the one case where a human might not
+    otherwise know what's currently configured.
     """
     load_dotenv(dotenv_path=".env", override=False)
     check_env_file()
@@ -192,16 +200,6 @@ async def storage(capfd):
     storage_instance = await initialize_graph_storage()
     if storage_instance is None:
         pytest.skip("Graph storage backend is not configured for integration tests")
-
-    # Lives here, not only in the CLI: a bare `pytest tests/kg/test_graph_storage.py
-    # -m integration --run-integration` is an equally valid entry point and must
-    # get the same visibility. capfd.disabled() bypasses pytest's default output
-    # capture, so this shows up without -s and regardless of pass/fail — under
-    # both a real terminal and a CI log (piped, non-TTY; verified to survive
-    # that). Read off the constructed instance's own class rather than
-    # LIGHTRAG_GRAPH_STORAGE again, so it reports what actually got built.
-    with capfd.disabled():
-        ASCIIColors.magenta(f"\nTesting backend: {type(storage_instance).__name__}")
 
     try:
         await storage_instance.drop()
