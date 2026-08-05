@@ -943,6 +943,13 @@ class TestPostgresBatchOrdering:
                 calls.append({"sql": sql, "args": args})
                 return ""
 
+            async def fetch(self, sql, *args):
+                # Edge upserts run through fetch(); an empty result means the
+                # endpoints were missing and the edge was dropped, which now
+                # raises — so hand back a created-edge row.
+                calls.append({"sql": sql, "args": args})
+                return [{"r": "edge"}]
+
         conn = _Conn()
 
         async def fake_run_with_retry(operation, **_kwargs):
