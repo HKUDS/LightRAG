@@ -943,6 +943,13 @@ class TestPostgresBatchOrdering:
                 calls.append({"sql": sql, "args": args})
                 return ""
 
+            async def fetch(self, sql, *args):
+                # Edge upserts run through fetch(); an empty result means the
+                # endpoints were missing and the edge was dropped, which now
+                # raises — so hand back a created-edge row.
+                calls.append({"sql": sql, "args": args})
+                return [{"r": "edge"}]
+
         conn = _Conn()
 
         async def fake_run_with_retry(operation, **_kwargs):
@@ -1065,7 +1072,7 @@ class TestMongoBatchOrdering:
 
     @pytest.mark.offline
     @pytest.mark.asyncio
-    async def test_upsert_edges_batch_deduplicates_source_node_upserts(self):
+    async def test_upsert_edges_batch_materializes_and_dedupes_endpoint_upserts(self):
         pytest.importorskip("pymongo")
         from lightrag.kg.mongo_impl import (
             MongoGraphStorage,
@@ -1091,9 +1098,16 @@ class TestMongoBatchOrdering:
             ],
         )
 
+        # Every endpoint of every edge gets a placeholder node — both ends, not
+        # just the sources, so no edge is left pointing at a node document that
+        # does not exist. EntityA appears as the source of both edges and must
+        # still collapse to a single op.
         node_ops = storage.collection.bulk_write.await_args.args[0]
-        assert len(node_ops) == 1
-        assert node_ops[0]._filter == {"_id": "EntityA"}
+        assert [op._filter["_id"] for op in node_ops] == [
+            "EntityA",
+            "EntityB",
+            "EntityC",
+        ]
 
 
 class TestPGTableBatchOrdering:

@@ -42,6 +42,12 @@ class _FakeConnection:
         self.calls.append({"sql": sql, "args": args})
         return ""
 
+    async def fetch(self, sql, *args):
+        # upsert_edge runs its Cypher through fetch() and raises when the result
+        # is empty (endpoints missing -> edge silently dropped), so return a row.
+        self.calls.append({"sql": sql, "args": args})
+        return [{"r": "edge"}]
+
 
 class _FakeTransaction:
     async def __aenter__(self):
