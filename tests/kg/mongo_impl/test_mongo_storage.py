@@ -1074,9 +1074,7 @@ class TestMongoGraphReadContract:
         assert await s.get_node_edges("Lonely") == []
 
     @pytest.mark.asyncio
-    async def test_get_node_edges_skips_existence_lookup_when_edges_found(self):
-        """Any edge naming the node already proves it exists, so the connected
-        case must keep its single round trip."""
+    async def test_get_node_edges_returns_edges_for_an_existing_node(self):
         s = self._make_storage()
         self._stub_edges(
             s,
@@ -1091,7 +1089,24 @@ class TestMongoGraphReadContract:
             ("Alpha", "Beta"),
             ("Gamma", "Alpha"),
         ]
-        s.collection.find_one.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_none_for_a_dangling_target_endpoint(self):
+        """Having edges does NOT prove the node exists in this backend.
+
+        upsert_edge / upsert_edges_batch materialize only the SOURCE endpoint as
+        a placeholder node, so an id that appears only as a target can carry
+        edges with no node document. Inferring existence from the edge scan
+        would make this method answer "exists, here are its edges" for an id
+        that has_node() reports absent — and delete_entity 404s on has_node().
+        """
+        s = self._make_storage()
+        self._stub_edges(s, [{"source_node_id": "Alpha", "target_node_id": "Target"}])
+        s.collection.find_one = AsyncMock(return_value=None)  # no node document
+
+        assert await s.get_node_edges("Target") is None
+        # The absent node also skips the edge scan entirely.
+        s.edge_collection.find.assert_not_called()
 
 
 class TestMongoLabelHelpersFailLoud:

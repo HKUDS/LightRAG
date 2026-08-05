@@ -3817,6 +3817,18 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         if not self._indices_ready:
             return None
         try:
+            # Existence is decided by the node index, before the edge scan.
+            # Inferring it from the edges instead would be wrong HERE
+            # specifically: upsert_edge / upsert_edges_batch materialize only the
+            # SOURCE endpoint as a placeholder node, so a target-only endpoint
+            # can carry edges with no node document at all. Reading that as "the
+            # node exists" would make this method contradict has_node() on the
+            # same id — and delete_entity 404s on has_node(), so the two must not
+            # disagree. exists() is a real-time id lookup (no refresh needed), and
+            # it also means an absent node skips the PIT scan entirely.
+            if not await self.has_node(source_node_id):
+                return None
+
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
             query = {
                 "bool": {
@@ -3864,11 +3876,6 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     await self.client.delete_pit(body={"pit_id": [pit_id]})
                 except Exception:
                     pass
-            # The existence check only runs when the scan came back empty: any
-            # edge naming the node already proves it exists, so the common
-            # (connected) case keeps its round-trip count unchanged.
-            if not edges and not await self.has_node(source_node_id):
-                return None
             return edges
         except OpenSearchException as e:
             if _is_missing_index_error(e):

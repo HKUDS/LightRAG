@@ -2219,6 +2219,10 @@ class TestGraphStorage:
                 },
             }
         )
+        # get_node_edges confirms the node exists before scanning edges (an id
+        # that only appears as an edge target may have no node document), and
+        # the shared fixture defaults exists() to False.
+        mock_client.exists = AsyncMock(return_value=True)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -5465,10 +5469,9 @@ class TestGraphReadContract:
             assert await s.get_node_edges("Lonely") == []
 
     @pytest.mark.asyncio
-    async def test_get_node_edges_skips_existence_check_when_edges_found(
+    async def test_get_node_edges_returns_edges_for_an_existing_node(
         self, global_config, embed_func, mock_client
     ):
-        """Any edge naming the node already proves it exists."""
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
@@ -5488,4 +5491,40 @@ class TestGraphReadContract:
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_node_edges("A") == [("A", "B")]
-            mock_client.exists.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_none_for_a_dangling_target_endpoint(
+        self, global_config, embed_func, mock_client
+    ):
+        """Having edges does NOT prove the node exists in this backend.
+
+        upsert_edge / upsert_edges_batch materialize only the SOURCE endpoint as
+        a placeholder node, so an id that appears only as a target can carry
+        edge documents with no node document. Inferring existence from the edge
+        scan would make this method answer "exists, here are its edges" for an
+        id that has_node() reports absent — and delete_entity 404s on has_node().
+        """
+        mock_client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "e1",
+                            "_source": {
+                                "source_node_id": "A",
+                                "target_node_id": "Target",
+                            },
+                            "sort": [1],
+                        }
+                    ],
+                    "total": {"value": 1},
+                }
+            }
+        )
+        mock_client.exists = AsyncMock(return_value=False)  # no node document
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_node_edges("Target") is None
+            # The absent node also skips the PIT scan entirely.
+            mock_client.create_pit.assert_not_awaited()

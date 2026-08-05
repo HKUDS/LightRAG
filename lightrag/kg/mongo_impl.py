@@ -2178,6 +2178,17 @@ class MongoGraphStorage(BaseGraphStorage):
         collapsing the two here is what makes the information unrecoverable for
         a caller that needs it. A backend error is neither value: it propagates.
         """
+        # Existence is decided by the node collection, before the edge scan.
+        # Inferring it from the edges instead would be wrong HERE specifically:
+        # upsert_edge / upsert_edges_batch materialize only the SOURCE endpoint
+        # as a placeholder node, so a target-only endpoint can carry edges with
+        # no node document at all. Reading that as "the node exists" would make
+        # this method contradict has_node() on the same id — and delete_entity
+        # 404s on has_node(), so the two must not disagree. It also means an
+        # absent node costs one indexed point lookup instead of a full edge scan.
+        if not await self.has_node(source_node_id):
+            return None
+
         cursor = self.edge_collection.find(
             {
                 "$or": [
@@ -2188,15 +2199,9 @@ class MongoGraphStorage(BaseGraphStorage):
             {"source_node_id": 1, "target_node_id": 1},
         )
 
-        edges = [
+        return [
             (e.get("source_node_id"), e.get("target_node_id")) async for e in cursor
         ]
-        # The existence lookup only runs when the scan came back empty: any edge
-        # naming the node already proves the node side of the graph knows it, so
-        # the common (connected) case keeps its single round trip.
-        if not edges and not await self.has_node(source_node_id):
-            return None
-        return edges
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         result = {}
