@@ -186,47 +186,82 @@ def is_valid_file_source(file_source: str | None) -> bool:
 
 def sanitize_filename(filename: str, input_dir: Path) -> str:
     """
-    Sanitize uploaded filename to prevent Path Traversal attacks.
+    Validate an uploaded filename and return it unchanged when safe.
+
+    Uploaded filenames are document identifiers as well as on-disk names, so
+    unsafe names must be rejected rather than rewritten. Rewriting values such
+    as ``../report.pdf`` to ``report.pdf`` can hide malicious input, collide
+    with a legitimate document, and make audit logs misleading.
 
     Args:
         filename: The original filename from the upload
         input_dir: The target input directory
 
     Returns:
-        str: Sanitized filename that is safe to use
+        str: The original filename after safety validation
 
     Raises:
         HTTPException: If the filename is unsafe or invalid
     """
-    # Basic validation
     if not filename or not filename.strip():
         raise HTTPException(status_code=400, detail="Filename cannot be empty")
 
-    # Remove path separators and traversal sequences
-    clean_name = filename.replace("/", "").replace("\\", "")
-    clean_name = clean_name.replace("..", "")
+    if filename != filename.strip():
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Remove control characters and null bytes
-    clean_name = "".join(c for c in clean_name if ord(c) >= 32 and c != "\x7f")
+    if any(ord(c) < 32 or c == "\x7f" for c in filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Remove leading/trailing whitespace and dots
-    clean_name = clean_name.strip().strip(".")
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Unsafe filename detected")
 
-    # Check if anything is left after sanitization
-    if not clean_name:
-        raise HTTPException(
-            status_code=400, detail="Invalid filename after sanitization"
-        )
+    if filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Unsafe filename detected")
 
-    # Verify the final path stays within the input directory
+    # Verify the final path stays within the input directory. This is a
+    # defense-in-depth check for platform-specific path parsing edge cases.
     try:
-        final_path = (input_dir / clean_name).resolve()
-        if not final_path.is_relative_to(input_dir.resolve()):
+        input_root = input_dir.resolve()
+        final_path = (input_root / filename).resolve()
+        if final_path.parent != input_root or not final_path.is_relative_to(input_root):
             raise HTTPException(status_code=400, detail="Unsafe filename detected")
     except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    return clean_name
+    return filename
+
+
+def upload_file_opener(input_dir: Path):
+    """Return an opener that creates uploads safely below ``input_dir``.
+
+    The upload path is pre-validated as a single basename, but the final file
+    creation must also be fail-closed. Opening relative to a directory file
+    descriptor with exclusive creation prevents symlink-following overwrites
+    and closes the check/write race between duplicate detection and streaming.
+    """
+
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    dir_fd = os.open(input_dir, directory_flags)
+
+    def opener(path: str, flags: int) -> int:
+        nonlocal dir_fd
+        try:
+            open_flags = flags | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags |= os.O_NOFOLLOW
+            return os.open(
+                os.path.basename(path),
+                open_flags,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        finally:
+            os.close(dir_fd)
+            dir_fd = -1
+
+    return opener
 
 
 class ScanResponse(BaseModel):
@@ -5082,25 +5117,47 @@ def create_document_routes(
             chunk_size = 1024 * 1024  # 1MB chunks
             needs_cleanup = False
 
-            async with aiofiles.open(file_path, "wb") as out_file:
-                while True:
-                    # Read chunk from upload stream
-                    chunk = await file.read(chunk_size)
-                    if not chunk:
-                        break
+            try:
+                upload_opener = upload_file_opener(doc_manager.input_dir)
+                out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
+            except OSError as e:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Input directory already contains '{safe_filename}' or the "
+                        "upload path is unsafe. Remove it before re-uploading."
+                    ),
+                ) from e
 
-                    # Check size limit during streaming (if not checked before)
-                    if (
-                        global_args.max_upload_size is not None
-                        and global_args.max_upload_size > 0
-                    ):
-                        bytes_written += len(chunk)
-                        if bytes_written > global_args.max_upload_size:
-                            needs_cleanup = True
+            try:
+                async with out_file_context as out_file:
+                    while True:
+                        # Read chunk from upload stream
+                        chunk = await file.read(chunk_size)
+                        if not chunk:
                             break
 
-                    # Write chunk to file
-                    await out_file.write(chunk)
+                        # Check size limit during streaming (if not checked before)
+                        if (
+                            global_args.max_upload_size is not None
+                            and global_args.max_upload_size > 0
+                        ):
+                            bytes_written += len(chunk)
+                            if bytes_written > global_args.max_upload_size:
+                                needs_cleanup = True
+                                break
+
+                        # Write chunk to file
+                        await out_file.write(chunk)
+
+            except OSError as e:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Input directory already contains '{safe_filename}' or the "
+                        "upload path is unsafe. Remove it before re-uploading."
+                    ),
+                ) from e
 
             # Cleanup after file is closed
             if needs_cleanup:

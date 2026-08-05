@@ -3168,6 +3168,58 @@ def test_lightrag_document_reprocess_uses_full_docs_without_reparse():
     assert engine == "reuse"
 
 
+def test_sanitize_filename_rejects_traversal_instead_of_rewriting(tmp_path):
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        _document_routes.sanitize_filename("../report.pdf", tmp_path)
+
+    assert exc.value.status_code == 400
+
+
+def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path):
+    for filename in ("nested/report.pdf", "nested\\report.pdf", "report.pdf\x00"):
+        with pytest.raises(_document_routes.HTTPException) as exc:
+            _document_routes.sanitize_filename(filename, tmp_path)
+
+        assert exc.value.status_code == 400
+
+
+def test_sanitize_filename_allows_non_traversal_dot_sequences(tmp_path):
+    filename = "report..final.pdf"
+
+    assert _document_routes.sanitize_filename(filename, tmp_path) == filename
+
+
+def test_upload_file_opener_refuses_existing_symlink(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    link = tmp_path / "safe.pdf"
+    link.symlink_to(outside)
+
+    opener = _document_routes.upload_file_opener(tmp_path)
+    with pytest.raises(FileExistsError):
+        with open(link, "xb", opener=opener):
+            pass
+
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_upload_file_opener_creates_new_file_with_private_permissions(tmp_path):
+    path = tmp_path / "safe.pdf"
+
+    opener = _document_routes.upload_file_opener(tmp_path)
+    with open(path, "xb", opener=opener) as fh:
+        fh.write(b"content")
+
+    assert path.read_bytes() == b"content"
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_sanitize_filename_preserves_safe_parser_hint_filename(tmp_path):
+    filename = "report.[native].docx"
+
+    assert _document_routes.sanitize_filename(filename, tmp_path) == filename
+
+
 def test_default_allowlist_equals_local_engine_suffixes(tmp_path, monkeypatch):
     """With no external endpoints and no routing rules, the registry-derived
     allowlist must equal the local engines' (legacy ∪ native) suffixes —
