@@ -4996,9 +4996,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         Only reached when the connected entities do not already fill the caller's
         limit, so a large graph never pays for this pass. The scan stops as soon
-        as ``needed`` labels are collected — the node index is sorted on
-        ``entity_id``, which is the same ascending label order every backend uses
-        to break degree ties.
+        as ``needed`` labels are collected, which is what makes the scan order
+        load-bearing: these labels all tie at degree 0, so the order they are
+        visited in IS the tie-break, and it must be ``entity_id`` ascending like
+        every other backend's.
+
+        That is why the sort is spelled out here instead of reusing
+        ``_pit_sort_with_field``: that helper is a pagination tiebreaker and
+        collapses to ``_shard_doc`` on OpenSearch >= 3.3, i.e. shard order.
+        ``get_all_labels`` can use it because it reads every page and re-sorts in
+        Python afterwards; an early-exit scan cannot — it would return an
+        arbitrary shard-ordered subset and omit alphabetically earlier labels.
+        ``entity_id`` is unique (it mirrors ``_id``), so it is a total order and
+        needs no extra tiebreaker for ``search_after``.
         """
         if needed <= 0:
             return []
@@ -5016,7 +5026,7 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "_source": False,
                     "size": 10000,
                     "pit": {"id": pit_id, "keep_alive": "1m"},
-                    "sort": _pit_sort_with_field("entity_id"),
+                    "sort": [{"entity_id": {"order": "asc"}}],
                 }
                 if search_after:
                     body["search_after"] = search_after

@@ -23,6 +23,7 @@ from opensearchpy.exceptions import (  # type: ignore
     OpenSearchException,
     ConflictError,
 )
+import lightrag.kg.opensearch_impl
 from lightrag.kg.opensearch_impl import (
     OpenSearchKVStorage,
     OpenSearchDocStatusStorage,
@@ -5361,6 +5362,44 @@ class TestGraphReadContract:
         assert labels == ["A", "B", "Orphan1", "Orphan2"]
         mock_client.create_pit.assert_awaited_once()
         mock_client.delete_pit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shard_doc_supported", [False, True])
+    async def test_isolated_backfill_sorts_by_label_not_shard_order(
+        self, global_config, embed_func, mock_client, shard_doc_supported
+    ):
+        """The isolated-node scan must sort on entity_id explicitly.
+
+        Every degree-0 label ties, so the scan order IS the tie-break — and the
+        scan exits as soon as it has enough labels. Reusing the pagination
+        helper ``_pit_sort_with_field`` would collapse to ``_shard_doc`` on
+        OpenSearch >= 3.3, making the backfill return an arbitrary shard-ordered
+        subset and omit alphabetically earlier entities.
+        ``get_all_labels`` tolerates that helper only because it reads every page
+        and re-sorts in Python afterwards.
+        """
+        mock_client.search = AsyncMock(
+            side_effect=[
+                self._aggs([{"key": "A", "doc_count": 1}], []),
+                self._node_page(["A", "Orphan"]),
+            ]
+        )
+        with patch.object(
+            lightrag.kg.opensearch_impl, "_shard_doc_supported", shard_doc_supported
+        ):
+            with patch.object(ClientManager, "get_client", return_value=mock_client):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.get_popular_labels(limit=10)
+
+        # The PRIMARY sort key must be entity_id ascending on every cluster
+        # version — an added tiebreaker would be harmless, a _shard_doc primary
+        # is the bug.
+        scan_body = mock_client.search.call_args_list[-1].kwargs["body"]
+        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, (
+            f"isolated backfill must sort on entity_id "
+            f"(_shard_doc_supported={shard_doc_supported}), got {scan_body['sort']}"
+        )
 
     @pytest.mark.asyncio
     async def test_popular_labels_skips_node_scan_when_limit_already_filled(
