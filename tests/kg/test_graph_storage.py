@@ -995,17 +995,21 @@ async def test_graph_query_helpers(storage):
     1. get_all_nodes  - every node as a dict carrying its "id".
     2. get_all_edges  - every edge as a dict carrying "source"/"target".
     3. get_popular_labels - labels ordered by degree (highest first), INCLUDING
-       isolated (degree-0) entities.
+       isolated (degree-0) entities, ties broken on the label ascending.
     4. search_labels  - substring/fuzzy label search.
     5. get_node_edges - None for a node that does not exist, [] for one that
        exists with no relations.
     """
     try:
-        # Star topology so degrees are distinct: Alpha=3, others=1. "Orphan"
-        # stays unconnected (degree 0) to pin that isolated entities are still
-        # ranked: a backend deriving degrees from its edge store has no row for
-        # them, and joining/aggregating from that side alone drops them.
-        node_ids = ["Alpha", "Beta", "Gamma", "Alphabet", "Orphan"]
+        # Star topology so degrees are distinct: Alpha=3, others=1. "Orphan" and
+        # "Aardvark" stay unconnected (degree 0) to pin two things at once:
+        #   * isolated entities are still ranked -- a backend deriving degrees
+        #     from its edge store has no row for them, and joining/aggregating
+        #     from that side alone drops them;
+        #   * their tie is broken on the LABEL, not on insertion order --
+        #     "Aardvark" is inserted last on purpose, so a backend that keeps
+        #     insertion order for ties returns it after "Orphan".
+        node_ids = ["Alpha", "Beta", "Gamma", "Alphabet", "Orphan", "Aardvark"]
         for nid in node_ids:
             await storage.upsert_node(
                 nid,
@@ -1048,14 +1052,18 @@ async def test_graph_query_helpers(storage):
         )
 
         # 3.1 Isolated entities must still be ranked (last, at degree 0) rather
-        # than excluded — they are entities the user can select in the WebUI.
+        # than excluded — they are entities the user can select in the WebUI —
+        # and their tie must break on the label, not on insertion order. The
+        # tie-break is what decides which labels survive a `limit`, so getting
+        # it wrong silently hides entities from the picker.
         all_popular = await storage.get_popular_labels(limit=len(node_ids) + 5)
         assert set(all_popular) == set(node_ids), (
             f"get_popular_labels must rank every node, got {all_popular}"
         )
         assert all_popular[0] == "Alpha"
-        assert all_popular[-1] == "Orphan", (
-            f"degree-0 node should rank last, got {all_popular}"
+        assert all_popular[-2:] == ["Aardvark", "Orphan"], (
+            "degree-0 nodes should rank last, ordered by label ascending "
+            f"(NOT insertion order), got {all_popular}"
         )
 
         # 4. search_labels - substring / prefix match, and a clear miss
