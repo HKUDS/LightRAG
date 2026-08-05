@@ -12,9 +12,25 @@ Supported graph storage types include:
 - PGGraphStorage
 - PGTableGraphStorage
 - MemgraphStorage
+
+Every test is triggerable two ways, and both run the exact same code through the
+same pytest fixture — the command line is a thin wrapper around pytest, not a
+second execution path:
+
+    # via pytest (integration tests are opt-in)
+    pytest tests/kg/test_graph_storage.py --run-integration
+    pytest tests/kg/test_graph_storage.py::test_graph_basic --run-integration
+    ./scripts/test.sh tests/kg/test_graph_storage.py --run-integration
+
+    # via the command line — no interactive prompts, exit code is pytest's
+    python tests/kg/test_graph_storage.py                 # every test
+    python tests/kg/test_graph_storage.py basic advanced   # a subset
+    python tests/kg/test_graph_storage.py --list           # show the names
+    python tests/kg/test_graph_storage.py basic -- -x --tb=long   # extra pytest args
 """
 
-import asyncio
+import argparse
+import inspect
 import os
 import sys
 import importlib
@@ -49,20 +65,31 @@ async def mock_embedding_func(texts):
 
 def check_env_file():
     """
-    Check if the .env file exists and issue a warning if it does not.
-    Returns True to continue execution, False to exit.
+    Warn if the .env file is missing. Never blocks.
+
+    This runs inside the pytest fixture, so it must not prompt: an input() here
+    hangs `pytest` in a terminal and dies on EOF under CI or any captured run.
+    Configuration problems surface as the fixture's own skip (missing backend /
+    env vars) rather than as a question nobody is there to answer.
     """
     if not os.path.exists(".env"):
-        warning_msg = "Warning: .env file not found in the current directory. This may affect storage configuration loading."
-        ASCIIColors.yellow(warning_msg)
+        ASCIIColors.yellow(
+            "Warning: .env file not found in the current directory. "
+            "This may affect storage configuration loading."
+        )
 
-        # Check if running in an interactive terminal
-        if sys.stdin.isatty():
-            response = input("Do you want to continue? (yes/NO): ")
-            if response.lower() != "yes":
-                ASCIIColors.red("Test program cancelled.")
-                return False
-    return True
+
+def _report_and_reraise(exc: Exception) -> None:
+    """Print the failure marker CI greps for, then re-raise so pytest fails.
+
+    The test bodies below wrap themselves in try/except purely for this log line.
+    Returning a value from that except block — as an earlier version did — does
+    NOT fail the test: pytest-asyncio discards a coroutine test's return value,
+    so a swallowed assertion was reported as a PASSED test. Re-raising is what
+    makes pytest the authority on the result, for both entry points.
+    """
+    ASCIIColors.red(f"An error occurred during the test: {str(exc)}")
+    raise exc
 
 
 async def initialize_graph_storage():
@@ -144,9 +171,7 @@ async def storage():
     Each test gets an initialized storage instance with a clean graph state.
     """
     load_dotenv(dotenv_path=".env", override=False)
-
-    if not check_env_file():
-        pytest.skip(".env file not available for graph storage integration tests")
+    check_env_file()
 
     storage_instance = await initialize_graph_storage()
     if storage_instance is None:
@@ -286,11 +311,9 @@ async def test_graph_basic(storage):
             )
 
         print("Basic tests completed, data is preserved in the database.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
 @pytest.mark.integration
@@ -518,11 +541,9 @@ async def test_graph_advanced(storage):
         assert node3_props is None, f"Node {node3_id} should have been deleted"
 
         print("\nAdvanced tests completed.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
 @pytest.mark.integration
@@ -872,11 +893,9 @@ async def test_graph_batch_operations(storage):
         )
 
         print("\nBatch operations tests completed.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
 @pytest.mark.integration
@@ -980,11 +999,9 @@ async def test_graph_batch_upsert(storage):
         assert await storage.node_degree("E5") == 1
 
         print("\nBatch upsert tests completed.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
 @pytest.mark.integration
@@ -1053,11 +1070,9 @@ async def test_graph_query_helpers(storage):
         assert "Alpha" not in misses and "Gamma" not in misses
 
         print("\nQuery helper tests completed.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
 @pytest.mark.integration
@@ -1209,11 +1224,9 @@ async def test_graph_special_characters(storage):
             assert False, f"Failed to read edge properties: {node2_id} -> {node3_id}"
 
         print("\nSpecial character tests completed, data is preserved in the database.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
 @pytest.mark.integration
@@ -1632,30 +1645,133 @@ async def test_graph_undirected_property(storage):
         )
 
         print("\nUndirected property tests completed.")
-        return True
 
     except Exception as e:
-        ASCIIColors.red(f"An error occurred during the test: {str(e)}")
-        return False
+        _report_and_reraise(e)
 
 
-async def main():
-    """Main function"""
-    # Display program title
+# ---------------------------------------------------------------------------
+# Command-line entry point
+#
+# Maps a short CLI name to the test function itself, so the command line can only
+# ever run tests that pytest also collects — there is no second copy of the test
+# list to drift (test_cli_can_trigger_every_test_in_this_module pins that), and no
+# second execution path: main() hands the selection to pytest.main().
+# ---------------------------------------------------------------------------
+
+CLI_TESTS = {
+    "basic": test_graph_basic,
+    "advanced": test_graph_advanced,
+    "batch-operations": test_graph_batch_operations,
+    "batch-upsert": test_graph_batch_upsert,
+    "query-helpers": test_graph_query_helpers,
+    "special-characters": test_graph_special_characters,
+    "string-escaping": test_graph_string_escaping_regressions,
+    "undirected": test_graph_undirected_property,
+}
+
+
+def _summary(func) -> str:
+    """First line of a test's docstring, for --list."""
+    doc = (func.__doc__ or "").strip()
+    return doc.splitlines()[0].strip() if doc else ""
+
+
+@pytest.mark.offline
+def test_cli_can_trigger_every_test_in_this_module():
+    """Every test here must be reachable from the command line as well as pytest.
+
+    Guards the requirement that both entry points cover the same set: a test added
+    to this module without a CLI_TESTS entry would be runnable only under pytest,
+    which is exactly the drift the mapping exists to prevent.
+
+    Membership is decided by taking the ``storage`` fixture, not by a name prefix —
+    that is what makes a test one of the backend contract tests, so a new one is
+    caught whatever it is called. This meta-test takes no fixture and is therefore
+    not itself expected in the mapping.
+    """
+    defined = {
+        name
+        for name, obj in globals().items()
+        if name.startswith("test_")
+        and callable(obj)
+        and "storage" in inspect.signature(obj).parameters
+    }
+    exposed = {func.__name__ for func in CLI_TESTS.values()}
+
+    assert exposed == defined, (
+        "CLI_TESTS is out of sync with the tests defined in this module: "
+        f"missing from the CLI {sorted(defined - exposed)}, "
+        f"unknown to pytest {sorted(exposed - defined)}"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the selected tests through pytest; return pytest's exit code.
+
+    Deliberately non-interactive: no menu, no input() prompt, so the script is
+    usable from CI, a Makefile, or a non-TTY shell.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Everything after a literal "--" is forwarded to pytest verbatim. Split it off
+    # before argparse, which would otherwise swallow the separator and try to read
+    # the pytest flags as test names.
+    if "--" in argv:
+        separator = argv.index("--")
+        argv, forwarded = argv[:separator], argv[separator + 1 :]
+    else:
+        forwarded = []
+
+    parser = argparse.ArgumentParser(
+        prog="python tests/kg/test_graph_storage.py",
+        description=(
+            "Run the graph storage contract tests against the backend selected by "
+            "LIGHTRAG_GRAPH_STORAGE. A thin wrapper around pytest: the tests run "
+            "through the same fixture whichever entry point you use."
+        ),
+        epilog=(
+            "examples:\n"
+            "  %(prog)s                       run every test\n"
+            "  %(prog)s basic advanced        run a subset\n"
+            "  %(prog)s --list                list the test names\n"
+            "  %(prog)s basic -- -x --tb=long forward extra args to pytest\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "tests",
+        nargs="*",
+        metavar="NAME",
+        help="tests to run (default: all). See --list for the names.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="list the available test names and exit",
+    )
+    args = parser.parse_args(argv)
+
+    if args.list:
+        for name, func in CLI_TESTS.items():
+            ASCIIColors.white(f"  {name:<20} {func.__name__} — {_summary(func)}")
+        return 0
+
+    unknown = [name for name in args.tests if name not in CLI_TESTS]
+    if unknown:
+        parser.error(
+            f"unknown test name(s): {', '.join(unknown)}\n"
+            f"valid names: {', '.join(CLI_TESTS)}"
+        )
+
     ASCIIColors.cyan("""
     ╔══════════════════════════════════════════════════════════════╗
     ║            General Graph Storage Test Program                ║
     ╚══════════════════════════════════════════════════════════════╝
     """)
 
-    # Check for .env file
-    if not check_env_file():
-        return
-
-    # Load environment variables
+    check_env_file()
     load_dotenv(dotenv_path=".env", override=False)
 
-    # Get graph storage type
     graph_storage_type = os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage")
     ASCIIColors.magenta(
         f"\nCurrently configured graph storage type: {graph_storage_type}"
@@ -1664,133 +1780,27 @@ async def main():
         f"Supported graph storage types: {', '.join(STORAGE_IMPLEMENTATIONS['GRAPH_STORAGE']['implementations'])}"
     )
 
-    # Initialize storage instance
-    storage = await initialize_graph_storage()
-    if not storage:
-        ASCIIColors.red("Failed to initialize storage instance, exiting test program.")
-        return
+    selected = args.tests or list(CLI_TESTS)
+    # --run-integration is mandatory here: these tests carry the integration
+    # marker, so without it conftest skips every one and the script would exit 0
+    # having run nothing. -s keeps the tests' own progress output visible, which is
+    # the point of driving them by hand.
+    pytest_argv = [
+        *(
+            f"{os.path.abspath(__file__)}::{CLI_TESTS[name].__name__}"
+            for name in selected
+        ),
+        "--run-integration",
+        "-v",
+        "-s",
+        *forwarded,
+    ]
+    ASCIIColors.yellow(f"\n$ pytest {' '.join(pytest_argv)}\n")
 
-    try:
-
-        async def reset_storage(test_name: str) -> None:
-            ASCIIColors.yellow(f"\nCleaning data before {test_name}...")
-            await storage.drop()
-            ASCIIColors.green("Data cleanup complete\n")
-
-        # Display test options
-        ASCIIColors.yellow("\nPlease select a test type:")
-        ASCIIColors.white("1. Basic Test (Node and edge insertion, reading)")
-        ASCIIColors.white(
-            "2. Advanced Test (Degree, labels, knowledge graph, deletion, etc.)"
-        )
-        ASCIIColors.white(
-            "3. Batch Operations Test (Batch get node/edge properties, degrees, etc.)"
-        )
-        ASCIIColors.white(
-            "4. Undirected Property Test (Verify undirected properties of the storage)"
-        )
-        ASCIIColors.white(
-            "5. Special Characters Test (Verify handling of single/double quotes, backslashes, etc.)"
-        )
-        ASCIIColors.white(
-            "6. String Escaping Regression Test (Quoted and escaped entity IDs across graph operations)"
-        )
-        ASCIIColors.white(
-            "7. Batch Upsert Test (upsert_nodes_batch / upsert_edges_batch, dedup, has_node)"
-        )
-        ASCIIColors.white(
-            "8. Query Helpers Test (get_all_nodes / get_all_edges / get_popular_labels / search_labels)"
-        )
-        ASCIIColors.white("9. All Tests")
-
-        choice = input("\nEnter your choice (1/2/3/4/5/6/7/8/9): ")
-
-        # Clean data before running tests
-        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9"]:
-            await reset_storage("running tests")
-
-        if choice == "1":
-            await test_graph_basic(storage)
-        elif choice == "2":
-            await test_graph_advanced(storage)
-        elif choice == "3":
-            await test_graph_batch_operations(storage)
-        elif choice == "4":
-            await test_graph_undirected_property(storage)
-        elif choice == "5":
-            await test_graph_special_characters(storage)
-        elif choice == "6":
-            await test_graph_string_escaping_regressions(storage)
-        elif choice == "7":
-            await test_graph_batch_upsert(storage)
-        elif choice == "8":
-            await test_graph_query_helpers(storage)
-        elif choice == "9":
-            ASCIIColors.cyan("\n=== Starting Basic Test ===")
-            await reset_storage("Basic Test")
-            basic_result = await test_graph_basic(storage)
-
-            if basic_result:
-                ASCIIColors.cyan("\n=== Starting Advanced Test ===")
-                await reset_storage("Advanced Test")
-                advanced_result = await test_graph_advanced(storage)
-
-                if advanced_result:
-                    ASCIIColors.cyan("\n=== Starting Batch Operations Test ===")
-                    await reset_storage("Batch Operations Test")
-                    batch_result = await test_graph_batch_operations(storage)
-
-                    if batch_result:
-                        ASCIIColors.cyan("\n=== Starting Undirected Property Test ===")
-                        await reset_storage("Undirected Property Test")
-                        undirected_result = await test_graph_undirected_property(
-                            storage
-                        )
-
-                        if undirected_result:
-                            ASCIIColors.cyan(
-                                "\n=== Starting Special Characters Test ==="
-                            )
-                            await reset_storage("Special Characters Test")
-                            special_result = await test_graph_special_characters(
-                                storage
-                            )
-
-                            if special_result:
-                                ASCIIColors.cyan(
-                                    "\n=== Starting String Escaping Regression Test ==="
-                                )
-                                await reset_storage("String Escaping Regression Test")
-                                escaping_result = (
-                                    await test_graph_string_escaping_regressions(
-                                        storage
-                                    )
-                                )
-
-                                if escaping_result is not False:
-                                    ASCIIColors.cyan(
-                                        "\n=== Starting Batch Upsert Test ==="
-                                    )
-                                    await reset_storage("Batch Upsert Test")
-                                    batch_upsert_result = await test_graph_batch_upsert(
-                                        storage
-                                    )
-
-                                    if batch_upsert_result is not False:
-                                        ASCIIColors.cyan(
-                                            "\n=== Starting Query Helpers Test ==="
-                                        )
-                                        await reset_storage("Query Helpers Test")
-                                        await test_graph_query_helpers(storage)
-        else:
-            ASCIIColors.red("Invalid choice")
-
-    finally:
-        # Close connection
-        if storage:
-            await storage.finalize()
-            ASCIIColors.green("\nStorage connection closed.")
+    # The fixture drops the graph before and after each test, so no cleanup pass
+    # is needed here.
+    return pytest.main(pytest_argv)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(main())
