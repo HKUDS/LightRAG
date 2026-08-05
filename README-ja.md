@@ -241,10 +241,10 @@ Native markdown/textpack パーサーは、埋め込まれた SVG 画像を `cai
 
 ```bash
 # Debian / Ubuntu（公式 Docker イメージには既に含まれています）
-apt-get install -y libcairo2
+sudo apt-get install -y libcairo2
 
 # RHEL / Fedora
-dnf install -y cairo
+sudo dnf install -y cairo
 
 # macOS（Homebrew）
 brew install cairo

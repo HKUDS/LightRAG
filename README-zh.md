@@ -241,10 +241,10 @@ Native markdown/textpack 解析器会通过 `cairosvg` 把内嵌的 SVG 图片�
 
 ```bash
 # Debian / Ubuntu（官方 Docker 镜像已内置）
-apt-get install -y libcairo2
+sudo apt-get install -y libcairo2
 
 # RHEL / Fedora
-dnf install -y cairo
+sudo dnf install -y cairo
 
 # macOS（Homebrew）
 brew install cairo

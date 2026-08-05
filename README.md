@@ -241,10 +241,10 @@ Install the system package for your platform:
 
 ```bash
 # Debian / Ubuntu (the official Docker image already includes this)
-apt-get install -y libcairo2
+sudo apt-get install -y libcairo2
 
 # RHEL / Fedora
-dnf install -y cairo
+sudo dnf install -y cairo
 
 # macOS (Homebrew)
 brew install cairo
