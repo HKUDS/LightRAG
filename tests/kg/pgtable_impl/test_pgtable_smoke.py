@@ -5,6 +5,12 @@ These tests exercise the actual DB glue that all offline unit tests mock:
   - _fetch    → PostgreSQLDB.query(..., multirows=True)   JSONB via asyncpg
   - json.loads() on JSONB columns returned by asyncpg
 
+The second half of the module carries the backend-agnostic end-to-end graph
+contract ported from tests/kg/test_graph_storage.py (that suite only reaches
+PGTableGraphStorage when LIGHTRAG_GRAPH_STORAGE happens to point at it), with the
+parts already covered above merged in rather than duplicated — see the section
+banner further down for the mapping.
+
 Requires a live PostgreSQL instance.  The tests carry both the ``pg_smoke``
 and ``integration`` markers so that:
 
@@ -109,7 +115,8 @@ def _edge(weight: float = 1.0) -> dict:
 @pytest.mark.asyncio
 async def test_upsert_and_get_node(store):
     """upsert_node round-trips through positional binding and JSONB decode."""
-    await store.upsert_node("Alice", _node("Alice"))
+    data = dict(_node("Alice"), keywords="AI,Machine Learning,Deep Learning")
+    await store.upsert_node("Alice", data)
 
     row = await store.get_node("Alice")
 
@@ -117,6 +124,9 @@ async def test_upsert_and_get_node(store):
     assert row["entity_id"] == "Alice"
     assert row["entity_type"] == "SMOKE"
     assert row["description"] == "smoke node Alice"
+    # Every key of the payload must survive the JSONB round-trip, not just the
+    # three the original smoke test spot-checked.
+    assert row == data
 
 
 @pytest.mark.asyncio
@@ -141,20 +151,34 @@ async def test_has_node(store):
 
 @pytest.mark.asyncio
 async def test_upsert_and_get_edge(store):
-    """upsert_edge round-trips through positional binding and JSONB decode."""
+    """upsert_edge round-trips through positional binding and JSONB decode.
+
+    Also pins full-payload fidelity and strict forward/reverse equality — the
+    undirected contract asserted by ``test_graph_basic`` in
+    tests/kg/test_graph_storage.py, folded in here so the PG path carries it too.
+    """
     await store.upsert_node("A", _node("A"))
     await store.upsert_node("B", _node("B"))
-    await store.upsert_edge("A", "B", _edge(2.5))
+    edge_data = dict(
+        _edge(2.5),
+        relationship="includes",
+        description="A includes the subfield B.",
+    )
+    await store.upsert_edge("A", "B", edge_data)
 
     row = await store.get_edge("A", "B")
     assert row is not None
     # Weight is stored as JSON number; asyncpg decodes JSONB to Python dict
     assert float(row["weight"]) == pytest.approx(2.5)
+    assert row["relationship"] == edge_data["relationship"]
+    assert row["description"] == edge_data["description"]
+    assert row["keywords"] == edge_data["keywords"]
 
-    # Edge is undirected — reverse lookup must also work
+    # Edge is undirected — reverse lookup must return the identical property set
     row_rev = await store.get_edge("B", "A")
     assert row_rev is not None
     assert float(row_rev["weight"]) == pytest.approx(2.5)
+    assert row_rev == row, "forward and reverse edge properties must be identical"
 
 
 @pytest.mark.asyncio
@@ -312,19 +336,58 @@ async def test_get_all_edges_key_shape(store):
 
 @pytest.mark.asyncio
 async def test_jsonb_unicode_and_special_chars(store):
-    """JSONB round-trip must preserve Unicode and apostrophes without corruption.
+    """JSONB round-trip must preserve Unicode, quotes and backslashes verbatim.
 
     Guards against SQL-injection / quoting bugs in the positional param path.
-    """
-    node_data = dict(
-        _node("Special"),
-        description="O'Brien's café — 日本語 <script>",
-    )
-    await store.upsert_node("Special", node_data)
 
-    row = await store.get_node("Special")
-    assert row is not None
-    assert row["description"] == "O'Brien's café — 日本語 <script>"
+    Merged with ``test_graph_special_characters`` from
+    tests/kg/test_graph_storage.py: single/double quotes and backslashes in both
+    node ids and property values, on nodes and on edges, including a value that
+    looks like a SQL injection attempt.
+    """
+    quoted_id = "Node with 'single quotes'"
+    dquoted_id = 'Node with "double quotes"'
+    backslash_id = "Node with \\backslashes\\"
+
+    node_payloads = {
+        "Special": dict(
+            _node("Special"), description="O'Brien's café — 日本語 <script>"
+        ),
+        quoted_id: dict(
+            _node(quoted_id),
+            description="Contains 'single quotes', \"double quotes\" and \\backslashes",
+        ),
+        dquoted_id: dict(
+            _node(dquoted_id),
+            description="Both 'single quotes' and \"double quotes\" and \\a\\path",
+        ),
+        backslash_id: dict(
+            _node(backslash_id),
+            description="Windows path C:\\Program Files\\ and escapes \\n\\t",
+        ),
+    }
+    for node_id, payload in node_payloads.items():
+        await store.upsert_node(node_id, payload)
+
+    for node_id, payload in node_payloads.items():
+        row = await store.get_node(node_id)
+        assert row is not None, f"node {node_id!r} must round-trip"
+        assert row["entity_id"] == node_id
+        assert row["description"] == payload["description"]
+
+    # Edge properties take the same path and must survive it identically.
+    edge_payload = dict(
+        _edge(0.8),
+        relationship='complex "relationship"\\type',
+        description=("SQL injection attempt: SELECT * FROM users WHERE name='admin'--"),
+    )
+    await store.upsert_edge(quoted_id, backslash_id, edge_payload)
+
+    edge = await store.get_edge(quoted_id, backslash_id)
+    assert edge is not None
+    assert edge["relationship"] == edge_payload["relationship"]
+    assert edge["description"] == edge_payload["description"]
+    assert await store.get_edge(backslash_id, quoted_id) == edge
 
 
 # ---------------------------------------------------------------------------
@@ -984,3 +1047,466 @@ async def test_failed_upsert_chunk_leaves_no_edge_without_endpoints(store, monke
     # Replaying the full batch converges on the complete edge set.
     await store.upsert_edges_batch(edges)
     assert len(await store.get_all_edges()) == len(edges)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end graph-storage contract, ported from tests/kg/test_graph_storage.py
+#
+# That module is the backend-agnostic end-to-end suite selected by
+# LIGHTRAG_GRAPH_STORAGE, so it only exercises PGTableGraphStorage when a
+# developer happens to point .env at it. The contract it asserts is ported here
+# so the pg-smoke CI job runs it unconditionally against a live server.
+#
+# Already covered above and therefore NOT re-added:
+#   test_graph_basic            -> test_upsert_and_get_node / _edge (extended
+#                                  there with full-payload and forward==reverse
+#                                  assertions)
+#   node_degree, get_node_edges -> test_node_degree,
+#                                  test_get_node_edges_queried_node_first
+#   test_graph_special_chars    -> merged into
+#                                  test_jsonb_unicode_and_special_chars
+#   search_labels               -> test_search_labels_sql_scoring_matches_
+#                                  search_score_reference (strictly stronger)
+#   test_graph_undirected_property -> its unique assertions (undirected
+#                                  edge_degree, undirected get_edges_batch,
+#                                  undirected deletion) are folded into the
+#                                  degree / batch-read / deletion tests below
+#                                  rather than duplicated as a seventh walk over
+#                                  the same graph.
+# ---------------------------------------------------------------------------
+
+
+def _kg_node(entity_id: str, description: str, keywords: str) -> dict:
+    """A node payload shaped like the end-to-end suite's (keywords included)."""
+    return dict(_node(entity_id), description=description, keywords=keywords)
+
+
+async def _build_ai_graph(store) -> tuple[dict[str, dict], dict[tuple[str, str], dict]]:
+    """Build the 5-node / 6-edge topology the ported batch tests assert on.
+
+    Degrees: AI=3, ML=2, DL=3, NLP=2, CV=2.
+    """
+    nodes = {
+        "AI": _kg_node("AI", "Artificial intelligence", "AI,ML,DL"),
+        "ML": _kg_node("ML", "Machine learning", "supervised,unsupervised"),
+        "DL": _kg_node("DL", "Deep learning", "neural networks,CNN,RNN"),
+        "NLP": _kg_node("NLP", "Natural language processing", "NLP,text"),
+        "CV": _kg_node("CV", "Computer vision", "CV,image recognition"),
+    }
+    for node_id, payload in nodes.items():
+        await store.upsert_node(node_id, payload)
+
+    edges = {
+        ("AI", "ML"): dict(_edge(1.0), relationship="includes", description="ai>ml"),
+        ("ML", "DL"): dict(_edge(1.0), relationship="includes", description="ml>dl"),
+        ("AI", "NLP"): dict(_edge(1.0), relationship="includes", description="ai>nlp"),
+        ("AI", "CV"): dict(_edge(1.0), relationship="includes", description="ai>cv"),
+        ("DL", "NLP"): dict(
+            _edge(0.8), relationship="applied to", description="dl>nlp"
+        ),
+        ("DL", "CV"): dict(_edge(0.8), relationship="applied to", description="dl>cv"),
+    }
+    for (src, tgt), payload in edges.items():
+        await store.upsert_edge(src, tgt, payload)
+
+    return nodes, edges
+
+
+@pytest.mark.asyncio
+async def test_edge_degree_sums_endpoints_and_is_symmetric(store):
+    """edge_degree(a, b) == node_degree(a) + node_degree(b), in either direction.
+
+    Ported from test_graph_advanced / test_graph_undirected_property: the smoke
+    suite covered node_degree but never edge_degree, whose undirected symmetry is
+    part of the storage contract.
+    """
+    for name in ("AI", "ML", "DL"):
+        await store.upsert_node(name, _node(name))
+    await store.upsert_edge("AI", "ML", _edge())
+    await store.upsert_edge("ML", "DL", _edge())
+
+    assert await store.node_degree("AI") == 1
+    assert await store.node_degree("ML") == 2
+    assert await store.node_degree("DL") == 1
+
+    forward = await store.edge_degree("AI", "ML")
+    assert forward == 3, f"edge_degree should be 1 + 2 = 3, got {forward}"
+    assert await store.edge_degree("ML", "AI") == forward, (
+        "edge_degree must be direction-independent on an undirected graph"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_all_labels_lists_every_node_id(store):
+    """get_all_labels returns every node id, sorted. Ported from
+    test_graph_advanced; no smoke test touched this method."""
+    nodes, _ = await _build_ai_graph(store)
+
+    labels = await store.get_all_labels()
+
+    assert labels == sorted(nodes), f"get_all_labels mismatch: {labels}"
+
+
+@pytest.mark.asyncio
+async def test_get_knowledge_graph_wildcard_returns_whole_graph(store):
+    """The "*" wildcard path returns every node and edge, with entity_id intact.
+
+    The smoke suite only exercised seeded BFS (`get_knowledge_graph("A", ...)`);
+    the wildcard branch is a completely separate SQL query. The entity_id
+    assertion is the WebUI regression guard from test_graph_advanced: the
+    property panel reads properties["entity_id"] to render a node's name.
+    """
+    from lightrag.types import KnowledgeGraph
+
+    nodes, edges = await _build_ai_graph(store)
+
+    kg = await store.get_knowledge_graph("*", max_depth=2, max_nodes=10)
+
+    assert isinstance(kg, KnowledgeGraph)
+    assert {n.id for n in kg.nodes} == set(nodes)
+    assert len(kg.edges) == len(edges)
+    assert kg.is_truncated is False
+    for kg_node in kg.nodes:
+        assert kg_node.properties.get("entity_id") == kg_node.id, (
+            f"node {kg_node.id} lost entity_id in properties: {kg_node.properties}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_node_and_remove_nodes_and_edges(store):
+    """delete_node / remove_edges / remove_nodes on a small live graph.
+
+    Ported from test_graph_advanced plus the deletion half of
+    test_graph_undirected_property: removing an edge in one direction must remove
+    it in both, and deleting a node must take its incident edges with it (here via
+    the FK cascade). The existing chunked-delete smoke test drives the same
+    methods but only checks bulk arithmetic, never these semantics.
+    """
+    await _build_ai_graph(store)
+
+    # delete_node also cascades the node's incident edges.
+    await store.delete_node("CV")
+    assert await store.get_node("CV") is None
+    assert await store.has_edge("AI", "CV") is False
+    assert await store.has_edge("DL", "CV") is False
+
+    # remove_edges is undirected: both directions disappear.
+    await store.remove_edges([("ML", "DL")])
+    assert await store.get_edge("ML", "DL") is None
+    assert await store.get_edge("DL", "ML") is None, (
+        "reverse edge must be deleted too — deletion is undirected"
+    )
+    ml_edges = await store.get_node_edges("ML")
+    assert ml_edges == [("ML", "AI")], f"ML should keep only its AI edge: {ml_edges}"
+
+    # remove_nodes drops several nodes at once and leaves the rest untouched.
+    await store.remove_nodes(["ML", "DL"])
+    assert await store.get_node("ML") is None
+    assert await store.get_node("DL") is None
+    assert await store.get_node("AI") is not None
+    assert await store.get_all_labels() == ["AI", "NLP"]
+    surviving = {(e["source"], e["target"]) for e in await store.get_all_edges()}
+    assert surviving == {("AI", "NLP")}, (
+        f"only the AI-NLP edge should survive the cascade: {surviving}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_read_helpers_round_trip_and_stay_undirected(store):
+    """get_nodes_batch / node_degrees_batch / edge_degrees_batch /
+    get_edges_batch / get_nodes_edges_batch against a real server.
+
+    Ported from test_graph_batch_operations, with the reverse-pair assertions of
+    test_graph_undirected_property folded in. Only get_nodes_batch and
+    get_nodes_edges_batch had any live coverage here before, and neither checked
+    property fidelity or degree arithmetic.
+    """
+    nodes, edges = await _build_ai_graph(store)
+
+    # 1. get_nodes_batch — properties survive the batch read path.
+    nodes_dict = await store.get_nodes_batch(["AI", "ML", "DL"])
+    assert set(nodes_dict) == {"AI", "ML", "DL"}
+    for node_id, payload in nodes_dict.items():
+        assert payload["description"] == nodes[node_id]["description"]
+        assert payload["keywords"] == nodes[node_id]["keywords"]
+        assert payload["entity_id"] == node_id
+
+    # 2. node_degrees_batch — matches the per-node degrees.
+    degrees = await store.node_degrees_batch(["AI", "ML", "DL", "NLP", "CV", "ghost"])
+    assert degrees == {
+        "AI": 3,
+        "ML": 2,
+        "DL": 3,
+        "NLP": 2,
+        "CV": 2,
+        "ghost": 0,
+    }, f"node_degrees_batch mismatch: {degrees}"
+
+    # 3. edge_degrees_batch — sum of endpoint degrees per pair.
+    pairs = [("AI", "ML"), ("ML", "DL"), ("DL", "NLP")]
+    edge_degrees = await store.edge_degrees_batch(pairs)
+    assert edge_degrees == {
+        ("AI", "ML"): 5,
+        ("ML", "DL"): 5,
+        ("DL", "NLP"): 5,
+    }, f"edge_degrees_batch mismatch: {edge_degrees}"
+
+    # 4. get_edges_batch — properties keyed by the pair AS ASKED, both directions.
+    forward = await store.get_edges_batch([{"src": s, "tgt": t} for s, t in pairs])
+    reverse = await store.get_edges_batch([{"src": t, "tgt": s} for s, t in pairs])
+    assert set(forward) == set(pairs)
+    assert set(reverse) == {(t, s) for s, t in pairs}
+    for src, tgt in pairs:
+        expected = edges[(src, tgt)]
+        assert forward[(src, tgt)]["relationship"] == expected["relationship"]
+        assert forward[(src, tgt)]["description"] == expected["description"]
+        assert reverse[(tgt, src)] == forward[(src, tgt)], (
+            f"edge {src}<->{tgt} not undirected-consistent in get_edges_batch"
+        )
+
+    # 5. get_nodes_edges_batch — every incident edge, regardless of direction.
+    nodes_edges = await store.get_nodes_edges_batch(["AI", "DL"])
+    assert set(nodes_edges) == {"AI", "DL"}
+    assert {tgt for _, tgt in nodes_edges["AI"]} == {"ML", "NLP", "CV"}
+    assert {tgt for _, tgt in nodes_edges["DL"]} == {"ML", "NLP", "CV"}
+
+
+@pytest.mark.asyncio
+async def test_batch_upsert_dedup_and_existence_checks(store, monkeypatch):
+    """upsert_nodes_batch / upsert_edges_batch: same-batch dedup, has_node,
+    has_nodes_batch, reciprocal edge collapse.
+
+    Ported from test_graph_batch_upsert. The chunking smoke tests above drive the
+    same two methods but never feed them a duplicate, and has_nodes_batch had no
+    live coverage at all. The record cap is lowered to 2 so the duplicate and its
+    original land in different chunks: dedup has to happen before chunking, or the
+    earlier payload wins in its own statement.
+    """
+    monkeypatch.setenv("POSTGRES_UPSERT_MAX_RECORDS_PER_BATCH", "2")
+    # The fixture may already have cached the default caps.
+    store._cached_batch_limits = None
+
+    nodes = [
+        ("E1", _kg_node("E1", "first", "k")),
+        ("E2", _kg_node("E2", "second", "k")),
+        ("E3", _kg_node("E3", "third", "k")),
+        ("E4", _kg_node("E4", "fourth", "k")),
+        ("E5", _kg_node("E5", "fifth", "k")),
+        # duplicate of E1 later in the same batch -> this payload must win
+        ("E1", _kg_node("E1", "first-updated", "k")),
+    ]
+    await store.upsert_nodes_batch(nodes)
+
+    for node_id in ("E1", "E2", "E3", "E4", "E5"):
+        assert await store.has_node(node_id) is True
+
+    assert await store.has_nodes_batch(["E1", "E3", "E5", "DOES_NOT_EXIST"]) == {
+        "E1",
+        "E3",
+        "E5",
+    }
+
+    e1 = await store.get_node("E1")
+    assert e1 is not None and e1["description"] == "first-updated", (
+        "same-batch node dedup must keep the last write"
+    )
+
+    edges = [
+        ("E1", "E2", dict(_edge(1.0), relationship="r12")),
+        ("E2", "E3", dict(_edge(1.0), relationship="r23")),
+        ("E3", "E4", dict(_edge(1.0), relationship="r34")),
+        ("E4", "E5", dict(_edge(1.0), relationship="r45")),
+        # reciprocal of (E1, E2): undirected -> last write wins
+        ("E2", "E1", dict(_edge(2.0), relationship="r12-updated")),
+    ]
+    await store.upsert_edges_batch(edges)
+
+    for a, b in (("E1", "E2"), ("E2", "E3"), ("E3", "E4"), ("E4", "E5")):
+        fwd = await store.get_edge(a, b)
+        rev = await store.get_edge(b, a)
+        assert fwd is not None, f"edge {a}->{b} missing after upsert_edges_batch"
+        assert fwd == rev, f"edge {a}<->{b} not undirected-consistent"
+
+    e12 = await store.get_edge("E1", "E2")
+    assert e12["relationship"] == "r12-updated", "reciprocal edge dedup lost"
+    assert float(e12["weight"]) == pytest.approx(2.0), (
+        "reciprocal edge dedup kept the wrong payload"
+    )
+
+    # Exactly four distinct edges were written, so the degrees are unambiguous.
+    assert await store.node_degree("E1") == 1
+    assert await store.node_degree("E2") == 2
+    assert await store.node_degree("E3") == 2
+    assert await store.node_degree("E5") == 1
+
+
+@pytest.mark.asyncio
+async def test_get_all_nodes_and_popular_labels_rank_by_degree(store):
+    """get_all_nodes carries "id"; get_popular_labels orders by degree.
+
+    Ported from test_graph_query_helpers. get_all_nodes was only ever asserted
+    empty here (in the drop test), and get_popular_labels only on a single
+    self-loop — neither pinned the "id" key or the degree ordering.
+    """
+    star = ["Alpha", "Beta", "Gamma", "Alphabet"]
+    for node_id in star:
+        await store.upsert_node(node_id, _node(node_id))
+    star_edges = [("Alpha", "Beta"), ("Alpha", "Gamma"), ("Alpha", "Alphabet")]
+    for src, tgt in star_edges:
+        await store.upsert_edge(src, tgt, _edge())
+
+    all_nodes = await store.get_all_nodes()
+    assert {n["id"] for n in all_nodes} == set(star)
+    assert all("entity_id" in n for n in all_nodes)
+
+    all_edges = await store.get_all_edges()
+    assert {frozenset((e["source"], e["target"])) for e in all_edges} == {
+        frozenset(pair) for pair in star_edges
+    }
+
+    # Alpha has degree 3, every spoke has 1 — the hub must come first.
+    popular = await store.get_popular_labels(limit=2)
+    assert len(popular) == 2
+    assert popular[0] == "Alpha", f"highest-degree label must lead: {popular}"
+    assert popular[1] in {"Alphabet", "Beta", "Gamma"}
+
+
+@pytest.mark.asyncio
+async def test_escaped_entity_ids_round_trip_across_every_path(store):
+    """Quoted / backslash-laden entity IDs through every read and write path.
+
+    Ported from test_graph_string_escaping_regressions. Entity ids (not just
+    property values) go into positional parameters and into ANY()/unnest() arrays,
+    so each read shape needs its own pass; the ids here are the ones that broke
+    the Cypher-escaping backends.
+    """
+    center_id = 'Danh mục "bài toán lớn"'
+    backslash_id = r"C:\Program Files\LightRAG"
+    mixed_id = 'Path "C:\\RAG\\docs"'
+    single_quote_id = "Node with 'single quotes'"
+    ids = [center_id, backslash_id, mixed_id, single_quote_id]
+
+    node_payloads = {
+        center_id: _kg_node(
+            center_id,
+            'Quoted entity with JSON-ish payload {"path": "C:\\\\temp"}',
+            'quotes,"double quotes",unicode',
+        ),
+        backslash_id: _kg_node(
+            backslash_id,
+            r"Windows path C:\Program Files\LightRAG\bin",
+            r"paths,C:\temp,backslashes",
+        ),
+        mixed_id: _kg_node(
+            mixed_id,
+            'Mixed quotes "and" slashes \\ in one entity id',
+            r'mixed,"quoted",C:\RAG\docs',
+        ),
+        single_quote_id: _kg_node(
+            single_quote_id,
+            "Single quotes stay literal in entity identifiers",
+            "single quotes,escaping",
+        ),
+    }
+    for node_id, payload in node_payloads.items():
+        await store.upsert_node(node_id, payload)
+
+    edge_payloads = {
+        (center_id, backslash_id): dict(
+            _edge(1.0),
+            relationship=r'contains "path"\edge',
+            description=r'Links "quoted" title to C:\Program Files\LightRAG',
+        ),
+        (center_id, mixed_id): dict(
+            _edge(0.8),
+            relationship='references "docs"',
+            description=r'Contains both "quotes" and \\backslashes\\',
+        ),
+        (center_id, single_quote_id): dict(
+            _edge(0.6),
+            relationship="mentions 'alias'",
+            description='Single quote entity linked to "quoted" center node',
+        ),
+    }
+    for (src_id, tgt_id), payload in edge_payloads.items():
+        await store.upsert_edge(src_id, tgt_id, payload)
+
+    # Single-node reads.
+    for node_id, payload in node_payloads.items():
+        node = await store.get_node(node_id)
+        assert node is not None, f"expected node {node_id!r} to round-trip"
+        assert node["entity_id"] == node_id
+        assert node["description"] == payload["description"]
+
+    # Batch reads (ANY() array binding).
+    nodes_batch = await store.get_nodes_batch(ids)
+    assert set(nodes_batch) == set(ids)
+    for node_id, payload in node_payloads.items():
+        assert nodes_batch[node_id]["entity_id"] == node_id
+        assert nodes_batch[node_id]["description"] == payload["description"]
+
+    assert await store.has_nodes_batch(ids) == set(ids)
+    assert await store.node_degrees_batch(ids) == {
+        center_id: 3,
+        backslash_id: 1,
+        mixed_id: 1,
+        single_quote_id: 1,
+    }
+
+    def connects(edges, a, b):
+        """Undirected: accept either endpoint order."""
+        return any(
+            (src == a and tgt == b) or (src == b and tgt == a) for src, tgt in edges
+        )
+
+    center_edges = await store.get_node_edges(center_id)
+    assert center_edges is not None
+    for other in (backslash_id, mixed_id, single_quote_id):
+        assert connects(center_edges, center_id, other), (
+            f"center_edges should contain connection to {other!r}"
+        )
+
+    batch_edges = await store.get_nodes_edges_batch(ids)
+    assert set(batch_edges) == set(ids)
+    for other in (backslash_id, mixed_id, single_quote_id):
+        assert connects(batch_edges[center_id], center_id, other)
+        assert connects(batch_edges[other], center_id, other)
+
+    # Edge reads, forward and reverse.
+    for (src_id, tgt_id), payload in edge_payloads.items():
+        fwd = await store.get_edge(src_id, tgt_id)
+        rev = await store.get_edge(tgt_id, src_id)
+        assert fwd is not None, f"get_edge({src_id!r}, {tgt_id!r}) returned None"
+        assert rev == fwd, f"edge {src_id!r}<->{tgt_id!r} not undirected-consistent"
+        assert fwd["relationship"] == payload["relationship"]
+        assert fwd["description"] == payload["description"]
+        assert await store.has_edge(src_id, tgt_id) is True
+        assert await store.has_edge(tgt_id, src_id) is True
+
+    forward_batch = await store.get_edges_batch(
+        [{"src": src_id, "tgt": tgt_id} for src_id, tgt_id in edge_payloads]
+    )
+    reverse_batch = await store.get_edges_batch(
+        [{"src": tgt_id, "tgt": src_id} for src_id, tgt_id in edge_payloads]
+    )
+    assert set(forward_batch) == set(edge_payloads)
+    for pair, payload in edge_payloads.items():
+        assert forward_batch[pair]["relationship"] == payload["relationship"]
+        assert forward_batch[pair]["description"] == payload["description"]
+        assert reverse_batch[(pair[1], pair[0])] == forward_batch[pair]
+
+    # Write paths: escaped ids must be deletable too.
+    await store.remove_edges([(center_id, mixed_id)])
+    assert await store.get_edge(center_id, mixed_id) is None
+    assert await store.get_edge(mixed_id, center_id) is None
+    remaining = await store.get_node_edges(center_id)
+    assert remaining is not None
+    assert not connects(remaining, center_id, mixed_id)
+
+    await store.delete_node(single_quote_id)
+    assert await store.get_node(single_quote_id) is None
+
+    await store.remove_nodes([center_id, backslash_id])
+    assert await store.get_node(center_id) is None
+    assert await store.get_node(backslash_id) is None
+    assert await store.get_node(mixed_id) is not None
