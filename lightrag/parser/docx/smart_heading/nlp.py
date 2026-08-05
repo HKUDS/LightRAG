@@ -37,7 +37,18 @@ _INSTALL_HINT = (
 
 
 class SmartHeadingNLPError(RuntimeError):
-    """spaCy runtime/model unavailable while smart_heading is enabled."""
+    """spaCy runtime/model unavailable while smart_heading is enabled.
+
+    ``problem``/``install_hint`` are kept as separate attributes (rather than
+    only a flat message) so a caller presenting this at startup — e.g. a
+    boxed splash-screen error instead of a raw traceback — can lay the
+    install command out on its own line without parsing the message text.
+    """
+
+    def __init__(self, problem: str, install_hint: str = _INSTALL_HINT) -> None:
+        super().__init__(f"{problem} {install_hint}")
+        self.problem = problem
+        self.install_hint = install_hint
 
 
 def missing_spacy_models() -> list[str]:
@@ -63,8 +74,7 @@ def ensure_spacy_models_installed(context: str) -> None:
     missing = missing_spacy_models()
     if missing:
         raise SmartHeadingNLPError(
-            f"{context}, but spaCy model(s) {', '.join(missing)} are not "
-            "installed. " + _INSTALL_HINT
+            f"{context}, but spaCy model(s) {', '.join(missing)} are not installed."
         )
 
 
@@ -79,15 +89,13 @@ def _get_pipeline(lang: str):
         try:
             import spacy
         except ImportError as exc:
-            raise SmartHeadingNLPError(
-                f"spaCy is not installed. {_INSTALL_HINT}"
-            ) from exc
+            raise SmartHeadingNLPError("spaCy is not installed.") from exc
         model_name = _MODELS[lang]
         try:
             pipeline = spacy.load(model_name)
         except OSError as exc:
             raise SmartHeadingNLPError(
-                f"spaCy model {model_name!r} is not installed. {_INSTALL_HINT}"
+                f"spaCy model {model_name!r} is not installed."
             ) from exc
         _pipelines[lang] = pipeline
         return pipeline
