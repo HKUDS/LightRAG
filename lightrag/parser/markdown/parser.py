@@ -200,20 +200,26 @@ def check_svg_rasterizer() -> str | None:
     time a user uploads a file with an embedded SVG. Rendering a trivial probe
     SVG here surfaces the same gap once, at startup, instead.
 
-    Returns ``None`` when rasterization works, otherwise a human-readable
+    Returns ``None`` when rasterization works, otherwise a short human-readable
     diagnostic for the caller to surface (e.g. in the startup splash screen).
-    Never raises — :func:`_rasterize_svg` already degrades gracefully per image.
+    The underlying exception is logged at debug level only — cairocffi's
+    library-not-found error repeats the lookup across every platform's naming
+    convention (``.so``, ``.dylib``, ``.dll``) and is too noisy for a one-line
+    warning. Never raises — :func:`_rasterize_svg` already degrades gracefully
+    per image.
     """
     try:
         import cairosvg
     except Exception as exc:  # noqa: BLE001 - optional native dep
-        return f"cairosvg unavailable, SVG images will be skipped: {exc}"
+        logger.debug("[native_md] cairosvg import failed: %s", exc)
+        return "cairosvg is not installed; SVG images will be skipped."
     try:
         cairosvg.svg2png(bytestring=_SVG_RASTERIZER_PROBE)
     except Exception as exc:  # noqa: BLE001 - missing libcairo or similar
+        logger.debug("[native_md] cairosvg rasterization probe failed: %s", exc)
         return (
-            "cairosvg is installed but SVG rasterization failed, likely because "
-            f"the native libcairo library is missing: {exc}"
+            "cairosvg is installed but the native libcairo library was not "
+            "found; SVG images will be skipped."
         )
     return None
 

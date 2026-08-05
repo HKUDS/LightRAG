@@ -887,6 +887,9 @@ def _warn_about_svg_rasterizer() -> None:
         return
     ASCIIColors.yellow("\n⚠️  SVG Rasterization Warning:")
     ASCIIColors.white(f"""    {error}
-    Install the native libcairo library to fix this: libcairo2 on Debian/Ubuntu,
-    cairo on RHEL/Fedora/Homebrew, or the GTK3 runtime on Windows.
+    Install the native libcairo library to fix this:
+      Debian/Ubuntu : sudo apt-get install -y libcairo2
+      RHEL/Fedora   : sudo dnf install -y cairo
+      macOS         : brew install cairo
+      Windows       : install the GTK3 runtime (bundles libcairo-2.dll)
     """)
