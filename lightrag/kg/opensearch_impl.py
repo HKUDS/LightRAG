@@ -3817,15 +3817,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         if not self._indices_ready:
             return None
         try:
-            # Existence is decided by the node index, before the edge scan.
-            # Inferring it from the edges instead would be wrong HERE
-            # specifically: upsert_edge / upsert_edges_batch materialize only the
-            # SOURCE endpoint as a placeholder node, so a target-only endpoint
-            # can carry edges with no node document at all. Reading that as "the
-            # node exists" would make this method contradict has_node() on the
-            # same id — and delete_entity 404s on has_node(), so the two must not
-            # disagree. exists() is a real-time id lookup (no refresh needed), and
-            # it also means an absent node skips the PIT scan entirely.
+            # Existence is decided by the node index, before the edge scan —
+            # never inferred from the edges. upsert_edge / upsert_edges_batch now
+            # materialize both endpoints, so a dangling target should not arise
+            # from new writes, but documents written before that change still can
+            # carry one, and a read contract must not rest on a write-path
+            # invariant anyway. Inferring existence from the edge scan would make
+            # this method contradict has_node() on the same id, and delete_entity
+            # 404s on has_node(). exists() is a real-time id lookup (no refresh
+            # needed), and checking first skips the PIT scan for an absent node.
             if not await self.has_node(source_node_id):
                 return None
 
@@ -4064,9 +4064,20 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         """
         try:
             await self._ensure_indices_ready()
-            # Ensure source node exists (don't overwrite if it already has data)
-            if not await self.has_node(source_node_id):
-                await self.upsert_node(source_node_id, {})
+            # Materialize BOTH endpoints, not just the source. A target-only
+            # endpoint would otherwise carry edges with no node document, and
+            # that dangling state is externally visible: has_node() says absent
+            # while the edge scan says connected, get_popular_labels ranks an id
+            # get_node returns nothing for, and delete_entity 404s on an entity
+            # whose edges are right there. NetworkXStorage.add_edge and
+            # PGOpsGraphStorage both create both ends; this makes the document
+            # backends agree. One mget for the pair, and existing nodes are left
+            # untouched so real properties are never overwritten by a placeholder.
+            endpoints = list(dict.fromkeys((source_node_id, target_node_id)))
+            existing_endpoints = await self.has_nodes_batch(endpoints)
+            for node_id in endpoints:
+                if node_id not in existing_endpoints:
+                    await self.upsert_node(node_id, {})
 
             doc = {k: v for k, v in edge_data.items() if k != "_id"}
             doc["source_node_id"] = source_node_id
@@ -4169,14 +4180,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         try:
             await self._ensure_indices_ready()
 
-            # Ensure all source nodes exist (mirrors upsert_edge behaviour)
-            source_ids = list({src for src, _tgt, _data in edges})
-            existing_sources = await self.has_nodes_batch(source_ids)
-            missing_sources = [
-                (nid, {}) for nid in source_ids if nid not in existing_sources
+            # Both endpoints, not just the source — see upsert_edge for why a
+            # target-only endpoint is externally visible as an inconsistency.
+            endpoint_ids = list(
+                dict.fromkeys(
+                    node_id for src, tgt, _data in edges for node_id in (src, tgt)
+                )
+            )
+            existing_endpoints = await self.has_nodes_batch(endpoint_ids)
+            missing_endpoints = [
+                (nid, {}) for nid in endpoint_ids if nid not in existing_endpoints
             ]
-            if missing_sources:
-                await self.upsert_nodes_batch(missing_sources)
+            if missing_endpoints:
+                await self.upsert_nodes_batch(missing_endpoints)
 
             # Key every edge by its canonical id and dedupe within the batch
             # (last-write-wins) so a single bulk request carries one action per

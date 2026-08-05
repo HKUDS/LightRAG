@@ -2295,8 +2295,16 @@ class TestGraphStorage:
             s = self._make(global_config, embed_func)
             await s.initialize()
             await s.upsert_edge("A", "B", {"weight": "1.0", "description": "knows"})
-            # Should call index twice: once for ensuring source node, once for edge
-            assert mock_client.index.await_count == 2
+            # Three index calls: a placeholder for BOTH endpoints (neither
+            # exists here), then the edge. Materializing only the source would
+            # leave B with edges but no node document.
+            assert mock_client.index.await_count == 3
+            placeholder_ids = [
+                c.kwargs["id"]
+                for c in mock_client.index.await_args_list
+                if c.kwargs["index"] == s._nodes_index
+            ]
+            assert placeholder_ids == ["A", "B"]
 
     @pytest.mark.asyncio
     async def test_upsert_edge_uses_canonical_id_without_reverse_lookup(
@@ -2380,6 +2388,16 @@ class TestGraphStorage:
             assert index_actions[0]["_id"] == _canonical_edge_id("A", "B")
             # last-write-wins within the batch
             assert index_actions[0]["_source"]["weight"] == "2.0"
+
+            # BOTH endpoints get a placeholder node, not just the sources: a
+            # target-only endpoint would carry edges with no node document.
+            node_ids = sorted(
+                a["_id"]
+                for call in bulk_calls
+                for a in call
+                if a["_index"] == s._nodes_index
+            )
+            assert node_ids == ["A", "B"]
 
     @pytest.mark.asyncio
     async def test_migrate_edges_to_canonical_id_reindexes_legacy_docs(
@@ -3014,7 +3032,8 @@ class TestGraphStorage:
                 await s.drop()
                 await s.upsert_edge("A", "B", {"weight": "1.0"})
                 mock_create.assert_awaited_once()
-                assert mock_client.index.await_count == 2
+                # Placeholder for both endpoints, then the edge.
+                assert mock_client.index.await_count == 3
 
     @pytest.mark.asyncio
     async def test_reads_short_circuit_after_drop(
@@ -5498,11 +5517,12 @@ class TestGraphReadContract:
     ):
         """Having edges does NOT prove the node exists in this backend.
 
-        upsert_edge / upsert_edges_batch materialize only the SOURCE endpoint as
-        a placeholder node, so an id that appears only as a target can carry
-        edge documents with no node document. Inferring existence from the edge
-        scan would make this method answer "exists, here are its edges" for an
-        id that has_node() reports absent — and delete_entity 404s on has_node().
+        Writes now materialize both endpoints, but documents indexed before that
+        change can still hold an id that appears only as an edge target with no
+        node document. Inferring existence from the edge scan would make this
+        method answer "exists, here are its edges" for an id that has_node()
+        reports absent — and delete_entity 404s on has_node(). The read must not
+        depend on a write-path invariant that older data does not satisfy.
         """
         mock_client.search = AsyncMock(
             return_value={

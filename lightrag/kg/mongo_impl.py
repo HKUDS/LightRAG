@@ -2178,14 +2178,15 @@ class MongoGraphStorage(BaseGraphStorage):
         collapsing the two here is what makes the information unrecoverable for
         a caller that needs it. A backend error is neither value: it propagates.
         """
-        # Existence is decided by the node collection, before the edge scan.
-        # Inferring it from the edges instead would be wrong HERE specifically:
-        # upsert_edge / upsert_edges_batch materialize only the SOURCE endpoint
-        # as a placeholder node, so a target-only endpoint can carry edges with
-        # no node document at all. Reading that as "the node exists" would make
-        # this method contradict has_node() on the same id — and delete_entity
-        # 404s on has_node(), so the two must not disagree. It also means an
-        # absent node costs one indexed point lookup instead of a full edge scan.
+        # Existence is decided by the node collection, before the edge scan —
+        # never inferred from the edges. upsert_edge / upsert_edges_batch now
+        # materialize both endpoints, so a dangling target should not arise from
+        # new writes, but rows written before that change still can carry one,
+        # and a read contract must not rest on a write-path invariant anyway.
+        # Inferring existence from the edge scan would make this method
+        # contradict has_node() on the same id, and delete_entity 404s on
+        # has_node(). Checking first also means an absent node costs one indexed
+        # point lookup instead of a full edge scan.
         if not await self.has_node(source_node_id):
             return None
 
@@ -2313,8 +2314,24 @@ class MongoGraphStorage(BaseGraphStorage):
         writers race the first insert, the loser hits a ``DuplicateKeyError``; we
         retry once, which now matches the just-inserted doc and updates it.
         """
-        # Ensure source node exists
-        await self.upsert_node(source_node_id, {})
+        # Materialize BOTH endpoints, not just the source. A target-only
+        # endpoint would otherwise carry edges with no node document, and that
+        # dangling state is externally visible: has_node() says absent while the
+        # edge scan says connected, get_popular_labels ranks an id get_node
+        # returns nothing for, and delete_entity 404s on an entity whose edges
+        # are right there. NetworkXStorage.add_edge and PGOpsGraphStorage both
+        # create both ends; this makes the document backends agree.
+        #
+        # One bulk_write instead of two round trips, and $setOnInsert (the form
+        # upsert_edges_batch already uses) so an endpoint that already carries
+        # real properties is never touched. dict.fromkeys collapses a self-loop.
+        await self.collection.bulk_write(
+            [
+                UpdateOne({"_id": nid}, {"$setOnInsert": {"_id": nid}}, upsert=True)
+                for nid in dict.fromkeys((source_node_id, target_node_id))
+            ],
+            ordered=False,
+        )
 
         edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
 
@@ -2392,9 +2409,9 @@ class MongoGraphStorage(BaseGraphStorage):
     ) -> None:
         """Batch insert/update multiple edges using a single bulk_write() call.
 
-        Also ensures source nodes exist (matching upsert_edge() behaviour) via a
-        separate bulk_write on the node collection for any source nodes that need
-        to be created as empty placeholders.
+        Also ensures BOTH endpoints of every edge exist (matching upsert_edge()
+        behaviour) via a separate bulk_write on the node collection for any
+        endpoint that needs to be created as an empty placeholder.
 
         Args:
             edges: List of (source_node_id, target_node_id, edge_data) tuples.
@@ -2402,15 +2419,20 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
-        # Ensure all source nodes exist (mirrors upsert_edge's upsert_node call)
-        source_node_ids = list(dict.fromkeys(src for src, _tgt, _data in edges))
+        # Both endpoints, not just the source — see upsert_edge for why a
+        # target-only endpoint is externally visible as an inconsistency.
+        endpoint_ids = list(
+            dict.fromkeys(
+                node_id for src, tgt, _data in edges for node_id in (src, tgt)
+            )
+        )
         node_ops: list[tuple[Any, int, str]] = [
             (
-                UpdateOne({"_id": src}, {"$setOnInsert": {"_id": src}}, upsert=True),
-                _estimate_doc_bytes({"_id": src}),
-                src,
+                UpdateOne({"_id": nid}, {"$setOnInsert": {"_id": nid}}, upsert=True),
+                _estimate_doc_bytes({"_id": nid}),
+                nid,
             )
-            for src in source_node_ids
+            for nid in endpoint_ids
         ]
         await _run_batched_bulk_write(
             self.collection,
@@ -2419,7 +2441,7 @@ class MongoGraphStorage(BaseGraphStorage):
             max_records_per_batch=self._max_upsert_records_per_batch,
             ordered=False,
             log_prefix=f"[{self.workspace}] {self.namespace} edges:",
-            what="source-node placeholder upsert",
+            what="edge endpoint placeholder upsert",
         )
 
         # Key every edge by its canonical (edge_lo, edge_hi) pair and dedupe

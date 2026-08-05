@@ -40,8 +40,9 @@ class _AsyncCursor:
 
 def _make_node_find_side_effect(real_ids: set):
     """Mock ``collection.find({"_id": {"$in": ids}})``, dropping ids that have
-    no node document -- mirrors a dangling edge endpoint (upsert_edge only
-    guarantees the source node exists, never the target)."""
+    no node document -- mirrors a dangling edge endpoint. Writes now materialize
+    both endpoints, so new data cannot produce one, but rows written before that
+    change still can and the traversal must keep tolerating them."""
 
     def _find(query, projection=None):
         ids = query["_id"]["$in"]
@@ -376,7 +377,8 @@ class TestMongoEdgeKey:
         s._edge_collection_name = "test_edges"
         s._max_upsert_payload_bytes = 16 * 1024 * 1024
         s._max_upsert_records_per_batch = 128
-        s.collection = SimpleNamespace(update_one=AsyncMock())
+        # upsert_edge materializes both endpoints through one bulk_write.
+        s.collection = SimpleNamespace(update_one=AsyncMock(), bulk_write=AsyncMock())
         s.edge_collection = SimpleNamespace()
         return s
 
@@ -409,6 +411,37 @@ class TestMongoEdgeKey:
         assert update["$set"]["target_node_id"] == "A"
         assert update["$set"]["source_ids"] == ["c1", "c2"]
         assert kwargs.get("upsert") is True
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_materializes_both_endpoints(self):
+        """Both endpoints get a placeholder node, not just the source.
+
+        A target-only endpoint would leave an edge whose target has no node
+        document — externally visible as has_node() and get_node_edges()
+        disagreeing, and as get_popular_labels ranking an id get_node returns
+        nothing for. $setOnInsert so an endpoint that already carries real
+        properties is never overwritten by the placeholder.
+        """
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock()
+        await s.upsert_edge("B", "A", {"weight": 1.0})
+
+        (node_ops,), kwargs = s.collection.bulk_write.call_args
+        assert [op._filter["_id"] for op in node_ops] == ["B", "A"]
+        assert all(
+            op._doc == {"$setOnInsert": {"_id": op._filter["_id"]}} for op in node_ops
+        )
+        assert all(op._upsert for op in node_ops)
+        assert kwargs.get("ordered") is False
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_self_loop_materializes_one_endpoint(self):
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock()
+        await s.upsert_edge("Loop", "Loop", {"weight": 1.0})
+
+        (node_ops,), _kwargs = s.collection.bulk_write.call_args
+        assert [op._filter["_id"] for op in node_ops] == ["Loop"]
 
     @pytest.mark.asyncio
     async def test_upsert_edge_retries_once_on_duplicate_key(self):
@@ -445,7 +478,13 @@ class TestMongoEdgeKey:
                 [("A", "B", {"weight": 1.0}), ("B", "A", {"weight": 2.0})]
             )
 
-        # Last call is the edge bulk (first is the node-placeholder bulk).
+        # First call is the endpoint-placeholder bulk: BOTH endpoints of every
+        # edge, deduped — not just the sources.
+        node_collection, node_ops = calls[0]
+        assert node_collection is s.collection
+        assert [op._filter["_id"] for op, _bytes, _logid in node_ops] == ["A", "B"]
+
+        # Last call is the edge bulk.
         edge_collection, edge_ops = calls[-1]
         assert edge_collection is s.edge_collection
         assert len(edge_ops) == 1  # reciprocal pair collapsed to one op
@@ -1094,11 +1133,12 @@ class TestMongoGraphReadContract:
     async def test_get_node_edges_returns_none_for_a_dangling_target_endpoint(self):
         """Having edges does NOT prove the node exists in this backend.
 
-        upsert_edge / upsert_edges_batch materialize only the SOURCE endpoint as
-        a placeholder node, so an id that appears only as a target can carry
-        edges with no node document. Inferring existence from the edge scan
-        would make this method answer "exists, here are its edges" for an id
-        that has_node() reports absent — and delete_entity 404s on has_node().
+        Writes now materialize both endpoints, but rows written before that
+        change can still hold an id that appears only as an edge target with no
+        node document. Inferring existence from the edge scan would make this
+        method answer "exists, here are its edges" for an id that has_node()
+        reports absent — and delete_entity 404s on has_node(). The read must not
+        depend on a write-path invariant that older data does not satisfy.
         """
         s = self._make_storage()
         self._stub_edges(s, [{"source_node_id": "Alpha", "target_node_id": "Target"}])
