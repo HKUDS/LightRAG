@@ -10,7 +10,7 @@ import math
 
 import pytest
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
 pytest.importorskip(
@@ -5898,3 +5898,136 @@ class TestPopularLabelsDanglingEndpoints:
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_popular_labels(limit=2) == ["Real", "Orphan"]
+
+
+class TestPopularLabelsBucketBudget:
+    """Filtering non-entities out of the ranking must not cost real ones.
+
+    The terms aggregation returns only the top N endpoint ids per field. That
+    budget exists as headroom, and confirming ids against the node index spends
+    it: with enough dangling endpoint-only ids, a whole round can be filtered
+    away while lower-degree CONNECTED entities sit just outside the budget,
+    unseen. Falling back to the degree-0 backfill there would rank isolated
+    entities ahead of connected ones.
+    """
+
+    def _make(self, global_config, embed_func, workspace="test"):
+        return OpenSearchGraphStorage(
+            namespace="chunk_entity_relation",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    @staticmethod
+    def _agg_response(src_buckets, *, other=0):
+        return {
+            "hits": {"hits": [], "total": {"value": 0}},
+            "aggregations": {
+                "src": {"buckets": src_buckets, "sum_other_doc_count": other},
+                "tgt": {"buckets": [], "sum_other_doc_count": 0},
+                "status_counts": {"buckets": []},
+            },
+        }
+
+    @staticmethod
+    def _search_router(agg_responses, node_page_ids):
+        """Route agg searches to `agg_responses` in order, node scans to a page."""
+        agg_bodies = []
+
+        async def _search(index=None, body=None, **kwargs):
+            if "aggs" in body:
+                agg_bodies.append(body)
+                return agg_responses[len(agg_bodies) - 1]
+            return {
+                "hits": {
+                    "hits": [{"_id": i, "sort": [i]} for i in node_page_ids],
+                    "total": {"value": len(node_page_ids)},
+                }
+            }
+
+        return _search, agg_bodies
+
+    @pytest.mark.asyncio
+    async def test_budget_grows_when_filtering_empties_the_round(
+        self, global_config, embed_func, mock_client
+    ):
+        """A connected entity beyond the first budget must outrank an isolated one.
+
+        Round 1 sees only the dangling `Ghost` and reports itself truncated, so
+        filtering leaves nothing. Retrying with a larger budget surfaces the
+        real connected entity `Real`, which belongs ahead of the degree-0
+        `Orphan` that would otherwise have taken its slot.
+        """
+        search, agg_bodies = self._search_router(
+            [
+                self._agg_response([{"key": "Ghost", "doc_count": 9}], other=5),
+                self._agg_response(
+                    [{"key": "Ghost", "doc_count": 9}, {"key": "Real", "doc_count": 2}]
+                ),
+            ],
+            node_page_ids=["Orphan"],
+        )
+        mock_client.search = AsyncMock(side_effect=search)
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"Real"}))
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=2)
+
+        assert labels == ["Real", "Orphan"]
+        # Two aggregation rounds, the second with a bigger bucket budget.
+        assert len(agg_bodies) == 2
+        sizes = [b["aggs"]["src"]["terms"]["size"] for b in agg_bodies]
+        assert sizes == [4, 16], f"budget should grow between rounds, got {sizes}"
+
+    @pytest.mark.asyncio
+    async def test_no_extra_round_when_the_aggregation_is_complete(
+        self, global_config, embed_func, mock_client
+    ):
+        """A short-but-complete aggregation means there is nothing more to find:
+        the backfill is the correct source for the remaining slots."""
+        search, agg_bodies = self._search_router(
+            [self._agg_response([{"key": "Real", "doc_count": 2}])],
+            node_page_ids=["Orphan"],
+        )
+        mock_client.search = AsyncMock(side_effect=search)
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"Real"}))
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=2)
+
+        assert labels == ["Real", "Orphan"]
+        assert len(agg_bodies) == 1
+
+    @pytest.mark.asyncio
+    async def test_escalation_is_bounded_and_reported(
+        self, global_config, embed_func, mock_client
+    ):
+        """The retry cannot loop forever on an endlessly truncated aggregation,
+        and the residual gap is logged rather than passed off as a clean
+        ranking."""
+        search, agg_bodies = self._search_router(
+            [self._agg_response([{"key": "Ghost", "doc_count": 9}], other=99)] * 10,
+            node_page_ids=["Orphan"],
+        )
+        mock_client.search = AsyncMock(side_effect=search)
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with patch.object(
+                lightrag.kg.opensearch_impl, "logger", MagicMock()
+            ) as mock_logger:
+                labels = await s.get_popular_labels(limit=2)
+
+        assert len(agg_bodies) == 3  # _POPULAR_LABEL_AGG_ROUNDS
+        assert labels == ["Orphan"]
+        assert mock_logger.warning.called, (
+            "a ranking still truncated after the last round must not be reported "
+            "as if it were complete"
+        )

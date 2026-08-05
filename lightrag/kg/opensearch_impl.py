@@ -224,6 +224,16 @@ DEFAULT_OPENSEARCH_DELETE_MAX_RECORDS_PER_BATCH = 1000
 # large finite value in place of Mongo's float("inf").
 _OPENSEARCH_UNBOUNDED_PAYLOAD_BYTES = 1 << 62
 
+# Popular-label degree ranking runs a terms aggregation over edge endpoints,
+# which returns only the top N ids per field. Endpoint ids that are not
+# entities get filtered out afterwards, and that filtering eats into the
+# headroom the budget was there to provide -- so when the confirmed set falls
+# short, the budget grows and the aggregation runs again. Bounded, because this
+# serves an interactive endpoint: a few rounds, and a ceiling well under
+# OpenSearch's default `search.max_buckets`.
+_POPULAR_LABEL_AGG_ROUNDS = 3
+_POPULAR_LABEL_MAX_BUCKET_SIZE = 10_000
+
 
 def _resolve_bulk_batch_limits() -> tuple[int, int, int]:
     """Resolve flush-time bulk batching limits from env, with module defaults.
@@ -5155,6 +5165,50 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 pass
         return isolated
 
+    async def _rank_connected_labels(
+        self, bucket_size: int
+    ) -> tuple[list[str], dict[str, int], bool]:
+        """One degree-aggregation round over the edge index.
+
+        Returns ``(confirmed_labels, degree_map, truncated)``:
+
+        * ``confirmed_labels`` — endpoint ids that the NODE index confirms are
+          entities, ranked by degree descending then label ascending. The
+          aggregation is keyed on edge endpoints, which is not the same set:
+          edges written before both endpoints were materialized can still name a
+          target with no node document, and ranking one would put a label in the
+          picker that ``get_node``/``has_node`` report absent. Confirmation runs
+          before any truncation, so a non-entity cannot consume a slot.
+        * ``degree_map`` — every endpoint id seen this round, confirmed or not;
+          the isolated-node backfill uses it to know which ids already have edges.
+        * ``truncated`` — the aggregation hit its bucket budget, so lower-degree
+          endpoints exist that this round did not see.
+        """
+        body = {
+            "size": 0,
+            "aggs": {
+                "src": {"terms": {"field": "source_node_id", "size": bucket_size}},
+                "tgt": {"terms": {"field": "target_node_id", "size": bucket_size}},
+            },
+        }
+        response = await self.client.search(index=self._edges_index, body=body)
+        degree_map: dict[str, int] = {}
+        truncated = False
+        for agg_name in ("src", "tgt"):
+            agg = response["aggregations"][agg_name]
+            # Absent on a complete aggregation (and on hand-built test doubles),
+            # so default to "not truncated" rather than assuming the worst.
+            truncated = truncated or agg.get("sum_other_doc_count", 0) > 0
+            for bucket in agg["buckets"]:
+                degree_map[bucket["key"]] = (
+                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+                )
+        # Ties break on the label, ascending — the ordering the SQL and Cypher
+        # backends use, rather than aggregation bucket order.
+        ranked = sorted(degree_map, key=lambda label: (-degree_map[label], label))
+        existing = await self.has_nodes_batch(ranked)
+        return [label for label in ranked if label in existing], degree_map, truncated
+
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
         """Get node labels ranked by edge degree (most connected first).
 
@@ -5163,53 +5217,54 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         relations has no document at all, so ranking from the edge side alone
         silently excluded them. NetworkXStorage ranks the whole node set, and a
         graph whose entities carry no relations must not report an empty list.
+
+        Conversely an endpoint id that is not an entity never ranks, however
+        high its degree — see ``_rank_connected_labels``.
         """
         if not self._indices_ready or limit <= 0:
             return []
         try:
             await self._refresh_graph_indices_if_dirty(refresh_edges=True)
-            body = {
-                "size": 0,
-                "aggs": {
-                    "src": {"terms": {"field": "source_node_id", "size": limit * 2}},
-                    "tgt": {"terms": {"field": "target_node_id", "size": limit * 2}},
-                },
-            }
-            response = await self.client.search(index=self._edges_index, body=body)
-            degree_map = {}
-            for bucket in response["aggregations"]["src"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
+            # The terms aggregation returns only the top `bucket_size` endpoint
+            # ids per field, and the confirmation step below drops the ones that
+            # are not entities — which spends exactly the headroom that budget
+            # was there to provide. If that leaves the confirmed set short of
+            # `limit` while the aggregation reports it truncated, connected
+            # entities that simply fell outside the budget are still out there,
+            # and taking the shortfall from the degree-0 backfill instead would
+            # rank isolated nodes ahead of them. So grow the budget and ask
+            # again, bounded (see _POPULAR_LABEL_AGG_ROUNDS).
+            bucket_size = limit * 2
+            confirmed: list[str] = []
+            degree_map: dict[str, int] = {}
+            truncated = False
+            for _round in range(_POPULAR_LABEL_AGG_ROUNDS):
+                confirmed, degree_map, truncated = await self._rank_connected_labels(
+                    bucket_size
                 )
-            for bucket in response["aggregations"]["tgt"]["buckets"]:
-                degree_map[bucket["key"]] = (
-                    degree_map.get(bucket["key"], 0) + bucket["doc_count"]
-                )
-            # The aggregation is keyed on edge ENDPOINTS, which is not the same
-            # set as the entities: edges written before this release
-            # materialized only their source, so a target-only id can still
-            # have edge documents and no node document. Confirm the ranked ids
-            # against the node index — one mget over at most the aggregation's
-            # own bucket budget — before they can occupy a slot. Ranking an
-            # unconfirmed id would put a label in the picker that
-            # get_node()/has_node() report absent; the write-path fix
-            # materializes both endpoints from now on but does not backfill.
-            #
-            # Filtering happens BEFORE the limit is applied, so a dangling id
-            # does not silently consume a slot a real entity should have had.
-            connected = sorted(
-                degree_map, key=lambda label: (-degree_map[label], label)
-            )
-            existing_connected = await self.has_nodes_batch(connected)
-            # Ties break on the label, ascending — the ordering the SQL and
-            # Cypher backends use, rather than aggregation bucket order.
-            sorted_labels = [
-                label for label in connected if label in existing_connected
-            ][:limit]
+                if (
+                    len(confirmed) >= limit
+                    or not truncated
+                    or bucket_size >= _POPULAR_LABEL_MAX_BUCKET_SIZE
+                ):
+                    break
+                bucket_size = min(bucket_size * 4, _POPULAR_LABEL_MAX_BUCKET_SIZE)
+
+            sorted_labels = confirmed[:limit]
             if len(sorted_labels) >= limit:
                 # Every remaining slot would go to a degree-0 node anyway, and
                 # there are none left to fill: skip the node scan entirely.
                 return sorted_labels
+            if truncated:
+                # Never silently: the caller is about to see degree-0 entities in
+                # slots that connected ones beyond the budget may deserve.
+                logger.warning(
+                    f"[{self.workspace}] Popular labels: the degree aggregation "
+                    f"is still truncated at bucket size {bucket_size} with only "
+                    f"{len(confirmed)} confirmed connected entities for "
+                    f"limit={limit}; the tail may rank isolated entities ahead "
+                    f"of connected ones."
+                )
             sorted_labels.extend(
                 await self._collect_isolated_labels(
                     limit - len(sorted_labels), set(degree_map)
