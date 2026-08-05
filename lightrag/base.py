@@ -834,11 +834,21 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             List of labels sorted by degree (highest first)
 
-        Ranks the WHOLE node set. An isolated (degree-0) entity ranks last, but
-        it still ranks: implementations that derive degrees from their edge
-        store must not let a node absent from that store fall out of the result
-        (LEFT JOIN / union in a degree-0 baseline / backfill from the node
-        store). Ties break on the label, ascending.
+        Ranks the WHOLE node set, and NOTHING BUT the node set. Degrees are
+        derived from the edge store in most backends, and the two sets differ at
+        both ends:
+
+        * an isolated (degree-0) entity has no edge to be counted, yet it still
+          ranks — last, but present (LEFT JOIN / union in a degree-0 baseline /
+          backfill from the node store);
+        * an id that appears only as an edge endpoint is NOT an entity and must
+          not rank, however high its degree. Ranking one offers the caller a
+          label that :meth:`get_node` and :meth:`has_node` report absent.
+
+        Filter before applying ``limit``, so an id that is not an entity cannot
+        consume a slot a real one should have had. Ties break on the label,
+        ascending — with degree-0 entities included, a tie at the cutoff is the
+        common case, and it decides which labels the caller never sees.
 
         An empty list means the graph holds no entities. A backend error MUST
         raise instead — ``/graph/label/popular`` renders both, and the two are

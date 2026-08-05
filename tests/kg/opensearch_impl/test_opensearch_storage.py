@@ -3195,6 +3195,9 @@ class TestGraphStorage:
                 },
             }
         )
+        # Ranked endpoints are confirmed against the node index before they can
+        # occupy a slot (an edge endpoint is not proof of an entity).
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -5400,6 +5403,7 @@ class TestGraphReadContract:
                 self._node_page(["A", "B", "Orphan1", "Orphan2"]),
             ]
         )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -5432,6 +5436,7 @@ class TestGraphReadContract:
                 self._node_page(["A", "Orphan"]),
             ]
         )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A"}))
         with patch.object(
             lightrag.kg.opensearch_impl, "_shard_doc_supported", shard_doc_supported
         ):
@@ -5460,6 +5465,7 @@ class TestGraphReadContract:
                 [{"key": "A", "doc_count": 5}, {"key": "B", "doc_count": 2}], []
             )
         )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -5478,6 +5484,9 @@ class TestGraphReadContract:
             return_value=self._aggs(
                 [{"key": "Zeta", "doc_count": 1}, {"key": "Alpha", "doc_count": 1}], []
             )
+        )
+        mock_client.mget = AsyncMock(
+            side_effect=_node_mget_side_effect({"Zeta", "Alpha"})
         )
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
@@ -5784,3 +5793,108 @@ class TestGraphEndpointPlaceholderSafety:
             ):
                 with pytest.raises(RuntimeError, match="endpoint placeholder"):
                     await s.upsert_edges_batch([("A", "B", {"weight": "1.0"})])
+
+
+class TestPopularLabelsDanglingEndpoints:
+    """The ranking is over ENTITIES, not over edge endpoints.
+
+    The degree aggregation is keyed on source_node_id/target_node_id, which is
+    not the same set as the node index: edges written before both endpoints
+    were materialized can still name a target that has no node document. Such
+    an id must not reach /graph/label/popular — the picker would offer a label
+    that get_node()/has_node() report absent. The write-path fix materializes
+    both endpoints from now on, but it is not a backfill.
+    """
+
+    def _make(self, global_config, embed_func, workspace="test"):
+        return OpenSearchGraphStorage(
+            namespace="chunk_entity_relation",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    @staticmethod
+    def _aggs(src_buckets, tgt_buckets):
+        return {
+            "hits": {"hits": [], "total": {"value": 0}},
+            "aggregations": {
+                "src": {"buckets": src_buckets},
+                "tgt": {"buckets": tgt_buckets},
+                "status_counts": {"buckets": []},
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_dangling_endpoint_is_not_ranked(
+        self, global_config, embed_func, mock_client
+    ):
+        """`Ghost` has the highest degree but no node document."""
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [
+                    {"key": "Ghost", "doc_count": 9},
+                    {"key": "Real", "doc_count": 2},
+                ],
+                [],
+            )
+        )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"Real"}))
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_popular_labels(limit=10) == ["Real"]
+
+    @pytest.mark.asyncio
+    async def test_dangling_endpoint_does_not_consume_a_slot(
+        self, global_config, embed_func, mock_client
+    ):
+        """Filtering happens before the limit is applied.
+
+        With limit=1 and Ghost ranked first, filtering after truncation would
+        answer [] — hiding the real entity behind a row that is not one.
+        """
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [
+                    {"key": "Ghost", "doc_count": 9},
+                    {"key": "Real", "doc_count": 2},
+                ],
+                [],
+            )
+        )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"Real"}))
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_popular_labels(limit=1) == ["Real"]
+
+    @pytest.mark.asyncio
+    async def test_dropped_dangling_endpoint_frees_the_slot_for_an_isolated_node(
+        self, global_config, embed_func, mock_client
+    ):
+        """Once Ghost is dropped the connected set no longer fills the limit, so
+        the isolated-node backfill runs and a real degree-0 entity takes the
+        slot the dangling id was occupying."""
+        mock_client.search = AsyncMock(
+            side_effect=[
+                self._aggs(
+                    [
+                        {"key": "Ghost", "doc_count": 9},
+                        {"key": "Real", "doc_count": 2},
+                    ],
+                    [],
+                ),
+                {
+                    "hits": {
+                        "hits": [{"_id": "Orphan", "sort": ["Orphan"]}],
+                        "total": {"value": 1},
+                    }
+                },
+            ]
+        )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"Real"}))
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert await s.get_popular_labels(limit=2) == ["Real", "Orphan"]

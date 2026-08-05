@@ -5185,11 +5185,27 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 degree_map[bucket["key"]] = (
                     degree_map.get(bucket["key"], 0) + bucket["doc_count"]
                 )
+            # The aggregation is keyed on edge ENDPOINTS, which is not the same
+            # set as the entities: edges written before this release
+            # materialized only their source, so a target-only id can still
+            # have edge documents and no node document. Confirm the ranked ids
+            # against the node index — one mget over at most the aggregation's
+            # own bucket budget — before they can occupy a slot. Ranking an
+            # unconfirmed id would put a label in the picker that
+            # get_node()/has_node() report absent; the write-path fix
+            # materializes both endpoints from now on but does not backfill.
+            #
+            # Filtering happens BEFORE the limit is applied, so a dangling id
+            # does not silently consume a slot a real entity should have had.
+            connected = sorted(
+                degree_map, key=lambda label: (-degree_map[label], label)
+            )
+            existing_connected = await self.has_nodes_batch(connected)
             # Ties break on the label, ascending — the ordering the SQL and
             # Cypher backends use, rather than aggregation bucket order.
-            sorted_labels = sorted(
-                degree_map, key=lambda label: (-degree_map[label], label)
-            )[:limit]
+            sorted_labels = [
+                label for label in connected if label in existing_connected
+            ][:limit]
             if len(sorted_labels) >= limit:
                 # Every remaining slot would go to a degree-0 node anyway, and
                 # there are none left to fill: skip the node scan entirely.
