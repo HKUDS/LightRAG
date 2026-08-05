@@ -3195,9 +3195,6 @@ class TestGraphStorage:
                 },
             }
         )
-        # Ranked endpoints are confirmed against the node index before they can
-        # occupy a slot (an edge endpoint is not proof of an entity).
-        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()

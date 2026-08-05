@@ -488,9 +488,7 @@ async def test_upsert_edge_write_lost_error_is_not_retried(monkeypatch):
     # upsert_edge re-raise it unchanged instead of re-wrapping it...
     assert issubclass(PGGraphEdgeWriteLostError, PGGraphQueryException)
     # ... and the transient-error predicate does not classify it as retryable.
-    assert _is_transient_graph_write_error(
-        PGGraphEdgeWriteLostError("g", "A", "B")
-    ) is (False)
+    assert not _is_transient_graph_write_error(PGGraphEdgeWriteLostError("g", "A", "B"))
 
 
 @pytest.mark.asyncio
