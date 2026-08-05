@@ -3302,21 +3302,30 @@ def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path):
         assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_rejects_windows_reserved_path_characters(tmp_path):
+def test_sanitize_filename_rejects_colon(tmp_path):
     for filename in (
         "safe.pdf:payload.pdf",  # NTFS alternate-data-stream reference
         "C:report.pdf",  # drive-relative, not a literal basename
-        'bad"name.pdf',
-        "bad|name.pdf",
-        "bad?name.pdf",
-        "bad*name.pdf",
-        "bad<name.pdf",
-        "bad>name.pdf",
     ):
         with pytest.raises(_document_routes.HTTPException) as exc:
             _document_routes.sanitize_filename(filename, tmp_path)
 
         assert exc.value.status_code == 400
+
+
+def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path):
+    """Unlike ':', these don't let the name be reinterpreted as a different
+    path (no shell-out or unescaped glob() call site uses upload filenames in
+    this codebase), so they're accepted rather than pre-emptively rejected."""
+    for filename in (
+        'quoted"name.pdf',
+        "piped|name.pdf",
+        "glob?name.pdf",
+        "glob*name.pdf",
+        "less<than.pdf",
+        "greater>than.pdf",
+    ):
+        assert _document_routes.sanitize_filename(filename, tmp_path) == filename
 
 
 def test_sanitize_filename_allows_non_traversal_dot_sequences(tmp_path):
