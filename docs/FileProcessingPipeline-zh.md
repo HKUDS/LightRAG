@@ -336,7 +336,7 @@ native docx 会采集 Word 2013+ 写入的 `w14:paraId` 作为段落级溯源锚
     - 查找目录内 `.md` / `.markdown` 文件**必须恰好 1 个**：0 个或多于 1 个均报错。
     - 正文所在目录即资源解析的"包根"（`bundle_root`）。
   - 包内以相对路径（文件引用）内嵌的图片按相对包根目录解析，**允许放在包内任意子目录**（不限于 `assets/`），但禁止目录穿越（`..`、绝对路径、越出包根的引用会被记 warning 跳过）；解析出的字节须通过图片 magic bytes 校验，否则跳过。独立 `.md`（非 textpack）中的相对路径图片不解析（记 warning 跳过）。
-- SVG 图片（base64 / textpack 包内文件 / 在线下载）会先经 cairosvg 栅格化为 PNG 再写入 sidecar；cairosvg 不可用或渲染失败时跳过该图（记 warning）。
+- SVG 图片（base64 / textpack 包内文件 / 在线下载）会先经 cairosvg 栅格化为 PNG 再写入 sidecar；cairosvg 不可用或渲染失败时跳过该图（记 warning）。**系统依赖**：`cairosvg` 是对 cairo 的 cffi 绑定——`pip install cairosvg`（随 `api` extra 安装）总能成功，但只有宿主机同时装了原生的 `libcairo` 共享库，栅格化才真正能跑（Debian/Ubuntu 用 `apt-get install libcairo2`，RHEL/Fedora 用 `dnf install cairo`，macOS 用 `brew install cairo`，Windows 需安装内含 `libcairo-2.dll` 的 GTK3 运行时）——`pip`/`uv` 装不了系统库，所以除官方 Docker 镜像外这一步永远不会自动完成。服务器会在启动时探测栅格化能力，缺失时记一条 warning，避免这个缺口一直藏到某篇文档处理时才被发现。
 - 外部 URL 图片（`![](http://...)`）**默认下载并内嵌**（`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` 默认 `true`）；无论下载成功与否都会生成 drawing（成功内嵌资源，失败回退为外链）。下载默认仅允许可全球路由的公网 IP（DNS 解析结果与每一跳重定向目标都校验，且 socket 直连已校验 IP 以防 DNS rebinding，忽略环境 `HTTP(S)_PROXY`），私网 / 环回 / 链路本地 / 保留 / CGNAT（`100.64.0.0/10`）等一律拒绝；如需放行特定内网段，用 `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS` 配置 CIDR 白名单。若设为 `false`，外链图片整个丢弃（不生成对应 drawing，故仅含外链图片的文档不会生成 `drawings.json`）。
 
 #### 环境变量

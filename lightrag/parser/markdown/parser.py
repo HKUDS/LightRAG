@@ -184,6 +184,40 @@ def _rasterize_svg(raw: bytes, *, max_pixels: int) -> bytes | None:
         return None
 
 
+_SVG_RASTERIZER_PROBE = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+)
+
+
+def check_svg_rasterizer() -> str | None:
+    """Startup probe for the cairosvg SVG->PNG rasterization path (advisory only).
+
+    ``cairosvg`` is a cffi binding: ``pip install cairosvg`` always succeeds,
+    but rendering only works if the native ``libcairo`` shared library is
+    *also* present on the host — pip/uv cannot install system libraries, so a
+    missing ``libcairo2`` (Debian/Ubuntu) / ``cairo`` (RHEL/Fedora/Homebrew)
+    package would otherwise only surface as a per-document warning the first
+    time a user uploads a file with an embedded SVG. Rendering a trivial probe
+    SVG here surfaces the same gap once, at startup, instead.
+
+    Returns ``None`` when rasterization works, otherwise a human-readable
+    diagnostic for the caller to surface (e.g. in the startup splash screen).
+    Never raises — :func:`_rasterize_svg` already degrades gracefully per image.
+    """
+    try:
+        import cairosvg
+    except Exception as exc:  # noqa: BLE001 - optional native dep
+        return f"cairosvg unavailable, SVG images will be skipped: {exc}"
+    try:
+        cairosvg.svg2png(bytestring=_SVG_RASTERIZER_PROBE)
+    except Exception as exc:  # noqa: BLE001 - missing libcairo or similar
+        return (
+            "cairosvg is installed but SVG rasterization failed, likely because "
+            f"the native libcairo library is missing: {exc}"
+        )
+    return None
+
+
 def _image_bytes_and_ext(
     raw: bytes, *, max_bytes: int, max_svg_pixels: int
 ) -> tuple[bytes, str] | None:

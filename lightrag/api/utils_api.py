@@ -823,6 +823,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     """)
 
     _warn_about_body_limits(args)
+    _warn_about_svg_rasterizer()
 
     # Ensure splash output flush to system log
     sys.stdout.flush()
@@ -866,4 +867,26 @@ def _warn_about_body_limits(args) -> None:
         ASCIIColors.white("""    MAX_UPLOAD_SIZE is unset or unlimited, so /documents/upload has no raw
     request-body ceiling to derive and accepts a body of any size. Set
     MAX_UPLOAD_SIZE to the largest file you intend to accept.
+    """)
+
+
+def _warn_about_svg_rasterizer() -> None:
+    """Flag a missing/broken cairosvg->libcairo rasterization path.
+
+    ``cairosvg`` is a cffi binding: ``pip install cairosvg`` always succeeds,
+    but rendering only works if the native ``libcairo`` shared library is also
+    present on the host, which pip/uv cannot install. Without it, SVG images in
+    markdown/textpack documents are silently skipped (the rest of the document
+    is unaffected) — surfacing the gap here, once, is cheaper for an operator
+    to notice than a per-document warning buried in later processing logs.
+    """
+    from lightrag.parser.markdown.parser import check_svg_rasterizer
+
+    error = check_svg_rasterizer()
+    if error is None:
+        return
+    ASCIIColors.yellow("\n⚠️  SVG Rasterization Warning:")
+    ASCIIColors.white(f"""    {error}
+    Install the native libcairo library to fix this: libcairo2 on Debian/Ubuntu,
+    cairo on RHEL/Fedora/Homebrew, or the GTK3 runtime on Windows.
     """)
