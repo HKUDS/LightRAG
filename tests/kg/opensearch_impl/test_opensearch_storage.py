@@ -164,6 +164,29 @@ def embed_func():
     return MockEmbeddingFunc()
 
 
+def _node_mget_side_effect(existing: set[str]):
+    """Well-formed node ``mget``: echo every requested id, found iff in `existing`.
+
+    ``has_nodes_batch`` reads items through ``_interpret_mget_item``, which
+    raises on an id mismatch, an item-level error, or a short ``docs`` array —
+    an ambiguous item must never be reported as a confirmed miss, because the
+    edge writers turn "absent" into a placeholder node. A canned fixed-id
+    response therefore no longer stands in for a real one.
+    """
+
+    async def _mget(index=None, body=None, **kwargs):
+        return {
+            "docs": [
+                {"_id": node_id, "found": True, "_source": {"entity_id": node_id}}
+                if node_id in existing
+                else {"_id": node_id, "found": False}
+                for node_id in body["ids"]
+            ]
+        }
+
+    return _mget
+
+
 def _make_client():
     """Create a fully-mocked AsyncOpenSearch client with spec validation."""
     from opensearchpy import AsyncOpenSearch
@@ -2290,7 +2313,7 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_upsert_edge(self, global_config, embed_func, mock_client):
-        mock_client.exists = AsyncMock(return_value=False)
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -2311,7 +2334,8 @@ class TestGraphStorage:
         self, global_config, embed_func, mock_client
     ):
         """Reciprocal writes land on the same canonical _id, no exists(reverse)."""
-        mock_client.exists = AsyncMock(return_value=True)  # source node already exists
+        # Both endpoints already exist, so no placeholder writes.
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -2336,7 +2360,7 @@ class TestGraphStorage:
     ):
         """No per-write reverse-orientation cleanup — the fail-fast migration
         already guarantees the index is canonical before any write."""
-        mock_client.exists = AsyncMock(return_value=True)  # source exists
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -2356,6 +2380,7 @@ class TestGraphStorage:
     ):
         """Reciprocal edges in one batch collapse to a single canonical action,
         with no extra self-heal delete bulk."""
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
@@ -3021,7 +3046,7 @@ class TestGraphStorage:
     async def test_upsert_after_drop_recreates_indices(
         self, global_config, embed_func, mock_client
     ):
-        mock_client.exists = AsyncMock(return_value=False)
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             with patch.object(
@@ -3336,7 +3361,7 @@ class TestGraphStorage:
     async def test_drop_partial_error_marks_indices_not_ready_and_next_upsert_recreates_indices(
         self, global_config, embed_func, mock_client
     ):
-        mock_client.exists = AsyncMock(return_value=False)
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
         mock_client.indices.delete = AsyncMock(
             side_effect=[None, OpenSearchException("edges drop failed")]
         )
@@ -5548,3 +5573,214 @@ class TestGraphReadContract:
             assert await s.get_node_edges("Target") is None
             # The absent node also skips the PIT scan entirely.
             mock_client.create_pit.assert_not_awaited()
+
+
+class TestGraphEndpointPlaceholderSafety:
+    """A placeholder write for an edge endpoint must never destroy a real node.
+
+    Two independent guards, because either one alone leaves a hole:
+
+    1. ``has_nodes_batch`` must not report an ambiguous mget item as absent —
+       an item-level error or a short ``docs`` array is "unknown", and the edge
+       writers turn "absent" into a placeholder write.
+    2. The placeholder write itself is insert-only, so even a probe that raced
+       a concurrent writer cannot cost the node its properties.
+    """
+
+    def _make(self, global_config, embed_func, workspace="test"):
+        return OpenSearchGraphStorage(
+            namespace="chunk_entity_relation",
+            global_config=global_config,
+            embedding_func=embed_func,
+            workspace=workspace,
+        )
+
+    @pytest.mark.asyncio
+    async def test_has_nodes_batch_raises_on_item_level_error(
+        self, global_config, embed_func, mock_client
+    ):
+        """An mget item carrying an `error` is UNKNOWN, never "absent".
+
+        OpenSearch answers mget with HTTP 200 even when an individual item
+        failed (unavailable shard). Reading the missing `found` flag as absent
+        would make upsert_edge overwrite a live node with a bare placeholder.
+        """
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "A", "found": True, "_source": {"entity_id": "A"}},
+                    {"_id": "B", "error": {"type": "shard_unavailable"}},
+                ]
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with pytest.raises(RuntimeError, match="mget item error"):
+                await s.has_nodes_batch(["A", "B"])
+
+    @pytest.mark.asyncio
+    async def test_has_nodes_batch_raises_on_short_docs_array(
+        self, global_config, embed_func, mock_client
+    ):
+        """A response with fewer items than ids requested is malformed, not a
+        set of confirmed misses for the ids that fell off the end."""
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [{"_id": "A", "found": True, "_source": {"entity_id": "A"}}]
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with pytest.raises(RuntimeError, match="expected exactly 2"):
+                await s.has_nodes_batch(["A", "B"])
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_probe_never_reaches_the_placeholder_write(
+        self, global_config, embed_func, mock_client
+    ):
+        """End to end: upsert_edge fails loudly instead of placeholdering.
+
+        This is the actual data-loss path — an ambiguous probe result feeding a
+        placeholder write that would replace a node's description/source_ids.
+        """
+        mock_client.mget = AsyncMock(
+            return_value={
+                "docs": [
+                    {"_id": "A", "error": {"type": "shard_unavailable"}},
+                    {"_id": "B", "found": False},
+                ]
+            }
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with pytest.raises(RuntimeError, match="mget item error"):
+                await s.upsert_edge("A", "B", {"weight": "1.0"})
+            # Nothing was written: not the placeholder, not the edge.
+            assert mock_client.index.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_placeholder_write_is_insert_only(
+        self, global_config, embed_func, mock_client
+    ):
+        """op_type=create, not a plain index.
+
+        The index API REPLACES the document, so a placeholder written over an
+        endpoint that already carries a real description / entity_type /
+        source_ids would silently strip them. Insert-only makes the write safe
+        even when the probe raced a concurrent writer that created the node.
+        """
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert_edge("A", "B", {"weight": "1.0"})
+
+        node_writes = [
+            c
+            for c in mock_client.index.await_args_list
+            if c.kwargs["index"] == s._nodes_index
+        ]
+        assert [c.kwargs["id"] for c in node_writes] == ["A", "B"]
+        assert all(c.kwargs.get("op_type") == "create" for c in node_writes), (
+            "placeholder writes must be insert-only so they cannot replace a "
+            "node that already holds real properties"
+        )
+        # The edge itself is still a plain index (last-write-wins by design).
+        edge_writes = [
+            c
+            for c in mock_client.index.await_args_list
+            if c.kwargs["index"] == s._edges_index
+        ]
+        assert len(edge_writes) == 1
+        assert edge_writes[0].kwargs.get("op_type") is None
+
+    @pytest.mark.asyncio
+    async def test_placeholder_conflict_is_not_an_error(
+        self, global_config, embed_func, mock_client
+    ):
+        """A 409 means the endpoint was created between probe and write —
+        exactly the race insert-only exists to survive, so the edge write must
+        carry on rather than fail the document."""
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
+
+        async def _index(index=None, id=None, body=None, **kwargs):
+            if kwargs.get("op_type") == "create":
+                raise ConflictError(409, "version_conflict_engine_exception", {})
+            return {"result": "created"}
+
+        mock_client.index = AsyncMock(side_effect=_index)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert_edge("A", "B", {"weight": "1.0"})
+
+        # Both placeholders 409'd, and the edge was still written.
+        edge_writes = [
+            c
+            for c in mock_client.index.await_args_list
+            if c.kwargs["index"] == s._edges_index
+        ]
+        assert len(edge_writes) == 1
+
+    @pytest.mark.asyncio
+    async def test_batch_placeholders_are_insert_only_and_tolerate_conflicts(
+        self, global_config, embed_func, mock_client
+    ):
+        """The batch path uses the same insert-only semantics, and a per-item
+        409 is filtered out instead of failing the whole batch."""
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
+        bulk_calls = []
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            bulk_calls.append(acts)
+            node_acts = [a for a in acts if a["_index"].endswith("-nodes")]
+            if node_acts:
+                # One endpoint lost the race and 409s — must not abort.
+                return (
+                    len(acts) - 1,
+                    [{"create": {"_id": node_acts[0]["_id"], "status": 409}}],
+                )
+            return (len(acts), [])
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new=AsyncMock(side_effect=capture_bulk),
+            ):
+                await s.upsert_edges_batch([("A", "B", {"weight": "1.0"})])
+
+        node_acts = [
+            a for call in bulk_calls for a in call if a["_index"] == s._nodes_index
+        ]
+        assert sorted(a["_id"] for a in node_acts) == ["A", "B"]
+        assert all(a["_op_type"] == "create" for a in node_acts)
+
+    @pytest.mark.asyncio
+    async def test_batch_placeholder_non_conflict_error_fails_the_write(
+        self, global_config, embed_func, mock_client
+    ):
+        """A non-409 placeholder failure must not be swallowed: the edge would
+        otherwise land against an endpoint that was never created."""
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
+
+        async def capture_bulk(_client, actions, *args, **kwargs):
+            acts = list(actions)
+            if any(a["_index"].endswith("-nodes") for a in acts):
+                return (0, [{"create": {"_id": "A", "status": 503}}])
+            return (len(acts), [])
+
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with patch(
+                "lightrag.kg.opensearch_impl.helpers.async_bulk",
+                new=AsyncMock(side_effect=capture_bulk),
+            ):
+                with pytest.raises(RuntimeError, match="endpoint placeholder"):
+                    await s.upsert_edges_batch([("A", "B", {"weight": "1.0"})])
