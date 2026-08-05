@@ -5139,8 +5139,10 @@ def create_document_routes(
             upload_opener = upload_file_opener(doc_manager.input_dir)
             out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
 
+            opened = False
             try:
                 async with out_file_context as out_file:
+                    opened = True
                     while True:
                         # Read chunk from upload stream
                         chunk = await file.read(chunk_size)
@@ -5161,13 +5163,29 @@ def create_document_routes(
                         await out_file.write(chunk)
 
             except OSError as e:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Input directory already contains '{safe_filename}' or the "
-                        "upload path is unsafe. Remove it before re-uploading."
-                    ),
-                ) from e
+                if not opened:
+                    # Open-time failure: the O_EXCL/O_NOFOLLOW conflict this
+                    # opener exists to enforce. No file was created.
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Input directory already contains '{safe_filename}' or the "
+                            "upload path is unsafe. Remove it before re-uploading."
+                        ),
+                    ) from e
+                # Failure after the file was already created (e.g. ENOSPC/EIO
+                # during write or close) is a server-side fault, not a
+                # client-fixable conflict -- clean up the partial file so a
+                # retry isn't permanently blocked by the exclusive-create
+                # check, then let it propagate to the endpoint's
+                # internal_server_error(e) path.
+                try:
+                    file_path.unlink()
+                except OSError as cleanup_error:
+                    logger.error(
+                        f"Error cleaning up partially written file {safe_filename}: {cleanup_error}"
+                    )
+                raise
 
             # Cleanup after file is closed
             if needs_cleanup:

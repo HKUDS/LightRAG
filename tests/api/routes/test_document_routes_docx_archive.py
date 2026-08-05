@@ -1272,6 +1272,48 @@ async def test_upload_opener_construction_failure_returns_500_not_409(
     assert not (tmp_path / "safe.pdf").exists()
 
 
+async def test_upload_write_failure_cleans_up_partial_file_and_returns_500(
+    tmp_path, monkeypatch
+):
+    """An OSError raised after the exclusive-create opener already succeeded
+    (e.g. ENOSPC mid-stream) is a server-side fault, not the O_EXCL/O_NOFOLLOW
+    conflict the 409 branch exists for. It must delete the partial file (so a
+    retry isn't permanently blocked by the exact-file precheck) and surface as
+    a 500 that doesn't echo the raw OSError text."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    upload_file = _document_routes.UploadFile(
+        filename="safe.pdf", file=BytesIO(b"content")
+    )
+
+    call_count = 0
+
+    async def _read_then_fail(_size):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return b"partial content"
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(upload_file, "read", _read_then_fail)
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+
+    assert excinfo.value.status_code == 500
+    assert "No space left on device" not in str(excinfo.value.detail)
+    assert not (tmp_path / "safe.pdf").exists()
+
+
 async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     """A malformed filename hint fails the upload synchronously with the
     detailed hint error in the 400 body (it used to be accepted and only
