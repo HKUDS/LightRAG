@@ -40,8 +40,9 @@ class _AsyncCursor:
 
 def _make_node_find_side_effect(real_ids: set):
     """Mock ``collection.find({"_id": {"$in": ids}})``, dropping ids that have
-    no node document -- mirrors a dangling edge endpoint (upsert_edge only
-    guarantees the source node exists, never the target)."""
+    no node document -- mirrors a dangling edge endpoint. Writes now materialize
+    both endpoints, so new data cannot produce one, but rows written before that
+    change still can and the traversal must keep tolerating them."""
 
     def _find(query, projection=None):
         ids = query["_id"]["$in"]
@@ -376,7 +377,8 @@ class TestMongoEdgeKey:
         s._edge_collection_name = "test_edges"
         s._max_upsert_payload_bytes = 16 * 1024 * 1024
         s._max_upsert_records_per_batch = 128
-        s.collection = SimpleNamespace(update_one=AsyncMock())
+        # upsert_edge materializes both endpoints through one bulk_write.
+        s.collection = SimpleNamespace(update_one=AsyncMock(), bulk_write=AsyncMock())
         s.edge_collection = SimpleNamespace()
         return s
 
@@ -409,6 +411,37 @@ class TestMongoEdgeKey:
         assert update["$set"]["target_node_id"] == "A"
         assert update["$set"]["source_ids"] == ["c1", "c2"]
         assert kwargs.get("upsert") is True
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_materializes_both_endpoints(self):
+        """Both endpoints get a placeholder node, not just the source.
+
+        A target-only endpoint would leave an edge whose target has no node
+        document — externally visible as has_node() and get_node_edges()
+        disagreeing, and as get_popular_labels ranking an id get_node returns
+        nothing for. $setOnInsert so an endpoint that already carries real
+        properties is never overwritten by the placeholder.
+        """
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock()
+        await s.upsert_edge("B", "A", {"weight": 1.0})
+
+        (node_ops,), kwargs = s.collection.bulk_write.call_args
+        assert [op._filter["_id"] for op in node_ops] == ["B", "A"]
+        assert all(
+            op._doc == {"$setOnInsert": {"_id": op._filter["_id"]}} for op in node_ops
+        )
+        assert all(op._upsert for op in node_ops)
+        assert kwargs.get("ordered") is False
+
+    @pytest.mark.asyncio
+    async def test_upsert_edge_self_loop_materializes_one_endpoint(self):
+        s = self._make_storage()
+        s.edge_collection.update_one = AsyncMock()
+        await s.upsert_edge("Loop", "Loop", {"weight": 1.0})
+
+        (node_ops,), _kwargs = s.collection.bulk_write.call_args
+        assert [op._filter["_id"] for op in node_ops] == ["Loop"]
 
     @pytest.mark.asyncio
     async def test_upsert_edge_retries_once_on_duplicate_key(self):
@@ -445,7 +478,13 @@ class TestMongoEdgeKey:
                 [("A", "B", {"weight": 1.0}), ("B", "A", {"weight": 2.0})]
             )
 
-        # Last call is the edge bulk (first is the node-placeholder bulk).
+        # First call is the endpoint-placeholder bulk: BOTH endpoints of every
+        # edge, deduped — not just the sources.
+        node_collection, node_ops = calls[0]
+        assert node_collection is s.collection
+        assert [op._filter["_id"] for op, _bytes, _logid in node_ops] == ["A", "B"]
+
+        # Last call is the edge bulk.
         edge_collection, edge_ops = calls[-1]
         assert edge_collection is s.edge_collection
         assert len(edge_ops) == 1  # reciprocal pair collapsed to one op
@@ -962,3 +1001,240 @@ class TestMongoDocStatusLookup:
 
         with pytest.raises(PyMongoError):
             await storage.get_doc_by_content_hash("abc123")
+
+
+class TestMongoGraphReadContract:
+    """Read-path contracts MongoGraphStorage shares with the other backends.
+
+    Both cases used to answer with a value that means something else:
+    ``get_popular_labels`` ranked only nodes that appear in the edge collection,
+    so isolated entities were missing entirely, and ``get_node_edges`` returned
+    ``[]`` for an entity that does not exist -- indistinguishable from one that
+    exists with no relations.
+    """
+
+    def _make_storage(self):
+        s = MongoGraphStorage.__new__(MongoGraphStorage)
+        s.workspace = "test"
+        s.namespace = "chunk_entity_relation"
+        s._edge_collection_name = "test_edges"
+        s.collection = SimpleNamespace()
+        s.edge_collection = SimpleNamespace()
+        return s
+
+    # -- get_popular_labels -------------------------------------------------
+
+    @staticmethod
+    def _stub_isolated(s, ids):
+        """Stub the phase-2 node-collection top-up (find().sort().limit())."""
+        captured = {}
+
+        def _find(query, projection=None):
+            captured["query"] = query
+            cursor = _AsyncCursor([{"_id": i} for i in ids])
+            cursor.sort = lambda *a, **k: cursor
+            return cursor
+
+        s.collection.find = Mock(side_effect=_find)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_ranks_from_edges_without_touching_the_nodes(self):
+        """Phase 1 is the cheap edge-side aggregation, and on a graph with
+        enough connected entities it is the ONLY thing that runs.
+
+        The node collection holds far more entities than `limit` in any real
+        graph, so making it drive the ranking would mean a full pass over it on
+        every call to produce a result the edge aggregation already had.
+        """
+        s = self._make_storage()
+        s.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": f"E{i}"} for i in range(5)])
+        )
+        s.collection.aggregate = AsyncMock()
+        s.collection.find = Mock()
+
+        labels = await s.get_popular_labels(limit=5)
+
+        assert labels == [f"E{i}" for i in range(5)]
+        s.edge_collection.aggregate.assert_awaited_once()
+        # Limit filled by connected entities: the node collection is untouched.
+        s.collection.find.assert_not_called()
+        s.collection.aggregate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_sums_degrees_and_keeps_ranking_stages(self):
+        """Degrees sum across both endpoint groups, ordered and capped."""
+        s = self._make_storage()
+        s.edge_collection.aggregate = AsyncMock(return_value=_AsyncCursor([]))
+        self._stub_isolated(s, [])
+
+        await s.get_popular_labels(limit=42)
+
+        pipeline = s.edge_collection.aggregate.call_args[0][0]
+        assert pipeline[0] == {
+            "$group": {"_id": "$source_node_id", "out_degree": {"$sum": 1}}
+        }
+        union = next(stage for stage in pipeline if "$unionWith" in stage)
+        assert union["$unionWith"]["coll"] == "test_edges"
+        assert union["$unionWith"]["pipeline"][0]["$group"]["_id"] == "$target_node_id"
+        assert {"$sort": {"total_degree": -1, "_id": 1}} in pipeline
+        assert {"$limit": 42} in pipeline
+        assert s.edge_collection.aggregate.call_args.kwargs == {"allowDiskUse": True}
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_tops_up_from_isolated_entities_when_short(self):
+        """Regression: a graph whose entities carry no relations reported an
+        EMPTY picker, because an entity with no edge document has no group to
+        land in. Phase 1 coming up short is exactly that signal -- and since its
+        aggregation is exact, every node outside the result is isolated.
+        """
+        s = self._make_storage()
+        s.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "Connected"}])
+        )
+        captured = self._stub_isolated(s, ["Aardvark", "Orphan"])
+
+        labels = await s.get_popular_labels(limit=3)
+
+        # Connected first, then isolated in label order.
+        assert labels == ["Connected", "Aardvark", "Orphan"]
+        # The top-up excludes what phase 1 already returned...
+        assert captured["query"] == {"_id": {"$nin": ["Connected"]}}
+        # ... and asks only for the shortfall, so it can never scan the whole
+        # collection: at most `limit` rows, ordered by the _id index.
+        assert s.collection.find.call_args[0][1] == {"_id": 1}
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_returns_labels_in_ranked_order(self):
+        s = self._make_storage()
+        s.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "Alpha"}, {"_id": "Beta"}])
+        )
+        self._stub_isolated(s, ["Orphan"])
+
+        assert await s.get_popular_labels() == ["Alpha", "Beta", "Orphan"]
+
+    # -- get_node_edges -----------------------------------------------------
+
+    def _stub_edges(self, s, docs):
+        s.edge_collection.find = MagicMock(
+            side_effect=lambda query, projection=None: _AsyncCursor(docs)
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_none_for_missing_node(self):
+        """Regression: an absent entity answered ``[]``, the same value an
+        existing-but-isolated entity yields. The contract (NetworkXStorage) is
+        ``None``."""
+        s = self._make_storage()
+        self._stub_edges(s, [])
+        s.collection.find_one = AsyncMock(return_value=None)
+
+        assert await s.get_node_edges("NoSuchEntity") is None
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_empty_list_for_isolated_node(self):
+        s = self._make_storage()
+        self._stub_edges(s, [])
+        s.collection.find_one = AsyncMock(return_value={"_id": "Lonely"})
+
+        assert await s.get_node_edges("Lonely") == []
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_edges_for_an_existing_node(self):
+        s = self._make_storage()
+        self._stub_edges(
+            s,
+            [
+                {"source_node_id": "Alpha", "target_node_id": "Beta"},
+                {"source_node_id": "Gamma", "target_node_id": "Alpha"},
+            ],
+        )
+        s.collection.find_one = AsyncMock(return_value={"_id": "Alpha"})
+
+        assert await s.get_node_edges("Alpha") == [
+            ("Alpha", "Beta"),
+            ("Gamma", "Alpha"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_node_edges_returns_none_for_a_dangling_target_endpoint(self):
+        """Having edges does NOT prove the node exists in this backend.
+
+        Writes now materialize both endpoints, but rows written before that
+        change can still hold an id that appears only as an edge target with no
+        node document. Inferring existence from the edge scan would make this
+        method answer "exists, here are its edges" for an id that has_node()
+        reports absent — and delete_entity 404s on has_node(). The read must not
+        depend on a write-path invariant that older data does not satisfy.
+        """
+        s = self._make_storage()
+        self._stub_edges(s, [{"source_node_id": "Alpha", "target_node_id": "Target"}])
+        s.collection.find_one = AsyncMock(return_value=None)  # no node document
+
+        assert await s.get_node_edges("Target") is None
+        # The absent node also skips the edge scan entirely.
+        s.edge_collection.find.assert_not_called()
+
+
+class TestMongoLabelHelpersFailLoud:
+    """A database error in the label helpers must propagate.
+
+    Returning [] reports a dead database as "this graph has no entities" --
+    and /graph/label/popular already turns an exception into a 500, so the
+    swallow was the only thing standing between the user and an accurate error.
+    """
+
+    def _make_storage(self):
+        s = MongoGraphStorage.__new__(MongoGraphStorage)
+        s.workspace = "test"
+        s.namespace = "chunk_entity_relation"
+        s._collection_name = "test_nodes"
+        s._edge_collection_name = "test_edges"
+        s.collection = SimpleNamespace()
+        s.edge_collection = SimpleNamespace()
+        return s
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_raises_on_aggregation_error(self):
+        s = self._make_storage()
+        s.edge_collection.aggregate = AsyncMock(side_effect=PyMongoError("boom"))
+
+        with pytest.raises(PyMongoError):
+            await s.get_popular_labels(limit=10)
+
+    @pytest.mark.asyncio
+    async def test_search_labels_raises_when_node_count_fails(self):
+        """The pre-flight count is an optimisation, not a verdict: a failed
+        count is not "the graph is empty"."""
+        s = self._make_storage()
+        s.collection.count_documents = AsyncMock(side_effect=PyMongoError("boom"))
+
+        with pytest.raises(PyMongoError):
+            await s.search_labels("alpha")
+
+    @pytest.mark.asyncio
+    async def test_search_labels_raises_when_regex_fallback_fails(self):
+        """Atlas Search may legitimately be unavailable and fall through to the
+        regex scan -- but if that last resort fails too, no answer was produced.
+        """
+        s = self._make_storage()
+        s.collection.count_documents = AsyncMock(return_value=3)
+        s._try_atlas_text_search = AsyncMock(side_effect=PyMongoError("no atlas"))
+        s._try_atlas_autocomplete_search = AsyncMock(
+            side_effect=PyMongoError("no atlas")
+        )
+        s._try_atlas_compound_search = AsyncMock(side_effect=PyMongoError("no atlas"))
+        s.collection.find = MagicMock(side_effect=PyMongoError("scan failed"))
+
+        with pytest.raises(PyMongoError):
+            await s.search_labels("alpha")
+
+    @pytest.mark.asyncio
+    async def test_search_labels_still_returns_empty_for_an_empty_graph(self):
+        """A confirmed-empty node collection is a real "no labels", not an error."""
+        s = self._make_storage()
+        s.collection.count_documents = AsyncMock(return_value=0)
+
+        assert await s.search_labels("alpha") == []

@@ -627,8 +627,10 @@ async def test_bfs_subgraph_transient_error_raises_not_reports_false_complete(
 def _bfs_mget_side_effect(real_nodes: dict):
     """Mock ``client.mget`` for both the single-id start-node lookup and the
     batched per-level neighbor resolution. Ids absent from `real_nodes` come
-    back ``found: False``, mirroring a dangling edge endpoint (upsert_edge
-    only guarantees the source node exists, never the target)."""
+    back ``found: False``, mirroring a dangling edge endpoint. Writes now
+    materialize both endpoints, so new data cannot produce one, but documents
+    written before that change still can and the traversal must keep tolerating
+    them."""
 
     async def _mget(index=None, body=None, **kwargs):
         docs = []
@@ -787,10 +789,12 @@ async def test_vector_query_missing_index_still_returns_empty(global_config):
 # ---------------------------------------------------------------------------
 
 
-async def test_upsert_edge_raises_when_has_node_check_fails(global_config):
+async def test_upsert_edge_raises_when_endpoint_existence_check_fails(global_config):
+    # upsert_edge materializes BOTH endpoints and probes them with one mget
+    # (has_nodes_batch), like upsert_edges_batch does.
     client = _make_graph_client()
     storage = await _make_graph(global_config, client)
-    client.exists = AsyncMock(side_effect=_transient_error())
+    client.mget = AsyncMock(side_effect=_transient_error())
     with pytest.raises(TransportError):
         await storage.upsert_edge("A", "B", {})
 

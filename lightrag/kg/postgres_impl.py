@@ -6721,6 +6721,52 @@ class PGGraphQueryException(Exception):
         return self.details
 
 
+class PGGraphEdgeWriteLostError(PGGraphQueryException):
+    """Raised when an edge upsert completed without writing an edge.
+
+    The AGE upsert Cypher is ``MATCH (source) ... MATCH (target) ... CREATE``:
+    if either endpoint is absent the whole pattern fails to match, the statement
+    succeeds with zero rows, and the relation is dropped on the floor. Every
+    in-tree caller creates its endpoints first (``merge_nodes_and_edges``,
+    ``ainsert_custom_kg``, the graph-edit flows in ``utils_graph``), so this can
+    only fire on a real defect or a concurrent endpoint deletion — cases where a
+    silent drop is far worse than an error.
+
+    Attributes:
+        source_node_id / target_node_id: the endpoints of the lost edge.
+        missing_endpoints: the endpoint ids found absent, when identifiable.
+    """
+
+    def __init__(
+        self,
+        graph_name: str,
+        source_node_id: str,
+        target_node_id: str,
+        missing_endpoints: Sequence[str] = (),
+    ) -> None:
+        self.graph_name = graph_name
+        self.source_node_id = source_node_id
+        self.target_node_id = target_node_id
+        self.missing_endpoints = tuple(missing_endpoints)
+        if self.missing_endpoints:
+            details = "missing endpoint node(s): " + ", ".join(
+                f"`{node_id}`" for node_id in self.missing_endpoints
+            )
+        else:
+            details = (
+                "both endpoints appear to exist; the edge write was most likely "
+                "lost to a concurrent endpoint deletion"
+            )
+        message = (
+            f"PostgreSQL AGE: edge `{source_node_id}`-`{target_node_id}` was not "
+            f"written to graph {graph_name} ({details})"
+        )
+        super().__init__({"message": message, "details": details})
+        # PGGraphQueryException does not populate Exception.args, which would
+        # make str(exc) empty in logs and test output.
+        self.args = (message,)
+
+
 def _is_transient_graph_write_error(exc: BaseException) -> bool:
     """Return True when a PGGraphQueryException wraps a transient write-time error.
 
@@ -7244,7 +7290,11 @@ class PGGraphStorage(BaseGraphStorage):
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
         Retrieves all edges (relationships) for a particular node identified by its label.
-        :return: list of dictionaries containing edge information
+
+        Returns:
+            A list of (source_id, connected_id) tuples, or None if the node does
+            not exist — the BaseGraphStorage contract, as implemented by
+            NetworkXStorage and PGOpsGraphStorage.
         """
         cypher_query = """MATCH (n:base {entity_id: $entity_id})
                       OPTIONAL MATCH (n)-[]-(connected:base)
@@ -7256,6 +7306,19 @@ class PGGraphStorage(BaseGraphStorage):
         }
 
         results = await self._query(query, params=pg_params)
+        if not results:
+            # The anchor MATCH produced no row at all, so no such node exists.
+            # An existing node with no relations is NOT this case: the OPTIONAL
+            # MATCH still yields exactly one row, with connected_id NULL, which
+            # the loop below filters into an empty list. Returning [] here too
+            # would collapse "node absent" into "node isolated" and diverge from
+            # NetworkXStorage/PGOpsGraphStorage. No in-tree caller reads the
+            # distinction today — they all guard with `if edges:` — so this
+            # restores the declared contract rather than fixing a live caller;
+            # collapsing the two here is what makes it unrecoverable for one
+            # that needs it (an error, by contrast, must raise, never return
+            # either value — see get_node_edges on the other backends).
+            return None
         edges = []
         for record in results:
             source_id = record["source_id"]
@@ -7329,6 +7392,53 @@ class PGGraphStorage(BaseGraphStorage):
             ensure_ascii=False,
         )
         return cypher_sql, params_json
+
+    def _build_endpoint_exists_sql(self) -> str:
+        """SQL returning which of the given entity ids have a vertex in the graph.
+
+        Diagnostic-only: used to name the culprit when an edge upsert wrote
+        nothing. Plain SQL over the label table (same access-operator predicate
+        as ``has_node``) so it can run on the caller's connection inside the
+        already-open write transaction.
+        """
+        return f"""
+            SELECT candidate.entity_id AS entity_id
+            FROM unnest($1::text[]) AS candidate(entity_id)
+            WHERE EXISTS (
+                SELECT 1
+                FROM {self.graph_name}.base v
+                WHERE ag_catalog.agtype_access_operator(
+                        VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]
+                      ) = (to_json(candidate.entity_id::text)::text)::agtype
+            )
+        """
+
+    async def _build_edge_write_lost_error(
+        self,
+        connection: asyncpg.Connection,
+        source_node_id: str,
+        target_node_id: str,
+    ) -> PGGraphEdgeWriteLostError:
+        """Build the error for an edge upsert that returned no created edge.
+
+        Probes both endpoints so the message names the one that is missing. The
+        probe is best-effort: it runs on a connection whose transaction is about
+        to be rolled back, so a failure there must not mask the real problem.
+        """
+        endpoints = list(dict.fromkeys((source_node_id, target_node_id)))
+        missing: list[str] = []
+        try:
+            rows = await connection.fetch(self._build_endpoint_exists_sql(), endpoints)
+            present = {row["entity_id"] for row in rows}
+            missing = [node_id for node_id in endpoints if node_id not in present]
+        except Exception as probe_error:  # pragma: no cover - diagnostics only
+            logger.debug(
+                f"[{self.workspace}] Could not probe edge endpoints for "
+                f"`{source_node_id}`-`{target_node_id}`: {probe_error}"
+            )
+        return PGGraphEdgeWriteLostError(
+            self.graph_name, source_node_id, target_node_id, missing
+        )
 
     def _estimate_node_cypher_bytes(
         self, node_id: str, node_data: dict[str, str]
@@ -7470,7 +7580,15 @@ class PGGraphStorage(BaseGraphStorage):
                 await connection.execute(
                     _GRAPH_ADVISORY_LOCK_SHARED_SQL, self.graph_name
                 )
-                await connection.execute(cypher_sql, params_json)
+                # fetch(), not execute(): the Cypher RETURNs the created edge, so
+                # an empty result set is the only signal that the endpoint MATCHes
+                # failed and the edge was silently dropped (see
+                # PGGraphEdgeWriteLostError). AGE reports no error for that.
+                created = await connection.fetch(cypher_sql, params_json)
+                if not created:
+                    raise await self._build_edge_write_lost_error(
+                        connection, source_node_id, target_node_id
+                    )
 
         try:
             await self.db._run_with_retry(
@@ -7642,6 +7760,11 @@ class PGGraphStorage(BaseGraphStorage):
         duplicate DIRECTED rows. Edges are also deduped within the chunk. Retry
         semantics mirror ``upsert_edge``: DELETE + CREATE is idempotent, so a
         full-chunk replay is safe.
+
+        Like the single-edge path, each statement's returned edge is checked: an
+        edge whose endpoints are absent matches nothing and would otherwise be
+        dropped without an error. That raises and rolls the whole chunk back,
+        which is the same all-or-nothing behaviour as any other mid-chunk failure.
         """
         built = [
             self._build_upsert_edge_sql(src, tgt, edge_data)
@@ -7652,8 +7775,14 @@ class PGGraphStorage(BaseGraphStorage):
         async def _operation(connection: asyncpg.Connection) -> None:
             async with connection.transaction():
                 await connection.execute(_GRAPH_ADVISORY_LOCK_SQL, self.graph_name)
-                for cypher_sql, params_json in built:
-                    await connection.execute(cypher_sql, params_json)
+                for (cypher_sql, params_json), (src, tgt, _edge_data) in zip(
+                    built, chunk
+                ):
+                    created = await connection.fetch(cypher_sql, params_json)
+                    if not created:
+                        raise await self._build_edge_write_lost_error(
+                            connection, src, tgt
+                        )
 
         try:
             await self.db._run_with_retry(
@@ -8693,11 +8822,32 @@ class PGGraphStorage(BaseGraphStorage):
         return edges
 
     async def get_popular_labels(self, limit: int = 300) -> list[str]:
-        """Get popular labels by node degree (most connected entities) using native SQL for performance."""
+        """Get popular labels by node degree (most connected entities) using native SQL for performance.
+
+        Two phases, and the second one usually does not run. Phase 1 ranks the
+        entities that HAVE edges, straight off the edge-derived degrees — the
+        cheap plan, and on any graph with more than ``limit`` connected entities
+        it fills every slot on its own. Only when it comes up short does phase 2
+        top the result up from the isolated (degree-0) entities, which is
+        exactly the case the original inner join got wrong by returning nothing
+        at all for a graph whose entities carry no relations.
+
+        Driving the whole ranking off the vertex table instead (one LEFT JOIN)
+        would be simpler, but it forces a full vertex scan on every call — on a
+        large graph, to produce a result phase 1 already had.
+        """
         try:
             # Native SQL query to calculate node degrees directly from AGE's underlying tables
-            # This is significantly faster than using the cypher() function wrapper
-            query = f"""
+            # This is significantly faster than using the cypher() function wrapper.
+            #
+            # Self-loops count twice (start_id and end_id both contribute),
+            # matching node_degree() and the other backends. COLLATE "C" makes
+            # the tie-break a byte-order comparison so it matches Python's
+            # code-point sort. The ranking columns live in a derived table
+            # because ORDER BY cannot apply COLLATE to a bare output alias
+            # (a sub-SELECT, not a CTE: CTEs are an optimization fence before
+            # PostgreSQL 12).
+            connected_query = f"""
             WITH node_degrees AS (
                 SELECT
                     node_id,
@@ -8709,31 +8859,74 @@ class PGGraphStorage(BaseGraphStorage):
                 ) AS all_edges
                 GROUP BY node_id
             )
-            SELECT
-                (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
-            FROM
-                node_degrees d
-            JOIN
-                {self.graph_name}._ag_label_vertex v ON d.node_id = v.id
-            WHERE
-                ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
+            SELECT label FROM (
+                SELECT
+                    (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label,
+                    d.degree AS degree
+                FROM
+                    node_degrees d
+                JOIN
+                    {self.graph_name}._ag_label_vertex v ON d.node_id = v.id
+                WHERE
+                    ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
+            ) AS connected
             ORDER BY
-                d.degree DESC,
-                label ASC
+                degree DESC,
+                label COLLATE "C" ASC
             LIMIT $1;
             """
-            results = await self._query(query, params={"limit": limit})
+            results = await self._query(connected_query, params={"limit": limit})
             labels = [
                 result["label"] for result in results if result and "label" in result
             ]
+
+            if len(labels) < limit:
+                # Phase 1 returned fewer than `limit`, and its aggregate is
+                # exact, so the connected set is now known in full: every
+                # remaining entity has no edge at all. Top up in label order,
+                # bounded by the shortfall — never more than `limit` rows, so
+                # even a sequential vertex scan stays cheap.
+                isolated_query = f"""
+                SELECT label FROM (
+                    SELECT
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
+                    FROM
+                        {self.graph_name}._ag_label_vertex v
+                    WHERE
+                        ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]) IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {self.graph_name}._ag_label_edge e
+                            WHERE e.start_id = v.id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {self.graph_name}._ag_label_edge e
+                            WHERE e.end_id = v.id
+                        )
+                ) AS isolated
+                ORDER BY
+                    label COLLATE "C" ASC
+                LIMIT $1;
+                """
+                isolated_results = await self._query(
+                    isolated_query, params={"limit": limit - len(labels)}
+                )
+                labels.extend(
+                    result["label"]
+                    for result in isolated_results
+                    if result and "label" in result
+                )
 
             logger.debug(
                 f"[{self.workspace}] Retrieved {len(labels)} popular labels (limit: {limit})"
             )
             return labels
         except Exception as e:
+            # Raise, never return []: an empty list here is indistinguishable
+            # from "the graph has no entities". /graph/label/popular already
+            # turns an exception into a 500, so swallowing it handed the WebUI a
+            # 200 with an empty entity picker while the database was down.
             logger.error(f"[{self.workspace}] Error getting popular labels: {str(e)}")
-            return []
+            raise
 
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """Search labels with fuzzy matching using native, parameterized SQL for performance and security."""
@@ -8794,10 +8987,12 @@ class PGGraphStorage(BaseGraphStorage):
             )
             return labels
         except Exception as e:
+            # Same reasoning as get_popular_labels: "no match" and "the query
+            # failed" must not share a return value.
             logger.error(
                 f"[{self.workspace}] Error searching labels with query '{query}': {str(e)}"
             )
-            return []
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""

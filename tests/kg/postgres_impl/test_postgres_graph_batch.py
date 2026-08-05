@@ -44,6 +44,12 @@ class _FakeConnection:
         self._capture.calls.append({"sql": sql, "args": args})
         return ""
 
+    async def fetch(self, sql, *args):
+        # The edge chunk path runs each Cypher through fetch() and raises when a
+        # statement returns no created edge (missing endpoints), so return a row.
+        self._capture.calls.append({"sql": sql, "args": args})
+        return [{"r": "edge"}]
+
 
 def make_graph_storage(
     *,

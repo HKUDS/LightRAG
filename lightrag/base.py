@@ -574,6 +574,19 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             A list of (source_id, target_id) tuples representing edges,
             or None if the node doesn't exist
+
+        Three outcomes, three answers — implementations must not merge them:
+
+        * ``[]``   — the node exists and has no relations.
+        * ``None`` — the node is **confirmed absent**.
+        * raise    — the backend could not answer. A transport/server error is
+          neither of the above; reporting it as ``[]`` or ``None`` turns an
+          unknown into a fact that callers (entity merge/dedup, graph edits)
+          act on. Same rule as :meth:`BaseKVStorage.get_by_id_strict`.
+
+        ``get_nodes_edges_batch`` cannot express the middle case (it returns a
+        dict of lists) and flattens ``None`` to ``[]`` by design; callers that
+        need the distinction must use this single-node form.
         """
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
@@ -820,6 +833,39 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             List of labels sorted by degree (highest first)
+
+        Ranks the WHOLE node set: an isolated (degree-0) entity ranks last, but
+        it still ranks. Implementations that derive degrees from their edge
+        store must therefore not let a node absent from that store fall out of
+        the result. Ties break on the label, ascending.
+
+        The expected shape is two phases, because the second one almost never
+        runs. Rank the entities that HAVE edges first — the cheap path, and any
+        graph with more than ``limit`` connected entities fills every slot there
+        — then top the result up from the isolated entities only when that comes
+        up short. The top-up is bounded by the shortfall (never more than
+        ``limit`` rows), which is what keeps it affordable even where it means a
+        sequential scan of the node store. Coming up short also means the
+        connected set is now known in full, so every remaining entity is
+        isolated by definition.
+
+        Driving the whole ranking off the node store instead is simpler to
+        write and gives the same answer, but it pays a full pass over the nodes
+        on every call — on a large graph, to produce a result the first phase
+        already had.
+
+        The result is best-effort about the reverse direction: a backend that
+        derives degrees from its edge store MAY also surface an id that has
+        edges but no node document. Only a data-quality defect produces one —
+        the write paths materialize both endpoints of every edge — and
+        confirming every ranked id against the node store would cost a join or
+        an extra round trip on a hot, interactive endpoint. Callers must
+        therefore tolerate a returned label whose :meth:`get_node` comes back
+        empty, rather than assume every label resolves.
+
+        An empty list means the graph holds no entities. A backend error MUST
+        raise instead — ``/graph/label/popular`` renders both, and the two are
+        indistinguishable to the user once the error is swallowed.
         """
 
     @abstractmethod
@@ -832,6 +878,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Returns:
             List of matching labels sorted by relevance
+
+        As with :meth:`get_popular_labels`, an empty list means "nothing
+        matched" — a backend error MUST raise rather than return it. A blank
+        query is a real empty result, not an error.
         """
 
 

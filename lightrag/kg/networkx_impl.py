@@ -412,13 +412,25 @@ class NetworkXStorage(BaseGraphStorage):
             limit: Maximum number of labels to return
 
         Returns:
-            List of labels sorted by degree (highest first)
+            List of labels sorted by degree (highest first), ties broken on the
+            label ascending
         """
         graph = await self._get_graph()
 
-        # Get degrees of all nodes and sort by degree descending
+        # Degree descending, then label ascending. The tie-break is not
+        # cosmetic: `sorted(..., key=degree, reverse=True)` is stable, so ties
+        # used to come back in node INSERTION order, and when more labels share
+        # the cutoff degree than fit in `limit` that decided which ones the
+        # caller never sees — a graph that happened to insert "Zeta" before
+        # "Alpha" returned Zeta and dropped Alpha. Every other backend orders
+        # ties by label (SQL `ORDER BY degree DESC, label ASC` / COLLATE "C",
+        # Cypher `ORDER BY degree DESC, label ASC`), and this is the default
+        # backend the contract in BaseGraphStorage points at. Comparing on
+        # str() gives the same code-point order as COLLATE "C".
         degrees = dict(graph.degree())
-        sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+        sorted_nodes = sorted(
+            degrees.items(), key=lambda item: (-item[1], str(item[0]))
+        )
 
         # Return top labels limited by the specified limit
         popular_labels = [str(node) for node, _ in sorted_nodes[:limit]]

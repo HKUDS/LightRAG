@@ -15,6 +15,7 @@ import asyncpg
 from tenacity import wait_none
 
 from lightrag.kg.postgres_impl import (
+    PGGraphEdgeWriteLostError,
     PGGraphQueryException,
     PGGraphStorage,
     _is_transient_graph_write_error,
@@ -38,10 +39,16 @@ def make_graph_storage() -> PGGraphStorage:
 
 
 class _FakeConnection:
-    """Captures statements + args passed to a fake asyncpg connection."""
+    """Captures statements + args passed to a fake asyncpg connection.
 
-    def __init__(self):
+    ``fetch`` returns one row by default: the edge upsert runs its Cypher via
+    fetch() and treats an empty result as "the edge was not written" (see
+    PGGraphEdgeWriteLostError), so the happy path must hand back a row.
+    """
+
+    def __init__(self, edge_rows: list | None = None):
         self.calls: list[dict] = []
+        self._edge_rows = [{"r": "edge"}] if edge_rows is None else edge_rows
 
     def transaction(self):
         return _FakeTransaction()
@@ -49,6 +56,10 @@ class _FakeConnection:
     async def execute(self, sql, *args):
         self.calls.append({"sql": sql, "args": args})
         return ""
+
+    async def fetch(self, sql, *args):
+        self.calls.append({"sql": sql, "args": args})
+        return self._edge_rows
 
 
 class _FakeTransaction:
@@ -391,3 +402,166 @@ async def test_upsert_edges_batch_dedupes_last_write_wins():
     assert '"first"' not in cypher_calls[0]["sql"]
     params_json = cypher_calls[0]["args"][0]
     assert json.loads(params_json) == {"src_id": "B", "tgt_id": "A"}
+
+
+# ---------------------------------------------------------------------------
+# Missing endpoints: the edge must not be dropped silently
+# ---------------------------------------------------------------------------
+
+
+class _MissingEndpointConnection(_FakeConnection):
+    """Fake connection where the edge CREATE matches nothing.
+
+    Mirrors AGE's behaviour when an endpoint is absent: ``MATCH (source) ...
+    MATCH (target)`` fails to match, so the whole pattern -- including the
+    CREATE -- produces no rows, and the statement still succeeds. The endpoint
+    probe that follows reports whichever ids were asked for as absent.
+    """
+
+    def __init__(self, present: set[str] | None = None):
+        super().__init__(edge_rows=[])
+        self._present = present or set()
+
+    async def fetch(self, sql, *args):
+        self.calls.append({"sql": sql, "args": args})
+        if "unnest(" in sql:  # the endpoint-existence probe
+            return [
+                {"entity_id": node_id}
+                for node_id in args[0]
+                if node_id in self._present
+            ]
+        return []  # the edge upsert: nothing created
+
+
+async def _run_upsert_edge(storage: PGGraphStorage, conn, src, tgt, edge_data=None):
+    async def fake_run_with_retry(operation, **_kwargs):
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+    await storage.upsert_edge(src, tgt, edge_data or {"weight": "1.0"})
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_raises_when_no_edge_was_created(monkeypatch):
+    """An edge whose endpoints are missing must raise, not vanish.
+
+    Regression: the Cypher is ``MATCH (source) ... MATCH (target) ... CREATE``.
+    If either endpoint does not exist the pattern matches nothing, AGE reports
+    success with zero rows, and the relation was silently lost -- no exception,
+    no log line, and the caller believed the write landed.
+    """
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+    storage = make_graph_storage()
+    conn = _MissingEndpointConnection(present={"Alice"})
+
+    with pytest.raises(PGGraphEdgeWriteLostError) as excinfo:
+        await _run_upsert_edge(storage, conn, "Alice", "Bob")
+
+    error = excinfo.value
+    # The message names the endpoint that is actually missing.
+    assert error.missing_endpoints == ("Bob",)
+    assert "`Bob`" in str(error)
+    assert "Alice" in str(error) and "test_graph" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_write_lost_error_is_not_retried(monkeypatch):
+    """A missing endpoint is deterministic — retrying it just wastes time."""
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+    storage = make_graph_storage()
+    conn = _MissingEndpointConnection()
+
+    call_count = 0
+
+    async def fake_run_with_retry(operation, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+
+    with pytest.raises(PGGraphEdgeWriteLostError):
+        await storage.upsert_edge("Alice", "Bob", {"weight": "1.0"})
+
+    assert call_count == 1
+    # It is a PGGraphQueryException subclass, so the existing except-clauses in
+    # upsert_edge re-raise it unchanged instead of re-wrapping it...
+    assert issubclass(PGGraphEdgeWriteLostError, PGGraphQueryException)
+    # ... and the transient-error predicate does not classify it as retryable.
+    assert not _is_transient_graph_write_error(PGGraphEdgeWriteLostError("g", "A", "B"))
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_reports_both_endpoints_when_neither_exists(monkeypatch):
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+    storage = make_graph_storage()
+    conn = _MissingEndpointConnection(present=set())
+
+    with pytest.raises(PGGraphEdgeWriteLostError) as excinfo:
+        await _run_upsert_edge(storage, conn, "Alice", "Bob")
+
+    assert excinfo.value.missing_endpoints == ("Alice", "Bob")
+
+
+@pytest.mark.asyncio
+async def test_upsert_edge_still_raises_when_probe_finds_both_endpoints(monkeypatch):
+    """Zero created edges is an error even when the endpoints look present.
+
+    A concurrent endpoint deletion can land between the CREATE and the probe.
+    Nothing was written either way, so the caller must still hear about it.
+    """
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+    storage = make_graph_storage()
+    conn = _MissingEndpointConnection(present={"Alice", "Bob"})
+
+    with pytest.raises(PGGraphEdgeWriteLostError) as excinfo:
+        await _run_upsert_edge(storage, conn, "Alice", "Bob")
+
+    assert excinfo.value.missing_endpoints == ()
+    assert "concurrent" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_upsert_edges_batch_raises_and_rolls_back_the_chunk(monkeypatch):
+    """One dropped edge fails the whole chunk transaction.
+
+    The chunk is a single transaction, so this matches the existing
+    all-or-nothing behaviour for any mid-chunk failure -- and the edges that did
+    CREATE are rolled back rather than left as a partial write.
+    """
+    monkeypatch.setattr(PGGraphStorage._upsert_edge_chunk.retry, "wait", wait_none())
+    storage = make_graph_storage()
+    conn = _MissingEndpointConnection(present={"A"})
+
+    async def fake_run_with_retry(operation, **_kwargs):
+        return await operation(conn)
+
+    storage.db._run_with_retry = AsyncMock(side_effect=fake_run_with_retry)
+
+    with pytest.raises(PGGraphEdgeWriteLostError) as excinfo:
+        await storage.upsert_edges_batch(
+            [("A", "B", {"weight": "1"}), ("A", "C", {"weight": "2"})]
+        )
+
+    # Fails on the first edge of the chunk; the second never runs.
+    assert (excinfo.value.source_node_id, excinfo.value.target_node_id) == ("A", "B")
+    cypher_calls = [c for c in conn.calls if "CREATE (source)-[r:DIRECTED" in c["sql"]]
+    assert len(cypher_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_edge_endpoint_probe_failure_does_not_mask_the_error(monkeypatch):
+    """The diagnostic probe is best-effort: its failure must not hide the drop."""
+    monkeypatch.setattr(PGGraphStorage.upsert_edge.retry, "wait", wait_none())
+    storage = make_graph_storage()
+
+    class _ProbeExplodes(_MissingEndpointConnection):
+        async def fetch(self, sql, *args):
+            if "unnest(" in sql:
+                raise RuntimeError("transaction is aborted")
+            return await super().fetch(sql, *args)
+
+    with pytest.raises(PGGraphEdgeWriteLostError) as excinfo:
+        await _run_upsert_edge(storage, _ProbeExplodes(), "Alice", "Bob")
+
+    assert excinfo.value.missing_endpoints == ()
