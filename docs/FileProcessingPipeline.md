@@ -18,8 +18,8 @@ This document is organized from the perspective of **LightRAG Server** deploymen
 - [4. Multimodal Analysis (VLM)](#4-multimodal-analysis-vlm)
 - [5. Chunker Parameter Configuration (chunk_options)](#5-chunker-parameter-configuration-chunk_options)
 - [6. Storage and Directory Layout](#6-storage-and-directory-layout)
-- [7. Document Duplicate Detection Rules](#7-document-duplicate-detection-rules)
-- [8. Pipeline Concurrency and Reentry Constraints](#8-pipeline-concurrency-and-reentry-constraints)
+- [7. Same-name and Duplicate Documents](#7-same-name-and-duplicate-documents)
+- [8. Operating the Pipeline: Uploading While It Runs, Stopping, Retrying](#8-operating-the-pipeline-uploading-while-it-runs-stopping-retrying)
 - [9. Pipeline Resume Rules at Startup](#9-pipeline-resume-rules-at-startup)
 - [10. Troubleshooting](#10-troubleshooting)
 - [11. Python SDK Invocation](#11-python-sdk-invocation)
@@ -555,7 +555,7 @@ The surrounding budgets are subtracted from the total, so setting them too high 
 
 ### 4.5 Image limits and throughput
 
-`VLM_MAX_IMAGE_BYTES` (default 5 MB) and `VLM_MIN_IMAGE_PIXEL` (default 64) bound what is worth sending: the lower bound exists to skip icons and separator rules rather than pay for a VLM call on them. Analyze-stage concurrency is `MAX_PARALLEL_ANALYZE` (§8.10), which is independent of the parse and insert stages.
+`VLM_MAX_IMAGE_BYTES` (default 5 MB) and `VLM_MIN_IMAGE_PIXEL` (default 64) bound what is worth sending: the lower bound exists to skip icons and separator rules rather than pay for a VLM call on them. Analyze-stage concurrency is `MAX_PARALLEL_ANALYZE` (§8.6), which is independent of the parse and insert stages.
 
 ### 4.6 Model configuration lives elsewhere
 
@@ -571,7 +571,7 @@ MinerU has a VLM pass of its own, enabled by `MINERU_LOCAL_IMAGE_ANALYSIS`. It r
 2. Confirm the sidecar items carry `llm_analyze_result.status == "success"`.
 3. Then add `i` **together with** `VLM_PROCESS_ENABLE=true` and a vision-capable binding.
 
-Doing step 3 in two halves is what produces the failure in §4.3 step 4. And because processing options are frozen at enqueue, a document that already failed that way cannot be rescued by editing configuration and retrying: `/documents/reprocess_failed` re-runs it with the same `i`. Either make the VLM available and retry, or delete the document and upload it again without `i`.
+Doing step 3 in two halves is what produces the failure in §4.3 step 4. And because processing options are frozen at enqueue, a document that already failed that way cannot be rescued by editing configuration and retrying: `/documents/reprocess_failed` re-runs it with the same `i`. Either make the VLM available and retry, or delete the document and upload it again without `i` (§8.3).
 
 ## 5. Chunker Parameter Configuration (chunk_options)
 
@@ -843,268 +843,298 @@ Engine-specific conditions on top of that:
 
 > **"Either side empty means skip"** applies to `engine_version` and `endpoint_signature` on both external engines. If the field was empty when the manifest was written (for example `MINERU_ENGINE_VERSION` was unset at first parse), or if the current environment variable is unset, that particular check is skipped. Consequently, setting a version variable *after* a bundle already exists does not retroactively invalidate it — use the matching `LIGHTRAG_FORCE_REPARSE_*` flag for that.
 
-## 7. Document Duplicate Detection Rules
+## 7. Same-name and Duplicate Documents
 
-File upload, file-parse enqueue, and the text APIs check duplicates against two gates: "filename + content hash". Hitting either is considered a duplicate, and a `FAILED` record is written without overwriting the existing `full_docs`. `/documents/scan` directory scanning uses the same set of indexes, but in order to facilitate automatic retry of unfinished files, it has separate archive and re-process rules for duplicate filenames.
+Uploads, directory scans and the text endpoints all deduplicate. Ingesting the same content twice wastes LLM quota and creates duplicate entities in the knowledge graph, so LightRAG checks two rules — filename and content: hitting either marks the attempt a duplicate, records it as `FAILED`, and **never overwrites the existing document**. Every check completes **before** chunking, entity extraction and any graph write — but that is not the same as "before anything is stored": `native` / `mineru` / `docling` must persist a pending-parse record and then the parse result before a content hash exists at all, so that path briefly holds a record that is subsequently rolled back (see §7.1, §7.2).
 
-### 7.1 Filename (basename) Deduplication
+### 7.1 The Two Dedup Rules
 
-- The granularity of the check is basename, excluding directory path and workspace path. For example, `/data/a.pdf`, `inputs/a.pdf`, and `a.pdf` are all considered the same filename `a.pdf`.
-- Filename deduplication uses `canonical_basename` as the index: the supported-engine processing hint at the end of the filename is stripped before comparison, so `abc.docx`, `abc.[native].docx`, and `abc.[native-iet].docx` are considered the same name. Unsupported hints are not stripped; e.g., `abc.[draft].docx` is still treated by its original filename.
-- For ordinary upload, text APIs, and core enqueue APIs, as long as a file with the same name already exists in `doc_status` — whether that record is currently `PENDING`, `PARSING`, `ANALYZING`, `PROCESSING`, `FAILED`, or `PROCESSED` — the same-name file is considered a duplicate.
-- For `/documents/scan` directory scan: the canonical basename only **locates** candidate records; it is not assumed to be unique (custom-ID inserts, legacy ids and historical collisions can all share one canonical). Scan computes each physical file's canonical source key, resolves it once through `resolve_doc_source_strict`, and classifies it into exactly one of seven exits in a fixed, mutually exclusive order. Classification is **read-only**: enqueue, archive and stub deletion all happen after it, so every decision can be logged, counted and sampled before anything changes.
+**Rule one: duplicate filename.** Only the filename itself is compared (no directory, no workspace path), so `/data/a.pdf`, `inputs/a.pdf` and `a.pdf` are the same name. Any recognized `[engine-options]` hint is stripped first, so `abc.docx`, `abc.[native].docx` and `abc.[native-iet].docx` all count as the same name; an unrecognized hint is not stripped, so `abc.[draft].docx` is still a different name. If `doc_status` already holds a record under that name, the attempt is a duplicate **whatever state that record is in — `PENDING`, `PARSING`, `ANALYZING`, `PROCESSING`, `FAILED` or `PROCESSED`**.
 
-  | Exit | Condition | Action |
-  | --- | --- | --- |
-  | `CLAIMED_NEW` | no record shares the canonical source (`SourceAbsent`) | staged in the scan's disposable disk spool under the first canonical claim; later enqueued in global `st_mtime` order; `metadata.source_file` keeps the original basename including its hint |
-  | `SOURCE_CONFLICT` | several primary records share the canonical source (`SourceConflict`, historical) | not enqueued, no record deleted, and the file is **not** archived (the operator needs it in place); the job records a bounded sample of candidate doc IDs, to be repaired by doc ID before the file can be classified. Repair entry points: `GET /documents/source_conflicts` lists the conflicts and `POST /documents/source_conflicts/repair` settles one by naming the `primary_doc_id` to keep (dry-run by default; echo back the returned `candidate_count`/`fingerprint` to commit, and a changed candidate set returns 409), or offline via `python -m lightrag.tools.source_conflict_repair` |
-  | `PROCESSED` | the unique record is already `PROCESSED` | emit a warning, archive the source file to `__parsed__`, skip enqueueing |
-  | `STALE_STUB` | the unique record is `FAILED` **and** a strict point read confirms `full_docs` is absent | recognized as an extraction-error stub written by `apipeline_enqueue_error_documents` (the consistency check preserves such rows for human review): the stub is deleted and the current file is enqueued as `CLAIMED_NEW`. This is the only re-extracting exit, and it is what makes "fix the source file, scan again" take effect. If the point read is unsupported or fails, nothing is deleted and the file falls through to the non-destructive exits below |
-  | `SOURCE_IDENTITY_UNKNOWN` | the unique record has no `metadata.source_file` (custom-ID / legacy / non-scan-origin RAW rows) | keep the file, do not enqueue, record a bounded warning; a missing source file is **not** evidence of a different physical file |
-  | `RESUME_SAME_PHYSICAL_SOURCE` | physical basename == `source_file` | **resume path**: doc_status is preserved as-is, the source file remains in `INPUT/`, and the processing loop picks it up by status query (no re-extract, no overwrite of existing status) |
-  | `ALIAS_DUPLICATE` | physical basename != `source_file` | a different physical file for the same canonical source: archive the alias with a warning, and do not take the ordinary enqueue path (which would manufacture a `dup-*` FAILED row) |
+**Rule two: duplicate content.** What is compared is the **extracted text**, not the raw file bytes. Rename the file, or convert it to another format — as long as the extraction produces the same content it is still a duplicate. The value depends on the content format:
 
-  Discovery is a single unordered pass, but exact global mtime order needs O(number of files) ordering state somewhere. New candidates therefore go into a disposable SQLite spool. Its UNIQUE canonical-key index preserves first-physical-claim-wins across the whole scan before any new row reaches doc_status; its `(mtime, path, discovery sequence)` index is then read with `fetchmany(SCAN_ENQUEUE_BATCH_SIZE)`, so Python memory remains O(K). Each candidate also carries the size discovery already stat'ed, so the enqueue phase issues no second metadata read.
-
-  **Where the spool lives.** `SCAN_SPOOL_DIR`, else `WORKING_DIR/scan_spool`, narrowed in both cases to a per-workspace subdirectory. It must sit on real, writable, local disk: the point of the spool is to keep O(number of files) state out of RAM, and `/tmp` is a RAM-backed tmpfs on many Linux hosts, which silently gives that back. Set `SCAN_SPOOL_DIR` when `WORKING_DIR` is a network volume. INPUT_DIR is deliberately not used — it is frequently a network mount (the slowest possible home for the only bulk-insert phase), it is legitimately mounted read-only, and it is co-managed by sync tools that would copy or delete the spool mid-scan.
-
-  **Placement is fail-closed.** If the directory cannot be used, the scan fails with an error naming `SCAN_SPOOL_DIR` and enqueues nothing; the input files are untouched, so fixing the setting and re-scanning loses nothing. It does *not* relocate to the OS temp dir — that is not a degraded-but-correct mode, because on a tmpfs host it restores the exact memory cost the spool exists to remove and the operator would meet it as an OOM kill partway through a large scan.
-
-  **Crash residue is capped at one spool.** The spool sits on a persistent volume, where nothing reclaims what `kill -9` leaves behind, so its filename inside the per-workspace directory is fixed rather than randomized: the next scan deletes any leftover before opening its own. Residue is therefore one spool, never one per crash. The fixed name is safe because `scanning_exclusive` already admits a single scan per workspace — the same guarantee that keeps two scans from fighting over INPUT_DIR — and the per-workspace subdirectory is what keeps two workspaces sharing a `WORKING_DIR` from reusing each other's file.
-
-  Because the fixed name makes that subdirectory load-bearing, the workspace → directory mapping is injective by construction:
-
-  ```text
-  <base>/unnamed/candidates.sqlite3           # WORKSPACE unset
-  <base>/named/<workspace>/candidates.sqlite3 # every named workspace
-  ```
-
-  A bare sentinel would not be injective — workspace names are validated, not restricted, so a workspace literally called `_default` would land in the same directory as the unnamed one. Those two hold *different* per-workspace scan locks and can therefore scan concurrently, and the second one to start would delete the first one's live database.
-
-  **The cost of exact global ordering.** Nothing reaches doc_status until discovery finishes, so an interrupted scan (cancel, crash, restart) enqueues *nothing*: the source files stay in INPUT_DIR and the next scan rediscovers them. The one thing that does not come back is a `STALE_STUB` row deleted during discovery — the file is re-enqueued as new next time, but its preserved-for-review FAILED stub is gone. The spool itself is not LightRAG storage and is discarded when the scan ends.
-- For ordinary upload and core enqueue APIs, a file with the same name — even if its content has changed — must have its old document record deleted before re-upload or re-enqueue; the automatic recoveries above (`STALE_STUB` / `RESUME_SAME_PHYSICAL_SOURCE`) only apply to the directory-scan path.
-- Filesystem time is only a pre-persistence scan priority. The spool emits candidates globally oldest first; each sequential enqueue then stamps `doc_status.created_at=now()` at the actual first write. Once a file has entered doc_status, only the ordinary immutable `(created_at, id)` scheduling key matters and its filesystem mtime is discarded. An unreadable mtime sorts after every readable timestamp but does not lose the candidate; the enqueue path handles a vanished/unreadable file normally.
-- The text APIs must provide a valid `file_source`, and duplicates are checked by the basename of `file_source`; lacking a valid `file_source` returns 400 directly.
-- When the SDK path calls `insert` / `ainsert` / `apipeline_enqueue_documents` without `file_paths`, that is allowed; related behavior is detailed in §11.4. Such documents without a source have `file_path` saved as `unknown_source`.
-- Empty strings, `no-file-path`, and `unknown_source` are all considered unknown sources; they do not block new source-less text from being enqueued, nor do they deduplicate each other as same-named files.
-
-The storage backend provides basename direct lookup via `get_doc_by_file_basename`, internally comparing against the `canonical_basename` field (the input parameter is first canonicalized through `canonicalize_parser_hinted_basename`). `JsonDocStatusStorage` already implements an in-memory traversal; other backends currently fall back to the default implementation (scanning all states and comparing `canonical_basename`), to be augmented with native indexes in subsequent PRs.
-
-### 7.2 Content Hash Deduplication
-
-- Documents with different filenames but identical extracted content are also considered duplicates. The hash here is the content hash of the final text or LightRAG Document obtained by the configured extraction engine; it is not the hash of the original file bytes.
-- `full_docs` and `doc_status` write or fill in the `content_hash` field according to the content format:
-  - `parse_format=raw`: the MD5 of the text after `sanitize_text_for_encoding`.
-  - `parse_format=lightrag`: the MD5 of the `*.blocks.jsonl` file parsed out of `lightrag_document_path`. Relative paths are resolved against `INPUT_DIR`.
-  - `parse_format=pending_parse`: no hash is written yet; it is filled in by subsequent steps after parsing actually completes (to avoid mistakenly judging by empty content).
-- The `legacy` path deduplicates content hashes after locally extracting text and during enqueue; on hit, this record is written as `FAILED duplicate`, and no new `full_docs`, chunks, or graph data are generated.
-- The `native` / `mineru` / `docling` paths first enqueue with `pending_parse`; after parsing completes and `content_hash` is filled in, if another document already has the same hash, this record is stopped before entering analysis, chunking, entity extraction, and graph writing.
-- Duplicate records are marked as `filename` or `content_hash` in `metadata.duplicate_kind` for diagnosis. Content-hash duplicates also record `metadata.is_duplicate=true`, `metadata.original_doc_id`, and `metadata.original_track_id`; duplicates discovered only after parsing also have the temporarily-written `full_docs` deleted.
-- Related warnings minimize repetitive noise: when scanning discovers a same-name file already `PROCESSED`, a log and pipeline status are written; duplicates at the enqueue stage use the LightRAG layer's `Duplicate document detected (...)` log; content duplicates only discovered after parsing use `Duplicate content skipped after parsing` and write a pipeline status. Scan archiving does not emit the extra `[File Extraction]Duplicate skipped`.
-- The storage backend provides hash direct lookup via `get_doc_by_content_hash`; the naming convention is the same as `get_doc_by_file_basename`.
-
-> Within an enqueue batch (the same `apipeline_enqueue_documents` call), basename and content_hash dedup are also performed; on hit, subsequent entries are written as `FAILED` directly and marked with `existing_status=batch_duplicate`. Basename dedup only applies to valid filenames; `unknown_source`, `no-file-path`, and empty sources only participate in content-hash dedup.
->
-> **Cross-call concurrent dedup** is also guaranteed by the workspace-level serialization lock (see [§8.8 enqueue serialization lock (preventing concurrent dedup leakage)](#88-enqueue-serialization-lock-preventing-concurrent-dedup-leakage)): two concurrent enqueues of identical content with different filenames will not both leak past the `content_hash` check.
-
-## 8. Pipeline Concurrency and Reentry Constraints
-
-To prevent `scan` / `upload` / `insert` from overwriting `doc_status` / `full_docs` records of an in-flight pipeline, all write entry points coordinate via the `pipeline_status` shared dictionary. The `pipeline_status_lock` per workspace ensures that all transitions in the table below are completed atomically within the lock.
-
-### 8.1 `pipeline_status` Fields
-
-| Field | Semantics |
+| `parse_format` | The content hash comes from |
 | --- | --- |
-| `busy` | Generic pipeline-busy flag. Both the processing loop and destructive jobs (clear/delete) set it. **`busy=True` (processing loop) alone does not block enqueue** — the loop pulls a `doc_status` snapshot per batch; work arriving mid-run is picked up via the workspace ingress mailbox (in-batch feeder + batch-boundary quiescence decision). |
-| `destructive_busy` | A destructive subset of `busy`: `/documents/clear` or `/documents/delete_document` is dropping storages / removing source files. Both reservation and the enqueue last-line guard reject — a concurrent enqueue would write to storage being torn down, and accepted documents would be silently lost. The processing loop does not set this field. |
-| `scanning` | The `/documents/scan` background task is running (entire lifecycle: classification stage + processing stage). Only the `/scan` endpoint uses it to reject overlapping scans; it does **not** itself block upload/insert. |
-| `scanning_exclusive` | An exclusive subset of `scanning`: True only during scan's **classification phase** — run_scanning_process is reading doc_status to classify (already processed / resume / delete stub / archive) and cannot interleave with concurrent writers. Both reservation and the enqueue last-line guard reject. After classification, the flag is cleared immediately, and concurrent uploads are allowed once scan enters the processing phase. |
-| `pending_enqueues` | The number of upload/insert calls that have passed `_reserve_enqueue_slot` but whose bg task has not completed. Used only by the scan endpoint — to decide whether to take the exclusive lock. The bg task releases the slot in `finally`. |
+| `raw` | MD5 of the text after encoding sanitization |
+| `lightrag` | MD5 of the sidecar's `*.blocks.jsonl` file (relative paths resolve against `INPUT_DIR`) |
+| `pending_parse` | Not computed yet; filled in once parsing actually completes (so empty content cannot cause a false match) |
 
-Wake-up signals live **outside** `pipeline_status`, in the workspace **pipeline ingress mailbox** (`lightrag/kg/pipeline_ingress.py`, three channels: per-doc document messages / auto-rescan dirty flag / sticky manual retry requests). Enqueue publishes document messages under `pipeline_status_lock` after writing `doc_status`; a busy-refused processing request arms the auto-rescan flag inside the reservation's critical section; the running loop consumes these signals mid-batch (in-batch feeder) and at every batch boundary (atomic quiescence decision, which releases `busy` in the same critical section when all channels are empty). `doc_status` remains the source of truth — a dropped notification is recovered by the next run's initial strict scan.
+That also decides *when* the content check happens: `legacy` extracts text locally and can check at enqueue time; `native` / `mineru` / `docling` can only check once parsing has really finished, and at that point the attempt **stops before anything is built** — no chunking, no entity extraction, no graph writes — and the `full_docs` row written for this attempt is deleted.
 
-### 8.2 Entry Point Behavior
+Two additional rules:
 
-| Entry point | Condition | Behavior |
-| --- | --- | --- |
-| `/documents/upload` / `/documents/text` / `/documents/texts` | `scanning_exclusive=True` or `destructive_busy=True` | Throw HTTP 409; do not write file, do not call enqueue |
-| Same as above | Otherwise (including pure `busy=True`, scan-processing-phase `scanning=True` but `scanning_exclusive=False`) | Within the lock: `pending_enqueues++` reserves a slot → strict name precheck → save file → schedule bg task; the bg task releases the slot in `finally` |
-| `/documents/scan` | `busy=True` or `scanning=True` or `pending_enqueues>0` | Emit a warning and immediately return `scanning_skipped_pipeline_busy`; do not schedule a background task |
-| Same as above | All idle | Within the lock, set `scanning=True` then schedule; the task clears the flag in `finally` upon completion |
-| `/documents/clear` / `/documents/delete_document` | `busy=True` or `scanning=True` or `pending_enqueues>0` | The endpoint synchronously returns `status="busy"` and does not schedule a background task |
-| Same as above | All idle | The endpoint **synchronously** within the lock sets `busy=True` + `destructive_busy=True` (before `delete_document` returns `deletion_started`), and the bg task's finally clears both flags |
-| `apipeline_enqueue_documents` internal (last-line guard) | `scanning_exclusive=True` and `from_scan=False`, or `destructive_busy=True` | Throw `RuntimeError("Cannot enqueue while scan is classifying / clearing or deleting")` |
-| Same as above | Anything else (including pure `busy=True`, scan processing phase) | Enqueue normally; after writing `doc_status`, publish per-doc messages to the ingress mailbox (a running loop picks them up mid-batch or at the batch boundary) |
+- **The text endpoints** (`/documents/text`, `/documents/texts`) must supply a valid `file_source`, whose basename is used for the name check; without one they return 400.
+- **Sourceless documents** (SDK `insert` / `ainsert` without `file_paths`, recorded as `file_path=unknown_source`) take no part in name dedup — `unknown_source` is only a placeholder, so two sourceless documents never collide on it — but they **are still deduplicated by content**: inserting the same text again is still a duplicate. The empty string and `no-file-path` behave the same way.
 
-`from_scan=True` is a bypass for scan's own background-task enqueue: scan already holds the `scanning` flag, so it must be allowed to enqueue the files it has scanned.
+Neither documents within one enqueue batch nor two concurrently issued enqueues can both slip past the check: the later one is always recognized as a duplicate and recorded as `FAILED`.
 
-### 8.3 Why `busy` no longer blocks enqueue
+### 7.2 What You Will See
 
-In the old version, `busy=True` always rejected any new enqueue, on the reasoning that "modifying `doc_status` would interleave with the pipeline worker thread." However, in practice:
+| Symptom | What it means |
+| --- | --- |
+| Upload returns 409 `Document storage already contains '<name>' (Status: …)` | `doc_status` already holds a record under that name (any status, including `FAILED`) |
+| Upload returns 409 `Input directory already contains a file with the same canonical basename …` | No record exists, but `INPUT_DIR` still holds a file with that name |
+| An extra `FAILED` row appears with `error_msg` `File name already exists. Original doc_id: …, Status: …` | A batch enqueue or a scan hit the filename rule |
+| `FAILED` with `error_msg` `Identical content already exists under another filename. Original doc_id: …` | The content rule was hit |
+| `FAILED` with `error_msg` `N existing documents already share this file name …` | A legacy "one filename, several primary records" conflict that has to be repaired by doc id first |
 
-1. **Write order guarantees consistency**: `apipeline_enqueue_documents` always upserts `full_docs` first, then upserts `doc_status`. The consistency check at the start of the processing loop only deletes "orphan `doc_status` rows that have no corresponding `full_docs`" — a state that cannot occur with concurrent enqueue.
-2. **Batch-level snapshots**: each processing-loop batch pulls a `get_docs_by_statuses` snapshot once; newly written `PENDING` rows don't disturb the current batch — their document messages are routed straight into the running batch by the in-batch feeder, and anything left over is re-pulled at the batch boundary.
-3. **The ingress mailbox is designed for this**: enqueue publishes a per-doc notification for exactly the "new work arrives while running" case; the loop's quiescence decision consumes the signals and releases `busy` atomically, so nothing lands in a gap.
+The upload path is **fail-fast**: the first two cases return 409 outright, writing no file and leaving no trace in `doc_status`. The other three do leave a record in the document list, but **the records have different shapes** — do not go looking only for the `dup-` prefix:
 
-With this mechanism enabled in the new contract, **users can continue to upload new documents during long batch processing**, and the bg task, after writing `doc_status`, will be automatically picked up by the running loop.
+- **A duplicate caught at enqueue time** (same name, or a content hash that already exists on the `legacy` path): a new `FAILED` record with a doc id prefixed `dup-` is created, and the original document is untouched. Its `metadata` carries `duplicate_kind` (`filename` / `content_hash`), `original_doc_id` and `original_track_id`, naming the copy that was kept.
+- **A content duplicate found only after parsing** (`native` / `mineru` / `docling` have no content hash at enqueue time): **no** `dup-*` record is created. Instead this document's own `doc-*` record is flipped to `FAILED` in place with `metadata.is_duplicate=true` and `duplicate_kind=content_hash`, the `full_docs` row written for this attempt is deleted, and the source file is archived into `__parsed__`.
+- **`filename_conflict`**: several primary records already share the filename and the system **deliberately does not pick a primary for you**, so `original_doc_id` on this record does not name "the copy that was kept" — repair the conflict first, per [§7.3](#73-what-to-do-about-it).
 
-### 8.4 Why scan is still the exclusive writer
+### 7.3 What To Do About It
 
-scan not only enqueues the new files it finds, but also reads `doc_status` to decide what to do with each file (archive a `PROCESSED` one, keep a resume candidate, delete a stale stub and re-enqueue, …; the seven exits are listed in [§7.1](#71-filename-basename-deduplication)).
+- **To replace a same-named document with new content**: delete it first (`POST /documents/delete_document`, or the delete dialog in the WebUI document list), then upload. An upload never overwrites an existing record.
+- **To clear out duplicate records**: both the `dup-*` rows and an original row flipped to `FAILED` after parsing are **inert records** — they carry no content, and both `/documents/scan` and `/documents/reprocess_failed` skip them, so they neither re-run nor fail again. The only way to remove one is an explicit delete; leaving it in place does not affect retrieval.
+- **To re-run the same file with a different engine or different options**: dedup is not the obstacle, the frozen configuration is — see [§8.3](#83-retrying-after-a-failure) and [§9.3](#93-branch-b-already-extracted); this case requires delete + re-upload.
+- **`filename_conflict` (one name, several records)**: list the conflicts with `GET /documents/source_conflicts` and repair them with `POST /documents/source_conflicts/repair`, naming the `primary_doc_id` to keep (dry-run by default; submit again with the returned `candidate_count` / `fingerprint`, and a changed candidate set returns 409), or run `python -m lightrag.tools.source_conflict_repair` offline. Scan again once repaired.
 
-These "read–decide–write" combinations cannot interleave with other writers; otherwise classification decisions would be based on a stale view. So the classification stage must be exclusive (`scanning_exclusive`), and the scan endpoint rejects when any of `busy` / `scanning` / `pending_enqueues>0` / an exclusive-reset freeze (`manual_freeze_requested`) / an earlier unserved manual retry request holds — the last one keeps a scan from jumping ahead of a queued manual retry.
+### 7.4 What a Directory Scan Does Differently
 
-### 8.5 Strict name precheck (upload path)
+`/documents/scan` applies the same dedup rules, but it faces both sides at once — the files on disk and the records in storage — so it handles same-named files with extra automatic steps, precisely so that "fix the configuration, fix the source file, scan again" works directly instead of requiring a manual delete for every file:
 
-After upload passes the reservation but before saving the file, a two-pass check is required:
+| The record in storage | What the scan does |
+| --- | --- |
+| No record under that name | Enqueued as a new document; the whole batch is ordered by file modification time, oldest first |
+| Already `PROCESSED` | Not reprocessed; the source file is archived into `__parsed__` and a warning is logged |
+| `FAILED`, and content is confirmed to have never been extracted | The failure record is deleted and the file goes through as a brand-new document — this is what makes "fix the source file and scan again" work |
+| Interrupted mid-flight (`PENDING` / `PARSING` / `ANALYZING` / `PROCESSING`) | Both the record and the source file are kept as-is; the pipeline resumes them without re-extracting |
+| A different physical file under the same name / a record with unknown origin / one name with several records | Neither enqueued nor deleted, only archived or reported — these need a human decision, see [§7.3](#73-what-to-do-about-it) |
 
-1. **INPUT directory scan**: canonicalize the basename to be saved via `canonicalize_parser_hinted_basename`, traverse the INPUT directory for any existing same-canonical variant (with hint / without hint); 409 on hit.
-2. **doc_status check**: call `get_existing_doc_by_file_path_candidates` with the canonicalized basename; 409 on hit.
+Two operational notes:
 
-Both pass → save the file → schedule the bg task → bg task calls `apipeline_enqueue_documents` to write the store + calls `apipeline_process_enqueue_documents` to trigger processing.
+- **If a scan is interrupted (cancelled, crashed, restarted) nothing at all is enqueued.** Discovery and enqueue are two separate steps, the source files never leave `INPUT_DIR`, and the next scan simply rediscovers them. The one thing that does not come back is a failure record already deleted per row three above — the file re-runs as a new document, but the record kept for human review is gone.
+- **`SCAN_SPOOL_DIR` must point at real, writable local disk.** The candidate list built during a scan is stored under `SCAN_SPOOL_DIR`, falling back to `WORKING_DIR/scan_spool`, both further split per workspace. Do not point it at tmpfs (on many Linux hosts `/tmp` is RAM-backed); set it explicitly when `WORKING_DIR` itself is a network volume. If the directory is unusable the scan **fails outright and enqueues nothing**, and the error names the variable; input files are untouched, so nothing is lost by fixing the configuration and scanning again.
 
-> The old version once allowed upload to silently write a FAILED duplicate entry when a same-name record existed; the new rule is fail-fast, leaving no duplicate traces in doc_status. To replace a same-name document, call the `/documents/delete_document` API first.
+## 8. Operating the Pipeline: Uploading While It Runs, Stopping, Retrying
 
-### 8.6 Coordination of Multiple Concurrent Reservations
+This chapter answers three runtime questions: whether you can keep uploading once the pipeline is running, how to stop it, and what to do after a document fails. Concurrency tuning and request admission limits close the chapter.
 
-When two uploads arrive simultaneously (scan cannot acquire exclusivity at this time):
+### 8.1 What You Can Do While Processing Is Running
 
-1. A `_reserve_enqueue_slot` → `pending_enqueues=1`, write file, schedule bg task A, return success.
-2. B `_reserve_enqueue_slot` → `pending_enqueues=2`, write file, schedule bg task B, return success.
-3. bg task A `apipeline_enqueue_documents` → writes `doc_status` → calls `apipeline_process_enqueue_documents` → sets `busy=True` to process A's document.
-4. bg task B `apipeline_enqueue_documents` → sees `scanning=False`, writes normally; after writing, publishes B's document message to the ingress mailbox.
-5. bg task B calls `apipeline_process_enqueue_documents` → the reservation sees `busy=True`, arms the auto-rescan flag in the same critical section, and returns immediately.
-6. A's running loop routes B's document message into the current batch via the in-batch feeder — or, if the message lands at the boundary, the quiescence decision consumes the signal and re-pulls the snapshot — and picks up B's `PENDING` row.
-7. After all is complete: `busy=False`, `pending_enqueues=0`.
+| What you want to do | Processing documents | Scan classification phase | Clearing / deleting | Manual retry draining |
+| --- | :-: | :-: | :-: | :-: |
+| Upload a file / insert text | ✅ allowed | ❌ 409 | ❌ 409 | ❌ 409 |
+| `/documents/scan` | ⛔ refused | ⛔ refused | ⛔ refused | ⛔ refused |
+| Delete / clear documents | ⛔ refused | ⛔ refused | ⛔ refused | ⛔ refused |
+| Query / retrieval | ✅ not refused | ✅ not refused | ⚠️ not refused, results not guaranteed | ✅ not refused |
 
-No bg task will be falsely rejected due to busy — because enqueue no longer checks busy; the processing loop will not process the same document twice — in-batch admission dedups against the routing/inflight registries, and the auto-rescan flag is consumed exactly once per quiescence decision.
+Key points:
 
-### 8.7 The `recovery_required` Fence
+- **You can keep uploading during a long batch — no need to wait.** This is the most commonly misread part: document processing itself does **not** block uploads. Once the new document's record is written, the running pipeline picks it up on its own — possibly folded into the current batch, possibly at the batch boundary — and neither case needs anything from you.
+- **Scan, delete and clear need an idle pipeline.** A scan reads storage while deciding what to do with each file on disk ([§7.4](#74-what-a-directory-scan-does-differently)), and delete/clear tear storage down directly; neither can interleave with concurrent writes. When refused, `/documents/scan` returns HTTP 200 with `status="scanning_skipped_pipeline_busy"` and delete/clear return `status="busy"` — neither is an error, just retry once things are idle.
+- **Queries are not subject to pipeline admission, but results are not guaranteed during a clear/delete.** The query endpoints do not check pipeline state, so they are never refused with a 409 the way an upload is; but `/documents/clear` concurrently drops a dozen storages via `asyncio.gather` — text chunks, entity / relation / chunk vectors, the knowledge graph, `full_docs` and `doc_status` — while a query holds no consistent snapshot and does not wait for it to finish, so a query issued mid-clear may see empty results, partial results, or a storage error. "The request is accepted" and "the result is consistent" are different guarantees: wait for a destructive operation to finish before querying.
+- **When an upload is refused, the message identifies the cause** — three distinct 409s, one per state:
+  - `Document scan is classifying files. …` — a scan is in its classification phase.
+  - `Pipeline is clearing or deleting documents. …` — a clear or delete is running.
+  - `A retry of failed documents is draining the pipeline. …` — a manual retry is draining the pipeline ([§8.3](#83-retrying-after-a-failure)).
+- An upload returning **413 / 429** has nothing to do with pipeline busyness; those are request admission limits, see [§8.7](#87-admission-and-request-limits). For **503**, see [§8.5](#85-everything-returns-503-the-recovery_required-fence).
 
-Some failures leave the workspace in a state where continuing would be a guess. Rather than pick one, the pipeline sets a `recovery_required` fence: **every** mutation (upload / text / scan / manual retry / delete / clear) is then refused with **HTTP 503** until an operator clears it. The fence is set in three situations:
+### 8.2 Stopping a Running Pipeline
 
-1. **A worker died mid `custom_chunks` / `delete` / `clear`.** Those operations may have half-committed, so their reservation is not simply re-run. (A dead `processing` / `scan` owner is re-runnable and is reclaimed silently instead — no fence.)
-2. **A manual retry's drain cannot reach idle.** `/documents/reprocess_failed` drains the pipeline to idle before its exclusive `FAILED → PENDING` reset, and two things stop that drain: active documents that keep coming back unchanged (re-checking could only spin), and active documents the drain can never advance at all — rows holding an **unfinished custom-chunk operation**, which only `/documents/scan`'s rollback resolves. Either way the reset does not run, the retry request is left un-acknowledged (so its one attempt per document is still owed), and the fence message carries a bounded sample of the blocking document ids. `recovery_kind` distinguishes them: `manual_drain_stalled` and `manual_drain_blocked`.
-
-   (`/documents/scan` does not perform this drain — see §8.4: it is granted its reservation only while the pipeline is idle and holds `scanning_exclusive` across classification, and its reset starts no worker, so remaining `PENDING` rows are inert rather than producers.)
-3. **A reservation holder cannot be adjudicated.** Reclaiming a reservation requires proving its owning process is dead. A holder record with no process identity can never be proven either way, so its reservation is left untouched (never reclaimed on a guess) and the fence provides the way out.
-
-`GET /documents/pipeline_status` reports a sanitized projection — `recovery_required` (bool), `recovery_kind` (the coarse cause) and `recovery_message` (the same text the 503 carries, including the bounded blocker sample where the cause provides one). The raw fence record is never exposed: it sits alongside owner records carrying PIDs and reservation tokens, and a token authorizes releasing a reservation.
-
-Clear the fence with:
-
+```text
+POST /documents/cancel_pipeline      # no request body
 ```
+
+The WebUI entry point is the **Cancel** button inside the "Pipeline Status" dialog on the document management page, clickable only while the pipeline is running and no cancellation has been requested yet. The endpoint returns `{"status": "cancellation_requested" | "not_busy", "message": …}`; `not_busy` means nothing is running and there is nothing to cancel.
+
+**A 200 does not mean it has stopped.** All it does is set a cancellation-requested flag. Cancellation is **cooperative**: it takes effect between stages, at batch boundaries, and at the 0.5-second poll inside multimodal analysis — it **never interrupts an LLM call already in flight**. So expect to wait for the current step to finish; `cancellation_requested` in `GET /documents/pipeline_status` confirms the request was received.
+
+Once it stops, documents end up in one of these states:
+
+| Where the document was | State after the stop |
+| --- | --- |
+| Already finished | `PROCESSED`, kept, unaffected |
+| Already taken into the batch (parsing / analyzing / extracting, or queued) | `FAILED`, with `error_msg` like `User cancelled during parse: <filename>` |
+| Not yet taken into the batch | Stays `PENDING`, resumes on the next trigger |
+
+A few follow-ups:
+
+- **Completed work is not wasted.** The LLM cache and any multimodal items that analyzed successfully are flushed to disk, so a later retry hits the cache instead of paying again.
+- ⚠️ **Documents marked `FAILED` are not retried automatically** — you have to recover them with one of the explicit retries in [§8.3](#83-retrying-after-a-failure).
+- **Uploads keep working during a cancellation.** Newly uploaded documents are picked up by the next run, once this one has exited.
+- **When it does not apply**: a scan's classification phase does not count as "pipeline busy", so the call returns `not_busy` there, and there is currently no endpoint to cancel a scan job — just let it finish. Delete/clear jobs **can** be cancelled, per document: what was already deleted stays deleted, and the rest is reported as not deleted in the response.
+
+**Restarting or killing the server** is the other way to stop, with different consequences:
+
+- In-flight documents are left at `PARSING` / `ANALYZING` / `PROCESSING`; they are **not** written as `FAILED`.
+- Those interrupted states are **automatically reset to `PENDING` and re-run** the next time the pipeline starts, with no manual step.
+- But **starting the server does not start a run by itself**: it takes an upload, or a call to `POST /documents/scan`, to trigger one. So documents sitting at `PROCESSING` after a restart are not cause for alarm — just trigger a run.
+
+### 8.3 Retrying After a Failure
+
+There are three ways to recover a failed document, widest coverage first:
+
+| Method | What it does | When to use it |
+| --- | --- | --- |
+| `POST /documents/scan` (the WebUI "Scan/Retry" button) | First resets every recoverable `FAILED` back to `PENDING`, then scans `INPUT_DIR` for new files; it can also handle failure records whose content was never extracted (delete the record and re-run the file as a new document) | **First choice**, widest coverage |
+| `POST /documents/reprocess_failed` | Retries `FAILED` records from storage only, with no directory discovery; but a document that failed *during parsing* is **re-parsed**, which still reads the source file its record points at | When you do not want to trigger a full directory scan |
+| Delete + re-upload | Starts over completely | You need a different engine or different processing options, or neither of the above can recover it |
+
+Four rules you have to know:
+
+1. **Each retry request grants each document exactly one attempt.** Fail again and it stays `FAILED` until the next explicit retry — it never spins.
+2. **Automatic resume does not touch `FAILED`.** The run triggered by a new upload only recovers interrupted states (`PENDING` / `PARSING` / `ANALYZING` / `PROCESSING`); `FAILED` needs one of the two explicit entry points above.
+3. **Whether it re-parses depends on whether content was extracted successfully.** A document that already has content is not re-parsed: the retry restarts from the multimodal analysis stage, first purging the chunks and graph contributions written by the previous run (details in [§9.3](#93-branch-b-already-extracted)) — which is why "fix the VLM configuration / wait out the rate limit, then retry" works. A document that **failed during parsing** (only a `pending_parse` placeholder in `full_docs`) is reset to `PENDING` and re-enters the parse stage, reading the source file in `INPUT_DIR` again and calling the engine again — so retrying after fixing MinerU / Docling works, but such a retry fails again if the source file has been deleted.
+4. **A retry does not change the engine or the processing options.** `parse_engine`, `process_options` and `chunk_options` are frozen into the record at enqueue time; editing `.env` or a filename hint only affects new uploads.
+
+Which failures a retry fixes, and which need a delete + re-upload:
+
+| Failure cause | Retry in place? |
+| --- | --- |
+| Transient LLM / VLM / storage / network failure, or a rate limit | ✅ just retry |
+| Cancelled by the user (`User cancelled during …`) | ✅ just retry |
+| VLM not configured (`VLM analysis required but VLM role is not available`) | ⚠️ retry works once the VLM is configured; to drop image analysis instead (remove `i`), delete and re-upload |
+| External parser service down / wrong endpoint | ⚠️ retry after fixing the configuration; a raw-bundle cache hit avoids calling the external service again (§6.3) |
+| You want a different parser engine, chunking strategy, or `i/t/e/!` | ❌ delete and re-upload ([§9.3](#93-branch-b-already-extracted)) |
+| Bad filename hint or invalid chunk parameters (rows prefixed `[File Extraction]` that never produced content) | ❌ `reprocess_failed` skips them; fix the filename and use `/documents/scan`, or delete the record and re-upload |
+| A scanned PDF routed to `legacy`, which extracts no text | ❌ route the suffix to `mineru` / `docling` first, then delete and re-upload ([§3.2](#32-using-the-legacy-content-extractor)) |
+| A `dup-*` duplicate record | ❌ inert record; a retry will not touch it, just delete it ([§7.3](#73-what-to-do-about-it)) |
+| Deleting the document returns 409 (missing recovery anchor) | ❌ retrying unchanged is refused again; run `audit_kg_integrity(..., apply=True)` first |
+
+Two more things about `/documents/reprocess_failed`. It first freezes ingestion and drains the pipeline to idle — during which uploads return 409 and `/documents/scan` is refused — then rewrites `FAILED` back to `PENDING` with no worker running, and finally resumes normal processing; with many documents this takes a while. It can return 429 (too many unacknowledged retry requests, capped by `MAX_UNACKED_MANUAL_RETRIES`) or 503 (the fence is up, or a clear/delete is running); a drain that cannot reach idle raises the fence, see [§8.5](#85-everything-returns-503-the-recovery_required-fence).
+
+### 8.4 Deleting a Document: What the Two Checkboxes Remove
+
+Both checkboxes in the delete dialog default to unchecked; they decide whether the on-disk artifacts go away too:
+
+- **Neither checked**: only storage state is removed — chunks, vectors, graph contributions, `doc_status`, `full_docs`. The source file on disk, the archived copy and `.parsed/` sidecar under `__parsed__`, and the external engines' raw artifact bundles are **all kept**.
+- **"Also delete uploaded files"** (API parameter `delete_file=true`): additionally removes the source file in `INPUT_DIR`, the archived copy and `<base>.parsed/` sidecar under `__parsed__`, and the `<base>.mineru_raw/` / `<base>.docling_raw/` / `<base>.native_raw/` raw artifact bundles. **If you want to re-run with a different engine, or to make an external engine genuinely re-parse, you must check this**, otherwise the re-upload hits the cache and gets the old result back ([§3.7](#37-parse-cache-and-forced-re-parse), §6.3).
+- **"Also delete extracted LLM cache"**: additionally clears that document's extraction-stage LLM cache, so a re-upload really re-runs the LLM instead of hitting the cache. Check it when you want to verify the effect of a new model or new prompt.
+
+### 8.5 Everything Returns 503: the `recovery_required` Fence
+
+Some failures leave a workspace in a state where continuing would only be guesswork. The pipeline does not guess; it raises the `recovery_required` fence, after which **every** write operation (upload / text / scan / manual retry / delete / clear) returns **HTTP 503** until an operator lifts it explicitly. Three situations raise it — of which 1 and 3 depend on cross-process dead-owner detection and therefore only occur on **Linux with multi-worker Gunicorn** (single-process Uvicorn loses its coordination state with the process):
+
+1. **A worker died in the middle of `custom_chunks` / `delete` / `clear`.** These may be half-committed, so they cannot simply be re-run. (A dead `processing` / `scan` owner is re-runnable, is reclaimed silently, and raises no fence.)
+2. **A manual retry's drain cannot reach idle.** Two ways it gets stuck: the same documents keep coming back with no change in state (re-checking could only spin), and documents the drain can never advance at all — rows holding an **unfinished custom-chunk operation**, which only `/documents/scan`'s rollback can resolve. In both cases the reset does not run, the retry request stays unacknowledged (its one attempt is still owed), and the fence message carries a bounded sample of the blocking document ids. `recovery_kind` distinguishes them: `manual_drain_stalled` and `manual_drain_blocked`.
+3. **Whether an owner is alive cannot be determined.** Reclaiming an owner's hold requires proving its process is really dead; a holder record without a process identity can never prove it, so the pipeline does not reclaim on a guess and the fence provides the exit instead.
+
+`GET /documents/pipeline_status` reports `recovery_required` (boolean), `recovery_kind` (coarse reason) and `recovery_message` (the same text as the 503, with a bounded sample of blocking documents for some reasons).
+
+Lifting the fence:
+
+```text
 POST /documents/recovery/force_reset
 ```
 
-This is an **unsafe manual override** — it does not repair anything. Besides the fence it also **cancels the workspace's queued manual retry requests**, and that is required rather than incidental: a queued request makes `/documents/scan` refuse its reservation (a scan runs its own exclusive `FAILED` reset and may not jump the manual FIFO, §8.4), so clearing only the fence would leave the recovery path just as blocked. The response reports `cancelled_manual_retries`. No document is lost — failed documents stay `FAILED` and are retried by the next request or by the scan's own reset.
-
-Because both halves are required, the call is **all-or-nothing**: if the queued retries cannot be cancelled it returns **503** with the fence untouched, so a retry can complete the recovery instead of the API reporting one that did not happen.
+This is an **unsafe manual override** — it repairs nothing. Besides the fence it also **cancels the workspace's queued manual retry requests**, and that is required rather than incidental: while a request is queued `/documents/scan` refuses to run (a scan runs its own exclusive `FAILED` reset and may not jump the queue), so clearing only the fence would leave the recovery path just as blocked. The response reports `cancelled_manual_retries`. No document is lost — failed documents stay `FAILED` and are handled by the next retry request or by the scan's own reset. Because both halves are required, the call is **all-or-nothing**: if the queued requests cannot be cancelled the endpoint returns **503** and the fence stays up, so you can retry to complete the recovery rather than have the API report a recovery that did not happen.
 
 Recovery order:
 
-| Cause | Do this |
+| Reason | Action |
 |---|---|
-| `manual_drain_blocked` | `POST /documents/recovery/force_reset`, then `POST /documents/scan` — the scan rolls the unfinished operation back **and** runs the `FAILED` reset itself, so no separate retry call is needed. |
-| `manual_drain_stalled` | `POST /documents/recovery/force_reset`, then inspect the documents named in `recovery_message` — they are stuck for a reason this fence cannot name. Re-issue `POST /documents/reprocess_failed` once they are resolved. |
-| worker died mid `custom_chunks` / `delete` / `clear` | Verify the affected storages are consistent, then `POST /documents/recovery/force_reset`. |
+| `manual_drain_blocked` | `POST /documents/recovery/force_reset`, then `POST /documents/scan` — the scan rolls back the unfinished operations **and** runs the `FAILED` reset itself, so no separate retry call is needed. |
+| `manual_drain_stalled` | `POST /documents/recovery/force_reset`, then investigate the documents named in `recovery_message` — the fence cannot say why they are stuck. Re-issue `POST /documents/reprocess_failed` once they are resolved. |
+| A worker died during `custom_chunks` / `delete` / `clear` | Do not reach for `force_reset` — follow "Repairing half-committed storage" below. |
 
-Restarting the whole service also clears the fence and the queued requests, since both are runtime coordination state and neither is persisted.
+**Can a restart just fix it?** There is exactly one test — **is the blocker in memory or in storage?** A restart clears only runtime coordination state (the fence and owner records in `pipeline_status`, the queued manual retry requests in the ingress; none of it is persisted). Anything written to `doc_status` / `full_docs` / the storages survives untouched.
 
-### 8.8 enqueue Serialization Lock (Preventing Concurrent Dedup Leakage)
+| Cause | Does a restart fix it? | Why |
+| --- | :-: | --- |
+| Owner liveness undeterminable | ✅ Yes | The stuck reservation record lives in cross-process shared state, so restarting the process group removes it, and no storage was ever touched — this is the cleanest fix |
+| `manual_drain_stalled` | ⚠️ Usually | The fence and the queued requests go away with the restart; if the active rows that "keep coming back unchanged" are dead-process `PROCESSING` / `PARSING` / `ANALYZING` orphans, they are automatically reset to `PENDING` after the restart and re-run on the next trigger, so the blocker disappears. But a restart diagnoses nothing: if they stall on the same state for another reason, the next `/documents/reprocess_failed` stalls again |
+| `manual_drain_blocked` | ❌ No | The blocker is the unfinished custom-chunk journal in `doc_status.metadata`, which **is persisted** and survives the restart intact. A restart only clears the fence and the queued requests (still necessary — a queued request makes `/scan` refuse its own reservation); the actual rollback has to come from `POST /documents/scan` |
+| A worker died during `custom_chunks` / `delete` / `clear` | ❌ No | What is half-committed is the storage itself — see below |
 
-Inside `apipeline_enqueue_documents`, "read doc_status to dedupe → write `full_docs` / `doc_status`" runs serially under the workspace-level `enqueue_serialize` lock. Reason: now that concurrent enqueue is allowed during the busy/scan-processing phases, two enqueues with identical content but different filenames (typical scenario: a scan-processing-phase enqueue and an upload arriving together) would, without the lock, race as follows —
+A restart is therefore a "gentler `force_reset`": both clear the fence and the queued requests and neither repairs anything, except that a restart additionally resets interrupted documents to `PENDING` (which is exactly why a stall often heals itself), at the cost of downtime. Prefer a restart when you can take one; use `force_reset` when you cannot and have confirmed storage was never touched (causes 2 and 3).
 
-1. A reads `doc_status` to check `content_hash`: miss.
-2. B reads `doc_status` to check `content_hash`: still miss (A hasn't upserted yet).
-3. A upserts `full_docs` + `doc_status`.
-4. B upserts `full_docs` + `doc_status`.
+#### Repairing Half-committed Storage: the Two Offline Tools vs `force_reset`
 
-Result: both `PENDING` rows with the same `content_hash` enter the downstream pipeline, and the row that should have been identified as `duplicate_kind=content_hash` was **not** identified.
+The fence itself is **not persisted** (it lives in `pipeline_status`), so **restarting the service clears it along with the queued requests**. That is what decides where `force_reset` belongs:
 
-With the serialization lock, the second enqueue's dedup read is guaranteed to see the row already upserted by the first, taking the normal "no new unique document" early-return path and writing this run as a `duplicate_kind=content_hash` FAILED row. The lock only covers:
+- **Use it for causes 2 and 3.** In both, the reset never ran and storage was not touched at all — only scheduling is stuck, and stopping the service for that is not worth it.
+- **Avoid it for cause 1.** It clears a flag and repairs nothing; once cleared, every write (including concurrent uploads) resumes immediately against possibly half-committed storage. Both offline tools below already require a stopped service — and stopping it removes the fence anyway, so `force_reset` never needs to appear.
 
-- `filter_keys` (exclude existing by doc_id)
-- Filename / content hash dedup reads
-- Upsert of duplicate FAILED rows
-- `full_docs.upsert` + `doc_status.upsert`
+What each offline tool can and cannot repair:
 
-The lock does **not** cover the ingress document publish (outside the lock; only briefly takes `pipeline_status_lock`), and does **not** block the `get_docs_by_statuses` read of the processing loop (which goes through `doc_status`'s own concurrent reads — a KV-level atomic with the enqueue writes, not contending for the same lock). Lock order: `enqueue_serialize → pipeline_status_lock`; no deadlock path.
+| Tool | Source of truth and what it repairs | What it cannot repair | Cost |
+| --- | --- | --- | --- |
+| `python -m lightrag.tools.kg_integrity_repair` | Walks graph → chunk `source_id` → `text_chunks` → `full_doc_id` to rebuild missing or unusable `full_entities` / `full_relations` anchor rows; can also write empty anchor rows for a document that genuinely owns nothing | Graph↔VDB drift, `doc_status` / `full_docs` themselves, custom-chunk journals, the fence itself | Never calls the LLM or embedder — effectively free |
+| `lightrag-rebuild-vdb` | Drops and rebuilds `entities_vdb` / `relationships_vdb` from the graph and `chunks_vdb` from `text_chunks`; also clears reverse orphans (present in the vector store, absent from the graph), which incremental repair cannot do | Anchor rows, `doc_status`, the correctness of the graph itself, the fence itself | A full re-embed — real money |
 
-### 8.9 Where chunking runs
+Two ordering traps; getting them backwards turns repairable data into unrepairable data:
 
-Chunking is CPU-bound in the document supplied and — for the recursive strategy — in the separator cascade supplied with it, so it runs in a dedicated **single-worker** thread pool rather than inline on the asyncio event loop. Inline execution may block the event loop, causing latency for async operations. Everything CPU-bound between "content in hand" and "chunks written" is in that pool: the four chunking strategies, the semantic chunker's oversized-piece re-split, the multimodal chunk builder, the pre-embedding hard split, and the `surrounding` backfill.
+- **`kg_integrity_repair` must run before any further deletion.** It can only rebuild anchors from **surviving** chunk provenance; if a half-finished delete already removed the `text_chunks` rows, those contributions become irrecoverable orphans that the tool can only report and will never modify on its own. There is no reason not to run report mode (without `--apply`) first.
+- **`lightrag-rebuild-vdb` must run last.** It treats the graph and `text_chunks` as the truth: graph objects a half-finished delete should have removed will be faithfully re-embedded back into the vector store. It guarantees that vectors are **consistent** with the graph, not that the graph is **correct**. So settle the graph side first, then consider rebuilding vectors.
 
-Two consequences worth knowing:
+The full order for cause 1 is therefore:
 
-- **Concurrency is unchanged, not increased.** One worker is exactly what the event loop already imposed — while one document chunked, no other document's coroutine could run. The pool frees the loop; it does not make chunking parallel, and it does not scale with `MAX_PARALLEL_INSERT`.
-- **A custom `chunking_func` still runs on the event loop.** Its contract is "synchronous or async", so an implementation that touches the running loop when called is supported and would fail in a worker thread. Only the built-in default is dispatched to the pool; a CPU-bound custom chunker should do its own `asyncio.to_thread`.
+1. **Stop the service** (the fence disappears with it — do not reach for `force_reset`).
+2. Run `python -m lightrag.tools.kg_integrity_repair --verbose` for the report first: anchor gaps, plus the irrecoverable orphans that are already beyond saving. Run `--apply` only if there are gaps.
+3. Start the service and re-run the operation that did not finish — a whole-document purge is journaled and resumes after the phases it already completed; `clear` is simply re-run; a `custom_chunks` rollback is triggered by `POST /documents/scan`.
+4. Once things are stable, if you suspect graph↔VDB drift, stop the service again and run `lightrag-rebuild-vdb`, using its read-only consistency check first to decide whether the embedding cost is worth paying.
 
-### 8.10 Pipeline Concurrency Parameters
+Both tools must run with the service stopped and the workspace idle (concurrent writes make them read a moving target), and `lightrag-rebuild-vdb` must use the same `.env` as the server or the rebuilt vectors land in a different embedding space. See [README_KG_INTEGRITY_REPAIR.md](../lightrag/tools/README_KG_INTEGRITY_REPAIR.md) and [README_REBUILD_VDB.md](../lightrag/tools/README_REBUILD_VDB.md).
 
-The locks around `pipeline_status` solve the correctness problem of "who can write"; this section's set of parameters solves the throughput problem of "how many workers run concurrently". The pipeline is divided into 3 stages, each with an independently tunable worker pool:
+### 8.6 Pipeline Concurrency Parameters
+
+The previous sections are about the correctness question of "who may write"; this set of parameters answers the throughput question of "how many workers run at once". The pipeline has 3 stages, and each stage's worker pool is sized independently:
 
 ```
           ┌─ parse_queues["native"]  ─► [native pool  × N1] ─┐   ← legacy shares this pool
 PENDING ─►├─ parse_queues["mineru"]  ─► [mineru pool  × N2] ─┼─► q_analyze ─►[analyzer × N4] ─► q_process ─►[processor × N5]
           ├─ parse_queues["docling"] ─► [docling pool × N3] ─┤
-          └─ parse_queues[<3rd-party group>] ─► [custom pool] ┘   ← created per ParserSpec.queue_group
+          └─ parse_queues[<3rd-party>] ─► [custom pool]   ──┘   ← created dynamically per ParserSpec.queue_group
 ```
 
-Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): the built-in native/mineru/docling each own a group, legacy shares the native pool (local, no network), and a third-party engine may declare its own group with a custom worker count (see [ThirdPartyParser.md](./ThirdPartyParser.md)). At enqueue time, `resolve_stored_document_parser_engine` puts each document into the corresponding parse queue based on its `parser_engine` (from `LIGHTRAG_PARSER` defaults or the filename hint); the parse queues are **completely non-blocking** with respect to each other — mineru saturation does not slow down docling or native. After parsing, they enter `q_analyze` (multimodal analysis) uniformly, and then enter `q_process` (entity/relation extraction + ingest).
+Parse queues are **created dynamically from the registry's `ParserSpec.queue_group`** (one registry snapshot per batch): built-in native/mineru/docling each get a group, legacy shares the native pool (local, no network), and third-party engines can declare their own group and concurrency (see [ThirdPartyParser.md](./ThirdPartyParser.md)). At enqueue time each document's parser engine (from the `LIGHTRAG_PARSER` default or a filename hint) decides which parse queue it lands in; the parse queues **never block one another** — a saturated mineru queue does not slow docling or native down. After parsing, everything converges on `q_analyze` (multimodal analysis) and then `q_process` (entity/relation extraction + ingestion).
 
-| Environment variable | Default | Effect | Tuning advice |
+| Environment variable | Default | Role | Tuning advice |
 | --- | --- | --- | --- |
-| `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: number of concurrent workers for native parsing (docx / pdf / txt and other pure local processing) | Pure CPU, low memory usage; can be raised to CPU core count |
-| `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: number of concurrent workers for MinerU parsing | MinerU has significant GPU/CPU usage; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample VRAM, you can set 2–3; when going through MinerU's official cloud service, you can raise it appropriately (subject to cloud quotas). |
-| `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: number of concurrent workers for Docling parsing | Docling is similarly resource-sensitive; **the default of 2 is a modest amount of parallelism**. Lower to 1 when resources are tight; with local deployment and ample CPU/GPU, you can set 2–3. |
-| `MAX_PARALLEL_ANALYZE` | `5` | N4: number of concurrent workers for multimodal analysis (VLM image / table description) | Directly consumes the VLM quota. Recommended ≤ VLM service concurrency cap. |
-| `MAX_PARALLEL_INSERT` | `3` | N5: number of concurrent documents at the entity / relation extraction + ingest stage | Recommended `MAX_ASYNC_LLM / 3`, in the range 2–10. This stage triggers multiple LLM calls per document; setting it too high will hit LLM rate limits. This value also serves as the `asyncio.Semaphore` for an additional constraint (worker count and semaphore value are the same). |
-| `QUEUE_SIZE_PARSE` | `20` | Bounded capacity of the parse-input queues (native/MinerU/Docling) | Generally no need to tune. Items here are lightweight doc_ids (the large parsed body is stripped before the analyze stage); this only bounds how many pending docs the pipeline pre-dispatches to parse workers, so tuning has little effect. |
-| `QUEUE_SIZE_ANALYZE` | `100` | Bounded capacity of the analyze queue (parse → analyze stage) | Generally no need to tune. For very large batches (thousands or more), can be raised to avoid backpressure at the enqueue side; lower it when memory is tight. |
-| `QUEUE_SIZE_INSERT` | `4` | Queue capacity between the analyze → process stage | The process stage is the slowest and most memory-hungry in the pipeline; the queue is deliberately small to provide backpressure to upstream and prevent memory bloat. |
+| `MAX_PARALLEL_PARSE_NATIVE` | `5` | N1: concurrent workers for native parsing (docx / pdf / txt, all local) | Pure CPU with a low memory footprint; scale with core count |
+| `MAX_PARALLEL_PARSE_MINERU` | `2` | N2: concurrent workers for MinerU parsing | MinerU is GPU/CPU heavy, so **2 is a moderate default**. Drop to 1 when resources are tight; 2-3 for a local deployment with enough VRAM; higher against MinerU's official cloud service (subject to its quota) |
+| `MAX_PARALLEL_PARSE_DOCLING` | `2` | N3: concurrent workers for Docling parsing | Docling is equally resource-sensitive, so **2 is a moderate default**. Drop to 1 when resources are tight; 2-3 for a local deployment with enough CPU/GPU |
+| `MAX_PARALLEL_ANALYZE` | `5` | N4: concurrent workers for multimodal analysis (VLM image / table descriptions) | Consumes VLM quota directly. Keep ≤ the VLM service's concurrency limit |
+| `MAX_PARALLEL_INSERT` | `3` | N5: concurrent documents in the entity/relation extraction + ingestion stage | `MAX_ASYNC_LLM / 3` is a good rule of thumb, in the 2~10 range. Each document triggers many LLM calls here, so too high hits LLM rate limits. The same value also backs an `asyncio.Semaphore` as a second constraint (worker count equals the semaphore value) |
+| `QUEUE_SIZE_PARSE` | `20` | Input queue length for parse (native/MinerU/Docling) | Rarely needs tuning. The queue holds only lightweight doc_ids (large document bodies are stripped before analyze), and it just bounds how many documents the pipeline pre-dispatches to parse workers |
+| `QUEUE_SIZE_ANALYZE` | `100` | Bounded capacity of the analyze queue (parse → analyze) | Rarely needs tuning. Raise it slightly for very large batches (tens of thousands) to avoid back-pressure at the enqueue side; lower it when memory is tight |
+| `QUEUE_SIZE_INSERT` | `4` | Queue capacity between the analyze and process stages | process is the slowest and most memory-hungry stage, so this queue is deliberately small, giving upstream back-pressure |
 
-**Several key points:**
+**A few key points:**
 
-1. **Parsing stage is isolated per engine**, so when mixing native/mineru/docling, you don't have to worry about a slow engine dragging another down.
-2. **mineru / docling default to 2**: both have high resource usage, so the default keeps parallelism modest. Lower to 1 when resources are tight (OOM / VRAM contention / failure retry); with multi-GPU or a dedicated parser server, you can raise them manually.
-3. **`MAX_PARALLEL_INSERT` doubles as worker pool size and semaphore cap**: the pipeline creates a `Semaphore(max_parallel_insert)`, and each process worker also takes the semaphore before extraction and ingest. So even if you manually raise the worker count, the actual concurrency cap is still bounded by this value — just tune it directly.
-4. **Queue size and backpressure**: the small default `QUEUE_SIZE_INSERT=4` is intentional — the process stage is slow and memory-hungry; when the queue fills, analyze blocks, and backpressure reaches the parse stage, preventing thousands of parsing results from piling up in memory at once.
-5. **How changes take effect**: all parameters are passed in via `.env` (or environment variables), read once at `LightRAG` construction; restart the service after changing them.
+1. **The parse stage is isolated per engine**, so mixing native/mineru/docling never lets one slow engine drag another down.
+2. **mineru / docling default to 2**: both are resource-heavy, so the default stays moderate. Drop to 1 when resources are tight (avoiding OOM / VRAM contention / failure retries); raise it by hand if you have multiple GPUs or a dedicated parsing server.
+3. **`MAX_PARALLEL_INSERT` is both pool size and semaphore ceiling**: the pipeline creates `Semaphore(max_parallel_insert)` and every process worker takes it before extracting and ingesting. So even if you raise the worker count by hand, this value still caps real concurrency — just tune it directly.
+4. **Queue size and back-pressure**: the small `QUEUE_SIZE_INSERT=4` default is deliberate — process is slow and memory-hungry, so a full queue blocks the analyze stage and back-pressures parse, instead of piling tens of thousands of parse results into memory at once.
+5. **How changes take effect**: every parameter comes from `.env` (or the environment) and is read once when the `LightRAG` instance is constructed; restart the service after changing one.
+6. **Chunking does not scale with concurrency**: chunking runs in a dedicated single-worker thread pool so it does not block the event loop, and its concurrency does not grow with `MAX_PARALLEL_INSERT` — raising that will not make chunking faster. A custom `chunking_func` still runs on the event loop (its contract allows touching the running loop), so CPU-heavy implementations should call `asyncio.to_thread` themselves.
 
 **Typical tuning scenarios:**
 
-- Large batch of PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (defaults are fine; lower MINERU to 1 if VRAM is tight).
-- Large batch of PDFs + MinerU cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (depending on cloud quota), others at defaults.
-- Pure docx / txt (only native): `MAX_PARALLEL_PARSE_NATIVE=10`; `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
-- Heavy LLM rate-limiting: first lower `MAX_PARALLEL_INSERT` (the process stage makes multiple LLM calls per document), then lower `MAX_PARALLEL_ANALYZE` (VLM is a separate quota).
+- Many PDFs + local MinerU on a single GPU: `MAX_PARALLEL_PARSE_MINERU=2`, `MAX_PARALLEL_ANALYZE=5`, `MAX_PARALLEL_INSERT=3` (the defaults; drop MINERU to 1 when VRAM is tight).
+- Many PDFs + MinerU's cloud service: `MAX_PARALLEL_PARSE_MINERU=3~5` (per your cloud quota), everything else default.
+- Pure docx / txt (native only): `MAX_PARALLEL_PARSE_NATIVE=10`, with `MAX_PARALLEL_INSERT` derived from `MAX_ASYNC_LLM/3`.
+- Visible LLM rate limiting: lower `MAX_PARALLEL_INSERT` first (the process stage makes many LLM calls per document), then `MAX_PARALLEL_ANALYZE` (VLM has its own quota).
 
-### 8.11 Admission and Request Limits
+### 8.7 Admission and Request Limits
 
-Before a document reaches any of the machinery above, the server can refuse it outright. These are the variables behind an upload that is rejected rather than queued:
+Before a document reaches any of the mechanisms above, the server may refuse it outright. These variables decide whether an upload is rejected or queued:
 
-| Variable | Default | Refusal |
+| Variable | Default | How it refuses |
 | --- | --- | --- |
-| `MAX_UPLOAD_SIZE` | `104857600` (100 MB) | `413` — single uploaded file too large |
-| `MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | `413` — raw request body too large. Applies to **every** route, layered: ordinary routes get this value, `/documents/text` and `/documents/texts` get a built-in 50 MiB **while this variable is unset**, and `/documents/upload` derives `MAX_UPLOAD_SIZE` + 1 MiB. Configuring any positive value — the 1 MiB default included — makes it govern every non-upload route. `0` disables all of them |
-| `MAX_TEXTS_PER_REQUEST` | `0` (disabled) | `413` — too many texts in one `/documents/texts` call |
-| `MAX_PENDING_DOCUMENTS` | `0` (disabled) | `429` — too many documents already PENDING / PARSING / ANALYZING / PROCESSING |
+| `MAX_UPLOAD_SIZE` | `104857600` (100 MB) | `413` — a single uploaded file is too large |
+| `MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | `413` — the raw request body is too large. It applies to **all** routes, in tiers: ordinary routes take this value, `/documents/text` and `/documents/texts` take a built-in 50 MiB **when the variable is unset**, and `/documents/upload` derives its limit from `MAX_UPLOAD_SIZE` + 1 MiB. Setting any positive value explicitly (including the 1 MiB default) applies it uniformly to every non-upload route. `0` disables all of them |
+| `MAX_TEXTS_PER_REQUEST` | `0` (off) | `413` — too many texts in a single `/documents/texts` call |
+| `MAX_PENDING_DOCUMENTS` | `0` (off) | `429` — too many documents already in PENDING / PARSING / ANALYZING / PROCESSING |
 
-Their full semantics, including how `MAX_UPLOAD_SIZE` interacts with a reverse proxy's own body limit, are documented in [LightRAG Server](./LightRAG-API-Server.md).
+Their full semantics (including how `MAX_UPLOAD_SIZE` relates to a reverse proxy's own body limit) are in [LightRAG Server](./LightRAG-API-Server.md).
 
-Three further knobs belong to the pipeline itself rather than to request admission:
+Three more knobs belong to the pipeline itself rather than to request admission:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PIPELINE_SCHEDULING_PAGE_SIZE` | `500` | keyset page size for the doc-status backlog sweep; `0` disables paging |
-| `PIPELINE_REQUIRE_STRICT_STORAGE_READS` | `false` | refuse to start when the doc-status backend cannot serve strict reads. This is what decides whether the `STALE_STUB` exit in §7.1 can act at all — without a reliable point read, nothing is deleted |
-| `MAX_UNACKED_MANUAL_RETRIES` | `64` | per-workspace ceiling on published-but-unacknowledged manual retry requests (§8.7) |
+| `PIPELINE_SCHEDULING_PAGE_SIZE` | `500` | Keyset page size for the doc_status backlog scan; `0` disables paging |
+| `PIPELINE_REQUIRE_STRICT_STORAGE_READS` | `false` | Refuse to start when the doc_status backend cannot serve strict reads. This directly decides whether the "delete the failure record and re-run the file as a new document" row in [§7.4](#74-what-a-directory-scan-does-differently) can act at all — without a reliable point read, nothing is deleted |
+| `MAX_UNACKED_MANUAL_RETRIES` | `64` | Per-workspace ceiling on published-but-unacknowledged manual retry requests ([§8.3](#83-retrying-after-a-failure)) |
 
 ## 9. Pipeline Resume Rules at Startup
 
 Each time `apipeline_process_enqueue_documents` starts up, it pulls all documents in `PARSING` / `ANALYZING` / `PROCESSING` / `PENDING` / `FAILED` to continue processing. The resume path **branches by "whether content has been extracted"**, ensuring that any document, regardless of its previous progress, has an idempotent result when resumed under the current `process_options`.
 
-The resume rule only applies to documents whose `doc_id` already exists in `doc_status`. New files joining the queue require the file dedup logic in "Concurrency and Reentry Constraints", to avoid new files squeezing out the records of files whose content has already been successfully extracted.
+The resume rule only applies to documents whose `doc_id` already exists in `doc_status`. New files joining the queue require the file dedup logic in §7, to avoid new files squeezing out the records of files whose content has already been successfully extracted.
 
 ### 9.1 Determining "Content Has Been Extracted"
 
@@ -1149,12 +1179,15 @@ Go through the full pipeline (registry-dispatched parsing `get_parser(engine).pa
 | `P` was requested but the chunks look like `R` output | No structured `LightRAG Document` was produced, so `P` degraded (§2.7, §3.2) | Route the file to `native` / `mineru` / `docling` instead of `legacy` |
 | Headings are wrong in a `.docx`, so `P` splits badly | The document's Word outline is unreliable | Try `native(smart_heading=true)` (§3.3) and iterate with the parser CLI |
 | Log notes that paragraphs lack `paraId` | Produced by LibreOffice / WPS / older Word (§3.3) | Informational. Re-save in Word 2013+ only if you need paragraph-level provenance |
-| Document is FAILED as a duplicate | Basename dedup (canonicalized, hint stripped) or content-hash dedup (§7.1, §7.2) | Delete the existing document first, or rename the new file |
-| Upload returns `409` | A document with the same canonical basename already exists in the input directory or in doc-status (§8.5) | Delete it via `POST /documents/delete_document`, then upload again |
-| Upload returns `413` or `429` | An admission limit was hit (§8.11) | See the limits table for which one |
-| Everything returns `503` | The `recovery_required` fence is up (§8.7) | Follow the recovery order documented in that section |
-| `/documents/scan` returns `scanning_skipped_pipeline_busy` | The pipeline is busy or scanning, uploads are in flight, or a manual retry is queued (§8.2) | Wait for idle; `POST /documents/reprocess_failed` is the single-call recovery for a stuck retry request |
-| Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Automatic resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§9.3) | Delete the document (with "also delete file") and upload it again |
+| Document is FAILED as a duplicate | Basename dedup (canonicalized, hint stripped) or content-hash dedup (§7.1, §7.2) | Delete the existing document first, or rename the new file; duplicate records (`dup-*`, or an original row flipped to FAILED after parsing) can only be removed explicitly (§7.3) |
+| Upload returns `409` | A document with the same canonical basename already exists in the input directory or in doc-status (§7.2) | Delete it via `POST /documents/delete_document`, then upload again |
+| Upload returns `413` or `429` | An admission limit was hit (§8.7) | See the limits table for which one |
+| Everything returns `503` | The `recovery_required` fence is up (§8.5) | Follow the recovery order documented in that section |
+| `/documents/scan` returns `scanning_skipped_pipeline_busy` | The pipeline is busy or scanning, uploads are in flight, or a manual retry is queued (§8.1) | Wait for idle; `POST /documents/reprocess_failed` is the single-call recovery for a stuck retry request |
+| Cancel was clicked and a batch of documents turned `FAILED` | Documents already taken into the batch are marked FAILED on cancellation (§8.2) | Retry with `POST /documents/scan` or `POST /documents/reprocess_failed`; finished documents are unaffected |
+| Cancel was clicked but the pipeline is still running | Cancellation is cooperative and never interrupts an LLM call already in flight (§8.2) | Wait for the current stage to end; `cancellation_requested` in `GET /documents/pipeline_status` confirms the request arrived |
+| Documents stuck at `PROCESSING` / `PARSING` after a restart | Interrupted states recover automatically, but starting the server does not itself trigger a run (§8.2) | Call `POST /documents/scan` once, or upload any file to trigger one |
+| Changed the engine or the options, but the output is unchanged | Both the engine and `process_options` are frozen into the doc-status record at enqueue. Automatic resume and `/documents/reprocess_failed` reuse the stored values; editing `LIGHTRAG_PARSER` or a hint affects new uploads only (§8.3, §9.3) | Delete the document (with "also delete file") and upload it again |
 | An external engine keeps returning stale output after fixing its service config | The raw-artifact bundle cache was hit (§6.3) | Set the matching `LIGHTRAG_FORCE_REPARSE_*` flag (§3.7), or delete the document with "also delete file" |
 | A scanned PDF fails with "extracted no usable text" | `legacy` cannot read a PDF with no text layer (§3.2) | Route it to `mineru` or `docling` with OCR enabled |
 | MinerU rejects a multi-segment page range | Multi-segment ranges require `official` mode; `local` accepts a single page or one simple range (§3.6) | Use a single range under `local`, or switch modes |
@@ -1217,7 +1250,7 @@ Typical scenarios for per-file personalization: a management UI configures separ
 
 **Compatibility for not passing `file_paths`**: the core APIs `insert` / `ainsert` / `apipeline_enqueue_documents` still support invocations without `file_paths`; the `file_path` of such documents is saved as `unknown_source`, does not participate in filename dedup, and the document ID continues to be generated from text content.
 
-For `apipeline_enqueue_documents`'s own concurrency constraints (last-line guard, `from_scan=True` bypass), see the entry-point behavior table in §8.2.
+For `apipeline_enqueue_documents`'s own concurrency constraints, see the state/action table in §8.1.
 
 ### 11.5 `ainsert(split_by_character=…, split_by_character_only=…)`
 
@@ -1232,7 +1265,7 @@ Only effective for the F strategy; other strategies' sub-dictionaries are unaffe
 
 The legacy `apipeline_enqueue_documents` behavior of `reprocess_existing_non_processed=True` would directly delete non-PROCESSED old records and rebuild them during scan, which conflicts with the rules in §7 / §8; it has been entirely removed. Replacement paths:
 
-- Automatic resume: scan handles same-named files per the classification rules in §7.1 (archive / resume / delete stub then re-enqueue), uniformly picked up by the resume rules in §9 inside the processing loop.
+- Automatic resume: scan handles same-named files per the rules in §7.4 (archive / resume / delete the record then re-enqueue), uniformly picked up by the resume rules in §9 inside the processing loop.
 - Forced refresh: first call `/documents/delete_document` to delete the old document, then upload the same-named new file.
 
 ## Appendix A. Notes on Upgrading from Legacy
@@ -1269,8 +1302,8 @@ Where to find each family of file-processing variables. This is an index, not a 
 | MinerU | `MINERU_*` | §3.4 |
 | Docling | `DOCLING_*` | §3.5 |
 | Parse cache | `LIGHTRAG_FORCE_REPARSE_{NATIVE,MINERU,DOCLING}`, `{MINERU,DOCLING}_ENGINE_VERSION` | §3.7, §6.3 |
-| Directories | `INPUT_DIR`, `WORKING_DIR`, `SCAN_SPOOL_DIR` | §6, §7.1 |
-| Concurrency | `MAX_PARALLEL_*`, `QUEUE_SIZE_*` | §8.10 |
-| Admission and limits | `MAX_UPLOAD_SIZE`, `MAX_REQUEST_BODY_BYTES`, `MAX_TEXTS_PER_REQUEST`, `MAX_PENDING_DOCUMENTS`, `PIPELINE_*`, `MAX_UNACKED_MANUAL_RETRIES`, `SCAN_ENQUEUE_BATCH_SIZE` | §8.11 |
+| Directories | `INPUT_DIR`, `WORKING_DIR`, `SCAN_SPOOL_DIR` | §6, §7.4 |
+| Concurrency | `MAX_PARALLEL_*`, `QUEUE_SIZE_*` | §8.6 |
+| Admission and limits | `MAX_UPLOAD_SIZE`, `MAX_REQUEST_BODY_BYTES`, `MAX_TEXTS_PER_REQUEST`, `MAX_PENDING_DOCUMENTS`, `PIPELINE_*`, `MAX_UNACKED_MANUAL_RETRIES`, `SCAN_ENQUEUE_BATCH_SIZE` | §8.7 |
 | Query-time (not chunking) | `ENABLE_CONTENT_HEADINGS` — appends each chunk's heading path when assembling the answer context; it does not change chunk boundaries or stored chunk text | [LightRAG Server](./LightRAG-API-Server.md) |
 | Offline / tokenizer | `TIKTOKEN_CACHE_DIR` | [OfflineDeployment.md](./OfflineDeployment.md) |
