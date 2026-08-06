@@ -52,6 +52,16 @@ def test_headings_split_blocks_and_track_parents():
     assert ex.blocks[0]["content"].startswith("# A")
 
 
+def test_skipped_heading_levels_keep_same_level_headings_as_siblings():
+    ex = _extract("# A\n### B\n### C")
+    summary = [(b["heading"], b["parent_headings"]) for b in ex.blocks]
+    assert summary == [
+        ("A", []),
+        ("B", ["A"]),
+        ("C", ["A"]),
+    ]
+
+
 def test_content_before_first_heading_is_preface():
     ex = _extract("loose intro line\n\n# Real")
     assert ex.blocks[0]["heading"] == PREFACE_HEADING
