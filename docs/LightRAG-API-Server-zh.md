@@ -539,6 +539,7 @@ lightrag-server --port 9622 --workspace space2
 - **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
 - **对于图数据库，通过 label 实现数据的逻辑隔离：** `Neo4JStorage`、`MemgraphStorage`
 - **对于 OpenSearch，通过索引名称前缀实现数据隔离：** `OpenSearchKVStorage`、`OpenSearchDocStatusStorage`、`OpenSearchGraphStorage`、`OpenSearchVectorDBStorage`
+- **对于 LanceDB (embedded), 数据跟里是通过在表名前面添加前缀来实现:** `LanceDBKVStorage`, `LanceDBDocStatusStorage`, `LanceDBGraphStorage`, `LanceDBVectorStorage`
 
 为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`。
 
@@ -887,10 +888,10 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 
 | 存储类型 | 可选实现（首个为默认实现） |
 |---|---|
-| KV_STORAGE | `JsonKVStorage`、`RedisKVStorage`、`PGKVStorage`、`MongoKVStorage`、`OpenSearchKVStorage` |
-| VECTOR_STORAGE | `NanoVectorDBStorage`、`MilvusVectorDBStorage`、`PGVectorStorage`、`FaissVectorDBStorage`、`QdrantVectorDBStorage`、`MongoVectorDBStorage`、`OpenSearchVectorDBStorage` |
-| GRAPH_STORAGE | `NetworkXStorage`、`Neo4JStorage`、`PGTableGraphStorage`、`PGGraphStorage`、`MongoGraphStorage`、`MemgraphStorage`、`OpenSearchGraphStorage` |
-| DOC_STATUS_STORAGE | `JsonDocStatusStorage`、`RedisDocStatusStorage`、`PGDocStatusStorage`、`MongoDocStatusStorage`、`OpenSearchDocStatusStorage` |
+| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage`, `LanceDBKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage`, `LanceDBVectorStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage`, `LanceDBGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage`, `LanceDBDocStatusStorage` |
 
 在生产环境中，如果希望用单一后端同时承担全部四种存储，可以选择 PostgreSQL、MongoDB 或 OpenSearch；也可以为不同存储类型分别选择专用数据库，例如用 Milvus 或 Qdrant 承担向量存储，用 Neo4j 或 Memgraph 承担图存储。
 
@@ -913,6 +914,7 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 | `QdrantVectorDBStorage` | `QDRANT_URL`（`QDRANT_API_KEY` 可选） |
 | `MemgraphStorage` | `MEMGRAPH_URI` |
 | `OpenSearchKVStorage` / `OpenSearchVectorDBStorage` / `OpenSearchGraphStorage` / `OpenSearchDocStatusStorage` | `OPENSEARCH_HOSTS` |
+| `LanceDBKVStorage` / `LanceDBVectorStorage` / `LanceDBGraphStorage` / `LanceDBDocStatusStorage` | `LANCEDB_URI` |
 
 此外，`WORKSPACE` 环境变量用于在同一后端上隔离多个 LightRAG 实例的数据（合法字符为 `a-z`、`A-Z`、`0-9` 和 `_`）；各存储后端也提供形如 `POSTGRES_WORKSPACE`、`NEO4J_WORKSPACE` 的专属覆盖变量，仅为兼容旧配置保留，正常情况下应统一使用 `WORKSPACE`。
 

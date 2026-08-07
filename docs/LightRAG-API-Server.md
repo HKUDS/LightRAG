@@ -539,8 +539,9 @@ The command-line `workspace` argument and the `WORKSPACE` environment variable i
 - **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
 - **For graph databases, logical data isolation is achieved through labels:** `Neo4JStorage`, `MemgraphStorage`
 - **For OpenSearch, data isolation is achieved through index name prefixes:** `OpenSearchKVStorage`, `OpenSearchDocStatusStorage`, `OpenSearchGraphStorage`, `OpenSearchVectorDBStorage`
+- **For LanceDB (embedded), data isolation is achieved through table name prefixes:** `LanceDBKVStorage`, `LanceDBDocStatusStorage`, `LanceDBGraphStorage`, `LanceDBVectorStorage`
 
-To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`.
+To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`, `MEMGRAPH_WORKSPACE`, `OPENSEARCH_WORKSPACE`, `LANCEDB_WORKSPACE`.
 
 ### Multiple workers for Gunicorn + Uvicorn
 
@@ -887,10 +888,10 @@ Each storage type offers multiple implementations. By default, LightRAG Server u
 
 | Storage Type | Available Implementations (Default First) |
 |---|---|
-| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage` |
-| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage` |
-| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage` |
-| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage` |
+| KV_STORAGE | `JsonKVStorage`, `RedisKVStorage`, `PGKVStorage`, `MongoKVStorage`, `OpenSearchKVStorage`, `LanceDBKVStorage` |
+| VECTOR_STORAGE | `NanoVectorDBStorage`, `MilvusVectorDBStorage`, `PGVectorStorage`, `FaissVectorDBStorage`, `QdrantVectorDBStorage`, `MongoVectorDBStorage`, `OpenSearchVectorDBStorage`, `LanceDBVectorStorage` |
+| GRAPH_STORAGE | `NetworkXStorage`, `Neo4JStorage`, `PGTableGraphStorage`, `PGGraphStorage`, `MongoGraphStorage`, `MemgraphStorage`, `OpenSearchGraphStorage`, `LanceDBGraphStorage` |
+| DOC_STATUS_STORAGE | `JsonDocStatusStorage`, `RedisDocStatusStorage`, `PGDocStatusStorage`, `MongoDocStatusStorage`, `OpenSearchDocStatusStorage`, `LanceDBDocStatusStorage` |
 
 For production deployments, PostgreSQL, MongoDB, or OpenSearch can provide all four storage types through a single backend. You can also select a specialized database for each storage type, such as Milvus or Qdrant for vector storage and Neo4j or Memgraph for graph storage.
 
@@ -913,6 +914,7 @@ The environment variables required at startup for each storage implementation ar
 | `QdrantVectorDBStorage` | `QDRANT_URL` (`QDRANT_API_KEY` is optional) |
 | `MemgraphStorage` | `MEMGRAPH_URI` |
 | `OpenSearchKVStorage` / `OpenSearchVectorDBStorage` / `OpenSearchGraphStorage` / `OpenSearchDocStatusStorage` | `OPENSEARCH_HOSTS` |
+| `LanceDBKVStorage` / `LanceDBVectorStorage` / `LanceDBGraphStorage` / `LanceDBDocStatusStorage` | `LANCEDB_URI` |
 
 The `WORKSPACE` environment variable isolates data for multiple LightRAG instances on the same backend (valid characters are `a-z`, `A-Z`, `0-9`, and `_`). Each storage backend also provides a backend-specific override such as `POSTGRES_WORKSPACE` or `NEO4J_WORKSPACE`. These overrides are retained only for compatibility with legacy configurations; under normal circumstances, use `WORKSPACE` consistently.
 
