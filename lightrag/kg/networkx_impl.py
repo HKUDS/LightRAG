@@ -530,8 +530,13 @@ class NetworkXStorage(BaseGraphStorage):
         if node_label == "*":
             # Get degrees of all nodes
             degrees = dict(graph.degree())
-            # Sort nodes by degree in descending order and take top max_nodes
-            sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+            # Degree descending, then label ascending — same contract as
+            # get_popular_labels / BaseGraphStorage. Stable degree-only sort
+            # kept insertion order on ties, so max_nodes truncation dropped
+            # different isolates depending on insert order.
+            sorted_nodes = sorted(
+                degrees.items(), key=lambda item: (-item[1], str(item[0]))
+            )
 
             # Check if graph is truncated
             if len(sorted_nodes) > max_nodes:
