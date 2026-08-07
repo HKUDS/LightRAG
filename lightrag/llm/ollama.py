@@ -137,6 +137,16 @@ async def _ollama_model_if_cache(
         kwargs.pop("keyword_extraction", None)
 
     _normalize_ollama_response_format(kwargs)
+
+    # `think` (OllamaLLMOptions) travels in with the rest of the generation
+    # options, but Ollama's chat() takes it as its own top-level argument,
+    # not a key inside `options` -- lift it out here rather than at every
+    # call site. Absent entirely (e.g. the embedding options dict, which has
+    # no `think` field) leaves thinking at the model's own default.
+    options = kwargs.get("options")
+    if isinstance(options, dict) and "think" in options:
+        kwargs["think"] = options.pop("think")
+
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
     if timeout == 0:
