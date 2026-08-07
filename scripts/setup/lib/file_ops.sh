@@ -352,7 +352,10 @@ generate_env_file() {
     if [[ "$line" =~ ^[A-Za-z0-9_]+= ]]; then
       key="${line%%=*}"
       if [[ -z "${written_keys[$key]+set}" ]]; then
-        if [[ -n "${ENV_VALUES[$key]+set}" ]]; then
+        if [[ -n "${ENV_SUPPRESS_ACTIVE_KEYS[$key]+set}" ]]; then
+          printf '# %s  # unset for LM Studio (auto-probed at server startup)\n' "$line" >> "$tmp_file"
+          written_keys["$key"]=1
+        elif [[ -n "${ENV_VALUES[$key]+set}" ]]; then
           value="${ENV_VALUES[$key]}"
           local _fmt_active_val
           _fmt_active_val="$(format_env_value "$value" "$key")"
