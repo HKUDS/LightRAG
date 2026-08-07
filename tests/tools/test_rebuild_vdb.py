@@ -2,7 +2,7 @@
 
 Covers:
 - rebuild: payload fidelity against the authoritative write points,
-  bidirectional edge dedup, AGE quote stripping, dirty-data skipping,
+  bidirectional edge dedup, quote-bearing endpoint id preservation, dirty-data skipping,
   drop-before-upsert ordering, batching with periodic flushes, and
   error collection on persistently failing batches.
 - check: consistent stores, missing-record detection, legacy reverse
@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag.tools.rebuild_vdb import (
-    _strip_agtype_quotes,
     check_vdb_consistency,
     rebuild_chunks_vdb,
     rebuild_entities_vdb,
@@ -282,15 +281,20 @@ async def test_rebuild_relationships_dedupes_bidirectional_edges():
 
 
 @pytest.mark.asyncio
-async def test_rebuild_relationships_strips_age_quotes():
-    # PG/AGE agtype::text casts wrap endpoint strings in double quotes
-    graph = make_graph(edges=[edge('"Alice"', '"Bob"')])
+async def test_rebuild_relationships_preserves_quote_bearing_endpoint_ids():
+    # get_all_edges already returns plain entity_ids: an AGE ``agtype::text``
+    # cast emits the scalar's raw content ('Bob', not '"Bob"'), so surrounding
+    # quotes only ever appear when they are part of the id itself. The removed
+    # _strip_agtype_quotes was therefore a no-op for normal ids and a corrupter
+    # for an id that legitimately begins and ends with a quote -- which must now
+    # flow through the rebuild unchanged.
+    graph = make_graph(edges=[edge('"Alice"', "Bob")])
     vdb = MockVDB()
 
     await rebuild_relationships_vdb(graph, vdb, {})
 
-    rel_id = compute_mdhash_id("AliceBob", prefix="rel-")
-    assert vdb.records[rel_id]["src_id"] == "Alice"
+    rel_id = compute_mdhash_id('"Alice"Bob', prefix="rel-")
+    assert vdb.records[rel_id]["src_id"] == '"Alice"'
     assert vdb.records[rel_id]["tgt_id"] == "Bob"
 
 
@@ -303,14 +307,6 @@ async def test_rebuild_relationships_skips_edges_without_endpoints():
 
     assert stats["rebuilt"] == 1
     assert stats["skipped"] == 1
-
-
-def test_strip_agtype_quotes():
-    assert _strip_agtype_quotes('"Alice"') == "Alice"
-    assert _strip_agtype_quotes("Alice") == "Alice"
-    assert _strip_agtype_quotes('"') == '"'
-    assert _strip_agtype_quotes(None) is None
-    assert _strip_agtype_quotes(3) == 3
 
 
 # ---------------------------------------------------------------------------
