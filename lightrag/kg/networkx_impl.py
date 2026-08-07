@@ -576,8 +576,10 @@ class NetworkXStorage(BaseGraphStorage):
                 while queue and queue[0][1] == current_depth:
                     current_level_nodes.append(queue.popleft())
 
-                # Sort nodes at current depth by degree (highest first)
-                current_level_nodes.sort(key=lambda x: x[2], reverse=True)
+                # Degree descending, then label ascending — matches '*' mode
+                # and get_popular_labels. Degree-only reverse sort is stable and
+                # kept neighbor insertion order on ties at the max_nodes cutoff.
+                current_level_nodes.sort(key=lambda x: (-x[2], str(x[0])))
 
                 # Process all nodes at current depth in order of degree
                 for idx, (current_node, depth, degree) in enumerate(
