@@ -713,11 +713,35 @@ def create_optimized_embedding_function(
     # Step 2: Apply priority (user config > provider default)
     # For max_token_size: explicit env var > provider default > None
     final_max_token_size = args.embedding_token_limit or provider_max_token_size
-    # For embedding_dim: user config (always has value) takes priority
-    # Only use provider default if user config is explicitly None (which shouldn't happen)
-    final_embedding_dim = (
-        args.embedding_dim if args.embedding_dim else provider_embedding_dim
-    )
+    # For embedding_dim: user config > known-model lookup (Ollama only) > provider default.
+    # provider_embedding_dim is a single static value per provider (1024 for Ollama,
+    # tuned for its default model bge-m3) -- correct for that one model, silently wrong
+    # for most others a user might point EMBEDDING_MODEL at instead. The Ollama API
+    # exposes no dimension metadata to check ahead of a real embed call, so for known
+    # models we resolve the real dimension from a lookup table instead of guessing;
+    # for unrecognized models we keep the provider default but warn, so a mismatch
+    # surfaces as a clear message here rather than a confusing failure mid-ingestion.
+    final_embedding_dim = args.embedding_dim
+    if not final_embedding_dim and binding == "ollama" and model:
+        from lightrag.llm.binding_options import KNOWN_OLLAMA_EMBEDDING_DIMS
+
+        base_model_name = model.split(":")[0]
+        known_dim = KNOWN_OLLAMA_EMBEDDING_DIMS.get(
+            model
+        ) or KNOWN_OLLAMA_EMBEDDING_DIMS.get(base_model_name)
+        if known_dim is not None:
+            final_embedding_dim = known_dim
+        else:
+            final_embedding_dim = provider_embedding_dim
+            logger.warning(
+                f"Ollama embedding model '{model}' has an unknown output dimension; "
+                f"defaulting to {provider_embedding_dim} (matches bge-m3, the Ollama "
+                f"binding's default model). If document insertion fails with an "
+                f"'Embedding dimension mismatch' error, set EMBEDDING_DIM explicitly "
+                f"to this model's real output size."
+            )
+    if not final_embedding_dim:
+        final_embedding_dim = provider_embedding_dim
     # Asymmetric embedding is explicit opt-in only. Provider-specific
     # validation decides whether task parameters or prefixes are required.
     asymmetric_opt_in = resolve_asymmetric_embedding_opt_in(

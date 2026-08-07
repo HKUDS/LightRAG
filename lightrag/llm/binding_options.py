@@ -527,6 +527,30 @@ class OllamaEmbeddingOptions(_OllamaOptionsMixin, BindingOptions):
     _binding_name: ClassVar[str] = "ollama_embedding"
 
 
+# Known output dimensions for common Ollama embedding models, keyed by model
+# name without a tag suffix (e.g. "nomic-embed-text", not
+# "nomic-embed-text:latest"). The Ollama API exposes no dimension metadata to
+# check ahead of a real embed call, and ollama_embed's
+# @wrap_embedding_func_with_attrs (lightrag/llm/ollama.py) needs a single
+# static default at import time -- 1024 is correct for bge-m3 (the binding's
+# default model) but silently wrong for most others. This lives here rather
+# than in lightrag/llm/ollama.py so resolving it doesn't require importing
+# the optional `ollama` SDK (see #3596); create_optimized_embedding_function
+# in lightrag_server.py consults it once the actual configured model name is
+# known, falling back to the bge-m3 default (with a startup warning) for
+# anything not listed here.
+KNOWN_OLLAMA_EMBEDDING_DIMS: dict[str, int] = {
+    "bge-m3": 1024,
+    "nomic-embed-text": 768,
+    "mxbai-embed-large": 1024,
+    "all-minilm": 384,
+    "snowflake-arctic-embed": 1024,
+    "snowflake-arctic-embed2": 1024,
+    "granite-embedding": 768,
+    "paraphrase-multilingual": 768,
+}
+
+
 @dataclass
 class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     """Options for Ollama LLM with specialized configuration for LLM tasks."""
