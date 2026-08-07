@@ -5740,10 +5740,11 @@ def merge_source_ids(
         for source_id in sequence:
             if not source_id:
                 continue
-            if source_id not in seen:
-                seen.add(source_id)
-                merged.append(source_id)
-
+            for sid in str(source_id).split(GRAPH_FIELD_SEP):
+                sid = sid.strip()
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    merged.append(sid)
     return merged
 
 
