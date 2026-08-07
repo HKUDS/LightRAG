@@ -5811,18 +5811,17 @@ def compute_incremental_chunk_ids(
     """
     # Calculate changes
     chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
-    chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
 
-    # Apply changes to full chunk_ids
     # Step 1: Remove chunks that are no longer needed
     updated_chunk_ids = [
         cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
     ]
+    seen = set(updated_chunk_ids)
 
-    # Step 2: Add new chunks (preserving order from new_chunk_ids)
-    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    # Step 2: Add any chunks from new_chunk_ids not currently in updated_chunk_ids
     for cid in new_chunk_ids:
-        if cid in chunks_to_add and cid not in updated_chunk_ids:
+        if cid and cid not in seen:
+            seen.add(cid)
             updated_chunk_ids.append(cid)
 
     return updated_chunk_ids
