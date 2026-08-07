@@ -8385,10 +8385,15 @@ class PGGraphStorage(BaseGraphStorage):
         label = self._normalize_node_id(node_label)
 
         # Build Cypher query with dynamic dollar-quoting to handle entity_id containing $ sequences
+        # NOTE: id(n) is deliberately not selected here. AGE >= 1.8.0 returns
+        # graphid from id(), which cannot be cast to bigint in the column
+        # definition list ("cannot cast type graphid to bigint"). The internal
+        # id is read from the returned vertex below, so selecting it separately
+        # was redundant anyway.
         cypher_query = f"""MATCH (n:base {{entity_id: "{label}"}})
-                    RETURN id(n) as node_id, n"""
+                    RETURN n"""
 
-        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (node_id bigint, n agtype)"
+        query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(cypher_query)}) AS (n agtype)"
 
         node_result = await self._query(query)
         if not node_result or not node_result[0].get("n"):
@@ -8445,11 +8450,15 @@ class PGGraphStorage(BaseGraphStorage):
             )
 
             # Build Cypher queries with dynamic dollar-quoting to handle entity_id containing $ sequences
+            # NOTE: id() results are declared agtype, not bigint. AGE >= 1.8.0
+            # returns graphid from id(), which the column definition list
+            # refuses to cast to bigint. agtype works on both 1.7.x and 1.8.x,
+            # and the values are consumed via str() below either way.
+            # current_internal_id is dropped entirely — it was never read.
             outgoing_cypher = f"""UNWIND [{formatted_ids}] AS node_id
                 MATCH (n:base {{entity_id: node_id}})
                 OPTIONAL MATCH (n)-[r]->(neighbor:base)
                 RETURN node_id AS current_id,
-                       id(n) AS current_internal_id,
                        id(neighbor) AS neighbor_internal_id,
                        neighbor.entity_id AS neighbor_id,
                        id(r) AS edge_id,
@@ -8461,7 +8470,6 @@ class PGGraphStorage(BaseGraphStorage):
                 MATCH (n:base {{entity_id: node_id}})
                 OPTIONAL MATCH (n)<-[r]-(neighbor:base)
                 RETURN node_id AS current_id,
-                       id(n) AS current_internal_id,
                        id(neighbor) AS neighbor_internal_id,
                        neighbor.entity_id AS neighbor_id,
                        id(r) AS edge_id,
@@ -8469,9 +8477,9 @@ class PGGraphStorage(BaseGraphStorage):
                        neighbor,
                        false AS is_outgoing"""
 
-            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint, neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"
+            outgoing_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(outgoing_cypher)}) AS (current_id text, neighbor_internal_id agtype, neighbor_id text, edge_id agtype, r agtype, neighbor agtype, is_outgoing bool)"
 
-            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint, neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"
+            incoming_query = f"SELECT * FROM cypher({_dollar_quote(self.graph_name)}, {_dollar_quote(incoming_cypher)}) AS (current_id text, neighbor_internal_id agtype, neighbor_id text, edge_id agtype, r agtype, neighbor agtype, is_outgoing bool)"
 
             # Execute queries
             outgoing_results = await self._query(outgoing_query)
