@@ -6128,8 +6128,10 @@ def convert_to_user_format(
 
         # Try to get original data first
         original_relation = None
-        if relation_id_to_original and relation_key in relation_id_to_original:
-            original_relation = relation_id_to_original[relation_key]
+        if relation_id_to_original:
+            original_relation = relation_id_to_original.get(
+                relation_key
+            ) or relation_id_to_original.get((entity2, entity1))
 
         if original_relation:
             # Use original database data

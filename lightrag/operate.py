@@ -5008,9 +5008,11 @@ async def _apply_token_truncation(
         else:
             entity1, entity2 = relation.get("src_id"), relation.get("tgt_id")
 
-        # Store mapping from relation pair to original data
+        # Store mapping from relation pair to original data (both directions)
         relation_key = (entity1, entity2)
         relation_id_to_original[relation_key] = relation
+        if entity1 and entity2:
+            relation_id_to_original[(entity2, entity1)] = relation
 
         relations_context.append(
             {
@@ -5081,7 +5083,11 @@ async def _apply_token_truncation(
     filtered_relations = []
     filtered_relation_id_to_original = {}
     if relations_context:
-        final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
+        final_relation_pairs = {
+            (r["entity1"], r["entity2"]) for r in relations_context
+        } | {
+            (r["entity2"], r["entity1"]) for r in relations_context
+        }
         seen_edges = set()
         for relation in final_relations:
             src, tgt = relation.get("src_id"), relation.get("tgt_id")
@@ -5089,11 +5095,15 @@ async def _apply_token_truncation(
                 src, tgt = relation.get("src_tgt", (None, None))
 
             pair = (src, tgt)
-            if pair in final_relation_pairs and pair not in seen_edges:
+            rev_pair = (tgt, src)
+            if (
+                pair in final_relation_pairs or rev_pair in final_relation_pairs
+            ) and pair not in seen_edges and rev_pair not in seen_edges:
                 filtered_relations.append(relation)
                 filtered_relation_id_to_original[pair] = relation
+                filtered_relation_id_to_original[rev_pair] = relation
                 seen_edges.add(pair)
-
+                seen_edges.add(rev_pair)
     return {
         "entities_context": entities_context,
         "relations_context": relations_context,
