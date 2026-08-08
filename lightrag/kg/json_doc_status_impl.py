@@ -237,18 +237,37 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_docs_by_track_id(
         self, track_id: str
     ) -> dict[str, DocProcessingStatus]:
-        """Get all documents with a specific track_id"""
+        """Get all documents with a specific track_id.
+
+        Relaxed read path (no ``strict`` variant): this backs the
+        ``/documents/track_status`` display endpoint, not the scheduling
+        control plane, so an unusable row is skipped-and-logged rather than
+        failing the whole listing. That matters because ``track_id`` groups a
+        whole upload BATCH — raising here would hide every healthy sibling
+        document behind one bad row.
+        """
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
-                if isinstance(v, dict) and v.get("track_id") == track_id:
-                    try:
-                        result[k] = self._doc_processing_status_from_row(v)
-                    except (KeyError, TypeError) as e:
-                        logger.error(
-                            f"[{self.workspace}] Missing required field for document {k}: {e}"
-                        )
-                        continue
+                if not isinstance(v, dict):
+                    # Logged, never silently dropped: a non-mapping record is
+                    # corruption an operator needs to see, and this is the only
+                    # place it surfaces for this track_id. The sibling scans
+                    # report it too (``get_docs_by_statuses`` reaches it via the
+                    # TypeError from its in-``try`` ``v["status"]`` subscript).
+                    logger.error(
+                        f"[{self.workspace}] doc_status record {k} is not a mapping"
+                    )
+                    continue
+                if v.get("track_id") != track_id:
+                    continue
+                try:
+                    result[k] = self._doc_processing_status_from_row(v)
+                except (KeyError, TypeError) as e:
+                    logger.error(
+                        f"[{self.workspace}] Missing required field for document {k}: {e}"
+                    )
+                    continue
         return result
 
     async def index_done_callback(self) -> None:
