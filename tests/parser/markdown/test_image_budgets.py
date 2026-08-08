@@ -251,6 +251,120 @@ def test_byte_budget_fires_without_the_request_budget(monkeypatch, fake_network)
 
 
 # --------------------------------------------------------------------------
+# Document download time budget
+# --------------------------------------------------------------------------
+
+
+class _FakeClock:
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = _FakeClock()
+    monkeypatch.setattr(md_parser, "_monotonic", fake)
+    return fake
+
+
+def test_document_time_budget_stops_further_requests(monkeypatch, fake_network, clock):
+    # Each fetch burns 10s of wall clock; the document may spend 15s total.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT", "15")
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", "30")
+
+    real_open = md_parser._build_guarded_opener()
+
+    class _SlowOpener:
+        def open(self, req, timeout=None):
+            clock.advance(10.0)
+            return real_open.open(req, timeout=timeout)
+
+    monkeypatch.setattr(md_parser, "_build_guarded_opener", lambda: _SlowOpener())
+
+    kinds, warnings, _ = _extract(_markdown(3))
+
+    # Second fetch ends at t=20 > the 15s budget, so the third is degraded
+    # without a request being made at all.
+    assert fake_network["opens"] == 2
+    assert kinds.count("external") >= 1
+    assert warnings.get("images_time_budget_exceeded") >= 1
+
+
+def test_time_budget_is_armed_lazily_at_the_first_download(clock):
+    # Anchored at the first fetch, not at construction: parsing a large
+    # markdown body costs no network and must not eat the network budget.
+    budget = md_parser._ImageBudget(
+        max_total_bytes=10**9, max_requests=100, total_timeout=10
+    )
+    assert budget.deadline is None
+
+    clock.advance(3600.0)  # a long body parse before the first image
+    armed = budget.arm_deadline()
+
+    assert armed == clock.now + 10.0
+    # Idempotent: later fetches share the document clock, they do not extend it.
+    clock.advance(5.0)
+    assert budget.arm_deadline() == armed
+
+
+def test_a_single_slow_image_reports_the_time_budget_not_a_download_failure(
+    monkeypatch, fake_network, clock
+):
+    # A one-image document must still be able to show the time-budget counter:
+    # if the document clock were only ever reported as a request TimeoutError,
+    # images_time_budget_exceeded would be unreachable here.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT", "5")
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", "30")
+
+    class _StallingOpener:
+        def open(self, req, timeout=None):
+            fake_network["opens"] += 1
+            clock.advance(10.0)  # blows the document budget, not the request's
+            return _FakeResponse(_png(0, 1024))
+
+    monkeypatch.setattr(md_parser, "_build_guarded_opener", lambda: _StallingOpener())
+
+    kinds, warnings, _ = _extract(_markdown(1))
+
+    assert kinds == ["external"]
+    assert warnings.get("images_time_budget_exceeded") == 1
+    assert "images_download_failed" not in warnings
+
+
+def test_request_deadline_never_outlives_the_document_budget(monkeypatch, clock):
+    budget = md_parser._ImageBudget(
+        max_total_bytes=10**9, max_requests=100, total_timeout=5
+    )
+    state = md_parser._DownloadState(
+        deadline=clock.now + 300.0, cancel_events=(), budget=budget
+    )
+    budget.arm_deadline()
+    clock.advance(6.0)
+    # The request's own deadline is far away, but the document's is spent.
+    assert isinstance(state.trip_reason(), md_parser._ImageTimeBudgetExceeded)
+
+
+def test_document_budget_outranks_the_request_deadline(monkeypatch, clock):
+    budget = md_parser._ImageBudget(
+        max_total_bytes=10**9, max_requests=100, total_timeout=5
+    )
+    state = md_parser._DownloadState(
+        deadline=clock.now + 1.0, cancel_events=(), budget=budget
+    )
+    budget.arm_deadline()
+    clock.advance(6.0)  # both expired
+    # Document first: otherwise a one-image document reports a plain timeout
+    # and the time-budget counter is never reachable.
+    assert isinstance(state.trip_reason(), md_parser._ImageTimeBudgetExceeded)
+
+
+# --------------------------------------------------------------------------
 # REQUIRED semantics, env parsing, and the shipped defaults
 # --------------------------------------------------------------------------
 

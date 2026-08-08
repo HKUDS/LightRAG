@@ -76,6 +76,12 @@ _TEXTPACK_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB uncompressed
 # degrade to external links with a warning, they do not fail the document.
 DEFAULT_NATIVE_MD_IMAGE_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 DEFAULT_NATIVE_MD_IMAGE_MAX_REQUESTS = 100
+# Wall clock for ALL image downloads in one document (the per-request timeout
+# is NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT). Bounds how long the parse pool can be
+# held: 120 s x 5 workers, and now interruptible by /documents/cancel_pipeline.
+# A document truncated by this budget resumes on re-parse, because everything
+# already fetched is served from `.native_raw/` for free.
+DEFAULT_NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT = 120
 
 # Magic-byte signatures → file extension. Authoritative for download
 # validation; ``None`` means "not a supported image".
@@ -336,6 +342,16 @@ class _ImageRequestBudgetExceeded(_ImageBudgetExceeded):
     """The per-document remote-fetch-attempt ceiling was reached."""
 
 
+class _ImageTimeBudgetExceeded(_ImageBudgetExceeded):
+    """The per-document total download wall clock was spent.
+
+    Distinct from the per-request ``TimeoutError``: a single slow image can
+    exhaust the DOCUMENT budget, and reporting that as an ordinary download
+    failure would mean a one-image document never shows the time-budget
+    counter at all.
+    """
+
+
 # --------------------------------------------------------------------------
 # Per-fetch download context: wall-clock deadline, cancellation, DNS memo and
 # the socket watchdog. One instance is active per thread for the duration of
@@ -368,11 +384,35 @@ class _ImageBudget:
     thousand unresolvable URLs spend an unbounded amount of work.
     """
 
-    def __init__(self, *, max_total_bytes: int, max_requests: int) -> None:
+    def __init__(
+        self, *, max_total_bytes: int, max_requests: int, total_timeout: int
+    ) -> None:
         self.max_total_bytes = max_total_bytes
         self.max_requests = max_requests
+        self.total_timeout = total_timeout
         self.bytes_used = 0
         self.requests_used = 0
+        self.deadline: float | None = None
+
+    def arm_deadline(self) -> float:
+        """Start the document download clock, lazily, on the first attempt.
+
+        Anchored here rather than at resolver construction so that parsing the
+        markdown body — which can take a while for a large document and costs
+        no network — does not eat the network budget.
+        """
+        if self.deadline is None:
+            self.deadline = _monotonic() + self.total_timeout
+        return self.deadline
+
+    def time_exhausted(self) -> bool:
+        return self.deadline is not None and _monotonic() >= self.deadline
+
+    def check_time(self) -> None:
+        if self.time_exhausted():
+            raise _ImageTimeBudgetExceeded(
+                f"document spent its {self.total_timeout}s image download budget"
+            )
 
     def remaining_bytes(self) -> int:
         return max(0, self.max_total_bytes - self.bytes_used)
@@ -428,10 +468,20 @@ class _DownloadState:
         loses: a socket timeout or a peer EOF that arrives before the next poll
         would surface as an ordinary download failure, and a cancellation
         followed by an EOF would be read as a *successful* truncated image.
+
+        Order: cancellation, then the DOCUMENT time budget, then this
+        request's deadline. Document before request matters — a single slow
+        image can exhaust the document budget, and calling that an ordinary
+        request timeout would mean a one-image document never reports the
+        time-budget counter.
         """
         cancelled = self.cancellation("native markdown image download cancelled")
         if cancelled is not None:
             return cancelled
+        if self.budget is not None and self.budget.time_exhausted():
+            return _ImageTimeBudgetExceeded(
+                f"document spent its {self.budget.total_timeout}s image download budget"
+            )
         if self.expired():
             return TimeoutError("image download exceeded its deadline")
         return self._watchdog_reason
@@ -473,9 +523,7 @@ class _DownloadState:
         """One watchdog poll. Returns True once it has tripped."""
         if self._watchdog_reason is not None:
             return True
-        reason = self.cancellation("native markdown image download cancelled")
-        if reason is None and self.expired():
-            reason = TimeoutError("image download exceeded its deadline")
+        reason = self.trip_reason()
         if reason is None:
             return False
         self._watchdog_reason = reason
@@ -1007,6 +1055,7 @@ class _MarkdownImageResolver:
         max_svg_pixels: int,
         max_total_bytes: int,
         max_requests: int,
+        total_timeout: int,
         raw_cache: NativeImageRawCache | None = None,
         cancel_events: tuple = (),
     ) -> None:
@@ -1020,7 +1069,9 @@ class _MarkdownImageResolver:
         self._raw_cache = raw_cache
         self._cancel_events = cancel_events
         self._budget = _ImageBudget(
-            max_total_bytes=max_total_bytes, max_requests=max_requests
+            max_total_bytes=max_total_bytes,
+            max_requests=max_requests,
+            total_timeout=total_timeout,
         )
         self._cache: dict[str, ResolvedImage] = {}
 
@@ -1215,10 +1266,17 @@ class _MarkdownImageResolver:
                     )
                 self._bump("images_cache_hit")
                 return resolved
+        # Pre-checks, outside the try below so their raises cannot be
+        # relabelled as download failures by the blanket handler. Once the
+        # document's wall clock is spent no further request is issued at all.
+        try:
+            self._budget.check_time()
+        except _ImageTimeBudgetExceeded as exc:
+            self._bump("images_time_budget_exceeded")
+            return self._budget_degraded(src, ext_hint, exc)
         # Charged BEFORE the fetch, so an attempt that dies in DNS or the SSRF
         # guard still costs — otherwise a few thousand unresolvable URLs would
-        # be free. Outside the try below so the raise cannot be relabelled as a
-        # download failure by the blanket handler.
+        # be free.
         try:
             self._budget.charge_request()
         except _ImageRequestBudgetExceeded as exc:
@@ -1238,6 +1296,10 @@ class _MarkdownImageResolver:
         except _ImageRequestBudgetExceeded as exc:
             # Raised by a redirect hop, from inside urllib.
             self._bump("images_request_budget_exceeded")
+            return self._budget_degraded(src, ext_hint, exc)
+        except _ImageTimeBudgetExceeded as exc:
+            # The document clock ran out mid-fetch, surfaced by the guard.
+            self._bump("images_time_budget_exceeded")
             return self._budget_degraded(src, ext_hint, exc)
         except Exception as exc:  # noqa: BLE001 - best-effort network fetch
             if self._download_required:
@@ -1289,7 +1351,11 @@ class _MarkdownImageResolver:
         The signature is fixed by tests that monkeypatch it; everything the
         fetch needs comes off ``self``.
         """
-        deadline = _monotonic() + self._timeout
+        # The request deadline can never outlive the document's: 100 attempts
+        # at 30 s each would otherwise pin a worker for the better part of an
+        # hour even with every other budget respected.
+        doc_deadline = self._budget.arm_deadline()
+        deadline = min(_monotonic() + self._timeout, doc_deadline)
         # Never read more than the document has left to spend: without this the
         # peak would be the budget plus one whole NATIVE_MD_IMAGE_MAX_BYTES.
         cap = min(self._max_bytes, self._budget.remaining_bytes())
@@ -1499,6 +1565,10 @@ class NativeMarkdownParser(NativeParserBase):
             ),
             max_requests=_env_pos_int(
                 "NATIVE_MD_IMAGE_MAX_REQUESTS", DEFAULT_NATIVE_MD_IMAGE_MAX_REQUESTS
+            ),
+            total_timeout=_env_pos_int(
+                "NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT",
+                DEFAULT_NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT,
             ),
             raw_cache=raw_cache,
         )
