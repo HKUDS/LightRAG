@@ -516,6 +516,7 @@ class _OllamaOptionsMixin:
         "embedding_only": "Only use for embeddings",
         "penalize_newline": "Penalize newline tokens",
         "stop": 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
+        "think": "Enable the model's extended-thinking/reasoning trace (LLM only, ignored for embeddings)",
     }
 
 
@@ -530,6 +531,17 @@ class OllamaEmbeddingOptions(_OllamaOptionsMixin, BindingOptions):
 @dataclass
 class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     """Options for Ollama LLM with specialized configuration for LLM tasks."""
+
+    # Whether the model may emit a hidden reasoning trace before its answer.
+    # Only meaningful for LLM calls, not embeddings, hence living here rather
+    # than on _OllamaOptionsMixin. True (matching each model's own default)
+    # is right for a user-facing query, where a bit of extra latency for a
+    # better answer is a reasonable trade. It is the wrong default for
+    # extraction/keyword calls, which need deterministic structured output
+    # and no visible reasoning -- resolve_role_llm_settings() in
+    # lightrag_server.py overrides those two roles to False unless a role
+    # explicitly sets OLLAMA_LLM_THINK/EXTRACT_OLLAMA_LLM_THINK itself.
+    think: bool = True
 
     # mandatory name of binding
     _binding_name: ClassVar[str] = "ollama_llm"
