@@ -399,6 +399,19 @@ class _ImageBudget:
     leaving the host. It is therefore an upper bound on outbound HTTP requests
     rather than an exact count — charging only successes would let a few
     thousand unresolvable URLs spend an unbounded amount of work.
+
+    ``max_total_bytes`` bounds bytes RETAINED. While one image is in flight the
+    peak is higher, because assembling a stream into a single immutable
+    ``bytes`` costs a second copy of that image; the per-document peak is
+    therefore about ``max_total_bytes + 2 * min(NATIVE_MD_IMAGE_MAX_BYTES,
+    max_total_bytes)``. That doubling is inherent rather than a choice of read
+    strategy — measured on CPython 3.12, a chunked read plus ``b"".join`` and a
+    single bounded ``read()`` peak identically, and pre-allocating a buffer and
+    using ``readinto`` is worse (it pays for the full cap up front AND the
+    conversion). Removing it needs the asset bytes to stop being retained in
+    the heap at all, which is the streaming-to-``asset_dir`` follow-up. The
+    per-image read cap is ``min(max_bytes, remaining_bytes)``, so the transient
+    only ever shrinks as a document fills its budget.
     """
 
     def __init__(
@@ -957,8 +970,11 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         host = urlparse(newurl).hostname or ""
         if not _host_is_public(host):
+            # ``fp`` is already closed by the caller, so it is not offered to
+            # the error: a caller reading it would get a closed file, and the
+            # point of closing early was to stop holding the body at all.
             raise urllib.error.HTTPError(
-                newurl, code, "redirect to non-public host blocked", headers, fp
+                newurl, code, "redirect to non-public host blocked", headers, None
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -994,7 +1010,23 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
         newurl = quote(newurl, encoding="iso-8859-1", safe=string.punctuation)
         newurl = urljoin(req.full_url, newurl)
 
-        new = self.redirect_request(req, fp, code, msg, headers, newurl)
+        # THE fix: discard the redirect body instead of ``fp.read()``-ing it.
+        # Done here, before anything that can fail or block, so no error path
+        # can hand a still-open body to an HTTPError.
+        fp.close()
+
+        # A hop is a fetch attempt of its own — charging only the initial
+        # request would understate the budget by up to max_redirections. It is
+        # charged BEFORE resolving the target, so an exhausted budget does not
+        # buy the attacker one more uninterruptible DNS lookup, and a hop the
+        # SSRF guard goes on to refuse is still counted as the attempt it was.
+        state = _active_download()
+        if state is not None and state.budget is not None:
+            state.budget.charge_request()
+
+        # redirect_request resolves the new host (SSRF re-validation), which is
+        # why it comes after the two steps above.
+        new = self.redirect_request(req, None, code, msg, headers, newurl)
         if new is None:
             return None
 
@@ -1005,7 +1037,6 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
                 visited.get(newurl, 0) >= self.max_repeats
                 or len(visited) >= self.max_redirections
             ):
-                fp.close()
                 raise urllib.error.HTTPError(
                     req.full_url, code, self.inf_msg + msg, headers, None
                 )
@@ -1013,13 +1044,6 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
             visited = new.redirect_dict = req.redirect_dict = {}
         visited[newurl] = visited.get(newurl, 0) + 1
 
-        # THE fix: discard the redirect body instead of ``fp.read()``-ing it.
-        fp.close()
-        # A hop is a fetch attempt of its own. Charging only the initial
-        # request would understate the budget by up to max_redirections.
-        state = _active_download()
-        if state is not None and state.budget is not None:
-            state.budget.charge_request()
         return self.parent.open(new, timeout=req.timeout)
 
     # The base class assigns these as five independent attributes pointing at
@@ -1093,6 +1117,13 @@ class _MarkdownImageResolver:
         self._cache: dict[str, ResolvedImage] = {}
 
     def resolve(self, src: str) -> ResolvedImage:
+        # Checked before the memo, not after: a document that references the
+        # same image thousands of times resolves it once and then serves every
+        # later occurrence from ``self._cache``, doing no I/O at all. A check
+        # placed further in would never run for those, and the document would
+        # keep going after the user cancelled it. Covers the data-URL and
+        # bundle-file paths too, which do no network work of their own.
+        self._raise_if_cancelled()
         cached = self._cache.get(src)
         if cached is not None:
             return cached
@@ -1271,10 +1302,6 @@ class _MarkdownImageResolver:
             )
             self._bump("images_external_dropped")
             return ResolvedImage(kind="skip")
-        # Polled per image, not only inside a fetch: a document whose images
-        # are all cache hits does no blocking I/O at all, and would otherwise
-        # run to completion after a cancel.
-        self._raise_if_cancelled()
         if self._raw_cache is not None:
             hit = self._raw_cache.get(src)
             if hit is not None:

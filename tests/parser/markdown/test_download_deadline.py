@@ -698,6 +698,41 @@ def test_cancellation_is_not_swallowed_into_an_external_link(monkeypatch):
     assert opens["n"] == 1
 
 
+def test_cancellation_is_seen_on_repeated_references_to_one_url(monkeypatch):
+    """The in-MEMORY memo must not outrun a cancel either.
+
+    ``resolve()`` short-circuits on ``self._cache[src]``, so a document that
+    references the same image thousands of times does I/O exactly once. A
+    cancel check placed any deeper than ``resolve()`` never runs for the other
+    references, and the document keeps going after the user stopped it. The
+    disk-cache test below uses distinct URLs and does not cover this path.
+    """
+    event = threading.Event()
+    resolved = {"n": 0}
+
+    def _fake_download(self, src):
+        resolved["n"] += 1
+        # Cancelled DURING the one and only fetch, so every later reference is
+        # served from the memo. Setting it before the document starts would be
+        # caught by any check anywhere and would prove nothing.
+        event.set()
+        return (_PNG_BYTES, "png")
+
+    monkeypatch.setattr(md_parser._MarkdownImageResolver, "_download", _fake_download)
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", "true")
+
+    # One URL, 50 references: exactly one fetch, then 49 memo hits.
+    md = "\n\n".join("![x](http://host.example/same.png)" for _ in range(50))
+    parser = md_parser.NativeMarkdownParser()
+    with pytest.raises(LLMBridgePipelineCancelled):
+        parser._extract_text(
+            md,
+            bundle_root=None,
+            cancel_events=((event, LLMBridgePipelineCancelled),),
+        )
+    assert resolved["n"] == 1  # the memo hits stopped the document, not a refetch
+
+
 def test_cancellation_is_seen_between_all_cache_hit_images(monkeypatch, tmp_path):
     """A document that does no blocking I/O must still observe a cancel.
 

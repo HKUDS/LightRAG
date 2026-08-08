@@ -114,6 +114,80 @@ def test_redirect_to_ftp_is_refused_for_every_status_code(monkeypatch, code):
     assert fp.closes == 1
 
 
+def test_redirect_closes_the_body_and_charges_before_resolving_the_target(
+    monkeypatch,
+):
+    """Order of operations on a hop: close, charge, only then resolve.
+
+    All three matter. Resolving first means an exhausted request budget still
+    buys one more DNS lookup — the single phase of a fetch that can be neither
+    deadline-bounded nor cancelled. It also meant a hop the SSRF guard went on
+    to refuse was never counted as the attempt it was, and that the refusal
+    path handed a still-open body to the HTTPError.
+    """
+    order: list[str] = []
+
+    def _refusing_host_check(host):
+        order.append("resolve")
+        return False
+
+    monkeypatch.setattr(md_parser, "_host_is_public", _refusing_host_check)
+
+    budget = md_parser._ImageBudget(
+        max_total_bytes=10**9, max_requests=10, total_timeout=300
+    )
+
+    class _TrackedBody(_ExplodingBody):
+        def close(self):
+            order.append("close")
+            super().close()
+
+    fp = _TrackedBody()
+    handler = md_parser._GuardedRedirectHandler()
+    handler.parent = _RecordingParent()
+    req = urllib.request.Request("http://origin.example/a.png")
+    req.timeout = 30
+
+    with md_parser._download_context(deadline=None, budget=budget, poll_interval=60.0):
+        with pytest.raises(urllib.error.HTTPError, match="non-public host"):
+            handler.http_error_302(
+                req, fp, 302, "Found", _headers("http://internal.example/b.png")
+            )
+
+    assert order == ["close", "resolve"]
+    assert fp.closes == 1
+    assert budget.requests_used == 1  # the refused hop was still an attempt
+
+
+def test_redirect_budget_exhaustion_skips_the_target_resolution(monkeypatch):
+    resolves = {"n": 0}
+
+    def _counting_host_check(host):
+        resolves["n"] += 1
+        return True
+
+    monkeypatch.setattr(md_parser, "_host_is_public", _counting_host_check)
+    budget = md_parser._ImageBudget(
+        max_total_bytes=10**9, max_requests=1, total_timeout=300
+    )
+    budget.charge_request()  # the initial request already spent it
+
+    fp = _ExplodingBody()
+    handler = md_parser._GuardedRedirectHandler()
+    handler.parent = _RecordingParent()
+    req = urllib.request.Request("http://origin.example/a.png")
+    req.timeout = 30
+
+    with md_parser._download_context(deadline=None, budget=budget, poll_interval=60.0):
+        with pytest.raises(md_parser._ImageRequestBudgetExceeded):
+            handler.http_error_302(
+                req, fp, 302, "Found", _headers("http://elsewhere.example/b.png")
+            )
+
+    assert fp.closes == 1
+    assert resolves["n"] == 0  # no DNS bought by an exhausted budget
+
+
 def test_guarded_opener_carries_no_non_http_handlers():
     opener = md_parser._build_guarded_opener()
     names = {type(h).__name__ for h in opener.handlers}
