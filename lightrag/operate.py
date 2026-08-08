@@ -1707,7 +1707,11 @@ async def _rebuild_single_entity(
             logger.error(error_msg)
             raise  # Re-raise exception
 
-    # normalized_chunk_ids = merge_source_ids([], chunk_ids)
+    # No merge_source_ids() normalization here: the rebuild caller derives
+    # chunk_ids from subtract_source_ids() over either entity_chunks_storage
+    # rows or an already-split graph `source_id` (see _purge_kg_contributions),
+    # so the ids arrive individual and non-empty. Normalizing again would only
+    # re-walk the list on the purge hot path.
     normalized_chunk_ids = chunk_ids
 
     if entity_chunks_storage is not None and normalized_chunk_ids:
@@ -1922,7 +1926,8 @@ async def _rebuild_single_relationship(
     if not current_relationship:
         return False
 
-    # normalized_chunk_ids = merge_source_ids([], chunk_ids)
+    # Same as _rebuild_single_entity: chunk_ids reach this function already
+    # split and non-empty, so no merge_source_ids() normalization is needed.
     normalized_chunk_ids = chunk_ids
 
     if relation_chunks_storage is not None and normalized_chunk_ids:
