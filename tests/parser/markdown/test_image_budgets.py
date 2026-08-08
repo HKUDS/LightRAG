@@ -10,6 +10,7 @@ defeated by a ``?u=<i>`` query parameter.
 from __future__ import annotations
 
 import base64
+import tracemalloc
 import zipfile
 from pathlib import Path
 
@@ -443,6 +444,84 @@ def test_a_legitimate_document_is_unaffected_by_the_shipped_defaults(
     assert "images_byte_budget_exceeded" not in warnings
     assert "images_request_budget_exceeded" not in warnings
     assert "images_skipped" not in warnings
+
+
+_MIB = 1024 * 1024
+# Covers what the TEST costs, not the parser: the markdown source string, the
+# drawings/assets dicts, and the fake opener slicing its own response bodies.
+# Small next to the MiB-scale budgets below, so the formula still dominates.
+_HARNESS_SLACK = 1 * _MIB
+
+
+@pytest.mark.parametrize(
+    ("max_bytes", "max_total"),
+    [
+        (4 * _MIB, 4 * _MIB),  # one image may fill the whole budget
+        (2 * _MIB, 8 * _MIB),  # per-image cap binds
+        (16 * _MIB, 4 * _MIB),  # remaining budget binds
+    ],
+)
+def test_peak_memory_stays_within_the_documented_formula(
+    monkeypatch, fake_network, max_bytes, max_total
+):
+    """Peak <= MAX_TOTAL_BYTES + 2 * min(MAX_BYTES, MAX_TOTAL_BYTES).
+
+    The budget bounds bytes RETAINED; while one image is in flight there is
+    additionally a second copy of THAT image, because assembling a stream into
+    a single immutable ``bytes`` costs a copy. Measured on CPython 3.12 that
+    doubling is the same for a chunked read plus ``join``, for one bounded
+    ``read()``, and worse for a pre-allocated ``readinto`` — it is inherent, not
+    a choice of read strategy, and only the streaming-to-disk follow-up removes
+    it.
+
+    This pins the resulting formula so a change to the read path cannot quietly
+    make it worse, and so the figure quoted in env.example stays honest. A read
+    path that regressed to three live copies fails every case here.
+    """
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_BYTES", str(max_bytes))
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", str(max_total))
+    per_image = min(max_bytes, max_total)
+    fake_network["size"] = per_image
+
+    allowance = max_total + 2 * per_image + _HARNESS_SLACK
+
+    tracemalloc.start()
+    try:
+        _extract(_markdown(8))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak <= allowance, (
+        f"peak {peak / _MIB:.1f}MiB exceeds {allowance / _MIB:.1f}MiB "
+        f"(retained {max_total / _MIB:.0f} + 2 x {per_image / _MIB:.0f} "
+        f"in flight + {_HARNESS_SLACK / _MIB:.0f} harness)"
+    )
+
+
+def test_the_read_cap_never_exceeds_the_remaining_budget(monkeypatch, fake_network):
+    """The per-image read cap shrinks as a document fills its budget.
+
+    This is what keeps the in-flight transient from being a constant
+    MAX_BYTES for every image: the last image of a nearly-full document is
+    read under a cap of whatever is left, not the per-image ceiling.
+    """
+    caps: list[int] = []
+    original = md_parser._MarkdownImageResolver._fetch
+
+    def _spy(self, src, guard, cap):
+        caps.append(cap)
+        return original(self, src, guard, cap)
+
+    monkeypatch.setattr(md_parser._MarkdownImageResolver, "_fetch", _spy)
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_BYTES", str(8 * 1024))
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", str(3 * 1024))
+    fake_network["size"] = 1024
+
+    _extract(_markdown(3))
+
+    assert caps == [3 * 1024, 2 * 1024, 1024]
+    assert max(caps) <= 3 * 1024  # never the 8 KiB per-image ceiling
 
 
 def test_shipped_defaults_are_derived_from_the_parse_concurrency():
