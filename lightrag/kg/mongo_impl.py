@@ -799,12 +799,19 @@ class MongoDocStatusStorage(DocStatusStorage):
         result = await cursor.to_list()
         processed_result = {}
         for doc in result:
+            doc_id_hint = doc.get("_id", "<unknown>") if doc else "<unknown>"
             try:
-                data = self._prepare_doc_status_data(doc)
-                processed_result[doc["_id"]] = DocProcessingStatus(**data)
-            except KeyError as e:
+                processed_result[doc["_id"]] = (
+                    self._mongo_doc_processing_status_from_doc(doc)
+                )
+            except (KeyError, TypeError) as e:
+                # TypeError, not just KeyError: DocProcessingStatus is a
+                # dataclass, so a row missing a required field (or carrying an
+                # unknown one) raises TypeError. Catching KeyError alone left
+                # the real failure uncaught and crashed the whole listing.
                 logger.error(
-                    f"[{self.workspace}] Missing required field for document {doc['_id']}: {e}"
+                    f"[{self.workspace}] Missing required field for document "
+                    f"{doc_id_hint}: {e}"
                 )
                 continue
         return processed_result
