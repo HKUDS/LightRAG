@@ -16,6 +16,23 @@ Image handling (see the parser plan):
   fallback on failure. Set the flag to ``false`` to instead DROP external images
   entirely (no drawing emitted, so a doc whose only images are external links
   produces no drawings.json).
+
+Resource bounds on that download path (GHSA-25c3-j78v-83qx). Per image there
+is a size ceiling and an SVG pixel budget; per DOCUMENT there are three more,
+because a small upload can reference an unbounded number of images:
+
+- ``NATIVE_MD_IMAGE_MAX_TOTAL_BYTES`` — total image bytes retained, across
+  every source. This is the memory bound.
+- ``NATIVE_MD_IMAGE_MAX_REQUESTS`` — remote fetch attempts, redirect hops and
+  attempts that never leave the host included, so an upper bound on outbound
+  requests. Cache hits cost nothing here.
+- ``NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT`` — wall clock across all
+  downloads, clamping every per-request deadline.
+
+Over-budget remote images degrade to external links with a dedicated warning
+counter; the fetch is cancellable via ``/documents/cancel_pipeline``. See
+``_MarkdownImageResolver._download`` for the per-phase bound / interrupt
+matrix, whose one exception is DNS resolution.
 - SVG images (base64 / textpack file / downloaded) are rasterized to PNG via
   cairosvg before entering the sidecar; if cairosvg is unavailable or rendering
   fails the image is skipped + warned.

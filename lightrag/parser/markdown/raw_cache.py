@@ -43,7 +43,17 @@ def native_md_options_signature() -> str:
     Deliberately excludes ``NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`` /
     ``..._TIMEOUT`` / ``..._REQUIRED`` — those gate *whether* a fetch happens,
     not the resulting bytes — and includes the size / SVG-pixel ceilings and the
-    SSRF allowlist (which govern what bytes are accepted at all)."""
+    SSRF allowlist (which govern what bytes are accepted at all).
+
+    The per-document budgets (``..._MAX_TOTAL_BYTES`` / ``..._MAX_REQUESTS`` /
+    ``..._DOWNLOAD_TOTAL_TIMEOUT``) are excluded for the same reason: they
+    decide whether a fetch is attempted, never what a given URL yields. Two
+    further arguments against including them. A budget-rejected image is never
+    ``put()`` here, so there is no entry to go stale, and the byte budget is
+    re-applied to cache HITS at resolve time, so tightening it takes effect on
+    the next parse with no invalidation. And including them would make tuning
+    any budget invalidate every ``.native_raw/`` bundle on the host at once,
+    triggering exactly the re-download storm the budgets exist to prevent."""
     payload = {
         "signature_version": 1,
         "max_bytes": os.getenv("NATIVE_MD_IMAGE_MAX_BYTES", ""),
