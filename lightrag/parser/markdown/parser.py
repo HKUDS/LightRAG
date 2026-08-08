@@ -1086,6 +1086,14 @@ class _MarkdownImageResolver:
     def _bump(self, key: str) -> None:
         self._warnings[key] = self._warnings.get(key, 0) + 1
 
+    def _raise_if_cancelled(self) -> None:
+        cancellation = first_cancellation(
+            normalize_cancel_events(self._cancel_events),
+            "native markdown image resolution cancelled",
+        )
+        if cancellation is not None:
+            raise cancellation
+
     def _skip(self, reason: str, src: str) -> ResolvedImage:
         logger.warning("[native_md] skipping image (%s): %s", reason, src[:120])
         self._bump("images_skipped")
@@ -1246,6 +1254,10 @@ class _MarkdownImageResolver:
             )
             self._bump("images_external_dropped")
             return ResolvedImage(kind="skip")
+        # Polled per image, not only inside a fetch: a document whose images
+        # are all cache hits does no blocking I/O at all, and would otherwise
+        # run to completion after a cancel.
+        self._raise_if_cancelled()
         if self._raw_cache is not None:
             hit = self._raw_cache.get(src)
             if hit is not None:
@@ -1473,18 +1485,28 @@ class NativeMarkdownParser(NativeParserBase):
             force_reparse=_env_bool("LIGHTRAG_FORCE_REPARSE_NATIVE", False),
         )
         raw_cache.load()
+        # /documents/cancel_pipeline reaches the image downloader through here.
+        cancel_events = runtime.cancel_events if runtime else ()
         if source.suffix.lower() == ".textpack":
             tmp_dir = Path(tempfile.mkdtemp(prefix="textpack-"))
             try:
                 md_text, bundle_root = self._open_textpack(source, tmp_dir)
                 result = self._extract_text(
-                    md_text, bundle_root=bundle_root, raw_cache=raw_cache
+                    md_text,
+                    bundle_root=bundle_root,
+                    raw_cache=raw_cache,
+                    cancel_events=cancel_events,
                 )
             finally:
                 rmtree(tmp_dir, ignore_errors=True)
         else:
             md_text = source.read_bytes().decode("utf-8-sig")
-            result = self._extract_text(md_text, bundle_root=None, raw_cache=raw_cache)
+            result = self._extract_text(
+                md_text,
+                bundle_root=None,
+                raw_cache=raw_cache,
+                cancel_events=cancel_events,
+            )
         # Flush only on successful extraction so a transient failure cannot prune
         # a previously-valid bundle (an exception propagates before this line).
         raw_cache.flush()
@@ -1549,6 +1571,7 @@ class NativeMarkdownParser(NativeParserBase):
         *,
         bundle_root: Path | None,
         raw_cache: NativeImageRawCache | None = None,
+        cancel_events: tuple = (),
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
         warnings: dict[str, int] = {}
         resolver = _MarkdownImageResolver(
@@ -1571,6 +1594,7 @@ class NativeMarkdownParser(NativeParserBase):
                 DEFAULT_NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT,
             ),
             raw_cache=raw_cache,
+            cancel_events=cancel_events,
         )
         extraction = extract_markdown(md_text, image_resolver=resolver)
         metadata: dict[str, Any] = {

@@ -594,6 +594,148 @@ def _self_signed_cert(tmp_path):
     return str(combined), ca
 
 
+# --------------------------------------------------------------------------
+# End to end: /documents/cancel_pipeline reaches the image downloader.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stalled_listener", ["trickle_body"], indirect=True)
+def test_pipeline_cancel_event_aborts_a_native_md_parse(
+    monkeypatch, tmp_path, stalled_listener
+):
+    """Drive the production path: get_parser("native").parse(ParseContext(...)).
+
+    Exercises the whole chain the fix touches — NativeParserBase building
+    runtime.cancel_events from ctx.pipeline_cancel_event, the executor
+    dispatch, and the image downloader polling those events mid-fetch. Before
+    this, ``grep -rn cancel lightrag/parser/markdown/`` returned nothing: the
+    pipeline event reached the LLM bridge only, so a document stuck in a
+    trickled image download could not be reclaimed by anything short of a
+    process restart.
+    """
+    import asyncio
+    import threading as _threading
+
+    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.parser.base import ParseContext
+    from lightrag.parser.debug import build_debug_rag
+    from lightrag.parser.registry import get_parser
+
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", "true")
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "127.0.0.0/8")
+    # Long enough that the deadline is NOT what ends the parse — the cancel is.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", "300")
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT", "300")
+
+    source = input_dir / "doc.md"
+    source.write_text(f"# H\n\n![x](http://127.0.0.1:{stalled_listener.port}/x.png)\n")
+
+    cancel_event = _threading.Event()
+    ctx = ParseContext(
+        build_debug_rag(),
+        "doc-cancel",
+        str(source),
+        {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+        pipeline_cancel_event=cancel_event,
+    )
+
+    async def _drive():
+        task = asyncio.create_task(get_parser("native").parse(ctx))
+        await asyncio.sleep(1.0)  # let the fetch get into the trickled body
+        cancel_event.set()
+        return await asyncio.wait_for(task, timeout=10.0)
+
+    started = time.monotonic()
+    with pytest.raises(LLMBridgePipelineCancelled):
+        asyncio.run(_drive())
+    elapsed = time.monotonic() - started
+
+    # Reclaimed on the cancel, not on the 300 s deadline.
+    assert elapsed < 10.0, f"cancel took {elapsed:.1f}s to reach the download"
+    # The type matters as much as the timing: pipeline.py catches exactly this
+    # family to record the document as cancelled rather than failed.
+    assert issubclass(LLMBridgePipelineCancelled, RuntimeError)
+    # No parse thread left behind holding the pool slot.
+    leftover = [
+        t for t in _threading.enumerate() if t.name.startswith("native-md-download")
+    ]
+    assert leftover == []
+
+
+def test_cancellation_is_not_swallowed_into_an_external_link(monkeypatch):
+    """A cancel must abort the document, not degrade one image and carry on.
+
+    LLMBridgeCancelled derives from RuntimeError, so without the explicit
+    re-raise ahead of ``_resolve_remote``'s blanket ``except Exception`` this
+    would quietly become an external-link fallback — and the parse would keep
+    fetching the rest of the document after the user asked it to stop.
+    """
+    event = threading.Event()
+    opens = {"n": 0}
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            opens["n"] += 1
+            event.set()  # cancelled during the first fetch
+            raise OSError("peer went away")
+
+    monkeypatch.setattr(md_parser, "_host_is_public", lambda host: True)
+    monkeypatch.setattr(md_parser, "_build_guarded_opener", lambda: _Opener())
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", "true")
+
+    md = "\n\n".join(f"![i{i}](http://host.example/x.png?u={i})" for i in range(3))
+    parser = md_parser.NativeMarkdownParser()
+    with pytest.raises(LLMBridgePipelineCancelled):
+        parser._extract_text(
+            md,
+            bundle_root=None,
+            cancel_events=((event, LLMBridgePipelineCancelled),),
+        )
+    # Stopped at the first image rather than working through all three.
+    assert opens["n"] == 1
+
+
+def test_cancellation_is_seen_between_all_cache_hit_images(monkeypatch, tmp_path):
+    """A document that does no blocking I/O must still observe a cancel.
+
+    Every image being a cache hit means no socket is ever opened, so the
+    in-fetch checkpoints never run; the poll at the top of _resolve_remote is
+    what stops the document.
+    """
+    event = threading.Event()
+    hits = {"n": 0}
+
+    def _never_download(self, src):
+        raise AssertionError("cache hit must not reach the network")
+
+    class _Cache:
+        def get(self, src):
+            hits["n"] += 1
+            if hits["n"] == 2:
+                event.set()
+            return (_PNG_BYTES, "png")
+
+        def put(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(md_parser._MarkdownImageResolver, "_download", _never_download)
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", "true")
+
+    md = "\n\n".join(f"![i{i}](http://host.example/x.png?u={i})" for i in range(5))
+    parser = md_parser.NativeMarkdownParser()
+    with pytest.raises(LLMBridgePipelineCancelled):
+        parser._extract_text(
+            md,
+            bundle_root=None,
+            raw_cache=_Cache(),
+            cancel_events=((event, LLMBridgePipelineCancelled),),
+        )
+    assert hits["n"] == 2  # stopped on the image after the cancel landed
+
+
 class _PngHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
