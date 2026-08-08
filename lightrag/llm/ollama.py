@@ -145,7 +145,13 @@ async def _ollama_model_if_cache(
     # no `think` field) leaves thinking at the model's own default.
     options = kwargs.get("options")
     if isinstance(options, dict) and "think" in options:
-        kwargs["think"] = options.pop("think")
+        # Read without mutating -- options can be the same dict object
+        # reused across every call for a role's lifetime (library callers
+        # pass it once via llm_model_kwargs), so popping from it here would
+        # only lift `think` out on the first call and silently lose it on
+        # every call after that.
+        kwargs["think"] = options["think"]
+        kwargs["options"] = {k: v for k, v in options.items() if k != "think"}
 
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)

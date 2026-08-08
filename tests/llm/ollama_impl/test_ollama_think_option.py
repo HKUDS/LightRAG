@@ -58,6 +58,29 @@ async def test_no_think_key_means_no_think_kwarg_is_added():
 
 
 @pytest.mark.asyncio
+async def test_options_dict_is_not_mutated_across_repeated_calls():
+    """options can be the same dict object reused across every call for a
+    role's lifetime (library callers bind it once via llm_model_kwargs) --
+    popping `think` out of it would only work on the first call and
+    silently lose it on every call after that."""
+    fake_client = _make_fake_client()
+    shared_options = {"think": False, "num_predict": 4096}
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        await _ollama_model_if_cache(
+            model="test-model", prompt="first", options=shared_options
+        )
+        await _ollama_model_if_cache(
+            model="test-model", prompt="second", options=shared_options
+        )
+
+    first_call, second_call = fake_client.chat.call_args_list
+    assert first_call.kwargs["think"] is False
+    assert second_call.kwargs["think"] is False
+    assert shared_options == {"think": False, "num_predict": 4096}
+
+
+@pytest.mark.asyncio
 async def test_missing_options_dict_entirely_does_not_crash():
     fake_client = _make_fake_client()
 

@@ -1252,30 +1252,6 @@ def _build_scheduling_status(pipeline_snapshot: dict, ingress_counts: dict) -> d
     }
 
 
-_OLLAMA_THINK_DEFAULT_OFF_ROLES = ("extract", "keyword")
-
-
-def _apply_ollama_role_think_default(role: str, role_provider_options: dict) -> None:
-    """Default thinking off for the extract/keyword roles on the Ollama binding.
-
-    A hidden reasoning trace is pure overhead for these two roles -- they need
-    deterministic structured output, not a better-considered answer -- and on
-    a thinking-capable model it can consume the entire generation budget
-    before any actual output, silently emitting nothing rather than a result
-    (see #3597). Mutates role_provider_options in place, matching the
-    dict-building style at its one call site in resolve_role_llm_settings().
-
-    An explicit choice always wins over this default: the override is only
-    applied when neither the role's own {ROLE}_OLLAMA_LLM_THINK nor the
-    global OLLAMA_LLM_THINK is set.
-    """
-    if role not in _OLLAMA_THINK_DEFAULT_OFF_ROLES:
-        return
-    role_env = f"{role.upper()}_OLLAMA_LLM_THINK"
-    if os.getenv(role_env) is None and os.getenv("OLLAMA_LLM_THINK") is None:
-        role_provider_options["think"] = False
-
-
 def create_app(args):
     # Check frontend build first and get status
     webui_assets_exist, is_frontend_outdated = check_frontend_build()
@@ -1855,8 +1831,6 @@ def create_app(args):
                 role_provider_options = OllamaLLMOptions.options_dict_for_role(
                     args, role, is_cross_provider
                 )
-                if role_binding == "ollama":
-                    _apply_ollama_role_think_default(attr, role_provider_options)
             elif role_binding == "bedrock":
                 from lightrag.llm.binding_options import BedrockLLMOptions
 
