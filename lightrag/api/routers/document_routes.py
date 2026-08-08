@@ -5924,19 +5924,9 @@ def create_document_routes(
             )
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status(workspace=rag.workspace)
-
-            # Convert MutableBoolean objects to regular boolean values
-            processed_update_status = {}
-            for namespace, flags in update_status.items():
-                processed_flags = []
-                for flag in flags:
-                    # Handle both multiprocess and single process cases
-                    if hasattr(flag, "value"):
-                        processed_flags.append(bool(flag.value))
-                    else:
-                        processed_flags.append(bool(flag))
-                processed_update_status[namespace] = processed_flags
+            processed_update_status = await get_all_update_flags_status(
+                workspace=rag.workspace
+            )
 
             async with pipeline_status_lock:
                 # DictProxy.copy() is one Manager RPC; dict(proxy) may fetch
