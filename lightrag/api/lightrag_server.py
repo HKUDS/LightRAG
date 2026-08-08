@@ -771,6 +771,7 @@ def create_optimized_embedding_function(
                     "texts": texts,
                     "host": host,
                     "api_key": api_key,
+                    "embedding_dim": embedding_dim,
                     "options": ollama_options,
                 }
                 if provider_supports_asymmetric and asymmetric_opt_in:

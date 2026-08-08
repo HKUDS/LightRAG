@@ -268,6 +268,7 @@ async def ollama_model_complete(
 async def ollama_embed(
     texts: list[str],
     embed_model: str = "bge-m3:latest",
+    embedding_dim: int | None = None,
     max_token_size: int | None = None,
     context: str = "document",
     query_prefix: str | None = None,
@@ -279,6 +280,8 @@ async def ollama_embed(
     Args:
         texts: List of texts to embed.
         embed_model: The Ollama embedding model to use. Default is "bge-m3:latest".
+        embedding_dim: Optional target dimension. When set, forwarded to Ollama's
+            embed API so the model actually returns a vector of that size.
         max_token_size: Maximum tokens per text. This parameter is automatically
             injected by the EmbeddingFunc wrapper when the underlying function
             signature supports it (via inspect.signature check). Ollama will
@@ -325,9 +328,11 @@ async def ollama_embed(
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     try:
         options = kwargs.pop("options", {})
-        data = await ollama_client.embed(
-            model=embed_model, input=texts, options=options
-        )
+        embed_kwargs = {"model": embed_model, "input": texts, "options": options}
+        # mirrors lightrag/llm/openai.py's api_params["dimensions"] handling
+        if embedding_dim is not None:
+            embed_kwargs["dimensions"] = embedding_dim
+        data = await ollama_client.embed(**embed_kwargs)
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")
