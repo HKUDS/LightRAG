@@ -3792,6 +3792,16 @@ async def extract_entities(
         # Create cache keys collector for batch processing
         cache_keys_collector = []
 
+        def _report_truncation(result: str, stage: str) -> None:
+            if not is_truncated_response(result):
+                return
+            truncation_message = (
+                f"Token-limit truncation during {stage} entity extraction "
+                f"for chunk {chunk_key} in {file_path}"
+            )
+            logger.warning(truncation_message)
+            status_logger.log(truncation_message)
+
         if use_json_extraction:
             # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
             entity_extraction_system_prompt = PROMPTS[
@@ -3838,6 +3848,8 @@ async def extract_entities(
             response_format=({"type": "json_object"} if use_json_extraction else None),
             llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
         )
+
+        _report_truncation(final_result, "initial")
 
         history = pack_user_ass_to_openai_messages(
             entity_extraction_user_prompt, final_result
@@ -3906,6 +3918,8 @@ async def extract_entities(
                 ),
                 llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
             )
+
+            _report_truncation(glean_result, "gleaning")
 
             # Process gleaning result with appropriate parser
             if use_json_extraction:

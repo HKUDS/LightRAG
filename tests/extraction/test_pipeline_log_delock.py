@@ -24,7 +24,7 @@ import pytest
 
 import lightrag.operate as operate
 from lightrag.operate import extract_entities
-from lightrag.utils import Tokenizer, TokenizerInterface
+from lightrag.utils import TruncatedResponse, Tokenizer, TokenizerInterface
 
 pytestmark = pytest.mark.offline
 
@@ -93,6 +93,18 @@ class _RaiseOnEnterLock:
 
     async def __aexit__(self, *exc):
         return False
+
+
+class _FakeCache:
+    def __init__(self):
+        self.global_config = {"enable_llm_cache_for_entity_extract": True}
+        self._store = {}
+
+    async def get_by_id(self, key):
+        return self._store.get(key)
+
+    async def upsert(self, entries):
+        self._store.update(entries)
 
 
 @pytest.fixture
@@ -177,3 +189,40 @@ async def test_logs_written_even_without_pipeline_status_lock(_high_token_limit)
     )
     assert any("extracted" in m for m in status["history_messages"])
     assert "extracted" in status["latest_message"]
+
+
+@pytest.mark.parametrize("cache_enabled", [False, True])
+async def test_truncated_extraction_is_published_to_pipeline_status(
+    monkeypatch, _high_token_limit, cache_enabled
+):
+    """Operators see token truncation with chunk and document identity."""
+    captured: list[tuple[str, ...]] = []
+
+    class _CaptureLogger:
+        def __init__(self, pipeline_status):
+            self.pipeline_status = pipeline_status
+
+        def log(self, *messages):
+            captured.append(messages)
+
+    monkeypatch.setattr(operate, "PipelineStatusLogger", _CaptureLogger)
+    config = _make_global_config()
+    config["role_llm_funcs"]["extract"].return_value = TruncatedResponse(
+        _EXTRACTION_RESULT
+    )
+    chunks = _make_chunks()
+    chunks["chunk-001"]["file_path"] = "reports/annual.md"
+
+    await extract_entities(
+        chunks=chunks,
+        global_config=config,
+        llm_response_cache=_FakeCache() if cache_enabled else None,
+    )
+
+    messages = [message for group in captured for message in group]
+    truncation_messages = [
+        message for message in messages if "Token-limit truncation" in message
+    ]
+    assert len(truncation_messages) == 1
+    assert "chunk-001" in truncation_messages[0]
+    assert "reports/annual.md" in truncation_messages[0]

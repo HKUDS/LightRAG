@@ -4454,17 +4454,23 @@ def is_truncated_response(value: Any) -> bool:
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
 
+    Preserves the :class:`TruncatedResponse` marker so downstream consumers
+    can still distinguish partial model output after sanitization.
+
     Handles two cases:
     1. Complete <think>...</think> blocks anywhere in the text.
     2. Orphaned </think> at the very start (e.g., from streaming that begins
        mid-think-block), removing everything before and including it.
     """
+    was_truncated = is_truncated_response(text)
+
     # First, remove orphaned </think> prefix (content before first </think>
     # when there is no preceding <think> tag)
     text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
     # Then remove all complete <think>...</think> blocks
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return text.strip()
+    cleaned = text.strip()
+    return TruncatedResponse(cleaned) if was_truncated else cleaned
 
 
 async def use_llm_func_with_cache(
