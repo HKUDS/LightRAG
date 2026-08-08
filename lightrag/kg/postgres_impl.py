@@ -8637,27 +8637,23 @@ class PGGraphStorage(BaseGraphStorage):
             # isolated (degree-0) nodes, matching the previous OPTIONAL MATCH
             # behaviour when the graph is not truncated.
             #
-            # Ties break on the entity_id, not on v.id: the internal AGE vertex
-            # id is an insertion counter, so ordering the equal-degree band by
-            # it was deterministic per database but still meant "whichever
-            # entity was ingested first", which is exactly what the contract
-            # rules out. COLLATE "C" makes it a byte comparison so it matches
-            # Python's code-point sort, and the ranking columns live in a
-            # derived table because ORDER BY cannot apply COLLATE to a bare
-            # output alias (a sub-SELECT, not a CTE: CTEs are an optimization
-            # fence before PostgreSQL 12).
+            # KNOWN DEVIATION from the BaseGraphStorage tie-break, which is on
+            # the label: this ranks on v.id, AGE's internal vertex id. Ordering
+            # on the entity_id is what the contract asks for and it was measured
+            # too expensive here. Selecting only v.id lets the vertex scan be
+            # index-only (entity_p_idx); the label lives in `properties`, so
+            # sorting on it forces a full heap read -- ~1.5x buffers and ~25%
+            # wall clock on a 200k-vertex / 600k-edge graph. No index removes
+            # that: the ORDER BY leads with an aggregate computed from the edge
+            # table, so no index can supply the ordering, and a covering index
+            # on (id, label) is not chosen even with enable_seqscan off.
             #
-            # This costs a heap read. Selecting only v.id let the vertex scan be
-            # index-only (entity_p_idx); the label lives in `properties`, so the
-            # scan now has to visit the heap -- measured at ~1.5x buffers and
-            # ~25% wall clock on a 200k-vertex / 600k-edge graph. No index can
-            # avoid it: the ORDER BY leads with an aggregate computed from the
-            # edge table, so this is a scan-and-sort plan either way, and a
-            # covering index on (id, label) is not chosen even with seqscan off.
-            # Accepted because /graphs is a manual explorer action whose
-            # dominant cost is already the full edge aggregation plus the
-            # isolated-node-preserving full vertex scan, and get_popular_labels
-            # pays the same per-vertex extraction on a hotter endpoint.
+            # What that costs: v.id is an insertion counter, so this view is
+            # stable for a given database but still varies with ingestion order
+            # ACROSS databases holding the same graph. get_popular_labels on
+            # this backend does order by label, so the entity picker and the
+            # graph view can disagree at the same cutoff. Revisit if AGE ever
+            # gains a cheap way to read entity_id without visiting the heap.
             query_nodes = f"""
                 WITH node_degrees AS (
                     SELECT node_id, COUNT(*) AS degree
@@ -8668,15 +8664,10 @@ class PGGraphStorage(BaseGraphStorage):
                     ) AS all_edges
                     GROUP BY node_id
                 )
-                SELECT node_id FROM (
-                    SELECT
-                        v.id AS node_id,
-                        COALESCE(d.degree, 0) AS degree,
-                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
-                    FROM {self.graph_name}.base v
-                    LEFT JOIN node_degrees d ON d.node_id = v.id
-                ) AS ranked
-                ORDER BY degree DESC, label COLLATE "C" ASC
+                SELECT v.id AS node_id, COALESCE(d.degree, 0) AS degree
+                FROM {self.graph_name}.base v
+                LEFT JOIN node_degrees d ON d.node_id = v.id
+                ORDER BY degree DESC, v.id ASC
                 LIMIT $1"""
             node_results = await self._query(query_nodes, params={"limit": max_nodes})
 

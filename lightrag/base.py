@@ -826,6 +826,19 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Order the labels by code point (SQL ``COLLATE "C"``, not a locale
         collation) so every backend agrees with Python's ``str`` comparison.
 
+        **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
+        on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
+        Selecting only ``v.id`` lets the vertex scan be index-only; the label
+        lives in the vertex ``properties``, so ordering on it forces a full heap
+        read (~1.5x buffers, ~25% wall clock on a 200k-vertex/600k-edge graph),
+        and no index removes that -- the ORDER BY leads with an aggregate
+        computed from the edge table. The id is an insertion counter, so that
+        backend's view is stable for a given database but still varies with
+        ingestion order across databases holding the same graph, and its
+        :meth:`get_popular_labels` (which DOES order by label) can disagree with
+        its graph view at the same cutoff. Every other backend follows the rule;
+        do not copy the deviation into a new one.
+
         This constrains WHICH nodes survive truncation, not the order of
         :class:`KnowledgeGraph.nodes` in the response — implementations
         materialize that list from a dict or a subgraph view, and callers that

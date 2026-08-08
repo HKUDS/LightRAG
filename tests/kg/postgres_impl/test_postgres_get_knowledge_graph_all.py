@@ -109,22 +109,29 @@ async def test_degree_selection_sql_is_undirected_and_preserves_isolated():
     # Isolated nodes preserved.
     assert "LEFT JOIN" in sql
     assert "COALESCE" in sql
-    # Ranked by degree, ties broken on the label (see the dedicated test below).
+    # Ranked by degree, ties on the vertex id (see the deviation test below).
     assert "ORDER BY degree DESC" in sql
+    assert "v.id ASC" in sql
     # The old outgoing-only Cypher must be gone.
     assert "-[r]->()" not in sql
     assert "OPTIONAL MATCH (n)-[r]->()" not in sql
 
 
 @pytest.mark.asyncio
-async def test_degree_selection_breaks_ties_on_the_label_not_the_vertex_id():
-    """``LIMIT max_nodes`` cuts through a band of equal-degree entities, and the
-    BaseGraphStorage contract orders that band by the label, ascending.
+async def test_degree_selection_keeps_the_index_only_vertex_scan():
+    """Documented deviation from the BaseGraphStorage tie-break, pinned here so
+    it stays a deliberate choice rather than drift.
 
-    The tie-break used to be ``v.id`` -- AGE's internal vertex id, an insertion
-    counter. Deterministic per database, and still the wrong answer: it means
-    "whichever entity was ingested first", so the same corpus re-ingested in a
-    different document order returns a different graph at the same ``max_nodes``.
+    The contract breaks equal-degree ties on the LABEL. This backend breaks them
+    on ``v.id`` because selecting only ``v.id`` is what lets the vertex scan stay
+    index-only: the label lives in the vertex ``properties``, and ordering on it
+    forces a full heap read (~1.5x buffers, ~25% wall clock on a 200k-vertex /
+    600k-edge graph). No index removes that -- the ORDER BY leads with an
+    aggregate computed from the edge table, so nothing can supply the ordering.
+
+    The accepted cost: ``v.id`` is an insertion counter, so this view is stable
+    for one database but still varies with ingestion order across databases
+    holding the same graph.
     """
     capture = _QueryCapture(
         total_nodes=99,
@@ -137,13 +144,12 @@ async def test_degree_selection_breaks_ties_on_the_label_not_the_vertex_id():
         await storage.get_knowledge_graph("*", max_nodes=2)
 
     sql = " ".join(capture.degree_sql.split())
-    # COLLATE "C" is a byte comparison, so the order matches the code-point
-    # sort the Python-side backends use rather than a server locale.
-    assert 'ORDER BY degree DESC, label COLLATE "C" ASC' in sql, sql
-    # The label is read from the vertex properties, the same expression
-    # get_popular_labels ranks on.
-    assert "'\"entity_id\"'::agtype" in sql, sql
-    assert "v.id ASC" not in sql, sql
+    assert "ORDER BY degree DESC, v.id ASC" in sql, sql
+    # The point of the deviation: the vertex properties are never read, so the
+    # scan can be served from the id index alone. Projecting the entity_id --
+    # even only to sort on it -- is what would cost the heap visit.
+    assert "properties" not in sql, sql
+    assert "agtype_access_operator" not in sql, sql
 
 
 @pytest.mark.asyncio
