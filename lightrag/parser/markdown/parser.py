@@ -30,6 +30,7 @@ import http.client
 import os
 import re
 import socket
+import string
 import tempfile
 import urllib.error
 import urllib.request
@@ -38,7 +39,7 @@ from math import ceil
 from pathlib import Path
 from shutil import rmtree
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 from lightrag.constants import NATIVE_RAW_DIR_SUFFIX, PARSER_ENGINE_NATIVE
 from lightrag.parser.external._common import raw_dir_for_parsed_dir
@@ -452,10 +453,37 @@ class _GuardedHTTPSHandler(urllib.request.HTTPSHandler):
         return self.do_open(_GuardedHTTPSConnection, req, **kwargs)
 
 
+# Redirect schemes we are willing to follow. The stdlib allows ``ftp`` here;
+# an ftp:// redirect would be served by urllib's FTPHandler, which never goes
+# through _GuardedHTTPConnection and so escapes the IP pin, the download
+# deadline, cancellation and the request budget. Empty scheme is a relative
+# redirect, resolved by urljoin against the (http/https) request URL.
+_REDIRECT_ALLOWED_SCHEMES = ("http", "https", "")
+
+
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Re-validate the host on every redirect so a redirect cannot bounce the
-    request to an internal address. (Defense in depth: the pinned connection
-    re-validates at connect time too.)"""
+    """Redirect handler that re-validates the host and never drains the body.
+
+    Two departures from :class:`urllib.request.HTTPRedirectHandler`:
+
+    * ``redirect_request`` narrows the scheme allowlist to http(s) — see
+      :data:`_REDIRECT_ALLOWED_SCHEMES`.
+    * :meth:`http_error_302` closes the redirect response instead of calling
+      ``fp.read()``. The stdlib reads the whole body before following the
+      redirect (so it can hand a live ``fp`` to ``HTTPError``), which is an
+      unbounded allocation an attacker controls: ``302`` + a huge body lands
+      in memory before the image itself ever reaches the size-capped chunked
+      read. We give up the readable ``fp`` on the error path — the loop /
+      max-redirection errors below are raised with the body already closed —
+      and keep the residency bounded instead.
+
+    Host validation is defense in depth: the pinned connection re-validates at
+    connect time too (and shares that resolution, see ``_validated_addresses``).
+    """
+
+    # Tighter than the stdlib default of 10: one image reference should not be
+    # able to turn into a double-digit chain of outbound requests.
+    max_redirections = 5
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         host = urlparse(newurl).hostname or ""
@@ -465,17 +493,90 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
+    def http_error_302(self, req, fp, code, msg, headers):  # type: ignore[override]
+        # Mirrors the stdlib implementation up to the point where it drains the
+        # body. Kept deliberately close to it so future stdlib changes are easy
+        # to diff against.
+        if "location" in headers:
+            newurl = headers["location"]
+        elif "uri" in headers:
+            newurl = headers["uri"]
+        else:
+            return None
+
+        urlparts = urlparse(newurl)
+        if urlparts.scheme not in _REDIRECT_ALLOWED_SCHEMES:
+            fp.close()
+            raise urllib.error.HTTPError(
+                newurl,
+                code,
+                f"{msg} - redirection to scheme {urlparts.scheme!r} is not allowed",
+                headers,
+                None,
+            )
+        if not urlparts.path and urlparts.netloc:
+            parts = list(urlparts)
+            parts[2] = "/"
+            newurl = urlunparse(parts)
+        else:
+            newurl = urlunparse(urlparts)
+        # http.client.parse_headers() decodes as ISO-8859-1. Recover the
+        # original bytes and percent-encode non-ASCII bytes and specials.
+        newurl = quote(newurl, encoding="iso-8859-1", safe=string.punctuation)
+        newurl = urljoin(req.full_url, newurl)
+
+        new = self.redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+
+        # Loop detection (unchanged semantics).
+        if hasattr(req, "redirect_dict"):
+            visited = new.redirect_dict = req.redirect_dict
+            if (
+                visited.get(newurl, 0) >= self.max_repeats
+                or len(visited) >= self.max_redirections
+            ):
+                fp.close()
+                raise urllib.error.HTTPError(
+                    req.full_url, code, self.inf_msg + msg, headers, None
+                )
+        else:
+            visited = new.redirect_dict = req.redirect_dict = {}
+        visited[newurl] = visited.get(newurl, 0) + 1
+
+        # THE fix: discard the redirect body instead of ``fp.read()``-ing it.
+        fp.close()
+        return self.parent.open(new, timeout=req.timeout)
+
+    # The base class assigns these as five independent attributes pointing at
+    # its own http_error_302, so overriding only http_error_302 in a subclass
+    # leaves 301/303/307/308 resolving to the ORIGINAL draining implementation.
+    # They must be rebound here explicitly.
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
 
 def _build_guarded_opener() -> urllib.request.OpenerDirector:
-    """Opener whose connections pin to a validated IP and that ignores any
-    ambient ``HTTP(S)_PROXY`` (an env proxy would otherwise fetch the blocked
-    URL on our behalf, bypassing the IP guard)."""
-    return urllib.request.build_opener(
+    """Opener that speaks http(s) only, pins connections to a validated IP, and
+    ignores any ambient ``HTTP(S)_PROXY`` (an env proxy would otherwise fetch
+    the blocked URL on our behalf, bypassing the IP guard).
+
+    Assembled explicitly rather than via ``build_opener()``, which additionally
+    installs ``FTPHandler`` / ``FileHandler`` / ``DataHandler``. Those handlers
+    bypass every control in this module, so the opener simply does not carry
+    them; ``UnknownHandler`` turns any non-http(s) URL into a ``URLError``.
+    """
+    opener = urllib.request.OpenerDirector()
+    for handler in (
         urllib.request.ProxyHandler({}),
         _GuardedHTTPHandler(),
         _GuardedHTTPSHandler(),
         _GuardedRedirectHandler(),
-    )
+        urllib.request.HTTPErrorProcessor(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.UnknownHandler(),
+    ):
+        opener.add_handler(handler)
+    return opener
 
 
 class _MarkdownImageResolver:

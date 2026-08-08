@@ -484,9 +484,10 @@ def _patch_download(
         def open(self, req, timeout=None):
             return _FakeResponse(data, content_type)
 
-    monkeypatch.setattr(
-        md_parser.urllib.request, "build_opener", lambda *a, **k: _Opener()
-    )
+    # Patch our own seam rather than ``urllib.request.build_opener``: the
+    # guarded opener is assembled by hand (no FTP/file/data handlers), so the
+    # stdlib factory is no longer on the path.
+    monkeypatch.setattr(md_parser, "_build_guarded_opener", lambda: _Opener())
 
 
 def test_remote_image_dropped_when_download_disabled(monkeypatch):
