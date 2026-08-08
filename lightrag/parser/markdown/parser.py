@@ -25,15 +25,20 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import http.client
 import os
 import re
+import selectors
 import socket
 import string
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from ipaddress import ip_address, ip_network
 from math import ceil
 from pathlib import Path
@@ -43,6 +48,7 @@ from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 from lightrag.constants import NATIVE_RAW_DIR_SUFFIX, PARSER_ENGINE_NATIVE
 from lightrag.parser.external._common import raw_dir_for_parsed_dir
+from lightrag.parser.llm_bridge import first_cancellation, normalize_cancel_events
 from lightrag.parser.markdown.extract import ResolvedImage, extract_markdown
 from lightrag.parser.markdown.raw_cache import (
     NativeImageRawCache,
@@ -263,6 +269,180 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+# --------------------------------------------------------------------------
+# Per-fetch download context: wall-clock deadline, cancellation, DNS memo and
+# the socket watchdog. One instance is active per thread for the duration of
+# one _download() call (redirect chain included).
+# --------------------------------------------------------------------------
+
+# Indirected so tests can install a fake clock with
+# ``monkeypatch.setattr(md_parser, "_monotonic", fake)``. Patching
+# ``time.monotonic`` itself would be a process-wide change.
+_monotonic = time.monotonic
+
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+_CONNECT_POLL_SECONDS = 0.2
+_WATCHDOG_POLL_SECONDS = 0.5
+
+_ACTIVE_DOWNLOAD = threading.local()
+
+
+class _DownloadState:
+    """Mutable per-fetch state shared between the fetch and its watchdog."""
+
+    def __init__(
+        self,
+        *,
+        deadline: float | None,
+        cancel_events: tuple,
+    ) -> None:
+        self.deadline = deadline
+        self.cancel_events = normalize_cancel_events(cancel_events)
+        self.dns: dict[str, list[str]] = {}
+        self._lock = threading.Lock()
+        self._sock = None
+        self._watchdog_reason: BaseException | None = None
+
+    # -- cancellation / deadline ------------------------------------------
+
+    def cancellation(self, message: str) -> BaseException | None:
+        return first_cancellation(self.cancel_events, message)
+
+    def expired(self) -> bool:
+        return self.deadline is not None and _monotonic() >= self.deadline
+
+    def trip_reason(self) -> BaseException | None:
+        """The exception this fetch should die with, or ``None`` to continue.
+
+        Evaluated SYNCHRONOUSLY, in the calling thread, in a fixed priority
+        order — the watchdog's own finding is only a fallback. The watchdog
+        polls on an interval, so relying on it would misclassify every race it
+        loses: a socket timeout or a peer EOF that arrives before the next poll
+        would surface as an ordinary download failure, and a cancellation
+        followed by an EOF would be read as a *successful* truncated image.
+        """
+        cancelled = self.cancellation("native markdown image download cancelled")
+        if cancelled is not None:
+            return cancelled
+        if self.expired():
+            return TimeoutError("image download exceeded its deadline")
+        return self._watchdog_reason
+
+    def raise_trip_reason(self) -> None:
+        reason = self.trip_reason()
+        if reason is not None:
+            raise reason
+
+    # -- socket registration / watchdog ------------------------------------
+
+    def register_socket(self, sock) -> None:
+        """Hand a CONNECTED socket to the watchdog.
+
+        Never register a socket that is still connecting: aborting a connect
+        is the calling thread's job (see :func:`_pin_socket`).
+        """
+        with self._lock:
+            self._sock = sock
+            already_tripped = self._watchdog_reason is not None
+        if already_tripped:
+            self._shutdown_socket()
+
+    def _shutdown_socket(self) -> None:
+        with self._lock:
+            sock = self._sock
+        if sock is None:
+            return
+        try:
+            # shutdown() only — never close(). Closing an fd another thread is
+            # still using invites fd reuse; a half-close is enough to wake a
+            # blocked recv (it returns b'', which is why trip_reason() is also
+            # consulted after a clean read loop).
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def watchdog_tick(self) -> bool:
+        """One watchdog poll. Returns True once it has tripped."""
+        if self._watchdog_reason is not None:
+            return True
+        reason = self.cancellation("native markdown image download cancelled")
+        if reason is None and self.expired():
+            reason = TimeoutError("image download exceeded its deadline")
+        if reason is None:
+            return False
+        self._watchdog_reason = reason
+        self._shutdown_socket()
+        return True
+
+
+def _active_download() -> _DownloadState | None:
+    return getattr(_ACTIVE_DOWNLOAD, "state", None)
+
+
+def _checkpoint() -> None:
+    """Raise if the active fetch has been cancelled or has run out of time."""
+    state = _active_download()
+    if state is not None:
+        state.raise_trip_reason()
+
+
+def _deadline() -> float | None:
+    state = _active_download()
+    return None if state is None else state.deadline
+
+
+def _effective_timeout(timeout: float | None) -> float | None:
+    """Clamp a socket timeout to the remaining fetch budget."""
+    deadline = _deadline()
+    if deadline is None:
+        return timeout
+    remaining = max(0.001, deadline - _monotonic())
+    return remaining if timeout is None else min(timeout, remaining)
+
+
+def _register_download_socket(sock) -> None:
+    state = _active_download()
+    if state is not None:
+        state.register_socket(sock)
+
+
+@contextmanager
+def _download_context(
+    *,
+    deadline: float | None,
+    cancel_events: tuple = (),
+    poll_interval: float = _WATCHDOG_POLL_SECONDS,
+):
+    """Activate a download context (and its watchdog) for one fetch.
+
+    MUST wrap the whole of :meth:`_MarkdownImageResolver._download`, starting
+    before the first ``_host_is_public`` call. Wrapping only ``opener.open()``
+    would leave that first DNS resolve outside the context: no checkpoints, no
+    shared memo, so the resolve happens twice and a cancellation during it is
+    reported as a download failure.
+    """
+    state = _DownloadState(deadline=deadline, cancel_events=cancel_events)
+    previous = getattr(_ACTIVE_DOWNLOAD, "state", None)
+    _ACTIVE_DOWNLOAD.state = state
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(poll_interval):
+            if state.watchdog_tick():
+                return
+
+    thread = threading.Thread(
+        target=_watch, name="native-md-download-watchdog", daemon=True
+    )
+    thread.start()
+    try:
+        yield state
+    finally:
+        stop.set()
+        thread.join(timeout=poll_interval * 2)
+        _ACTIVE_DOWNLOAD.state = previous
+
+
 def _allowed_non_public_networks() -> list:
     """Parse ``NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`` (comma-separated
     CIDRs / IPs) into networks. Invalid tokens are warned and dropped."""
@@ -377,10 +557,10 @@ def _validated_addresses(host: str) -> list[str]:
     address is non-public — so a single poisoned A/AAAA record rejects the whole
     host.
 
-    The returned addresses are what the connection actually dials (see
-    :class:`_GuardedHTTPConnection`): validating and connecting share one
-    resolution, closing the DNS-rebinding TOCTOU window between check and
-    connect.
+    Call it through :func:`_resolve_shared`, never directly: that wrapper is
+    what makes "validating and connecting share one resolution" actually true
+    (it memoises per host for the duration of one fetch) and what surrounds the
+    uninterruptible resolve with cancellation checkpoints.
     """
     allow = _allowed_non_public_networks()
     try:
@@ -400,23 +580,123 @@ def _validated_addresses(host: str) -> list[str]:
     return addrs
 
 
+def _resolve_shared(host: str) -> list[str]:
+    """:func:`_validated_addresses`, memoised per host for one fetch.
+
+    Two jobs, both load-bearing:
+
+    * **One resolve per host per fetch.** ``_host_is_public`` and
+      :func:`_pin_socket` each used to resolve independently (and a redirect
+      hop doubled that again), which doubled the one phase of a fetch that
+      can be neither deadline-bounded nor cancelled.
+    * **Checkpoints around the resolve.** This is the only place a fetch
+      blocks in the system resolver, so a cancellation raised during it can
+      only be observed here. Putting the checkpoints in ``_pin_socket``
+      instead would miss the common case entirely: when the resolve yields
+      nothing usable, ``_host_is_public`` returns False and the caller raises
+      before ``_pin_socket`` is ever reached, so the cancellation would be
+      swallowed and reported as an ordinary download failure.
+
+    Membership, not truthiness, decides a memo hit: ``[]`` is a *result*
+    (resolution failed, or an address was non-public), not a miss.
+    """
+    state = _active_download()
+    if state is None:
+        return _validated_addresses(host)
+    _checkpoint()
+    if host not in state.dns:
+        state.dns[host] = _validated_addresses(host)
+    _checkpoint()
+    return state.dns[host]
+
+
 def _host_is_public(host: str) -> bool:
     """True iff every resolved address for ``host`` is safe to fetch."""
-    return bool(_validated_addresses(host))
+    return bool(_resolve_shared(host))
+
+
+def _timeout_seconds(timeout) -> float | None:
+    """Normalise a socket-style timeout argument to seconds, or ``None``."""
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        timeout = socket.getdefaulttimeout()
+    if timeout is None:
+        return None
+    return float(timeout)
 
 
 def _pin_socket(host: str, port: int, timeout, source_address):
-    """Open a TCP socket to a *validated* resolved address of ``host``.
+    """Connect to a *validated* resolved address of ``host``, cancellably.
 
-    The address comes from the same :func:`_validated_addresses` resolution
-    that authorised the host, so urllib never independently re-resolves the
-    name (which a DNS-rebinding attacker could flip to an internal IP between
-    our check and the actual connect)."""
-    addrs = _validated_addresses(host)
+    The address comes from the same :func:`_resolve_shared` resolution that
+    authorised the host, so urllib never independently re-resolves the name
+    (which a DNS-rebinding attacker could flip to an internal IP between our
+    check and the actual connect).
+
+    The connect is non-blocking + selector-polled rather than a blocking
+    ``create_connection``, so it observes both the fetch deadline and a
+    cancellation within one poll interval. It must be done this way and not
+    with the socket watchdog: a ``shutdown()`` on a socket that is still
+    connecting does not abort the connect — on macOS it makes ``connect()``
+    return *successfully* — so a mid-connect abort has to be driven by the
+    calling thread itself.
+    """
+    addrs = _resolve_shared(host)
     if not addrs:
         raise OSError(f"refusing connection to non-public host: {host!r}")
-    sock = socket.create_connection((addrs[0], port), timeout, source_address)
-    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    addr = addrs[0]
+    family = socket.AF_INET6 if ":" in addr else socket.AF_INET
+    timeout_s = _timeout_seconds(timeout)
+
+    # A connect deadline of its own, not just the fetch deadline: without an
+    # active download context there is no fetch deadline, and the timeout
+    # argument would otherwise not be honoured until AFTER the connect
+    # completes — an EINPROGRESS peer would poll forever, where
+    # create_connection(timeout=...) used to give up.
+    candidates = [
+        d
+        for d in (_deadline(), None if timeout_s is None else _monotonic() + timeout_s)
+        if d is not None
+    ]
+    connect_deadline = min(candidates) if candidates else None
+
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if source_address:
+            sock.bind(source_address)
+        sock.setblocking(False)
+        err = sock.connect_ex((addr, port))
+        if err not in (0, errno.EINPROGRESS, errno.EWOULDBLOCK):
+            raise OSError(err, os.strerror(err))
+        if err:
+            with selectors.DefaultSelector() as sel:
+                sel.register(sock, selectors.EVENT_WRITE)
+                while True:
+                    _checkpoint()
+                    wait = _CONNECT_POLL_SECONDS
+                    if connect_deadline is not None:
+                        remaining = connect_deadline - _monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("image download connect timed out")
+                        wait = min(wait, remaining)
+                    if sel.select(wait):
+                        # Re-check before accepting: a cancellation that landed
+                        # while we were blocked in select() must not be
+                        # overtaken by the connection completing.
+                        _checkpoint()
+                        code = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                        if code:
+                            raise OSError(code, os.strerror(code))
+                        break
+        _checkpoint()
+        sock.setblocking(True)
+        sock.settimeout(_effective_timeout(timeout_s))
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except BaseException:
+        # Aborts during connect are closed by THIS thread; the watchdog is
+        # deliberately not involved (see the docstring).
+        sock.close()
+        raise
+    _register_download_socket(sock)
     return sock
 
 
@@ -432,7 +712,20 @@ class _GuardedHTTPSConnection(http.client.HTTPSConnection):
         sock = _pin_socket(self.host, self.port, self.timeout, self.source_address)
         # Wrap with the original hostname so SNI / certificate validation still
         # runs against the domain, not the pinned IP.
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        #
+        # The handshake is driven explicitly rather than by wrap_socket,
+        # because wrap_socket DETACHES the socket it wraps (the original
+        # object's fd becomes -1). Handshaking inside it would therefore run
+        # with only the detached object registered, and the watchdog would have
+        # nothing it could shut down — a peer that stalls mid-handshake would
+        # hold the worker indefinitely. Registering the SSLSocket first makes
+        # the handshake interruptible like every later read.
+        sslsock = self._context.wrap_socket(
+            sock, server_hostname=self.host, do_handshake_on_connect=False
+        )
+        _register_download_socket(sslsock)
+        sslsock.do_handshake()
+        self.sock = sslsock
 
 
 class _GuardedHTTPHandler(urllib.request.HTTPHandler):
@@ -597,6 +890,7 @@ class _MarkdownImageResolver:
         max_bytes: int,
         max_svg_pixels: int,
         raw_cache: NativeImageRawCache | None = None,
+        cancel_events: tuple = (),
     ) -> None:
         self._bundle_root = bundle_root.resolve() if bundle_root else None
         self._warnings = warnings
@@ -606,6 +900,7 @@ class _MarkdownImageResolver:
         self._max_bytes = max_bytes
         self._max_svg_pixels = max_svg_pixels
         self._raw_cache = raw_cache
+        self._cancel_events = cancel_events
         self._cache: dict[str, ResolvedImage] = {}
 
     def resolve(self, src: str) -> ResolvedImage:
@@ -730,17 +1025,39 @@ class _MarkdownImageResolver:
         return self._local(data, ext, f"image-{digest}.{ext}")
 
     def _download(self, src: str) -> tuple[bytes, str]:
-        parsed = urlparse(src)
-        if parsed.scheme not in ("http", "https"):
-            raise ValueError(f"unsupported scheme: {parsed.scheme!r}")
-        if not _host_is_public(parsed.hostname or ""):
-            raise ValueError("non-public host blocked")
-        opener = _build_guarded_opener()
-        req = urllib.request.Request(src, headers={"User-Agent": "lightrag-native-md"})
-        with opener.open(req, timeout=self._timeout) as resp:
-            content_type = (resp.headers.get_content_type() or "").lower()
-            # Read at most max_bytes + 1 so we can detect an over-limit body.
-            data = resp.read(self._max_bytes + 1)
+        """Fetch one image, bounded by a real wall-clock deadline.
+
+        ``NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT`` is applied as a deadline for the
+        whole request, not merely as urllib's per-socket-operation timeout: a
+        peer that emits one byte per interval resets a socket timeout forever,
+        which at the shipped defaults kept a parse worker for years.
+
+        What each phase can and cannot do:
+
+        ==================  =================  =====================
+        phase               bounded by         interruptible by cancel
+        ==================  =================  =====================
+        DNS resolution      system resolver    no
+        TCP connect         deadline           yes (poll interval)
+        TLS handshake       deadline           yes (watchdog)
+        response headers    deadline           yes (watchdog)
+        response body       deadline           yes (watchdog)
+        redirect hop        deadline           yes (watchdog)
+        ==================  =================  =====================
+
+        DNS is the sole exception on both counts: it happens before any socket
+        exists, so neither the deadline nor the watchdog can reach it. The
+        bound is therefore "deadline plus one DNS resolution", and a cancel is
+        observed at worst one resolution plus one poll interval late.
+
+        The signature is fixed by tests that monkeypatch it; everything the
+        fetch needs comes off ``self``.
+        """
+        deadline = _monotonic() + self._timeout
+        with _download_context(
+            deadline=deadline, cancel_events=self._cancel_events
+        ) as guard:
+            data, content_type = self._fetch(src, guard)
         if len(data) > self._max_bytes:
             raise ValueError(f"image exceeds {self._max_bytes} bytes")
         # Magic bytes are authoritative; SVG is rasterized to PNG here. Reject
@@ -758,6 +1075,46 @@ class _MarkdownImageResolver:
         if coerced is None:
             raise ValueError("downloaded bytes are not a supported image")
         return coerced
+
+    def _fetch(self, src: str, guard: _DownloadState) -> tuple[bytes, str]:
+        """The network half of :meth:`_download`, inside an active context."""
+        parsed = urlparse(src)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"unsupported scheme: {parsed.scheme!r}")
+        # Inside the context, so this resolve is checkpointed and memoised for
+        # the connect that follows.
+        if not _host_is_public(parsed.hostname or ""):
+            raise ValueError("non-public host blocked")
+        opener = _build_guarded_opener()
+        req = urllib.request.Request(src, headers={"User-Agent": "lightrag-native-md"})
+        cap = self._max_bytes
+        try:
+            with opener.open(req, timeout=self._timeout) as resp:
+                content_type = (resp.headers.get_content_type() or "").lower()
+                chunks: list[bytes] = []
+                total = 0
+                # Read at most cap + 1 so the over-limit check below still sees
+                # one byte past the ceiling, exactly as the single read did.
+                while total <= cap:
+                    _checkpoint()
+                    want = min(_DOWNLOAD_CHUNK_BYTES, cap + 1 - total)
+                    chunk = resp.read(want)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                data = b"".join(chunks)
+        except BaseException:
+            # A watchdog-induced teardown surfaces as a bare OSError, which the
+            # caller's blanket handler would silently degrade to an external
+            # link — including for a cancellation. Re-label it first.
+            guard.raise_trip_reason()
+            raise
+        # Also on the clean path: a half-closed socket makes read() return b'',
+        # which looks exactly like a complete body. Without this, an aborted
+        # fetch would be accepted as a (truncated) image.
+        guard.raise_trip_reason()
+        return data, content_type
 
 
 class NativeMarkdownParser(NativeParserBase):
