@@ -5729,7 +5729,30 @@ def normalize_source_ids_limit_method(method: str | None) -> str:
 def merge_source_ids(
     existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
 ) -> list[str]:
-    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+    """Merge two iterables of source IDs into one flat, ordered, deduplicated list.
+
+    Every element is split on ``GRAPH_FIELD_SEP``, stripped, and deduplicated by
+    first-seen order. The split is what makes this the normalization boundary
+    for chunk-id lists: an element that is itself a joined string
+    (``"chunk-a<SEP>chunk-b"``) would otherwise be stored as a single id, and
+    such an id matches no key in ``text_chunks``. It would then corrupt the
+    ``chunk_ids``/``count`` rows of ``entity_chunks_storage`` /
+    ``relation_chunks_storage``, miscount ``apply_source_ids_limit``'s
+    truncation (two chunks counted as one), and miss every downstream
+    ``get_by_ids`` lookup.
+
+    No in-tree producer passes a joined element today — every caller splits its
+    graph ``source_id`` first, and extraction emits one ``chunk_key`` per record
+    — so the split is a guard against a future upstream regression rather than a
+    fix for a live path. A joined element arriving here therefore means an
+    upstream bug and is logged at debug level so the silent repair does not hide
+    the root cause.
+
+    Despite the name, this also merges the sibling union fields that share the
+    same ``GRAPH_FIELD_SEP`` encoding: ``file_path`` and ``description`` in the
+    edge-dedup merges of ``mongo_impl`` / ``opensearch_impl``. Stripping applies
+    to those fragments too, so ``" foo"`` and ``"foo"`` collapse into one entry.
+    """
 
     merged: list[str] = []
     seen: set[str] = set()
@@ -5740,9 +5763,26 @@ def merge_source_ids(
         for source_id in sequence:
             if not source_id:
                 continue
-            if source_id not in seen:
-                seen.add(source_id)
-                merged.append(source_id)
+            if not isinstance(source_id, str):
+                # Coerce rather than skip: dropping the value would silently
+                # lose provenance, which is the failure mode this function
+                # exists to prevent. The warning surfaces the type bug.
+                logger.warning(
+                    f"merge_source_ids received a non-string id "
+                    f"{source_id!r} ({type(source_id).__name__}); coercing to str"
+                )
+                source_id = str(source_id)
+            if GRAPH_FIELD_SEP in source_id:
+                logger.debug(
+                    f"merge_source_ids splitting a GRAPH_FIELD_SEP-joined value "
+                    f"{source_id!r}; callers are expected to pass individual ids"
+                )
+            # split_string_by_multi_markers already strips each fragment and
+            # drops the empty ones, so a whitespace-only element yields nothing.
+            for sid in split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]):
+                if sid not in seen:
+                    seen.add(sid)
+                    merged.append(sid)
 
     return merged
 
