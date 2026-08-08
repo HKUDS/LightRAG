@@ -22,6 +22,11 @@ pytestmark = pytest.mark.offline
 class _AsyncCursor:
     def __init__(self, docs):
         self._docs = list(docs)
+        self.sort_calls = []
+
+    def sort(self, *args, **kwargs):
+        self.sort_calls.append((args, kwargs))
+        return self
 
     def limit(self, n: int):
         self._docs = self._docs[:n]
@@ -144,6 +149,53 @@ class TestMongoGraphStorage:
         assert len(result.edges) == 1
         assert result.edges[0].source == "A"
         assert result.edges[0].target == "B"
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_breaks_degree_ties_on_the_label(self):
+        """``$limit max_nodes`` cuts through a band of equal-degree entities,
+        and the BaseGraphStorage contract orders that band by the label.
+
+        Without the second sort key, which entities survived the cutoff was
+        whatever order the aggregation happened to emit them in.
+        """
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=5)
+        storage.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "A", "degree": 1}])
+        )
+        storage.collection.find = Mock(return_value=_AsyncCursor([]))
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        await storage.get_knowledge_graph_all_by_degree(max_depth=2, max_nodes=2)
+
+        pipeline = storage.edge_collection.aggregate.call_args[0][0]
+        assert {"$sort": {"degree": -1, "_id": 1}} in pipeline, pipeline
+        assert {"$sort": {"degree": -1}} not in pipeline, pipeline
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_tops_up_isolated_nodes_in_label_order(self):
+        """The degree-0 top-up needs an order for the same reason the ranking
+        does: an unsorted ``find`` handed the remaining slots to whichever
+        documents the collection scan reached first."""
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=9)
+        storage.edge_collection.aggregate = AsyncMock(
+            return_value=_AsyncCursor([{"_id": "Connected", "degree": 2}])
+        )
+        top_up = _AsyncCursor([{"_id": "Aardvark"}, {"_id": "Orphan"}])
+        storage.collection.find = Mock(return_value=top_up)
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        await storage.get_knowledge_graph_all_by_degree(max_depth=2, max_nodes=3)
+
+        assert top_up.sort_calls == [(("_id", 1), {})], top_up.sort_calls
+        # First find() is the top-up; the later one is the node fetch by id.
+        # Asserting the filter AFTER the call is what pins the snapshot: the
+        # same list is appended to while this cursor is consumed, so a live
+        # reference would read back as ["Connected", "Aardvark", "Orphan"].
+        assert storage.collection.find.call_args_list[0][0][0] == {
+            "_id": {"$nin": ["Connected"]}
+        }
 
     @pytest.mark.asyncio
     async def test_bidirectional_bfs_reports_truncated_and_respects_cap(self):

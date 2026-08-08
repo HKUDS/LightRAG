@@ -805,6 +805,31 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
+
+        Ranks by node degree, descending, and **ties break on the label,
+        ascending** — the same tie-break :meth:`get_popular_labels` documents,
+        for the same reason. Degree alone does not order a real graph: leaf
+        entities of degree 1 or 2 outnumber everything else, so the ``max_nodes``
+        cutoff almost always lands inside a band of equal-degree entities, and
+        whatever orders that band decides which nodes the caller ever sees.
+        Left to the backend's natural order that is node INSERTION order (a
+        stable sort in Python, an unconstrained plan order in SQL/Cypher), so
+        re-ingesting the same corpus with the documents in a different order
+        returned a different graph at the same ``max_nodes`` — the defect fixed
+        for ``get_popular_labels`` first, then here.
+
+        The rule covers both selection paths: the ``*`` whole-graph ranking, and
+        the same-depth ordering of a BFS expansion from ``node_label``, where the
+        tie decides both which neighbours are kept at the cutoff and which get
+        expanded next.
+
+        Order the labels by code point (SQL ``COLLATE "C"``, not a locale
+        collation) so every backend agrees with Python's ``str`` comparison.
+
+        This constrains WHICH nodes survive truncation, not the order of
+        :class:`KnowledgeGraph.nodes` in the response — implementations
+        materialize that list from a dict or a subgraph view, and callers that
+        need a specific presentation order must sort it themselves.
         """
 
     @abstractmethod

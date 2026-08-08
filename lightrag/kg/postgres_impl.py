@@ -8635,7 +8635,17 @@ class PGGraphStorage(BaseGraphStorage):
             # that is mostly an edge target is not under-ranked and dropped on
             # truncation. LEFT JOIN from the base vertex table + COALESCE keeps
             # isolated (degree-0) nodes, matching the previous OPTIONAL MATCH
-            # behaviour when the graph is not truncated. Stable tie-break on id.
+            # behaviour when the graph is not truncated.
+            #
+            # Ties break on the entity_id, not on v.id: the internal AGE vertex
+            # id is an insertion counter, so ordering the equal-degree band by
+            # it was deterministic per database but still meant "whichever
+            # entity was ingested first", which is exactly what the contract
+            # rules out. COLLATE "C" makes it a byte comparison so it matches
+            # Python's code-point sort, and the ranking columns live in a
+            # derived table because ORDER BY cannot apply COLLATE to a bare
+            # output alias (a sub-SELECT, not a CTE: CTEs are an optimization
+            # fence before PostgreSQL 12).
             query_nodes = f"""
                 WITH node_degrees AS (
                     SELECT node_id, COUNT(*) AS degree
@@ -8646,10 +8656,15 @@ class PGGraphStorage(BaseGraphStorage):
                     ) AS all_edges
                     GROUP BY node_id
                 )
-                SELECT v.id AS node_id, COALESCE(d.degree, 0) AS degree
-                FROM {self.graph_name}.base v
-                LEFT JOIN node_degrees d ON d.node_id = v.id
-                ORDER BY degree DESC, v.id ASC
+                SELECT node_id FROM (
+                    SELECT
+                        v.id AS node_id,
+                        COALESCE(d.degree, 0) AS degree,
+                        (ag_catalog.agtype_access_operator(VARIADIC ARRAY[v.properties, '"entity_id"'::agtype]))::text AS label
+                    FROM {self.graph_name}.base v
+                    LEFT JOIN node_degrees d ON d.node_id = v.id
+                ) AS ranked
+                ORDER BY degree DESC, label COLLATE "C" ASC
                 LIMIT $1"""
             node_results = await self._query(query_nodes, params={"limit": max_nodes})
 
