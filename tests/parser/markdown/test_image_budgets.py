@@ -55,6 +55,42 @@ class _FakeResponse:
         return False
 
 
+class _StreamingResponse:
+    """A response that GENERATES its body chunk by chunk.
+
+    Deliberately never holds the whole body: the peak-memory test below would
+    otherwise be measuring one extra copy per image that the harness owns, and
+    an allowance sized to cover that would stop proving anything about the
+    parser. The first chunk carries the index, so each image still has distinct
+    bytes and therefore a distinct sha256.
+    """
+
+    def __init__(self, index: int, size: int) -> None:
+        self._head = _PNG_HEADER + str(index).encode().rjust(16, b"0")
+        self._size = size
+        self._pos = 0
+        self.headers = _FakeHeaders("image/png")
+
+    def read(self, n: int = -1) -> bytes:
+        remaining = self._size - self._pos
+        if n < 0 or n > remaining:
+            n = remaining
+        if n <= 0:
+            return b""
+        start = self._pos
+        self._pos += n
+        if start >= len(self._head):
+            return bytes(n)  # freshly generated filler, nothing retained
+        head = self._head[start : start + n]
+        return head + bytes(n - len(head))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 @pytest.fixture
 def fake_network(monkeypatch):
     """Serve a distinct PNG per URL and count opener.open() calls."""
@@ -67,8 +103,8 @@ def fake_network(monkeypatch):
                 raise OSError("connection refused")
             url = req.full_url if hasattr(req, "full_url") else str(req)
             index = url.rsplit("=", 1)[-1]
-            return _FakeResponse(
-                _png(int(index) if index.isdigit() else 0, state["size"])
+            return _StreamingResponse(
+                int(index) if index.isdigit() else 0, state["size"]
             )
 
     monkeypatch.setattr(md_parser, "_host_is_public", lambda host: True)
@@ -447,9 +483,10 @@ def test_a_legitimate_document_is_unaffected_by_the_shipped_defaults(
 
 
 _MIB = 1024 * 1024
-# Covers what the TEST costs, not the parser: the markdown source string, the
-# drawings/assets dicts, and the fake opener slicing its own response bodies.
-# Small next to the MiB-scale budgets below, so the formula still dominates.
+# Covers the read buffer, the chunk list, the `cap + 1` extra byte, and what the
+# TEST itself costs (the markdown source string, the drawings/assets dicts).
+# Small next to the MiB-scale budgets below, so the formula still dominates:
+# a read path that held one extra whole copy would blow past it in every case.
 _HARNESS_SLACK = 1 * _MIB
 
 
@@ -464,26 +501,31 @@ _HARNESS_SLACK = 1 * _MIB
 def test_peak_memory_stays_within_the_documented_formula(
     monkeypatch, fake_network, max_bytes, max_total
 ):
-    """Peak <= MAX_TOTAL_BYTES + 2 * min(MAX_BYTES, MAX_TOTAL_BYTES).
+    """Live image data <= MAX_TOTAL_BYTES + min(MAX_BYTES, MAX_TOTAL_BYTES).
 
-    The budget bounds bytes RETAINED; while one image is in flight there is
-    additionally a second copy of THAT image, because assembling a stream into
-    a single immutable ``bytes`` costs a copy. Measured on CPython 3.12 that
-    doubling is the same for a chunked read plus ``join``, for one bounded
-    ``read()``, and worse for a pre-allocated ``readinto`` — it is inherent, not
-    a choice of read strategy, and only the streaming-to-disk follow-up removes
-    it.
+    The budget bounds bytes RETAINED. While one image is in flight, assembling
+    it into a single immutable ``bytes`` holds the pieces and the result
+    together for a moment. With ``R`` retained and ``C`` in flight, the read cap
+    ``C <= min(MAX_BYTES, MAX_TOTAL_BYTES - R)`` means that moment holds
+    ``R + 2C = (R + C) + C``, and ``R + C <= MAX_TOTAL_BYTES`` — so the
+    in-flight copy adds ``min(MAX_BYTES, MAX_TOTAL_BYTES)``, not twice it.
 
-    This pins the resulting formula so a change to the read path cannot quietly
-    make it worse, and so the figure quoted in env.example stays honest. A read
-    path that regressed to three live copies fails every case here.
+    That transient is inherent, not a choice of read strategy: on CPython 3.12 a
+    chunked read plus ``join`` and one bounded ``read()`` peak identically, and
+    pre-allocating and using ``readinto`` is worse. Only the
+    streaming-to-``asset_dir`` follow-up removes it.
+
+    This is a bound on live allocations, NOT on process RSS — RSS follows the
+    allocator's high-water mark, which no algebra here can promise. It exists so
+    a change to the read path cannot quietly cost another whole copy, and so the
+    figure quoted in env.example stays honest.
     """
     monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_BYTES", str(max_bytes))
     monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", str(max_total))
     per_image = min(max_bytes, max_total)
     fake_network["size"] = per_image
 
-    allowance = max_total + 2 * per_image + _HARNESS_SLACK
+    allowance = max_total + per_image + _HARNESS_SLACK
 
     tracemalloc.start()
     try:
@@ -494,8 +536,8 @@ def test_peak_memory_stays_within_the_documented_formula(
 
     assert peak <= allowance, (
         f"peak {peak / _MIB:.1f}MiB exceeds {allowance / _MIB:.1f}MiB "
-        f"(retained {max_total / _MIB:.0f} + 2 x {per_image / _MIB:.0f} "
-        f"in flight + {_HARNESS_SLACK / _MIB:.0f} harness)"
+        f"(retained {max_total / _MIB:.0f} + {per_image / _MIB:.0f} in flight "
+        f"+ {_HARNESS_SLACK / _MIB:.0f} slack)"
     )
 
 

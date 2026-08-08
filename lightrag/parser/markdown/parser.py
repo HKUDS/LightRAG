@@ -400,18 +400,30 @@ class _ImageBudget:
     rather than an exact count — charging only successes would let a few
     thousand unresolvable URLs spend an unbounded amount of work.
 
-    ``max_total_bytes`` bounds bytes RETAINED. While one image is in flight the
-    peak is higher, because assembling a stream into a single immutable
-    ``bytes`` costs a second copy of that image; the per-document peak is
-    therefore about ``max_total_bytes + 2 * min(NATIVE_MD_IMAGE_MAX_BYTES,
-    max_total_bytes)``. That doubling is inherent rather than a choice of read
-    strategy — measured on CPython 3.12, a chunked read plus ``b"".join`` and a
-    single bounded ``read()`` peak identically, and pre-allocating a buffer and
-    using ``readinto`` is worse (it pays for the full cap up front AND the
-    conversion). Removing it needs the asset bytes to stop being retained in
-    the heap at all, which is the streaming-to-``asset_dir`` follow-up. The
-    per-image read cap is ``min(max_bytes, remaining_bytes)``, so the transient
-    only ever shrinks as a document fills its budget.
+    ``max_total_bytes`` bounds bytes RETAINED. Live image data peaks higher,
+    while one image is in flight: assembling a stream into a single immutable
+    ``bytes`` means the chunks and the result are briefly alive together. With
+    ``R`` retained, ``C`` in flight and the read capped at
+    ``C <= min(max_bytes, max_total_bytes - R)``, that moment holds
+    ``R + 2C = (R + C) + C``, and since ``R + C <= max_total_bytes`` the bound
+    on live image data is::
+
+        max_total_bytes + min(NATIVE_MD_IMAGE_MAX_BYTES, max_total_bytes)
+
+    (~89 MiB at the shipped defaults), plus a constant for the reader's buffer
+    and the chunk list. This is a bound on live *allocations*, not on process
+    RSS: RSS follows the allocator's high-water mark and is not something this
+    algebra can promise.
+
+    The transient copy is inherent rather than a choice of read strategy —
+    measured on CPython 3.12, a chunked read plus ``b"".join`` and a single
+    bounded ``read()`` peak identically (128.2 vs 128.1 MiB for a 64 MiB body),
+    and pre-allocating a buffer and using ``readinto`` is markedly worse
+    (192.1 MiB: it pays the full cap up front AND the conversion). Removing it
+    needs the asset bytes to stop being retained in the heap at all, which is
+    the streaming-to-``asset_dir`` follow-up. Note the read cap shrinks as the
+    document fills its budget, so the transient shrinks with it and is never
+    more than the pre-budget cap of ``max_bytes``.
     """
 
     def __init__(
