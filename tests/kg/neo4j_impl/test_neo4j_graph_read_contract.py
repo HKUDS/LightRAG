@@ -116,6 +116,8 @@ async def test_get_node_edges_returns_connected_pairs():
         ("Alpha", "Beta"),
         ("Alpha", "Gamma"),
     ]
+
+
 @pytest.mark.asyncio
 async def test_get_edges_batch_omits_missing_edges():
     """get_edges_batch must omit non-existent edge pairs rather than returning dummy attributes."""
