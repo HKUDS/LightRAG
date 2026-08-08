@@ -55,7 +55,9 @@ async def test_apply_token_truncation_bidirectional_relation_matching():
     filtered_relations = result["filtered_relations"]
     relation_id_to_original = result["relation_id_to_original"]
 
-    assert len(filtered_relations) == 2, f"Expected 2 filtered relations, got {len(filtered_relations)}"
+    assert len(filtered_relations) == 2, (
+        f"Expected 2 filtered relations, got {len(filtered_relations)}"
+    )
     assert ("NodeD", "NodeC") in relation_id_to_original
     assert ("NodeC", "NodeD") in relation_id_to_original
 

@@ -5085,9 +5085,7 @@ async def _apply_token_truncation(
     if relations_context:
         final_relation_pairs = {
             (r["entity1"], r["entity2"]) for r in relations_context
-        } | {
-            (r["entity2"], r["entity1"]) for r in relations_context
-        }
+        } | {(r["entity2"], r["entity1"]) for r in relations_context}
         seen_edges = set()
         for relation in final_relations:
             src, tgt = relation.get("src_id"), relation.get("tgt_id")
@@ -5097,8 +5095,10 @@ async def _apply_token_truncation(
             pair = (src, tgt)
             rev_pair = (tgt, src)
             if (
-                pair in final_relation_pairs or rev_pair in final_relation_pairs
-            ) and pair not in seen_edges and rev_pair not in seen_edges:
+                (pair in final_relation_pairs or rev_pair in final_relation_pairs)
+                and pair not in seen_edges
+                and rev_pair not in seen_edges
+            ):
                 filtered_relations.append(relation)
                 filtered_relation_id_to_original[pair] = relation
                 filtered_relation_id_to_original[rev_pair] = relation
