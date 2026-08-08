@@ -34,37 +34,13 @@ import pytest
 from lightrag.parser.markdown import parser as md_parser
 from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
 
-_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
-    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05"
-    b"\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
 # The listener emits a byte every _TRICKLE_INTERVAL, comfortably inside the
 # socket timeout, so a per-socket-operation timeout never fires.
 _TRICKLE_INTERVAL = 0.25
 _DEADLINE_SECONDS = 2
 _DEADLINE_PLUS_SLACK = 8.0
-
-
-class _FakeClock:
-    """A monotonic clock the test drives by hand."""
-
-    def __init__(self, start: float = 1000.0) -> None:
-        self.now = start
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-@pytest.fixture
-def clock(monkeypatch):
-    fake = _FakeClock()
-    monkeypatch.setattr(md_parser, "_monotonic", fake)
-    return fake
 
 
 # --------------------------------------------------------------------------
@@ -359,6 +335,24 @@ def test_resolution_is_shared_between_validation_and_connect(monkeypatch, clock)
         assert md_parser._resolve_shared("host.example") == ["93.184.216.34"]
     # Validation and the connect that follows share one resolution, which is
     # what the _validated_addresses docstring has always claimed.
+    assert calls["n"] == 1
+
+
+def test_resolution_memo_folds_hostname_case(monkeypatch, clock):
+    # _fetch seeds the memo with urlparse().hostname, which lowercases, while
+    # the connect path looks it up with http.client's case-preserved req.host.
+    # DNS is case-insensitive; a memo that splits on case re-runs the one
+    # uninterruptible phase on every fetch of a non-lowercase host.
+    calls = {"n": 0}
+
+    def _fake_validated(host):
+        calls["n"] += 1
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(md_parser, "_validated_addresses", _fake_validated)
+    with md_parser._download_context(deadline=clock.now + 300.0, poll_interval=60.0):
+        assert md_parser._host_is_public("host.example") is True
+        assert md_parser._resolve_shared("HOST.example") == ["93.184.216.34"]
     assert calls["n"] == 1
 
 

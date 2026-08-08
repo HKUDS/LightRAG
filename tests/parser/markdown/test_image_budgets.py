@@ -287,27 +287,24 @@ def test_byte_budget_fires_without_the_request_budget(monkeypatch, fake_network)
     assert "images_request_budget_exceeded" not in warnings
 
 
+def test_an_exactly_filled_byte_budget_stops_issuing_requests(
+    monkeypatch, fake_network
+):
+    # With 0 bytes remaining the fetch's outcome is knowable before a socket is
+    # opened — any body would be rejected — so no request is issued (or charged
+    # against the request budget) and the stop lands on the byte counter.
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", str(1024))
+    kinds, warnings, _ = _extract(_markdown(3))
+
+    assert fake_network["opens"] == 1
+    assert kinds == ["local", "external", "external"]
+    assert warnings.get("images_byte_budget_exceeded") == 2
+    assert "images_request_budget_exceeded" not in warnings
+
+
 # --------------------------------------------------------------------------
 # Document download time budget
 # --------------------------------------------------------------------------
-
-
-class _FakeClock:
-    def __init__(self, start: float = 1000.0) -> None:
-        self.now = start
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-@pytest.fixture
-def clock(monkeypatch):
-    fake = _FakeClock()
-    monkeypatch.setattr(md_parser, "_monotonic", fake)
-    return fake
 
 
 def test_document_time_budget_stops_further_requests(monkeypatch, fake_network, clock):

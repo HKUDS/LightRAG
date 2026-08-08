@@ -170,7 +170,7 @@ class NativeImageRawCache:
         }
         self._dirty = True
 
-    def flush(self) -> None:
+    def flush(self, *, prune: bool = True) -> None:
         """Persist the bundle only if it actually changed this run.
 
         Skipped entirely on a **pure cache hit** (every image reused, nothing
@@ -178,25 +178,38 @@ class NativeImageRawCache:
         equals the on-disk one and a rewrite would only be an idempotent write.
         Leaving the manifest and image files untouched means their mtimes flag a
         miss/update vs. a hit. Also a no-op for an image-less or
-        download-disabled run, so a pre-existing valid bundle is left intact."""
+        download-disabled run, so a pre-existing valid bundle is left intact.
+
+        ``prune=False`` is the failure path: a parse that raises after
+        downloading images still persists that progress, so the retry resumes
+        from the cache instead of re-fetching. Pruning must be skipped there —
+        it keys on the entries referenced THIS run, and an aborted run never
+        reached the rest — so the manifest instead keeps every entry from the
+        prior valid bundle and no files are deleted."""
         if not self._dirty:
             return
         self._ensure_writable_dir()
-        referenced = {e["file"] for e in self._entries.values()}
-        for child in self._raw_dir.iterdir():
-            if child.name == _MANIFEST_FILENAME:
-                continue
-            if child.is_file() and child.name not in referenced:
-                try:
-                    child.unlink()
-                except OSError:
-                    pass
+        if prune:
+            entries = self._entries
+            referenced = {e["file"] for e in entries.values()}
+            for child in self._raw_dir.iterdir():
+                if child.name == _MANIFEST_FILENAME:
+                    continue
+                if child.is_file() and child.name not in referenced:
+                    try:
+                        child.unlink()
+                    except OSError:
+                        pass
+        else:
+            # _index is non-empty only when the prior bundle was valid, in
+            # which case no clear ran and its files are still on disk.
+            entries = {**self._index, **self._entries}
         manifest = {
             "version": _MANIFEST_VERSION,
             "engine": _CACHE_ENGINE,
             "source_content_hash": self._source_hash,
             "options_signature": self._options_signature,
-            "images": self._entries,
+            "images": entries,
         }
         final = self._raw_dir / _MANIFEST_FILENAME
         tmp = final.with_suffix(".json.tmp")

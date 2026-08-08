@@ -25,11 +25,7 @@ import pytest
 
 from lightrag.parser.markdown import parser as md_parser
 
-_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
-    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05"
-    b"\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
 # How long the redirect handler holds its body open. Long enough that a client
 # which drains it cannot finish inside the assertion window.

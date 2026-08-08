@@ -20,6 +20,38 @@ from __future__ import annotations
 
 import pytest
 
+from lightrag.parser.markdown import parser as md_parser
+
+# A minimal valid 1x1 transparent PNG, shared by the parser / cache / budget /
+# deadline / redirect tests.
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05"
+    b"\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+class FakeClock:
+    """A monotonic clock the test drives by hand."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Install a hand-driven clock behind the parser's ``_monotonic`` alias."""
+    fake = FakeClock()
+    monkeypatch.setattr(md_parser, "_monotonic", fake)
+    return fake
+
+
 _NATIVE_MD_ENV_VARS = (
     "NATIVE_MD_IMAGE_DOWNLOAD_ENABLED",
     "NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED",
