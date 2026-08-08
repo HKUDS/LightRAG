@@ -880,7 +880,7 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             query = f"""
             UNWIND $pairs AS pair
-            MATCH (start:`{workspace_label}` {{entity_id: pair.src}})-[r:DIRECTED]-(end:`{workspace_label}` {{entity_id: pair.tgt}})
+            MATCH (start:`{workspace_label}` {{entity_id: pair.src}})-[r]-(end:`{workspace_label}` {{entity_id: pair.tgt}})
             RETURN pair.src AS src_id, pair.tgt AS tgt_id, collect(properties(r)) AS edges
             """
             result = await session.run(query, pairs=pairs)
@@ -901,14 +901,6 @@ class Neo4JStorage(BaseGraphStorage):
                         if key not in edge_props:
                             edge_props[key] = default
                     edges_dict[(src, tgt)] = edge_props
-                else:
-                    # No edge found – set default edge properties
-                    edges_dict[(src, tgt)] = {
-                        "weight": 1.0,
-                        "source_id": None,
-                        "description": None,
-                        "keywords": None,
-                    }
             await result.consume()
             return edges_dict
 

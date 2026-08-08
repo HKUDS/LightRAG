@@ -116,3 +116,13 @@ async def test_get_node_edges_returns_connected_pairs():
         ("Alpha", "Beta"),
         ("Alpha", "Gamma"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_edges_batch_omits_missing_edges():
+    """get_edges_batch must omit non-existent edge pairs rather than returning dummy attributes."""
+    storage, calls = _make_storage([{"src_id": "A", "tgt_id": "B", "edges": []}])
+    res = await storage.get_edges_batch([{"src": "A", "tgt": "B"}])
+    assert res == {}
+    query, _ = calls[0]
+    assert "-[r]-" in query
