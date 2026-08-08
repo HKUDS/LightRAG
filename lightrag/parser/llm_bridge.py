@@ -24,7 +24,14 @@ from typing import Any
 
 
 class LLMBridgeCancelled(RuntimeError):
-    """The parse was cancelled (or the rag shut down) during an LLM wait."""
+    """The parse was cancelled (or the rag shut down) during a blocking wait.
+
+    Named for its first consumer (the LLM bridge), but the hierarchy is the
+    repo-wide "a blocking parse wait was cancelled" signal: ``pipeline.py``
+    catches :class:`LLMBridgePipelineCancelled` to mark a document cancelled
+    rather than failed, so any blocking parse path that wants that treatment
+    must raise from this family.
+    """
 
 
 class LLMBridgePipelineCancelled(LLMBridgeCancelled):
@@ -33,6 +40,40 @@ class LLMBridgePipelineCancelled(LLMBridgeCancelled):
 
 class LLMBridgeShutdown(LLMBridgeCancelled):
     """The RAG parser executor is shutting down."""
+
+
+def normalize_cancel_events(
+    cancel_events: tuple[
+        threading.Event | tuple[threading.Event, type[LLMBridgeCancelled]] | None, ...
+    ],
+) -> tuple[tuple[threading.Event, type[LLMBridgeCancelled]], ...]:
+    """Normalize a cancel-event spec into ``(event, exception_type)`` pairs.
+
+    An entry may be a bare Event (mapped to :class:`LLMBridgeCancelled`) or an
+    ``(Event, exception_type)`` pair when the caller needs the cancellation
+    source preserved. ``None`` events are dropped so callers can pass optional
+    events positionally without filtering first.
+    """
+    normalized: list[tuple[threading.Event, type[LLMBridgeCancelled]]] = []
+    for entry in cancel_events:
+        if isinstance(entry, tuple):
+            event, exception_type = entry
+        else:
+            event, exception_type = entry, LLMBridgeCancelled
+        if event is not None:
+            normalized.append((event, exception_type))
+    return tuple(normalized)
+
+
+def first_cancellation(
+    cancel_events: tuple[tuple[threading.Event, type[LLMBridgeCancelled]], ...],
+    message: str,
+) -> LLMBridgeCancelled | None:
+    """Return the exception for the first set event, or ``None`` if none is set."""
+    for event, exception_type in cancel_events:
+        if event.is_set():
+            return exception_type(message)
+    return None
 
 
 class SyncLLMBridge:
@@ -64,15 +105,7 @@ class SyncLLMBridge:
     ) -> None:
         self._loop = loop
         self._submit = submit
-        normalized_events: list[tuple[threading.Event, type[LLMBridgeCancelled]]] = []
-        for entry in cancel_events:
-            if isinstance(entry, tuple):
-                event, exception_type = entry
-            else:
-                event, exception_type = entry, LLMBridgeCancelled
-            if event is not None:
-                normalized_events.append((event, exception_type))
-        self._cancel_events = tuple(normalized_events)
+        self._cancel_events = normalize_cancel_events(cancel_events)
         self._poll_interval = max(0.01, float(poll_interval))
         # The loop thread id at construction time. Calling the bridge from
         # that thread would block the loop the coroutine needs — a guaranteed
@@ -80,10 +113,7 @@ class SyncLLMBridge:
         self._loop_thread_id = threading.get_ident()
 
     def _cancellation_exception(self, message: str) -> LLMBridgeCancelled | None:
-        for event, exception_type in self._cancel_events:
-            if event.is_set():
-                return exception_type(message)
-        return None
+        return first_cancellation(self._cancel_events, message)
 
     def __call__(self, prompt: str, *, system_prompt: str | None = None) -> str:
         if threading.get_ident() == self._loop_thread_id:
