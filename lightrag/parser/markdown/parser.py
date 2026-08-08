@@ -48,7 +48,11 @@ from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 from lightrag.constants import NATIVE_RAW_DIR_SUFFIX, PARSER_ENGINE_NATIVE
 from lightrag.parser.external._common import raw_dir_for_parsed_dir
-from lightrag.parser.llm_bridge import first_cancellation, normalize_cancel_events
+from lightrag.parser.llm_bridge import (
+    LLMBridgeCancelled,
+    first_cancellation,
+    normalize_cancel_events,
+)
 from lightrag.parser.markdown.extract import ResolvedImage, extract_markdown
 from lightrag.parser.markdown.raw_cache import (
     NativeImageRawCache,
@@ -63,6 +67,15 @@ if TYPE_CHECKING:
 # Zip-bomb guards for .textpack extraction.
 _TEXTPACK_MAX_ENTRIES = 10_000
 _TEXTPACK_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB uncompressed
+
+# Per-DOCUMENT image ceilings (NATIVE_MD_IMAGE_MAX_BYTES bounds ONE image).
+# Sized against the default parse concurrency, DEFAULT_MAX_PARALLEL_PARSE_NATIVE
+# = 5: 64 MiB x 5 keeps attacker-controlled image bytes near 320 MiB, which
+# leaves the process viable in a small container. Raise them if large image
+# galleries matter more than the memory ceiling — over-budget remote images
+# degrade to external links with a warning, they do not fail the document.
+DEFAULT_NATIVE_MD_IMAGE_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+DEFAULT_NATIVE_MD_IMAGE_MAX_REQUESTS = 100
 
 # Magic-byte signatures → file extension. Authoritative for download
 # validation; ``None`` means "not a supported image".
@@ -269,6 +282,60 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_pos_int(key: str, default: int) -> int:
+    """:func:`_env_int` for budgets: anything not strictly positive is the default.
+
+    ``0`` and negatives deliberately do NOT mean "unlimited". An operator who
+    types ``0`` into a ceiling means *strictest*, and silently inverting that
+    would turn a typo into the very resource exhaustion the budget exists to
+    prevent. Unlimited is spelled with a very large number.
+
+    Kept separate from :func:`_env_int` because the existing per-image knobs
+    treat ``0`` as "skip every image", which is already strict-in-the-safe
+    direction; changing that is not this fix's business.
+    """
+    value = _env_int(key, default)
+    if value <= 0:
+        return default
+    return value
+
+
+def _b64_decoded_size(payload: str) -> int:
+    """Bytes ``payload`` will decode to, computed without decoding it.
+
+    Exact for well-formed base64, so a payload that fits the remaining budget
+    is never rejected for being a padding character too large. Whitespace is
+    legal inside a data URL payload and is stripped before decoding, so it
+    must not inflate the count either.
+    """
+    compact = "".join(payload.split())
+    padding = len(compact) - len(compact.rstrip("="))
+    return (len(compact) // 4) * 3 - padding
+
+
+class _ImageBudgetExceeded(Exception):
+    """Base for "this document has spent its allowance" signals.
+
+    Deliberately NOT an ``OSError`` subclass: urllib's ``do_open`` wraps
+    ``OSError`` into ``URLError``, which would erase the distinction between a
+    budget stop and an ordinary network failure by the time ``_resolve_remote``
+    sees it — and misreporting a budget stop as a download failure is exactly
+    what the dedicated warning counters exist to avoid.
+
+    Raised, never counted, at the point of detection: every one of these is
+    tallied once in ``_resolve_remote``'s except chain, so a signal that is
+    raised deep inside urllib cannot be double-counted on the way out.
+    """
+
+
+class _ImageByteBudgetExceeded(_ImageBudgetExceeded):
+    """The per-document total-bytes ceiling was reached."""
+
+
+class _ImageRequestBudgetExceeded(_ImageBudgetExceeded):
+    """The per-document remote-fetch-attempt ceiling was reached."""
+
+
 # --------------------------------------------------------------------------
 # Per-fetch download context: wall-clock deadline, cancellation, DNS memo and
 # the socket watchdog. One instance is active per thread for the duration of
@@ -287,6 +354,45 @@ _WATCHDOG_POLL_SECONDS = 0.5
 _ACTIVE_DOWNLOAD = threading.local()
 
 
+class _ImageBudget:
+    """Per-DOCUMENT image allowances, shared by every fetch in that document.
+
+    ``NATIVE_MD_IMAGE_MAX_BYTES`` bounds one image; these bound the document.
+    Lives on the resolver (one per document) and is handed to each fetch's
+    download context so the redirect handler can charge its hops.
+
+    ``requests`` counts remote fetch ATTEMPTS, including redirect hops and
+    including attempts that die in DNS or the SSRF guard without a packet
+    leaving the host. It is therefore an upper bound on outbound HTTP requests
+    rather than an exact count — charging only successes would let a few
+    thousand unresolvable URLs spend an unbounded amount of work.
+    """
+
+    def __init__(self, *, max_total_bytes: int, max_requests: int) -> None:
+        self.max_total_bytes = max_total_bytes
+        self.max_requests = max_requests
+        self.bytes_used = 0
+        self.requests_used = 0
+
+    def remaining_bytes(self) -> int:
+        return max(0, self.max_total_bytes - self.bytes_used)
+
+    def charge_bytes(self, count: int) -> bool:
+        """Spend ``count`` bytes; False (and nothing spent) if over budget."""
+        if count > self.remaining_bytes():
+            return False
+        self.bytes_used += count
+        return True
+
+    def charge_request(self) -> None:
+        """Spend one fetch attempt, or raise :class:`_ImageRequestBudgetExceeded`."""
+        if self.requests_used >= self.max_requests:
+            raise _ImageRequestBudgetExceeded(
+                f"document reached its {self.max_requests}-request image budget"
+            )
+        self.requests_used += 1
+
+
 class _DownloadState:
     """Mutable per-fetch state shared between the fetch and its watchdog."""
 
@@ -295,9 +401,11 @@ class _DownloadState:
         *,
         deadline: float | None,
         cancel_events: tuple,
+        budget: _ImageBudget | None = None,
     ) -> None:
         self.deadline = deadline
         self.cancel_events = normalize_cancel_events(cancel_events)
+        self.budget = budget
         self.dns: dict[str, list[str]] = {}
         self._lock = threading.Lock()
         self._sock = None
@@ -411,6 +519,7 @@ def _download_context(
     *,
     deadline: float | None,
     cancel_events: tuple = (),
+    budget: _ImageBudget | None = None,
     poll_interval: float = _WATCHDOG_POLL_SECONDS,
 ):
     """Activate a download context (and its watchdog) for one fetch.
@@ -421,7 +530,9 @@ def _download_context(
     shared memo, so the resolve happens twice and a cancellation during it is
     reported as a download failure.
     """
-    state = _DownloadState(deadline=deadline, cancel_events=cancel_events)
+    state = _DownloadState(
+        deadline=deadline, cancel_events=cancel_events, budget=budget
+    )
     previous = getattr(_ACTIVE_DOWNLOAD, "state", None)
     _ACTIVE_DOWNLOAD.state = state
     stop = threading.Event()
@@ -839,6 +950,11 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
         # THE fix: discard the redirect body instead of ``fp.read()``-ing it.
         fp.close()
+        # A hop is a fetch attempt of its own. Charging only the initial
+        # request would understate the budget by up to max_redirections.
+        state = _active_download()
+        if state is not None and state.budget is not None:
+            state.budget.charge_request()
         return self.parent.open(new, timeout=req.timeout)
 
     # The base class assigns these as five independent attributes pointing at
@@ -889,6 +1005,8 @@ class _MarkdownImageResolver:
         timeout: int,
         max_bytes: int,
         max_svg_pixels: int,
+        max_total_bytes: int,
+        max_requests: int,
         raw_cache: NativeImageRawCache | None = None,
         cancel_events: tuple = (),
     ) -> None:
@@ -901,6 +1019,9 @@ class _MarkdownImageResolver:
         self._max_svg_pixels = max_svg_pixels
         self._raw_cache = raw_cache
         self._cancel_events = cancel_events
+        self._budget = _ImageBudget(
+            max_total_bytes=max_total_bytes, max_requests=max_requests
+        )
         self._cache: dict[str, ResolvedImage] = {}
 
     def resolve(self, src: str) -> ResolvedImage:
@@ -919,7 +1040,34 @@ class _MarkdownImageResolver:
         self._bump("images_skipped")
         return ResolvedImage(kind="skip")
 
-    def _local(self, data: bytes, ext: str, suggested_name: str) -> ResolvedImage:
+    def _local(
+        self, data: bytes, ext: str, suggested_name: str, *, src: str
+    ) -> ResolvedImage | None:
+        """Accept ``data`` into the document, or ``None`` if it would overrun.
+
+        The single point every image kind — base64, bundle file, download,
+        cache hit — passes through, and therefore the only honest place to
+        account for resident bytes.
+
+        Returns ``None`` rather than raising so the caller decides the
+        degradation (an external link for a remote image, a skip for the
+        kinds that have no URL to fall back to). An exception here would be
+        caught by ``_resolve_remote``'s blanket handler and relabelled as a
+        download failure.
+
+        Two URLs serving identical bytes are charged twice, deliberately.
+        ``MarkdownExtraction.assets`` deduplicates by sha256, but the resolver
+        cache holds one ``bytes`` object per src and both are resident — which
+        is exactly the shape an attacker builds with ``?u=0..N`` all returning
+        the same body. The budget bounds what is actually resident.
+        """
+        if not self._budget.charge_bytes(len(data)):
+            logger.warning(
+                "[native_md] image dropped (document byte budget exhausted): %s",
+                src[:120],
+            )
+            self._bump("images_byte_budget_exceeded")
+            return None
         asset_ref = "sha256:" + hashlib.sha256(data).hexdigest()
         return ResolvedImage(
             kind="local",
@@ -928,6 +1076,22 @@ class _MarkdownImageResolver:
             suggested_name=suggested_name,
             fmt=ext,
         )
+
+    def _budget_degraded(
+        self, src: str, ext_hint: str, exc: Exception
+    ) -> ResolvedImage:
+        """Degrade an over-budget REMOTE image to an external link.
+
+        Mirrors the download-failure fallback so a document does not silently
+        lose drawings depending on how loaded the host was. With
+        ``NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED`` the operator has asked for
+        embedded images specifically, and an image that was not embedded is
+        exactly the failure that switch describes, so it raises instead.
+        """
+        logger.warning("[native_md] image budget exhausted (%s): %s", exc, src[:120])
+        if self._download_required:
+            raise exc
+        return ResolvedImage(kind="external", url=src, fmt=ext_hint)
 
     def _resolve_uncached(self, src: str) -> ResolvedImage:
         lower = src.lower()
@@ -942,6 +1106,18 @@ class _MarkdownImageResolver:
         if ";base64," not in src:
             return self._skip("data url not base64", src)
         _, _, payload = src.partition(";base64,")
+        # Estimate the decoded size before decoding. The budget below bounds
+        # what is RETAINED; this keeps the transient allocation bounded too,
+        # which matters because the payload is attacker-supplied and would
+        # otherwise be fully decoded before anyone checked.
+        if _b64_decoded_size(payload) > self._budget.remaining_bytes():
+            logger.warning(
+                "[native_md] data-url image dropped (document byte budget "
+                "exhausted): %s",
+                src[:60],
+            )
+            self._bump("images_byte_budget_exceeded")
+            return ResolvedImage(kind="skip")
         try:
             data = base64.b64decode("".join(payload.split()), validate=True)
         except (ValueError, binascii.Error):
@@ -956,7 +1132,10 @@ class _MarkdownImageResolver:
             return self._skip("unrecognised image", src)
         data, ext = coerced
         digest = hashlib.sha256(data).hexdigest()[:12]
-        return self._local(data, ext, f"image-{digest}.{ext}")
+        # No URL to fall back to, so an over-budget data URL is dropped.
+        return self._local(
+            data, ext, f"image-{digest}.{ext}", src=src
+        ) or ResolvedImage(kind="skip")
 
     def _resolve_relative(self, src: str) -> ResolvedImage:
         if self._bundle_root is None:
@@ -974,9 +1153,19 @@ class _MarkdownImageResolver:
             return self._skip("image file missing", src)
         # Cap a single bundled asset at the same ceiling as a remote download,
         # so one oversized file inside the (zip-bomb-bounded) bundle cannot pull
-        # hundreds of MB into memory.
-        if candidate.stat().st_size > self._max_bytes:
+        # hundreds of MB into memory. Also clamp to what the document has left,
+        # so the read below stays bounded and not just the retention.
+        size = candidate.stat().st_size
+        if size > self._max_bytes:
             return self._skip("image exceeds size limit", src)
+        if size > self._budget.remaining_bytes():
+            logger.warning(
+                "[native_md] bundled image dropped (document byte budget "
+                "exhausted): %s",
+                src[:120],
+            )
+            self._bump("images_byte_budget_exceeded")
+            return ResolvedImage(kind="skip")
         data = candidate.read_bytes()
         # Magic bytes are authoritative; the filename suffix is not trusted for
         # validation. SVG is rasterized to PNG (so the on-disk name takes the
@@ -987,7 +1176,11 @@ class _MarkdownImageResolver:
         if coerced is None:
             return self._skip("unrecognised image", src)
         data, ext = coerced
-        return self._local(data, ext, f"{candidate.stem}.{ext}")
+        # SVG rasterization can grow the bytes past the pre-check, so the
+        # authoritative charge still happens in _local.
+        return self._local(
+            data, ext, f"{candidate.stem}.{ext}", src=src
+        ) or ResolvedImage(kind="skip")
 
     def _resolve_remote(self, src: str) -> ResolvedImage:
         ext_hint = Path(urlparse(src).path).suffix.lower().lstrip(".")
@@ -1007,22 +1200,65 @@ class _MarkdownImageResolver:
             if hit is not None:
                 # Reuse the cached bytes (already post-SVG-rasterization), so a
                 # re-parse skips both the network fetch and the rasterization.
+                # A hit costs no request budget — it issues no request — but it
+                # is still charged bytes, because those bytes are just as
+                # resident, and on a re-parse the byte budget is the ONLY thing
+                # bounding memory.
                 data, ext = hit
-                self._bump("images_cache_hit")
                 digest = hashlib.sha256(data).hexdigest()[:12]
-                return self._local(data, ext, f"image-{digest}.{ext}")
+                resolved = self._local(data, ext, f"image-{digest}.{ext}", src=src)
+                if resolved is None:
+                    return self._budget_degraded(
+                        src,
+                        ext_hint,
+                        _ImageByteBudgetExceeded("document byte budget exhausted"),
+                    )
+                self._bump("images_cache_hit")
+                return resolved
+        # Charged BEFORE the fetch, so an attempt that dies in DNS or the SSRF
+        # guard still costs — otherwise a few thousand unresolvable URLs would
+        # be free. Outside the try below so the raise cannot be relabelled as a
+        # download failure by the blanket handler.
+        try:
+            self._budget.charge_request()
+        except _ImageRequestBudgetExceeded as exc:
+            self._bump("images_request_budget_exceeded")
+            return self._budget_degraded(src, ext_hint, exc)
         try:
             data, ext = self._download(src)
+        except LLMBridgeCancelled:
+            # Cancellation is NOT a download failure. It derives from
+            # RuntimeError, so without this clause the blanket handler below
+            # would degrade it to an external link and carry on fetching the
+            # rest of the document.
+            raise
+        except _ImageByteBudgetExceeded as exc:
+            self._bump("images_byte_budget_exceeded")
+            return self._budget_degraded(src, ext_hint, exc)
+        except _ImageRequestBudgetExceeded as exc:
+            # Raised by a redirect hop, from inside urllib.
+            self._bump("images_request_budget_exceeded")
+            return self._budget_degraded(src, ext_hint, exc)
         except Exception as exc:  # noqa: BLE001 - best-effort network fetch
             if self._download_required:
                 raise
             logger.warning("[native_md] image download failed (%s): %s", exc, src[:120])
             self._bump("images_download_failed")
             return ResolvedImage(kind="external", url=src, fmt=ext_hint)
+        digest = hashlib.sha256(data).hexdigest()[:12]
+        resolved = self._local(data, ext, f"image-{digest}.{ext}", src=src)
+        if resolved is None:
+            # Rejected bytes must not enter the raw cache: "a budget-rejected
+            # image is never cached" is what keeps a later re-parse from
+            # serving it back for free.
+            return self._budget_degraded(
+                src,
+                ext_hint,
+                _ImageByteBudgetExceeded("document byte budget exhausted"),
+            )
         if self._raw_cache is not None:
             self._raw_cache.put(src, data, ext)
-        digest = hashlib.sha256(data).hexdigest()[:12]
-        return self._local(data, ext, f"image-{digest}.{ext}")
+        return resolved
 
     def _download(self, src: str) -> tuple[bytes, str]:
         """Fetch one image, bounded by a real wall-clock deadline.
@@ -1054,11 +1290,23 @@ class _MarkdownImageResolver:
         fetch needs comes off ``self``.
         """
         deadline = _monotonic() + self._timeout
+        # Never read more than the document has left to spend: without this the
+        # peak would be the budget plus one whole NATIVE_MD_IMAGE_MAX_BYTES.
+        cap = min(self._max_bytes, self._budget.remaining_bytes())
         with _download_context(
-            deadline=deadline, cancel_events=self._cancel_events
+            deadline=deadline,
+            cancel_events=self._cancel_events,
+            budget=self._budget,
         ) as guard:
-            data, content_type = self._fetch(src, guard)
-        if len(data) > self._max_bytes:
+            data, content_type = self._fetch(src, guard, cap)
+        if len(data) > cap:
+            if cap < self._max_bytes:
+                # Stopped by what the DOCUMENT has left, not by the per-image
+                # ceiling. Distinct exception so it is counted as a budget stop
+                # instead of an ordinary download failure.
+                raise _ImageByteBudgetExceeded(
+                    f"image exceeds the {cap} bytes left in the document budget"
+                )
             raise ValueError(f"image exceeds {self._max_bytes} bytes")
         # Magic bytes are authoritative; SVG is rasterized to PNG here. Reject
         # only an *explicit* non-image Content-Type — but ``image/svg+xml`` is a
@@ -1076,7 +1324,7 @@ class _MarkdownImageResolver:
             raise ValueError("downloaded bytes are not a supported image")
         return coerced
 
-    def _fetch(self, src: str, guard: _DownloadState) -> tuple[bytes, str]:
+    def _fetch(self, src: str, guard: _DownloadState, cap: int) -> tuple[bytes, str]:
         """The network half of :meth:`_download`, inside an active context."""
         parsed = urlparse(src)
         if parsed.scheme not in ("http", "https"):
@@ -1087,7 +1335,6 @@ class _MarkdownImageResolver:
             raise ValueError("non-public host blocked")
         opener = _build_guarded_opener()
         req = urllib.request.Request(src, headers={"User-Agent": "lightrag-native-md"})
-        cap = self._max_bytes
         try:
             with opener.open(req, timeout=self._timeout) as resp:
                 content_type = (resp.headers.get_content_type() or "").lower()
@@ -1246,6 +1493,13 @@ class NativeMarkdownParser(NativeParserBase):
             timeout=_env_int("NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT", 30),
             max_bytes=_env_int("NATIVE_MD_IMAGE_MAX_BYTES", 25 * 1024 * 1024),
             max_svg_pixels=_env_int("NATIVE_MD_IMAGE_MAX_SVG_PIXELS", 16_000_000),
+            max_total_bytes=_env_pos_int(
+                "NATIVE_MD_IMAGE_MAX_TOTAL_BYTES",
+                DEFAULT_NATIVE_MD_IMAGE_MAX_TOTAL_BYTES,
+            ),
+            max_requests=_env_pos_int(
+                "NATIVE_MD_IMAGE_MAX_REQUESTS", DEFAULT_NATIVE_MD_IMAGE_MAX_REQUESTS
+            ),
             raw_cache=raw_cache,
         )
         extraction = extract_markdown(md_text, image_resolver=resolver)
