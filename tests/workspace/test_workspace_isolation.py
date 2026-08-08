@@ -681,19 +681,29 @@ async def test_update_flags_workspace_isolation():
     # Get status for workspace1 only
     status1 = await get_all_update_flags_status(workspace=workspace1)
 
-    # Check that workspace1's namespaces are present
-    # The keys should include workspace1's namespaces but not workspace2's
-    workspace1_keys = [k for k in status1.keys() if workspace1 in k]
-    workspace2_keys = [k for k in status1.keys() if workspace2 in k]
+    # Workspace1 query must surface exactly workspace1's namespaces, never workspace2's
+    expected_ws1_keys = {
+        f"{workspace1}:{test_namespace}",
+        f"{workspace1}:ns_a",
+        f"{workspace1}:ns_b",
+    }
+    assert set(status1.keys()) == expected_ws1_keys, (
+        f"Unexpected namespaces for workspace1: {status1.keys()}"
+    )
 
-    assert len(workspace1_keys) > 0, (
-        f"workspace1 keys should be present, got {len(workspace1_keys)}"
+    # Assert the flag values themselves, per namespace. A blanket `all(values)` over
+    # every namespace cannot express this: test_namespace was cleared for workspace1
+    # back in Test 8.2 and is legitimately False here, while ns_a/ns_b were just set.
+    assert status1[f"{workspace1}:ns_a"] == [True], (
+        f"ns_a should be set for workspace1, got {status1[f'{workspace1}:ns_a']}"
     )
-    assert len(workspace2_keys) == 0, (
-        f"workspace2 keys should not be present, got {len(workspace2_keys)}"
+    assert status1[f"{workspace1}:ns_b"] == [True], (
+        f"ns_b should be set for workspace1, got {status1[f'{workspace1}:ns_b']}"
     )
-    for key, values in status1.items():
-        assert all(values), f"All flags in {key} should be True, got {values}"
+    assert status1[f"{workspace1}:{test_namespace}"] == [False], (
+        "test_namespace was cleared for workspace1 in Test 8.2 and must stay cleared, "
+        f"got {status1[f'{workspace1}:{test_namespace}']}"
+    )
 
     # Workspace2 query should only surface workspace2 namespaces
     status2 = await get_all_update_flags_status(workspace=workspace2)
@@ -704,12 +714,17 @@ async def test_update_flags_workspace_isolation():
     assert set(status2.keys()) == expected_ws2_keys, (
         f"Unexpected namespaces for workspace2: {status2.keys()}"
     )
-    for key, values in status2.items():
-        assert all(values), f"All flags in {key} should be True, got {values}"
+    # Both were set and never cleared for workspace2 (Test 8.2 cleared workspace1 only)
+    assert status2[f"{workspace2}:{test_namespace}"] == [True], (
+        f"test_namespace should stay set for workspace2, got {status2[f'{workspace2}:{test_namespace}']}"
+    )
+    assert status2[f"{workspace2}:ns_c"] == [True], (
+        f"ns_c should be set for workspace2, got {status2[f'{workspace2}:ns_c']}"
+    )
 
     print("✅ PASSED: Update Flags - get_all_update_flags_status Filtering")
     print(
-        f"   Status correctly filtered: ws1 keys={len(workspace1_keys)}, ws2 keys={len(workspace2_keys)}"
+        f"   Status correctly filtered: ws1 keys={len(status1)}, ws2 keys={len(status2)}"
     )
 
 
