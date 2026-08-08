@@ -115,9 +115,7 @@ async def test_get_docs_by_track_id_skips_row_carrying_an_unknown_field(tmp_path
     assert "written_by_newer_build" not in docs
 
 
-async def test_get_docs_by_track_id_logs_and_skips_a_non_mapping_row(
-    tmp_path, caplog
-):
+async def test_get_docs_by_track_id_logs_and_skips_a_non_mapping_row(tmp_path, caplog):
     """A non-mapping record must be reported, not silently dropped.
 
     Before the guard, ``v.get("track_id")`` on a non-dict raised AttributeError
