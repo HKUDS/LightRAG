@@ -338,6 +338,7 @@ native docx 会采集 Word 2013+ 写入的 `w14:paraId` 作为段落级溯源锚
   - 包内以相对路径（文件引用）内嵌的图片按相对包根目录解析，**允许放在包内任意子目录**（不限于 `assets/`），但禁止目录穿越（`..`、绝对路径、越出包根的引用会被记 warning 跳过）；解析出的字节须通过图片 magic bytes 校验，否则跳过。独立 `.md`（非 textpack）中的相对路径图片不解析（记 warning 跳过）。
 - SVG 图片（base64 / textpack 包内文件 / 在线下载）会先经 cairosvg 栅格化为 PNG 再写入 sidecar；cairosvg 不可用或渲染失败时跳过该图（记 warning）。**系统依赖**：`cairosvg` 是对 cairo 的 cffi 绑定——`pip install cairosvg`（随 `api` extra 安装）总能成功，但只有宿主机同时装了原生的 `libcairo` 共享库，栅格化才真正能跑（Debian/Ubuntu 用 `sudo apt-get install libcairo2`，RHEL/Fedora 用 `sudo dnf install cairo`，macOS 用 `brew install cairo`，Windows 需安装内含 `libcairo-2.dll` 的 GTK3 运行时）——`pip`/`uv` 装不了系统库，所以除官方 Docker 镜像外这一步永远不会自动完成。服务器会在启动时探测栅格化能力，缺失时记一条 warning，避免这个缺口一直藏到某篇文档处理时才被发现。
 - 外部 URL 图片（`![](http://...)`）**默认下载并内嵌**（`NATIVE_MD_IMAGE_DOWNLOAD_ENABLED` 默认 `true`）；无论下载成功与否都会生成 drawing（成功内嵌资源，失败回退为外链）。下载默认仅允许可全球路由的公网 IP（DNS 解析结果与每一跳重定向目标都校验，且 socket 直连已校验 IP 以防 DNS rebinding，忽略环境 `HTTP(S)_PROXY`），私网 / 环回 / 链路本地 / 保留 / CGNAT（`100.64.0.0/10`）等一律拒绝；如需放行特定内网段，用 `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS` 配置 CIDR 白名单。若设为 `false`，外链图片整个丢弃（不生成对应 drawing，故仅含外链图片的文档不会生成 `drawings.json`）。
+  - 下载还受**每文档**（而不只是每图片）预算约束：单文档保留的图片总字节数（`NATIVE_MD_IMAGE_MAX_TOTAL_BYTES`）、含重定向跳转在内的远程获取尝试数（`NATIVE_MD_IMAGE_MAX_REQUESTS`）、以及覆盖全部下载的墙钟总预算（`NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT`）。超预算的远程图片降级为外链并记录解析告警，不会让文档失败；每个请求都有真实的墙钟截止时间（`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT`），慢速滴流的对端无法将其无限重置。进行中的下载可被 `POST /documents/cancel_pipeline` 中断。
 
 #### 环境变量
 
@@ -346,7 +347,7 @@ native 的所有 `NATIVE_*` 环境变量与 `.native_raw/` 缓存目录**仅作�
 - `LIGHTRAG_FORCE_REPARSE_NATIVE`（默认 `false`）：强制丢弃 `.native_raw/` 缓存、重新联网下载外链图片。
 - `NATIVE_MD_IMAGE_DOWNLOAD_ENABLED`（默认 `true`）：外链图片下载总开关，设为 `false` 时丢弃所有外链图片。
 
-其余下载/大小/SSRF 相关变量（`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT` / `NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED` / `NATIVE_MD_IMAGE_MAX_BYTES` / `NATIVE_MD_IMAGE_MAX_SVG_PIXELS` / `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`）含义与默认值见仓库根目录 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example)。
+其余下载/大小/预算/SSRF 相关变量（`NATIVE_MD_IMAGE_DOWNLOAD_TIMEOUT` / `NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED` / `NATIVE_MD_IMAGE_MAX_BYTES` / `NATIVE_MD_IMAGE_MAX_SVG_PIXELS` / `NATIVE_MD_IMAGE_MAX_TOTAL_BYTES` / `NATIVE_MD_IMAGE_MAX_REQUESTS` / `NATIVE_MD_IMAGE_DOWNLOAD_TOTAL_TIMEOUT` / `NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS`）含义与默认值见仓库根目录 [env.example](https://github.com/HKUDS/LightRAG/blob/main/env.example)。
 
 下载的外链图片缓存到 `<文件>.native_raw/`（与 `.parsed/` 同级，类比 `.mineru_raw`/`.docling_raw`），重新解析同一未改动文件时直接复用、不再联网；源文件内容或上述大小 / SVG 像素 / CIDR 配置变化时缓存自动失效。删除文档（删除弹窗勾选「同时删除文件」）时该缓存目录会与 `.parsed/` 一并清理。
 

@@ -230,7 +230,11 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         graph = await self._get_graph()
-        return graph.nodes.get(node_id)
+        node = graph.nodes.get(node_id)
+        # Shallow-copy so callers cannot mutate the live NetworkX attr dict
+        # (same class as JsonKV/JsonDocStatus copy-on-read). get_all_nodes
+        # already copies; get_node/get_edge must match.
+        return dict(node) if node is not None else None
 
     async def node_degree(self, node_id: str) -> int:
         graph = await self._get_graph()
@@ -248,7 +252,8 @@ class NetworkXStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         graph = await self._get_graph()
-        return graph.edges.get((source_node_id, target_node_id))
+        edge = graph.edges.get((source_node_id, target_node_id))
+        return dict(edge) if edge is not None else None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         graph = await self._get_graph()
