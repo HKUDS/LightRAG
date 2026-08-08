@@ -4,7 +4,11 @@ Covers the fix for issue #2895: responses truncated when retrieved chunks
 contain <think> tags.
 """
 
-from lightrag.utils import remove_think_tags
+from lightrag.utils import (
+    TruncatedResponse,
+    is_truncated_response,
+    remove_think_tags,
+)
 
 
 class TestRemoveThinkTags:
@@ -76,3 +80,12 @@ class TestRemoveThinkTags:
         """Orphaned prefix with HTML/XML-like content is fully removed."""
         text = "check <b>bold</b> reasoning</think>The answer."
         assert remove_think_tags(text) == "The answer."
+
+    def test_truncation_marker_survives_think_tag_removal(self):
+        """Sanitizing partial output must not erase its truncation metadata."""
+        text = TruncatedResponse("<think>reasoning</think>Partial answer")
+
+        result = remove_think_tags(text)
+
+        assert result == "Partial answer"
+        assert is_truncated_response(result)
