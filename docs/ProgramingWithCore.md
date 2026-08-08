@@ -670,6 +670,7 @@ OpenSearchGraphStorage   OpenSearch
 
 **VECTOR_STORAGE**
 ```
+NoopVectorDBStorage         Disabled (graph-only ingestion)
 NanoVectorDBStorage         NanoVector (default)
 PGVectorStorage             Postgres
 MilvusVectorDBStorage       Milvus
@@ -678,6 +679,79 @@ QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
 OpenSearchVectorDBStorage   OpenSearch
 ```
+
+#### Graph-only ingestion
+
+`NoopVectorDBStorage` is intended for an initial or offline corpus backfill
+where the graph and KV stores are authoritative and vector indexes can be
+materialized once from the final state. It avoids embedding and persisting
+intermediate entity, relationship, and chunk revisions during ingestion.
+
+Do not use this workflow when newly inserted documents must become queryable
+immediately. Normal incremental ingestion should use the intended persistent
+vector backend from the beginning.
+
+Configure the backfill process with the no-op backend. `embedding_func=None` is
+supported when no other configured component requires embeddings:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=None,
+    vector_storage="NoopVectorDBStorage",
+)
+```
+
+The backend accepts vector mutations without calling the embedding function or
+persisting vectors. Graph, full-document, text-chunk, LLM-cache, document-status,
+and graph-recovery writes continue normally.
+
+While `NoopVectorDBStorage` is active, only `bypass` queries are available.
+`local`, `global`, `hybrid`, `mix`, and `naive` modes require vector indexes and
+raise an error that points to `lightrag-rebuild-vdb`.
+
+If the semantic-vector (`V`) chunker is selected while `embedding_func=None`,
+it logs a warning and falls back to recursive-character chunking. Configure an
+embedding function during ingestion if semantic-vector chunk boundaries are
+required; this is separate from whether vectors are persisted.
+
+##### Switching to persistent vectors
+
+After the backfill, stop the server and all ingestion writers. Keep
+`WORKING_DIR`, `WORKSPACE`, graph storage, KV storage, and their connection
+settings unchanged. For example, switch from Noop to NanoVector with an OpenAI
+embedding model while pointing to the same graph and KV sources:
+
+```bash
+export WORKING_DIR=/data/lightrag/rag_storage
+export WORKSPACE=project_a
+export LIGHTRAG_GRAPH_STORAGE=NetworkXStorage
+export LIGHTRAG_KV_STORAGE=JsonKVStorage
+export LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage
+export EMBEDDING_BINDING=openai
+export EMBEDDING_MODEL=text-embedding-3-small
+export EMBEDDING_DIM=1536
+
+lightrag-rebuild-vdb  # Select "Rebuild ALL vector storages"
+```
+
+Replace all example values with the backfill's actual storage settings and the
+production embedding model, dimension, host, and credentials. Backend-specific
+connection variables must remain available. If the same `.env` already contains
+these values, only the vector and embedding entries need to change. Run this in
+a new process or after a restart, then keep the persistent configuration for
+later queries and incremental ingestion.
+
+Rebuild cost and memory grow with the final graph and chunk data. If rebuilding
+fails or is interrupted, keep writers stopped and rerun it with the same
+configuration; the graph and KV sources remain unchanged. Start the server only
+after the tool reports a successful rebuild, for example with
+`lightrag-server`, because LightRAG has no persisted vector-index readiness
+marker.
+
+See `lightrag/tools/README_REBUILD_VDB.md` for rebuild options and operational
+details.
 
 **DOC_STATUS_STORAGE**
 ```
