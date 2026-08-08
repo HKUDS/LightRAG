@@ -8646,6 +8646,18 @@ class PGGraphStorage(BaseGraphStorage):
             # derived table because ORDER BY cannot apply COLLATE to a bare
             # output alias (a sub-SELECT, not a CTE: CTEs are an optimization
             # fence before PostgreSQL 12).
+            #
+            # This costs a heap read. Selecting only v.id let the vertex scan be
+            # index-only (entity_p_idx); the label lives in `properties`, so the
+            # scan now has to visit the heap -- measured at ~1.5x buffers and
+            # ~25% wall clock on a 200k-vertex / 600k-edge graph. No index can
+            # avoid it: the ORDER BY leads with an aggregate computed from the
+            # edge table, so this is a scan-and-sort plan either way, and a
+            # covering index on (id, label) is not chosen even with seqscan off.
+            # Accepted because /graphs is a manual explorer action whose
+            # dominant cost is already the full edge aggregation plus the
+            # isolated-node-preserving full vertex scan, and get_popular_labels
+            # pays the same per-vertex extraction on a hotter endpoint.
             query_nodes = f"""
                 WITH node_degrees AS (
                     SELECT node_id, COUNT(*) AS degree
