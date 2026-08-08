@@ -2645,7 +2645,11 @@ class MongoGraphStorage(BaseGraphStorage):
                     }
                 },
                 {"$group": {"_id": "$_id", "degree": {"$sum": "$degree"}}},
-                {"$sort": {"degree": -1}},
+                # Degree descending, then label ascending. The tie-break is the
+                # BaseGraphStorage contract: $limit cuts a band of equal-degree
+                # entities, and without a second sort key which ones survive is
+                # whatever order the aggregation happens to emit.
+                {"$sort": {"degree": -1, "_id": 1}},
                 {"$limit": max_nodes},
             ]
             cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
@@ -2656,11 +2660,22 @@ class MongoGraphStorage(BaseGraphStorage):
                 node_ids.append(node_id)
 
             if len(node_ids) < max_nodes:
+                # Top up from the isolated (degree-0) entities, in label order
+                # for the same reason the ranking above breaks ties on the
+                # label: an unordered `find` handed the shortfall to whichever
+                # documents the collection scan reached first. list(node_ids),
+                # not node_ids: the cursor is consumed while appending to the
+                # same list, and a live reference makes the $nin filter depend
+                # on when the driver serializes it.
                 remaining = max_nodes - len(node_ids)
-                cursor = self.collection.find(
-                    {"_id": {"$nin": node_ids}},
-                    {"source_ids": 0},
-                ).limit(remaining)
+                cursor = (
+                    self.collection.find(
+                        {"_id": {"$nin": list(node_ids)}},
+                        {"source_ids": 0},
+                    )
+                    .sort("_id", 1)
+                    .limit(remaining)
+                )
                 async for doc in cursor:
                     node_ids.append(str(doc["_id"]))
 

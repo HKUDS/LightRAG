@@ -805,6 +805,44 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
+
+        Ranks by node degree, descending, and **ties break on the label,
+        ascending** — the same tie-break :meth:`get_popular_labels` documents,
+        for the same reason. Degree alone does not order a real graph: leaf
+        entities of degree 1 or 2 outnumber everything else, so the ``max_nodes``
+        cutoff almost always lands inside a band of equal-degree entities, and
+        whatever orders that band decides which nodes the caller ever sees.
+        Left to the backend's natural order that is node INSERTION order (a
+        stable sort in Python, an unconstrained plan order in SQL/Cypher), so
+        re-ingesting the same corpus with the documents in a different order
+        returned a different graph at the same ``max_nodes`` — the defect fixed
+        for ``get_popular_labels`` first, then here.
+
+        The rule covers both selection paths: the ``*`` whole-graph ranking, and
+        the same-depth ordering of a BFS expansion from ``node_label``, where the
+        tie decides both which neighbours are kept at the cutoff and which get
+        expanded next.
+
+        Order the labels by code point (SQL ``COLLATE "C"``, not a locale
+        collation) so every backend agrees with Python's ``str`` comparison.
+
+        **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
+        on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
+        Selecting only ``v.id`` lets the vertex scan be index-only; the label
+        lives in the vertex ``properties``, so ordering on it forces a full heap
+        read (~1.5x buffers, ~25% wall clock on a 200k-vertex/600k-edge graph),
+        and no index removes that -- the ORDER BY leads with an aggregate
+        computed from the edge table. The id is an insertion counter, so that
+        backend's view is stable for a given database but still varies with
+        ingestion order across databases holding the same graph, and its
+        :meth:`get_popular_labels` (which DOES order by label) can disagree with
+        its graph view at the same cutoff. Every other backend follows the rule;
+        do not copy the deviation into a new one.
+
+        This constrains WHICH nodes survive truncation, not the order of
+        :class:`KnowledgeGraph.nodes` in the response — implementations
+        materialize that list from a dict or a subgraph view, and callers that
+        need a specific presentation order must sort it themselves.
         """
 
     @abstractmethod

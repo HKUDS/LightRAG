@@ -4735,9 +4735,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     degree_map[bucket["key"]] = (
                         degree_map.get(bucket["key"], 0) + bucket["doc_count"]
                     )
-                top_ids = sorted(degree_map, key=degree_map.get, reverse=True)[
-                    :max_nodes
-                ]
+                # Degree descending, then label ascending — the BaseGraphStorage
+                # tie-break, and the same ordering get_popular_labels uses.
+                # Sorting on the degree alone is stable, so the equal-degree
+                # band at the max_nodes cutoff was cut in aggregation bucket
+                # order: which entities the caller saw depended on how the
+                # buckets happened to come back.
+                top_ids = sorted(
+                    degree_map, key=lambda label: (-degree_map[label], label)
+                )[:max_nodes]
                 if len(top_ids) < max_nodes:
                     top_ids.extend(
                         await self._collect_node_ids(

@@ -5490,6 +5490,41 @@ class TestGraphReadContract:
             await s.initialize()
             assert await s.get_popular_labels(limit=2) == ["Alpha", "Zeta"]
 
+    # -- get_knowledge_graph ------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_breaks_degree_ties_on_label(
+        self, global_config, embed_func, mock_client
+    ):
+        """The max_nodes cutoff lands inside an equal-degree band, and which
+        entities survive it must not be aggregation bucket order.
+
+        Same defect as get_popular_labels, one method over: sorting on the
+        degree alone is stable, so the band was cut in whatever order the
+        buckets came back and the graph view silently varied.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 3})
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [
+                    {"key": "Zeta", "doc_count": 1},
+                    {"key": "Beta", "doc_count": 1},
+                    {"key": "Alpha", "doc_count": 1},
+                ],
+                [],
+            )
+        )
+        mock_client.mget = AsyncMock(
+            side_effect=_node_mget_side_effect({"Zeta", "Beta", "Alpha"})
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            kg = await s.get_knowledge_graph("*", max_depth=1, max_nodes=2)
+
+        assert sorted(node.id for node in kg.nodes) == ["Alpha", "Beta"]
+        assert kg.is_truncated is True
+
     # -- get_node_edges -----------------------------------------------------
 
     @pytest.mark.asyncio

@@ -1346,12 +1346,16 @@ class Neo4JStorage(BaseGraphStorage):
                         if count_result:
                             await count_result.consume()
 
-                    # Run main query to get nodes with highest degree
+                    # Run main query to get nodes with highest degree.
+                    # Degree descending, then entity_id ascending: the tie-break
+                    # is the BaseGraphStorage contract, and without it the
+                    # LIMIT cut an unordered band of equal-degree entities, so
+                    # the same graph returned different nodes run to run.
                     main_query = f"""
                     MATCH (n:`{workspace_label}`)
                     OPTIONAL MATCH (n)-[r]-()
                     WITH n, COALESCE(count(r), 0) AS degree
-                    ORDER BY degree DESC
+                    ORDER BY degree DESC, n.entity_id ASC
                     LIMIT $max_nodes
                     WITH collect({{node: n}}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info

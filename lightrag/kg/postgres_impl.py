@@ -8635,7 +8635,25 @@ class PGGraphStorage(BaseGraphStorage):
             # that is mostly an edge target is not under-ranked and dropped on
             # truncation. LEFT JOIN from the base vertex table + COALESCE keeps
             # isolated (degree-0) nodes, matching the previous OPTIONAL MATCH
-            # behaviour when the graph is not truncated. Stable tie-break on id.
+            # behaviour when the graph is not truncated.
+            #
+            # KNOWN DEVIATION from the BaseGraphStorage tie-break, which is on
+            # the label: this ranks on v.id, AGE's internal vertex id. Ordering
+            # on the entity_id is what the contract asks for and it was measured
+            # too expensive here. Selecting only v.id lets the vertex scan be
+            # index-only (entity_p_idx); the label lives in `properties`, so
+            # sorting on it forces a full heap read -- ~1.5x buffers and ~25%
+            # wall clock on a 200k-vertex / 600k-edge graph. No index removes
+            # that: the ORDER BY leads with an aggregate computed from the edge
+            # table, so no index can supply the ordering, and a covering index
+            # on (id, label) is not chosen even with enable_seqscan off.
+            #
+            # What that costs: v.id is an insertion counter, so this view is
+            # stable for a given database but still varies with ingestion order
+            # ACROSS databases holding the same graph. get_popular_labels on
+            # this backend does order by label, so the entity picker and the
+            # graph view can disagree at the same cutoff. Revisit if AGE ever
+            # gains a cheap way to read entity_id without visiting the heap.
             query_nodes = f"""
                 WITH node_degrees AS (
                     SELECT node_id, COUNT(*) AS degree
