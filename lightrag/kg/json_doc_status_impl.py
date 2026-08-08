@@ -241,22 +241,10 @@ class JsonDocStatusStorage(DocStatusStorage):
         result = {}
         async with self._storage_lock:
             for k, v in self._data.items():
-                if v.get("track_id") == track_id:
+                if isinstance(v, dict) and v.get("track_id") == track_id:
                     try:
-                        # Make a deep copy of the data to avoid modifying the original
-                        data = copy.deepcopy(v) if isinstance(v, dict) else v
-                        # Remove deprecated content field if it exists
-                        data.pop("content", None)
-                        # Normalize missing or null file_path
-                        if not data.get("file_path"):
-                            data["file_path"] = "no-file-path"
-                        # Ensure new fields exist with default values
-                        if "metadata" not in data:
-                            data["metadata"] = {}
-                        if "error_msg" not in data:
-                            data["error_msg"] = None
-                        result[k] = DocProcessingStatus(**data)
-                    except KeyError as e:
+                        result[k] = self._doc_processing_status_from_row(v)
+                    except (KeyError, TypeError) as e:
                         logger.error(
                             f"[{self.workspace}] Missing required field for document {k}: {e}"
                         )
