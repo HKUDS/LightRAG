@@ -5792,7 +5792,26 @@ def compute_incremental_chunk_ids(
 
     This function applies delta changes (additions and removals) to an existing
     list of chunk IDs while maintaining order and ensuring deduplication.
-    Delta additions from new_chunk_ids are placed at the end.
+    Delta additions from new_chunk_ids are placed at the end. Empty IDs are
+    dropped from both inputs.
+
+    Authority model:
+        ``existing_full_chunk_ids`` — the entity/relation chunk-tracking row — is
+        AUTHORITATIVE. A graph node's ``source_id`` is only a truncated view of it
+        (see ``apply_source_ids_limit``), and it may legitimately retain STALE chunk
+        IDs that tracking has already pruned: the purge path reads tracking first and
+        falls back to ``source_id`` only when the tracking row is absent, and its
+        ``graph_references_deleted_chunks`` branch exists precisely to handle a graph
+        that still references chunks tracking has dropped.
+
+        Consequently an ID present in BOTH ``old_chunk_ids`` and ``new_chunk_ids`` but
+        absent from ``existing_full_chunk_ids`` is treated as intentionally pruned and
+        is NOT restored — only genuine additions (``new - old``) are appended. Widening
+        Step 2 to append every entry of ``new_chunk_ids`` would resurrect stale
+        attribution into the authoritative store, which a later purge would then use to
+        rebuild or retain KG objects sourced from chunks that no longer exist.
+        Repairing genuinely missing attribution is the job of
+        ``audit_kg_integrity(..., apply=True)``, never of this function.
 
     Args:
         existing_full_chunk_ids: Complete list of existing chunk IDs from storage
@@ -5819,7 +5838,10 @@ def compute_incremental_chunk_ids(
     ]
     seen = set(updated_chunk_ids)
 
-    # Step 2: Add new chunk additions (preserving order from new_chunk_ids)
+    # Step 2: Append genuine additions only (preserving order from new_chunk_ids).
+    # The `seen` check is not redundant with `chunks_to_add`: tracking may already
+    # hold an ID that is in new_chunk_ids but not in old_chunk_ids, because
+    # source_id is a truncated view of the tracking row.
     for cid in new_chunk_ids:
         if cid and cid in chunks_to_add and cid not in seen:
             seen.add(cid)
