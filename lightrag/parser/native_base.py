@@ -46,15 +46,13 @@ class NativeExtractRuntime:
 
     ``cancel_events`` is the full set, in the ``(event, exception_type)`` shape
     :func:`~lightrag.parser.llm_bridge.normalize_cancel_events` accepts, so a
-    consumer stays agnostic about which source fired: the per-parse event, the
-    pipeline's (``/documents/cancel_pipeline``), and the rag shutdown event.
-    ``cancel_event`` remains the per-parse event alone, for callers that only
-    need to signal.
+    consumer stays agnostic about which source fired: the per-parse event
+    (first entry), the pipeline's (``/documents/cancel_pipeline``), and the
+    rag shutdown event.
     """
 
     engine_params: Mapping[str, Any] = field(default_factory=dict)
     llm_invoke: Callable[..., str] | None = None
-    cancel_event: threading.Event | None = None
     cancel_events: tuple = ()
 
 
@@ -274,7 +272,6 @@ class NativeParserBase(BaseParser):
         runtime = NativeExtractRuntime(
             engine_params=engine_params,
             llm_invoke=llm_invoke,
-            cancel_event=cancel_event,
             cancel_events=cancel_events,
         )
 
