@@ -1848,9 +1848,9 @@ async def _rebuild_single_entity(
     # Get most common entity type from raw entity_types list before deduplicating
     if entity_types:
         type_counts = Counter(entity_types)
-        entity_type = sorted(
-            type_counts.items(), key=lambda x: x[1], reverse=True
-        )[0][0]
+        entity_type = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[0][
+            0
+        ]
     else:
         entity_type = current_entity.get("entity_type", "UNKNOWN")
 

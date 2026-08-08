@@ -10,6 +10,8 @@ class _DummyTokenizer(TokenizerInterface):
 
     def decode(self, tokens: list[int]):
         return "".join(chr(t) for t in tokens)
+
+
 class DummyGraph(BaseGraphStorage):
     def __init__(self):
         self.nodes = {}
@@ -28,12 +30,17 @@ class DummyGraph(BaseGraphStorage):
         return node_id in self.nodes
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        return (source_node_id, target_node_id) in self.edges or (target_node_id, source_node_id) in self.edges
+        return (source_node_id, target_node_id) in self.edges or (
+            target_node_id,
+            source_node_id,
+        ) in self.edges
 
     async def upsert_node(self, node_id: str, node_data: dict) -> None:
         self.nodes[node_id] = node_data
 
-    async def upsert_edge(self, source_node_id: str, target_node_id: str, edge_data: dict) -> None:
+    async def upsert_edge(
+        self, source_node_id: str, target_node_id: str, edge_data: dict
+    ) -> None:
         self.edges[(source_node_id, target_node_id)] = edge_data
 
     async def get_node_edges(self, source_node_id: str):
@@ -58,8 +65,11 @@ class DummyGraph(BaseGraphStorage):
     async def search_labels(self, query: str, limit: int = 50):
         return [k for k in self.nodes if query.lower() in k.lower()][:limit]
 
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 3, max_nodes: int = 1000):
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
+    ):
         from lightrag.types import KnowledgeGraph
+
         return KnowledgeGraph()
 
     async def get_all_nodes(self):
@@ -73,6 +83,7 @@ class DummyGraph(BaseGraphStorage):
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         return await self.node_degree(src_id) + await self.node_degree(tgt_id)
+
     async def delete_node(self, node_id: str) -> None:
         self.nodes.pop(node_id, None)
 
@@ -87,6 +98,7 @@ class DummyGraph(BaseGraphStorage):
 
         self.workspace = ""
 
+
 class DummyVector(BaseVectorStorage):
     def __post_init__(self):
         self.namespace = "test"
@@ -94,11 +106,13 @@ class DummyVector(BaseVectorStorage):
     def __init__(self):
         self.data = {}
         self.namespace = "test"
+
     async def upsert(self, data: dict) -> None:
         self.data.update(data)
 
     async def query(self, query: str, top_k: int, query_embedding: list[float] = None):
         return []
+
     async def delete(self, ids: list[str]):
         for i in ids:
             self.data.pop(i, None)
@@ -130,6 +144,7 @@ class DummyKV(BaseKVStorage):
     def __init__(self):
         self.data = {}
         self.namespace = "test"
+
     async def get_by_id(self, id: str):
         return self.data.get(id)
 
@@ -151,8 +166,11 @@ class DummyKV(BaseKVStorage):
 
     async def index_done_callback(self) -> None:
         pass
+
     async def drop(self) -> dict[str, str]:
         return {"status": "success"}
+
+
 @pytest.mark.asyncio
 async def test_rebuild_single_entity_most_common_type():
     graph = DummyGraph()
@@ -178,10 +196,18 @@ async def test_rebuild_single_entity_most_common_type():
     )
 
     chunk_entities = {
-        "c1": {"ALICE": [{"entity_type": "PERSON", "description": "Alice is a person"}]},
-        "c2": {"ALICE": [{"entity_type": "ORGANIZATION", "description": "Alice Org 1"}]},
-        "c3": {"ALICE": [{"entity_type": "ORGANIZATION", "description": "Alice Org 2"}]},
-        "c4": {"ALICE": [{"entity_type": "ORGANIZATION", "description": "Alice Org 3"}]},
+        "c1": {
+            "ALICE": [{"entity_type": "PERSON", "description": "Alice is a person"}]
+        },
+        "c2": {
+            "ALICE": [{"entity_type": "ORGANIZATION", "description": "Alice Org 1"}]
+        },
+        "c3": {
+            "ALICE": [{"entity_type": "ORGANIZATION", "description": "Alice Org 2"}]
+        },
+        "c4": {
+            "ALICE": [{"entity_type": "ORGANIZATION", "description": "Alice Org 3"}]
+        },
     }
 
     await _rebuild_single_entity(
@@ -196,6 +222,8 @@ async def test_rebuild_single_entity_most_common_type():
 
     updated_node = await graph.get_node("ALICE")
     assert updated_node["entity_type"] == "ORGANIZATION"
+
+
 @pytest.mark.asyncio
 async def test_rebuild_single_relationship_keyword_deduplication_and_formatting():
     graph = DummyGraph()
@@ -226,8 +254,19 @@ async def test_rebuild_single_relationship_keyword_deduplication_and_formatting(
     )
 
     chunk_relationships = {
-        "c1": {("A", "B"): [{"keywords": "AI, Machine Learning", "description": "rel desc 1"}]},
-        "c2": {("A", "B"): [{"keywords": "Machine Learning, Deep Learning", "description": "rel desc 2"}]},
+        "c1": {
+            ("A", "B"): [
+                {"keywords": "AI, Machine Learning", "description": "rel desc 1"}
+            ]
+        },
+        "c2": {
+            ("A", "B"): [
+                {
+                    "keywords": "Machine Learning, Deep Learning",
+                    "description": "rel desc 2",
+                }
+            ]
+        },
     }
 
     await _rebuild_single_relationship(
