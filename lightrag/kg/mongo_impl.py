@@ -2676,16 +2676,25 @@ class MongoGraphStorage(BaseGraphStorage):
         ``_fetch_nodes_by_ids`` preserves the requested order and drops ids with
         no document, so consuming it in order preserves the ranking and never
         lets an id that resolves to nothing occupy a slot.
+
+        Asks for the current shortfall first and for the remainder only if that
+        did not fill it, so at most two queries: the caller passes whole ranked
+        pages, and filling the handful of slots a few dangling ids vacated must
+        not pull a page of node documents to place a few nodes.
         """
         if not candidate_ids or len(accepted) >= limit:
             return
 
-        docs = await self._fetch_nodes_by_ids(candidate_ids, {"source_ids": 0})
-        for doc in docs:
-            if len(accepted) >= limit:
+        head = candidate_ids[: limit - len(accepted)]
+        for chunk in (head, candidate_ids[len(head) :]):
+            if not chunk or len(accepted) >= limit:
                 break
-            accepted.append(str(doc["_id"]))
-            result.nodes.append(self._construct_graph_node(doc["_id"], doc))
+            docs = await self._fetch_nodes_by_ids(chunk, {"source_ids": 0})
+            for doc in docs:
+                if len(accepted) >= limit:
+                    break
+                accepted.append(str(doc["_id"]))
+                result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
     async def get_knowledge_graph_all_by_degree(
         self, max_depth: int, max_nodes: int
@@ -2708,23 +2717,31 @@ class MongoGraphStorage(BaseGraphStorage):
             # Taking the $limit as final let such an id consume a slot and the
             # answer came back short, reachable as soon as ties break on the
             # label because a dangling label sorts like any other.
+            # Page the band until the cap fills or the band runs out, so a
+            # vacated slot always goes to the next-ranked entry. The loop is
+            # what keeps the top-up below meaning what it says: it is reachable
+            # only once every edge-backed entity has been offered a slot, so
+            # everything it can still pick really is degree-0. Stopping earlier
+            # would let an isolate outrank an entity further down the band --
+            # only ONE dangling id in this page plus one in the next is enough
+            # to reach that, so it is not a corner.
+            #
+            # Whole pages, not shortfall-sized ones: a page is {_id, degree}
+            # rows, cheap next to the aggregation that produces it, so each
+            # extra pass should make as much progress as it can. The document
+            # fetch inside _accept_existing_nodes stays shortfall-sized.
             node_ids: list[str] = []
-            ranked_page = await self._rank_edge_endpoints_by_degree(max_nodes)
-            await self._accept_existing_nodes(ranked_page, max_nodes, result, node_ids)
-
-            if len(node_ids) < max_nodes and len(ranked_page) == max_nodes:
-                # Refill the vacated slots from the NEXT-ranked entries rather
-                # than from the isolated top-up below, which would hand them to
-                # an arbitrary entity. One extra pass only: a full page came
-                # back, so the band continues, and re-aggregating per remaining
-                # slot would be a scan of the edge collection each time. If this
-                # page is dangling too the top-up takes over -- bounded, at the
-                # cost of ranking in a case that needs two whole pages of
-                # legacy rows to reach.
-                refill = await self._rank_edge_endpoints_by_degree(
-                    max_nodes - len(node_ids), skip=max_nodes
+            skip = 0
+            while len(node_ids) < max_nodes:
+                ranked_page = await self._rank_edge_endpoints_by_degree(
+                    max_nodes, skip=skip
                 )
-                await self._accept_existing_nodes(refill, max_nodes, result, node_ids)
+                skip += len(ranked_page)
+                await self._accept_existing_nodes(
+                    ranked_page, max_nodes, result, node_ids
+                )
+                if len(ranked_page) < max_nodes:
+                    break  # short page: the band is exhausted
 
             if len(node_ids) < max_nodes:
                 # Top up from the isolated (degree-0) entities, in label order

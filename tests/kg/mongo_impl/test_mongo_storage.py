@@ -296,11 +296,73 @@ class TestMongoGraphStorage:
         )
 
         assert [node.id for node in result.nodes] == ["Real", "Next"]
-        # The refill asks for exactly the shortfall, skipping the page already
-        # consumed -- not a second full page.
+        # A whole page, skipping the one already consumed: pages are
+        # {_id, degree} rows and cheap next to the aggregation producing them,
+        # so each extra pass should make as much progress as it can.
         refill_pipeline = storage.edge_collection.aggregate.call_args_list[1][0][0]
         assert {"$skip": 2} in refill_pipeline, refill_pipeline
-        assert {"$limit": 1} in refill_pipeline, refill_pipeline
+        assert {"$limit": 2} in refill_pipeline, refill_pipeline
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_graph_all_exhausts_the_band_before_topping_up(self):
+        """An isolate must never outrank an entity still left in the ranked band.
+
+        Stopping the refill after one page let the degree-0 top-up -- which
+        orders on the label alone, over EVERY remaining node document, not just
+        isolates -- take slots the band could still fill. Here "Aaa" sorts ahead
+        of the degree-1 "Zed", so a single dangling id in each of the first two
+        pages was enough to drop Zed from a degree-ranked view.
+
+        The top-up is only correct where it is reachable only on exhaustion:
+        that is what makes "the isolated (degree-0) entities" true of whatever
+        it can still pick.
+        """
+        storage = self._make_storage()
+        storage.collection.count_documents = AsyncMock(return_value=9)
+        # One dangling id in each of the first two pages.
+        band = [
+            {"_id": "Hi", "degree": 5},
+            {"_id": "Dang1", "degree": 4},
+            {"_id": "Dang2", "degree": 3},
+            {"_id": "Zed", "degree": 1},
+        ]
+
+        async def _aggregate(pipeline, **kwargs):
+            # Honour $skip/$limit: a mock that ignores them hands a
+            # shortfall-sized request a whole page and hides the defect.
+            skip = next((s["$skip"] for s in pipeline if "$skip" in s), 0)
+            limit = next(s["$limit"] for s in pipeline if "$limit" in s)
+            return _AsyncCursor(band[skip : skip + limit])
+
+        storage.edge_collection.aggregate = _aggregate
+
+        real = {"Hi", "Zed", "Aaa"}  # Dang1/Dang2 have no node document
+
+        def _find(query, projection=None):
+            if "$in" in query["_id"]:
+                return _AsyncCursor(
+                    [
+                        {"_id": node_id, "entity_type": "person"}
+                        for node_id in query["_id"]["$in"]
+                        if node_id in real
+                    ]
+                )
+            # The top-up scans every node not already accepted, label-ordered.
+            return _AsyncCursor(
+                [
+                    {"_id": node_id, "entity_type": "person"}
+                    for node_id in sorted(real - set(query["_id"]["$nin"]))
+                ]
+            )
+
+        storage.collection.find = Mock(side_effect=_find)
+        storage.edge_collection.find = Mock(return_value=_AsyncCursor([]))
+
+        result = await storage.get_knowledge_graph_all_by_degree(
+            max_depth=2, max_nodes=2
+        )
+
+        assert [node.id for node in result.nodes] == ["Hi", "Zed"]
 
     @pytest.mark.asyncio
     async def test_bidirectional_bfs_reports_truncated_and_respects_cap(self):
