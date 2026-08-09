@@ -57,6 +57,48 @@ def _limits() -> tuple[int, int, int, int]:
     )
 
 
+_EOCD_SIG = b"PK\x05\x06"
+# EOCD record (22 bytes) plus the largest possible trailing comment.
+_EOCD_SEARCH_WINDOW = 22 + 0xFFFF
+# The EOCD's entry count is 16-bit; 0xFFFF means "65535, or more and the real
+# count lives in the ZIP64 record".
+_EOCD_COUNT_SATURATED = 0xFFFF
+
+
+def _declared_entry_count(source: Path | bytes) -> int | None:
+    """Total-entries field from the End of Central Directory record.
+
+    Reads the tail of the archive only — the point is to answer "how many
+    members does this claim?" WITHOUT ``zipfile.ZipFile`` walking the central
+    directory, which allocates one ``ZipInfo`` per member before any limit can
+    be applied (measured: 24 s and 272 MB for a 500k-member archive).
+
+    Returns ``None`` when the record cannot be found or read. That is
+    deliberately fail-OPEN: this is a fast pre-filter in front of the
+    authoritative ``infolist()`` count, so a parsing failure here must cost a
+    malformed archive nothing more than the slow path it would have taken
+    anyway. It must never be the reason a legitimate document is refused.
+    """
+    try:
+        if isinstance(source, bytes):
+            tail = source[-_EOCD_SEARCH_WINDOW:]
+        else:
+            size = source.stat().st_size
+            with source.open("rb") as fh:
+                if size > _EOCD_SEARCH_WINDOW:
+                    fh.seek(-_EOCD_SEARCH_WINDOW, io.SEEK_END)
+                tail = fh.read()
+    except OSError:
+        return None
+
+    marker = tail.rfind(_EOCD_SIG)
+    if marker < 0 or len(tail) - marker < 22:
+        return None
+    # EOCD layout: sig(4) disk(2) cd_disk(2) this_disk_entries(2)
+    #              total_entries(2) ...  → total at offset 10.
+    return int.from_bytes(tail[marker + 10 : marker + 12], "little")
+
+
 def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> None:
     """Refuse ``source`` if its declared expansion exceeds the budget.
 
@@ -82,6 +124,26 @@ def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> N
     would change the error an existing caller sees for an unrelated reason.
     """
     max_uncompressed, max_ratio, ratio_floor, max_entries = _limits()
+
+    # Entry count first, from the EOCD record, because opening the archive is
+    # what an entry-count bomb makes expensive: ZipFile() builds every ZipInfo
+    # before infolist() can be counted, so checking there means paying the
+    # whole cost to then refuse. Only a refusal is decided here; anything else
+    # falls through to the authoritative count below.
+    if max_entries > 0:
+        declared = _declared_entry_count(source)
+        if declared is not None:
+            over = (
+                max_entries < _EOCD_COUNT_SATURATED
+                if declared >= _EOCD_COUNT_SATURATED
+                else declared > max_entries
+            )
+            if over:
+                raise DocxDecompressionBudgetError(
+                    f"Refusing {file_path}: archive declares "
+                    f"{'>=' if declared >= _EOCD_COUNT_SATURATED else ''}{declared} "
+                    f"members (limit {max_entries}, env DOCX_MAX_ENTRIES)"
+                )
 
     handle: Any = io.BytesIO(source) if isinstance(source, bytes) else source
     try:

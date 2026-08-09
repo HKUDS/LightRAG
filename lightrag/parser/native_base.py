@@ -68,11 +68,31 @@ class NativeParserBase(BaseParser):
 
     # --- engine-private hooks ------------------------------------------------
     def validate_source(self, source: Path, file_path: str) -> None:
-        """Validate the resolved source (default: must be an existing file)."""
+        """Validate the resolved source (default: must be an existing file).
+
+        Runs inline in :meth:`parse`, i.e. ON THE EVENT LOOP, so it must stay
+        stat-level. Anything that reads the file belongs in
+        :meth:`validate_source_blocking`.
+        """
         if not (source.exists() and source.is_file()):
             raise FileNotFoundError(
                 f"{self.engine_name} source file not found: {source}"
             )
+
+    def validate_source_blocking(self, source: Path, file_path: str) -> None:
+        """Validate what cannot be checked without reading the source.
+
+        Runs at the top of ``_extract_sync`` — inside the parser executor, and
+        BEFORE the ``parsed_dir`` cleanup — so that:
+
+        * a check whose cost scales with the file (opening the archive of a
+          .docx with a huge central directory takes seconds) cannot stall the
+          event loop and every unrelated request with it, and
+        * a refusal has not already deleted the previous attempt's artifacts.
+
+        Default is a no-op; engines that need a read-level gate override it.
+        """
+        return None
 
     @abstractmethod
     def extract(
@@ -285,6 +305,11 @@ class NativeParserBase(BaseParser):
         asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
         def _extract_sync():
+            # Read-level validation runs here, not in parse(): it opens the
+            # source, and on the event loop that cost is paid by every other
+            # request. Before the rmtree below, so a refusal leaves the
+            # previous attempt's artifacts alone.
+            self.validate_source_blocking(source, ctx.file_path)
             # Pre-clean parsed_dir and pre-create asset_dir so the extractor
             # can write image bytes BEFORE write_sidecar (clean_parsed_dir=False
             # then keeps them). parsed_artifact_dir_for returns a unique dir per

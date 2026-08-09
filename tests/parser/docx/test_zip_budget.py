@@ -106,7 +106,7 @@ def test_high_ratio_docx_is_refused_before_any_member_is_decompressed(
     monkeypatch.setattr(zipfile.ZipFile, "open", _explode)
 
     with pytest.raises(DocxDecompressionBudgetError) as exc:
-        NativeDocxParser().validate_source(src, "bomb.docx")
+        NativeDocxParser().validate_source_blocking(src, "bomb.docx")
 
     message = str(exc.value)
     assert "uncompressed bytes" in message
@@ -196,7 +196,9 @@ def test_limits_are_read_live_and_can_be_disabled(tmp_path, monkeypatch):
 
 def test_ordinary_docx_passes_untouched(tmp_path):
     src = _benign(tmp_path / "ok.docx")
-    NativeDocxParser().validate_source(src, "ok.docx")
+    parser = NativeDocxParser()
+    parser.validate_source(src, "ok.docx")
+    parser.validate_source_blocking(src, "ok.docx")
 
 
 def test_non_zip_named_docx_is_passed_through_not_rejected_here(tmp_path):
@@ -287,3 +289,100 @@ def test_budget_accepts_bytes_and_path_equivalently(tmp_path):
     with pytest.raises(DocxDecompressionBudgetError) as from_bytes:
         enforce_docx_decompression_budget(src.read_bytes(), "bomb.docx")
     assert str(from_path.value) == str(from_bytes.value)
+
+
+# --- the budget must not run on the event loop -----------------------------
+#
+# validate_source is called inline in NativeParserBase.parse, on the event
+# loop; only _extract_sync runs in the parser executor. Opening the archive
+# of a .docx with a huge central directory takes seconds (measured: 5.2s for
+# 100k members, 24.3s for 500k), so a budget check placed in validate_source
+# stalls every unrelated request — the exact symptom the budget exists to
+# prevent, re-created by the guard itself.
+
+
+def test_validate_source_does_not_open_the_archive(tmp_path, monkeypatch):
+    src = _benign(tmp_path / "ok.docx")
+
+    def _explode(*args, **kwargs):  # pragma: no cover - only on regression
+        raise AssertionError("validate_source opened the zip on the event loop")
+
+    monkeypatch.setattr(zipfile, "ZipFile", _explode)
+    NativeDocxParser().validate_source(src, "ok.docx")
+
+
+def test_budget_runs_in_the_executor_before_artifact_cleanup():
+    """The base must call the blocking hook inside _extract_sync, ahead of the
+    rmtree — a refusal must not have destroyed the previous attempt's output.
+    """
+    import inspect
+
+    from lightrag.parser.native_base import NativeParserBase
+
+    body = inspect.getsource(NativeParserBase.parse)
+    extract_sync = body.index("def _extract_sync()")
+    call = body.index("validate_source_blocking", extract_sync)
+    rmtree = body.index("shutil.rmtree", extract_sync)
+    assert call < rmtree, "blocking validation must precede parsed_dir cleanup"
+    # And it must NOT be called inline in parse() before that.
+    assert "validate_source_blocking" not in body[:extract_sync]
+
+
+# --- an entry-count bomb is refused without building every ZipInfo ---------
+
+
+def test_entry_count_bomb_is_refused_without_opening_the_archive(tmp_path, monkeypatch):
+    """ZipFile() materializes one ZipInfo per member before infolist() can be
+    counted, so checking the count there means paying the whole cost to then
+    refuse. The EOCD record carries the total; read that instead."""
+    src = tmp_path / "many.docx"
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        for i in range(300):
+            zf.writestr(f"m/{i}", b"")
+    monkeypatch.setenv("DOCX_MAX_ENTRIES", "50")
+
+    def _explode(*args, **kwargs):  # pragma: no cover - only on regression
+        raise AssertionError("entry-count refusal opened the central directory")
+
+    monkeypatch.setattr(zipfile, "ZipFile", _explode)
+    with pytest.raises(DocxDecompressionBudgetError) as exc:
+        enforce_docx_decompression_budget(src, "many.docx")
+    assert "DOCX_MAX_ENTRIES" in str(exc.value)
+
+
+def test_eocd_prefilter_is_fail_open(tmp_path, monkeypatch):
+    """A tail that carries no readable EOCD must fall through to the
+    authoritative infolist() count, never refuse on its own — a parsing bug
+    here must not be able to reject a legitimate document."""
+    from lightrag.parser.docx.zip_budget import _declared_entry_count
+
+    junk = tmp_path / "junk.docx"
+    junk.write_bytes(b"not a zip at all")
+    assert _declared_entry_count(junk) is None
+    # ...and the caller treats that as "no verdict": a non-zip is passed
+    # through to python-docx, exactly as before the prefilter existed.
+    enforce_docx_decompression_budget(junk, "junk.docx")
+
+
+def test_eocd_count_matches_reality_for_an_ordinary_archive(tmp_path):
+    from lightrag.parser.docx.zip_budget import _declared_entry_count
+
+    src = _write_docx(tmp_path / "ok.docx", body_xml="<w:p/>", extra_members=7)
+    with zipfile.ZipFile(src) as zf:
+        real = len(zf.infolist())
+    assert _declared_entry_count(src) == real
+
+
+def test_eocd_prefilter_survives_a_zip_comment(tmp_path, monkeypatch):
+    """The EOCD is not necessarily the last 22 bytes — a trailing comment
+    pushes it back, and the record must still be found."""
+    from lightrag.parser.docx.zip_budget import _declared_entry_count
+
+    src = tmp_path / "commented.docx"
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        for i in range(20):
+            zf.writestr(f"m/{i}", b"")
+        zf.comment = b"x" * 5000
+    assert _declared_entry_count(src) == 21
