@@ -4566,6 +4566,33 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         return (depth_value, -weight_value)
 
+    async def _extend_with_existing_nodes(
+        self,
+        candidate_ids: list[str],
+        limit: int,
+        result: KnowledgeGraph,
+        accepted: list[str],
+    ) -> None:
+        """Append the candidates that really have node documents, up to `limit`.
+
+        `mget` answers in request order, so consuming it in order preserves
+        whatever ranking `candidate_ids` arrived in.
+        """
+        if not candidate_ids or len(accepted) >= limit:
+            return
+
+        resp = await self.client.mget(
+            index=self._nodes_index, body={"ids": candidate_ids}
+        )
+        for doc in resp["docs"]:
+            if len(accepted) >= limit:
+                break
+            if doc.get("found"):
+                accepted.append(doc["_id"])
+                result.nodes.append(
+                    self._construct_graph_node(doc["_id"], doc["_source"])
+                )
+
     async def _append_edges_between_nodes(
         self, node_ids: list[str], result: KnowledgeGraph
     ) -> None:
@@ -4741,32 +4768,42 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # band at the max_nodes cutoff was cut in aggregation bucket
                 # order: which entities the caller saw depended on how the
                 # buckets happened to come back.
-                top_ids = sorted(
+                ranked_ids = sorted(
                     degree_map, key=lambda label: (-degree_map[label], label)
-                )[:max_nodes]
-                if len(top_ids) < max_nodes:
-                    top_ids.extend(
-                        await self._collect_node_ids(
-                            max_nodes - len(top_ids), exclude_ids=set(top_ids)
-                        )
-                    )
-            else:
-                top_ids = await self._collect_node_ids(max_nodes)
-
-            # Fetch node data
-            if top_ids:
-                node_resp = await self.client.mget(
-                    index=self._nodes_index, body={"ids": top_ids}
                 )
-                found_node_ids = []
-                for doc in node_resp["docs"]:
-                    if doc.get("found"):
-                        found_node_ids.append(doc["_id"])
-                        result.nodes.append(
-                            self._construct_graph_node(doc["_id"], doc["_source"])
-                        )
+            else:
+                ranked_ids = await self._collect_node_ids(max_nodes)
 
-                await self._append_edges_between_nodes(found_node_ids, result)
+            # Resolve existence BEFORE applying the cutoff, the rule _bfs_subgraph
+            # already follows: these ids are edge ENDPOINTS, and upsert_edge only
+            # guarantees the source node exists, so a candidate can be a dangling
+            # id with no node document. Slicing first let such an id consume a
+            # real node's slot and shrink the answer -- reachable as soon as ties
+            # break on the label, because a dangling label sorts like any other.
+            accepted_ids: list[str] = []
+            await self._extend_with_existing_nodes(
+                ranked_ids[:max_nodes], max_nodes, result, accepted_ids
+            )
+            if len(accepted_ids) < max_nodes:
+                # Refill from the rest of the ranked band first: falling straight
+                # through to the node-index top-up below would replace a dropped
+                # candidate with an arbitrary node instead of the next-ranked one.
+                await self._extend_with_existing_nodes(
+                    ranked_ids[max_nodes:], max_nodes, result, accepted_ids
+                )
+            if result.is_truncated and len(accepted_ids) < max_nodes:
+                # The ranked band only names entities that appear in the edge
+                # index; isolated ones fill whatever it left over.
+                await self._extend_with_existing_nodes(
+                    await self._collect_node_ids(
+                        max_nodes - len(accepted_ids), exclude_ids=set(accepted_ids)
+                    ),
+                    max_nodes,
+                    result,
+                    accepted_ids,
+                )
+
+            await self._append_edges_between_nodes(accepted_ids, result)
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_indices_missing()

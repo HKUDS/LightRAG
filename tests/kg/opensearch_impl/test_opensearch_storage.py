@@ -3245,15 +3245,14 @@ class TestGraphStorage:
                 },
             ]
         )
+        # Answers the ids actually requested: existence is now resolved before
+        # the max_nodes cutoff, so the ranked band and the isolated top-up are
+        # separate mgets and a canned fixed-id response would stand in for
+        # neither.
         mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {"_id": "A", "found": True, "_source": {"entity_type": "person"}},
-                    {"_id": "B", "found": True, "_source": {"entity_type": "person"}},
-                    {"_id": "C", "found": True, "_source": {"entity_type": "person"}},
-                    {"_id": "D", "found": True, "_source": {"entity_type": "person"}},
-                ]
-            }
+            side_effect=_mget_by_ids_side_effect(
+                {node_id: {"entity_type": "person"} for node_id in "ABCD"}
+            )
         )
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -5524,6 +5523,70 @@ class TestGraphReadContract:
 
         assert sorted(node.id for node in kg.nodes) == ["Alpha", "Beta"]
         assert kg.is_truncated is True
+
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_does_not_let_a_dangling_id_take_a_slot(
+        self, global_config, embed_func, mock_client
+    ):
+        """The ranked ids are edge ENDPOINTS, and upsert_edge only guarantees the
+        source node exists, so one can be a dangling id with no node document.
+
+        Applying max_nodes before resolving existence let such an id consume a
+        real node's slot and shrink the answer. The label tie-break is what makes
+        it reachable -- a dangling label sorts like any other -- so here the
+        dangling target "A" outranks the real source "B" and, unresolved, would
+        leave the graph empty.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 3})
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [{"key": "B", "doc_count": 1}], [{"key": "A", "doc_count": 1}]
+            )
+        )
+        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"B"}))
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            kg = await s.get_knowledge_graph("*", max_depth=1, max_nodes=1)
+
+        assert [node.id for node in kg.nodes] == ["B"]
+
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_refills_from_the_ranked_band(
+        self, global_config, embed_func, mock_client
+    ):
+        """A slot freed by a dangling id goes to the NEXT-RANKED candidate.
+
+        Falling through to the isolated-node top-up instead would hand it to an
+        arbitrary node from the node index and quietly break the ranking.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 9})
+        mock_client.search = AsyncMock(
+            return_value=self._aggs(
+                [
+                    {"key": "Dangling", "doc_count": 9},
+                    {"key": "Real", "doc_count": 5},
+                    {"key": "Lower", "doc_count": 1},
+                ],
+                [],
+            )
+        )
+        mock_client.mget = AsyncMock(
+            side_effect=_node_mget_side_effect({"Real", "Lower"})
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            kg = await s.get_knowledge_graph("*", max_depth=1, max_nodes=2)
+
+        assert [node.id for node in kg.nodes] == ["Real", "Lower"]
+        # First mget resolves the cutoff-sized slice; the second asks the rest
+        # of the RANKED band for the slot "Dangling" vacated -- not the node
+        # index, which would have answered with an arbitrary entity.
+        requested = [
+            call.kwargs["body"]["ids"] for call in mock_client.mget.await_args_list
+        ]
+        assert requested == [["Dangling", "Real"], ["Lower"]], requested
 
     # -- get_node_edges -----------------------------------------------------
 
