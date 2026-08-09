@@ -545,3 +545,85 @@ def test_a_failure_after_cleanup_began_still_rolls_back(tmp_path, monkeypatch):
         _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, "doc-roll")
 
     assert not parsed_dir.exists(), "rollback must still remove a partial parse"
+
+
+def test_cancel_during_validation_does_not_destroy_a_prior_sidecar(
+    tmp_path, monkeypatch
+):
+    """Cancelling run_in_executor cancels the future, not the worker thread.
+
+    Without a checkpoint after validation, the abandoned worker walks on into
+    the rmtree: it deletes a COMPLETE sidecar from an earlier parse and leaves
+    a partial one, after the coroutine has already raised CancelledError. The
+    source has been consumed out of INPUT_DIR by then, so nothing can rebuild
+    it, and the persisted sidecar_location points at a file that is gone.
+    """
+    import asyncio
+    import threading
+    from unittest import mock
+
+    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.parser.base import ParseContext
+    from lightrag.parser.debug import build_debug_rag
+    from lightrag.parser.registry import get_parser
+
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+    _benign(source_path)
+
+    result = _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, "doc-cancel")
+    parsed_dir = Path(result.blocks_path).parent
+    survivors = sorted(p.name for p in parsed_dir.iterdir())
+    assert "doc.blocks.jsonl" in survivors
+
+    entered = threading.Event()
+    release = threading.Event()
+    reached_extract = threading.Event()
+
+    def _slow_validate(self, source, file_path):
+        # A large-but-legal archive: the scan is slow, not refused.
+        entered.set()
+        release.wait(10)
+
+    def _spy_extract(self, source, **kwargs):
+        reached_extract.set()
+        return [], {}, {}
+
+    async def _run():
+        _benign(source_path)  # the first parse consumed the source
+        with (
+            mock.patch.object(
+                NativeDocxParser, "validate_source_blocking", _slow_validate
+            ),
+            mock.patch.object(NativeDocxParser, "extract", _spy_extract),
+        ):
+            task = asyncio.create_task(
+                get_parser("native").parse(
+                    ParseContext(
+                        build_debug_rag(),
+                        "doc-cancel",
+                        str(source_path),
+                        {
+                            "parse_format": FULL_DOCS_FORMAT_PENDING_PARSE,
+                            "content": "",
+                        },
+                    )
+                )
+            )
+            await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # Let the abandoned worker run on past validation.
+            release.set()
+            # Pre-fix it proceeds into extract; post-fix it stops at the
+            # checkpoint and this simply times out.
+            await asyncio.to_thread(reached_extract.wait, 2)
+
+    asyncio.run(_run())
+
+    assert not reached_extract.is_set(), "abandoned worker continued into extraction"
+    assert parsed_dir.is_dir()
+    assert sorted(p.name for p in parsed_dir.iterdir()) == survivors

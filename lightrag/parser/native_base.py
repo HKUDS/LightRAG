@@ -318,6 +318,24 @@ class NativeParserBase(BaseParser):
             # source, and on the event loop that cost is paid by every other
             # request.
             self.validate_source_blocking(source, ctx.file_path)
+            # Cancellation checkpoint, and the last moment one is useful.
+            # Cancelling run_in_executor cancels only the future — THIS thread
+            # keeps running, and everything below destroys parsed_dir and
+            # rebuilds it. Ordinary extraction polls nothing, so without this
+            # a cancel arriving during validation lets an abandoned worker
+            # delete a complete sidecar from an earlier parse and leave a
+            # partial one behind, after the coroutine has already returned.
+            # The source is gone from INPUT_DIR by then, so that is not
+            # recoverable. Racy by nature (the flag may be set just after this
+            # reads it), but it removes the window that is actually wide: the
+            # whole of validate_source_blocking.
+            pipeline_cancelled = getattr(ctx, "pipeline_cancel_event", None)
+            if cancel_event.is_set() or (
+                pipeline_cancelled is not None and pipeline_cancelled.is_set()
+            ):
+                raise asyncio.CancelledError(
+                    f"parse cancelled before extraction: {ctx.file_path}"
+                )
             cleanup_started = True
             # Pre-clean parsed_dir and pre-create asset_dir so the extractor
             # can write image bytes BEFORE write_sidecar (clean_parsed_dir=False
