@@ -845,6 +845,15 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         its graph view at the same cutoff. Every other backend orders its ``*``
         ranking on the label; do not copy the deviation into a new one.
 
+        **Known approximation -- OpenSearchGraphStorage** applies the rule, but
+        only to the candidates its degree aggregations surfaced, and that set is
+        approximate: the two endpoint aggregations are each capped at
+        ``max_nodes``, so an entity whose in- and out-degree both fall outside
+        their respective top-N never reaches the ranking however high its
+        undirected degree is, and terms aggregations are count-approximate
+        across shards. Tracked in issue #3613; it needs a storage-shape change,
+        not an ordering one.
+
         This constrains WHICH nodes survive truncation, not the order of
         :class:`KnowledgeGraph.nodes` in the response — implementations
         materialize that list from a dict or a subgraph view, and callers that

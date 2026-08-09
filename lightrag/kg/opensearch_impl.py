@@ -4494,9 +4494,26 @@ class OpenSearchGraphStorage(BaseGraphStorage):
             raise
 
     async def _collect_node_ids(
-        self, limit: int, exclude_ids: set[str] | None = None
+        self,
+        limit: int,
+        exclude_ids: set[str] | None = None,
+        ordered: bool = False,
     ) -> list[str]:
-        """Collect up to `limit` node IDs, optionally skipping known IDs."""
+        """Collect up to `limit` node IDs, optionally skipping known IDs.
+
+        `ordered` scans in ``entity_id`` ascending order. Pass it whenever the
+        scan STOPS EARLY on a set whose members tie, because then the visit
+        order IS the tie-break: neither default path provides one. The
+        unexcluded fast path sends no sort at all, and the PIT path's
+        ``_pit_sort_with_field`` is a pagination tiebreaker that collapses to
+        ``_shard_doc`` on OpenSearch >= 3.3 — shard order. See
+        :meth:`_collect_isolated_labels`, which spells the sort out for exactly
+        this reason. ``entity_id`` mirrors ``_id`` and so is a total order,
+        which is also what makes it usable as the ``search_after`` key.
+
+        Leave it off when the caller takes every node it can reach, where the
+        order cannot change which nodes come back.
+        """
         if limit <= 0:
             return []
 
@@ -4507,6 +4524,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 "_source": False,
                 "size": limit,
             }
+            if ordered:
+                body["sort"] = [{"entity_id": {"order": "asc"}}]
             resp = await self.client.search(index=self._nodes_index, body=body)
             return [hit["_id"] for hit in resp["hits"]["hits"]]
 
@@ -4523,7 +4542,11 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     "_source": False,
                     "size": 10000,
                     "pit": {"id": pit_id, "keep_alive": "1m"},
-                    "sort": _pit_sort_with_field("entity_id"),
+                    "sort": (
+                        [{"entity_id": {"order": "asc"}}]
+                        if ordered
+                        else _pit_sort_with_field("entity_id")
+                    ),
                 }
                 if search_after:
                     body["search_after"] = search_after
@@ -4780,10 +4803,21 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 # band at the max_nodes cutoff was cut in aggregation bucket
                 # order: which entities the caller saw depended on how the
                 # buckets happened to come back.
+                #
+                # Exact WITHIN degree_map, which is itself approximate, so the
+                # ranking on this backend is too (#3613). Each aggregation above
+                # returns only its own top max_nodes buckets, so an entity whose
+                # in- and out-degree each fall outside their respective top-N
+                # never reaches this sort however high its undirected degree is;
+                # and terms aggregations are count-approximate across shards, so
+                # the degrees themselves can be off. Neither is fixable here --
+                # the data the sort would need never reaches the client.
                 ranked_ids = sorted(
                     degree_map, key=lambda label: (-degree_map[label], label)
                 )
             else:
+                # Everything fits, so this takes every node it can reach and the
+                # scan order cannot change the answer: no `ordered` needed.
                 ranked_ids = await self._collect_node_ids(max_nodes)
 
             # Resolve existence BEFORE applying the cutoff, the rule _bfs_subgraph
@@ -4805,10 +4839,15 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 )
             if result.is_truncated and len(accepted_ids) < max_nodes:
                 # The ranked band only names entities that appear in the edge
-                # index; isolated ones fill whatever it left over.
+                # index; isolated ones fill whatever it left over. `ordered`
+                # because this scan stops as soon as the slots are full and its
+                # candidates all tie at degree 0 -- the visit order IS the
+                # tie-break here, and neither default scan path provides one.
                 await self._extend_with_existing_nodes(
                     await self._collect_node_ids(
-                        max_nodes - len(accepted_ids), exclude_ids=set(accepted_ids)
+                        max_nodes - len(accepted_ids),
+                        exclude_ids=set(accepted_ids),
+                        ordered=True,
                     ),
                     max_nodes,
                     result,

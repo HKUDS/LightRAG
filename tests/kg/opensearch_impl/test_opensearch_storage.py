@@ -5588,6 +5588,84 @@ class TestGraphReadContract:
         ]
         assert requested == [["Dangling", "Real"], ["Lower"]], requested
 
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_isolated_topup_sorts_by_label(
+        self, global_config, embed_func, mock_client
+    ):
+        """A truncated graph with no edge-backed candidates fills every slot
+        from the node index, and those candidates all tie at degree 0 — so the
+        scan order IS the tie-break.
+
+        Nothing was accepted, so the exclusion set is empty and the scan takes
+        the unexcluded fast path, which sends no sort at all: the isolates that
+        survived the cutoff were whichever ones the shards answered with.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 3})
+        mock_client.search = AsyncMock(
+            side_effect=[
+                self._aggs([], []),  # no edges at all
+                self._node_page(["Alpha", "Beta"]),
+                {"hits": {"hits": [], "total": {"value": 0}}},  # edge pagination
+            ]
+        )
+        mock_client.mget = AsyncMock(
+            side_effect=_node_mget_side_effect({"Alpha", "Beta"})
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            kg = await s.get_knowledge_graph("*", max_depth=1, max_nodes=2)
+
+        scan_body = next(
+            call.kwargs["body"]
+            for call in mock_client.search.call_args_list
+            if "match_all" in call.kwargs.get("body", {}).get("query", {})
+        )
+        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, scan_body
+        assert [node.id for node in kg.nodes] == ["Alpha", "Beta"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shard_doc_supported", [False, True])
+    async def test_knowledge_graph_all_topup_scan_sorts_by_label_not_shard_order(
+        self, global_config, embed_func, mock_client, shard_doc_supported
+    ):
+        """The same tie-break has to hold on the PIT path, which is what the
+        top-up takes once something HAS been accepted (non-empty exclusions).
+
+        That path reused ``_pit_sort_with_field``, a pagination tiebreaker that
+        collapses to ``_shard_doc`` on OpenSearch >= 3.3 — so on any modern
+        cluster the degree-0 slots were handed out in shard order, exactly the
+        defect ``_collect_isolated_labels`` documents for get_popular_labels.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 9})
+        mock_client.search = AsyncMock(
+            side_effect=[
+                self._aggs([{"key": "Connected", "doc_count": 3}], []),
+                self._node_page(["Aardvark", "Orphan"]),
+                {"hits": {"hits": [], "total": {"value": 0}}},  # edge pagination
+            ]
+        )
+        mock_client.mget = AsyncMock(
+            side_effect=_node_mget_side_effect({"Connected", "Aardvark", "Orphan"})
+        )
+        with patch.object(
+            lightrag.kg.opensearch_impl, "_shard_doc_supported", shard_doc_supported
+        ):
+            with patch.object(ClientManager, "get_client", return_value=mock_client):
+                s = self._make(global_config, embed_func)
+                await s.initialize()
+                await s.get_knowledge_graph("*", max_depth=1, max_nodes=3)
+
+        scan_body = next(
+            call.kwargs["body"]
+            for call in mock_client.search.call_args_list
+            if "pit" in call.kwargs.get("body", {})
+        )
+        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, (
+            f"isolated top-up must sort on entity_id "
+            f"(_shard_doc_supported={shard_doc_supported}), got {scan_body['sort']}"
+        )
+
     # -- get_node_edges -----------------------------------------------------
 
     @pytest.mark.asyncio
