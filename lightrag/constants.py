@@ -151,6 +151,32 @@ DEFAULT_CHUNK_P_SIZE = 2000
 DEFAULT_P_REFERENCES_TAIL_N = 0
 DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 
+# Decompression budget for the native DOCX engine. A .docx is a ZIP, so the
+# bytes it costs to parse are its UNCOMPRESSED size, which no other control on
+# the ingestion path bounds: MAX_UPLOAD_SIZE bounds the compressed artifact on
+# disk and MAX_REQUEST_BODY_BYTES bounds the request body. A 449 KiB .docx
+# declaring 200 MiB of document.xml passed both and drove peak RSS past 1.1 GB
+# (GHSA-2wpj-ffvv-2pq8).
+#
+# Both quantities come from the ZIP central directory, so the check costs one
+# infolist() and no decompression. A central directory that UNDERSTATES a
+# member is self-limiting rather than a bypass: CPython's zipfile stops
+# decompressing at the declared file_size and then fails the CRC, so a liar
+# buys at most the size it declared — which is the size this budget bounds.
+#
+# The ratio gate is what actually closes the amplification: 512 MiB alone would
+# still let a ~1 MB upload expand 500x. At 100:1 an attacker must upload ~5 MB
+# to reach the hard ceiling, which puts the upload-size and rate controls back
+# in play. It applies only above DEFAULT_DOCX_RATIO_FLOOR_BYTES, because small
+# documents legitimately compress far better than large ones and a floor-less
+# ratio gate would reject them.
+# Env: DOCX_MAX_UNCOMPRESSED_BYTES / DOCX_MAX_COMPRESSION_RATIO /
+# DOCX_RATIO_FLOOR_BYTES / DOCX_MAX_ENTRIES, read live at parse time.
+DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+DEFAULT_DOCX_MAX_COMPRESSION_RATIO = 100
+DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
+DEFAULT_DOCX_MAX_ENTRIES = 10_000
+
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
 # by lightrag/parser/docx/smart_heading (same live-env pattern as the

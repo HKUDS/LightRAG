@@ -25,6 +25,7 @@ from urllib.parse import quote
 
 import pytest
 
+from lightrag.parser.external.docling import client as client_mod
 from lightrag.parser.external.docling.client import (
     CONVERT_PATH,
     POLL_PATH,
@@ -839,3 +840,53 @@ async def test_docling_client_default_upload_filename_falls_back_to_source_name(
 
     name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
     assert name == "demo.pdf"
+
+
+async def test_docling_result_zip_is_extracted_under_a_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    # ``safe_extract_zip`` defaults both guards to unlimited, so an
+    # unbudgeted call inherits no zip-bomb protection at all. The docling
+    # server is operator-configured rather than attacker-supplied, which
+    # makes this depth rather than the defect in GHSA-2wpj-ffvv-2pq8 — but
+    # the call has to pass real values for the guards to exist.
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+
+    seen: dict[str, object] = {}
+    real = client_mod.safe_extract_zip
+
+    def _spy(payload, dest_dir, **kwargs):
+        seen.update(kwargs)
+        return real(payload, dest_dir, **kwargs)
+
+    monkeypatch.setattr(client_mod, "safe_extract_zip", _spy)
+
+    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
+
+    assert isinstance(seen.get("max_entries"), int)
+    assert seen["max_entries"] > 0
+    assert isinstance(seen.get("max_total_bytes"), int)
+    assert seen["max_total_bytes"] > 0
+
+
+async def test_docling_oversized_result_zip_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+    monkeypatch.setattr(client_mod, "_RESULT_MAX_TOTAL_BYTES", 8)
+
+    with pytest.raises(RuntimeError) as exc:
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+    assert "uncompressed size" in str(exc.value)

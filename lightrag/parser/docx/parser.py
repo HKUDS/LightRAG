@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from collections.abc import Mapping
 
 from lightrag.constants import PARSER_ENGINE_NATIVE
+from lightrag.parser.docx.zip_budget import enforce_docx_decompression_budget
 from lightrag.parser.native_base import NativeExtractRuntime, NativeParserBase
 from lightrag.utils import logger
 
@@ -41,6 +42,11 @@ class NativeDocxParser(NativeParserBase):
             raise ValueError(
                 f"Native parser does not support pending file: {file_path}"
             )
+        # The only chokepoint that precedes every reader of this archive:
+        # NativeParserBase.run calls validate_source before extract, and
+        # extract is what opens the package (python-docx plus four more
+        # ZipFile opens). Nothing downstream bounds the expansion.
+        enforce_docx_decompression_budget(source, file_path)
 
     def wants_llm_bridge(self, engine_params: Mapping[str, Any]) -> bool:
         return bool(engine_params.get("smart_heading"))

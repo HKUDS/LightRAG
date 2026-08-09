@@ -89,6 +89,14 @@ RESULT_PATH = "/v1/result/{task_id}"
 DEFAULT_POLL_WAIT_SECONDS = 5
 DEFAULT_MAX_POLLS = 240  # 240 * 5s long-poll ≈ 20 min worst case
 
+# Zip-bomb guards for the result bundle, matching the .textpack extraction
+# guards in lightrag/parser/markdown/parser.py. The docling server is operator-
+# configured rather than attacker-supplied, so this is depth rather than the
+# defect fixed in GHSA-2wpj-ffvv-2pq8 — but safe_extract_zip defaults both
+# limits to unlimited, so an unbudgeted call inherits no protection at all.
+_RESULT_MAX_ENTRIES = 10_000
+_RESULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB uncompressed
+
 # ConversionStatus enum from the docling-serve OpenAPI
 SUCCESS_STATES = {"success"}
 FAILURE_STATES = {"failure", "partial_success", "skipped"}
@@ -312,7 +320,12 @@ class DoclingRawClient:
                 f"Docling result {task_id} returned non-zip content-type "
                 f"{ctype!r}; body prefix={resp.text[:400]!r}"
             )
-        safe_extract_zip(resp.content, raw_dir)
+        safe_extract_zip(
+            resp.content,
+            raw_dir,
+            max_entries=_RESULT_MAX_ENTRIES,
+            max_total_bytes=_RESULT_MAX_TOTAL_BYTES,
+        )
 
 
 # ---------------------------------------------------------------------------

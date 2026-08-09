@@ -44,6 +44,14 @@ def _extract_docx(file_bytes: bytes) -> str:
     from docx.table import Table  # type: ignore
     from docx.text.paragraph import Paragraph  # type: ignore
 
+    from lightrag.parser.docx.zip_budget import enforce_docx_decompression_budget
+
+    # Same decompression budget the native engine applies (GHSA-2wpj-ffvv-2pq8).
+    # Both engines parse .docx and the default routing falls back from native
+    # to legacy, so guarding only the native path leaves a bypass reachable
+    # with a ``bomb.[legacy].docx`` filename hint.
+    enforce_docx_decompression_budget(file_bytes, "docx")
+
     docx_file = BytesIO(file_bytes)
     doc = Document(docx_file)
 
