@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from lightrag.constants import (
+    DEFAULT_DOCX_MAX_CENTRAL_DIR_BYTES,
     DEFAULT_DOCX_MAX_COMPRESSION_RATIO,
     DEFAULT_DOCX_MAX_ENTRIES,
     DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES,
@@ -38,7 +39,7 @@ class DocxDecompressionBudgetError(ValueError):
     """
 
 
-def _limits() -> tuple[int, int, int, int]:
+def _limits() -> tuple[int, int, int, int, int]:
     """Read the budget from the environment at call time.
 
     Live-read (not import-time) for the same reason the smart_heading and
@@ -54,28 +55,37 @@ def _limits() -> tuple[int, int, int, int]:
         ),
         get_env_value("DOCX_RATIO_FLOOR_BYTES", DEFAULT_DOCX_RATIO_FLOOR_BYTES, int),
         get_env_value("DOCX_MAX_ENTRIES", DEFAULT_DOCX_MAX_ENTRIES, int),
+        get_env_value(
+            "DOCX_MAX_CENTRAL_DIR_BYTES", DEFAULT_DOCX_MAX_CENTRAL_DIR_BYTES, int
+        ),
     )
 
 
 _EOCD_SIG = b"PK\x05\x06"
 # EOCD record (22 bytes) plus the largest possible trailing comment.
 _EOCD_SEARCH_WINDOW = 22 + 0xFFFF
-# The EOCD's entry count is 16-bit; 0xFFFF means "65535, or more and the real
-# count lives in the ZIP64 record".
-_EOCD_COUNT_SATURATED = 0xFFFF
 
 
-def _declared_entry_count(source: Path | bytes) -> int | None:
-    """Total-entries field from the End of Central Directory record.
+def _declared_central_directory_bytes(source: Path | bytes) -> int | None:
+    """Central-directory byte size from the End of Central Directory record.
 
-    Reads the tail of the archive only — the point is to answer "how many
-    members does this claim?" WITHOUT ``zipfile.ZipFile`` walking the central
-    directory, which allocates one ``ZipInfo`` per member before any limit can
-    be applied (measured: 24 s and 272 MB for a 500k-member archive).
+    Reads the tail of the archive only, to answer "how much work is opening
+    this going to be?" WITHOUT ``zipfile.ZipFile`` doing that work — it walks
+    the directory as ``while total < size_cd``, allocating one ``ZipInfo`` per
+    member during construction, so any check made afterwards has already been
+    paid for (measured: 24 s and 272 MB for a 500k-member archive).
+
+    This reads ``size_cd`` and deliberately NOT the neighbouring member count.
+    The count is attacker-controlled and inert: setting both count fields to
+    100 leaves the directory untouched and the archive valid, CPython ignores
+    them, and all 500,002 members are still walked. ``size_cd`` is the field
+    CPython actually obeys, which is what makes it trustworthy — understating
+    it makes ZipFile walk fewer bytes and see fewer members, i.e. the attack
+    failing rather than succeeding.
 
     Returns ``None`` when the record cannot be found or read. That is
     deliberately fail-OPEN: this is a fast pre-filter in front of the
-    authoritative ``infolist()`` count, so a parsing failure here must cost a
+    authoritative checks below, so a parsing failure here must cost a
     malformed archive nothing more than the slow path it would have taken
     anyway. It must never be the reason a legitimate document is refused.
     """
@@ -95,8 +105,10 @@ def _declared_entry_count(source: Path | bytes) -> int | None:
     if marker < 0 or len(tail) - marker < 22:
         return None
     # EOCD layout: sig(4) disk(2) cd_disk(2) this_disk_entries(2)
-    #              total_entries(2) ...  → total at offset 10.
-    return int.from_bytes(tail[marker + 10 : marker + 12], "little")
+    #              total_entries(2) size_cd(4) ...  → size_cd at offset 12.
+    # 0xFFFFFFFF is the ZIP64 sentinel: the real size lives in the ZIP64
+    # record and is >= 4 GiB, so it is over any sane budget either way.
+    return int.from_bytes(tail[marker + 12 : marker + 16], "little")
 
 
 def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> None:
@@ -123,27 +135,20 @@ def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> N
     already reports it and reports it more precisely; taking it over here
     would change the error an existing caller sees for an unrelated reason.
     """
-    max_uncompressed, max_ratio, ratio_floor, max_entries = _limits()
+    max_uncompressed, max_ratio, ratio_floor, max_entries, max_cd_bytes = _limits()
 
-    # Entry count first, from the EOCD record, because opening the archive is
-    # what an entry-count bomb makes expensive: ZipFile() builds every ZipInfo
-    # before infolist() can be counted, so checking there means paying the
-    # whole cost to then refuse. Only a refusal is decided here; anything else
-    # falls through to the authoritative count below.
-    if max_entries > 0:
-        declared = _declared_entry_count(source)
-        if declared is not None:
-            over = (
-                max_entries < _EOCD_COUNT_SATURATED
-                if declared >= _EOCD_COUNT_SATURATED
-                else declared > max_entries
+    # Cost gate first: opening the archive is itself the expensive step an
+    # entry bomb exploits, so the member limit below cannot protect the work
+    # that produces it. Bounding the central directory's byte size is what
+    # bounds that walk. Only a refusal is decided here; everything else falls
+    # through to the authoritative checks.
+    if max_cd_bytes > 0:
+        declared_cd = _declared_central_directory_bytes(source)
+        if declared_cd is not None and declared_cd > max_cd_bytes:
+            raise DocxDecompressionBudgetError(
+                f"Refusing {file_path}: central directory is {declared_cd} bytes "
+                f"(limit {max_cd_bytes}, env DOCX_MAX_CENTRAL_DIR_BYTES)"
             )
-            if over:
-                raise DocxDecompressionBudgetError(
-                    f"Refusing {file_path}: archive declares "
-                    f"{'>=' if declared >= _EOCD_COUNT_SATURATED else ''}{declared} "
-                    f"members (limit {max_entries}, env DOCX_MAX_ENTRIES)"
-                )
 
     handle: Any = io.BytesIO(source) if isinstance(source, bytes) else source
     try:

@@ -177,6 +177,24 @@ DEFAULT_DOCX_MAX_COMPRESSION_RATIO = 100
 DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
 
+# Cost gate for opening the archive at all, bounding the CENTRAL DIRECTORY's
+# byte size. Distinct from the member limit above, which cannot protect the
+# work that produces it: ``ZipFile()`` walks the directory as ``while total <
+# size_cd`` and builds one ``ZipInfo`` per member during construction, so
+# counting members afterwards means paying the full cost first (measured: a
+# 500k-member archive costs seconds and 272 MB before any count exists).
+#
+# The byte size is the honest quantity here, and the EOCD's member count is
+# not: an attacker can set the count to anything without touching the
+# directory, and CPython ignores it entirely. Understating ``size_cd`` is
+# self-limiting instead of a bypass — ZipFile would simply walk fewer bytes
+# and see fewer members, which is the attack failing.
+#
+# 4 MiB is roughly 55k typical entries, far above the 10k member limit (whose
+# directory runs well under 1 MiB), so a legitimate document trips the member
+# gate long before this one. Env: DOCX_MAX_CENTRAL_DIR_BYTES.
+DEFAULT_DOCX_MAX_CENTRAL_DIR_BYTES = 4 * 1024 * 1024
+
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
 # by lightrag/parser/docx/smart_heading (same live-env pattern as the

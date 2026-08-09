@@ -331,53 +331,104 @@ def test_budget_runs_in_the_executor_before_artifact_cleanup():
 # --- an entry-count bomb is refused without building every ZipInfo ---------
 
 
-def test_entry_count_bomb_is_refused_without_opening_the_archive(tmp_path, monkeypatch):
-    """ZipFile() materializes one ZipInfo per member before infolist() can be
-    counted, so checking the count there means paying the whole cost to then
-    refuse. The EOCD record carries the total; read that instead."""
+def test_entry_bomb_is_refused_without_walking_the_central_directory(
+    tmp_path, monkeypatch
+):
+    """ZipFile() walks the directory as ``while total < size_cd``, building one
+    ZipInfo per member during construction, so a member count taken afterwards
+    has already been paid for. Bound the directory's byte size instead."""
     src = tmp_path / "many.docx"
     with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
         zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
         for i in range(300):
             zf.writestr(f"m/{i}", b"")
-    monkeypatch.setenv("DOCX_MAX_ENTRIES", "50")
+    monkeypatch.setenv("DOCX_MAX_CENTRAL_DIR_BYTES", "2048")
 
     def _explode(*args, **kwargs):  # pragma: no cover - only on regression
-        raise AssertionError("entry-count refusal opened the central directory")
+        raise AssertionError("cost gate walked the central directory")
 
     monkeypatch.setattr(zipfile, "ZipFile", _explode)
     with pytest.raises(DocxDecompressionBudgetError) as exc:
         enforce_docx_decompression_budget(src, "many.docx")
-    assert "DOCX_MAX_ENTRIES" in str(exc.value)
+    assert "DOCX_MAX_CENTRAL_DIR_BYTES" in str(exc.value)
 
 
-def test_eocd_prefilter_is_fail_open(tmp_path, monkeypatch):
+def test_a_forged_eocd_member_count_does_not_buy_a_pass(tmp_path, monkeypatch):
+    """The EOCD's member count is attacker-controlled and inert.
+
+    Both count fields can be set to anything without touching the directory:
+    the archive stays valid, CPython ignores them (it obeys ``size_cd``), and
+    every member is still walked. A prefilter keyed on the count is therefore
+    bypassed by a two-field edit — measured: 500,002 members still walked, the
+    refusal arriving only after the full cost. ``size_cd`` cannot be
+    understated the same way; doing so makes ZipFile walk *less*.
+    """
+    src = tmp_path / "forged.docx"
+    with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        for i in range(300):
+            zf.writestr(f"m/{i}", b"")
+
+    raw = bytearray(src.read_bytes())
+    marker = raw.rfind(b"PK\x05\x06")
+    assert marker > 0
+    real_count = struct.unpack_from("<H", raw, marker + 10)[0]
+    assert real_count == 301
+    size_cd_before = struct.unpack_from("<I", raw, marker + 12)[0]
+    struct.pack_into("<HH", raw, marker + 8, 1, 1)  # claim a single member
+    src.write_bytes(bytes(raw))
+
+    # The forgery is invisible to the archive's validity and to its real cost.
+    with zipfile.ZipFile(src) as zf:
+        assert len(zf.infolist()) == 301
+    assert struct.unpack_from("<I", bytearray(src.read_bytes()), marker + 12)[0] == (
+        size_cd_before
+    )
+
+    monkeypatch.setenv("DOCX_MAX_CENTRAL_DIR_BYTES", "2048")
+
+    def _explode(*args, **kwargs):  # pragma: no cover - only on regression
+        raise AssertionError("forged count bought a walk of the central directory")
+
+    monkeypatch.setattr(zipfile, "ZipFile", _explode)
+    with pytest.raises(DocxDecompressionBudgetError):
+        enforce_docx_decompression_budget(src, "forged.docx")
+
+
+def test_cost_gate_is_fail_open(tmp_path, monkeypatch):
     """A tail that carries no readable EOCD must fall through to the
-    authoritative infolist() count, never refuse on its own — a parsing bug
-    here must not be able to reject a legitimate document."""
-    from lightrag.parser.docx.zip_budget import _declared_entry_count
+    authoritative checks, never refuse on its own — a parsing bug here must
+    not be able to reject a legitimate document."""
+    from lightrag.parser.docx.zip_budget import _declared_central_directory_bytes
 
     junk = tmp_path / "junk.docx"
     junk.write_bytes(b"not a zip at all")
-    assert _declared_entry_count(junk) is None
-    # ...and the caller treats that as "no verdict": a non-zip is passed
-    # through to python-docx, exactly as before the prefilter existed.
+    assert _declared_central_directory_bytes(junk) is None
     enforce_docx_decompression_budget(junk, "junk.docx")
 
 
-def test_eocd_count_matches_reality_for_an_ordinary_archive(tmp_path):
-    from lightrag.parser.docx.zip_budget import _declared_entry_count
+def test_declared_central_dir_bytes_matches_reality(tmp_path):
+    from lightrag.parser.docx.zip_budget import _declared_central_directory_bytes
 
     src = _write_docx(tmp_path / "ok.docx", body_xml="<w:p/>", extra_members=7)
-    with zipfile.ZipFile(src) as zf:
-        real = len(zf.infolist())
-    assert _declared_entry_count(src) == real
+    raw = src.read_bytes()
+    marker = raw.rfind(b"PK\x05\x06")
+    expected = struct.unpack_from("<I", raw, marker + 12)[0]
+    assert _declared_central_directory_bytes(src) == expected
+    # An ordinary document sits far below the default budget.
+    assert expected < 4 * 1024 * 1024
+
+
+def test_ordinary_docx_is_not_refused_by_the_cost_gate(tmp_path):
+    # Default budget, real-ish member count: must pass untouched.
+    src = _write_docx(tmp_path / "ok.docx", body_xml="<w:p/>", extra_members=500)
+    enforce_docx_decompression_budget(src, "ok.docx")
 
 
 def test_eocd_prefilter_survives_a_zip_comment(tmp_path, monkeypatch):
     """The EOCD is not necessarily the last 22 bytes — a trailing comment
     pushes it back, and the record must still be found."""
-    from lightrag.parser.docx.zip_budget import _declared_entry_count
+    from lightrag.parser.docx.zip_budget import _declared_central_directory_bytes
 
     src = tmp_path / "commented.docx"
     with zipfile.ZipFile(src, "w", zipfile.ZIP_STORED) as zf:
@@ -385,7 +436,12 @@ def test_eocd_prefilter_survives_a_zip_comment(tmp_path, monkeypatch):
         for i in range(20):
             zf.writestr(f"m/{i}", b"")
         zf.comment = b"x" * 5000
-    assert _declared_entry_count(src) == 21
+    raw = src.read_bytes()
+    marker = raw.rfind(b"PK\x05\x06")
+    assert (
+        _declared_central_directory_bytes(src)
+        == struct.unpack_from("<I", raw, marker + 12)[0]
+    )
 
 
 # --- a refusal must not destroy a previous successful parse ----------------
