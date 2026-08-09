@@ -818,13 +818,19 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         returned a different graph at the same ``max_nodes`` — the defect fixed
         for ``get_popular_labels`` first, then here.
 
-        The rule covers both selection paths: the ``*`` whole-graph ranking, and
-        the same-depth ordering of a BFS expansion from ``node_label``, where the
-        tie decides both which neighbours are kept at the cutoff and which get
-        expanded next.
-
         Order the labels by code point (SQL ``COLLATE "C"``, not a locale
         collation) so every backend agrees with Python's ``str`` comparison.
+
+        **Scope: the ``*`` whole-graph ranking on every backend.** The rule
+        should govern the non-wildcard path too -- a BFS level that overflows
+        ``max_nodes`` faces the same tie, and it decides both which neighbours
+        survive and which get expanded next -- but today only
+        :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
+        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order their BFS
+        levels that way. Neo4j, Memgraph, Mongo and OpenSearch admit same-depth
+        nodes in traversal order, so their non-wildcard cutoff is still
+        ingestion-order dependent. Tracked in issue #3612; a new backend should
+        implement both paths rather than match that gap.
 
         **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
         on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
@@ -836,8 +842,8 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         backend's view is stable for a given database but still varies with
         ingestion order across databases holding the same graph, and its
         :meth:`get_popular_labels` (which DOES order by label) can disagree with
-        its graph view at the same cutoff. Every other backend follows the rule;
-        do not copy the deviation into a new one.
+        its graph view at the same cutoff. Every other backend orders its ``*``
+        ranking on the label; do not copy the deviation into a new one.
 
         This constrains WHICH nodes survive truncation, not the order of
         :class:`KnowledgeGraph.nodes` in the response — implementations
