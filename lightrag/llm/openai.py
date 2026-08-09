@@ -28,6 +28,7 @@ from tenacity import (
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
+    empty_length_truncated_hint,
     logger,
     TruncatedResponse,
 )
@@ -767,16 +768,9 @@ async def openai_complete_if_cache(
                         f"reasoning_content_len={reasoning_len}"
                     )
                     if finish_reason == "length":
-                        hint = (
-                            "generation hit the token limit before emitting "
-                            "any content"
-                            + (
-                                " (budget consumed by reasoning)"
-                                if reasoning_len
-                                else ""
-                            )
-                            + "; consider raising max_tokens or disabling "
-                            "thinking mode"
+                        hint = empty_length_truncated_hint(
+                            "consider raising max_tokens or disabling thinking mode",
+                            reasoning_consumed_budget=bool(reasoning_len),
                         )
                     elif reasoning_len:
                         hint = (
@@ -786,17 +780,20 @@ async def openai_complete_if_cache(
                         )
                     else:
                         hint = "model produced no output"
-                    logger.error(
+                    error_message = (
                         f"Received empty content from OpenAI API "
                         f"({diagnostics}): {hint}"
                     )
+                    logger.error(error_message)
                     try:
                         await openai_async_client.close()
                     except Exception as close_error:
                         logger.warning(f"Failed to close OpenAI client: {close_error}")
-                    raise InvalidResponseError(
-                        f"Received empty content from OpenAI API ({diagnostics})"
-                    )
+                    # The hint rides along into the exception (and therefore
+                    # into doc_status.error_msg) rather than living only in the
+                    # server log: the operator reading the failed document is
+                    # the one who has to turn the knob.
+                    raise InvalidResponseError(error_message)
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:

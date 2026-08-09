@@ -296,3 +296,86 @@ async def test_gemini_stop_finish_reason_is_not_marked_truncated(monkeypatch, re
 
     assert result == raw_json
     assert is_truncated_response(result) is False
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, request):
+    """The #3597 shape on Gemini: the whole budget went to the thought trace.
+
+    ``final_text`` is non-empty at the pre-strip check (it is
+    ``<think>...</think>``), so only a check AFTER ``remove_think_tags`` sees
+    that nothing usable came back. It used to be returned as an empty —
+    truncation-flagged — success.
+    """
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(
+            thought_text="let me carefully consider the entities",
+            finish_reason="MAX_TOKENS",
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    # Undecorated coroutine: Gemini retries InvalidResponseError, and the
+    # handler under test runs identically on every attempt.
+    with pytest.raises(gemini_module.InvalidResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache.__wrapped__(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+            enable_cot=True,
+        )
+
+    message = str(excinfo.value)
+    assert "Received empty content from Gemini API" in message
+    assert "finish_reason=MAX_TOKENS" in message
+    assert "budget consumed by reasoning" in message
+    assert "GEMINI_LLM_MAX_OUTPUT_TOKENS" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_no_content_at_all_names_the_token_limit(monkeypatch, request):
+    """The pre-existing empty-response raise now says WHY it was empty."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(finish_reason="MAX_TOKENS")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    with pytest.raises(gemini_module.InvalidResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache.__wrapped__(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+        )
+
+    message = str(excinfo.value)
+    assert "finish_reason=MAX_TOKENS" in message
+    assert "candidates_token_count=2" in message
+    assert "GEMINI_LLM_MAX_OUTPUT_TOKENS" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, request):
+    """Scope: only the token-limit case escalates. A reasoning-only response
+    that ended normally still returns empty content, with a warning."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(thought_text="thinking", finish_reason="STOP")
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Extract entities",
+        api_key="test-key",
+        enable_cot=True,
+    )
+
+    assert result == ""

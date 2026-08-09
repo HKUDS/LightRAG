@@ -4451,6 +4451,38 @@ def is_truncated_response(value: Any) -> bool:
     return isinstance(value, TruncatedResponse)
 
 
+def format_response_diagnostics(**fields: Any) -> str:
+    """Render provider response diagnostics as ``key=value`` pairs.
+
+    ``None`` becomes ``n/a`` so a field the provider did not report is visibly
+    absent rather than looking like a zero.
+    """
+    return ", ".join(
+        f"{key}={'n/a' if value is None else value}" for key, value in fields.items()
+    )
+
+
+def empty_length_truncated_hint(
+    budget_hint: str, *, reasoning_consumed_budget: bool = False
+) -> str:
+    """Explain an EMPTY response whose finish reason is the output token limit.
+
+    Shared by every binding so the four providers describe the same failure
+    identically. This is the structurally-broken case, not "ran a bit long":
+    generation stopped before producing a single content token, so there is
+    nothing to salvage and nothing to cache — the caller raises rather than
+    returning "" and letting the document be indexed as an empty graph
+    (issue #3601 gap 4).
+
+    ``budget_hint`` names the provider's own output-budget knob, since that is
+    the actionable part and only the binding knows it.
+    """
+    cause = "generation hit the token limit before emitting any content"
+    if reasoning_consumed_budget:
+        cause += " (budget consumed by reasoning)"
+    return f"{cause}; {budget_hint}"
+
+
 # doc_status.metadata key holding the per-document truncation summary.
 LLM_TRUNCATION_METADATA_KEY = "llm_truncation"
 

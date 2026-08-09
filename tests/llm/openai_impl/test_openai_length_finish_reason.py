@@ -399,4 +399,8 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
     assert "reasoning_tokens=n/a" in message
     assert "reasoning_content_len=0" in message
     assert "hit the token limit" in caplog.text
+    # The hint travels with the exception too, so the document's error_msg
+    # names the knob — same contract as the Ollama/Gemini/Bedrock bindings.
+    assert "hit the token limit" in message
+    assert "consider raising max_tokens" in message
     fake_client.close.assert_awaited()

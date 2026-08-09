@@ -1273,3 +1273,89 @@ async def test_bedrock_end_turn_stop_reason_is_not_marked_truncated(monkeypatch)
 
     assert result == '{"entities":[{"name":"Ali'
     assert is_truncated_response(result) is False
+
+
+class _FakeEmptyResponseClient(_FakeBedrockClient):
+    """Converse returned a well-formed envelope with no usable text.
+
+    ``stop_reason`` / ``reasoning`` shape the diagnostics the binding is
+    expected to attach.
+    """
+
+    stop_reason = "max_tokens"
+    reasoning = True
+
+    async def converse(self, **kwargs):
+        self._captured_calls.append(kwargs)
+        content = []
+        if self.reasoning:
+            content.append(
+                {"reasoningContent": {"reasoningText": {"text": "internal thought"}}}
+            )
+        content.append({"text": ""})
+        return {
+            "output": {"message": {"content": content}},
+            "stopReason": self.stop_reason,
+            "usage": {"outputTokens": 64},
+        }
+
+
+def _empty_response_session(captured_calls, *, stop_reason, reasoning):
+    client = _FakeEmptyResponseClient(captured_calls)
+    client.stop_reason = stop_reason
+    client.reasoning = reasoning
+    return SimpleNamespace(client=lambda *_args, **_kwargs: client)
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_empty_max_tokens_response_names_the_token_limit(monkeypatch):
+    """Bedrock already failed on empty content; what was missing is the cause.
+
+    doc_status.error_msg has to say which knob to turn, not just report
+    "empty content" (issue #3601 gap 4).
+    """
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_empty_response_session(
+            [], stop_reason="max_tokens", reasoning=True
+        ),
+    ):
+        with pytest.raises(Exception) as excinfo:
+            await bedrock_complete_if_cache.__wrapped__(
+                model="bedrock-model", prompt="Extract"
+            )
+
+    message = str(excinfo.value)
+    assert "Received empty content from Bedrock API" in message
+    assert "stopReason=max_tokens" in message
+    assert "outputTokens=64" in message
+    # Measured from the reasoning TEXT, not the repr of the block.
+    assert f"reasoning_content_len={len('internal thought')}" in message
+    assert "budget consumed by reasoning" in message
+    assert "BEDROCK_LLM_MAX_TOKENS" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_empty_response_without_token_limit_says_so(monkeypatch):
+    """A normal stop with no output is a different diagnosis, not the budget."""
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_empty_response_session(
+            [], stop_reason="end_turn", reasoning=False
+        ),
+    ):
+        with pytest.raises(Exception) as excinfo:
+            await bedrock_complete_if_cache.__wrapped__(
+                model="bedrock-model", prompt="Extract"
+            )
+
+    message = str(excinfo.value)
+    assert "stopReason=end_turn" in message
+    assert "model produced no output" in message
+    assert "BEDROCK_LLM_MAX_TOKENS" not in message
