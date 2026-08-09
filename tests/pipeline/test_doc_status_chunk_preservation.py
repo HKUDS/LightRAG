@@ -1255,7 +1255,7 @@ async def test_pipeline_cancellation_preserves_file_path_for_queued_docs(
         release_first_doc = asyncio.Event()
 
         async def _blocking_extract(
-            self, chunks, pipeline_status, pipeline_status_lock
+            self, chunks, pipeline_status, pipeline_status_lock, **kwargs
         ):
             extraction_started.set()
             await release_first_doc.wait()
@@ -1317,7 +1317,7 @@ async def test_pipeline_cancellation_repairs_placeholder_file_path_for_queued_do
         release_first_doc = asyncio.Event()
 
         async def _blocking_extract(
-            self, chunks, pipeline_status, pipeline_status_lock
+            self, chunks, pipeline_status, pipeline_status_lock, **kwargs
         ):
             extraction_started.set()
             await release_first_doc.wait()

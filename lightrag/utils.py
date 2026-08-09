@@ -4451,6 +4451,108 @@ def is_truncated_response(value: Any) -> bool:
     return isinstance(value, TruncatedResponse)
 
 
+# doc_status.metadata key holding the per-document truncation summary.
+LLM_TRUNCATION_METADATA_KEY = "llm_truncation"
+
+# Cap on the number of affected subjects (chunk ids / entity names) echoed into
+# that metadata entry. The doc_status row is serialized into every documents
+# listing response, so the summary must stay O(1) in document size; the exact
+# per-chunk detail lives in the server log, which is unbounded by design.
+TRUNCATION_METADATA_SAMPLE_LIMIT = 10
+
+
+class TokenLimitTruncationTally:
+    """Accumulator for token-limit truncation events over one scope.
+
+    A document whose output budget is too small does not truncate once, it
+    truncates on EVERY chunk: publishing one ``pipeline_status`` line per event
+    would push the rest of the run out of the bounded ``history_messages`` ring
+    and still leave the operator counting lines. So each producer stage keeps a
+    tally, publishes its FIRST event immediately (the condition must not stay
+    hidden until a long run ends) plus ONE aggregated line when it finishes,
+    and folds its counts into the document-scoped tally the pipeline stamps
+    into ``doc_status.metadata`` — the durable, machine-readable record that
+    outlives the status ring and reaches the API.
+
+    Not thread-safe, and does not need to be: every mutation is a plain,
+    await-free update made from tasks on a single event loop.
+    """
+
+    __slots__ = ("_events", "_stages", "_subjects")
+
+    def __init__(self) -> None:
+        self._events = 0
+        self._stages: dict[str, int] = {}
+        # Ordered set: preserves first-seen order for the metadata sample while
+        # de-duplicating a subject that truncated at more than one stage.
+        self._subjects: dict[str, None] = {}
+
+    def __bool__(self) -> bool:
+        return self._events > 0
+
+    @property
+    def events(self) -> int:
+        """Total truncated responses, counting a subject once per stage."""
+        return self._events
+
+    @property
+    def affected(self) -> int:
+        """Distinct subjects (chunk ids / entity names) with >= 1 truncation."""
+        return len(self._subjects)
+
+    def record(self, stage: str, subject: str) -> bool:
+        """Record one truncated response; True when it is this tally's first."""
+        first = self._events == 0
+        self._events += 1
+        self._stages[stage] = self._stages.get(stage, 0) + 1
+        if subject:
+            self._subjects.setdefault(subject, None)
+        return first
+
+    def absorb(self, other: "TokenLimitTruncationTally | None") -> None:
+        """Fold a stage-scoped tally into this (document-scoped) one."""
+        if not other:
+            return
+        self._events += other._events
+        for stage, count in other._stages.items():
+            self._stages[stage] = self._stages.get(stage, 0) + count
+        for subject in other._subjects:
+            self._subjects.setdefault(subject, None)
+
+    def stage_breakdown(self) -> str:
+        """Human-readable per-stage counts, e.g. ``initial: 12, gleaning: 3``."""
+        return ", ".join(f"{stage}: {count}" for stage, count in self._stages.items())
+
+    def as_metadata(self) -> dict[str, Any] | None:
+        """Summary payload for ``doc_status.metadata``; None when nothing hit."""
+        if not self._events:
+            return None
+        subjects = list(self._subjects)
+        payload: dict[str, Any] = {
+            "events": self._events,
+            "affected": len(subjects),
+            "stages": dict(self._stages),
+            "samples": subjects[:TRUNCATION_METADATA_SAMPLE_LIMIT],
+        }
+        omitted = len(subjects) - TRUNCATION_METADATA_SAMPLE_LIMIT
+        if omitted > 0:
+            payload["samples_omitted"] = omitted
+        return payload
+
+    def as_metadata_extra(self) -> dict[str, Any]:
+        """``metadata_extra`` fragment for a doc_status transition upsert.
+
+        Empty on a clean run, so the key is simply absent rather than persisting
+        a zeroed record. Because ``LLM_TRUNCATION_METADATA_KEY`` is deliberately
+        NOT in ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``, that absence also
+        CLEARS a previous attempt's summary instead of resurrecting it — a
+        re-run with a larger token budget must not keep reporting the old
+        truncation.
+        """
+        payload = self.as_metadata()
+        return {LLM_TRUNCATION_METADATA_KEY: payload} if payload else {}
+
+
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
 
@@ -4604,11 +4706,11 @@ async def use_llm_func_with_cache(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
 
-        # Capture the token-limit truncation flag before remove_think_tags
-        # rebuilds a plain str and drops the TruncatedResponse marker.
-        res_truncated = is_truncated_response(res)
-
+        # ``remove_think_tags`` re-wraps its result, so the marker survives
+        # sanitization and both this cache guard and the caller (which reports
+        # the truncation to pipeline status) read the same flag off ``res``.
         res = remove_think_tags(res)
+        res_truncated = is_truncated_response(res)
 
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())

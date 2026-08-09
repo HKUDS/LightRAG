@@ -186,6 +186,7 @@ from lightrag.utils import (
     normalize_source_ids_limit_method,
     normalize_string_list,
     run_in_chunking_executor,
+    TokenLimitTruncationTally,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -2999,7 +3000,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         await self._flush_storages([self.full_entities, self.full_relations])
 
     async def _process_extract_entities(
-        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+        self,
+        chunk: dict[str, Any],
+        pipeline_status=None,
+        pipeline_status_lock=None,
+        truncation_tally: TokenLimitTruncationTally | None = None,
     ) -> list:
         try:
             chunk_results = await extract_entities(
@@ -3009,6 +3014,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
                 text_chunks_storage=self.text_chunks,
+                truncation_tally=truncation_tally,
             )
             return chunk_results
         except Exception as e:

@@ -111,6 +111,7 @@ from lightrag.utils import (
     save_to_cache,
     serialize_llm_cache_identity,
     strip_control_characters,
+    TokenLimitTruncationTally,
     tolerant_load_json_dict,
 )
 from lightrag.utils_pipeline import (
@@ -4689,6 +4690,12 @@ class _PipelineMixin:
         extraction_meta: dict[str, Any] = {}
         chunk_results: list = []
         doc_process_opts = parse_process_options("")
+        # Document-scoped truncation record, fed by both KG stages (extraction
+        # + gleaning in extract_entities, description summaries in
+        # merge_nodes_and_edges). Stamped into doc_status.metadata at the
+        # terminal transition, where it survives the bounded pipeline-status
+        # ring and reaches /documents and the WebUI.
+        truncation_tally = TokenLimitTruncationTally()
 
         def get_failed_chunk_snapshot() -> tuple[list[str], int]:
             if chunks:
@@ -5242,6 +5249,7 @@ class _PipelineMixin:
                             chunks,
                             ctx.pipeline_status,
                             ctx.pipeline_status_lock,
+                            truncation_tally=truncation_tally,
                         )
                     )
                     chunk_results = await entity_relation_task
@@ -5265,6 +5273,9 @@ class _PipelineMixin:
                     metadata_extra={
                         "process_start_time": process_start_time,
                         "process_end_time": int(time.time()),
+                        # A run that truncated and then failed keeps the
+                        # evidence: truncation is often why it failed.
+                        **truncation_tally.as_metadata_extra(),
                     },
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
@@ -5304,6 +5315,7 @@ class _PipelineMixin:
                             on_anchors_durable=partial(
                                 self._mark_graph_mutation_started, doc_id, status_doc
                             ),
+                            truncation_tally=truncation_tally,
                         )
 
                     # If another in-flight document already triggered an abort
@@ -5347,6 +5359,11 @@ class _PipelineMixin:
                             "process_start_time": process_start_time,
                             "process_end_time": process_end_time,
                             **extraction_meta,
+                            # Empty on a clean run, which is what CLEARS a
+                            # previous attempt's summary: the key is not in the
+                            # carry-over whitelist, so absence means "this
+                            # attempt did not truncate", never "unchanged".
+                            **truncation_tally.as_metadata_extra(),
                         },
                         # A PROCESSED document has no purge in flight by
                         # definition, so retire any journal that a resume purge
@@ -5409,6 +5426,7 @@ class _PipelineMixin:
                             "process_start_time": process_start_time,
                             "process_end_time": int(time.time()),
                             **extraction_meta,
+                            **truncation_tally.as_metadata_extra(),
                         },
                         pipeline_status=ctx.pipeline_status,
                         pipeline_status_lock=ctx.pipeline_status_lock,

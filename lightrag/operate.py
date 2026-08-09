@@ -36,6 +36,7 @@ from lightrag.utils import (
     save_to_cache,
     CacheData,
     is_truncated_response,
+    TokenLimitTruncationTally,
     use_llm_func_with_cache,
     get_env_value,
     get_llm_cache_identity,
@@ -372,6 +373,7 @@ async def _handle_entity_relation_summary(
     separator: str,
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
+    truncation_tally: TokenLimitTruncationTally | None = None,
 ) -> tuple[str, bool]:
     """Handle entity relation description summary using map-reduce approach.
 
@@ -451,6 +453,7 @@ async def _handle_entity_relation_summary(
                     current_list,
                     global_config,
                     llm_response_cache,
+                    truncation_tally=truncation_tally,
                 )
                 return final_summary, True  # LLM was used for final summarization
 
@@ -510,6 +513,7 @@ async def _handle_entity_relation_summary(
                     chunk,
                     global_config,
                     llm_response_cache,
+                    truncation_tally=truncation_tally,
                 )
                 new_summaries.append(summary)
                 llm_was_used = True  # Mark that LLM was used in reduce phase
@@ -524,6 +528,7 @@ async def _summarize_descriptions(
     description_list: list[str],
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
+    truncation_tally: TokenLimitTruncationTally | None = None,
 ) -> str:
     """Helper function to summarize a list of descriptions using LLM.
 
@@ -532,6 +537,10 @@ async def _summarize_descriptions(
         descriptions: List of description strings to summarize
         global_config: Global configuration containing LLM function and settings
         llm_response_cache: Optional cache for LLM responses
+        truncation_tally: Optional accumulator for token-limit truncation. A
+            cut-off summary silently becomes the entity's/relation's persisted
+            description, so it belongs in the same operator-visible record as
+            truncated extraction.
 
     Returns:
         Summarized description string
@@ -588,6 +597,16 @@ async def _summarize_descriptions(
         cache_type="summary",
         llm_cache_identity=get_llm_cache_identity(global_config, "extract"),
     )
+
+    # Check BEFORE sanitizing: sanitize_text_for_encoding rebuilds a plain str
+    # and drops the TruncatedResponse marker that remove_think_tags preserved.
+    if is_truncated_response(summary):
+        subject = f"{description_type}:{description_name}"
+        logger.warning(
+            f"Token-limit truncation while summarizing descriptions for {subject}"
+        )
+        if truncation_tally is not None:
+            truncation_tally.record("summary", subject)
 
     # The LLM response is the only description path that bypasses
     # extraction-time sanitization; control chars / surrogates left here
@@ -798,6 +817,21 @@ def _normalize_text_extraction_record_attributes(
     return normalized
 
 
+def _truncation_cause_suffix(result: Any) -> str:
+    """Name token-limit truncation as the cause of a failed extraction parse.
+
+    An undelimited / unparseable extraction response has two very different
+    causes — a model that ignored the output contract, and a model that was cut
+    off mid-answer — and only the second is fixed by raising the output budget.
+    ``TruncatedResponse`` survives ``remove_think_tags``, so the parsers can
+    tell them apart instead of leaving the operator to correlate this warning
+    with a separate truncation line by chunk id.
+    """
+    if not is_truncated_response(result):
+        return ""
+    return " (response was truncated by the model's output token limit)"
+
+
 def _looks_like_json_extraction_result(result: str) -> bool:
     """Return True for raw or fenced JSON extraction responses."""
 
@@ -847,7 +881,10 @@ async def _process_json_extraction_result(
     # surfaced.
     parsed = tolerant_load_json_dict(result)
     if not parsed:
-        logger.warning(f"{chunk_key}: JSON extraction result is empty or unrecoverable")
+        logger.warning(
+            f"{chunk_key}: JSON extraction result is empty or unrecoverable"
+            f"{_truncation_cause_suffix(result)}"
+        )
         return dict(maybe_nodes), dict(maybe_edges)
 
     # Models quoting LaTeX in descriptions routinely under-escape backslashes
@@ -1432,6 +1469,7 @@ async def _process_extraction_result(
     if completion_delimiter not in result:
         logger.warning(
             f"{chunk_key}: Complete delimiter can not be found in extraction result"
+            f"{_truncation_cause_suffix(result)}"
         )
 
     # Split LLL output result to records by "\n"
@@ -2279,6 +2317,7 @@ async def _merge_nodes_then_upsert(
     llm_response_cache: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
     status_logger: PipelineStatusLogger | None = None,
+    truncation_tally: TokenLimitTruncationTally | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     if status_logger is None:
@@ -2459,6 +2498,7 @@ async def _merge_nodes_then_upsert(
             GRAPH_FIELD_SEP,
             global_config,
             llm_response_cache,
+            truncation_tally=truncation_tally,
         )
 
         # 9. Build file_path within MAX_FILE_PATHS
@@ -2624,6 +2664,7 @@ async def _merge_edges_then_upsert(
     relation_chunks_storage: BaseKVStorage | None = None,
     entity_chunks_storage: BaseKVStorage | None = None,
     status_logger: PipelineStatusLogger | None = None,
+    truncation_tally: TokenLimitTruncationTally | None = None,
 ):
     if status_logger is None:
         # Fallback for direct callers that pass pipeline_status only; a
@@ -2858,6 +2899,7 @@ async def _merge_edges_then_upsert(
             GRAPH_FIELD_SEP,
             global_config,
             llm_response_cache,
+            truncation_tally=truncation_tally,
         )
 
         # 9. Build file_path within MAX_FILE_PATHS limit
@@ -3319,6 +3361,7 @@ async def merge_nodes_and_edges(
     total_files: int = 0,
     file_path: str = "unknown_source",
     on_anchors_durable: Callable[[], Awaitable[None]] | None = None,
+    truncation_tally: TokenLimitTruncationTally | None = None,
 ) -> None:
     """Merge extracted entities/relations into the KG behind write-ahead anchors.
 
@@ -3358,6 +3401,10 @@ async def merge_nodes_and_edges(
             merge before any mutation. Not called when the anchor storages or
             ``doc_id`` are absent (patch-mode merges, which carry their own
             operation journal as the recovery proof).
+        truncation_tally: Optional document-scoped accumulator. Description
+            summaries are LLM calls too, so a too-small output budget truncates
+            them exactly like extraction; the merge folds its own count in so
+            the document's ``doc_status.metadata`` summary covers both stages.
     """
 
     # Check for cancellation at the start of merge
@@ -3370,6 +3417,11 @@ async def merge_nodes_and_edges(
     # of this document: the first history write fetches the shared list once;
     # every merge log is then a single extend on the cached handle.
     status_logger = PipelineStatusLogger(pipeline_status)
+
+    # Merge-scoped tally: one aggregated status line for the whole merge rather
+    # than one per truncated summary, folded into the document-scoped tally at
+    # the end so the doc_status record covers extraction and merge together.
+    summary_tally = TokenLimitTruncationTally()
 
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
@@ -3490,6 +3542,7 @@ async def merge_nodes_and_edges(
                         llm_response_cache,
                         entity_chunks_storage,
                         status_logger=status_logger,
+                        truncation_tally=summary_tally,
                     )
 
                     return entity_data
@@ -3580,6 +3633,7 @@ async def merge_nodes_and_edges(
                         relation_chunks_storage,
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
                         status_logger=status_logger,
+                        truncation_tally=summary_tally,
                     )
 
                     if edge_data is None:
@@ -3648,6 +3702,18 @@ async def merge_nodes_and_edges(
     # exceptions — is gone: a merge whose anchors cannot be persisted no
     # longer mutates the graph at all (issue #3400).
 
+    if summary_tally:
+        noun = "summary" if summary_tally.affected == 1 else "summaries"
+        truncation_message = (
+            f"Warning: token-limit truncation hit {summary_tally.affected} "
+            f"description {noun} during merge "
+            f"({summary_tally.events} responses); merged descriptions may be incomplete"
+        )
+        logger.warning(truncation_message)
+        status_logger.log(truncation_message)
+    if truncation_tally is not None:
+        truncation_tally.absorb(summary_tally)
+
     log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} extra entities, {len(processed_edges)} relations"
     logger.info(log_message)
     async with pipeline_status_lock:
@@ -3662,7 +3728,16 @@ async def extract_entities(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
+    truncation_tally: TokenLimitTruncationTally | None = None,
 ) -> list:
+    """Extract entities and relations from ``chunks``.
+
+    ``truncation_tally``: optional document-scoped accumulator. Extraction owns
+    a stage-scoped tally regardless (it publishes the first truncation
+    immediately and one aggregate at the end); passing this one additionally
+    hands the counts to the pipeline, which stamps them into
+    ``doc_status.metadata`` so the condition outlives the bounded status ring.
+    """
     # Check for cancellation at the start of entity extraction
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
@@ -3675,6 +3750,9 @@ async def extract_entities(
     # history write fetches the shared list once; every per-chunk log is then
     # a single extend on the cached handle.
     status_logger = PipelineStatusLogger(pipeline_status)
+
+    # Extraction-scoped truncation tally; see _publish_truncation_summary below.
+    stage_tally = TokenLimitTruncationTally()
 
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -3795,12 +3873,20 @@ async def extract_entities(
         def _report_truncation(result: str, stage: str) -> None:
             if not is_truncated_response(result):
                 return
-            truncation_message = (
+            location = f"chunk {chunk_key} in {file_path}"
+            # The server log keeps every occurrence with full identity; the
+            # bounded pipeline-status ring gets the first one plus the
+            # end-of-stage aggregate (see _publish_truncation_summary).
+            logger.warning(
                 f"Token-limit truncation during {stage} entity extraction "
-                f"for chunk {chunk_key} in {file_path}"
+                f"for {location}"
             )
-            logger.warning(truncation_message)
-            status_logger.log(truncation_message)
+            if stage_tally.record(stage, chunk_key):
+                status_logger.log(
+                    f"Warning: token-limit truncation during {stage} entity "
+                    f"extraction for {location}; further occurrences are "
+                    f"reported as one summary at the end of extraction"
+                )
 
         if use_json_extraction:
             # JSON mode: use JSON prompts and pass entity_extraction flag to LLM provider
@@ -4067,6 +4153,26 @@ async def extract_entities(
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
 
+    def _publish_truncation_summary() -> None:
+        """Publish one aggregated truncation line and hand the counts upward.
+
+        Called on both the success and the failure path, so a run that dies
+        mid-extraction still reports (and records) what it truncated before
+        dying. A no-op when nothing truncated.
+        """
+        if not stage_tally:
+            return
+        truncation_message = (
+            f"Warning: token-limit truncation hit {stage_tally.affected} of "
+            f"{total_chunks} chunks during entity extraction "
+            f"({stage_tally.stage_breakdown()}); "
+            f"extracted knowledge may be incomplete"
+        )
+        logger.warning(truncation_message)
+        status_logger.log(truncation_message)
+        if truncation_tally is not None:
+            truncation_tally.absorb(stage_tally)
+
     # Get max async tasks limit from global_config
     chunk_max_async = global_config.get("llm_model_max_async", 4)
     semaphore = asyncio.Semaphore(chunk_max_async)
@@ -4148,12 +4254,16 @@ async def extract_entities(
         if pending:
             await asyncio.wait(pending)
 
+        _publish_truncation_summary()
+
         # Add progress prefix to the exception message
         progress_prefix = f"C[{processed_chunks + 1}/{total_chunks}]"
 
         # Re-raise the original exception with a prefix
         prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
         raise prefixed_exception from first_exception
+
+    _publish_truncation_summary()
 
     # If all tasks completed successfully, chunk_results already contains the results
     # Return the chunk_results for later processing in merge_nodes_and_edges
