@@ -40,14 +40,20 @@ class NativeExtractRuntime:
     Bundles the per-file state the async template resolves BEFORE entering the
     worker thread: the decoded ``parse_engine`` params, an optional synchronous
     LLM callable (built only when :meth:`NativeParserBase.wants_llm_bridge`
-    says the params need one), and the cancellation event the bridge polls.
-    The three travel together — a subclass that consumes none of them simply
-    ignores the argument.
+    says the params need one), and the cancellation events any blocking work
+    in the worker thread should poll. They travel together — a subclass that
+    consumes none of them simply ignores the argument.
+
+    ``cancel_events`` is the full set, in the ``(event, exception_type)`` shape
+    :func:`~lightrag.parser.llm_bridge.normalize_cancel_events` accepts, so a
+    consumer stays agnostic about which source fired: the per-parse event
+    (first entry), the pipeline's (``/documents/cancel_pipeline``), and the
+    rag shutdown event.
     """
 
     engine_params: Mapping[str, Any] = field(default_factory=dict)
     llm_invoke: Callable[..., str] | None = None
-    cancel_event: threading.Event | None = None
+    cancel_events: tuple = ()
 
 
 class NativeParserBase(BaseParser):
@@ -232,7 +238,22 @@ class NativeParserBase(BaseParser):
         # Per-parse cancel event, polled by the LLM bridge between waits. The
         # rag-level shutdown event (when present) covers finalize_storages
         # while an extract is still in flight.
+        from lightrag.parser.llm_bridge import (
+            LLMBridgePipelineCancelled,
+            LLMBridgeShutdown,
+        )
+
         cancel_event = threading.Event()
+        # Built once and shared by every consumer in the worker thread — the
+        # LLM bridge and, since GHSA-25c3-j78v-83qx, the native markdown image
+        # downloader. Before that the pipeline event reached the bridge only,
+        # so a cancel was invisible to a document whose parse was stuck in a
+        # network read.
+        cancel_events = (
+            cancel_event,
+            (ctx.pipeline_cancel_event, LLMBridgePipelineCancelled),
+            (getattr(ctx.rag, "_parser_shutdown_event", None), LLMBridgeShutdown),
+        )
         llm_invoke = None
         smartheading_cache_keys: list = []
         i4_cache_disabled = False
@@ -241,29 +262,17 @@ class NativeParserBase(BaseParser):
                 ctx
             )
             if submit is not None:
-                from lightrag.parser.llm_bridge import (
-                    LLMBridgePipelineCancelled,
-                    LLMBridgeShutdown,
-                    SyncLLMBridge,
-                )
+                from lightrag.parser.llm_bridge import SyncLLMBridge
 
-                shutdown_event = getattr(ctx.rag, "_parser_shutdown_event", None)
                 llm_invoke = SyncLLMBridge(
                     asyncio.get_running_loop(),
                     submit,
-                    cancel_events=(
-                        cancel_event,
-                        (
-                            ctx.pipeline_cancel_event,
-                            LLMBridgePipelineCancelled,
-                        ),
-                        (shutdown_event, LLMBridgeShutdown),
-                    ),
+                    cancel_events=cancel_events,
                 )
         runtime = NativeExtractRuntime(
             engine_params=engine_params,
             llm_invoke=llm_invoke,
-            cancel_event=cancel_event,
+            cancel_events=cancel_events,
         )
 
         rs = ctx.resolve(self.engine_name)
