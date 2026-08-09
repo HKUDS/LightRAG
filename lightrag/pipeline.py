@@ -328,15 +328,24 @@ def _resolve_sidecar_image_path(path_str: str | None, sidecar_dir: Path) -> Path
     """
     if not path_str:
         return None
-    # An absolute path_str makes this yield path_str itself (pathlib
-    # semantics), which then fails containment — no separate branch needed.
-    candidate = (sidecar_dir / path_str).resolve()
     try:
-        if not candidate.is_relative_to(sidecar_dir.resolve()):
-            return None
-    except OSError:
-        # resolve() touches the filesystem; an unreadable prefix is a refusal,
-        # never a pass.
+        # An absolute path_str makes this yield path_str itself (pathlib
+        # semantics), which then fails containment — no separate branch needed.
+        candidate = (sidecar_dir / path_str).resolve()
+        root = sidecar_dir.resolve()
+    except (OSError, ValueError, RuntimeError):
+        # BOTH resolutions must sit inside the guard, and the guard must be
+        # this wide. ``resolve()`` touches the filesystem and validates the
+        # string: OSError for an unreadable prefix, ValueError for an embedded
+        # NUL, RuntimeError for a symlink loop (an OSError on Python 3.13+).
+        # The pre-containment resolver reached none of these — bare
+        # ``exists()`` answers False for a malformed path instead of raising —
+        # so letting one escape would convert a *skipped* item into a
+        # fail-fast that marks the whole document FAILED, which is exactly the
+        # regression this file otherwise refuses to introduce. Unresolvable is
+        # a refusal, never a pass and never a raise.
+        return None
+    if not candidate.is_relative_to(root):
         return None
     if candidate.exists() and candidate.is_file():
         return candidate

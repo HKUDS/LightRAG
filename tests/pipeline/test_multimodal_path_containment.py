@@ -138,3 +138,45 @@ def test_symlink_escaping_the_sidecar_is_refused(sidecar_dir, tmp_path):
         _resolve_sidecar_image_path("report.blocks.assets/escape.png", sidecar_dir)
         is None
     )
+
+
+# --- a malformed reference is skipped, never a failed document -------------
+#
+# The containment check introduced resolve(), which unlike the bare exists()
+# it replaced can RAISE on a malformed path. An escaping exception here is
+# not a refusal: it propagates out of the drawing task, hits the fail-fast
+# wait loop in analyze_multimodal, and marks the entire document FAILED —
+# turning a skipped image into a failed ingest.
+
+
+def test_embedded_nul_is_skipped_not_raised(sidecar_dir):
+    # Path.resolve() raises ValueError("embedded null character") here;
+    # the pre-containment exists() answered False.
+    assert (
+        _resolve_sidecar_image_path("report.blocks.assets/a\x00b.png", sidecar_dir)
+        is None
+    )
+
+
+def test_symlink_loop_is_skipped_not_raised(sidecar_dir):
+    # RuntimeError("Symlink loop") on CPython < 3.13, OSError(ELOOP) from
+    # 3.13 on — the guard covers both, and CI exercises 3.12 and 3.14.
+    assets = sidecar_dir / "report.blocks.assets"
+    (assets / "loopA.png").symlink_to(assets / "loopB.png")
+    (assets / "loopB.png").symlink_to(assets / "loopA.png")
+
+    assert (
+        _resolve_sidecar_image_path("report.blocks.assets/loopA.png", sidecar_dir)
+        is None
+    )
+
+
+def test_symlink_loop_in_the_sidecar_dir_itself_is_skipped(tmp_path):
+    # The guard must cover sidecar_dir.resolve() too, not just the candidate:
+    # a reused sidecar can be reached through a broken directory prefix.
+    a = tmp_path / "dirA"
+    b = tmp_path / "dirB"
+    a.symlink_to(b, target_is_directory=True)
+    b.symlink_to(a, target_is_directory=True)
+
+    assert _resolve_sidecar_image_path("report.blocks.assets/x.png", a) is None
