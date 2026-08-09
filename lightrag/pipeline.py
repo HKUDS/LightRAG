@@ -5273,6 +5273,16 @@ class _PipelineMixin:
                     metadata_extra={
                         "process_start_time": process_start_time,
                         "process_end_time": int(time.time()),
+                        # Same payload the merge-stage failure below writes.
+                        # None of these keys is carried over, so omitting them
+                        # here DROPPED the parse_format / parse_engine /
+                        # chunk_method / mm_chunks fields that the PROCESSING
+                        # transition had just stamped: a document that failed
+                        # during extraction ended up describing itself less
+                        # than one that failed one stage later. Always bound —
+                        # initialised empty above the try, so a failure that
+                        # precedes chunking simply contributes nothing.
+                        **extraction_meta,
                         # A run that truncated and then failed keeps the
                         # evidence: truncation is often why it failed.
                         **truncation_tally.as_metadata_extra(),
