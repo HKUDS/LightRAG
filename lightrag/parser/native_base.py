@@ -304,12 +304,21 @@ class NativeParserBase(BaseParser):
         parsed_dir = rs.parsed_dir
         asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
+        # Whether _extract_sync got as far as replacing parsed_dir. Written in
+        # the executor thread, read here after the await, so the future's
+        # completion is the happens-before edge. It exists because the two
+        # failure modes need opposite handling: once the directory is being
+        # replaced a failure must roll it back, but a refusal that happens
+        # BEFORE that must leave the previous attempt's sidecar alone.
+        cleanup_started = False
+
         def _extract_sync():
+            nonlocal cleanup_started
             # Read-level validation runs here, not in parse(): it opens the
             # source, and on the event loop that cost is paid by every other
-            # request. Before the rmtree below, so a refusal leaves the
-            # previous attempt's artifacts alone.
+            # request.
             self.validate_source_blocking(source, ctx.file_path)
+            cleanup_started = True
             # Pre-clean parsed_dir and pre-create asset_dir so the extractor
             # can write image bytes BEFORE write_sidecar (clean_parsed_dir=False
             # then keeps them). parsed_artifact_dir_for returns a unique dir per
@@ -348,8 +357,14 @@ class NativeParserBase(BaseParser):
             # the pre-created (possibly partial) dirs. The worker thread may
             # briefly outlive the rmtree; the pre-clean at the next parse
             # attempt sweeps any late writes.
+            #
+            # Only roll back what this attempt started building. A refusal from
+            # validate_source_blocking lands here having touched nothing, and
+            # deleting parsed_dir for it would destroy a COMPLETE sidecar from
+            # an earlier successful parse — one a persisted sidecar_location
+            # still points at, which the reuse path then cannot resolve.
             cancel_event.set()
-            if parsed_dir.exists():
+            if cleanup_started and parsed_dir.exists():
                 shutil.rmtree(parsed_dir, ignore_errors=True)
             raise
         if not blocks:

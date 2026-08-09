@@ -386,3 +386,106 @@ def test_eocd_prefilter_survives_a_zip_comment(tmp_path, monkeypatch):
             zf.writestr(f"m/{i}", b"")
         zf.comment = b"x" * 5000
     assert _declared_entry_count(src) == 21
+
+
+# --- a refusal must not destroy a previous successful parse ----------------
+
+
+def _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, doc_id):
+    """Drive the real NativeParserBase.parse (executor, rollback path, all)."""
+    import asyncio
+    from unittest import mock
+
+    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.parser.base import ParseContext
+    from lightrag.parser.debug import build_debug_rag
+    from lightrag.parser.registry import get_parser
+
+    def _stub_blocks(file_path, **_kwargs):
+        return [
+            {
+                "uuid": "p1",
+                "heading": "H",
+                "content": "# H\nbody",
+                "type": "text",
+                "parent_headings": [],
+                "level": 1,
+            }
+        ]
+
+    with mock.patch(
+        "lightrag.parser.docx.parse_document.extract_docx_blocks", _stub_blocks
+    ):
+        return asyncio.run(
+            get_parser("native").parse(
+                ParseContext(
+                    build_debug_rag(),
+                    doc_id,
+                    str(source_path),
+                    {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+                )
+            )
+        )
+
+
+def test_refusal_preserves_a_previous_successful_parse(tmp_path, monkeypatch):
+    """End-to-end: an over-budget re-parse must not delete the prior sidecar.
+
+    The rollback in ``NativeParserBase.parse`` catches BaseException and
+    removes ``parsed_dir``. A budget refusal raises from inside
+    ``_extract_sync``, so without the cleanup_started guard it lands in that
+    rollback and deletes a COMPLETE sidecar from an earlier successful parse —
+    one a persisted ``sidecar_location`` still points at.
+    """
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+
+    # 1. A first parse that succeeds and leaves artifacts behind.
+    _benign(source_path)
+    result = _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, "doc-keep")
+    parsed_dir = Path(result.blocks_path).parent
+    assert parsed_dir.is_dir()
+    survivors = sorted(p.name for p in parsed_dir.iterdir())
+    assert survivors, "first parse should have written artifacts"
+
+    # 2. The same document is re-parsed after being swapped for a bomb.
+    _bomb(source_path)
+    with pytest.raises(DocxDecompressionBudgetError):
+        _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, "doc-keep")
+
+    # 3. The earlier sidecar is still there.
+    assert parsed_dir.is_dir(), "refusal deleted the previous attempt's sidecar"
+    assert sorted(p.name for p in parsed_dir.iterdir()) == survivors
+
+
+def test_a_failure_after_cleanup_began_still_rolls_back(tmp_path, monkeypatch):
+    """The guard must not disable the rollback it narrows: once extract has
+    started replacing parsed_dir, a failure still has to clean up."""
+    from unittest import mock
+
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+    _benign(source_path)
+
+    result = _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, "doc-roll")
+    parsed_dir = Path(result.blocks_path).parent
+    assert parsed_dir.is_dir()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("extract blew up after the pre-clean")
+
+    # A successful parse consumes the source out of INPUT_DIR, so re-create it
+    # for the second attempt — the same thing the preservation test does by
+    # swapping in the bomb.
+    _benign(source_path)
+    with (
+        mock.patch("lightrag.parser.docx.parser.NativeDocxParser.extract", _boom),
+        pytest.raises(RuntimeError),
+    ):
+        _parse_via_real_pipeline(source_path, tmp_path, monkeypatch, "doc-roll")
+
+    assert not parsed_dir.exists(), "rollback must still remove a partial parse"
