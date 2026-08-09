@@ -2,7 +2,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lightrag.utils import TruncatedResponse, use_llm_func_with_cache
+from lightrag.utils import (
+    TruncatedResponse,
+    is_truncated_response,
+    use_llm_func_with_cache,
+)
 
 
 class _FakeKVStorage:
@@ -98,6 +102,7 @@ async def test_use_llm_func_with_cache_skips_caching_truncated_response():
 
     # Content is returned to the caller for tolerant parsing/salvage...
     assert result == '{"entities":[{"name":"Ali'
+    assert is_truncated_response(result)
     # ...but nothing was written to the cache.
     assert cache._store == {}
     llm_func.assert_awaited_once()
@@ -136,6 +141,24 @@ async def test_use_llm_func_with_cache_truncated_response_is_not_reused():
     # only the complete second result is now persisted.
     assert llm_func.await_count == 2
     assert len(cache._store) == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_truncation_marker_survives_when_cache_is_disabled():
+    """Callers must observe truncation even without an extraction cache."""
+    llm_func = AsyncMock(
+        return_value=TruncatedResponse("<think>reasoning</think>Partial result")
+    )
+
+    result, _ = await use_llm_func_with_cache(
+        "extract prompt",
+        llm_func,
+        llm_response_cache=None,
+    )
+
+    assert result == "Partial result"
+    assert is_truncated_response(result)
 
 
 @pytest.mark.offline
