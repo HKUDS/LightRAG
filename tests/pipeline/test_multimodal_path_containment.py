@@ -1,0 +1,140 @@
+"""Sidecar image paths are contained to their own document directory.
+
+GHSA-8rgj-chc2-6chv. The ``path`` field of ``<doc>.drawings.json`` reaches
+``Path.read_bytes`` and then the VLM. Before this guard the resolver returned
+an absolute path unchanged and joined a relative one to ``sidecar_dir``
+without ``resolve()`` or ``is_relative_to()``, so ``/etc/hostname`` and
+``../../../tenantB/...`` both resolved and were read.
+
+The producer-side half of that advisory is already fixed: since df29b1a6 the
+native DOCX extractor carries an external relationship target in ``src``, and
+the sink reads only ``path``. This file guards the *sink*, which is what makes
+the property hold for sidecars this version did not write — an older version's,
+an external engine's, or one restored from backup. ``ReuseParser`` re-uses an
+existing sidecar on resume/retry instead of re-parsing, so those values are
+still reachable.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from lightrag.pipeline import _resolve_sidecar_image_path
+
+
+@pytest.fixture
+def sidecar_dir(tmp_path: Path) -> Path:
+    """A document's parsed dir, with one legitimately-placed asset."""
+    d = tmp_path / "ws" / "tenantA" / "__parsed__" / "report.docx.parsed"
+    assets = d / "report.blocks.assets"
+    assets.mkdir(parents=True)
+    (assets / "image1.png").write_bytes(b"\x89PNG\r\n\x1a\nLEGIT")
+    return d
+
+
+# --- fix proof --------------------------------------------------------------
+
+
+def test_absolute_path_outside_the_sidecar_is_refused(sidecar_dir, tmp_path):
+    """Pre-fix this returned the path unchanged: ``is_absolute()`` skipped the
+    join entirely and the bare ``exists()`` accepted it."""
+    victim = tmp_path / "victim_home" / "id_rsa_screenshot.png"
+    victim.parent.mkdir(parents=True)
+    victim.write_bytes(b"\x89PNG\r\n\x1a\nSECRET")
+
+    assert _resolve_sidecar_image_path(str(victim), sidecar_dir) is None
+
+
+def test_dotdot_escape_is_refused(sidecar_dir, tmp_path):
+    """The cross-tenant read from the advisory, laid out as DocumentManager
+    lays workspaces out. Pre-fix ``sidecar_dir / '../../..'`` was accepted
+    because ``/`` does not fold ``..`` and ``exists()`` follows it."""
+    tenant_b = (
+        tmp_path
+        / "ws"
+        / "tenantB"
+        / "__parsed__"
+        / "victim.docx.parsed"
+        / "victim.blocks.assets"
+    )
+    tenant_b.mkdir(parents=True)
+    (tenant_b / "image1.png").write_bytes(b"\x89PNG\r\n\x1a\nTENANT-B-CONFIDENTIAL")
+
+    traversal = (
+        "../../../tenantB/__parsed__/victim.docx.parsed/victim.blocks.assets/image1.png"
+    )
+    assert _resolve_sidecar_image_path(traversal, sidecar_dir) is None
+
+
+def test_absolute_path_to_a_non_image_is_refused(sidecar_dir, tmp_path):
+    """``/etc/hostname`` was accepted by the resolver and only rejected 29
+    lines later by the extension gate — which is why the Tier-1 existence
+    oracle was not limited to images. It must not resolve at all.
+
+    Uses a file this test creates rather than a real system path: on a host
+    where ``/etc/hostname`` is absent, ``exists()`` refuses it for the wrong
+    reason and the test would pass against the pre-fix resolver too.
+    """
+    target = tmp_path / "hostname"
+    target.write_text("victim-host\n")
+    assert _resolve_sidecar_image_path(str(target), sidecar_dir) is None
+
+
+# --- the legitimate case still works ---------------------------------------
+
+
+def test_asset_inside_the_document_directory_resolves(sidecar_dir):
+    resolved = _resolve_sidecar_image_path(
+        "report.blocks.assets/image1.png", sidecar_dir
+    )
+    assert resolved is not None
+    assert resolved.read_bytes() == b"\x89PNG\r\n\x1a\nLEGIT"
+
+
+def test_resolution_survives_a_symlinked_prefix(tmp_path):
+    """Both sides must be resolved, not just the candidate.
+
+    On macOS ``/tmp`` is a symlink to ``/private/tmp``; comparing a resolved
+    candidate against an unresolved ``sidecar_dir`` would refuse every
+    legitimate asset there. This pins that the check is symmetric.
+    """
+    real = tmp_path / "real" / "report.docx.parsed"
+    (real / "report.blocks.assets").mkdir(parents=True)
+    (real / "report.blocks.assets" / "image1.png").write_bytes(b"PNGDATA")
+
+    link = tmp_path / "linked"
+    link.symlink_to(tmp_path / "real", target_is_directory=True)
+
+    resolved = _resolve_sidecar_image_path(
+        "report.blocks.assets/image1.png", link / "report.docx.parsed"
+    )
+    assert resolved is not None
+    assert resolved.read_bytes() == b"PNGDATA"
+
+
+def test_missing_and_empty_values_are_refused(sidecar_dir):
+    assert _resolve_sidecar_image_path(None, sidecar_dir) is None
+    assert _resolve_sidecar_image_path("", sidecar_dir) is None
+    assert (
+        _resolve_sidecar_image_path("report.blocks.assets/absent.png", sidecar_dir)
+        is None
+    )
+
+
+def test_a_directory_inside_the_sidecar_is_not_a_file(sidecar_dir):
+    assert _resolve_sidecar_image_path("report.blocks.assets", sidecar_dir) is None
+
+
+def test_symlink_escaping_the_sidecar_is_refused(sidecar_dir, tmp_path):
+    """resolve() follows symlinks, so a link planted inside the asset dir
+    must be judged by where it points, not by where it sits."""
+    victim = tmp_path / "outside_secret.png"
+    victim.write_bytes(b"\x89PNG\r\n\x1a\nSECRET")
+    (sidecar_dir / "report.blocks.assets" / "escape.png").symlink_to(victim)
+
+    assert (
+        _resolve_sidecar_image_path("report.blocks.assets/escape.png", sidecar_dir)
+        is None
+    )

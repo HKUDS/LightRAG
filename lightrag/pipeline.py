@@ -305,6 +305,44 @@ def _vlm_image_budget_limits() -> tuple[int, int]:
     return max_image_bytes, min_image_pixel
 
 
+def _resolve_sidecar_image_path(path_str: str | None, sidecar_dir: Path) -> Path | None:
+    """Resolve a sidecar image reference, contained to ``sidecar_dir``.
+
+    The ``path`` field of ``<doc>.drawings.json`` is attacker-influenced data
+    at rest: a sidecar can be written by an older version, by an external
+    engine, or restored from a backup, and the value inside it originates in
+    an uploaded document. This resolver is the sink that turns it into a file
+    that gets read and sent to the VLM, so containment belongs here rather
+    than resting on every producer behaving (GHSA-8rgj-chc2-6chv).
+
+    A legitimate value is relative and names a file inside the document's own
+    ``<base>.blocks.assets/``. Anything that leaves ``sidecar_dir`` — an
+    absolute path, or ``../`` — resolves outside and is refused.
+
+    ``resolve()`` before the comparison, and on BOTH sides: it is what folds
+    ``..`` away (``Path.__truediv__`` does not) and what makes the check
+    correct when a symlink sits anywhere in the prefix — on macOS
+    ``/tmp`` → ``/private/tmp`` alone would otherwise fail every comparison.
+    Same ``resolve()`` + ``is_relative_to()`` idiom as ``sanitize_filename``
+    and ``validate_file_path_security`` in the API layer.
+    """
+    if not path_str:
+        return None
+    # An absolute path_str makes this yield path_str itself (pathlib
+    # semantics), which then fails containment — no separate branch needed.
+    candidate = (sidecar_dir / path_str).resolve()
+    try:
+        if not candidate.is_relative_to(sidecar_dir.resolve()):
+            return None
+    except OSError:
+        # resolve() touches the filesystem; an unreadable prefix is a refusal,
+        # never a pass.
+        return None
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
 @lru_cache(maxsize=64)
 def _warn_content_budget_structurally_starved(
     *,
@@ -6537,20 +6575,6 @@ class _PipelineMixin:
                 value = _normalize_text(surrounding.get(key))
                 return value or "n/a"
 
-            def _resolve_image_path(
-                path_str: str | None, sidecar_dir: Path
-            ) -> Path | None:
-                if not path_str:
-                    return None
-                candidate = Path(path_str)
-                if not candidate.is_absolute():
-                    sidecar_candidate = sidecar_dir / path_str
-                    if sidecar_candidate.exists() and sidecar_candidate.is_file():
-                        candidate = sidecar_candidate
-                if candidate.exists() and candidate.is_file():
-                    return candidate
-                return None
-
             def _failure_result(message: str) -> dict[str, Any]:
                 return {
                     "analyze_time": int(time.time()),
@@ -6571,7 +6595,7 @@ class _PipelineMixin:
                 path_str = (
                     item.get("path") or item.get("img_path") or item.get("image_path")
                 )
-                candidate = _resolve_image_path(path_str, sidecar_dir)
+                candidate = _resolve_sidecar_image_path(path_str, sidecar_dir)
                 if candidate is None:
                     return (
                         _skipped_result(f"image file not found: {path_str or 'n/a'}"),
