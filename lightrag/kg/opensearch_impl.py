@@ -4577,21 +4577,33 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         `mget` answers in request order, so consuming it in order preserves
         whatever ranking `candidate_ids` arrived in.
+
+        Asks for the current shortfall first and for the remainder only if that
+        did not fill it, so at most two round trips. Requesting the whole list
+        up front would fetch a document per candidate: filling the handful of
+        slots a few dangling ids vacated would pull the entire rest of the
+        ranked band, up to `limit` documents, to place a few nodes. On the
+        first (cutoff-sized) call the shortfall IS the whole list, so that one
+        stays a single mget.
         """
         if not candidate_ids or len(accepted) >= limit:
             return
 
-        resp = await self.client.mget(
-            index=self._nodes_index, body={"ids": candidate_ids}
-        )
-        for doc in resp["docs"]:
-            if len(accepted) >= limit:
+        head = candidate_ids[: limit - len(accepted)]
+        # Two chunks, never more: chunking per shortfall in a loop would degrade
+        # to a round trip per remaining slot when most of the band is dangling.
+        for chunk in (head, candidate_ids[len(head) :]):
+            if not chunk or len(accepted) >= limit:
                 break
-            if doc.get("found"):
-                accepted.append(doc["_id"])
-                result.nodes.append(
-                    self._construct_graph_node(doc["_id"], doc["_source"])
-                )
+            resp = await self.client.mget(index=self._nodes_index, body={"ids": chunk})
+            for doc in resp["docs"]:
+                if len(accepted) >= limit:
+                    break
+                if doc.get("found"):
+                    accepted.append(doc["_id"])
+                    result.nodes.append(
+                        self._construct_graph_node(doc["_id"], doc["_source"])
+                    )
 
     async def _append_edges_between_nodes(
         self, node_ids: list[str], result: KnowledgeGraph
