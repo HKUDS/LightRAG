@@ -62,8 +62,33 @@ def _limits() -> tuple[int, int, int, int, int]:
 
 
 _EOCD_SIG = b"PK\x05\x06"
+_EOCD64_LOCATOR_SIG = b"PK\x06\x07"
+_EOCD64_SIG = b"PK\x06\x06"
 # EOCD record (22 bytes) plus the largest possible trailing comment.
 _EOCD_SEARCH_WINDOW = 22 + 0xFFFF
+_EOCD64_LOCATOR_SIZE = 20
+# ``size_cd`` is the 32-bit field in the classic EOCD. This value there means
+# "the real size is in the ZIP64 record", NOT "the size is >= 4 GiB": a writer
+# may use ZIP64 proactively for a tiny archive, and CPython reads and accepts
+# it. So the sentinel is followed into the ZIP64 record, never treated as huge.
+_ZIP64_SENTINEL_32 = 0xFFFFFFFF
+
+
+def _read_slice(source: Path | bytes, offset: int, length: int) -> bytes | None:
+    """Read ``length`` bytes at absolute ``offset``, or None if unavailable."""
+    if offset < 0:
+        return None
+    if isinstance(source, bytes):
+        if offset + length > len(source):
+            return None
+        return source[offset : offset + length]
+    try:
+        with source.open("rb") as fh:
+            fh.seek(offset)
+            data = fh.read(length)
+    except OSError:
+        return None
+    return data if len(data) == length else None
 
 
 def _declared_central_directory_bytes(source: Path | bytes) -> int | None:
@@ -83,6 +108,10 @@ def _declared_central_directory_bytes(source: Path | bytes) -> int | None:
     it makes ZipFile walk fewer bytes and see fewer members, i.e. the attack
     failing rather than succeeding.
 
+    When the classic field holds the ZIP64 sentinel, the real ``size_cd`` is
+    followed into the ZIP64 EOCD record via its locator, because that value
+    can legitimately be small — a sentinel is NOT proof of a 4 GiB directory.
+
     Returns ``None`` when the record cannot be found or read. That is
     deliberately fail-OPEN: this is a fast pre-filter in front of the
     authoritative checks below, so a parsing failure here must cost a
@@ -91,13 +120,16 @@ def _declared_central_directory_bytes(source: Path | bytes) -> int | None:
     """
     try:
         if isinstance(source, bytes):
+            total_size = len(source)
             tail = source[-_EOCD_SEARCH_WINDOW:]
+            tail_start = max(0, total_size - len(tail))
         else:
-            size = source.stat().st_size
+            total_size = source.stat().st_size
             with source.open("rb") as fh:
-                if size > _EOCD_SEARCH_WINDOW:
+                if total_size > _EOCD_SEARCH_WINDOW:
                     fh.seek(-_EOCD_SEARCH_WINDOW, io.SEEK_END)
                 tail = fh.read()
+            tail_start = max(0, total_size - len(tail))
     except OSError:
         return None
 
@@ -106,9 +138,30 @@ def _declared_central_directory_bytes(source: Path | bytes) -> int | None:
         return None
     # EOCD layout: sig(4) disk(2) cd_disk(2) this_disk_entries(2)
     #              total_entries(2) size_cd(4) ...  → size_cd at offset 12.
-    # 0xFFFFFFFF is the ZIP64 sentinel: the real size lives in the ZIP64
-    # record and is >= 4 GiB, so it is over any sane budget either way.
-    return int.from_bytes(tail[marker + 12 : marker + 16], "little")
+    size_cd = int.from_bytes(tail[marker + 12 : marker + 16], "little")
+    if size_cd != _ZIP64_SENTINEL_32:
+        return size_cd
+
+    # ZIP64: the locator sits immediately before the classic EOCD and points
+    # at the ZIP64 EOCD record (which carries the real 8-byte size_cd). A
+    # signature mismatch anywhere here — including the concatenated-archive
+    # case, where the recorded offset is shifted — falls through to fail-open.
+    loc = marker - _EOCD64_LOCATOR_SIZE
+    if loc < 0 or tail[loc : loc + 4] != _EOCD64_LOCATOR_SIG:
+        return None
+    # locator: sig(4) disk(4) z64_eocd_offset(8) total_disks(4)
+    z64_offset = int.from_bytes(tail[loc + 8 : loc + 16], "little")
+    # Prefer the copy already in the tail; only re-read for a far-back record.
+    if z64_offset >= tail_start:
+        rec = tail[z64_offset - tail_start : z64_offset - tail_start + 56]
+    else:
+        rec = _read_slice(source, z64_offset, 56)
+    if rec is None or len(rec) < 48 or rec[:4] != _EOCD64_SIG:
+        return None
+    # ZIP64 EOCD record: sig(4) rec_size(8) vmade(2) vneed(2) disk(4)
+    #   cd_disk(4) entries_disk(8) total_entries(8) size_cd(8) ...
+    #   → size_cd at offset 40.
+    return int.from_bytes(rec[40:48], "little")
 
 
 def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> None:

@@ -627,3 +627,88 @@ def test_cancel_during_validation_does_not_destroy_a_prior_sidecar(
     assert not reached_extract.is_set(), "abandoned worker continued into extraction"
     assert parsed_dir.is_dir()
     assert sorted(p.name for p in parsed_dir.iterdir()) == survivors
+
+
+# --- ZIP64: a proactive-ZIP64 small archive must not be mistaken for huge ---
+
+
+def _make_zip64(path: Path, *, forged_size_cd: int | None = None) -> Path:
+    """Write a tiny archive whose classic EOCD uses the ZIP64 sentinel.
+
+    Some writers use ZIP64 proactively for small archives, and CPython reads
+    and accepts them. ``forged_size_cd`` overrides the ZIP64 record's declared
+    central-directory size to simulate a large one without materializing it.
+    """
+    body = io.BytesIO()
+    with zipfile.ZipFile(body, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        zf.writestr("_rels/.rels", _ROOT_RELS)
+        zf.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+            'wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
+        )
+    raw = bytearray(body.getvalue())
+    m = raw.rfind(b"PK\x05\x06")
+    _disk, _cddisk, this_e, tot_e = struct.unpack_from("<HHHH", raw, m + 4)
+    size_cd, off_cd = struct.unpack_from("<II", raw, m + 12)
+    real_size_cd = forged_size_cd if forged_size_cd is not None else size_cd
+    z64eocd = struct.pack(
+        "<IQHHIIQQQQ",
+        0x06064B50,
+        44,
+        45,
+        45,
+        0,
+        0,
+        this_e,
+        tot_e,
+        real_size_cd,
+        off_cd,
+    )
+    locator = struct.pack("<IIQI", 0x07064B50, 0, m, 1)
+    classic = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    )
+    path.write_bytes(raw[:m] + z64eocd + locator + classic)
+    return path
+
+
+def test_small_proactive_zip64_is_not_refused(tmp_path):
+    """A ZIP64 archive with a tiny central directory: the classic EOCD holds
+    the 0xFFFFFFFF sentinel, but the real size is small and CPython accepts it.
+    Treating the sentinel as "huge" would refuse a legitimate document."""
+    from lightrag.parser.docx.zip_budget import _declared_central_directory_bytes
+
+    src = _make_zip64(tmp_path / "z64.docx")
+    # It is a real, readable archive.
+    assert len(zipfile.ZipFile(src).infolist()) == 3
+    # The classic field is the sentinel; the resolved value is the real size.
+    raw = src.read_bytes()
+    m = raw.rfind(b"PK\x05\x06")
+    assert struct.unpack_from("<I", raw, m + 12)[0] == 0xFFFFFFFF
+    resolved = _declared_central_directory_bytes(src)
+    assert resolved is not None and 0 < resolved < 4096
+    # And it is admitted, via path and via bytes.
+    enforce_docx_decompression_budget(src, "z64.docx")
+    enforce_docx_decompression_budget(src.read_bytes(), "z64.docx")
+
+
+def test_zip64_with_a_large_declared_central_directory_is_refused(tmp_path):
+    """The DoS path still closes for ZIP64: a large size_cd in the ZIP64
+    record is read and refused without opening the archive."""
+    src = _make_zip64(tmp_path / "z64big.docx", forged_size_cd=100 * 1024 * 1024)
+
+    def _explode(*args, **kwargs):  # pragma: no cover - only on regression
+        raise AssertionError("ZIP64 refusal opened the central directory")
+
+    import lightrag.parser.docx.zip_budget as zb
+
+    orig = zb.zipfile.ZipFile
+    try:
+        zb.zipfile.ZipFile = _explode
+        with pytest.raises(DocxDecompressionBudgetError) as exc:
+            enforce_docx_decompression_budget(src, "z64big.docx")
+    finally:
+        zb.zipfile.ZipFile = orig
+    assert "central directory" in str(exc.value)
