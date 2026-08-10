@@ -305,12 +305,22 @@ class NativeParserBase(BaseParser):
         asset_dir = parsed_dir / f"{base_name}.blocks.assets"
 
         # Whether _extract_sync got as far as replacing parsed_dir. Written in
-        # the executor thread, read here after the await, so the future's
-        # completion is the happens-before edge. It exists because the two
-        # failure modes need opposite handling: once the directory is being
+        # the executor thread, read here after the await. It exists because the
+        # two failure modes need opposite handling: once the directory is being
         # replaced a failure must roll it back, but a refusal that happens
         # BEFORE that must leave the previous attempt's sidecar alone.
+        #
+        # For normal completion the future's completion is the happens-before
+        # edge, but a CANCELLED future completes while the worker thread is
+        # still running — so the checkpoint's {read events, set flag} and the
+        # coroutine's {set cancel_event, read flag} race. cleanup_lock makes
+        # each of those a critical section: the coroutine either sees
+        # cleanup_started before the worker commits to the rmtree (and rolls
+        # back) or the worker sees the cancel event at the checkpoint (and
+        # never starts). Both sections are pure in-memory work, so holding the
+        # lock never blocks on I/O.
         cleanup_started = False
+        cleanup_lock = threading.Lock()
 
         def _extract_sync():
             nonlocal cleanup_started
@@ -326,17 +336,30 @@ class NativeParserBase(BaseParser):
             # delete a complete sidecar from an earlier parse and leave a
             # partial one behind, after the coroutine has already returned.
             # The source is gone from INPUT_DIR by then, so that is not
-            # recoverable. Racy by nature (the flag may be set just after this
-            # reads it), but it removes the window that is actually wide: the
-            # whole of validate_source_blocking.
-            pipeline_cancelled = getattr(ctx, "pipeline_cancel_event", None)
-            if cancel_event.is_set() or (
-                pipeline_cancelled is not None and pipeline_cancelled.is_set()
-            ):
-                raise asyncio.CancelledError(
-                    f"parse cancelled before extraction: {ctx.file_path}"
-                )
-            cleanup_started = True
+            # recoverable.
+            #
+            # Raise LLMBridgePipelineCancelled, NOT asyncio.CancelledError:
+            # the pipeline-level cancel (_watch_pipeline_cancellation) only
+            # SETS ctx.pipeline_cancel_event, it never cancels the worker task,
+            # so a CancelledError raised here would be set on a live, un-
+            # cancelled future and re-raised into _parse_worker as a
+            # BaseException that matches neither of its except clauses — the
+            # doc would strand in PARSING and, if every worker died this way,
+            # wedge the batch on q.join() with busy=True. LLMBridgePipelineCancelled
+            # is the repo-wide "blocking parse wait was cancelled" signal that
+            # _parse_worker catches to mark the doc cancelled. In the task-
+            # cancel case the future is already cancelled, so awaiting it raises
+            # CancelledError regardless of what the worker raised — one uniform
+            # raise covers both.
+            pipeline_cancelled = ctx.pipeline_cancel_event
+            with cleanup_lock:
+                if cancel_event.is_set() or (
+                    pipeline_cancelled is not None and pipeline_cancelled.is_set()
+                ):
+                    raise LLMBridgePipelineCancelled(
+                        f"parse cancelled before extraction: {ctx.file_path}"
+                    )
+                cleanup_started = True
             # Pre-clean parsed_dir and pre-create asset_dir so the extractor
             # can write image bytes BEFORE write_sidecar (clean_parsed_dir=False
             # then keeps them). parsed_artifact_dir_for returns a unique dir per
@@ -381,8 +404,18 @@ class NativeParserBase(BaseParser):
             # deleting parsed_dir for it would destroy a COMPLETE sidecar from
             # an earlier successful parse — one a persisted sidecar_location
             # still points at, which the reuse path then cannot resolve.
-            cancel_event.set()
-            if cleanup_started and parsed_dir.exists():
+            #
+            # Take cleanup_lock around {set cancel_event, read cleanup_started}
+            # so it interlocks with the worker's checkpoint (see cleanup_lock
+            # above): on a cancelled future the worker is still running, and
+            # without this the coroutine could read cleanup_started=False and
+            # skip the rollback while the worker goes on to set the flag and
+            # rmtree the prior complete sidecar. Snapshot the flag inside the
+            # lock, do the I/O outside it.
+            with cleanup_lock:
+                cancel_event.set()
+                should_roll_back = cleanup_started
+            if should_roll_back and parsed_dir.exists():
                 shutil.rmtree(parsed_dir, ignore_errors=True)
             raise
         if not blocks:

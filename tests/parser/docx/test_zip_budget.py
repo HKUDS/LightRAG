@@ -511,3 +511,70 @@ def test_cancel_during_validation_does_not_destroy_a_prior_sidecar(
     assert not reached_extract.is_set(), "abandoned worker continued into extraction"
     assert parsed_dir.is_dir()
     assert sorted(p.name for p in parsed_dir.iterdir()) == survivors
+
+
+def test_pipeline_cancel_event_raises_the_catchable_cancel_type(
+    tmp_path, monkeypatch
+):
+    """The checkpoint must raise LLMBridgePipelineCancelled, not CancelledError.
+
+    The production cancel path (_watch_pipeline_cancellation) only SETS
+    ctx.pipeline_cancel_event; it never cancels the worker task. So the future
+    stays live and the coroutine re-raises whatever the worker raised. A
+    CancelledError there is a BaseException the parse worker's ``except
+    (PipelineCancelledException, LLMBridgePipelineCancelled)`` / ``except
+    Exception`` clauses both miss — the doc strands in PARSING and the worker
+    task dies. This is the branch the shipped test does not cover: it uses
+    ``task.cancel()``, where the future is already cancelled so awaiting it
+    raises CancelledError regardless of the inner exception, hiding the type.
+
+    Fix-proof: on the pre-fix code the worker raises asyncio.CancelledError and
+    this ``pytest.raises(LLMBridgePipelineCancelled)`` fails behaviorally.
+    """
+    import asyncio
+    import threading
+    import time
+    from unittest import mock
+
+    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.parser.base import ParseContext
+    from lightrag.parser.debug import build_debug_rag
+    from lightrag.parser.llm_bridge import LLMBridgePipelineCancelled
+    from lightrag.parser.registry import get_parser
+
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+    _benign(source_path)
+
+    pipeline_cancel_event = threading.Event()
+    entered = threading.Event()
+
+    def _slow_validate(self, source, file_path):
+        entered.set()
+        # Wait until the coroutine has set the pipeline cancel event, so the
+        # checkpoint below sees it — WITHOUT the task itself being cancelled.
+        for _ in range(1000):
+            if pipeline_cancel_event.is_set():
+                return
+            time.sleep(0.005)
+
+    async def _run():
+        with mock.patch.object(
+            NativeDocxParser, "validate_source_blocking", _slow_validate
+        ):
+            ctx = ParseContext(
+                build_debug_rag(),
+                "doc-cancel-event",
+                str(source_path),
+                {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            )
+            ctx.pipeline_cancel_event = pipeline_cancel_event
+            task = asyncio.create_task(get_parser("native").parse(ctx))
+            await asyncio.to_thread(entered.wait, 5)
+            pipeline_cancel_event.set()  # production cancel: set, do NOT cancel
+            with pytest.raises(LLMBridgePipelineCancelled):
+                await task
+
+    asyncio.run(_run())
