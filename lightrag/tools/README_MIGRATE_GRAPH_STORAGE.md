@@ -149,14 +149,30 @@ Property comparison is type-strict: `1`, `1.0`, `True` and `"1"` are four
 different values, and `-0.0` differs from `0.0` — all are distinguishable
 downstream.
 
-**What `verified` claims.** Node and edge identity, payloads, and cardinality
-all came across: every source construct that would have collapsed is refused
-before the write rather than migrated and blessed. Two caveats it does not
-cover: byte-identical same-direction parallel relationships (invisible behind
-AGE's `SELECT DISTINCT`, see above), and payload keys named `id`, `source` or
-`target`, which `PGGraphStorage`'s enumerator overwrites with identity values
-before this tool ever sees the row — a business property under one of those
-names is already gone upstream.
+**What `verified` claims — and what it cannot.** The tool only ever sees what
+the source's `get_all_nodes` / `get_all_edges` return, so its claim is scoped
+to that enumerated view: **every node and edge the enumerator returned came
+across with its identity, its payload, and its count intact.** Within that
+view nothing silently collapses — reciprocals and duplicate ids are refused
+before the write rather than merged and blessed.
+
+`verified` does **not** prove that the physical AGE graph was reproduced. Two
+things are already lost or hidden before this tool is handed a row:
+
+- **Physical multiplicity.** AGE enumerates with `SELECT DISTINCT source,
+  target, properties`, so two byte-identical relationships between the same
+  ordered pair arrive as one row. AGE's own degree counts relationship rows, so
+  such a source has degree 2 where the target will have 1 — and `verified` will
+  still be true, because both sides match the one row the enumerator showed.
+  Reading raw multiplicity would mean going around the storage API, which this
+  tool deliberately does not do.
+- **Payload keys named `id`, `source` or `target`.** `PGGraphStorage`'s
+  enumerator overwrites them with identity values when flattening each row, so
+  a business property under one of those names is gone upstream and no
+  comparison here can notice.
+
+If exact physical fidelity matters for your graph, check for duplicate
+relationships directly in the AGE tables before migrating.
 
 ## If a write fails
 
