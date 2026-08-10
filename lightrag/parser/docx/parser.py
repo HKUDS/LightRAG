@@ -76,14 +76,15 @@ class NativeDocxParser(NativeParserBase):
         )
         from lightrag.parser.docx.parse_document import extract_docx_blocks
 
+        warnings: dict[str, Any] = {}
         ctx = DrawingExtractionContext(
             docx_path=source,
             blocks_output_path=parsed_dir / f"{base_name}.blocks.jsonl",
             export_dir_name=asset_dir.name,
             export_dir_path=asset_dir,
+            parse_warnings=warnings,
         )
         load_relationships(ctx)
-        warnings: dict[str, Any] = {}
         metadata: dict[str, Any] = {}
         blocks = extract_docx_blocks(
             str(source),
