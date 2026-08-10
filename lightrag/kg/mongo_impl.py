@@ -2619,6 +2619,83 @@ class MongoGraphStorage(BaseGraphStorage):
             docs_by_id[str(doc["_id"])] = doc
         return [docs_by_id[node_id] for node_id in node_ids if node_id in docs_by_id]
 
+    async def _rank_edge_endpoints_by_degree(
+        self, limit: int, skip: int = 0
+    ) -> list[str]:
+        """Rank edge endpoints by undirected degree, ties on the label ascending.
+
+        Paged rather than fetched whole because the ``$limit`` runs server-side:
+        the caller cannot tell how many of a page really have node documents
+        until it has fetched them, so it needs a way to ask for the next ones.
+        The sort is a TOTAL order -- degree descending, then the unique ``_id``
+        -- which is what makes ``$skip`` paging over it stable across passes.
+        """
+        if limit <= 0:
+            return []
+
+        pipeline: list[dict[str, Any]] = [
+            {"$project": {"source_node_id": 1, "_id": 0}},
+            {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
+            {
+                "$unionWith": {
+                    "coll": self._edge_collection_name,
+                    "pipeline": [
+                        {"$project": {"target_node_id": 1, "_id": 0}},
+                        {
+                            "$group": {
+                                "_id": "$target_node_id",
+                                "degree": {"$sum": 1},
+                            }
+                        },
+                    ],
+                }
+            },
+            {"$group": {"_id": "$_id", "degree": {"$sum": "$degree"}}},
+            # Degree descending, then label ascending. The tie-break is the
+            # BaseGraphStorage contract: $limit cuts a band of equal-degree
+            # entities, and without a second sort key which ones survive is
+            # whatever order the aggregation happens to emit.
+            {"$sort": {"degree": -1, "_id": 1}},
+        ]
+        if skip:
+            pipeline.append({"$skip": skip})
+        pipeline.append({"$limit": limit})
+
+        cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
+        return [str(doc["_id"]) async for doc in cursor]
+
+    async def _accept_existing_nodes(
+        self,
+        candidate_ids: list[str],
+        limit: int,
+        result: KnowledgeGraph,
+        accepted: list[str],
+    ) -> None:
+        """Append the candidates that really have node documents, up to `limit`.
+
+        ``_fetch_nodes_by_ids`` preserves the requested order and drops ids with
+        no document, so consuming it in order preserves the ranking and never
+        lets an id that resolves to nothing occupy a slot.
+
+        Asks for the current shortfall first and for the remainder only if that
+        did not fill it, so at most two queries: the caller passes whole ranked
+        pages, and filling the handful of slots a few dangling ids vacated must
+        not pull a page of node documents to place a few nodes.
+        """
+        if not candidate_ids or len(accepted) >= limit:
+            return
+
+        head = candidate_ids[: limit - len(accepted)]
+        for chunk in (head, candidate_ids[len(head) :]):
+            if not chunk or len(accepted) >= limit:
+                break
+            docs = await self._fetch_nodes_by_ids(chunk, {"source_ids": 0})
+            for doc in docs:
+                if len(accepted) >= limit:
+                    break
+                accepted.append(str(doc["_id"]))
+                result.nodes.append(self._construct_graph_node(doc["_id"], doc))
+
     async def get_knowledge_graph_all_by_degree(
         self, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
@@ -2633,49 +2710,65 @@ class MongoGraphStorage(BaseGraphStorage):
 
         result.is_truncated = total_node_count > max_nodes
         if result.is_truncated:
-            # Get all node_ids ranked by degree if max_nodes exceeds total node count
-            pipeline = [
-                {"$project": {"source_node_id": 1, "_id": 0}},
-                {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
-                {
-                    "$unionWith": {
-                        "coll": self._edge_collection_name,
-                        "pipeline": [
-                            {"$project": {"target_node_id": 1, "_id": 0}},
-                            {
-                                "$group": {
-                                    "_id": "$target_node_id",
-                                    "degree": {"$sum": 1},
-                                }
-                            },
-                        ],
-                    }
-                },
-                {"$group": {"_id": "$_id", "degree": {"$sum": "$degree"}}},
-                {"$sort": {"degree": -1}},
-                {"$limit": max_nodes},
-            ]
-            cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
-
-            node_ids = []
-            async for doc in cursor:
-                node_id = str(doc["_id"])
-                node_ids.append(node_id)
+            # The ranked ids are edge ENDPOINTS, and upsert_edge only guarantees
+            # the source node exists, so one can be a dangling id with no node
+            # document -- a legacy state this backend deliberately tolerates
+            # (see the traversal, which counts only documents it actually read).
+            # Taking the $limit as final let such an id consume a slot and the
+            # answer came back short, reachable as soon as ties break on the
+            # label because a dangling label sorts like any other.
+            # Page the band until the cap fills or the band runs out, so a
+            # vacated slot always goes to the next-ranked entry. The loop is
+            # what keeps the top-up below meaning what it says: it is reachable
+            # only once every edge-backed entity has been offered a slot, so
+            # everything it can still pick really is degree-0. Stopping earlier
+            # would let an isolate outrank an entity further down the band --
+            # only ONE dangling id in this page plus one in the next is enough
+            # to reach that, so it is not a corner.
+            #
+            # Whole pages, not shortfall-sized ones: a page is {_id, degree}
+            # rows, cheap next to the aggregation that produces it, so each
+            # extra pass should make as much progress as it can. The document
+            # fetch inside _accept_existing_nodes stays shortfall-sized.
+            node_ids: list[str] = []
+            skip = 0
+            while len(node_ids) < max_nodes:
+                ranked_page = await self._rank_edge_endpoints_by_degree(
+                    max_nodes, skip=skip
+                )
+                skip += len(ranked_page)
+                await self._accept_existing_nodes(
+                    ranked_page, max_nodes, result, node_ids
+                )
+                if len(ranked_page) < max_nodes:
+                    break  # short page: the band is exhausted
 
             if len(node_ids) < max_nodes:
+                # Top up from the isolated (degree-0) entities, in label order
+                # for the same reason the ranking above breaks ties on the
+                # label: an unordered `find` handed the shortfall to whichever
+                # documents the collection scan reached first. These come from
+                # the node collection, so they exist by construction and are
+                # appended directly. list(node_ids), not node_ids: the cursor is
+                # consumed while appending to the same list, and a live
+                # reference makes the $nin filter depend on when it serializes.
                 remaining = max_nodes - len(node_ids)
-                cursor = self.collection.find(
-                    {"_id": {"$nin": node_ids}},
-                    {"source_ids": 0},
-                ).limit(remaining)
+                cursor = (
+                    self.collection.find(
+                        {"_id": {"$nin": list(node_ids)}},
+                        {"source_ids": 0},
+                    )
+                    .sort("_id", 1)
+                    .limit(remaining)
+                )
                 async for doc in cursor:
                     node_ids.append(str(doc["_id"]))
+                    result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
-            docs = await self._fetch_nodes_by_ids(node_ids, {"source_ids": 0})
-            for doc in docs:
-                result.nodes.append(self._construct_graph_node(doc["_id"], doc))
-
-            # As node count reaches the limit, only need to fetch the edges that directly connect to these nodes
+            # As node count reaches the limit, only need to fetch the edges that
+            # directly connect to these nodes. Filtered on the RESOLVED ids: a
+            # dangling endpoint left in here would surface an edge pointing at a
+            # node the response does not contain.
             edge_cursor = self.edge_collection.find(
                 {
                     "$and": [
@@ -2689,7 +2782,6 @@ class MongoGraphStorage(BaseGraphStorage):
             cursor = self.collection.find({}, {"source_ids": 0})
 
             async for doc in cursor:
-                node_id = str(doc["_id"])
                 result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
             edge_cursor = self.edge_collection.find({})

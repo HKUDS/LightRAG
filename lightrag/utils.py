@@ -261,6 +261,57 @@ def parse_optional_float(raw: str | None) -> float | None:
     return value
 
 
+def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
+    """
+    Validate file path security to prevent Path Traversal attacks.
+
+    Args:
+        file_path_str: The file path string to validate
+        base_dir: The base directory that the file must be within
+
+    Returns:
+        Path: Safe file path (resolved, contained to ``base_dir``) if valid;
+            None if unsafe, malformed, or unresolvable. Does NOT check
+            existence — a returned path is guaranteed inside ``base_dir`` but
+            may not exist; the caller decides what "inside but absent" means.
+    """
+    if not file_path_str or not file_path_str.strip():
+        return None
+
+    try:
+        # Clean the file path string
+        clean_path_str = file_path_str.strip()
+
+        # Check for obvious path traversal patterns before processing
+        # This catches both Unix (..) and Windows (..\) style traversals
+        if ".." in clean_path_str:
+            # Additional check for Windows-style backslash traversal
+            if (
+                "\\..\\" in clean_path_str
+                or clean_path_str.startswith("..\\")
+                or clean_path_str.endswith("\\..")
+            ):
+                return None
+
+        # Normalize path separators (convert backslashes to forward slashes)
+        # This helps handle Windows-style paths on Unix systems
+        normalized_path = clean_path_str.replace("\\", "/")
+
+        # Create path object and resolve it (handles symlinks and relative paths)
+        candidate_path = (base_dir / normalized_path).resolve()
+        base_dir_resolved = base_dir.resolve()
+
+        # Check if the resolved path is within the base directory
+        if not candidate_path.is_relative_to(base_dir_resolved):
+            return None
+
+        return candidate_path
+
+    except Exception as e:
+        logger.warning(f"Invalid file path detected: {file_path_str} - {str(e)}")
+        return None
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:

@@ -109,12 +109,47 @@ async def test_degree_selection_sql_is_undirected_and_preserves_isolated():
     # Isolated nodes preserved.
     assert "LEFT JOIN" in sql
     assert "COALESCE" in sql
-    # Stable ordering with id tie-break.
+    # Ranked by degree, ties on the vertex id (see the deviation test below).
     assert "ORDER BY degree DESC" in sql
     assert "v.id ASC" in sql
     # The old outgoing-only Cypher must be gone.
     assert "-[r]->()" not in sql
     assert "OPTIONAL MATCH (n)-[r]->()" not in sql
+
+
+@pytest.mark.asyncio
+async def test_degree_selection_keeps_the_index_only_vertex_scan():
+    """Documented deviation from the BaseGraphStorage tie-break, pinned here so
+    it stays a deliberate choice rather than drift.
+
+    The contract breaks equal-degree ties on the LABEL. This backend breaks them
+    on ``v.id`` because selecting only ``v.id`` is what lets the vertex scan stay
+    index-only: the label lives in the vertex ``properties``, and ordering on it
+    forces a full heap read (~1.5x buffers, ~25% wall clock on a 200k-vertex /
+    600k-edge graph). No index removes that -- the ORDER BY leads with an
+    aggregate computed from the edge table, so nothing can supply the ordering.
+
+    The accepted cost: ``v.id`` is an insertion counter, so this view is stable
+    for one database but still varies with ingestion order across databases
+    holding the same graph.
+    """
+    capture = _QueryCapture(
+        total_nodes=99,
+        degree_rows=[{"node_id": 1, "degree": 1}, {"node_id": 2, "degree": 1}],
+        subgraph_rows=[{"a": _node(1, "Alice"), "r": None, "b": None}],
+    )
+    storage = make_graph_storage()
+
+    with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
+        await storage.get_knowledge_graph("*", max_nodes=2)
+
+    sql = " ".join(capture.degree_sql.split())
+    assert "ORDER BY degree DESC, v.id ASC" in sql, sql
+    # The point of the deviation: the vertex properties are never read, so the
+    # scan can be served from the id index alone. Projecting the entity_id --
+    # even only to sort on it -- is what would cost the heap visit.
+    assert "properties" not in sql, sql
+    assert "agtype_access_operator" not in sql, sql
 
 
 @pytest.mark.asyncio
