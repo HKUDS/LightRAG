@@ -13,6 +13,12 @@ the property hold for sidecars this version did not write — an older version's
 an external engine's, or one restored from backup. ``ReuseParser`` re-uses an
 existing sidecar on resume/retry instead of re-parsing, so those values are
 still reachable.
+
+The resolver returns ``(path, outcome)``: RESOLVED (a real contained file),
+REFUSED (containment / malformed / non-string — never read), or MISSING
+(contained but no such file). REFUSED and MISSING must stay distinct so a
+legacy absolute path (a file that DOES exist, outside the doc dir) is not
+mis-reported to the operator as "not found".
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from lightrag.pipeline import _resolve_sidecar_image_path
+from lightrag.pipeline import _SidecarPathOutcome, _resolve_sidecar_image_path
 
 
 @pytest.fixture
@@ -44,7 +50,9 @@ def test_absolute_path_outside_the_sidecar_is_refused(sidecar_dir, tmp_path):
     victim.parent.mkdir(parents=True)
     victim.write_bytes(b"\x89PNG\r\n\x1a\nSECRET")
 
-    assert _resolve_sidecar_image_path(str(victim), sidecar_dir) is None
+    path, outcome = _resolve_sidecar_image_path(str(victim), sidecar_dir)
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
 
 
 def test_dotdot_escape_is_refused(sidecar_dir, tmp_path):
@@ -65,7 +73,9 @@ def test_dotdot_escape_is_refused(sidecar_dir, tmp_path):
     traversal = (
         "../../../tenantB/__parsed__/victim.docx.parsed/victim.blocks.assets/image1.png"
     )
-    assert _resolve_sidecar_image_path(traversal, sidecar_dir) is None
+    path, outcome = _resolve_sidecar_image_path(traversal, sidecar_dir)
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
 
 
 def test_absolute_path_to_a_non_image_is_refused(sidecar_dir, tmp_path):
@@ -79,16 +89,31 @@ def test_absolute_path_to_a_non_image_is_refused(sidecar_dir, tmp_path):
     """
     target = tmp_path / "hostname"
     target.write_text("victim-host\n")
-    assert _resolve_sidecar_image_path(str(target), sidecar_dir) is None
+    path, outcome = _resolve_sidecar_image_path(str(target), sidecar_dir)
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
+
+
+def test_non_string_path_value_is_refused_not_raised(sidecar_dir):
+    """A sidecar carrying ``"path": 123`` (or a list) must be refused, not
+    raise. The caller's ``item.get("path") or ...`` chain passes any truthy
+    JSON type through; ``sidecar_dir / 123`` raises TypeError, which — before
+    the guard — escaped the resolver, hit the fail-fast wait loop, and marked
+    the whole document FAILED instead of skipping one image."""
+    for bad in (123, ["x"], {"a": 1}, 3.5, True):
+        path, outcome = _resolve_sidecar_image_path(bad, sidecar_dir)
+        assert path is None
+        assert outcome is _SidecarPathOutcome.REFUSED
 
 
 # --- the legitimate case still works ---------------------------------------
 
 
 def test_asset_inside_the_document_directory_resolves(sidecar_dir):
-    resolved = _resolve_sidecar_image_path(
+    resolved, outcome = _resolve_sidecar_image_path(
         "report.blocks.assets/image1.png", sidecar_dir
     )
+    assert outcome is _SidecarPathOutcome.RESOLVED
     assert resolved is not None
     assert resolved.read_bytes() == b"\x89PNG\r\n\x1a\nLEGIT"
 
@@ -107,24 +132,44 @@ def test_resolution_survives_a_symlinked_prefix(tmp_path):
     link = tmp_path / "linked"
     link.symlink_to(tmp_path / "real", target_is_directory=True)
 
-    resolved = _resolve_sidecar_image_path(
+    resolved, outcome = _resolve_sidecar_image_path(
         "report.blocks.assets/image1.png", link / "report.docx.parsed"
     )
+    assert outcome is _SidecarPathOutcome.RESOLVED
     assert resolved is not None
     assert resolved.read_bytes() == b"PNGDATA"
 
 
+# --- refused vs missing must stay distinct ---------------------------------
+
+
 def test_missing_and_empty_values_are_refused(sidecar_dir):
-    assert _resolve_sidecar_image_path(None, sidecar_dir) is None
-    assert _resolve_sidecar_image_path("", sidecar_dir) is None
-    assert (
-        _resolve_sidecar_image_path("report.blocks.assets/absent.png", sidecar_dir)
-        is None
+    # None / "" are not usable references at all → REFUSED.
+    assert _resolve_sidecar_image_path(None, sidecar_dir) == (
+        None,
+        _SidecarPathOutcome.REFUSED,
+    )
+    assert _resolve_sidecar_image_path("", sidecar_dir) == (
+        None,
+        _SidecarPathOutcome.REFUSED,
     )
 
 
+def test_a_contained_but_absent_file_is_missing_not_refused(sidecar_dir):
+    """A relative reference that resolves INSIDE the dir but names no file is
+    MISSING — the honest "image file not found". This is what must stay apart
+    from a containment refusal so the operator message is accurate."""
+    path, outcome = _resolve_sidecar_image_path(
+        "report.blocks.assets/absent.png", sidecar_dir
+    )
+    assert path is None
+    assert outcome is _SidecarPathOutcome.MISSING
+
+
 def test_a_directory_inside_the_sidecar_is_not_a_file(sidecar_dir):
-    assert _resolve_sidecar_image_path("report.blocks.assets", sidecar_dir) is None
+    path, outcome = _resolve_sidecar_image_path("report.blocks.assets", sidecar_dir)
+    assert path is None
+    assert outcome is _SidecarPathOutcome.MISSING
 
 
 def test_symlink_escaping_the_sidecar_is_refused(sidecar_dir, tmp_path):
@@ -134,10 +179,11 @@ def test_symlink_escaping_the_sidecar_is_refused(sidecar_dir, tmp_path):
     victim.write_bytes(b"\x89PNG\r\n\x1a\nSECRET")
     (sidecar_dir / "report.blocks.assets" / "escape.png").symlink_to(victim)
 
-    assert (
-        _resolve_sidecar_image_path("report.blocks.assets/escape.png", sidecar_dir)
-        is None
+    path, outcome = _resolve_sidecar_image_path(
+        "report.blocks.assets/escape.png", sidecar_dir
     )
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
 
 
 # --- a malformed reference is skipped, never a failed document -------------
@@ -151,11 +197,12 @@ def test_symlink_escaping_the_sidecar_is_refused(sidecar_dir, tmp_path):
 
 def test_embedded_nul_is_skipped_not_raised(sidecar_dir):
     # Path.resolve() raises ValueError("embedded null character") here;
-    # the pre-containment exists() answered False.
-    assert (
-        _resolve_sidecar_image_path("report.blocks.assets/a\x00b.png", sidecar_dir)
-        is None
+    # the shared helper catches it and returns None → REFUSED.
+    path, outcome = _resolve_sidecar_image_path(
+        "report.blocks.assets/a\x00b.png", sidecar_dir
     )
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
 
 
 def test_symlink_loop_is_skipped_not_raised(sidecar_dir):
@@ -165,10 +212,11 @@ def test_symlink_loop_is_skipped_not_raised(sidecar_dir):
     (assets / "loopA.png").symlink_to(assets / "loopB.png")
     (assets / "loopB.png").symlink_to(assets / "loopA.png")
 
-    assert (
-        _resolve_sidecar_image_path("report.blocks.assets/loopA.png", sidecar_dir)
-        is None
+    path, outcome = _resolve_sidecar_image_path(
+        "report.blocks.assets/loopA.png", sidecar_dir
     )
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED
 
 
 def test_symlink_loop_in_the_sidecar_dir_itself_is_skipped(tmp_path):
@@ -179,4 +227,6 @@ def test_symlink_loop_in_the_sidecar_dir_itself_is_skipped(tmp_path):
     a.symlink_to(b, target_is_directory=True)
     b.symlink_to(a, target_is_directory=True)
 
-    assert _resolve_sidecar_image_path("report.blocks.assets/x.png", a) is None
+    path, outcome = _resolve_sidecar_image_path("report.blocks.assets/x.png", a)
+    assert path is None
+    assert outcome is _SidecarPathOutcome.REFUSED

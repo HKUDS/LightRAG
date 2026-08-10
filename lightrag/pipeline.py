@@ -112,6 +112,7 @@ from lightrag.utils import (
     serialize_llm_cache_identity,
     strip_control_characters,
     tolerant_load_json_dict,
+    validate_file_path_security,
 )
 from lightrag.utils_pipeline import (
     # Re-exported through the pipeline namespace (not used by this module
@@ -305,7 +306,17 @@ def _vlm_image_budget_limits() -> tuple[int, int]:
     return max_image_bytes, min_image_pixel
 
 
-def _resolve_sidecar_image_path(path_str: str | None, sidecar_dir: Path) -> Path | None:
+class _SidecarPathOutcome(str, Enum):
+    """Why :func:`_resolve_sidecar_image_path` did or did not return a file."""
+
+    RESOLVED = "resolved"  # a real file, contained to the sidecar dir
+    REFUSED = "refused"  # containment / malformed / non-string — never read
+    MISSING = "missing"  # contained but no such file on disk (or a dir)
+
+
+def _resolve_sidecar_image_path(
+    path_str: object, sidecar_dir: Path
+) -> tuple[Path | None, _SidecarPathOutcome]:
     """Resolve a sidecar image reference, contained to ``sidecar_dir``.
 
     The ``path`` field of ``<doc>.drawings.json`` is attacker-influenced data
@@ -319,37 +330,30 @@ def _resolve_sidecar_image_path(path_str: str | None, sidecar_dir: Path) -> Path
     ``<base>.blocks.assets/``. Anything that leaves ``sidecar_dir`` — an
     absolute path, or ``../`` — resolves outside and is refused.
 
-    ``resolve()`` before the comparison, and on BOTH sides: it is what folds
-    ``..`` away (``Path.__truediv__`` does not) and what makes the check
-    correct when a symlink sits anywhere in the prefix — on macOS
-    ``/tmp`` → ``/private/tmp`` alone would otherwise fail every comparison.
-    Same ``resolve()`` + ``is_relative_to()`` idiom as ``sanitize_filename``
-    and ``validate_file_path_security`` in the API layer.
+    Returns ``(path, outcome)``. The outcome lets the caller tell a genuine
+    "no such file" (``MISSING``) apart from a containment/format refusal
+    (``REFUSED``): a legacy sidecar whose ``path`` is an absolute
+    RAG-Anything/MinerU value points at a file that DOES exist but sits
+    outside the document dir, so reporting it as "not found" would send an
+    operator debugging vanished VLM analysis away from the real cause.
+
+    Containment is delegated to :func:`validate_file_path_security`, the
+    shared ``resolve()`` + ``is_relative_to()`` primitive (it folds ``..``
+    away, resolves both sides so a symlinked prefix like macOS
+    ``/tmp`` → ``/private/tmp`` still matches, and converts any malformed
+    path — embedded NUL, symlink loop — into a quiet ``None`` rather than an
+    exception that would fail-fast the whole document). A non-string value is
+    refused explicitly here: the shared helper would swallow the resulting
+    ``TypeError`` via its blanket except, but the guard states the intent.
     """
-    if not path_str:
-        return None
-    try:
-        # An absolute path_str makes this yield path_str itself (pathlib
-        # semantics), which then fails containment — no separate branch needed.
-        candidate = (sidecar_dir / path_str).resolve()
-        root = sidecar_dir.resolve()
-    except (OSError, ValueError, RuntimeError):
-        # BOTH resolutions must sit inside the guard, and the guard must be
-        # this wide. ``resolve()`` touches the filesystem and validates the
-        # string: OSError for an unreadable prefix, ValueError for an embedded
-        # NUL, RuntimeError for a symlink loop (an OSError on Python 3.13+).
-        # The pre-containment resolver reached none of these — bare
-        # ``exists()`` answers False for a malformed path instead of raising —
-        # so letting one escape would convert a *skipped* item into a
-        # fail-fast that marks the whole document FAILED, which is exactly the
-        # regression this file otherwise refuses to introduce. Unresolvable is
-        # a refusal, never a pass and never a raise.
-        return None
-    if not candidate.is_relative_to(root):
-        return None
-    if candidate.exists() and candidate.is_file():
-        return candidate
-    return None
+    if not isinstance(path_str, str) or not path_str:
+        return None, _SidecarPathOutcome.REFUSED
+    safe = validate_file_path_security(path_str, sidecar_dir)
+    if safe is None:
+        return None, _SidecarPathOutcome.REFUSED
+    if safe.is_file():
+        return safe, _SidecarPathOutcome.RESOLVED
+    return None, _SidecarPathOutcome.MISSING
 
 
 @lru_cache(maxsize=64)
@@ -6604,7 +6608,23 @@ class _PipelineMixin:
                 path_str = (
                     item.get("path") or item.get("img_path") or item.get("image_path")
                 )
-                candidate = _resolve_sidecar_image_path(path_str, sidecar_dir)
+                candidate, outcome = _resolve_sidecar_image_path(path_str, sidecar_dir)
+                if outcome is _SidecarPathOutcome.REFUSED:
+                    # The reference resolves OUTSIDE the document dir (an
+                    # absolute legacy RAG-Anything/MinerU path, a ``..`` escape)
+                    # or is malformed. Distinct from "not found": the target may
+                    # well exist, so "not found" would misdirect an operator.
+                    logger.warning(
+                        f"Sidecar image reference refused for containment "
+                        f"(doc_id={doc_id}): {path_str!r}"
+                    )
+                    return (
+                        _skipped_result(
+                            f"image reference refused (outside document dir "
+                            f"or malformed): {path_str or 'n/a'}"
+                        ),
+                        None,
+                    )
                 if candidate is None:
                     return (
                         _skipped_result(f"image file not found: {path_str or 'n/a'}"),
