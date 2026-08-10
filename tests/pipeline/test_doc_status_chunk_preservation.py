@@ -360,6 +360,64 @@ async def test_extract_failure_preserves_chunks_and_allows_delete_with_cache_cle
 
 
 @pytest.mark.asyncio
+async def test_extract_failure_keeps_the_processing_attempt_metadata(
+    tmp_path,
+):
+    """A FAILED row must describe the attempt as fully as a PROCESSED one.
+
+    ``extraction_meta`` (parse_format / parse_engine / chunk_method, plus
+    mm_chunks and friends) is stamped when the document enters PROCESSING, and
+    none of those keys is in ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS`` — so the
+    FAILED transition has to re-pass them or they are dropped. The merge-stage
+    failure path always did; the extract-stage one did not, which left a
+    document that failed EARLIER describing itself LESS than one that failed
+    a stage later.
+    """
+    rag = await _build_rag(tmp_path, "extract_failure_meta", _deterministic_chunking)
+    try:
+        file_path = "extract_failure_meta.txt"
+        doc_id = compute_mdhash_id(file_path, prefix="doc-")
+        await rag.apipeline_enqueue_documents(
+            input="extract failure metadata document", file_paths=file_path
+        )
+
+        processing_metadata: dict = {}
+        original_transition = rag._upsert_doc_status_transition
+
+        async def _capture_transition(*args, status=None, **kwargs):
+            if status == DocStatus.PROCESSING:
+                processing_metadata.update(kwargs.get("metadata_extra") or {})
+            return await original_transition(*args, status=status, **kwargs)
+
+        rag._upsert_doc_status_transition = _capture_transition
+
+        async def fail_extract(
+            self, chunks, pipeline_status, pipeline_status_lock, **_
+        ):
+            raise RuntimeError("extract fail sentinel")
+
+        rag._process_extract_entities = MethodType(fail_extract, rag)
+
+        await rag.apipeline_process_enqueue_documents()
+
+        doc_status = await rag.doc_status.get_by_id(doc_id)
+        assert _status_to_text(doc_status["status"]) == "failed"
+        metadata = doc_status["metadata"]
+
+        # Everything PROCESSING recorded about how this attempt was run
+        # survives the failure, unchanged.
+        assert processing_metadata, "the PROCESSING transition wrote no metadata"
+        for key, value in processing_metadata.items():
+            assert metadata.get(key) == value, f"{key} was dropped by the FAILED write"
+        # Sanity: those are the descriptive fields, not just the timestamps.
+        assert {"parse_format", "chunk_method"} <= set(metadata)
+        # ...alongside the failure's own bookkeeping.
+        assert metadata["process_end_time"] >= metadata["process_start_time"]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_extract_failure_before_chunking_clears_stale_chunk_snapshot(
     tmp_path,
 ):
@@ -1255,7 +1313,7 @@ async def test_pipeline_cancellation_preserves_file_path_for_queued_docs(
         release_first_doc = asyncio.Event()
 
         async def _blocking_extract(
-            self, chunks, pipeline_status, pipeline_status_lock
+            self, chunks, pipeline_status, pipeline_status_lock, **kwargs
         ):
             extraction_started.set()
             await release_first_doc.wait()
@@ -1317,7 +1375,7 @@ async def test_pipeline_cancellation_repairs_placeholder_file_path_for_queued_do
         release_first_doc = asyncio.Event()
 
         async def _blocking_extract(
-            self, chunks, pipeline_status, pipeline_status_lock
+            self, chunks, pipeline_status, pipeline_status_lock, **kwargs
         ):
             extraction_started.set()
             await release_first_doc.wait()
