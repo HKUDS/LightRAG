@@ -101,6 +101,8 @@ When `DELETE /documents/{doc_id}` is invoked with `delete_file=true`, its filesy
 
 Steps 3–4 run per artifact kind (`source`, `parsed`) under the corresponding per-`(doc_id, artifact_kind)` artifact-export lock (§Per-artifact keyed lock): the lock for a kind is acquired before removing that kind's files and released once its targets are confirmed absent. This keeps a concurrent export build for the *same* document from reading a file this deletion is about to remove, while never blocking an export for any other document, or a different kind of the same document once its own removal has completed. Before contending for that lock, deletion atomically installs a per-key deletion fence in the export JobStore and requests cancellation of any `inflight` build on that key (§Per-artifact keyed lock). The fence rejects new export admission until the journaled deletion completes or yields to its retry path, closing the cancellation-to-lock-acquisition window in which a new builder could otherwise repeatedly get ahead of deletion.
 
+If deletion cannot acquire the `(doc_id, artifact_kind)` lock within its own bounded budget, it abandons this attempt with the deletion journal and the deletion fence both intact and returns a retryable error. It never proceeds with filesystem removal without the lock, and it never preempts the current holder. The fence keeps new exports out, so the retry converges once that holder finishes or its process exits.
+
 A partial failure preserves enough journal state for an idempotent retry. The `delete_file=true` branch must not call a basename variant sweep. The default `DELETE /documents` record-clear operation does not clear the workspace artifact root; any future filesystem-clear option must be separately explicit and run under the destructive reservation.
 
 Successfully published export ZIPs are immutable snapshots created while their authoritative inputs existed. Neither `delete_file=true` nor the default record-only deletion removes or revokes those snapshots: a previously issued `track_id` remains downloadable until the independent export-cache retention or capacity policy reclaims its ZIP, subject to authorization being checked again on every download. The deletion journal therefore contains authoritative source, sidecar, and parser raw-cache locators only; it never needs a persisted `doc_id`-to-`track_id` index.
@@ -257,9 +259,25 @@ The JobStore never stores `ready`, `failed`, or `cancelled`. Those states are te
 
 ### Per-artifact keyed lock and deletion fence
 
-A separate lock protects the one thing shared with ingestion: the source/sidecar file for one `doc_id`. It is `get_storage_keyed_lock(keys=[f"{doc_id}:{artifact_kind}"], namespace="artifact_export")`, reusing the existing storage keyed-lock primitive with a dedicated namespace. A builder holds it from strict locator resolution through reading the last input byte. Source archival and exact deletion take the same source key; the parser takes the parsed key before its first sidecar mutation and holds it until the directory has reached a complete persisted outcome or the parse has failed. Lock acquisition is part of `DEFAULT_MAX_DOWNLOAD_PREPARE_SECONDS`, so contention cannot wait forever.
+A separate lock protects the one thing shared with ingestion: the source/sidecar file for one `doc_id`. It is `get_storage_keyed_lock(keys=[f"{doc_id}:{artifact_kind}"], namespace="artifact_export")`, reusing the existing storage keyed-lock primitive with a dedicated namespace. A builder holds it from strict locator resolution through reading the last input byte. Source archival and exact deletion take the same source key; the parser takes the parsed key before its first sidecar mutation and holds it until the directory has reached a complete persisted outcome or the parse has failed. Acquisition of that lock is bounded by the caller, not by the primitive: `_KeyedLeaseLock.acquire()` polls the holder table with exponential backoff and never times out on its own. A builder MUST therefore wrap acquisition in a deadline derived from its remaining `DEFAULT_MAX_DOWNLOAD_PREPARE_SECONDS` budget and fail the job with a sanitized `artifact_busy` error when that deadline elapses. This is safe to cancel: `_KeyedLockContext.__aenter__` rolls back its reference count, its per-process gate, and any partially acquired key under `asyncio.shield` on `CancelledError`, and the multiprocess lease is installed only after the last cancellation point — a cancelled acquisition leaves no holder record behind.
 
 The parser must acquire the `(doc_id, "parsed")` key before clearing an existing sidecar directory, not merely when it begins writing. Supported parsers can clear `*.parsed/` before an external call and repopulate it later, so this whole attempt is one mutation interval. During a first parse no export can pass availability admission because `sidecar_location` is not published yet.
+
+#### The build lease and the artifact lock are independent
+
+They are separate mechanisms with no implication between them. A reaped build lease means only that the job's *visible status* has been resolved to a terminal marker; it NEVER means the artifact keyed lock is free. No code path — deletion, source archival, a new export, or crash reconciliation — may bypass or preempt the artifact lock on the strength of a lease expiry, a `.failed` marker, or an absent job record. Exclusion on the files themselves is established solely by holding the lock.
+
+Reclamation of the keyed lock is deliberately **dead-only**: a holder whose owner process is confirmed dead is reclaimed atomically by the next `try_acquire`, but a live-though-slow owner is never preempted and needs no fencing token. This is not a gap to be closed with a TTL. Preempting a live holder would authorize deleting or rewriting a file while a reader still holds it open — precisely what this lock exists to prevent.
+
+#### Releasing the lock is gated on the executor, not on the awaiting coroutine
+
+The build's traversal and compression run in a dedicated executor, and cancelling an `await` does not interrupt a thread already running there. The artifact keyed lock MUST therefore be released only once the executor task is confirmed finished — never merely because the awaiting coroutine was cancelled, which would hand the file to a waiting deletion while the worker thread is still reading it.
+
+On deadline or cancellation the builder sets the shared cancellation flag, then performs a bounded, shielded join on the executor future within `DEFAULT_ARTIFACT_EXPORT_EXECUTOR_JOIN_GRACE_SECONDS` before unwinding the lock context.
+
+If that grace elapses with the thread still running — for example blocked in an uninterruptible read on a stalled filesystem — the builder MUST NOT release the lock. It marks the key poisoned, emits an audit event, and leaves the lock held. A held lock blocks further exports, archival, and deletion for that one `(doc_id, artifact_kind)` and nothing else, which is the safe failure mode; releasing it while a live reader holds the descriptor is not. Dead-only reclamation still bounds the damage: when the process actually exits, the holder table reclaims the key.
+
+#### Deletion versus an in-flight build
 
 Deletion resolves a conflict without allowing a new builder to slip between cancellation and lock acquisition:
 
@@ -309,9 +327,11 @@ Single-flight lasts only while a build is queued or running. A later export requ
 2. create the exclusive `{track_id}.pending` output and acquire the per-artifact keyed lock within the overall preparation deadline;
 3. strictly re-resolve and open the locator from storage — never from request-time state — using root containment, `lstat`/no-follow, and descriptor-level type validation;
 4. run recursive enumeration, reads, and ZIP compression in a dedicated executor, enforcing every limit and checking a thread-safe cancellation/deadline signal at every directory entry and input chunk;
-5. release the artifact lock as soon as the last source byte has been consumed;
+5. release the artifact lock once the last source byte has been consumed **and** the executor task is confirmed finished (§Per-artifact keyed lock — a cancelled `await` alone is never sufficient);
 6. finish the ZIP, refresh its controlled mtime to the publication time, fsync it, atomically rename `.pending` to `.zip`, and then fsync the containing directory as required;
 7. owner-finalize all transient JobStore bookkeeping in one critical section.
+
+Before publishing ANY terminal file, the builder re-validates its ownership (owner token plus record version) in one JobStore critical section. If its record is gone or is now owned by another token, the build has already been reaped: the builder removes its `.pending` file and exits silently, publishing nothing. Terminal publication is authorized by live ownership, never by having done the work. This removes reaper-versus-woken-builder as a source of conflicting terminal files, leaving the `409` repair path for genuinely unexplained inconsistency only.
 
 On handled failure or cancellation, remove the partial ZIP instead of renaming its potentially large bytes. Write a bounded, sanitized JSON record to a separate temporary file, fsync it, and atomically rename it to `.failed` or `.cancelled`, then perform the same owner-finalization. The marker includes only `track_id`, `artifact_kind`, terminal status/time, and a bounded public error code/message; it contains no `doc_id`, principal, locator, cache path, credential, or owner token.
 
@@ -324,9 +344,11 @@ An unhandled worker crash stops the build heartbeat. Any later status read, expo
 | `.zip` | present or absent | Publication succeeded; return `ready` and idempotently clear stale transient bookkeeping. |
 | `.failed` / `.cancelled` | present or absent | Terminal marker is authoritative; return it and clear stale transient bookkeeping. |
 | `.pending` | valid queued/running owner | Build is live; leave it. |
-| `.pending` | no job or expired owner | Remove partial bytes, publish a sanitized `builder_lease_expired` `.failed` marker, and release stale bookkeeping. |
-| no file | expired queued/running owner | Publish a sanitized failure marker and release stale bookkeeping. |
+| `.pending` | no job or expired owner | Remove partial bytes, publish a sanitized `builder_lease_expired` `.failed` marker, and release stale bookkeeping. The artifact lock is not implied to be free. |
+| no file | expired queued/running owner | Publish a sanitized failure marker and release stale bookkeeping. The artifact lock is not implied to be free. |
 | multiple mutually exclusive terminal files | any | Return `409`, audit the inconsistency, and run bounded repair; never guess a downloadable object. |
+
+None of these recovery actions release, steal, or bypass the per-artifact keyed lock. Reconciliation resolves *job records and cache files* only; file-level exclusion remains governed entirely by the lock and its dead-only reclamation, so a reconciliation pass never has to decide whether a build is still reading a file.
 
 A single API worker restart does not imply that the shared JobStore is empty and must not reclaim another worker's live `.pending`. When the whole shared control plane restarts, all old build owners are gone: startup reconciliation converts orphaned `.pending` files into `.failed` markers but preserves every `.zip`, `.failed`, and `.cancelled`. There is no periodic per-worker watchdog; reconciliation stays event-driven and lease-based.
 
@@ -356,11 +378,12 @@ These are deployment policy or capacity values. Disk size, inode budget, CPU cou
 | `DEFAULT_MAX_DOWNLOAD_DIRECTORY_DEPTH` | `16` | Maximum parsed directory depth |
 | `DEFAULT_MAX_DOWNLOAD_PREPARE_SECONDS` | `600` | Maximum validation/compression time |
 | `DEFAULT_ARTIFACT_EXPORT_BUILD_LEASE_SECONDS` | `60` | Queued/running owner-lease duration |
+| `DEFAULT_ARTIFACT_EXPORT_EXECUTOR_JOIN_GRACE_SECONDS` | `30` | Bounded wait for the build executor thread to confirm exit after cancellation, before the artifact lock may be released |
 | `DEFAULT_ARTIFACT_EXPORT_STATUS_MAX_BYTES` | `4096` | Maximum serialized `.failed` or `.cancelled` marker size |
 | `DEFAULT_ARTIFACT_EXPORT_SHARD_HEX_CHARS` | `2` | Number of high-entropy track-ID hex characters used for cache sharding |
 | `DEFAULT_ARTIFACT_CACHE_MAINTENANCE_BATCH` | `256` | Maximum filesystem entries examined by one event-triggered maintenance pass |
 
-These constants are protocol safety bounds or internal implementation geometry, not storage-capacity policy. The build lease is renewed by a heartbeat that remains responsive because synchronous traversal and compression run in the dedicated executor. The preparation deadline covers lock acquisition, validation, traversal, reads, compression, fsync, and terminal publication.
+These constants are protocol safety bounds or internal implementation geometry, not storage-capacity policy. The build lease is renewed by an event-loop heartbeat; moving synchronous traversal and compression into the dedicated executor keeps that heartbeat schedulable, but does not make it unconditionally responsive — a long event-loop stall (a slow synchronous Manager RPC, a long GC pause) can still let the lease lapse while the build is healthy. That is tolerable precisely because a lapsed lease resolves only the job's visible status and grants no one access to the files (§Per-artifact keyed lock), and because a woken builder revalidates ownership before publishing anything. The preparation deadline covers lock acquisition, validation, traversal, reads, compression, fsync, and terminal publication.
 
 (`MAX_DOWNLOAD_JOBS_PER_CYCLE` is removed outright, not merely relocated: there is no pipeline export cycle left to bound.)
 
@@ -394,11 +417,11 @@ Build rules:
 5. enforce uncompressed bytes, compressed bytes, file count, depth, cancellation, and the preparation deadline while reading chunks, not only from initial metadata;
 6. write `.pending` with `ZIP_DEFLATED` at fixed compression level 6 and ZIP64 support in the dedicated executor;
 7. stop and remove `.pending` once any bound is exceeded;
-8. after the last input byte, release the artifact lock, complete the ZIP central directory, set the controlled publication mtime, and fsync the file;
+8. after the last input byte, and once the executor task is confirmed finished (§Per-artifact keyed lock), release the artifact lock, complete the ZIP central directory, set the controlled publication mtime, and fsync the file;
 9. atomically rename `.pending` to `.zip` and fsync the containing directory as required; only this suffix is downloadable;
 10. clear transient JobStore ownership and reservations only after `.zip` exists with its verified size.
 
-The artifact-export lock is released once the last source byte has been read; finishing, syncing, and renaming the cache file require no source lock. The public download filename is `{track_id}.{artifact_kind}.zip`; ZIP entries continue to use the canonical `file_path` and parsed top-level directory rules.
+The artifact-export lock is released once the last source byte has been read **and** the executor task is confirmed finished (§Per-artifact keyed lock — on cancellation, release waits on the bounded executor join); finishing, syncing, and renaming the cache file require no source lock. The public download filename is `{track_id}.{artifact_kind}.zip`; ZIP entries continue to use the canonical `file_path` and parsed top-level directory rules.
 
 An interrupted `.pending` ZIP is never downloadable. Startup preserves published terminal files and reconciles only orphaned active/temporary files as described in §Crash recovery. A restarted client may continue using a successfully published track ID without resubmitting the export.
 
