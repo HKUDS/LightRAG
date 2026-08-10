@@ -93,6 +93,15 @@ def payloads_equal(a: Any, b: Any) -> bool:
     - ``NaN`` never equals anything, itself included, so byte-identical
       payloads containing ``NaN`` compare unequal — a false positive in the
       safe (abort) direction.
+
+    Leaf ``==`` is reached ONLY for the exact JSON scalar types (str, int,
+    float, bool, None). Tuples recurse like lists (positional containers,
+    so hand-built input cannot smuggle a coercing leaf comparison past the
+    type gate inside a tuple wrapper); any other type — sets, custom
+    classes — compares unequal unconditionally, because ``==`` on an
+    unknown type may coerce and this function must be unfoolable.
+    JSON/agtype-parsed payloads only ever contain the safe set, so neither
+    branch fires on real migration data.
     """
     if type(a) is not type(b):
         return False
@@ -100,9 +109,12 @@ def payloads_equal(a: Any, b: Any) -> bool:
         return a.keys() == b.keys() and all(
             payloads_equal(value, b[key]) for key, value in a.items()
         )
-    if isinstance(a, list):
+    if isinstance(a, (list, tuple)):
         return len(a) == len(b) and all(payloads_equal(x, y) for x, y in zip(a, b))
-    return a == b
+    if type(a) in (str, int, float, bool, type(None)):
+        return a == b
+    # Unknown type: fail closed rather than trust its __eq__.
+    return False
 
 
 @dataclass(frozen=True)
@@ -340,7 +352,11 @@ def verify_source_side(
     has no well-defined expected target, and it must not depend on the
     caller having run the backstops. The source enumeration is
     deterministically ordered first, so the whole report (not just ``ok``)
-    is independent of enumeration order. ``unexpected_*`` entries are
+    is independent of SOURCE enumeration order. (Target order needs no such
+    pinning: the PGTable primary key (workspace, namespace, src_id, tgt_id)
+    guarantees at most one row per canonical key, so a real target cannot
+    present the duplicate rows that would make last-write-wins order-
+    sensitive.) ``unexpected_*`` entries are
     target rows with no source counterpart — under the empty-target
     invariant those can only be migration bugs (e.g. stub endpoints for
     edges the source never had).

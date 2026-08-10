@@ -7,6 +7,8 @@ the parallel-edge backstop, derived written-node sets for compensation, and
 source-driven verification.
 """
 
+from typing import Any
+
 import pytest
 
 from lightrag.tools.migrate_graph_storage import (
@@ -98,6 +100,23 @@ class TestPayloadsEqual:
     def test_nan_never_equal(self):
         # Safe-direction false positive, documented in the module.
         assert not payloads_equal(float("nan"), float("nan"))
+
+    def test_tuple_wrapper_cannot_defeat_type_gate(self):
+        # Regression: tuples previously fell through to leaf ==, so a tuple
+        # wrapper defeated the whole recursive type gate, nested dicts
+        # included. Tuples must recurse like lists.
+        assert not payloads_equal(({"x": True},), ({"x": 1},))
+        assert not payloads_equal((True,), (1,))
+        assert payloads_equal(({"x": 1},), ({"x": 1},))
+
+    def test_tuple_is_not_list(self):
+        assert not payloads_equal((1, 2), [1, 2])
+
+    def test_unknown_types_fail_closed(self):
+        # Non-JSON types never reach leaf ==: their __eq__ may coerce
+        # ({True} == {1} is True), so they compare unequal unconditionally.
+        assert not payloads_equal({True}, {1})
+        assert not payloads_equal({1}, {1})
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +303,7 @@ class TestVerifySourceSide:
     def _clean_migration(self):
         # Source: AGE-shaped, one edge enumerated in both directions with
         # identical payloads (legal reciprocal), plus a directed-only edge.
-        source_nodes = [
+        source_nodes: list[dict[str, Any]] = [
             {"id": "a", "entity_id": "a", "entity_type": "person"},
             {"id": "b", "entity_id": "b", "entity_type": "place"},
             {"id": "c", "entity_id": "c", "entity_type": "thing"},
