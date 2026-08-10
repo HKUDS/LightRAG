@@ -890,3 +890,70 @@ async def test_hard_crash_after_summary_truncation_survives_resume(
         )
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_between_merge_phases_keeps_the_journaled_summary_event(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): a cancellation landing on an inter-phase
+    await point inside the merge used to skip the summary-tally absorb; the
+    FAILED bookkeeping then recomputed the journal from the unabsorbed
+    operation tally, OVERWRITING the write-ahead snapshot that did carry the
+    summary event — while the truncated summary itself stayed in the graph."""
+    import asyncio
+
+    rag = await _build_rag(tmp_path, force_llm_summary_on_merge=3)
+    try:
+
+        async def extract_alice(chunks, *args, truncation_tally=None, **kwargs):
+            return [
+                (
+                    {
+                        "ALICE": [
+                            {
+                                "entity_name": "ALICE",
+                                "entity_type": "person",
+                                "description": f"ALICE description {i}",
+                                "source_id": chunk_id,
+                                "file_path": "custom",
+                                "timestamp": i,
+                            }
+                            for i in range(3)
+                        ]
+                    },
+                    {},
+                )
+                for chunk_id in chunks
+            ]
+
+        monkeypatch.setattr(rag, "_process_extract_entities", extract_alice)
+
+        async def truncated_summary_llm(*args, **kwargs):
+            return TruncatedResponse("partial summary"), 0
+
+        monkeypatch.setattr(
+            operate_module, "use_llm_func_with_cache", truncated_summary_llm
+        )
+
+        orig_append = operate_module.append_pipeline_history
+
+        def cancel_at_phase2(status, message):
+            if str(message).startswith("Phase 2"):
+                raise asyncio.CancelledError()
+            return orig_append(status, message)
+
+        monkeypatch.setattr(operate_module, "append_pipeline_history", cancel_at_phase2)
+
+        with pytest.raises(asyncio.CancelledError):
+            await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        journal = _journal(await rag.doc_status.get_by_id("doc-1"))
+        record = journal["operation_llm_truncation"]
+        assert record is not None and "summary" in (record.get("stages") or {}), (
+            "the FAILED bookkeeping overwrote the write-ahead journal snapshot "
+            "with the unabsorbed tally, erasing the summary event while the "
+            "truncated summary stayed in the graph"
+        )
+    finally:
+        await rag.finalize_storages()

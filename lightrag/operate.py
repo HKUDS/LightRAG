@@ -3465,12 +3465,17 @@ async def merge_nodes_and_edges(
     def _publish_summary_truncation() -> None:
         """Publish the merge's truncation aggregate and hand its counts upward.
 
-        Called on the success path AND from each phase's failure path: a
-        summary truncated by an entity that completed is already recorded when
-        a LATER sibling raises, and losing it there would leave the FAILED
-        document's metadata claiming extraction was the only stage that
-        truncated. Idempotent, so the two callers cannot double-publish, and
-        await-free, so it is safe to run inside a cancellation window.
+        Called from a ``finally`` covering both phases, so it runs on EVERY
+        merge exit — success, a failing sibling task, and a cancellation
+        landing on any await point between the phases (an inter-phase
+        ``sleep(0)`` or status-lock acquire). Wrapping only the
+        ``wait_tasks_with_drain`` calls was not enough: a cancellation at an
+        inter-phase yield skipped the absorb, and the custom-chunk failure
+        bookkeeping then recomputed the journal from the unabsorbed operation
+        tally — overwriting the summary event its write-ahead hook had
+        already persisted. Idempotent, so redundant calls cannot
+        double-publish, and await-free, so it is safe to run inside a
+        cancellation window.
         """
         nonlocal summary_truncation_published
         if summary_truncation_published:
@@ -3569,216 +3574,218 @@ async def merge_nodes_and_edges(
         if on_anchors_durable is not None:
             await on_anchors_durable()
 
-    # Get max async tasks limit from global_config for semaphore control
-    graph_max_async = global_config.get("llm_model_max_async", 4) * 2
-    semaphore = asyncio.Semaphore(graph_max_async)
+    try:
+        # Get max async tasks limit from global_config for semaphore control
+        graph_max_async = global_config.get("llm_model_max_async", 4) * 2
+        semaphore = asyncio.Semaphore(graph_max_async)
 
-    # ===== Phase 1: Process all entities concurrently =====
-    log_message = f"Phase 1: Processing {total_entities_count} entities from {doc_id} (async: {graph_max_async})"
-    logger.info(log_message)
-    async with pipeline_status_lock:
-        pipeline_status["latest_message"] = log_message
-        append_pipeline_history(pipeline_status, log_message)
+        # ===== Phase 1: Process all entities concurrently =====
+        log_message = f"Phase 1: Processing {total_entities_count} entities from {doc_id} (async: {graph_max_async})"
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            append_pipeline_history(pipeline_status, log_message)
 
-    async def _locked_process_entity_name(entity_name, entities):
-        async with semaphore:
-            # Check for cancellation before processing entity
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    if pipeline_status.get("cancellation_requested", False):
-                        raise PipelineCancelledException(
-                            "User cancelled during entity merge"
-                        )
+        async def _locked_process_entity_name(entity_name, entities):
+            async with semaphore:
+                # Check for cancellation before processing entity
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        if pipeline_status.get("cancellation_requested", False):
+                            raise PipelineCancelledException(
+                                "User cancelled during entity merge"
+                            )
 
-            workspace = global_config.get("workspace", "")
-            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-            async with get_storage_keyed_lock(
-                [entity_name], namespace=namespace, enable_logging=False
-            ):
-                try:
-                    logger.debug(f"Processing entity {entity_name}")
-                    entity_data = await _merge_nodes_then_upsert(
-                        entity_name,
-                        entities,
-                        knowledge_graph_inst,
-                        entity_vdb,
-                        global_config,
-                        pipeline_status,
-                        pipeline_status_lock,
-                        llm_response_cache,
-                        entity_chunks_storage,
-                        status_logger=status_logger,
-                        truncation_tally=summary_tally,
-                        truncation_write_ahead=truncation_write_ahead,
-                    )
-
-                    return entity_data
-
-                except Exception as e:
-                    error_msg = f"Error processing entity `{entity_name}`: {e}"
-                    logger.error(error_msg)
-
-                    # Try to update pipeline status, but don't let status update failure affect main exception
+                workspace = global_config.get("workspace", "")
+                namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+                async with get_storage_keyed_lock(
+                    [entity_name], namespace=namespace, enable_logging=False
+                ):
                     try:
-                        if (
-                            pipeline_status is not None
-                            and pipeline_status_lock is not None
-                        ):
-                            async with pipeline_status_lock:
-                                pipeline_status["latest_message"] = error_msg
-                                append_pipeline_history(pipeline_status, error_msg)
-                    except Exception as status_error:
-                        logger.error(
-                            f"Failed to update pipeline status: {status_error}"
+                        logger.debug(f"Processing entity {entity_name}")
+                        entity_data = await _merge_nodes_then_upsert(
+                            entity_name,
+                            entities,
+                            knowledge_graph_inst,
+                            entity_vdb,
+                            global_config,
+                            pipeline_status,
+                            pipeline_status_lock,
+                            llm_response_cache,
+                            entity_chunks_storage,
+                            status_logger=status_logger,
+                            truncation_tally=summary_tally,
+                            truncation_write_ahead=truncation_write_ahead,
                         )
 
-                    # Re-raise the original exception with a prefix
-                    prefixed_exception = create_prefixed_exception(
-                        e, f"`{entity_name}`"
-                    )
-                    raise prefixed_exception from e
+                        return entity_data
 
-    # Create entity processing tasks
-    entity_tasks = []
-    for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
-        task = asyncio.create_task(_locked_process_entity_name(entity_name, entities))
-        entity_tasks.append(task)
-        await _cooperative_yield(i, every=16)
+                    except Exception as e:
+                        error_msg = f"Error processing entity `{entity_name}`: {e}"
+                        logger.error(error_msg)
 
-    # Execute entity tasks; on any failure every sibling is cancelled and
-    # drained before the first exception propagates (no background writes
-    # survive failure handling — issue #3400).
-    processed_entities = []
-    if entity_tasks:
-        try:
+                        # Try to update pipeline status, but don't let status update failure affect main exception
+                        try:
+                            if (
+                                pipeline_status is not None
+                                and pipeline_status_lock is not None
+                            ):
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = error_msg
+                                    append_pipeline_history(pipeline_status, error_msg)
+                        except Exception as status_error:
+                            logger.error(
+                                f"Failed to update pipeline status: {status_error}"
+                            )
+
+                        # Re-raise the original exception with a prefix
+                        prefixed_exception = create_prefixed_exception(
+                            e, f"`{entity_name}`"
+                        )
+                        raise prefixed_exception from e
+
+        # Create entity processing tasks
+        entity_tasks = []
+        for i, (entity_name, entities) in enumerate(all_nodes.items(), start=1):
+            task = asyncio.create_task(
+                _locked_process_entity_name(entity_name, entities)
+            )
+            entity_tasks.append(task)
+            await _cooperative_yield(i, every=16)
+
+        # Execute entity tasks; on any failure every sibling is cancelled and
+        # drained before the first exception propagates (no background writes
+        # survive failure handling — issue #3400).
+        processed_entities = []
+        if entity_tasks:
             processed_entities = await wait_tasks_with_drain(
                 entity_tasks, context=f"entity merge {doc_id}"
             )
-        except BaseException:
-            _publish_summary_truncation()
-            raise
-        await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
-    # ===== Phase 2: Process all relationships concurrently =====
-    log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
-    logger.info(log_message)
-    async with pipeline_status_lock:
-        pipeline_status["latest_message"] = log_message
-        append_pipeline_history(pipeline_status, log_message)
+        # ===== Phase 2: Process all relationships concurrently =====
+        log_message = f"Phase 2: Processing {total_relations_count} relations from {doc_id} (async: {graph_max_async})"
+        logger.info(log_message)
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            append_pipeline_history(pipeline_status, log_message)
 
-    async def _locked_process_edges(edge_key, edges):
-        async with semaphore:
-            # Check for cancellation before processing edges
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    if pipeline_status.get("cancellation_requested", False):
-                        raise PipelineCancelledException(
-                            "User cancelled during relation merge"
-                        )
+        async def _locked_process_edges(edge_key, edges):
+            async with semaphore:
+                # Check for cancellation before processing edges
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        if pipeline_status.get("cancellation_requested", False):
+                            raise PipelineCancelledException(
+                                "User cancelled during relation merge"
+                            )
 
-            workspace = global_config.get("workspace", "")
-            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
-            sorted_edge_key = sorted([edge_key[0], edge_key[1]])
-            edge_label = _format_relation_edge_label(edge_key)
+                workspace = global_config.get("workspace", "")
+                namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+                sorted_edge_key = sorted([edge_key[0], edge_key[1]])
+                edge_label = _format_relation_edge_label(edge_key)
 
-            async with get_storage_keyed_lock(
-                sorted_edge_key,
-                namespace=namespace,
-                enable_logging=False,
-            ):
-                try:
-                    added_entities = []  # Track entities added during edge processing
-
-                    edge_data = await _merge_edges_then_upsert(
-                        edge_key[0],
-                        edge_key[1],
-                        edges,
-                        knowledge_graph_inst,
-                        relationships_vdb,
-                        entity_vdb,
-                        global_config,
-                        pipeline_status,
-                        pipeline_status_lock,
-                        llm_response_cache,
-                        added_entities,  # Pass list to collect added entities
-                        relation_chunks_storage,
-                        entity_chunks_storage,  # Add entity_chunks_storage parameter
-                        status_logger=status_logger,
-                        truncation_tally=summary_tally,
-                        truncation_write_ahead=truncation_write_ahead,
-                    )
-
-                    if edge_data is None:
-                        return None, []
-
-                    return edge_data, added_entities
-
-                except Exception as e:
-                    error_msg = f"Error processing relation `{edge_label}`: {e}"
-                    logger.error(error_msg)
-
-                    # Try to update pipeline status, but don't let status update failure affect main exception
+                async with get_storage_keyed_lock(
+                    sorted_edge_key,
+                    namespace=namespace,
+                    enable_logging=False,
+                ):
                     try:
-                        if (
-                            pipeline_status is not None
-                            and pipeline_status_lock is not None
-                        ):
-                            async with pipeline_status_lock:
-                                pipeline_status["latest_message"] = error_msg
-                                append_pipeline_history(pipeline_status, error_msg)
-                    except Exception as status_error:
-                        logger.error(
-                            f"Failed to update pipeline status: {status_error}"
+                        added_entities = []  # Track entities added during edge processing
+
+                        edge_data = await _merge_edges_then_upsert(
+                            edge_key[0],
+                            edge_key[1],
+                            edges,
+                            knowledge_graph_inst,
+                            relationships_vdb,
+                            entity_vdb,
+                            global_config,
+                            pipeline_status,
+                            pipeline_status_lock,
+                            llm_response_cache,
+                            added_entities,  # Pass list to collect added entities
+                            relation_chunks_storage,
+                            entity_chunks_storage,  # Add entity_chunks_storage parameter
+                            status_logger=status_logger,
+                            truncation_tally=summary_tally,
+                            truncation_write_ahead=truncation_write_ahead,
                         )
 
-                    # Re-raise the original exception with a prefix
-                    prefixed_exception = create_prefixed_exception(e, f"{edge_label}")
-                    raise prefixed_exception from e
+                        if edge_data is None:
+                            return None, []
 
-    # Create relationship processing tasks
-    edge_tasks = []
-    edge_task_labels: dict[asyncio.Task, str] = {}
-    for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
-        task = asyncio.create_task(_locked_process_edges(edge_key, edges))
-        edge_tasks.append(task)
-        edge_task_labels[task] = _format_relation_edge_label(edge_key)
-        await _cooperative_yield(i, every=32)
+                        return edge_data, added_entities
 
-    # Execute relationship tasks; failures cancel + drain every sibling
-    # before propagating (see wait_tasks_with_drain).
-    processed_edges = []
-    all_added_entities = []
+                    except Exception as e:
+                        error_msg = f"Error processing relation `{edge_label}`: {e}"
+                        logger.error(error_msg)
 
-    if edge_tasks:
-        try:
+                        # Try to update pipeline status, but don't let status update failure affect main exception
+                        try:
+                            if (
+                                pipeline_status is not None
+                                and pipeline_status_lock is not None
+                            ):
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = error_msg
+                                    append_pipeline_history(pipeline_status, error_msg)
+                        except Exception as status_error:
+                            logger.error(
+                                f"Failed to update pipeline status: {status_error}"
+                            )
+
+                        # Re-raise the original exception with a prefix
+                        prefixed_exception = create_prefixed_exception(
+                            e, f"{edge_label}"
+                        )
+                        raise prefixed_exception from e
+
+        # Create relationship processing tasks
+        edge_tasks = []
+        edge_task_labels: dict[asyncio.Task, str] = {}
+        for i, (edge_key, edges) in enumerate(all_edges.items(), start=1):
+            task = asyncio.create_task(_locked_process_edges(edge_key, edges))
+            edge_tasks.append(task)
+            edge_task_labels[task] = _format_relation_edge_label(edge_key)
+            await _cooperative_yield(i, every=32)
+
+        # Execute relationship tasks; failures cancel + drain every sibling
+        # before propagating (see wait_tasks_with_drain).
+        processed_edges = []
+        all_added_entities = []
+
+        if edge_tasks:
             edge_results = await wait_tasks_with_drain(
                 edge_tasks,
                 context=f"relation merge {doc_id}",
                 task_labels=edge_task_labels,
             )
-        except BaseException:
-            _publish_summary_truncation()
-            raise
-        for edge_data, added_entities in edge_results:
-            if edge_data is not None:
-                processed_edges.append(edge_data)
-            all_added_entities.extend(added_entities)
+            for edge_data, added_entities in edge_results:
+                if edge_data is not None:
+                    processed_edges.append(edge_data)
+                all_added_entities.extend(added_entities)
 
-        logger.info(
-            "Phase 2 relation processing completed for %s: edges=%d added_entities=%d",
-            doc_id,
-            len(processed_edges),
-            len(all_added_entities),
-        )
-        await asyncio.sleep(0)
+            logger.info(
+                "Phase 2 relation processing completed for %s: edges=%d added_entities=%d",
+                doc_id,
+                len(processed_edges),
+                len(all_added_entities),
+            )
+            await asyncio.sleep(0)
 
-    # NOTE: the recovery indexes are written (and flushed) in Phase 0, BEFORE
-    # graph mutation. The historical post-merge "Phase 3" write — which
-    # derived the rows from in-memory merge results and swallowed its own
-    # exceptions — is gone: a merge whose anchors cannot be persisted no
-    # longer mutates the graph at all (issue #3400).
+        # NOTE: the recovery indexes are written (and flushed) in Phase 0, BEFORE
+        # graph mutation. The historical post-merge "Phase 3" write — which
+        # derived the rows from in-memory merge results and swallowed its own
+        # exceptions — is gone: a merge whose anchors cannot be persisted no
+        # longer mutates the graph at all (issue #3400).
 
-    _publish_summary_truncation()
+    finally:
+        # On EVERY exit — the inter-phase await points (sleep(0) yields,
+        # status-lock acquires) sit outside any narrower handler, and a
+        # cancellation landing there must still absorb the summary tally
+        # before the caller's failure bookkeeping recomputes from it.
+        _publish_summary_truncation()
 
     log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} extra entities, {len(processed_edges)} relations"
     logger.info(log_message)

@@ -447,6 +447,41 @@ class TestSummaryStage:
         lines = _truncation_lines(pipeline_status["history_messages"])
         assert len(lines) == 1, f"expected one aggregate line, got {lines}"
 
+    async def test_a_cancellation_between_phases_still_feeds_the_document_tally(
+        self, monkeypatch
+    ):
+        """Codex review (PR #3607): the summary tally used to be absorbed
+        only by the per-phase ``wait_tasks_with_drain`` wrappers and the
+        success tail. A cancellation landing on an inter-phase await point
+        (simulated here at the Phase 2 status-line write) escaped both — the
+        document tally never learned of a summary that was already truncated
+        AND merged into the graph, so the custom-chunk failure bookkeeping
+        would recompute the journal from the incomplete tally and overwrite
+        the write-ahead snapshot that did carry the event."""
+        import asyncio
+
+        pipeline_status = {"history_messages": [], "latest_message": ""}
+        document_tally = TokenLimitTruncationTally()
+
+        orig_append = operate.append_pipeline_history
+
+        def cancel_at_phase2(status, message):
+            if str(message).startswith("Phase 2"):
+                raise asyncio.CancelledError()
+            return orig_append(status, message)
+
+        monkeypatch.setattr(operate, "append_pipeline_history", cancel_at_phase2)
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._run_merge(_MemGraph(), pipeline_status, document_tally)
+
+        payload = document_tally.as_metadata()
+        assert payload is not None, (
+            "the cancellation between phases discarded the truncated summary "
+            "that phase 1 had already merged into the graph"
+        )
+        assert payload["stages"] == {"summary": 1}
+
 
 class _MemGraph:
     def __init__(self):
