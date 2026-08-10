@@ -883,10 +883,41 @@ async def test_docling_oversized_result_zip_is_refused(
     )
     _CURRENT["recorder"] = recorder
     _install_fake_httpx(monkeypatch)
-    monkeypatch.setattr(client_mod, "_RESULT_MAX_TOTAL_BYTES", 8)
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "8")
 
     with pytest.raises(RuntimeError) as exc:
         await DoclingRawClient().download_into(
             tmp_path / "demo.docling_raw", source_pdf
         )
     assert "uncompressed size" in str(exc.value)
+
+
+async def test_docling_result_bundle_budget_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
+) -> None:
+    """A non-positive env value disables that gate (maps to None = unlimited).
+
+    Passing 0 straight into safe_extract_zip would refuse every bundle; the
+    live-read must map non-positive to None so an operator whose legitimate
+    result bundle exceeds the default ceiling can raise/disable it without a
+    code change.
+    """
+    recorder = _Recorder(
+        terminal_status="success",
+        zip_bytes=_fake_zip_with_main_json("demo"),
+    )
+    _CURRENT["recorder"] = recorder
+    _install_fake_httpx(monkeypatch)
+    # A ceiling below the real bundle size that would refuse it if honored...
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "8")
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_ENTRIES", "1")
+
+    with pytest.raises(RuntimeError):
+        await DoclingRawClient().download_into(
+            tmp_path / "demo.docling_raw", source_pdf
+        )
+
+    # ...disabled by a non-positive value, the bundle extracts normally.
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "0")
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_ENTRIES", "0")
+    await DoclingRawClient().download_into(tmp_path / "demo2.docling_raw", source_pdf)

@@ -185,6 +185,17 @@ DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 # executor, so it costs a parse thread but not the event loop).
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
 
+# Zip-bomb guards for the result BUNDLE an external parser engine (docling,
+# mineru) returns — a zip fetched from an operator-configured server and
+# extracted locally. Distinct from the DOCX_* budget above (attacker-uploaded
+# source), this is defense-in-depth against a compromised/misbehaving endpoint.
+# The .textpack extraction guard shares these defaults (attacker-uploaded, so
+# it stays env-less). docling and mineru live-read the env pair below; a
+# non-positive value disables that one gate. Env: PARSER_RESULT_BUNDLE_MAX_ENTRIES
+# / PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES.
+DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES = 10_000
+DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB
+
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
 # by lightrag/parser/docx/smart_heading (same live-env pattern as the
