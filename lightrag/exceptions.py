@@ -63,6 +63,22 @@ class APITimeoutError(APIConnectionError):
         super().__init__(message="Request timed out.", request=request)
 
 
+class EmptyTruncatedResponseError(RuntimeError):
+    """A token-limit-truncated LLM response that carried nothing usable.
+
+    Raised above the provider bindings, for the case none of them can see: a
+    thinking model exhausts its output budget inside the reasoning trace and
+    returns ``<think>...</think>`` with no answer after it. That payload is
+    NON-empty, so every binding's own empty-content check passes it through,
+    and it only becomes visibly empty after ``remove_think_tags``.
+
+    Same verdict as the binding-level checks (issue #3601 gap 4): nothing was
+    generated and generation was cut off, so there is nothing to salvage.
+    Failing here is what stops an empty knowledge graph from being indexed and
+    reported as success.
+    """
+
+
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
 

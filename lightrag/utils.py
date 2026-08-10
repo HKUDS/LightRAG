@@ -39,7 +39,7 @@ import numpy as np
 from dotenv import load_dotenv
 import json_repair
 
-from lightrag.exceptions import ChunkBlockMatchError
+from lightrag.exceptions import ChunkBlockMatchError, EmptyTruncatedResponseError
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -4658,6 +4658,44 @@ def remove_think_tags(text: str) -> str:
     return TruncatedResponse(cleaned) if was_truncated else cleaned
 
 
+def _reject_empty_truncated_response(
+    cleaned: str, *, raw_len: int, cache_type: str, chunk_id: str | None
+) -> None:
+    """Fail a truncated response that think-tag removal left with nothing.
+
+    The provider bindings each escalate their own empty + token-limit response,
+    but they cannot see this one: ``<think>reasoning</think>`` with no answer
+    after it is a NON-empty payload, so it passes every binding's check and
+    only becomes visibly empty here. This function is the shared throat that
+    every KG-building LLM call passes through, so the rule lands once for all
+    four providers.
+
+    Parse-stage callers (``cache_type="smartheading"``) already treat an empty
+    answer as an error — ``_parse_llm_json`` raises ``TitleBlockLLMError`` on
+    it — so this only replaces "answer carries no JSON object" with the actual
+    cause and its remedy.
+    """
+    if not is_truncated_response(cleaned) or cleaned.strip():
+        return
+    diagnostics = format_response_diagnostics(
+        chunk_id=chunk_id,
+        # Everything the model produced was reasoning, by construction: the
+        # payload was non-empty before think-tag removal and empty after.
+        reasoning_content_len=raw_len,
+    )
+    hint = empty_length_truncated_hint(
+        "consider raising the LLM's output token limit or disabling thinking "
+        "mode for this role",
+        reasoning_consumed_budget=True,
+    )
+    message = (
+        f"Received empty {cache_type} content after think-tag removal "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    raise EmptyTruncatedResponseError(message)
+
+
 async def use_llm_func_with_cache(
     user_prompt: str,
     use_llm_func: callable,
@@ -4792,7 +4830,11 @@ async def use_llm_func_with_cache(
         # ``remove_think_tags`` re-wraps its result, so the marker survives
         # sanitization and both this cache guard and the caller (which reports
         # the truncation to pipeline status) read the same flag off ``res``.
+        raw_len = len(res)
         res = remove_think_tags(res)
+        _reject_empty_truncated_response(
+            res, raw_len=raw_len, cache_type=cache_type, chunk_id=chunk_id
+        )
         res_truncated = is_truncated_response(res)
 
         # Generate timestamp for cache miss (LLM call completion time)
@@ -4846,7 +4888,12 @@ async def use_llm_func_with_cache(
 
     # Generate timestamp for non-cached LLM call
     current_timestamp = int(time.time())
-    return remove_think_tags(res), current_timestamp
+    raw_len = len(res)
+    cleaned = remove_think_tags(res)
+    _reject_empty_truncated_response(
+        cleaned, raw_len=raw_len, cache_type=cache_type, chunk_id=chunk_id
+    )
+    return cleaned, current_timestamp
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:

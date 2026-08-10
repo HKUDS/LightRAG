@@ -2101,6 +2101,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     full_text=full_text,
                     file_path=file_path,
                 )
+                # Operation-scoped truncation record, fed by both KG stages
+                # below and stamped onto whichever terminal transition this
+                # operation reaches — the same durable evidence the normal
+                # pipeline writes, for the path that does not go through it.
+                truncation_tally = TokenLimitTruncationTally()
                 try:
                     # Stage 1 (barrier): persist chunks BEFORE extraction.
                     # Extraction records per-chunk LLM cache references
@@ -2154,7 +2159,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # extraction, never call the LLM again and merge a
                     # different result into a partially applied operation.
                     chunk_results = await self._process_extract_entities(
-                        inserting_chunks, pipeline_status, pipeline_status_lock
+                        inserting_chunks,
+                        pipeline_status,
+                        pipeline_status_lock,
+                        truncation_tally=truncation_tally,
                     )
                     staging_flush = [
                         self.text_chunks,
@@ -2213,6 +2221,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             entity_chunks_storage=self.entity_chunks,
                             relation_chunks_storage=self.relation_chunks,
                             file_path=file_path,
+                            truncation_tally=truncation_tally,
                         )
 
                     # ---- Commit: flush ALL derived stores, union the patch
@@ -2241,6 +2250,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         base_row=status_row,
                         journal=None,
                         chunks_list=final_chunks_list,
+                        metadata_extra=truncation_tally.as_metadata_extra(),
                     )
                 except BaseException as op_exc:
                     # Journal is durable: record FAILED, keep the journal and
@@ -2260,6 +2270,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             base_row=status_row,
                             journal=failed_journal,
                             error_msg=str(op_exc)[:500],
+                            metadata_extra=truncation_tally.as_metadata_extra(),
                         )
                     except Exception as bookkeeping_error:
                         logger.error(
@@ -2424,6 +2435,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         file_path: str | None = None,
         chunks_list: list[str] | None = None,
         error_msg: str | None = None,
+        metadata_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Upsert the doc_status row for a custom-chunk operation.
 
@@ -2478,6 +2490,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             payload["metadata"].pop(CUSTOM_CHUNK_PATCH_METADATA_KEY, None)
         else:
             payload["metadata"][CUSTOM_CHUNK_PATCH_METADATA_KEY] = journal
+
+        # Additive, unlike the pipeline's transition metadata: that path
+        # rebuilds from a carry-over whitelist, so an absent truncation key
+        # CLEARS the previous attempt's record (a full reprocess replaces the
+        # document's whole graph contribution). Here ``base_row`` is copied
+        # verbatim, and a patch ADDS to the base document rather than
+        # replacing it — so a clean patch must leave the base run's record
+        # standing, because the graph objects it describes are still there.
+        if metadata_extra:
+            payload["metadata"].update(metadata_extra)
 
         if error_msg is not None:
             payload["error_msg"] = error_msg

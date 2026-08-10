@@ -24,7 +24,11 @@ import pytest
 import lightrag.lightrag as lightrag_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
-from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.utils import (
+    EmbeddingFunc,
+    LLM_TRUNCATION_METADATA_KEY,
+    Tokenizer,
+)
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     make_custom_chunk_id,
@@ -389,5 +393,70 @@ async def test_delete_includes_staged_patch_chunks(tmp_path, monkeypatch):
         assert (
             await rag.text_chunks.get_by_id(_chunk_id("doc-1", "alice is here")) is None
         )
+    finally:
+        await rag.finalize_storages()
+
+
+def _truncating_extraction(rag, monkeypatch, *, then_fail: bool = False):
+    """Extraction that reports a token-limit truncation into the caller's tally.
+
+    Scoped to the plumbing this covers: whether ``ainsert_custom_chunks``
+    creates an operation tally, hands it to the KG stages, and stamps it onto
+    the terminal transition. What makes extraction record is covered by
+    tests/extraction/test_truncation_reporting.py.
+    """
+
+    async def fake_extract(chunks, *args, truncation_tally=None, **kwargs):
+        assert truncation_tally is not None, (
+            "ainsert_custom_chunks must hand a truncation tally to extraction"
+        )
+        for chunk_id in chunks:
+            truncation_tally.record("initial", chunk_id)
+        if then_fail:
+            raise RuntimeError("extraction exploded")
+        return []
+
+    monkeypatch.setattr(rag, "_process_extract_entities", fake_extract)
+
+
+@pytest.mark.asyncio
+async def test_custom_chunk_commit_records_truncation(tmp_path, monkeypatch):
+    """A custom-chunk operation is a document-producing path too: its
+    truncations must reach durable metadata, not just transient status."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _truncating_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert summary is not None, (
+            "the operation truncated but left no record on the document"
+        )
+        assert summary["stages"] == {"initial": 1}
+        assert summary["samples"] == [_chunk_id("doc-1", "alice is here")]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_custom_chunk_failure_records_truncation(tmp_path, monkeypatch):
+    """Truncation is frequently why the operation failed — keep the evidence
+    on the FAILED row, alongside the retained journal."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _truncating_extraction(rag, monkeypatch, then_fail=True)
+        with pytest.raises(Exception, match="extraction exploded"):
+            await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.FAILED.value
+        assert _journal(row) is not None, "the recovery journal must survive"
+        summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert summary is not None, (
+            "the operation truncated but the failure path left no record"
+        )
+        assert summary["stages"] == {"initial": 1}
     finally:
         await rag.finalize_storages()

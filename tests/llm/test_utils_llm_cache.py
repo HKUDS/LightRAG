@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.utils import (
     TruncatedResponse,
     is_truncated_response,
@@ -180,3 +181,67 @@ async def test_use_llm_func_with_cache_rejects_json_schema_response_format():
         )
 
     llm_func.assert_not_awaited()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache_enabled", [False, True])
+async def test_truncated_response_emptied_by_think_removal_is_rejected(cache_enabled):
+    """The one empty+length shape no binding can see.
+
+    A thinking model that exhausts its budget inside the reasoning trace
+    returns ``<think>...</think>`` with no answer after it. That payload is
+    NON-empty, so every binding's own empty-content check passes it through;
+    it only becomes visibly empty after think-tag removal. Returning it let
+    extraction index an empty graph and still report PROCESSED.
+    """
+    llm_func = AsyncMock(
+        return_value=TruncatedResponse("<think>let me carefully consider</think>")
+    )
+
+    with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+        await use_llm_func_with_cache(
+            "extract prompt",
+            llm_func,
+            llm_response_cache=_FakeKVStorage() if cache_enabled else None,
+            chunk_id="chunk-001",
+        )
+
+    message = str(excinfo.value)
+    assert "Received empty extract content after think-tag removal" in message
+    assert "chunk_id=chunk-001" in message
+    # Everything the model produced was reasoning, by construction.
+    assert "reasoning_content_len=40" in message
+    assert "budget consumed by reasoning" in message
+    assert "output token limit" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_an_untruncated_empty_response_is_still_returned():
+    """Scope: only the token-limit case escalates. A model that legitimately
+    answers with nothing (or with reasoning only, having finished normally)
+    keeps its previous behavior."""
+    llm_func = AsyncMock(return_value="<think>done thinking</think>")
+
+    result, _ = await use_llm_func_with_cache(
+        "extract prompt", llm_func, llm_response_cache=None
+    )
+
+    assert result == ""
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_a_truncated_response_with_content_after_the_think_block_survives():
+    """The rejection must not swallow the salvage path."""
+    llm_func = AsyncMock(
+        return_value=TruncatedResponse('<think>reasoning</think>{"entities":[{"name')
+    )
+
+    result, _ = await use_llm_func_with_cache(
+        "extract prompt", llm_func, llm_response_cache=None
+    )
+
+    assert result == '{"entities":[{"name'
+    assert is_truncated_response(result)
