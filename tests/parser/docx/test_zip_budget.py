@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import struct
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,9 @@ from lightrag.parser.docx.zip_budget import (
     DocxDecompressionBudgetError,
     enforce_docx_decompression_budget,
 )
+
+# CI runs only ``-m offline``; these use tmp files only, no live services.
+pytestmark = pytest.mark.offline
 
 _CONTENT_TYPES = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -64,18 +68,30 @@ def _write_docx(path: Path, *, body_xml: str, extra_members: int = 0) -> Path:
     return path
 
 
-def _bomb(path: Path, *, uncompressed_mib: int = 200) -> Path:
-    """A high-ratio .docx: many small text nodes summing to ~N MiB.
+@lru_cache(maxsize=8)
+def _bomb_bytes(uncompressed_mib: int) -> bytes:
+    """The bomb archive bytes for a given uncompressed size, built once.
 
     Deliberately NOT one giant ``<w:t>``: lxml caps a single text node at
     10 MB, so the single-node shape reports a parse error instead of the
     unbounded expansion this guard exists to stop. Many ordinary-sized nodes
     is both the realistic worst case and the one that actually expands.
+
+    Cached because deflating a ~200 MiB body at level 9 costs ~1s and six
+    tests build the byte-identical fixture — the cache turns six builds into
+    one with no loss of coverage.
     """
     para = "<w:p><w:r><w:t>" + ("A" * 900) + "</w:t></w:r></w:p>"
-    return _write_docx(
-        path, body_xml=para * ((uncompressed_mib * 1024 * 1024) // len(para))
-    )
+    body_xml = para * ((uncompressed_mib * 1024 * 1024) // len(para))
+    buf = io.BytesIO()
+    _write_docx(buf, body_xml=body_xml)
+    return buf.getvalue()
+
+
+def _bomb(path: Path, *, uncompressed_mib: int = 200) -> Path:
+    """A high-ratio .docx written to ``path`` from the cached bomb bytes."""
+    path.write_bytes(_bomb_bytes(uncompressed_mib))
+    return path
 
 
 def _benign(path: Path) -> Path:
@@ -546,9 +562,7 @@ def test_cancel_during_validation_does_not_destroy_a_prior_sidecar(
     assert sorted(p.name for p in parsed_dir.iterdir()) == survivors
 
 
-def test_pipeline_cancel_event_raises_the_catchable_cancel_type(
-    tmp_path, monkeypatch
-):
+def test_pipeline_cancel_event_raises_the_catchable_cancel_type(tmp_path, monkeypatch):
     """The checkpoint must raise LLMBridgePipelineCancelled, not CancelledError.
 
     The production cancel path (_watch_pipeline_cancellation) only SETS

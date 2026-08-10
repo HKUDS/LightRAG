@@ -28,7 +28,6 @@ from __future__ import annotations
 import io
 import zipfile
 from pathlib import Path
-from typing import Any
 
 from lightrag.constants import (
     DEFAULT_DOCX_MAX_COMPRESSION_RATIO,
@@ -53,7 +52,17 @@ def _limits() -> tuple[int, int, int, int]:
 
     Live-read (not import-time) for the same reason the smart_heading and
     CHUNK_P_REFERENCES_* knobs are: tests and embedded callers set these
-    around a single parse. A non-positive value disables that one gate.
+    around a single parse.
+
+    Returns ``(max_uncompressed, max_ratio, ratio_floor, max_entries)``. For
+    the three GATES — ``max_uncompressed``, ``max_ratio``, ``max_entries`` — a
+    non-positive value disables that gate. ``ratio_floor`` is NOT a gate: it is
+    the small-file EXEMPTION threshold for the ratio gate (the ratio is only
+    checked once uncompressed size exceeds it, because small documents
+    legitimately compress far better than large ones). A non-positive
+    ``ratio_floor`` therefore does the OPPOSITE of "disable" — it removes the
+    exemption and makes the ratio gate apply to every non-empty archive, its
+    strictest setting.
     """
     return (
         get_env_value(
@@ -93,7 +102,13 @@ def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> N
     """
     max_uncompressed, max_ratio, ratio_floor, max_entries = _limits()
 
-    handle: Any = io.BytesIO(source) if isinstance(source, bytes) else source
+    # Single dispatch on the source union: derive the ZIP handle and the
+    # compressed (on-disk / in-memory) size together, so the two never drift.
+    handle: Path | io.BytesIO
+    if isinstance(source, bytes):
+        handle, compressed = io.BytesIO(source), len(source)
+    else:
+        handle, compressed = source, source.stat().st_size
     try:
         with zipfile.ZipFile(handle) as zf:
             infos = zf.infolist()
@@ -115,8 +130,8 @@ def enforce_docx_decompression_budget(source: Path | bytes, file_path: str) -> N
 
     # Ratio is measured against the whole archive, not against the summed
     # compress_size: the gap between them (local headers, the central
-    # directory itself) is part of what the attacker had to send.
-    compressed = len(source) if isinstance(source, bytes) else source.stat().st_size
+    # directory itself) is part of what the attacker had to send. ``compressed``
+    # was derived above in the same dispatch that produced ``handle``.
     if (
         max_ratio > 0
         and compressed > 0

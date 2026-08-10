@@ -178,11 +178,12 @@ DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 # DOCX_RATIO_FLOOR_BYTES / DOCX_MAX_ENTRIES, read live at parse time.
 DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 DEFAULT_DOCX_MAX_COMPRESSION_RATIO = 100
+# RATIO_FLOOR_BYTES is the small-file exemption threshold for the ratio gate,
+# not a gate itself: a non-positive value removes the exemption (strictest),
+# it does not disable the ratio gate. See lightrag/parser/docx/zip_budget.py.
 DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
-# Member-count ceiling, checked after ``zipfile.ZipFile`` builds the ZipInfo
-# list. It bounds how many members a .docx may declare, not the cost of the
-# central-directory walk that produces the count (that walk runs in the parser
-# executor, so it costs a parse thread but not the event loop).
+# Member-count ceiling. Its "checked after the central-directory walk" scope
+# note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
 
 # Zip-bomb guards for the result BUNDLE an external parser engine (docling,

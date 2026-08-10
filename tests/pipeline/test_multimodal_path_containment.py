@@ -29,6 +29,9 @@ import pytest
 
 from lightrag.pipeline import _SidecarPathOutcome, _resolve_sidecar_image_path
 
+# CI runs only ``-m offline``; these use tmp files only, no live services.
+pytestmark = pytest.mark.offline
+
 
 @pytest.fixture
 def sidecar_dir(tmp_path: Path) -> Path:

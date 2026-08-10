@@ -1114,7 +1114,9 @@ async def test_client_local_result_bundle_byte_budget_is_enforced(
     monkeypatch.setenv("MINERU_API_MODE", "local")
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
     monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
-    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "1")  # any real zip trips
+    monkeypatch.setenv(
+        "PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "1"
+    )  # any real zip trips
 
     src = tmp_path / "demo.pdf"
     src.write_bytes(b"PDF" * 50)
