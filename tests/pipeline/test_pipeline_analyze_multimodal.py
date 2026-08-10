@@ -33,8 +33,12 @@ import numpy as np
 import pytest
 
 from lightrag import LightRAG, ROLES, RoleLLMConfig
-from lightrag.exceptions import MultimodalAnalysisError
-from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.exceptions import MultimodalAnalysisError, PipelineCancelledException
+from lightrag.utils import (
+    EmbeddingFunc,
+    LLM_TRUNCATION_METADATA_KEY,
+    Tokenizer,
+)
 
 
 @pytest.fixture
@@ -1757,5 +1761,280 @@ async def test_truncated_vlm_response_not_cached_and_recomputed(tmp_path):
             process_options="i",
         )
         assert len(call_log) == 2
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_truncated_analysis_is_recorded_on_the_handoff_dict(tmp_path):
+    """Codex review (PR #3607): an accepted-but-truncated analysis feeds a
+    partial description into KG extraction, so it must reach the document's
+    durable metadata — not just the server log. The analyze stage records it
+    on the hand-off dict; the process stage merges it at the terminal write
+    (a doc_status stamp here would die at the PROCESSING transition, the key
+    being per-attempt rather than carried over)."""
+    from lightrag.utils import TruncatedResponse
+
+    async def truncated_vlm(prompt, **kwargs):
+        return TruncatedResponse(
+            json.dumps(
+                {
+                    "name": "fig-1",
+                    "type": "Chart",
+                    "description": "partial but parseable description",
+                }
+            )
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=truncated_vlm)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        analyzed = await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+
+        summary = analyzed.get("llm_truncation")
+        assert summary is not None, (
+            "an accepted truncated analysis left no record on the hand-off dict"
+        )
+        assert summary["stages"] == {"multimodal": 1}
+        assert summary["samples"] == ["drawings/im-001"]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_truncation_is_recorded_even_with_the_analysis_cache_disabled(
+    tmp_path, monkeypatch
+):
+    """The old marker check lived inside the cache-write guard, so with
+    enable_llm_cache_for_entity_extract off it never ran at all — the same
+    gap issue #3601 point 3 describes for extraction."""
+    from lightrag.utils import TruncatedResponse
+
+    async def truncated_vlm(prompt, **kwargs):
+        return TruncatedResponse(
+            json.dumps({"name": "f", "type": "Chart", "description": "partial"})
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=truncated_vlm)
+    rag.enable_llm_cache_for_entity_extract = False
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        analyzed = await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+
+        assert analyzed.get("llm_truncation") is not None
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_clean_analysis_leaves_no_truncation_record(tmp_path):
+    async def clean_vlm(prompt, **kwargs):
+        return json.dumps({"name": "fig-1", "type": "Chart", "description": "complete"})
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=clean_vlm)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, _sidecar_path = _write_sidecar_fixtures(tmp_path)
+
+        analyzed = await rag.analyze_multimodal(
+            doc_id=doc_id,
+            file_path="fixture.pdf",
+            parsed_data=parsed_data,
+            process_options="i",
+        )
+
+        assert "llm_truncation" not in analyzed
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_fail_fast_exit_still_hands_over_the_truncation_record(tmp_path):
+    """Codex review (PR #3607): sidecar groups run sequentially, so a drawing
+    whose truncated analysis was accepted (and written to the sidecar) can be
+    followed by a failing table whose fail-fast raise used to skip the
+    success-only hand-off — the recorded event never left the stage. The
+    hand-off must happen on every exit."""
+    from lightrag.utils import TruncatedResponse
+
+    async def truncated_vlm(prompt, **kwargs):
+        return TruncatedResponse(
+            json.dumps(
+                {
+                    "name": "fig-1",
+                    "type": "Chart",
+                    "description": "partial but parseable description",
+                }
+            )
+        )
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=truncated_vlm)
+    await rag.initialize_storages()
+    try:
+        doc_id, parsed_data, sidecar_path = _write_sidecar_fixtures(tmp_path)
+        # A table with no ``format`` hard-fails deterministically (no LLM
+        # call), AFTER the drawings group has fully completed.
+        (sidecar_path.parent / "doc.tables.json").write_text(
+            json.dumps(
+                {
+                    "tables": {
+                        "tb-001": {
+                            "caption": "Table 1",
+                            "content": "<table><tr><td>A</td></tr></table>",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(MultimodalAnalysisError):
+            await rag.analyze_multimodal(
+                doc_id=doc_id,
+                file_path="fixture.pdf",
+                parsed_data=parsed_data,
+                process_options="it",
+            )
+
+        summary = parsed_data.get("llm_truncation")
+        assert summary is not None, (
+            "the fail-fast exit dropped the accepted truncated analysis: its "
+            "partial result is in the sidecar but the record never left the "
+            "analyze stage"
+        )
+        assert summary["stages"] == {"multimodal": 1}
+        assert summary["samples"] == ["drawings/im-001"]
+        # The accepted partial analysis really did persist.
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        assert payload["drawings"]["im-001"]["llm_analyze_result"]["status"] == (
+            "success"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+def _make_worker_ctx():
+    import asyncio
+    from lightrag.pipeline import _BatchRunContext
+    from lightrag.parser.registry import parser_specs_snapshot
+
+    return _BatchRunContext(
+        pipeline_status={
+            "latest_message": "",
+            "history_messages": [],
+            "cancellation_requested": False,
+        },
+        pipeline_status_lock=asyncio.Lock(),
+        semaphore=asyncio.Semaphore(1),
+        total_files=1,
+        parse_queues={
+            "native": asyncio.Queue(),
+            "mineru": asyncio.Queue(),
+            "docling": asyncio.Queue(),
+        },
+        parser_specs=parser_specs_snapshot(),
+        q_analyze=asyncio.Queue(),
+        q_process=asyncio.Queue(),
+    )
+
+
+async def _run_analyze_worker_once(rag, ctx, doc_id, status_doc):
+    import asyncio
+
+    worker = asyncio.create_task(rag._analyze_worker(ctx))
+    await ctx.q_analyze.put((doc_id, status_doc, {"content": "body"}))
+    await ctx.q_analyze.join()
+    worker.cancel()
+    try:
+        await worker
+    except asyncio.CancelledError:
+        pass
+
+
+def _pending_status_doc(file_path: str):
+    from lightrag.base import DocProcessingStatus, DocStatus
+
+    return DocProcessingStatus(
+        content_summary="",
+        content_length=0,
+        file_path=file_path,
+        status=DocStatus.PENDING,
+        created_at="2026-05-14T00:00:00Z",
+        updated_at="2026-05-14T00:00:00Z",
+        track_id="t",
+        content_hash="h",
+    )
+
+
+@pytest.mark.parametrize(
+    "raise_exc",
+    [
+        MultimodalAnalysisError("forced failure for test"),
+        PipelineCancelledException("cancelled mid-VLM for test"),
+    ],
+    ids=["fail-fast", "cancelled"],
+)
+@pytest.mark.asyncio
+async def test_analyze_worker_stamps_truncation_on_the_failed_row(tmp_path, raise_exc):
+    """Codex review (PR #3607): a document that fails (or is cancelled) at
+    the analyze stage never reaches the process stage's terminal writes, so
+    the analyze worker's own FAILED transition must stamp the handed-over
+    truncation record — otherwise an accepted truncated analysis whose
+    partial result is already in the sidecar leaves no durable trace."""
+    from dataclasses import asdict
+    from lightrag.base import DocStatus
+
+    async def vlm_func(prompt, **kwargs):
+        return ""
+
+    rag = _build_rag(tmp_path, vlm_process_enable=True, vlm_func=vlm_func)
+    await rag.initialize_storages()
+    try:
+        doc_id = "doc-fail-trunc-1"
+        status_doc = _pending_status_doc("demo.pdf")
+        await rag.doc_status.upsert({doc_id: asdict(status_doc)})
+
+        handed_over = {
+            "events": 1,
+            "affected": 1,
+            "stages": {"multimodal": 1},
+            "samples": ["drawings/im-001"],
+        }
+
+        async def _record_then_raise(**kwargs):
+            # What analyze_multimodal's every-exit finally does: the record
+            # is on the hand-off dict by the time the exception escapes.
+            kwargs["parsed_data"]["llm_truncation"] = dict(handed_over)
+            raise raise_exc
+
+        rag.analyze_multimodal = _record_then_raise  # type: ignore[assignment]
+
+        ctx = _make_worker_ctx()
+        await _run_analyze_worker_once(rag, ctx, doc_id, status_doc)
+
+        refreshed = await rag.doc_status.get_by_id(doc_id)
+        if not isinstance(refreshed, dict):
+            refreshed = asdict(refreshed)
+        assert refreshed["status"] == DocStatus.FAILED
+        record = (refreshed.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert record == handed_over, (
+            "the analyze-stage FAILED transition dropped the truncation "
+            "record handed over by analyze_multimodal"
+        )
+        assert ctx.q_process.empty()
     finally:
         await rag.finalize_storages()

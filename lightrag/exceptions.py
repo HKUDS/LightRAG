@@ -63,6 +63,28 @@ class APITimeoutError(APIConnectionError):
         super().__init__(message="Request timed out.", request=request)
 
 
+class EmptyTruncatedResponseError(RuntimeError):
+    """A token-limit-truncated LLM response that carried nothing usable.
+
+    Two raise surfaces share it (issue #3601 gap 4):
+
+    - the provider bindings (OpenAI/Gemini), when the response is empty and
+      the finish reason is the output token limit;
+    - ``use_llm_func_with_cache``, for the case no binding can see: a thinking
+      model exhausts its budget inside the reasoning trace and returns
+      ``<think>...</think>`` with no answer after it — NON-empty at the
+      binding's own check, visibly empty only after ``remove_think_tags``.
+
+    Deliberately absent from every binding's retry predicate, unlike the
+    retryable response-validity errors: hitting the token limit is a property
+    of the prompt and the configured output budget, so re-running the same
+    call re-buys the same full-budget generation just to fail identically.
+    Nothing was generated and generation was cut off — there is nothing to
+    salvage. Failing (once) is what stops an empty knowledge graph from being
+    indexed and reported as success.
+    """
+
+
 class StorageNotInitializedError(RuntimeError):
     """Raised when storage operations are attempted before initialization."""
 

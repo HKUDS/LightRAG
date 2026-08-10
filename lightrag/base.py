@@ -805,6 +805,59 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
+
+        Ranks by node degree, descending, and **ties break on the label,
+        ascending** — the same tie-break :meth:`get_popular_labels` documents,
+        for the same reason. Degree alone does not order a real graph: leaf
+        entities of degree 1 or 2 outnumber everything else, so the ``max_nodes``
+        cutoff almost always lands inside a band of equal-degree entities, and
+        whatever orders that band decides which nodes the caller ever sees.
+        Left to the backend's natural order that is node INSERTION order (a
+        stable sort in Python, an unconstrained plan order in SQL/Cypher), so
+        re-ingesting the same corpus with the documents in a different order
+        returned a different graph at the same ``max_nodes`` — the defect fixed
+        for ``get_popular_labels`` first, then here.
+
+        Order the labels by code point (SQL ``COLLATE "C"``, not a locale
+        collation) so every backend agrees with Python's ``str`` comparison.
+
+        **Scope: the ``*`` whole-graph ranking on every backend.** The rule
+        should govern the non-wildcard path too -- a BFS level that overflows
+        ``max_nodes`` faces the same tie, and it decides both which neighbours
+        survive and which get expanded next -- but today only
+        :class:`~lightrag.kg.networkx_impl.NetworkXStorage` and
+        :class:`~lightrag.kg.pgtable_impl.PGTableGraphStorage` order their BFS
+        levels that way. Neo4j, Memgraph, Mongo and OpenSearch admit same-depth
+        nodes in traversal order, so their non-wildcard cutoff is still
+        ingestion-order dependent. Tracked in issue #3612; a new backend should
+        implement both paths rather than match that gap.
+
+        **Known deviation -- PGGraphStorage (Apache AGE)** ranks the ``*`` view
+        on ``degree DESC, v.id ASC``, the internal vertex id, not the label.
+        Selecting only ``v.id`` lets the vertex scan be index-only; the label
+        lives in the vertex ``properties``, so ordering on it forces a full heap
+        read (~1.5x buffers, ~25% wall clock on a 200k-vertex/600k-edge graph),
+        and no index removes that -- the ORDER BY leads with an aggregate
+        computed from the edge table. The id is an insertion counter, so that
+        backend's view is stable for a given database but still varies with
+        ingestion order across databases holding the same graph, and its
+        :meth:`get_popular_labels` (which DOES order by label) can disagree with
+        its graph view at the same cutoff. Every other backend orders its ``*``
+        ranking on the label; do not copy the deviation into a new one.
+
+        **Known approximation -- OpenSearchGraphStorage** applies the rule, but
+        only to the candidates its degree aggregations surfaced, and that set is
+        approximate: the two endpoint aggregations are each capped at
+        ``max_nodes``, so an entity whose in- and out-degree both fall outside
+        their respective top-N never reaches the ranking however high its
+        undirected degree is, and terms aggregations are count-approximate
+        across shards. Tracked in issue #3613; it needs a storage-shape change,
+        not an ordering one.
+
+        This constrains WHICH nodes survive truncation, not the order of
+        :class:`KnowledgeGraph.nodes` in the response — implementations
+        materialize that list from a dict or a subgraph view, and callers that
+        need a specific presentation order must sort it themselves.
         """
 
     @abstractmethod
