@@ -1025,6 +1025,49 @@ class TestCli:
         assert excinfo.value.code == 1
         assert "unsupported migration pair" in capsys.readouterr().out
 
+    def test_shared_data_is_initialized_before_any_storage_is_built(self, monkeypatch):
+        """Regression: the CLI must call initialize_share_data() first.
+
+        The graph backends acquire shared-storage locks inside initialize(),
+        which raise "Shared data not initialized. Call initialize_share_data()
+        before using locks!" when it was skipped. Constructing the storage
+        succeeds, so only running the real backend surfaces this — it was found
+        by the manual AGE end-to-end run, not by these fakes. Every other tool
+        in lightrag/tools does the same call, so this pins the convention.
+        """
+        import lightrag.kg.shared_storage as shared_storage
+
+        order: list[str] = []
+
+        def recording_initialize_share_data(*args, **kwargs):
+            order.append(f"initialize_share_data{args or ()}")
+
+        monkeypatch.setattr(
+            shared_storage, "initialize_share_data", recording_initialize_share_data
+        )
+
+        source, target = self._fakes()
+        import lightrag.kg.factory as factory
+
+        instances = {"PGGraphStorage": source, "PGTableGraphStorage": target}
+
+        def fake_get_storage_class(name):
+            def ctor(**kwargs):
+                order.append(f"build:{name}")
+                return instances[name]
+
+            return ctor
+
+        monkeypatch.setattr(factory, "get_storage_class", fake_get_storage_class)
+
+        main([])
+
+        assert order, "initialize_share_data was never called"
+        assert order[0].startswith("initialize_share_data"), (
+            f"shared data must be initialized before any storage is built, got {order}"
+        )
+        assert "build:PGGraphStorage" in order
+
     def test_workspace_flag_overrides_env(self, monkeypatch):
         source, target = self._fakes()
         ctor_kwargs = _patch_factory(monkeypatch, source, target)

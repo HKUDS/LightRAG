@@ -906,6 +906,16 @@ async def _async_main(args: argparse.Namespace) -> int:
     target = None
     try:
         try:
+            # REQUIRED before any storage is initialized: the backends acquire
+            # shared-storage locks in initialize(), which raise "Shared data not
+            # initialized" without this. Every other tool in this directory does
+            # the same (rebuild_vdb, migrate_llm_cache, clean_llm_query_cache,
+            # source_conflict_repair); workers=1 because this is a standalone
+            # single-process CLI, so the locks stay plain asyncio objects.
+            from lightrag.kg.shared_storage import initialize_share_data
+
+            initialize_share_data(workers=1)
+
             source = await _build_graph_storage(args.source_backend, args.workspace)
             target = await _build_graph_storage(args.target_backend, args.workspace)
         except Exception as exc:
