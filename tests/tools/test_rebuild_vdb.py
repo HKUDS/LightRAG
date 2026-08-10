@@ -2,11 +2,12 @@
 
 Covers:
 - rebuild: payload fidelity against the authoritative write points,
-  bidirectional edge dedup, AGE quote stripping, dirty-data skipping,
-  drop-before-upsert ordering, batching with periodic flushes, and
-  error collection on persistently failing batches.
-- check: consistent stores, missing-record detection, legacy reverse
-  relation ids not being misreported, and batching.
+  bidirectional edge dedup, quote-bearing id preservation, dirty-data
+  skipping, drop-before-upsert ordering, batching with periodic flushes,
+  and error collection on persistently failing batches.
+- check: consistent stores, missing-record detection, quote-bearing ids
+  matching the VDB and being reported verbatim, legacy reverse relation ids
+  not being misreported, and batching.
 - merge: _merge_entities_impl raising VectorStorageConsistencyError on
   persistent VDB failure without deleting source entities.
 """
@@ -16,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
 from lightrag.tools.rebuild_vdb import (
-    _strip_agtype_quotes,
     check_vdb_consistency,
     rebuild_chunks_vdb,
     rebuild_entities_vdb,
@@ -29,6 +29,21 @@ from lightrag.utils import (
 )
 
 pytestmark = pytest.mark.offline
+
+
+# An entity_id whose surrounding double quotes are part of the id itself, and
+# which the ordinary extraction path can actually produce: normalize_entity_name
+# strips an outer quote pair only when the inner content carries no double quote
+# of its own, so '"Alice"' normalizes down to 'Alice' and never reaches the
+# graph quoted, while this form survives intact. Pre-normalization data and
+# ainsert_custom_kg can carry either shape.
+#
+# The deleted _strip_agtype_quotes corrupted every id of this shape (see
+# lightrag/tools/rebuild_vdb.py history): the AGE ``agtype::text`` cast emits
+# the scalar's raw content ('Bob', not '"Bob"'), so the helper never had a cast
+# artifact to remove and only ever ate real characters. Each test below pins one
+# of its former call sites; they fail behaviourally if the strip returns.
+QUOTE_BEARING_ID = '"Al"ice"'
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +175,21 @@ async def test_rebuild_entities_handles_missing_optional_fields():
 
 
 @pytest.mark.asyncio
+async def test_rebuild_entities_preserves_quote_bearing_entity_id():
+    # get_all_nodes() parses the whole ``properties`` object with json.loads, so
+    # entity_id arrives as a plain Python string and a quote here is part of the
+    # name. It must reach both the record id and entity_name unchanged, or the
+    # rebuilt entity stops matching its own graph node.
+    graph = make_graph(nodes=[node(QUOTE_BEARING_ID)])
+    vdb = MockVDB()
+
+    await rebuild_entities_vdb(graph, vdb, {})
+
+    entity_id = compute_mdhash_id(QUOTE_BEARING_ID, prefix="ent-")
+    assert vdb.records[entity_id]["entity_name"] == QUOTE_BEARING_ID
+
+
+@pytest.mark.asyncio
 async def test_rebuild_entities_skips_dirty_nodes():
     graph = make_graph(nodes=[node("Alice"), {"description": "no id"}, node("  ")])
     vdb = MockVDB()
@@ -282,15 +312,17 @@ async def test_rebuild_relationships_dedupes_bidirectional_edges():
 
 
 @pytest.mark.asyncio
-async def test_rebuild_relationships_strips_age_quotes():
-    # PG/AGE agtype::text casts wrap endpoint strings in double quotes
-    graph = make_graph(edges=[edge('"Alice"', '"Bob"')])
+async def test_rebuild_relationships_preserves_quote_bearing_endpoint_ids():
+    # get_all_edges already returns plain entity_ids, so a quote-bearing
+    # endpoint must reach the rebuilt record unchanged -- both in the payload
+    # and in the id it is hashed into.
+    graph = make_graph(edges=[edge(QUOTE_BEARING_ID, "Bob")])
     vdb = MockVDB()
 
     await rebuild_relationships_vdb(graph, vdb, {})
 
-    rel_id = compute_mdhash_id("AliceBob", prefix="rel-")
-    assert vdb.records[rel_id]["src_id"] == "Alice"
+    rel_id = compute_mdhash_id(QUOTE_BEARING_ID + "Bob", prefix="rel-")
+    assert vdb.records[rel_id]["src_id"] == QUOTE_BEARING_ID
     assert vdb.records[rel_id]["tgt_id"] == "Bob"
 
 
@@ -303,14 +335,6 @@ async def test_rebuild_relationships_skips_edges_without_endpoints():
 
     assert stats["rebuilt"] == 1
     assert stats["skipped"] == 1
-
-
-def test_strip_agtype_quotes():
-    assert _strip_agtype_quotes('"Alice"') == "Alice"
-    assert _strip_agtype_quotes("Alice") == "Alice"
-    assert _strip_agtype_quotes('"') == '"'
-    assert _strip_agtype_quotes(None) is None
-    assert _strip_agtype_quotes(3) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +472,39 @@ async def test_check_detects_missing_records():
     assert report["missing_entity_names"] == ["Bob"]
     assert report["missing_relations"] == 1
     assert report["missing_relation_pairs"] == ["Bob ~ Carol"]
+
+
+@pytest.mark.asyncio
+async def test_check_matches_quote_bearing_ids_against_the_vdb():
+    # The check hashes graph names into the ids it looks up, so rewriting a name
+    # makes it miss a record that is present. Rebuild and check must derive the
+    # same id from the same node/edge, or the tool reports phantom gaps and
+    # sends the operator into a needless (and billable) re-embed.
+    nodes = [node(QUOTE_BEARING_ID)]
+    edges = [edge(QUOTE_BEARING_ID, "Bob")]
+    graph = make_graph(nodes=nodes, edges=edges)
+    entities_vdb, relationships_vdb = seeded_vdbs(nodes, edges)
+
+    report = await check_vdb_consistency(graph, entities_vdb, relationships_vdb)
+
+    assert report["missing_entities"] == 0
+    assert report["missing_relations"] == 0
+    assert report["consistent"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_reports_quote_bearing_names_verbatim():
+    # The report is what the operator greps the graph with, so a name printed
+    # here has to be the name actually stored.
+    graph = make_graph(
+        nodes=[node(QUOTE_BEARING_ID)], edges=[edge(QUOTE_BEARING_ID, "Bob")]
+    )
+
+    report = await check_vdb_consistency(graph, MockVDB(), MockVDB())
+
+    assert report["consistent"] is False
+    assert report["missing_entity_names"] == [QUOTE_BEARING_ID]
+    assert report["missing_relation_pairs"] == [f"{QUOTE_BEARING_ID} ~ Bob"]
 
 
 @pytest.mark.asyncio
