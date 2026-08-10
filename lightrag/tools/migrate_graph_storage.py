@@ -26,7 +26,8 @@ each undirected edge once in canonical order ``src_id = min(a, b)``,
 non-ASCII ids and would produce duplicate edges). ``canonicalize_edge`` is
 the single place this tool decides canonical order.
 
-Usage (dry run is the default; nothing is written without --apply):
+Usage (dry run is the default; no graph data is written without
+--apply, though initializing the backends still creates their schema):
 
     python -m lightrag.tools.migrate_graph_storage
     python -m lightrag.tools.migrate_graph_storage --apply [--workspace WS]
