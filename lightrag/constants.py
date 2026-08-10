@@ -165,11 +165,12 @@ DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 # buys at most the size it declared — which is the size this budget bounds.
 #
 # The ratio gate is what actually closes the amplification: 512 MiB alone would
-# still let a ~1 MB upload expand 500x. At 100:1 an attacker must upload ~5 MB
-# to reach the hard ceiling, which puts the upload-size and rate controls back
-# in play. It applies only above DEFAULT_DOCX_RATIO_FLOOR_BYTES, because small
-# documents legitimately compress far better than large ones and a floor-less
-# ratio gate would reject them.
+# still let a ~1 MB upload expand 500x. It is enforced both archive-wide and
+# against the cumulative expansion by which individual members exceed their
+# ratio budgets, so member splitting cannot dilute it. The allowance is the
+# fixed DEFAULT_DOCX_RATIO_FLOOR_BYTES plus archive bytes outside those members
+# at 1:1: real stored media can support repetitive XML, while padding cannot buy
+# another ratio-cap multiple of expansion.
 # The same budget governs the other OPC/OOXML formats the legacy engine parses
 # locally — .pptx (python-pptx) and .xlsx (openpyxl) are the identical ZIP-bomb
 # class — so the DOCX_* knobs below bound all three, enforced in the legacy
@@ -178,13 +179,28 @@ DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 # DOCX_RATIO_FLOOR_BYTES / DOCX_MAX_ENTRIES, read live at parse time.
 DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 DEFAULT_DOCX_MAX_COMPRESSION_RATIO = 100
-# RATIO_FLOOR_BYTES is the small-file exemption threshold for the ratio gate,
-# not a gate itself: a non-positive value removes the exemption (strictest),
-# it does not disable the ratio gate. See lightrag/parser/docx/zip_budget.py.
+# RATIO_FLOOR_BYTES exempts small content from the two ratio views above; it is
+# not a gate itself. Archive-wide it acts as a size THRESHOLD: the ratio is only
+# checked once the uncompressed total exceeds it. Per member it acts as a fixed
+# ALLOWANCE, added to the 1:1 supporting-archive-bytes budget for the cumulative
+# excess by which over-ratio members overrun their individual ratio budgets — so
+# it is an amount of tolerated expansion there, not a file-size cut-off. A
+# non-positive value removes the exemption (strictest) in both views, it does not
+# disable the ratio gate. See lightrag/parser/docx/zip_budget.py.
 DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 # Member-count ceiling. Its "checked after the central-directory walk" scope
 # note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
 DEFAULT_DOCX_MAX_ENTRIES = 10_000
+
+# Native DOCX embedded-image export budgets. Unlike the archive-wide limits
+# above, these cap the bytes materialized into ``*.blocks.assets``: one image
+# and the sum retained for one document. Sized like the native Markdown image
+# budgets so DEFAULT_MAX_PARALLEL_PARSE_NATIVE=5 keeps attacker-controlled
+# output bounded across concurrent parses. Env: NATIVE_DOCX_IMAGE_MAX_BYTES /
+# NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES, read live for each parse. Non-positive
+# values fall back to these safe defaults rather than disabling the guard.
+DEFAULT_NATIVE_DOCX_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
 # Zip-bomb guards for the result BUNDLE an external parser engine (docling,
 # mineru) returns — a zip fetched from an operator-configured server and
