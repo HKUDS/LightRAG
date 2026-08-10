@@ -46,7 +46,11 @@ class LegacyParser(BaseParser):
         # direction).
         pdf_password = os.getenv("PDF_DECRYPT_PASSWORD") or None
         text = await asyncio.to_thread(
-            extract_text, file_bytes, suffix, pdf_password=pdf_password
+            extract_text,
+            file_bytes,
+            suffix,
+            pdf_password=pdf_password,
+            file_path=ctx.file_path,
         )
         # The binary extractors (pdf/docx/pptx/xlsx) return whatever the
         # library yields — a scanned PDF with no text layer extracts to pure

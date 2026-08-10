@@ -115,6 +115,7 @@ from lightrag.parser.routing import (
 from lightrag.utils import (
     generate_track_id,
     move_file_to_parsed_dir,
+    validate_file_path_security,
 )
 from lightrag.kg.shared_storage import append_pipeline_history
 from lightrag.utils_pipeline import count_active_documents, read_source_file_basename
@@ -1540,60 +1541,6 @@ class DocumentManager:
 
         engine = resolve_file_parser_engine(filename)
         return parser_engine_supports_suffix(engine, parser_suffix(filename))
-
-
-def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
-    """
-    Validate file path security to prevent Path Traversal attacks.
-
-    Args:
-        file_path_str: The file path string to validate
-        base_dir: The base directory that the file must be within
-
-    Returns:
-        Path: Safe file path if valid, None if unsafe or invalid
-    """
-    if not file_path_str or not file_path_str.strip():
-        return None
-
-    try:
-        # Clean the file path string
-        clean_path_str = file_path_str.strip()
-
-        # Check for obvious path traversal patterns before processing
-        # This catches both Unix (..) and Windows (..\) style traversals
-        if ".." in clean_path_str:
-            # Additional check for Windows-style backslash traversal
-            if (
-                "\\..\\" in clean_path_str
-                or clean_path_str.startswith("..\\")
-                or clean_path_str.endswith("\\..")
-            ):
-                # logger.warning(
-                #     f"Security violation: Windows path traversal attempt detected - {file_path_str}"
-                # )
-                return None
-
-        # Normalize path separators (convert backslashes to forward slashes)
-        # This helps handle Windows-style paths on Unix systems
-        normalized_path = clean_path_str.replace("\\", "/")
-
-        # Create path object and resolve it (handles symlinks and relative paths)
-        candidate_path = (base_dir / normalized_path).resolve()
-        base_dir_resolved = base_dir.resolve()
-
-        # Check if the resolved path is within the base directory
-        if not candidate_path.is_relative_to(base_dir_resolved):
-            # logger.warning(
-            #     f"Security violation: Path traversal attempt detected - {file_path_str}"
-            # )
-            return None
-
-        return candidate_path
-
-    except (OSError, ValueError, Exception) as e:
-        logger.warning(f"Invalid file path detected: {file_path_str} - {str(e)}")
-        return None
 
 
 def get_doc_status_value(doc_status: Any) -> str:

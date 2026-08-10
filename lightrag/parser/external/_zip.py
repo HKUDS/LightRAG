@@ -14,6 +14,38 @@ import os
 import zipfile
 from pathlib import Path
 
+from lightrag.constants import (
+    DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES,
+    DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES,
+)
+from lightrag.utils import get_env_value
+
+
+def result_bundle_limits() -> tuple[int | None, int | None]:
+    """Live-read the external-engine result-bundle zip-bomb budget.
+
+    Returns ``(max_entries, max_total_bytes)`` for :func:`safe_extract_zip`,
+    read from the environment at call time so an operator whose legitimate
+    bundle is refused can raise the ceiling without a code change. A
+    non-positive value maps to ``None`` (that gate disabled) — ``safe_extract_zip``
+    treats ``None`` as unlimited, so passing 0 through raw would refuse every
+    bundle instead of disabling the check.
+    """
+    max_entries = get_env_value(
+        "PARSER_RESULT_BUNDLE_MAX_ENTRIES",
+        DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES,
+        int,
+    )
+    max_total_bytes = get_env_value(
+        "PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES",
+        DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES,
+        int,
+    )
+    return (
+        max_entries if max_entries > 0 else None,
+        max_total_bytes if max_total_bytes > 0 else None,
+    )
+
 
 def safe_extract_zip(
     payload: bytes,
@@ -64,4 +96,4 @@ def safe_extract_zip(
     return names
 
 
-__all__ = ["safe_extract_zip"]
+__all__ = ["result_bundle_limits", "safe_extract_zip"]

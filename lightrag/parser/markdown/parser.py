@@ -63,7 +63,12 @@ from shutil import rmtree
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
-from lightrag.constants import NATIVE_RAW_DIR_SUFFIX, PARSER_ENGINE_NATIVE
+from lightrag.constants import (
+    DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES,
+    DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES,
+    NATIVE_RAW_DIR_SUFFIX,
+    PARSER_ENGINE_NATIVE,
+)
 from lightrag.parser.external._common import raw_dir_for_parsed_dir
 from lightrag.parser.llm_bridge import (
     LLMBridgeCancelled,
@@ -81,9 +86,11 @@ from lightrag.utils import logger
 if TYPE_CHECKING:
     from lightrag.sidecar.ir import IRDoc
 
-# Zip-bomb guards for .textpack extraction.
-_TEXTPACK_MAX_ENTRIES = 10_000
-_TEXTPACK_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB uncompressed
+# Zip-bomb guards for .textpack extraction. A .textpack is attacker-uploaded
+# (unlike the docling/mineru result bundles that share these defaults), so it
+# stays env-less — a fixed ceiling, not an operator knob.
+_TEXTPACK_MAX_ENTRIES = DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES
+_TEXTPACK_MAX_TOTAL_BYTES = DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES
 
 # Per-DOCUMENT image ceilings (NATIVE_MD_IMAGE_MAX_BYTES bounds ONE image).
 # Sized against the default parse concurrency, DEFAULT_MAX_PARALLEL_PARSE_NATIVE

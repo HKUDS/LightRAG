@@ -168,6 +168,14 @@ _BINARY_EXTRACTORS = {
     "xlsx": _extract_xlsx,
 }
 
+# OPC/OOXML formats — all ZIP archives, all parsed locally by a library that
+# materializes the uncompressed parts (python-docx / python-pptx / openpyxl).
+# They share the decompression budget: guarding only .docx leaves .pptx and
+# .xlsx (registered above, reachable by default routing) exposed to the same
+# zip-bomb class (GHSA-2wpj-ffvv-2pq8) — .xlsx worse, since _extract_xlsx
+# deliberately load_workbook()s the bytes twice.
+_ZIP_OFFICE_SUFFIXES = frozenset({"docx", "pptx", "xlsx"})
+
 
 def _decode_text(file_bytes: bytes) -> str:
     """UTF-8 decode with the upload-path validation, raised on failure."""
@@ -188,15 +196,35 @@ def _decode_text(file_bytes: bytes) -> str:
 
 
 def extract_text(
-    file_bytes: bytes, suffix: str, *, pdf_password: str | None = None
+    file_bytes: bytes,
+    suffix: str,
+    *,
+    pdf_password: str | None = None,
+    file_path: str | None = None,
 ) -> str:
     """Extract plain text from ``file_bytes`` based on ``suffix`` (no dot).
 
     Synchronous; callers run it in a thread.  Raises
     :class:`LegacyExtractionError` (or the extractor's own exception) on
     failure.
+
+    ``file_path`` names the source in the decompression-budget error message;
+    it falls back to the suffix so a direct caller that omits it still gets a
+    usable message.
     """
     suffix = suffix.lower().lstrip(".")
+
+    # Decompression budget for the OPC/OOXML formats, enforced BEFORE the
+    # extractor library opens the archive (GHSA-2wpj-ffvv-2pq8). The native
+    # engine guards .docx; the default routing (``*:native-teP,*:legacy-R``)
+    # falls back here and reaches .pptx/.xlsx too, which native never handles,
+    # so the guard belongs at this dispatcher rather than in one per-format
+    # branch. Reads the ZIP central directory once and decompresses nothing.
+    if suffix in _ZIP_OFFICE_SUFFIXES:
+        from lightrag.parser.docx.zip_budget import enforce_docx_decompression_budget
+
+        enforce_docx_decompression_budget(file_bytes, file_path or suffix)
+
     extractor = _BINARY_EXTRACTORS.get(suffix)
     if extractor is _extract_pdf_pypdf:
         return _extract_pdf_pypdf(file_bytes, pdf_password)
