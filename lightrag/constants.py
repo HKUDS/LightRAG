@@ -179,9 +179,14 @@ DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 # DOCX_RATIO_FLOOR_BYTES / DOCX_MAX_ENTRIES, read live at parse time.
 DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 DEFAULT_DOCX_MAX_COMPRESSION_RATIO = 100
-# RATIO_FLOOR_BYTES is the small-file exemption threshold for the ratio gate,
-# not a gate itself: a non-positive value removes the exemption (strictest),
-# it does not disable the ratio gate. See lightrag/parser/docx/zip_budget.py.
+# RATIO_FLOOR_BYTES exempts small content from the two ratio views above; it is
+# not a gate itself. Archive-wide it acts as a size THRESHOLD: the ratio is only
+# checked once the uncompressed total exceeds it. Per member it acts as a fixed
+# ALLOWANCE, added to the 1:1 supporting-archive-bytes budget for the cumulative
+# excess by which over-ratio members overrun their individual ratio budgets — so
+# it is an amount of tolerated expansion there, not a file-size cut-off. A
+# non-positive value removes the exemption (strictest) in both views, it does not
+# disable the ratio gate. See lightrag/parser/docx/zip_budget.py.
 DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
 # Member-count ceiling. Its "checked after the central-directory walk" scope
 # note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
