@@ -9,12 +9,19 @@ from __future__ import annotations
 import posixpath
 import re
 import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from html import escape, unescape
 from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
+
+from lightrag.constants import (
+    DEFAULT_NATIVE_DOCX_IMAGE_MAX_BYTES,
+    DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES,
+)
+from lightrag.utils import get_env_value, logger, safe_log_value
 
 try:
     from defusedxml import ElementTree as ET
@@ -44,6 +51,35 @@ DRAWING_PATTERN = re.compile(
 DRAWING_TAG_PATTERN = re.compile(r"<drawing\b[^>]*/>")
 DRAWING_ATTR_PATTERN = re.compile(r'([a-zA-Z_][\w:.-]*)="([^"]*)"')
 
+_IMAGE_COPY_CHUNK_BYTES = 1024 * 1024
+
+
+class _EmbeddedImageBudgetExceeded(Exception):
+    """Internal control flow for a runtime image-byte budget stop."""
+
+
+class _EmbeddedImageReadFailed(Exception):
+    """Internal wrapper that distinguishes ZIP reads from output writes."""
+
+
+def _positive_env_limit(name: str, default: int) -> int:
+    """Read a live security limit; non-positive never disables the guard."""
+    value = get_env_value(name, default, int)
+    return value if value > 0 else default
+
+
+def _default_image_max_bytes() -> int:
+    return _positive_env_limit(
+        "NATIVE_DOCX_IMAGE_MAX_BYTES", DEFAULT_NATIVE_DOCX_IMAGE_MAX_BYTES
+    )
+
+
+def _default_image_max_total_bytes() -> int:
+    return _positive_env_limit(
+        "NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES",
+        DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES,
+    )
+
 
 @dataclass
 class DrawingRelationship:
@@ -67,8 +103,20 @@ class DrawingExtractionContext:
     export_dir_name: Optional[str] = None
     export_dir_path: Optional[Path] = None
     relationships: Dict[str, DrawingRelationship] = field(default_factory=dict)
+    parse_warnings: Optional[Dict[str, object]] = None
     _exported_part_to_relpath: Dict[str, str] = field(default_factory=dict)
+    _skipped_parts: set[str] = field(default_factory=set, init=False, repr=False)
+    _reported_read_failure_parts: set[str] = field(
+        default_factory=set, init=False, repr=False
+    )
     _used_filenames: Dict[str, str] = field(default_factory=dict)
+    _max_image_bytes: int = field(
+        default_factory=_default_image_max_bytes, init=False, repr=False
+    )
+    _max_total_image_bytes: int = field(
+        default_factory=_default_image_max_total_bytes, init=False, repr=False
+    )
+    _exported_image_bytes: int = field(default=0, init=False, repr=False)
 
     def resolve_relationship(self, rel_id: str) -> Optional[DrawingRelationship]:
         return self.relationships.get(rel_id)
@@ -89,25 +137,165 @@ class DrawingExtractionContext:
             return None
         if rel.part_name in self._exported_part_to_relpath:
             return self._exported_part_to_relpath[rel.part_name]
-
-        zip_member = rel.part_name.lstrip("/")
-        try:
-            with zipfile.ZipFile(self.docx_path, "r") as zf:
-                blob = zf.read(zip_member)
-        except Exception:
+        if rel.part_name in self._skipped_parts:
             return None
 
-        filename = self._dedupe_filename(PurePosixPath(rel.part_name).name or "image")
-        output_file = self.export_dir_path / filename
-        output_file.write_bytes(blob)
+        zip_member = rel.part_name.lstrip("/")
+        partial_file: Optional[Path] = None
+        declared_size = 0
+        written = 0
+        try:
+            zf = zipfile.ZipFile(self.docx_path, "r")
+        except Exception as exc:
+            self._record_image_read_failure(rel.part_name, exc)
+            return None
+
+        try:
+            try:
+                info = zf.getinfo(zip_member)
+            except Exception as exc:
+                self._record_image_read_failure(rel.part_name, exc)
+                return None
+
+            declared_size = max(0, info.file_size)
+            remaining = max(0, self._max_total_image_bytes - self._exported_image_bytes)
+            effective_limit = min(self._max_image_bytes, remaining)
+            if declared_size > effective_limit:
+                self._record_image_budget_skip(rel.part_name, declared_size)
+                return None
+
+            filename = self._available_filename(
+                PurePosixPath(rel.part_name).name or "image"
+            )
+            output_file = self.export_dir_path / filename
+
+            try:
+                source = zf.open(info, "r")
+            except Exception as exc:
+                self._record_image_read_failure(rel.part_name, exc)
+                return None
+
+            try:
+                # Keep the temporary file in the destination directory so the
+                # final replace stays atomic, but allocate it exclusively: a
+                # deterministic ``.<name>.part`` can be a legitimate earlier
+                # asset and must never be unlinked or overwritten here.
+                with (
+                    source,
+                    tempfile.NamedTemporaryFile(
+                        mode="wb",
+                        prefix=".lightrag-docx-image-",
+                        suffix=".part",
+                        dir=self.export_dir_path,
+                        delete=False,
+                    ) as output,
+                ):
+                    partial_file = Path(output.name)
+                    while True:
+                        # Ask for at most one byte beyond what remains. That
+                        # makes a lying metadata size a bounded stop too, while
+                        # never materializing the full member in memory.
+                        read_size = min(
+                            _IMAGE_COPY_CHUNK_BYTES,
+                            max(1, effective_limit - written + 1),
+                        )
+                        try:
+                            chunk = source.read(read_size)
+                        except Exception as exc:
+                            raise _EmbeddedImageReadFailed from exc
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > effective_limit:
+                            raise _EmbeddedImageBudgetExceeded
+                        # Output failures are operational errors and must fail
+                        # the parse instead of masquerading as a missing image.
+                        output.write(chunk)
+
+                partial_file.replace(output_file)
+            except _EmbeddedImageReadFailed as exc:
+                if partial_file is not None:
+                    partial_file.unlink(missing_ok=True)
+                source_error = exc.__cause__ or exc
+                self._record_image_read_failure(rel.part_name, source_error)
+                return None
+            except _EmbeddedImageBudgetExceeded:
+                if partial_file is not None:
+                    partial_file.unlink(missing_ok=True)
+                self._record_image_budget_skip(
+                    rel.part_name, max(declared_size, written)
+                )
+                return None
+            except BaseException:
+                if partial_file is not None:
+                    partial_file.unlink(missing_ok=True)
+                raise
+        finally:
+            zf.close()
 
         rel_path = str(PurePosixPath(self.export_dir_name) / filename)
+        self._used_filenames[filename] = filename
         self._exported_part_to_relpath[rel.part_name] = rel_path
+        self._exported_image_bytes += written
         return rel_path
 
-    def _dedupe_filename(self, base_name: str) -> str:
+    def _record_image_read_failure(self, part_name: str, error: BaseException) -> None:
+        """Record a ZIP-side image read failure without hiding retryability."""
+        retryable = isinstance(error, OSError)
+        if not retryable:
+            self._skipped_parts.add(part_name)
+
+        # Reporting is deduplicated separately from the skip verdict. A
+        # transient OSError must remain retryable for a later relationship,
+        # while a persistently damaged ZIP part should not flood logs.
+        if part_name in self._reported_read_failure_parts:
+            return
+        self._reported_read_failure_parts.add(part_name)
+
+        disposition = (
+            "later references will retry"
+            if retryable
+            else "the damaged or missing part will be skipped"
+        )
+        logger.warning(
+            "[parse_native] Failed to read DOCX image %s from %s (%s); %s",
+            safe_log_value(part_name),
+            safe_log_value(str(self.docx_path)),
+            safe_log_value(f"{type(error).__name__}: {error}"),
+            disposition,
+        )
+        if self.parse_warnings is None:
+            return
+        count_key = "docx_image_read_failed_count"
+        self.parse_warnings[count_key] = (
+            int(self.parse_warnings.get(count_key, 0) or 0) + 1
+        )
+
+    def _record_image_budget_skip(self, part_name: str, byte_count: int) -> None:
+        self._skipped_parts.add(part_name)
+        logger.warning(
+            "[parse_native] Skipping over-budget DOCX image %s from %s "
+            "(%d declared/observed bytes; per-image limit %d; "
+            "remaining document budget %d)",
+            safe_log_value(part_name),
+            safe_log_value(str(self.docx_path)),
+            max(0, byte_count),
+            self._max_image_bytes,
+            max(0, self._max_total_image_bytes - self._exported_image_bytes),
+        )
+        if self.parse_warnings is None:
+            return
+        count_key = "docx_image_budget_skipped_count"
+        bytes_key = "docx_image_budget_skipped_bytes"
+        self.parse_warnings[count_key] = (
+            int(self.parse_warnings.get(count_key, 0) or 0) + 1
+        )
+        self.parse_warnings[bytes_key] = int(
+            self.parse_warnings.get(bytes_key, 0) or 0
+        ) + max(0, byte_count)
+
+    def _available_filename(self, base_name: str) -> str:
         if base_name not in self._used_filenames:
-            self._used_filenames[base_name] = base_name
             return base_name
 
         stem = Path(base_name).stem
@@ -116,7 +304,6 @@ class DrawingExtractionContext:
         while True:
             candidate = f"{stem}_{index}{suffix}"
             if candidate not in self._used_filenames:
-                self._used_filenames[candidate] = candidate
                 return candidate
             index += 1
 
