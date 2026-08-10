@@ -373,6 +373,8 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
     emitted, the response has ``finish_reason="length"`` and empty content;
     usage may lack ``completion_tokens_details`` entirely.
     """
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
     completion = _make_completion("", finish_reason="length")
     fake_client = _make_fake_client(completion)
 
@@ -385,8 +387,13 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
             "lightrag.llm.openai.create_openai_async_client",
             return_value=fake_client,
         ):
-            with pytest.raises(InvalidResponseError) as excinfo:
-                await openai_complete_if_cache.__wrapped__(
+            # DECORATED call, deliberately: token-limit exhaustion is
+            # deterministic for a given prompt and output budget, so it must
+            # escape the retry predicate and fail after ONE request instead of
+            # re-buying two more full-budget generations plus backoff (Codex
+            # review on PR #3607, flagged on the Gemini twin of this check).
+            with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+                await openai_complete_if_cache(
                     model="test-model",
                     prompt="Describe the image",
                     response_format={"type": "json_object"},
@@ -394,6 +401,9 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
     finally:
         lightrag_logger.propagate = original_propagate
 
+    assert fake_client.chat.completions.create.await_count == 1, (
+        "a deterministic token-limit failure must not retry"
+    )
     message = str(excinfo.value)
     assert "finish_reason=length" in message
     assert "reasoning_tokens=n/a" in message

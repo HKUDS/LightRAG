@@ -23,6 +23,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
+from lightrag.exceptions import EmptyTruncatedResponseError
 from lightrag.utils import (
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -544,8 +545,17 @@ async def gemini_complete_if_cache(
     )
     length_limited = finish_reason == types.FinishReason.MAX_TOKENS
 
-    def _empty_response_error(thought_len: int) -> InvalidResponseError:
-        """Diagnose an empty Gemini response the way the OpenAI binding does."""
+    def _empty_response_error(thought_len: int) -> Exception:
+        """Diagnose an empty Gemini response the way the OpenAI binding does.
+
+        The exception TYPE selects the retry policy: token-limit exhaustion is
+        deterministic for a given prompt and output budget, so it returns
+        ``EmptyTruncatedResponseError`` — absent from the retry predicate —
+        and fails after ONE request instead of buying two more full-budget
+        generations plus backoff. Every other empty response keeps the
+        retryable ``InvalidResponseError``: those are sampling artifacts a
+        fresh attempt can genuinely fix.
+        """
         usage_metadata = getattr(response, "usage_metadata", None)
         diagnostics = format_response_diagnostics(
             finish_reason=getattr(finish_reason, "name", finish_reason),
@@ -570,6 +580,8 @@ async def gemini_complete_if_cache(
             hint = "model produced no output"
         message = f"Received empty content from Gemini API ({diagnostics}): {hint}"
         logger.error(message)
+        if length_limited:
+            return EmptyTruncatedResponseError(message)
         return InvalidResponseError(message)
 
     if not final_text:

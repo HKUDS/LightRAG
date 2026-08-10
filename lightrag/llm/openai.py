@@ -34,6 +34,7 @@ from lightrag.utils import (
 )
 
 from lightrag.api import __api_version__
+from lightrag.exceptions import EmptyTruncatedResponseError
 
 import numpy as np
 import base64
@@ -793,6 +794,16 @@ async def openai_complete_if_cache(
                     # into doc_status.error_msg) rather than living only in the
                     # server log: the operator reading the failed document is
                     # the one who has to turn the knob.
+                    #
+                    # The TYPE selects the retry policy: token-limit exhaustion
+                    # is deterministic for a given prompt and output budget, so
+                    # it raises EmptyTruncatedResponseError — absent from the
+                    # retry predicate — and fails after one request instead of
+                    # buying two more full-budget generations plus backoff.
+                    # The other empty modes stay retryable: those are sampling
+                    # artifacts a fresh attempt can genuinely fix.
+                    if finish_reason == "length":
+                        raise EmptyTruncatedResponseError(error_message)
                     raise InvalidResponseError(error_message)
 
             # Apply Unicode decoding to final content if needed
