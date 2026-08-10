@@ -38,6 +38,7 @@ import pytest
 import lightrag.tools.migrate_graph_storage as mgs
 from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.shared_storage import initialize_share_data
+from lightrag.utils import EmbeddingFunc
 from lightrag.tools.migrate_graph_storage import (
     MigrationDataError,
     MigrationPreconditionError,
@@ -73,13 +74,21 @@ def allow_networkx_pair(monkeypatch):
     )
 
 
+async def _never_embed(*_args, **_kwargs):
+    raise RuntimeError("graph migration tests never embed")
+
+
 async def _storage(tmp_path, namespace: str) -> NetworkXStorage:
     initialize_share_data()
     storage = NetworkXStorage(
         namespace=namespace,
         workspace="ws",
         global_config={"working_dir": str(tmp_path)},
-        embedding_func=None,
+        # Loud stub, matching the tool's _build_graph_storage (see the
+        # rationale there): graph storages tolerate None at runtime but the
+        # annotation does not promise it, so honor the declared contract
+        # the way rebuild_vdb does.
+        embedding_func=EmbeddingFunc(embedding_dim=1, func=_never_embed),
     )
     await storage.initialize()
     return storage
@@ -110,7 +119,8 @@ def _canonical_edge_map(edges: list[dict]) -> dict[tuple[str, str], dict]:
 
 
 class TestRealRoundTrip:
-    async def test_round_trip_preserves_graph(self, tmp_path, allow_networkx_pair):
+    @pytest.mark.usefixtures("allow_networkx_pair")
+    async def test_round_trip_preserves_graph(self, tmp_path):
         source = await _seeded_source(tmp_path)
         target = await _storage(tmp_path, "migration_tgt")
 
@@ -131,7 +141,8 @@ class TestRealRoundTrip:
         # Instance isolation: the source slice is intact after migration.
         assert set(_node_map(await source.get_all_nodes())) == set(_NODES)
 
-    async def test_non_empty_real_target_rejected(self, tmp_path, allow_networkx_pair):
+    @pytest.mark.usefixtures("allow_networkx_pair")
+    async def test_non_empty_real_target_rejected(self, tmp_path):
         source = await _seeded_source(tmp_path)
         target = await _storage(tmp_path, "migration_tgt")
         await target.upsert_nodes_batch([("pre", {"entity_id": "pre"})])
@@ -147,9 +158,8 @@ class TestRealRoundTrip:
         with pytest.raises(MigrationPreconditionError):
             await migrate_graph(source, target)
 
-    async def test_attributeless_source_node_fails_closed(
-        self, tmp_path, allow_networkx_pair
-    ):
+    @pytest.mark.usefixtures("allow_networkx_pair")
+    async def test_attributeless_source_node_fails_closed(self, tmp_path):
         # Real-backend wrinkle the fakes never showed: NetworkX add_edge
         # silently creates an attribute-less node for an unknown endpoint,
         # and get_all_nodes then enumerates it with NO entity_id. The tool
@@ -164,8 +174,9 @@ class TestRealRoundTrip:
 
 
 class TestRealCompensation:
+    @pytest.mark.usefixtures("allow_networkx_pair")
     async def test_edge_batch_failure_compensates_on_real_target(
-        self, tmp_path, allow_networkx_pair, monkeypatch
+        self, tmp_path, monkeypatch
     ):
         # AC-b against real storage: inject a failure after the first edge
         # lands, then let the REAL remove_edges / remove_nodes compensate.
@@ -212,9 +223,8 @@ class TestRealCompensation:
         assert await target.get_all_edges() == []
         assert set(_node_map(await other.get_all_nodes())) == {"keep"}
 
-    async def test_node_batch_failure_absent_ids_are_noops(
-        self, tmp_path, allow_networkx_pair, monkeypatch
-    ):
+    @pytest.mark.usefixtures("allow_networkx_pair")
+    async def test_node_batch_failure_absent_ids_are_noops(self, tmp_path, monkeypatch):
         # Failure INSIDE the node batch: most written ids and every edge key
         # were never applied, so compensation exercises the real backend's
         # absent-id no-op contract with the full superset.

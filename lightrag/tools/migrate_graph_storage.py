@@ -26,6 +26,11 @@ each undirected edge once in canonical order ``src_id = min(a, b)``,
 non-ASCII ids and would produce duplicate edges). ``canonicalize_edge`` is
 the single place this tool decides canonical order.
 
+Usage (dry run is the default; nothing is written without --apply):
+
+    python -m lightrag.tools.migrate_graph_storage
+    python -m lightrag.tools.migrate_graph_storage --apply [--workspace WS]
+
 Payload comparison is deliberately TYPE-STRICT (see ``payloads_equal``).
 Residual risk accepted with that choice: if the agtype-to-JSONB round trip
 ever drifts a numeric representation (e.g. ``1`` read back as ``1.0``),
@@ -801,6 +806,10 @@ async def _build_graph_storage(backend_name: str, workspace: str) -> Any:
     """
     from lightrag.kg.factory import get_storage_class
     from lightrag.namespace import NameSpace
+    from lightrag.utils import EmbeddingFunc
+
+    async def _never_embed(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("graph migration never embeds")
 
     cls = get_storage_class(backend_name)
     storage = cls(
@@ -810,7 +819,18 @@ async def _build_graph_storage(backend_name: str, workspace: str) -> Any:
         # (connection settings come from POSTGRES_* env vars); nothing is
         # required here for the graph-only paths this tool uses.
         global_config={},
-        embedding_func=None,
+        # Graph storages accept None at runtime (BaseVectorStorage validates
+        # against None while the graph branch has no such guard — the
+        # tolerance is deliberate), but the annotation is EmbeddingFunc and
+        # does not promise it. Honor the declared contract the way
+        # rebuild_vdb does when no embedding is available: manufacture a
+        # stub whose func fails loudly, so a graph path that ever asks for
+        # embeddings dies with an intentional message instead of an opaque
+        # AttributeError. embedding_dim=1 and the omitted model_name are
+        # safe here: the only embedding_func derivations in postgres_impl
+        # (model_name suffix, embedding_dim) belong to PGVectorStorage;
+        # PGGraphStorage never reads embedding_func.
+        embedding_func=EmbeddingFunc(embedding_dim=1, func=_never_embed),
     )
     try:
         await storage.initialize()
