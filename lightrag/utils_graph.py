@@ -348,16 +348,22 @@ async def _edit_entity_impl(
                     relations_to_delete.append(
                         compute_mdhash_id(target + source, prefix="rel-")
                     )
-                    if source == entity_name:
-                        await chunk_entity_relation_graph.upsert_edge(
-                            new_entity_name, target, edge_data
-                        )
-                        relations_to_update.append((new_entity_name, target, edge_data))
-                    else:  # target == entity_name
-                        await chunk_entity_relation_graph.upsert_edge(
-                            source, new_entity_name, edge_data
-                        )
-                        relations_to_update.append((source, new_entity_name, edge_data))
+                    # Rename every matching endpoint. A self-loop has the old
+                    # entity on both sides, so changing only the first match
+                    # would create (new, old), which is then removed together
+                    # with the old node below.
+                    renamed_source = (
+                        new_entity_name if source == entity_name else source
+                    )
+                    renamed_target = (
+                        new_entity_name if target == entity_name else target
+                    )
+                    await chunk_entity_relation_graph.upsert_edge(
+                        renamed_source, renamed_target, edge_data
+                    )
+                    relations_to_update.append(
+                        (renamed_source, renamed_target, edge_data)
+                    )
 
         await chunk_entity_relation_graph.delete_node(entity_name)
 
