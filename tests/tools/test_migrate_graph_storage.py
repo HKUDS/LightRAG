@@ -13,14 +13,20 @@ import pytest
 
 from lightrag.tools.migrate_graph_storage import (
     DivergentReciprocal,
+    MigrationDataError,
+    MigrationPreconditionError,
+    MigrationWriteError,
     VerificationReport,
     canonicalize_edge,
+    compensate_partial_migration,
     count_parallel_edges,
     derive_written_node_ids,
     detect_divergent_reciprocals,
     edge_properties,
+    migrate_graph,
     payloads_equal,
     sort_directed_edges,
+    target_slice_is_empty,
     verify_source_side,
 )
 
@@ -488,3 +494,299 @@ class TestDeterministicPipeline:
     def test_edge_properties_strips_only_endpoints(self):
         e = _edge("a", "b", source_id="chunk-1", weight=1)
         assert edge_properties(e) == {"source_id": "chunk-1", "weight": 1}
+
+
+# ---------------------------------------------------------------------------
+# Async orchestration — fakes standing in for the storage backends
+# ---------------------------------------------------------------------------
+
+
+class _FakeAGESource:
+    """AGE-shaped source: returns whatever node/edge dicts it was seeded with."""
+
+    def __init__(self, nodes, edges):
+        self._nodes = nodes
+        self._edges = edges
+
+    async def get_all_nodes(self):
+        return [dict(n) for n in self._nodes]
+
+    async def get_all_edges(self):
+        return [dict(e) for e in self._edges]
+
+
+class PGGraphStorage(_FakeAGESource):
+    """Named to satisfy the class-name allowlist; behavior is the fake's."""
+
+
+class PGTableGraphStorage:
+    """Fake target mirroring the pgtable contracts the tool relies on:
+
+    - upsert_edges_batch canonicalizes via Python min/max and silently
+      auto-creates missing endpoints as stub nodes (returns None);
+    - remove_* mirror DELETE ... = ANY: absent ids are silent no-ops;
+    - get_all_* merge ids into the dicts ("id" / "source"+"target");
+    - is_empty records the call and returns None, exactly like the base-class
+      stub the empty gate must never trust.
+
+    ``foreign_nodes`` stands in for another workspace slice: the real
+    remove_* are workspace-scoped, so compensation must leave it untouched.
+    """
+
+    def __init__(self, seed_nodes=None, foreign_nodes=None, fail_edge_batch_after=None):
+        self.nodes: dict[str, dict[str, Any]] = dict(seed_nodes or {})
+        self.edges: dict[tuple[str, str], dict[str, Any]] = {}
+        self.foreign_nodes: dict[str, dict[str, Any]] = dict(foreign_nodes or {})
+        self.calls: list[str] = []
+        self.remove_edges_args = None
+        self.remove_nodes_args = None
+        self.is_empty_called = False
+        self.fail_edge_batch_after = fail_edge_batch_after
+
+    async def is_empty(self):
+        self.is_empty_called = True  # forbidden gate: base stub returns None
+
+    async def get_all_nodes(self):
+        self.calls.append("get_all_nodes")
+        return sorted(
+            ({**props, "id": nid} for nid, props in self.nodes.items()),
+            key=lambda n: n["id"],
+        )
+
+    async def get_all_edges(self):
+        self.calls.append("get_all_edges")
+        return [
+            {**props, "source": src, "target": tgt}
+            for (src, tgt), props in sorted(self.edges.items())
+        ]
+
+    async def upsert_nodes_batch(self, nodes):
+        self.calls.append("upsert_nodes_batch")
+        for node_id, props in nodes:
+            assert "entity_id" in props
+            self.nodes[node_id] = {**self.nodes.get(node_id, {}), **props}
+
+    async def upsert_edges_batch(self, edges):
+        self.calls.append("upsert_edges_batch")
+        for i, (src, tgt, props) in enumerate(edges):
+            if (
+                self.fail_edge_batch_after is not None
+                and i >= self.fail_edge_batch_after
+            ):
+                raise RuntimeError("injected edge-batch failure")
+            key = (min(src, tgt), max(src, tgt))
+            for nid in key:
+                # Silent endpoint auto-creation (CTE ON CONFLICT DO NOTHING).
+                self.nodes.setdefault(nid, {"entity_id": nid})
+            self.edges[key] = dict(props)
+
+    async def remove_edges(self, edges):
+        self.calls.append("remove_edges")
+        self.remove_edges_args = list(edges)
+        for src, tgt in edges:
+            self.edges.pop((min(src, tgt), max(src, tgt)), None)  # absent: no-op
+
+    async def remove_nodes(self, nodes):
+        self.calls.append("remove_nodes")
+        self.remove_nodes_args = list(nodes)
+        for nid in nodes:
+            self.nodes.pop(nid, None)  # absent: no-op
+
+    async def drop(self):
+        self.calls.append("drop")
+        self.nodes.clear()
+        self.edges.clear()
+
+
+def _source(nodes=None, edges=None):
+    node_dicts = [
+        {"id": nid, "entity_id": nid, "entity_type": "thing"} for nid in (nodes or [])
+    ]
+    return PGGraphStorage(node_dicts, edges or [])
+
+
+class TestMigrationPreconditions:
+    async def test_non_empty_target_rejected_before_any_write(self):
+        # AC-a: rejection via get_all_nodes, is_empty never awaited, non-zero
+        # exit contract, zero writes issued.
+        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
+        with pytest.raises(MigrationPreconditionError) as excinfo:
+            await migrate_graph(_source(["a"], [_edge("a", "a")]), target)
+        assert excinfo.value.exit_code != 0
+        assert target.is_empty_called is False
+        assert target.calls == ["get_all_nodes"]  # the gate read; no writes
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+    async def test_pair_allowlist_rejects_unknown_backends(self):
+        class SomeOtherStorage(_FakeAGESource):
+            pass
+
+        target = PGTableGraphStorage()
+        with pytest.raises(MigrationPreconditionError):
+            await migrate_graph(SomeOtherStorage([], []), target)
+        assert target.calls == []  # rejected before even the empty gate
+
+        class SomeOtherTarget(PGTableGraphStorage):
+            pass
+
+        with pytest.raises(MigrationPreconditionError):
+            await migrate_graph(_source(), SomeOtherTarget())
+
+    async def test_target_slice_is_empty_uses_get_all_nodes(self):
+        target = PGTableGraphStorage()
+        assert await target_slice_is_empty(target) is True
+        target.nodes["x"] = {"entity_id": "x"}
+        assert await target_slice_is_empty(target) is False
+        assert target.is_empty_called is False
+
+    async def test_force_empty_target_drops_then_migrates(self):
+        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
+        report = await migrate_graph(
+            _source(["a", "b"], [_edge("a", "b", weight=1.0)]),
+            target,
+            force_empty_target=True,
+        )
+        assert "drop" in target.calls
+        assert report.verified
+        assert "pre" not in target.nodes
+
+    async def test_divergent_source_fails_before_any_write(self):
+        target = PGTableGraphStorage()
+        source = _source(["a", "b"], [_edge("a", "b", w=1), _edge("b", "a", w=2)])
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target)
+        assert "upsert_nodes_batch" not in target.calls
+        assert "upsert_edges_batch" not in target.calls
+
+    async def test_parallel_source_rows_fail_before_any_write(self):
+        target = PGTableGraphStorage()
+        source = _source(["a", "b"], [_edge("a", "b", w=1), _edge("a", "b", w=2)])
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target)
+        assert "upsert_nodes_batch" not in target.calls
+
+    async def test_node_without_entity_id_fails_before_any_write(self):
+        target = PGTableGraphStorage()
+        source = PGGraphStorage([{"id": "a", "entity_type": "thing"}], [])
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target)
+        assert "upsert_nodes_batch" not in target.calls
+
+
+class TestMigrationSuccess:
+    async def test_full_migration_verified(self):
+        source = _source(
+            ["a", "b", "한국"],
+            [
+                _edge("a", "b", weight=1.0),
+                _edge("b", "a", weight=1.0),  # equal reciprocal: one canonical row
+                _edge("한국", "a", rel="이웃"),
+            ],
+        )
+        target = PGTableGraphStorage()
+        report = await migrate_graph(source, target)
+        assert report.verified
+        assert report.verification is not None and report.verification.ok
+        assert report.node_count == 3
+        assert report.edge_count == 2  # reciprocal deduped
+        assert set(target.edges) == {("a", "b"), ("a", "한국")}
+        assert report.compensated is False
+
+    async def test_auto_created_endpoint_without_source_node_fails_closed(self):
+        # "ghost" appears only as an edge endpoint. A real AGE source cannot
+        # produce this (get_all_edges joins endpoints to the node table), so
+        # if it happens the enumeration was incomplete: the target
+        # auto-creates a stub node the source never enumerated, source-driven
+        # verification flags it as unexpected, and the run compensates. The
+        # derived write set must carry the stub so compensation removes it.
+        source = _source(["a"], [_edge("a", "ghost", w=1)])
+        target = PGTableGraphStorage()
+        with pytest.raises(MigrationWriteError) as excinfo:
+            await migrate_graph(source, target)
+        report = excinfo.value.report
+        assert report.written_node_ids == ["a", "ghost"]
+        assert report.verification is not None
+        assert report.verification.unexpected_node_ids == ["ghost"]
+        assert report.compensated
+        assert target.nodes == {} and target.edges == {}
+
+    async def test_verification_fails_when_target_drops_an_edge(self):
+        class LossyTarget(PGTableGraphStorage):
+            async def upsert_edges_batch(self, edges):
+                await super().upsert_edges_batch(edges[:-1])  # silently drop one
+
+        # Keep the class-name allowlist matching despite the subclass.
+        LossyTarget.__name__ = "PGTableGraphStorage"
+
+        source = _source(["a", "b", "c"], [_edge("a", "b", w=1), _edge("b", "c", w=2)])
+        target = LossyTarget()
+        with pytest.raises(MigrationWriteError) as excinfo:
+            await migrate_graph(source, target)
+        report = excinfo.value.report
+        assert report.verification is not None and not report.verification.ok
+        assert report.verification.missing_edges == [("b", "c")]
+        assert report.compensated
+        assert target.nodes == {} and target.edges == {}
+
+
+class TestMigrationCompensation:
+    async def test_edge_batch_failure_compensates_exactly_written_ids(self):
+        # AC-b: injected edge-batch failure -> compensation removes exactly
+        # the derived written set (auto-created endpoints included), and
+        # data outside that set (another workspace slice) is untouched.
+        source = _source(["a", "b"], [_edge("a", "b", w=1), _edge("b", "ghost", w=2)])
+        target = PGTableGraphStorage(
+            foreign_nodes={"other": {"entity_id": "other"}},
+            fail_edge_batch_after=1,  # first edge applies, second raises
+        )
+        with pytest.raises(MigrationWriteError) as excinfo:
+            await migrate_graph(source, target)
+        report = excinfo.value.report
+        assert report.compensated
+        assert report.compensation_error is None
+        # Exactly the derived superset was passed — including "ghost", whose
+        # edge never landed (absent-id no-op contract), and nothing more.
+        assert report.written_node_ids == ["a", "b", "ghost"]
+        assert target.remove_nodes_args == ["a", "b", "ghost"]
+        assert target.remove_edges_args == [("a", "b"), ("b", "ghost")]
+        # Slice is clean again; the foreign slice was never touched.
+        assert target.nodes == {} and target.edges == {}
+        assert target.foreign_nodes == {"other": {"entity_id": "other"}}
+
+    async def test_compensation_removes_edges_before_nodes(self):
+        # FK order is asserted, not assumed.
+        source = _source(["a", "b"], [_edge("a", "b", w=1)])
+        target = PGTableGraphStorage(fail_edge_batch_after=0)
+        with pytest.raises(MigrationWriteError):
+            await migrate_graph(source, target)
+        assert target.calls.index("remove_edges") < target.calls.index("remove_nodes")
+
+    async def test_absent_ids_are_noops_for_compensation(self):
+        # Pin the DELETE ... = ANY contract the tool relies on: compensating
+        # with ids that were never written must not raise and must not touch
+        # unrelated rows.
+        target = PGTableGraphStorage(seed_nodes={"keep": {"entity_id": "keep"}})
+        await compensate_partial_migration(
+            target, ["never-written"], [("never", "written")]
+        )
+        assert target.nodes == {"keep": {"entity_id": "keep"}}
+
+    async def test_failed_compensation_is_reported_not_swallowed(self):
+        class BrokenRemoveTarget(PGTableGraphStorage):
+            async def remove_nodes(self, nodes):
+                raise RuntimeError("connection lost during compensation")
+
+        # Keep the class-name allowlist matching despite the subclass.
+        BrokenRemoveTarget.__name__ = "PGTableGraphStorage"
+
+        source = _source(["a", "b"], [_edge("a", "b", w=1)])
+        target = BrokenRemoveTarget(fail_edge_batch_after=0)
+        with pytest.raises(MigrationWriteError) as excinfo:
+            await migrate_graph(source, target)
+        report = excinfo.value.report
+        assert report.compensated is False
+        assert "connection lost" in report.compensation_error
+        # Manual-cleanup contract: the report still carries the full sets.
+        assert report.written_node_ids == ["a", "b"]
+        assert report.written_edge_keys == [("a", "b")]
+        assert "COMPENSATION INCOMPLETE" in str(excinfo.value)

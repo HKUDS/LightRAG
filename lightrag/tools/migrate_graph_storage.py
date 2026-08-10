@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Pure helpers for backend-to-backend graph storage migration (Phase 1).
+"""Backend-to-backend graph storage migration (Phase 1).
 
 Phase 1 migrates a graph from ``PGGraphStorage`` (Apache AGE) to
 ``PGTableGraphStorage`` through the public storage API only:
 ``get_all_nodes`` / ``get_all_edges`` to read, ``upsert_nodes_batch`` /
 ``upsert_edges_batch`` to write, ``remove_nodes`` / ``remove_edges`` to
-compensate on failure. This module contains ONLY the pure, side-effect-free
-building blocks of that pipeline — no I/O, no async, no database imports —
-so every migration invariant can be unit-tested offline.
+compensate on failure. The first half of this module is pure,
+side-effect-free building blocks — no I/O, no async, no database imports —
+so every migration invariant can be unit-tested offline; the second half is
+the async orchestration (preconditions, write pipeline, verification,
+id-scoped compensation) driven entirely through the storage objects it is
+handed, so it stays testable with fakes and importable without asyncpg.
 
 Shared edge-dict shape (the "enumerated edge" currency of this module):
 both backends' ``get_all_edges`` return each edge as a single flat dict of
@@ -395,4 +398,240 @@ def verify_source_side(
                 (key, source_edge_map[key], target_edge_map[key])
             )
 
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Async orchestration — preconditions, write pipeline, compensation
+# ---------------------------------------------------------------------------
+
+# Phase 1 supports exactly one migration pair, keyed by class NAME rather
+# than by imported class object so this module never has to import the DB
+# backends (the offline CI environment does not install asyncpg).
+ALLOWED_MIGRATION_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {("PGGraphStorage", "PGTableGraphStorage")}
+)
+
+# Explicit extension points for Phase 2, deliberately empty: additional
+# pairs register a per-backend precondition hook (extra checks to run
+# before any write) and a compensation hook (how to undo that backend's
+# writes) keyed by backend class name. Phase 1 hard-codes the PGTable
+# behavior in migrate_graph instead of routing through these.
+PRECONDITION_HOOKS: dict[str, Any] = {}
+COMPENSATION_HOOKS: dict[str, Any] = {}
+
+
+class MigrationError(RuntimeError):
+    """Base class for migration failures.
+
+    ``exit_code`` is the process exit status the CLI wrapper (wired in a
+    later step) maps the failure to; it is part of the contract now so the
+    fail-closed paths are pinned as non-zero by tests.
+    """
+
+    exit_code = 1
+
+
+class MigrationPreconditionError(MigrationError):
+    """A precondition (pair allowlist, empty target) failed before any write."""
+
+
+class MigrationDataError(MigrationError):
+    """The source enumeration violates a migration invariant (divergent
+    reciprocals, parallel rows, node without entity_id). Raised before any
+    write."""
+
+
+class MigrationWriteError(MigrationError):
+    """The write or verification phase failed after writes began.
+
+    Carries the run report: ``report.compensated`` says whether the
+    id-scoped compensation completed, and ``report.written_node_ids`` /
+    ``report.written_edge_keys`` are exactly what an operator must remove
+    by hand if it did not (compensation itself is non-atomic — there is no
+    cross-backend transaction — so a crash mid-compensation can leave the
+    target partially populated; the empty-target gate then rejects a rerun
+    until the slice is cleaned up).
+    """
+
+    def __init__(self, message: str, report: MigrationRunReport):
+        super().__init__(message)
+        self.report = report
+
+
+@dataclass
+class MigrationRunReport:
+    """What one migration run read, wrote, and concluded."""
+
+    source_backend: str
+    target_backend: str
+    node_count: int = 0
+    edge_count: int = 0
+    # Everything this run wrote (or would have written when a write failed
+    # partway): computed BEFORE the first write via derive_written_node_ids,
+    # so compensation and manual cleanup always have the full superset.
+    # Absent ids are safe to pass to remove_* (DELETE ... = ANY is a no-op
+    # for them).
+    written_node_ids: list[str] = field(default_factory=list)
+    written_edge_keys: list[tuple[str, str]] = field(default_factory=list)
+    verified: bool = False
+    verification: VerificationReport | None = None
+    compensated: bool = False
+    compensation_error: str | None = None
+
+
+def check_migration_pair(source: Any, target: Any) -> None:
+    """Reject any (source, target) pair outside the Phase 1 allowlist.
+
+    Runs before every other precondition and therefore before any read or
+    write on either storage.
+    """
+    pair = (type(source).__name__, type(target).__name__)
+    if pair not in ALLOWED_MIGRATION_PAIRS:
+        allowed = ", ".join(f"{s} -> {t}" for s, t in sorted(ALLOWED_MIGRATION_PAIRS))
+        raise MigrationPreconditionError(
+            f"unsupported migration pair {pair[0]} -> {pair[1]}; "
+            f"Phase 1 supports exactly: {allowed}"
+        )
+
+
+async def target_slice_is_empty(target: Any) -> bool:
+    """Empty-target gate, via ``get_all_nodes``.
+
+    NEVER ``is_empty()``: the BaseGraphStorage stub has a docstring-only
+    body (returns None) and PGTableGraphStorage does not override it, so a
+    gate built on it silently passes on a populated target — the exact
+    fail-open this check exists to prevent.
+    """
+    return len(await target.get_all_nodes()) == 0
+
+
+async def compensate_partial_migration(
+    target: Any,
+    written_node_ids: Iterable[str],
+    written_edge_keys: Iterable[tuple[str, str]],
+) -> None:
+    """Remove exactly what this run wrote: edges first, then nodes.
+
+    Edge-before-node order follows the FK direction (edges reference their
+    endpoint rows). Both remove_* contracts are DELETE ... = ANY(ids), so
+    ids that were never actually written — e.g. when the failure hit before
+    the edge batch — are silent no-ops, which is why the full derived
+    superset is always passed. Exact under the empty-target invariant only:
+    on a target that was not empty at T0, these ids may name pre-existing
+    rows the migration never created (see derive_written_node_ids).
+    """
+    await target.remove_edges(sorted(written_edge_keys))
+    await target.remove_nodes(sorted(written_node_ids))
+
+
+async def migrate_graph(
+    source: Any, target: Any, *, force_empty_target: bool = False
+) -> MigrationRunReport:
+    """Migrate the whole graph from source to target via the storage API.
+
+    Pipeline: pair allowlist -> empty-target gate -> enumerate + fail-closed
+    source checks (parallel rows, divergent reciprocals, entity_id present)
+    -> upsert nodes -> upsert edges -> source-driven verification. Any
+    failure after writes begin triggers id-scoped compensation and raises
+    MigrationWriteError carrying the run report.
+
+    ``force_empty_target=True`` (CLI: --force-empty-target, wired in a later
+    step) is the ONLY path that touches pre-existing target data: it drops
+    the whole target slice instead of rejecting a non-empty target. It is
+    never used for compensation.
+    """
+    check_migration_pair(source, target)
+
+    if not await target_slice_is_empty(target):
+        if not force_empty_target:
+            raise MigrationPreconditionError(
+                "target graph slice is not empty; refusing to write "
+                "(pass force_empty_target to drop it instead)"
+            )
+        await target.drop()
+
+    source_nodes = await source.get_all_nodes()
+    source_edges = sort_directed_edges(await source.get_all_edges())
+
+    violations = {
+        pair: count
+        for pair, count in count_parallel_edges(source_edges).items()
+        if count > 1
+    }
+    if violations:
+        raise MigrationDataError(
+            f"source violates the one-directed-edge-per-ordered-pair "
+            f"invariant; parallel rows for: {sorted(violations)}"
+        )
+    divergent = detect_divergent_reciprocals(source_edges)
+    if divergent:
+        raise MigrationDataError(
+            "source has reciprocal directed edges with divergent properties; "
+            "canonicalization would silently drop one payload per pair: "
+            f"{[d.canonical_key for d in divergent]}"
+        )
+
+    node_items: list[tuple[str, dict[str, Any]]] = []
+    for node in source_nodes:
+        payload = _node_payload(node)
+        if "entity_id" not in payload:
+            raise MigrationDataError(
+                f"source node {node.get('id')!r} has no entity_id property; "
+                "the target backend requires it"
+            )
+        node_items.append((node["id"], payload))
+
+    canonical_edges = _canonical_edge_map(source_edges)
+    edge_items = [
+        (src, tgt, props) for (src, tgt), props in sorted(canonical_edges.items())
+    ]
+
+    report = MigrationRunReport(
+        source_backend=type(source).__name__,
+        target_backend=type(target).__name__,
+        node_count=len(node_items),
+        edge_count=len(edge_items),
+        # Derived before the first write so a failure at ANY later point
+        # already has the complete compensation set, auto-created edge
+        # endpoints included.
+        written_node_ids=sorted(
+            derive_written_node_ids(
+                (node_id for node_id, _ in node_items), source_edges
+            )
+        ),
+        written_edge_keys=sorted(canonical_edges),
+    )
+
+    try:
+        await target.upsert_nodes_batch(node_items)
+        await target.upsert_edges_batch(edge_items)
+        report.verification = verify_source_side(
+            source_nodes,
+            source_edges,
+            await target.get_all_nodes(),
+            await target.get_all_edges(),
+        )
+        if not report.verification.ok:
+            raise MigrationError("source-driven verification failed")
+    except Exception as exc:
+        try:
+            await compensate_partial_migration(
+                target, report.written_node_ids, report.written_edge_keys
+            )
+            report.compensated = True
+        except Exception as compensation_exc:  # noqa: BLE001 — report, then surface the original failure
+            report.compensation_error = repr(compensation_exc)
+        raise MigrationWriteError(
+            f"migration failed after writes began ({exc}); "
+            + (
+                "id-scoped compensation completed"
+                if report.compensated
+                else "COMPENSATION INCOMPLETE — remove the reported "
+                "written_edge_keys then written_node_ids by hand"
+            ),
+            report,
+        ) from exc
+
+    report.verified = True
     return report
