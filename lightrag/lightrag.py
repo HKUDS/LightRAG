@@ -2098,6 +2098,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # create: the document is born with this operation, so
                     # there is nothing prior to preserve or restore.
                     prior_truncation = None
+                # Truncation accumulated by PREVIOUS attempts of this
+                # operation. Truncated extraction responses are never cached,
+                # so a resume re-runs those calls and can get a clean sample —
+                # but the failed attempt's partial graph mutations stay (the
+                # resume is additive, it never purges them). Without this
+                # carry, a clean resume's terminal write would merge only
+                # snapshot + its own empty tally and silently drop the record
+                # of the truncated output still living in the graph. Captured
+                # ONCE from the journal as loaded — the applying/FAILED writes
+                # below fold the current attempt into the journal copy, and
+                # recomputing from that copy would double-count (the merge
+                # sums event counts exactly).
+                carried_operation_truncation = (existing_journal or {}).get(
+                    "operation_llm_truncation"
+                )
                 journal: dict[str, Any] = {
                     "schema_version": 1,
                     "operation_id": operation_id,
@@ -2110,6 +2125,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "relation_pairs", []
                     ),
                     "prior_llm_truncation": prior_truncation,
+                    "operation_llm_truncation": carried_operation_truncation,
                     "created_at": (existing_journal or {}).get("created_at") or now_iso,
                     "updated_at": now_iso,
                 }
@@ -2127,20 +2143,36 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # pipeline writes, for the path that does not go through it.
                 truncation_tally = TokenLimitTruncationTally()
 
+                def _operation_truncation_record() -> dict[str, Any] | None:
+                    """Previous attempts' accumulated payload + this attempt.
+
+                    Always recomputed from ``carried_operation_truncation``
+                    (previous attempts ONLY), never from the journal copy the
+                    applying write already folded this attempt into — the
+                    merge sums event counts exactly, so folding twice would
+                    double-count.
+                    """
+                    return merge_truncation_metadata(
+                        carried_operation_truncation,
+                        truncation_tally.as_metadata(),
+                    )
+
                 def _terminal_truncation_kwargs() -> dict[str, Any]:
                     """Set-or-drop arguments for a terminal status write.
 
-                    The operation tally is merged into the journal's
-                    pre-operation snapshot — never into the live row, whose
-                    value after a failed attempt is that attempt's own stamp
-                    and would double-count across resumes. Replace semantics
-                    with an explicit drop: when neither the base run nor this
-                    operation truncated, the key must come OFF the row (the
-                    live row may still carry a dead attempt's stamp).
+                    The operation-accumulated record (every attempt of this
+                    operation, current one included) is merged into the
+                    journal's pre-operation snapshot — never into the live
+                    row, whose value after a failed attempt is that attempt's
+                    own stamp and would double-count across resumes. Replace
+                    semantics with an explicit drop: when neither the base run
+                    nor any attempt of this operation truncated, the key must
+                    come OFF the row (the live row may still carry a dead
+                    attempt's stamp).
                     """
                     merged = merge_truncation_metadata(
                         journal.get("prior_llm_truncation"),
-                        truncation_tally.as_metadata(),
+                        _operation_truncation_record(),
                     )
                     if merged is None:
                         return {"metadata_drop": (LLM_TRUNCATION_METADATA_KEY,)}
@@ -2248,6 +2280,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "relation_pairs": [
                             list(pair) for pair in sorted(candidate_relations)
                         ],
+                        # Write-ahead for the truncation record too: any
+                        # attempt that mutates the graph has journaled its
+                        # extraction-stage truncations first. Merge-stage
+                        # summary truncations happen after this write; they
+                        # are picked up by the FAILED write below, so only a
+                        # hard crash mid-merge (no FAILED write) can lose that
+                        # attempt's summary-stage events.
+                        "operation_llm_truncation": _operation_truncation_record(),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
                     status_row = await self._upsert_custom_chunk_status(
@@ -2325,6 +2365,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         failed_journal = {
                             **journal,
                             "phase": "failed",
+                            # Recompute — overwrites the applying write's copy
+                            # (which already folded this attempt in) with the
+                            # same carried-plus-current merge, now including
+                            # any merge-stage summary events recorded since.
+                            "operation_llm_truncation": (
+                                _operation_truncation_record()
+                            ),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         }
                         await self._upsert_custom_chunk_status(

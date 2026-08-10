@@ -19,7 +19,11 @@ import lightrag.lightrag as lightrag_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.operate import KGRebuildReport
-from lightrag.utils import EmbeddingFunc, Tokenizer
+from lightrag.utils import (
+    LLM_TRUNCATION_METADATA_KEY,
+    EmbeddingFunc,
+    Tokenizer,
+)
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
     KG_RECOVERY_WARNINGS_METADATA_KEY,
@@ -674,5 +678,131 @@ async def test_resume_with_a_different_sample_keeps_both_attempts_candidates(
         )
         assert "BOB" in anchors["entity_names"]
         assert "CAROL" in anchors["entity_names"]
+    finally:
+        await rag.finalize_storages()
+
+
+def _entity_result(name: str, chunk_id: str) -> tuple[dict, dict]:
+    return (
+        {
+            name: [
+                {
+                    "entity_name": name,
+                    "entity_type": "person",
+                    "description": f"{name} description",
+                    "source_id": chunk_id,
+                    "file_path": "custom",
+                    "timestamp": 1,
+                }
+            ]
+        },
+        {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_clean_resume_keeps_the_failed_attempts_truncation_record(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): truncated extraction responses are never
+    cached, so a resume re-runs the LLM and can come back clean — but the
+    failed attempt's partial graph mutations stay (the resume is additive,
+    it never purges them). The terminal write used to merge only the
+    pre-operation snapshot with the CURRENT attempt's tally, so a clean
+    resume erased the record of the truncated output still in the graph."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["carol is here"], doc_id="doc-1")
+
+        attempts = {"n": 0}
+
+        async def _per_attempt_extract(chunks, *args, truncation_tally=None, **kwargs):
+            attempts["n"] += 1
+            results = []
+            for chunk_id in chunks:
+                if attempts["n"] == 1:
+                    # Attempt 1's response hit the token limit but was still
+                    # parseable — extraction records it and proceeds.
+                    truncation_tally.record("initial", chunk_id)
+                results.append(
+                    _entity_result("ALICE" if attempts["n"] == 1 else "BOB", chunk_id)
+                )
+            return results
+
+        monkeypatch.setattr(rag, "_process_extract_entities", _per_attempt_extract)
+        await _fail_one_merge(monkeypatch)
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["dave is there"], doc_id="doc-1")
+
+        # Resume: extraction genuinely re-runs (the truncated response was
+        # never cached) and this time comes back clean.
+        await rag.ainsert_custom_chunks("base", ["dave is there"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        record = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert record is not None, (
+            "attempt 1 truncated and its partial output may still be in the "
+            "graph, but the clean resume erased the document's truncation "
+            "record"
+        )
+        assert record["stages"] == {"initial": 1}
+        assert record["samples"] == [_chunk_id("doc-1", "dave is there")]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_failed_attempts_accumulate_truncation_exactly_once_each(
+    tmp_path, monkeypatch
+):
+    """The accumulated operation record is recomputed from the journal AS
+    LOADED (previous attempts only) plus the live tally. Recomputing from the
+    journal copy the applying write already folded this attempt into would sum
+    the attempt's events twice: a single failed attempt would journal 2 events
+    instead of 1."""
+    rag = await _build_rag(tmp_path)
+    try:
+
+        async def _truncating_extract(chunks, *args, truncation_tally=None, **kwargs):
+            results = []
+            for chunk_id in chunks:
+                truncation_tally.record("initial", chunk_id)
+                results.append(_entity_result("ALICE", chunk_id))
+            return results
+
+        monkeypatch.setattr(rag, "_process_extract_entities", _truncating_extract)
+
+        async def merge_boom(**kwargs):
+            raise RuntimeError("merge boom")
+
+        monkeypatch.setattr(lightrag_module, "merge_nodes_and_edges", merge_boom)
+
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        journal = _journal(await rag.doc_status.get_by_id("doc-1"))
+        record = journal["operation_llm_truncation"]
+        assert record["events"] == 1, (
+            "a single failed attempt must journal its one event exactly once — "
+            "2 means the FAILED write re-folded the applying write's copy"
+        )
+
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        record = _journal(row)["operation_llm_truncation"]
+        assert record["events"] == 2
+        assert record["stages"] == {"initial": 2}
+        # Same input, same chunk id: the subject deduplicates while the
+        # per-attempt events keep counting.
+        assert record["affected"] == 1
+        assert record["samples"] == [_chunk_id("doc-1", "alice is here")]
+
+        # The FAILED row's durable metadata carries the same accumulation.
+        meta = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert meta is not None and meta["events"] == 2
     finally:
         await rag.finalize_storages()

@@ -4641,12 +4641,13 @@ def merge_truncation_metadata(
 ) -> dict[str, Any] | None:
     """Combine two persisted ``llm_truncation`` payloads into one.
 
-    Exists for the custom-chunk patch path, which ADDS chunks to a document
-    whose earlier contributions stay in the graph: a patch that truncates must
-    not overwrite the base run's record, and a truncated base must not have
-    its record blanked by a clean patch. The pipeline never needs this — a
-    full reprocess replaces the document's whole contribution, so there
-    replace-or-clear is the correct semantics.
+    Exists for paths that ADD to a surviving record instead of replacing it:
+    the custom-chunk patch (its truncations must not overwrite the base run's
+    record, nor a truncated base be blanked by a clean patch), the same
+    operation's resumed attempts (a failed attempt's partial graph writes stay,
+    so its record must survive a clean resume), and the analyze→process
+    hand-off. The pipeline's whole-document reprocess never needs this —
+    there replace-or-clear is the correct semantics.
 
     Merging live tallies would be exact, but only the persisted payloads
     survive (the base run's tally object is long gone), and those are lossy:
@@ -4654,10 +4655,12 @@ def merge_truncation_metadata(
     subjects beyond the cap cannot be de-duplicated. ``events`` and ``stages``
     are exact sums regardless. ``affected`` is exact whenever both sample
     lists are complete (no ``samples_omitted``); otherwise it deduplicates
-    what the samples do show and over-counts a subject that truncated in both
-    runs but is visible in neither — chunk subjects cannot collide across a
-    base run and a patch (different id schemes), so in practice this only
-    brushes repeat ``summary`` subjects.
+    what the samples do show and over-counts a subject that truncated on both
+    sides but is visible in neither. Base-vs-patch merges rarely collide
+    (different chunk id schemes; only repeat ``summary`` subjects overlap),
+    but attempt-over-attempt merges re-run the SAME chunk ids, so collision is
+    the normal case there — still exact up to the sample cap, over-counted
+    past it.
     """
     if not base:
         return dict(extra) if extra else None
