@@ -169,6 +169,61 @@ async def test_first_truncation_is_published_with_chunk_and_document_identity(
     assert tally.as_metadata()["stages"] == {"initial": 1}
 
 
+async def test_extraction_cancelled_mid_wait_still_feeds_the_document_tally(
+    _high_token_limit,
+):
+    """Codex review (PR #3607): both explicit publish call sites sat after
+    the ``asyncio.wait`` on the chunk tasks, so an external cancellation
+    landing on that wait bypassed them — a truncated response that chunk 1
+    had already recorded never reached the caller's document tally, and
+    ``ainsert_custom_chunks``'s failure bookkeeping persisted FAILED with no
+    ``llm_truncation``. The hand-off now lives in a ``finally``."""
+    import asyncio
+
+    config = _make_global_config()  # llm_model_max_async=1 serializes chunks
+    b_entered = asyncio.Event()
+    release_b = asyncio.Event()
+    calls = {"n": 0}
+
+    async def _llm(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Chunk 1: truncated but parseable — recorded, then the task
+            # completes and releases the semaphore.
+            return TruncatedResponse(_EXTRACTION_RESULT)
+        # Chunk 2 starts only after chunk 1 fully finished (semaphore of 1);
+        # park it so the parent is deterministically stuck on asyncio.wait.
+        b_entered.set()
+        await release_b.wait()
+        return _EXTRACTION_RESULT
+
+    config["role_llm_funcs"]["extract"].side_effect = _llm
+
+    tally = TokenLimitTruncationTally()
+    extract_task = asyncio.create_task(
+        extract_entities(
+            chunks=_make_chunks(2),
+            global_config=config,
+            truncation_tally=tally,
+        )
+    )
+    await b_entered.wait()
+    extract_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await extract_task
+    # Unblock the orphaned chunk-2 task so it finishes cleanly.
+    release_b.set()
+    await asyncio.sleep(0)
+
+    payload = tally.as_metadata()
+    assert payload is not None, (
+        "the cancellation on asyncio.wait discarded the truncation chunk 1 "
+        "had already recorded — the FAILED bookkeeping would persist nothing"
+    )
+    assert payload["stages"] == {"initial": 1}
+    assert payload["samples"] == ["chunk-001"]
+
+
 async def test_gleaning_truncation_is_reported_and_counted(
     _high_token_limit, status_messages
 ):
