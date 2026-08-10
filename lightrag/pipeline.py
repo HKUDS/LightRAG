@@ -4540,6 +4540,27 @@ class _PipelineMixin:
             finally:
                 in_q.task_done()
 
+    @staticmethod
+    def _analyze_truncation_metadata_extra(
+        parsed_data: Any,
+    ) -> dict[str, Any] | None:
+        """``metadata_extra`` for a FAILED write on the analyze stage.
+
+        ``analyze_multimodal`` hands its truncation record over on EVERY
+        exit via ``parsed_data["llm_truncation"]``. On the raising exits
+        (fail-fast sibling failure, mid-VLM cancellation) the document goes
+        FAILED right here in the analyze worker and never reaches the
+        process stage's terminal writes — so the FAILED transition itself
+        must stamp the record, or an accepted truncated analysis whose
+        partial result is already in the sidecar leaves no durable trace.
+        """
+        payload = (
+            parsed_data.get("llm_truncation") if isinstance(parsed_data, dict) else None
+        )
+        if not payload:
+            return None
+        return {LLM_TRUNCATION_METADATA_KEY: payload}
+
     async def _analyze_worker(self, ctx: _BatchRunContext) -> None:
         """Layer 2 worker: run multimodal analysis (VLM) and feed q_process.
 
@@ -4647,6 +4668,9 @@ class _PipelineMixin:
                     stage_label="analyze",
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
+                    metadata_extra=self._analyze_truncation_metadata_extra(
+                        parsed_data_w
+                    ),
                 )
             except Exception as e:
                 # Mirror _parse_worker: failures here must transition the
@@ -4663,6 +4687,14 @@ class _PipelineMixin:
                         status_doc=status_doc_w,
                         file_path=getattr(status_doc_w, "file_path", "unknown_source"),
                         extra_fields={"error_msg": str(e)},
+                        # Accepted-but-truncated sibling analyses recorded
+                        # before the fail-fast raise: analyze_multimodal hands
+                        # them over on every exit, and only this transition
+                        # can make them durable — the doc never reaches the
+                        # process stage's terminal writes.
+                        metadata_extra=self._analyze_truncation_metadata_extra(
+                            parsed_data_w
+                        ),
                     )
                 except Exception as upsert_err:
                     # Mirror _parse_worker: log instead of swallowing so a
@@ -5809,6 +5841,7 @@ class _PipelineMixin:
         ctx: "_BatchRunContext",
         pipeline_status: dict,
         pipeline_status_lock,
+        metadata_extra: dict[str, Any] | None = None,
     ) -> None:
         """Mark a queued document FAILED with a 'User cancelled' message.
 
@@ -5817,7 +5850,9 @@ class _PipelineMixin:
         :meth:`_finalize_doc_failure` carries for the PROCESS stage. Also
         flushes the LLM response cache so any cache_ids written by completed
         sibling tasks (e.g. successful multimodal items inside a doc that is
-        being cancelled) survive a server restart.
+        being cancelled) survive a server restart. ``metadata_extra`` rides
+        the FAILED write — the analyze worker uses it to keep an accepted
+        truncated sibling analysis visible on the cancelled document.
         """
         status_snapshot = pipeline_status.copy()
         error_msg = (
@@ -5840,6 +5875,7 @@ class _PipelineMixin:
                 status_doc=status_doc,
                 file_path=file_path,
                 extra_fields={"error_msg": error_msg},
+                metadata_extra=metadata_extra,
             )
         except Exception as exc:
             logger.error(f"Failed to mark cancelled doc {doc_id} as FAILED: {exc}")
@@ -6405,6 +6441,13 @@ class _PipelineMixin:
                     f"d-id: {doc_id}, file: {file_path}: {enrich_err}"
                 )
 
+        # Stage-scoped truncation tally, shared by every item task on this
+        # loop (record() is await-free). A token-limit-truncated analysis
+        # that still parses is ACCEPTED — the partial description feeds KG
+        # extraction — so the condition must reach the document's durable
+        # metadata, not just the server log. Created BEFORE the try so the
+        # every-exit hand-off in its finally can always read it.
+        mm_truncation_tally = TokenLimitTruncationTally()
         try:
             lines = block_file.read_text(encoding="utf-8").splitlines()
             if not lines:
@@ -6646,15 +6689,6 @@ class _PipelineMixin:
                     "status": "skipped",
                     "message": message,
                 }
-
-            # Stage-scoped truncation tally, shared by every item task on this
-            # loop (record() is await-free). A token-limit-truncated analysis
-            # that still parses is ACCEPTED — the partial description feeds KG
-            # extraction — so the condition must reach the document's durable
-            # metadata, not just the server log. Handed to the process stage
-            # via ``parsed_data["llm_truncation"]``, which merges it with the
-            # extraction/merge tally at the terminal doc_status write.
-            mm_truncation_tally = TokenLimitTruncationTally()
 
             def _record_mm_truncation(fresh: bool, result_text: str, subject: str):
                 """Record an accepted-but-truncated fresh analysis.
@@ -7366,12 +7400,6 @@ class _PipelineMixin:
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = truncation_message
                         append_pipeline_history(pipeline_status, truncation_message)
-                # Ride the analyze→process hand-off dict rather than doc_status:
-                # LLM_TRUNCATION_METADATA_KEY is per-attempt (not carried over),
-                # so a stamp written here would be dropped at the PROCESSING
-                # transition. The process stage merges this into its own tally
-                # at the terminal write, which is where the key becomes durable.
-                parsed_data["llm_truncation"] = mm_truncation_tally.as_metadata()
             parsed_data["multimodal_processed"] = True
             logger.info(f"[analyze_multimodal] completed for d-id: {doc_id}")
         except PipelineCancelledException:
@@ -7383,6 +7411,21 @@ class _PipelineMixin:
             raise
         except Exception as e:
             logger.warning(f"[analyze_multimodal] failed for d-id: {doc_id}: {e}")
+        finally:
+            # Analyze→process hand-off of the truncation record, on EVERY
+            # exit — not just success. Ride the hand-off dict rather than
+            # doc_status: LLM_TRUNCATION_METADATA_KEY is per-attempt (not
+            # carried over), so a stamp written here would be dropped at the
+            # PROCESSING transition. Consumers: on success and on the
+            # soft-swallowed exits the process stage merges it into its own
+            # tally at the terminal write; when this call raises (a sibling
+            # item's fail-fast failure, mid-VLM cancellation), the analyze
+            # worker stamps it onto the FAILED row. A success-only hand-off
+            # lost an accepted truncated analysis on exactly those raising
+            # exits — the item's partial result was already written to the
+            # sidecar, but the document's metadata never learned of it.
+            if mm_truncation_tally:
+                parsed_data["llm_truncation"] = mm_truncation_tally.as_metadata()
         return parsed_data
 
     def _build_mm_chunks_from_sidecars(
