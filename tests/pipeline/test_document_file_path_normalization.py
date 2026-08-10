@@ -189,7 +189,7 @@ async def test_custom_chunks_use_canonical_unknown_source_before_upsert(monkeypa
     _patch_custom_chunk_saga(monkeypatch, rag)
 
     async def _process_extract_entities(
-        chunks, pipeline_status=None, pipeline_status_lock=None
+        chunks, pipeline_status=None, pipeline_status_lock=None, **kwargs
     ):
         return []
 
@@ -250,7 +250,7 @@ async def test_custom_chunks_merge_extracted_entities_into_kg(monkeypatch):
     extracted = [({"Entity": [{"entity_name": "Entity"}]}, {})]
 
     async def _process_extract_entities(
-        chunks, pipeline_status=None, pipeline_status_lock=None
+        chunks, pipeline_status=None, pipeline_status_lock=None, **kwargs
     ):
         return extracted
 
@@ -356,7 +356,7 @@ async def test_custom_chunks_persist_before_extraction(monkeypatch):
     _patch_custom_chunk_saga(monkeypatch, rag)
 
     async def _process_extract_entities(
-        chunks, pipeline_status=None, pipeline_status_lock=None
+        chunks, pipeline_status=None, pipeline_status_lock=None, **kwargs
     ):
         events.append("extract")
         # The barrier guarantees the chunk upsert completed first.
@@ -474,7 +474,7 @@ async def test_custom_chunks_rejects_when_pipeline_busy(monkeypatch):
 
     called = {"extract": False, "merge": False}
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         called["extract"] = True
         return [({"E": [{"entity_name": "E"}]}, {})]
 
@@ -508,7 +508,7 @@ async def test_custom_chunks_hands_off_busy_atomically(monkeypatch):
 
     observed = {}
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         observed["busy_during_extract"] = status["busy"]
         # Simulate a concurrent busy-refused process request arriving while
         # we hold busy: the reservation arms the auto-rescan flag.
@@ -554,7 +554,7 @@ async def test_custom_chunks_handoff_runs_even_when_flush_errors(monkeypatch):
     status = {"busy": False, "history_messages": []}
     rag = _custom_chunks_rag(monkeypatch, status)
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         # A concurrent busy-refused process request arrived while we held busy.
         rag._test_ingress.request_auto_rescan()
         return [({"E": [{"entity_name": "E"}]}, {})]
@@ -616,7 +616,7 @@ async def test_custom_chunks_resolve_failure_fails_toward_handoff(monkeypatch):
         # The real driven run releases the handed-off slot at its own exit.
         status.update({"busy": False, "busy_owner": None})
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         return [({"E": [{"entity_name": "E"}]}, {})]
 
     rag._process_extract_entities = _process_extract_entities
@@ -641,7 +641,7 @@ async def test_custom_chunks_releases_busy_without_pending(monkeypatch):
     async def _drain(_holding_busy=False, token=None):
         drained["called"] = True
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         return [({"E": [{"entity_name": "E"}]}, {})]
 
     rag._process_extract_entities = _process_extract_entities
@@ -666,7 +666,7 @@ async def test_custom_chunks_busy_rejection_does_not_flush_shared_buffers(monkey
     async def _insert_done_with_cleanup():
         cleanup["called"] = True
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         return []
 
     rag._insert_done_with_cleanup = _insert_done_with_cleanup
@@ -696,7 +696,7 @@ async def test_custom_chunks_clears_stale_cancellation(monkeypatch):
 
     observed = {}
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         # Real extract/merge raise PipelineCancelledException when this is True;
         # it must have been cleared on acquire so this job runs.
         observed["cancel_during"] = status.get("cancellation_requested")
@@ -729,7 +729,7 @@ async def test_custom_chunks_overwrites_stale_deletion_job_name(monkeypatch):
 
     observed = {}
 
-    async def _process_extract_entities(chunks, ps=None, pl=None):
+    async def _process_extract_entities(chunks, ps=None, pl=None, **kwargs):
         # Captured while we hold busy — this is what a concurrent
         # adelete_by_doc_id would see and key its join-guard off.
         observed["job_name_during"] = status["job_name"]

@@ -47,6 +47,7 @@ from lightrag.parser.routing import (
 from lightrag.utils import (
     compute_mdhash_id,
     get_content_summary,
+    LLM_TRUNCATION_METADATA_KEY,
     logger,
     move_file_to_parsed_dir,
 )
@@ -634,6 +635,11 @@ _DOC_STATUS_METADATA_ATTEMPT_KEYS: frozenset[str] = frozenset(
         "hard_fallback_split",
         "error_type",
         "error_stage",
+        # Token-limit truncation summary for THIS attempt. Deliberately absent
+        # from the carry-over and directive whitelists: a re-run with a larger
+        # output budget must start from a clean slate, and the terminal
+        # transition rewrites the key only when the new attempt truncated too.
+        LLM_TRUNCATION_METADATA_KEY,
     }
 )
 

@@ -39,7 +39,7 @@ import numpy as np
 from dotenv import load_dotenv
 import json_repair
 
-from lightrag.exceptions import ChunkBlockMatchError
+from lightrag.exceptions import ChunkBlockMatchError, EmptyTruncatedResponseError
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -4502,20 +4502,258 @@ def is_truncated_response(value: Any) -> bool:
     return isinstance(value, TruncatedResponse)
 
 
+def format_response_diagnostics(**fields: Any) -> str:
+    """Render provider response diagnostics as ``key=value`` pairs.
+
+    ``None`` becomes ``n/a`` so a field the provider did not report is visibly
+    absent rather than looking like a zero.
+    """
+    return ", ".join(
+        f"{key}={'n/a' if value is None else value}" for key, value in fields.items()
+    )
+
+
+def empty_length_truncated_hint(
+    budget_hint: str, *, reasoning_consumed_budget: bool = False
+) -> str:
+    """Explain an EMPTY response whose finish reason is the output token limit.
+
+    Shared by every binding so the four providers describe the same failure
+    identically. This is the structurally-broken case, not "ran a bit long":
+    generation stopped before producing a single content token, so there is
+    nothing to salvage and nothing to cache — the caller raises rather than
+    returning "" and letting the document be indexed as an empty graph
+    (issue #3601 gap 4).
+
+    ``budget_hint`` names the provider's own output-budget knob, since that is
+    the actionable part and only the binding knows it.
+    """
+    cause = "generation hit the token limit before emitting any content"
+    if reasoning_consumed_budget:
+        cause += " (budget consumed by reasoning)"
+    return f"{cause}; {budget_hint}"
+
+
+# doc_status.metadata key holding the per-document truncation summary.
+LLM_TRUNCATION_METADATA_KEY = "llm_truncation"
+
+# Cap on the number of affected subjects (chunk ids / entity names) echoed into
+# that metadata entry. The doc_status row is serialized into every documents
+# listing response, so the summary must stay O(1) in document size; the exact
+# per-chunk detail lives in the server log, which is unbounded by design.
+TRUNCATION_METADATA_SAMPLE_LIMIT = 10
+
+
+class TokenLimitTruncationTally:
+    """Accumulator for token-limit truncation events over one scope.
+
+    A document whose output budget is too small does not truncate once, it
+    truncates on EVERY chunk: publishing one ``pipeline_status`` line per event
+    would push the rest of the run out of the bounded ``history_messages`` ring
+    and still leave the operator counting lines. So each producer stage keeps a
+    tally, publishes its FIRST event immediately (the condition must not stay
+    hidden until a long run ends) plus ONE aggregated line when it finishes,
+    and folds its counts into the document-scoped tally the pipeline stamps
+    into ``doc_status.metadata`` — the durable, machine-readable record that
+    outlives the status ring and reaches the API.
+
+    Not thread-safe, and does not need to be: every mutation is a plain,
+    await-free update made from tasks on a single event loop.
+    """
+
+    __slots__ = ("_events", "_stages", "_subjects")
+
+    def __init__(self) -> None:
+        self._events = 0
+        self._stages: dict[str, int] = {}
+        # Ordered set: preserves first-seen order for the metadata sample while
+        # de-duplicating a subject that truncated at more than one stage.
+        self._subjects: dict[str, None] = {}
+
+    def __bool__(self) -> bool:
+        return self._events > 0
+
+    @property
+    def events(self) -> int:
+        """Total truncated responses, counting a subject once per stage."""
+        return self._events
+
+    @property
+    def affected(self) -> int:
+        """Distinct subjects (chunk ids / entity names) with >= 1 truncation."""
+        return len(self._subjects)
+
+    def record(self, stage: str, subject: str) -> bool:
+        """Record one truncated response; True when it is this tally's first."""
+        first = self._events == 0
+        self._events += 1
+        self._stages[stage] = self._stages.get(stage, 0) + 1
+        if subject:
+            self._subjects.setdefault(subject, None)
+        return first
+
+    def absorb(self, other: "TokenLimitTruncationTally | None") -> None:
+        """Fold a stage-scoped tally into this (document-scoped) one."""
+        if not other:
+            return
+        self._events += other._events
+        for stage, count in other._stages.items():
+            self._stages[stage] = self._stages.get(stage, 0) + count
+        for subject in other._subjects:
+            self._subjects.setdefault(subject, None)
+
+    def stage_breakdown(self) -> str:
+        """Human-readable per-stage counts, e.g. ``initial: 12, gleaning: 3``."""
+        return ", ".join(f"{stage}: {count}" for stage, count in self._stages.items())
+
+    def as_metadata(self) -> dict[str, Any] | None:
+        """Summary payload for ``doc_status.metadata``; None when nothing hit."""
+        if not self._events:
+            return None
+        subjects = list(self._subjects)
+        payload: dict[str, Any] = {
+            "events": self._events,
+            "affected": len(subjects),
+            "stages": dict(self._stages),
+            "samples": subjects[:TRUNCATION_METADATA_SAMPLE_LIMIT],
+        }
+        omitted = len(subjects) - TRUNCATION_METADATA_SAMPLE_LIMIT
+        if omitted > 0:
+            payload["samples_omitted"] = omitted
+        return payload
+
+    def as_metadata_extra(self) -> dict[str, Any]:
+        """``metadata_extra`` fragment for a doc_status transition upsert.
+
+        Empty on a clean run, so the key is simply absent rather than persisting
+        a zeroed record. Because ``LLM_TRUNCATION_METADATA_KEY`` is deliberately
+        NOT in ``_DOC_STATUS_METADATA_CARRY_OVER_KEYS``, that absence also
+        CLEARS a previous attempt's summary instead of resurrecting it — a
+        re-run with a larger token budget must not keep reporting the old
+        truncation.
+        """
+        payload = self.as_metadata()
+        return {LLM_TRUNCATION_METADATA_KEY: payload} if payload else {}
+
+
+def merge_truncation_metadata(
+    base: dict[str, Any] | None, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Combine two persisted ``llm_truncation`` payloads into one.
+
+    Exists for paths that ADD to a surviving record instead of replacing it:
+    the custom-chunk patch (its truncations must not overwrite the base run's
+    record, nor a truncated base be blanked by a clean patch), the same
+    operation's resumed attempts (a failed attempt's partial graph writes stay,
+    so its record must survive a clean resume), and the analyze→process
+    hand-off. The pipeline's whole-document reprocess never needs this —
+    there replace-or-clear is the correct semantics.
+
+    Merging live tallies would be exact, but only the persisted payloads
+    survive (the base run's tally object is long gone), and those are lossy:
+    ``samples`` is capped at :data:`TRUNCATION_METADATA_SAMPLE_LIMIT`, so
+    subjects beyond the cap cannot be de-duplicated. ``events`` and ``stages``
+    are exact sums regardless. ``affected`` is exact whenever both sample
+    lists are complete (no ``samples_omitted``); otherwise it deduplicates
+    what the samples do show and over-counts a subject that truncated on both
+    sides but is visible in neither. Base-vs-patch merges rarely collide
+    (different chunk id schemes; only repeat ``summary`` subjects overlap),
+    but attempt-over-attempt merges re-run the SAME chunk ids, so collision is
+    the normal case there — still exact up to the sample cap, over-counted
+    past it.
+    """
+    if not base:
+        return dict(extra) if extra else None
+    if not extra:
+        return dict(base)
+
+    base_samples = [s for s in (base.get("samples") or []) if isinstance(s, str)]
+    extra_samples = [s for s in (extra.get("samples") or []) if isinstance(s, str)]
+    # Ordered union, base first — mirrors the tally's first-seen ordering.
+    union_samples = list(dict.fromkeys(base_samples + extra_samples))
+
+    both_complete = not base.get("samples_omitted") and not extra.get("samples_omitted")
+    if both_complete:
+        affected = len(union_samples)
+    else:
+        overlap = len(set(base_samples) & set(extra_samples))
+        affected = int(base.get("affected") or 0) + int(extra.get("affected") or 0)
+        affected -= overlap
+
+    stages: dict[str, int] = dict(base.get("stages") or {})
+    for stage, count in (extra.get("stages") or {}).items():
+        stages[stage] = stages.get(stage, 0) + int(count)
+
+    merged: dict[str, Any] = {
+        "events": int(base.get("events") or 0) + int(extra.get("events") or 0),
+        "affected": affected,
+        "stages": stages,
+        "samples": union_samples[:TRUNCATION_METADATA_SAMPLE_LIMIT],
+    }
+    omitted = affected - len(merged["samples"])
+    if omitted > 0:
+        merged["samples_omitted"] = omitted
+    return merged
+
+
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
+
+    Preserves the :class:`TruncatedResponse` marker so downstream consumers
+    can still distinguish partial model output after sanitization.
 
     Handles two cases:
     1. Complete <think>...</think> blocks anywhere in the text.
     2. Orphaned </think> at the very start (e.g., from streaming that begins
        mid-think-block), removing everything before and including it.
     """
+    was_truncated = is_truncated_response(text)
+
     # First, remove orphaned </think> prefix (content before first </think>
     # when there is no preceding <think> tag)
     text = re.sub(r"^((?!<think>).)*?</think>", "", text, flags=re.DOTALL)
     # Then remove all complete <think>...</think> blocks
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return text.strip()
+    cleaned = text.strip()
+    return TruncatedResponse(cleaned) if was_truncated else cleaned
+
+
+def _reject_empty_truncated_response(
+    cleaned: str, *, raw_len: int, cache_type: str, chunk_id: str | None
+) -> None:
+    """Fail a truncated response that think-tag removal left with nothing.
+
+    The provider bindings each escalate their own empty + token-limit response,
+    but they cannot see this one: ``<think>reasoning</think>`` with no answer
+    after it is a NON-empty payload, so it passes every binding's check and
+    only becomes visibly empty here. This function is the shared throat that
+    every KG-building LLM call passes through, so the rule lands once for all
+    four providers.
+
+    Parse-stage callers (``cache_type="smartheading"``) already treat an empty
+    answer as an error — ``_parse_llm_json`` raises ``TitleBlockLLMError`` on
+    it — so this only replaces "answer carries no JSON object" with the actual
+    cause and its remedy.
+    """
+    if not is_truncated_response(cleaned) or cleaned.strip():
+        return
+    diagnostics = format_response_diagnostics(
+        chunk_id=chunk_id,
+        # Everything the model produced was reasoning, by construction: the
+        # payload was non-empty before think-tag removal and empty after.
+        reasoning_content_len=raw_len,
+    )
+    hint = empty_length_truncated_hint(
+        "consider raising the LLM's output token limit or disabling thinking "
+        "mode for this role",
+        reasoning_consumed_budget=True,
+    )
+    message = (
+        f"Received empty {cache_type} content after think-tag removal "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    raise EmptyTruncatedResponseError(message)
 
 
 async def use_llm_func_with_cache(
@@ -4649,11 +4887,15 @@ async def use_llm_func_with_cache(
             safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
         )
 
-        # Capture the token-limit truncation flag before remove_think_tags
-        # rebuilds a plain str and drops the TruncatedResponse marker.
-        res_truncated = is_truncated_response(res)
-
+        # ``remove_think_tags`` re-wraps its result, so the marker survives
+        # sanitization and both this cache guard and the caller (which reports
+        # the truncation to pipeline status) read the same flag off ``res``.
+        raw_len = len(res)
         res = remove_think_tags(res)
+        _reject_empty_truncated_response(
+            res, raw_len=raw_len, cache_type=cache_type, chunk_id=chunk_id
+        )
+        res_truncated = is_truncated_response(res)
 
         # Generate timestamp for cache miss (LLM call completion time)
         current_timestamp = int(time.time())
@@ -4706,7 +4948,12 @@ async def use_llm_func_with_cache(
 
     # Generate timestamp for non-cached LLM call
     current_timestamp = int(time.time())
-    return remove_think_tags(res), current_timestamp
+    raw_len = len(res)
+    cleaned = remove_think_tags(res)
+    _reject_empty_truncated_response(
+        cleaned, raw_len=raw_len, cache_type=cache_type, chunk_id=chunk_id
+    )
+    return cleaned, current_timestamp
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
