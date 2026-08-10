@@ -7,6 +7,9 @@ the parallel-edge backstop, derived written-node sets for compensation, and
 source-driven verification.
 """
 
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,7 +26,9 @@ from lightrag.tools.migrate_graph_storage import (
     derive_written_node_ids,
     detect_divergent_duplicate_nodes,
     detect_divergent_reciprocals,
+    dry_run_migration,
     edge_properties,
+    main,
     migrate_graph,
     payloads_equal,
     sort_directed_edges,
@@ -570,6 +575,13 @@ class _FakeAGESource:
     def __init__(self, nodes, edges):
         self._nodes = nodes
         self._edges = edges
+        self.finalized = False
+
+    async def initialize(self):
+        pass
+
+    async def finalize(self):
+        self.finalized = True
 
     async def get_all_nodes(self):
         return [dict(n) for n in self._nodes]
@@ -608,6 +620,13 @@ class PGTableGraphStorage:
         self.remove_nodes_args = None
         self.is_empty_called = False
         self.fail_edge_batch_after = fail_edge_batch_after
+        self.finalized = False
+
+    async def initialize(self):
+        pass
+
+    async def finalize(self):
+        self.finalized = True
 
     async def is_empty(self):
         self.is_empty_called = True  # tripwire: real graph storages lack this
@@ -891,3 +910,159 @@ class TestMigrationCompensation:
         assert report.written_node_ids == ["a", "b"]
         assert report.written_edge_keys == [("a", "b")]
         assert "COMPENSATION INCOMPLETE" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# CLI — argparse wiring, exit codes, factory-based instantiation
+# ---------------------------------------------------------------------------
+
+
+def _patch_factory(monkeypatch, source, target):
+    """Route the CLI's lazy get_storage_class import to the prepared fakes.
+
+    Returns the constructor kwargs recorded per backend name so tests can
+    assert what the CLI instantiated with. Never touches a real database.
+    """
+    import lightrag.kg.factory as factory
+
+    ctor_kwargs: dict[str, dict[str, Any]] = {}
+    instances = {"PGGraphStorage": source, "PGTableGraphStorage": target}
+
+    def fake_get_storage_class(name):
+        instance = instances[name]
+
+        def ctor(**kwargs):
+            ctor_kwargs[name] = kwargs
+            return instance
+
+        return ctor
+
+    monkeypatch.setattr(factory, "get_storage_class", fake_get_storage_class)
+    return ctor_kwargs
+
+
+class TestCli:
+    def _fakes(self):
+        source = _source(["a", "b"], [_edge("a", "b", weight=1.0)])
+        target = PGTableGraphStorage()
+        return source, target
+
+    def test_dry_run_default_writes_nothing(self, monkeypatch, capsys):
+        # AC-1: the default invocation is a read-only preflight — zero write
+        # calls of any kind on the target, and a report is still produced.
+        source, target = self._fakes()
+        _patch_factory(monkeypatch, source, target)
+        main([])  # no SystemExit: dry run succeeded
+        assert set(target.calls) <= {"get_all_nodes", "get_all_edges"}
+        for write_call in (
+            "upsert_nodes_batch",
+            "upsert_edges_batch",
+            "remove_nodes",
+            "remove_edges",
+            "drop",
+        ):
+            assert write_call not in target.calls
+        assert target.nodes == {} and target.edges == {}
+        out = capsys.readouterr().out
+        assert "'mode': 'dry-run'" in out
+        assert "'nodes': 2" in out and "'edges': 1" in out
+        assert "'verified': False" in out
+        assert source.finalized and target.finalized
+
+    def test_apply_performs_migration_and_exits_zero(self, monkeypatch, capsys):
+        source, target = self._fakes()
+        _patch_factory(monkeypatch, source, target)
+        main(["--apply"])  # no SystemExit: exit code zero
+        assert target.edges == {("a", "b"): {"weight": 1.0}}
+        out = capsys.readouterr().out
+        assert "'mode': 'apply'" in out
+        assert "'verified': True" in out
+
+    def test_failing_migration_exits_nonzero_without_writes(self, monkeypatch, capsys):
+        # Non-empty target: precondition failure must surface as a non-zero
+        # SystemExit (a shell script must never see success), with no writes.
+        source, target = self._fakes()
+        target.nodes["pre"] = {"entity_id": "pre"}
+        _patch_factory(monkeypatch, source, target)
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--apply"])
+        assert excinfo.value.code == 1
+        assert "upsert_nodes_batch" not in target.calls
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
+        assert "'error':" in capsys.readouterr().out
+        assert source.finalized and target.finalized
+
+    def test_write_failure_exit_code_and_report(self, monkeypatch, capsys):
+        source, target = self._fakes()
+        target.fail_edge_batch_after = 0
+        _patch_factory(monkeypatch, source, target)
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--apply"])
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        assert "'compensated': True" in out
+
+    def test_rejected_pair_exits_nonzero_before_instantiation(
+        self, monkeypatch, capsys
+    ):
+        import lightrag.kg.factory as factory
+
+        def exploding_get_storage_class(name):
+            raise AssertionError("factory must not be called for a rejected pair")
+
+        monkeypatch.setattr(factory, "get_storage_class", exploding_get_storage_class)
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--source-backend", "NetworkXStorage"])
+        assert excinfo.value.code == 1
+        assert "unsupported migration pair" in capsys.readouterr().out
+
+    def test_workspace_flag_overrides_env(self, monkeypatch, capsys):
+        source, target = self._fakes()
+        ctor_kwargs = _patch_factory(monkeypatch, source, target)
+        monkeypatch.setenv("WORKSPACE", "env-ws")
+        main(["--workspace", "cli-ws"])
+        assert ctor_kwargs["PGGraphStorage"]["workspace"] == "cli-ws"
+        assert ctor_kwargs["PGTableGraphStorage"]["workspace"] == "cli-ws"
+
+    def test_workspace_defaults_to_env(self, monkeypatch, capsys):
+        source, target = self._fakes()
+        ctor_kwargs = _patch_factory(monkeypatch, source, target)
+        monkeypatch.setenv("WORKSPACE", "env-ws")
+        main([])
+        assert ctor_kwargs["PGGraphStorage"]["workspace"] == "env-ws"
+
+    def test_force_empty_target_defaults_false_and_dry_run_never_drops(
+        self, monkeypatch, capsys
+    ):
+        source, target = self._fakes()
+        target.nodes["pre"] = {"entity_id": "pre"}
+        _patch_factory(monkeypatch, source, target)
+        # Default: refused (exercised above). With the flag, the dry run is
+        # not refused — but it must NOT drop; only the apply run may.
+        main(["--force-empty-target"])
+        assert "drop" not in target.calls
+        assert target.nodes["pre"] == {"entity_id": "pre"}
+        assert "'mode': 'dry-run'" in capsys.readouterr().out
+
+    async def test_dry_run_migration_rejects_non_empty_target(self):
+        # Library-level twin of the CLI default-refusal path.
+        source, target = self._fakes()
+        target.nodes["pre"] = {"entity_id": "pre"}
+        with pytest.raises(MigrationPreconditionError):
+            await dry_run_migration(source, target)
+
+    def test_cli_import_is_offline_safe(self):
+        # The offline CI does not install asyncpg: importing the module —
+        # CLI entry point included — must not pull it in. Subprocess keeps
+        # the probe independent of whatever the surrounding test session
+        # already imported.
+        import lightrag
+
+        repo_root = Path(lightrag.__file__).resolve().parents[1]
+        code = (
+            "import sys\n"
+            "import lightrag.tools.migrate_graph_storage as m\n"
+            "assert callable(m.main)\n"
+            "assert 'asyncpg' not in sys.modules, 'CLI import pulled asyncpg'\n"
+        )
+        subprocess.run([sys.executable, "-c", code], check=True, cwd=repo_root)

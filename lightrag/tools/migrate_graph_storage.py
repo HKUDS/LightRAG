@@ -51,7 +51,10 @@ strips the keys as endpoint identity. LightRAG's own edge schema uses
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -616,10 +619,10 @@ async def migrate_graph(
     failure after writes begin triggers id-scoped compensation and raises
     MigrationWriteError carrying the run report.
 
-    ``force_empty_target=True`` (CLI: --force-empty-target, wired in a later
-    step) is the ONLY path that touches pre-existing target data: it drops
-    the whole target slice instead of rejecting a non-empty target. It is
-    never used for compensation.
+    ``force_empty_target=True`` (CLI: --force-empty-target) is the ONLY path
+    that touches pre-existing target data: it drops the whole target slice
+    instead of rejecting a non-empty target. It is never used for
+    compensation.
     """
     check_migration_pair(source, target)
 
@@ -631,6 +634,56 @@ async def migrate_graph(
             )
         await target.drop()
 
+    source_nodes, source_edges, node_items, edge_items, report = await _plan_migration(
+        source, target
+    )
+
+    try:
+        await target.upsert_nodes_batch(node_items)
+        await target.upsert_edges_batch(edge_items)
+        report.verification = verify_source_side(
+            source_nodes,
+            source_edges,
+            await target.get_all_nodes(),
+            await target.get_all_edges(),
+        )
+        if not report.verification.ok:
+            raise MigrationError("source-driven verification failed")
+    except Exception as exc:
+        try:
+            await compensate_partial_migration(
+                target, report.written_node_ids, report.written_edge_keys
+            )
+            report.compensated = True
+        except Exception as compensation_exc:  # noqa: BLE001 — report, then surface the original failure
+            report.compensation_error = repr(compensation_exc)
+        raise MigrationWriteError(
+            f"migration failed after writes began ({exc}); "
+            + (
+                "id-scoped compensation completed"
+                if report.compensated
+                else "COMPENSATION INCOMPLETE — remove the reported "
+                "written_edge_keys then written_node_ids by hand"
+            ),
+            report,
+        ) from exc
+
+    report.verified = True
+    return report
+
+
+async def _plan_migration(
+    source: Any, target: Any
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[tuple[str, dict[str, Any]]],
+    list[tuple[str, str, dict[str, Any]]],
+    MigrationRunReport,
+]:
+    """Enumerate the source, run every fail-closed check, build the write
+    plan. Read-only; shared verbatim by migrate_graph and dry_run_migration
+    so the dry run exercises exactly the checks the apply run would."""
     source_nodes = await source.get_all_nodes()
     source_edges = sort_directed_edges(await source.get_all_edges())
 
@@ -690,36 +743,181 @@ async def migrate_graph(
         ),
         written_edge_keys=sorted(canonical_edges),
     )
+    return source_nodes, source_edges, node_items, edge_items, report
 
-    try:
-        await target.upsert_nodes_batch(node_items)
-        await target.upsert_edges_batch(edge_items)
-        report.verification = verify_source_side(
-            source_nodes,
-            source_edges,
-            await target.get_all_nodes(),
-            await target.get_all_edges(),
+
+async def dry_run_migration(
+    source: Any, target: Any, *, force_empty_target: bool = False
+) -> MigrationRunReport:
+    """Read-only preflight: everything migrate_graph checks, zero writes.
+
+    Runs the pair allowlist, the empty-target gate and every fail-closed
+    source check, and returns the report the apply run would start from
+    (counts and the would-be written id sets, ``verified`` False, no
+    verification). Raises exactly the errors the apply run would raise at
+    the same points. With ``force_empty_target`` a non-empty target is not
+    rejected — but it is NOT dropped either; the drop happens only in the
+    apply run.
+    """
+    check_migration_pair(source, target)
+    if not await target_slice_is_empty(target) and not force_empty_target:
+        raise MigrationPreconditionError(
+            "target graph slice is not empty; refusing to migrate "
+            "(pass force_empty_target to drop it instead)"
         )
-        if not report.verification.ok:
-            raise MigrationError("source-driven verification failed")
-    except Exception as exc:
-        try:
-            await compensate_partial_migration(
-                target, report.written_node_ids, report.written_edge_keys
-            )
-            report.compensated = True
-        except Exception as compensation_exc:  # noqa: BLE001 — report, then surface the original failure
-            report.compensation_error = repr(compensation_exc)
-        raise MigrationWriteError(
-            f"migration failed after writes began ({exc}); "
-            + (
-                "id-scoped compensation completed"
-                if report.compensated
-                else "COMPENSATION INCOMPLETE — remove the reported "
-                "written_edge_keys then written_node_ids by hand"
-            ),
-            report,
-        ) from exc
-
-    report.verified = True
+    _, _, _, _, report = await _plan_migration(source, target)
     return report
+
+
+# ---------------------------------------------------------------------------
+# CLI — dry-run by default, --apply to migrate
+# ---------------------------------------------------------------------------
+
+
+async def _build_graph_storage(backend_name: str, workspace: str) -> Any:
+    """Instantiate and initialize one graph storage via the factory.
+
+    Imports are deliberately INSIDE the function (the rebuild_vdb pattern):
+    the offline CI does not install asyncpg, and importing this module or
+    its tests must never pull in a DB backend — only actually running the
+    CLI may.
+    """
+    from lightrag.kg.factory import get_storage_class
+    from lightrag.namespace import NameSpace
+
+    cls = get_storage_class(backend_name)
+    storage = cls(
+        namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
+        workspace=workspace,
+        # Graph storages read their configuration via global_config.get(...)
+        # (connection settings come from POSTGRES_* env vars); nothing is
+        # required here for the graph-only paths this tool uses.
+        global_config={},
+        embedding_func=None,
+    )
+    await storage.initialize()
+    return storage
+
+
+def _report_dict(
+    report: MigrationRunReport, mode: str, error: str | None = None
+) -> dict[str, Any]:
+    """stdout report shape, matching the existing tools' dict convention."""
+    out: dict[str, Any] = {
+        "mode": mode,
+        "source_backend": report.source_backend,
+        "target_backend": report.target_backend,
+        "nodes": report.node_count,
+        "edges": report.edge_count,
+        "verified": report.verified,
+        "compensated": report.compensated,
+    }
+    if report.compensation_error is not None:
+        out["compensation_error"] = report.compensation_error
+        # The manual-cleanup contract: compensation did not finish, so the
+        # operator needs the exact sets to remove by hand.
+        out["written_node_ids"] = report.written_node_ids
+        out["written_edge_keys"] = report.written_edge_keys
+    else:
+        out["written_node_count"] = len(report.written_node_ids)
+        out["written_edge_count"] = len(report.written_edge_keys)
+    if report.verification is not None and not report.verification.ok:
+        out["verification_failed"] = True
+    if error is not None:
+        out["error"] = error
+    return out
+
+
+async def _async_main(args: argparse.Namespace) -> int:
+    """Run the migration (or dry run) and return the process exit code."""
+    mode = "apply" if args.apply else "dry-run"
+    # Reject a disallowed pair before instantiating anything: building an
+    # arbitrary backend could import drivers and open connections for a run
+    # that is already doomed.
+    pair = (args.source_backend, args.target_backend)
+    if pair not in ALLOWED_MIGRATION_PAIRS:
+        allowed = ", ".join(f"{s} -> {t}" for s, t in sorted(ALLOWED_MIGRATION_PAIRS))
+        print(
+            {
+                "mode": mode,
+                "error": f"unsupported migration pair {pair[0]} -> {pair[1]}; "
+                f"Phase 1 supports exactly: {allowed}",
+            }
+        )
+        return MigrationPreconditionError.exit_code
+
+    source = None
+    target = None
+    try:
+        source = await _build_graph_storage(args.source_backend, args.workspace)
+        target = await _build_graph_storage(args.target_backend, args.workspace)
+        if args.apply:
+            report = await migrate_graph(
+                source, target, force_empty_target=args.force_empty_target
+            )
+        else:
+            report = await dry_run_migration(
+                source, target, force_empty_target=args.force_empty_target
+            )
+        print(_report_dict(report, mode))
+        return 0
+    except MigrationWriteError as exc:
+        print(_report_dict(exc.report, mode, error=str(exc)))
+        return exc.exit_code
+    except MigrationError as exc:
+        print({"mode": mode, "error": str(exc)})
+        return exc.exit_code
+    finally:
+        for storage in (source, target):
+            if storage is not None:
+                await storage.finalize()
+
+
+def main(argv: list[str] | None = None) -> None:
+    from dotenv import load_dotenv
+
+    load_dotenv(dotenv_path=".env", override=False)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Migrate a LightRAG graph between storage backends through the "
+            "public storage API (Phase 1: PGGraphStorage -> "
+            "PGTableGraphStorage). Stop every LightRAG writer first. "
+            "Default is a read-only dry run."
+        )
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Perform the migration (default: dry-run, nothing is written)",
+    )
+    parser.add_argument(
+        "--workspace",
+        default=os.getenv("WORKSPACE", ""),
+        help="Workspace to migrate (default: WORKSPACE env / the default one)",
+    )
+    parser.add_argument(
+        "--force-empty-target",
+        action="store_true",
+        help=(
+            "DANGEROUS: drop() the whole non-empty target graph slice before "
+            "migrating instead of refusing (default: refuse)"
+        ),
+    )
+    parser.add_argument(
+        "--source-backend",
+        default="PGGraphStorage",
+        help="Source graph storage class name (default: PGGraphStorage)",
+    )
+    parser.add_argument(
+        "--target-backend",
+        default="PGTableGraphStorage",
+        help="Target graph storage class name (default: PGTableGraphStorage)",
+    )
+    args = parser.parse_args(argv)
+    exit_code = asyncio.run(_async_main(args))
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
