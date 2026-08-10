@@ -374,6 +374,8 @@ async def _handle_entity_relation_summary(
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    truncation_write_ahead: Callable[[TokenLimitTruncationTally], Awaitable[None]]
+    | None = None,
 ) -> tuple[str, bool]:
     """Handle entity relation description summary using map-reduce approach.
 
@@ -454,6 +456,7 @@ async def _handle_entity_relation_summary(
                     global_config,
                     llm_response_cache,
                     truncation_tally=truncation_tally,
+                    truncation_write_ahead=truncation_write_ahead,
                 )
                 return final_summary, True  # LLM was used for final summarization
 
@@ -514,6 +517,7 @@ async def _handle_entity_relation_summary(
                     global_config,
                     llm_response_cache,
                     truncation_tally=truncation_tally,
+                    truncation_write_ahead=truncation_write_ahead,
                 )
                 new_summaries.append(summary)
                 llm_was_used = True  # Mark that LLM was used in reduce phase
@@ -529,6 +533,8 @@ async def _summarize_descriptions(
     global_config: dict,
     llm_response_cache: BaseKVStorage | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    truncation_write_ahead: Callable[[TokenLimitTruncationTally], Awaitable[None]]
+    | None = None,
 ) -> str:
     """Helper function to summarize a list of descriptions using LLM.
 
@@ -541,6 +547,15 @@ async def _summarize_descriptions(
             cut-off summary silently becomes the entity's/relation's persisted
             description, so it belongs in the same operator-visible record as
             truncated extraction.
+        truncation_write_ahead: Optional hook awaited right after a truncation
+            is recorded, BEFORE the summary is returned to the caller that will
+            write it into the graph. Lets an additive caller (the custom-chunk
+            path, whose resume never purges a failed attempt's mutations) make
+            the record durable ahead of the mutation it warns about, so even a
+            hard crash cannot leave a truncated summary in the graph with no
+            journaled evidence. A hook failure propagates and fails this
+            entity/relation — fail-closed into the caller's normal failure
+            path.
 
     Returns:
         Summarized description string
@@ -607,6 +622,8 @@ async def _summarize_descriptions(
         )
         if truncation_tally is not None:
             truncation_tally.record("summary", subject)
+            if truncation_write_ahead is not None:
+                await truncation_write_ahead(truncation_tally)
 
     # The LLM response is the only description path that bypasses
     # extraction-time sanitization; control chars / surrogates left here
@@ -2318,6 +2335,8 @@ async def _merge_nodes_then_upsert(
     entity_chunks_storage: BaseKVStorage | None = None,
     status_logger: PipelineStatusLogger | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    truncation_write_ahead: Callable[[TokenLimitTruncationTally], Awaitable[None]]
+    | None = None,
 ):
     """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     if status_logger is None:
@@ -2499,6 +2518,7 @@ async def _merge_nodes_then_upsert(
             global_config,
             llm_response_cache,
             truncation_tally=truncation_tally,
+            truncation_write_ahead=truncation_write_ahead,
         )
 
         # 9. Build file_path within MAX_FILE_PATHS
@@ -2665,6 +2685,8 @@ async def _merge_edges_then_upsert(
     entity_chunks_storage: BaseKVStorage | None = None,
     status_logger: PipelineStatusLogger | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    truncation_write_ahead: Callable[[TokenLimitTruncationTally], Awaitable[None]]
+    | None = None,
 ):
     if status_logger is None:
         # Fallback for direct callers that pass pipeline_status only; a
@@ -2900,6 +2922,7 @@ async def _merge_edges_then_upsert(
             global_config,
             llm_response_cache,
             truncation_tally=truncation_tally,
+            truncation_write_ahead=truncation_write_ahead,
         )
 
         # 9. Build file_path within MAX_FILE_PATHS limit
@@ -3362,6 +3385,8 @@ async def merge_nodes_and_edges(
     file_path: str = "unknown_source",
     on_anchors_durable: Callable[[], Awaitable[None]] | None = None,
     truncation_tally: TokenLimitTruncationTally | None = None,
+    truncation_write_ahead: Callable[[TokenLimitTruncationTally], Awaitable[None]]
+    | None = None,
 ) -> None:
     """Merge extracted entities/relations into the KG behind write-ahead anchors.
 
@@ -3405,6 +3430,19 @@ async def merge_nodes_and_edges(
             summaries are LLM calls too, so a too-small output budget truncates
             them exactly like extraction; the merge folds its own count in so
             the document's ``doc_status.metadata`` summary covers both stages.
+        truncation_write_ahead: Optional async hook awaited right after a
+            summary truncation is recorded, before the object carrying that
+            summary is upserted. For callers whose failure recovery is
+            ADDITIVE (the custom-chunk path: a resume keeps the failed
+            attempt's graph mutations), the record must be durable before the
+            mutation it warns about — a FAILED-transition stamp alone loses
+            the event on a hard crash. The pipeline's own merges do not need
+            it: a reprocess purges the previous attempt's contributions, so
+            nothing truncated survives to warn about. Receives the tally the
+            event was recorded into (the merge-local one, folded into
+            ``truncation_tally`` only when the merge publishes — after every
+            hook call has completed, because failing phases drain their
+            sibling tasks first).
     """
 
     # Check for cancellation at the start of merge
@@ -3571,6 +3609,7 @@ async def merge_nodes_and_edges(
                         entity_chunks_storage,
                         status_logger=status_logger,
                         truncation_tally=summary_tally,
+                        truncation_write_ahead=truncation_write_ahead,
                     )
 
                     return entity_data
@@ -3666,6 +3705,7 @@ async def merge_nodes_and_edges(
                         entity_chunks_storage,  # Add entity_chunks_storage parameter
                         status_logger=status_logger,
                         truncation_tally=summary_tally,
+                        truncation_write_ahead=truncation_write_ahead,
                     )
 
                     if edge_data is None:

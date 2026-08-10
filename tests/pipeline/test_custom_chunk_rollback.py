@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 import lightrag.lightrag as lightrag_module
+import lightrag.operate as operate_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.operate import KGRebuildReport
@@ -23,6 +24,7 @@ from lightrag.utils import (
     LLM_TRUNCATION_METADATA_KEY,
     EmbeddingFunc,
     Tokenizer,
+    TruncatedResponse,
 )
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
@@ -49,7 +51,7 @@ async def _dummy_llm(*args, **kwargs) -> str:
     return "ok"
 
 
-async def _build_rag(tmp_path) -> LightRAG:
+async def _build_rag(tmp_path, **overrides) -> LightRAG:
     rag = LightRAG(
         working_dir=str(tmp_path / "wd"),
         workspace=f"ccroll-{uuid4().hex[:8]}",
@@ -59,6 +61,7 @@ async def _build_rag(tmp_path) -> LightRAG:
         ),
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
         max_parallel_insert=1,
+        **overrides,
     )
     await rag.initialize_storages()
     return rag
@@ -804,5 +807,86 @@ async def test_failed_attempts_accumulate_truncation_exactly_once_each(
         # The FAILED row's durable metadata carries the same accumulation.
         meta = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
         assert meta is not None and meta["events"] == 2
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_hard_crash_after_summary_truncation_survives_resume(
+    tmp_path, monkeypatch
+):
+    """End-to-end Codex scenario (PR #3607): attempt 1 truncates at extraction
+    AND at a description summary, its graph writes land, then the process dies
+    before the FAILED bookkeeping can run. The resume extracts a different,
+    clean sample, never re-touches the truncated entity, and succeeds — the
+    PROCESSED row must still carry both stages, fed by the write-ahead
+    journal alone (no FAILED write ever happened)."""
+    rag = await _build_rag(tmp_path, force_llm_summary_on_merge=3)
+    try:
+        attempts = {"n": 0}
+
+        def _descriptions(name: str, chunk_id: str, count: int) -> list[dict]:
+            return [
+                {
+                    "entity_name": name,
+                    "entity_type": "person",
+                    "description": f"{name} description {i}",
+                    "source_id": chunk_id,
+                    "file_path": "custom",
+                    "timestamp": i,
+                }
+                for i in range(count)
+            ]
+
+        async def _per_attempt_extract(chunks, *args, truncation_tally=None, **kwargs):
+            attempts["n"] += 1
+            results = []
+            for chunk_id in chunks:
+                if attempts["n"] == 1:
+                    # Truncated extraction (uncached, so the resume genuinely
+                    # re-runs it) yielding an entity whose three descriptions
+                    # force the LLM summary path — which truncates too.
+                    truncation_tally.record("initial", chunk_id)
+                    results.append(({"ALICE": _descriptions("ALICE", chunk_id, 3)}, {}))
+                else:
+                    results.append(({"BOB": _descriptions("BOB", chunk_id, 1)}, {}))
+            return results
+
+        monkeypatch.setattr(rag, "_process_extract_entities", _per_attempt_extract)
+
+        async def truncated_summary_llm(*args, **kwargs):
+            return TruncatedResponse("partial summary"), 0
+
+        monkeypatch.setattr(
+            operate_module, "use_llm_func_with_cache", truncated_summary_llm
+        )
+
+        # Attempt 1 fails after the merge completed its graph writes, and the
+        # "process" is gone before the FAILED bookkeeping runs: that write
+        # raises, leaving the journal exactly as the write-ahead left it.
+        await _fail_after_one_merge(monkeypatch)
+        orig_upsert_status = rag._upsert_custom_chunk_status
+
+        async def crash_on_failed_write(doc_key, status, **kwargs):
+            if status == DocStatus.FAILED:
+                raise RuntimeError("simulated hard crash")
+            return await orig_upsert_status(doc_key, status, **kwargs)
+
+        monkeypatch.setattr(rag, "_upsert_custom_chunk_status", crash_on_failed_write)
+
+        with pytest.raises(RuntimeError, match="post-merge boom"):
+            await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        # Resume: clean single-description sample, no summaries, succeeds.
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        record = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert record is not None, "both attempts' truncations were erased"
+        assert record["stages"] == {"initial": 1, "summary": 1}, (
+            "attempt 1's summary truncation was lost: only the FAILED write "
+            "knew about it, and a hard crash never runs the FAILED write"
+        )
     finally:
         await rag.finalize_storages()

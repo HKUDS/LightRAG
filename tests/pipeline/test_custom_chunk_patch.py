@@ -22,12 +22,14 @@ import numpy as np
 import pytest
 
 import lightrag.lightrag as lightrag_module
+import lightrag.operate as operate_module
 from lightrag import LightRAG
 from lightrag.base import DocStatus
 from lightrag.utils import (
     EmbeddingFunc,
     LLM_TRUNCATION_METADATA_KEY,
     Tokenizer,
+    TruncatedResponse,
 )
 from lightrag.utils_pipeline import (
     CUSTOM_CHUNK_PATCH_METADATA_KEY,
@@ -53,7 +55,7 @@ async def _dummy_llm(*args, **kwargs) -> str:
     return "ok"
 
 
-async def _build_rag(tmp_path) -> LightRAG:
+async def _build_rag(tmp_path, **overrides) -> LightRAG:
     rag = LightRAG(
         working_dir=str(tmp_path / "wd"),
         workspace=f"ccpatch-{uuid4().hex[:8]}",
@@ -63,6 +65,7 @@ async def _build_rag(tmp_path) -> LightRAG:
         ),
         tokenizer=Tokenizer("mock-tokenizer", _SimpleTokenizerImpl()),
         max_parallel_insert=1,
+        **overrides,
     )
     await rag.initialize_storages()
     return rag
@@ -575,5 +578,82 @@ async def test_rollback_restores_the_base_documents_truncation_record(
         row = await rag.doc_status.get_by_id("doc-1")
         summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
         assert summary == base_summary
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_summary_truncation_is_journaled_before_the_graph_write(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): the custom-chunk resume never purges a failed
+    attempt's graph mutations, so a truncated summary that reaches the graph
+    must already be journaled — a FAILED-transition stamp alone loses the
+    event on a hard crash. Intercepts the graph upsert to pin the ordering:
+    by the time the object carrying the truncated summary lands, the durable
+    journal already names the summary stage."""
+    rag = await _build_rag(tmp_path, force_llm_summary_on_merge=3)
+    try:
+
+        async def fake_extract(chunks, *args, **kwargs):
+            # Three distinct descriptions force the LLM summary path.
+            return [
+                (
+                    {
+                        "ALICE": [
+                            {
+                                "entity_name": "ALICE",
+                                "entity_type": "person",
+                                "description": f"ALICE description {i}",
+                                "source_id": chunk_id,
+                                "file_path": "custom",
+                                "timestamp": i,
+                            }
+                            for i in range(3)
+                        ]
+                    },
+                    {},
+                )
+                for chunk_id in chunks
+            ]
+
+        monkeypatch.setattr(rag, "_process_extract_entities", fake_extract)
+
+        async def truncated_summary_llm(*args, **kwargs):
+            return TruncatedResponse("partial summary"), 0
+
+        monkeypatch.setattr(
+            operate_module, "use_llm_func_with_cache", truncated_summary_llm
+        )
+
+        captured: dict[str, object] = {}
+        orig_upsert_node = rag.chunk_entity_relation_graph.upsert_node
+
+        async def observing_upsert_node(node_id, node_data):
+            if node_id == "ALICE" and "journal" not in captured:
+                row = await rag.doc_status.get_by_id("doc-1")
+                captured["journal"] = (_journal(row) or {}).get(
+                    "operation_llm_truncation"
+                )
+            return await orig_upsert_node(node_id, node_data)
+
+        monkeypatch.setattr(
+            rag.chunk_entity_relation_graph, "upsert_node", observing_upsert_node
+        )
+
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        assert "journal" in captured, "precondition: the merge never upserted ALICE"
+        durable = captured["journal"]
+        assert durable is not None and "summary" in durable.get("stages", {}), (
+            "the truncated summary reached the graph before the journal knew "
+            "about it: a hard crash at that point would strand truncated "
+            "output in the graph with no durable record"
+        )
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert summary["stages"] == {"summary": 1}
     finally:
         await rag.finalize_storages()

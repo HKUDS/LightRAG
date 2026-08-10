@@ -2178,6 +2178,44 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         return {"metadata_drop": (LLM_TRUNCATION_METADATA_KEY,)}
                     return {"metadata_extra": {LLM_TRUNCATION_METADATA_KEY: merged}}
 
+                truncation_persist_lock = asyncio.Lock()
+
+                async def _journal_truncation_write_ahead(
+                    pending: TokenLimitTruncationTally,
+                ) -> None:
+                    """Journal a truncation event BEFORE the mutation it warns about.
+
+                    Awaited by the merge's summary path between recording a
+                    truncated summary and upserting the object that carries
+                    it, so even a hard crash (no FAILED write) cannot leave
+                    truncated output in the graph with no journaled evidence.
+                    ``pending`` is the merge-local summary tally: its events
+                    reach the operation tally only when the merge publishes,
+                    which happens after every hook call has completed (a
+                    failing phase drains its sibling tasks first) — so the two
+                    sides of this merge are disjoint, and the later FAILED or
+                    terminal recompute overwrites this snapshot with a
+                    superset. A hook failure fails the recording entity or
+                    relation itself — fail-closed into the normal FAILED
+                    path. Fires once per truncation event (rare); serialized
+                    because sibling merges can record concurrently.
+                    """
+                    nonlocal status_row
+                    async with truncation_persist_lock:
+                        status_row = await self._upsert_custom_chunk_status(
+                            doc_key,
+                            DocStatus.PROCESSING,
+                            base_row=status_row,
+                            journal={
+                                **journal,
+                                "operation_llm_truncation": merge_truncation_metadata(
+                                    _operation_truncation_record(),
+                                    pending.as_metadata(),
+                                ),
+                                "updated_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+
                 try:
                     # Stage 1 (barrier): persist chunks BEFORE extraction.
                     # Extraction records per-chunk LLM cache references
@@ -2280,13 +2318,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         "relation_pairs": [
                             list(pair) for pair in sorted(candidate_relations)
                         ],
-                        # Write-ahead for the truncation record too: any
-                        # attempt that mutates the graph has journaled its
-                        # extraction-stage truncations first. Merge-stage
-                        # summary truncations happen after this write; they
-                        # are picked up by the FAILED write below, so only a
-                        # hard crash mid-merge (no FAILED write) can lose that
-                        # attempt's summary-stage events.
+                        # Write-ahead for the truncation record too. The
+                        # invariant: any truncation event whose subject's
+                        # graph mutation has landed is already journaled —
+                        # extraction-stage events by this write (which
+                        # precedes ALL merge mutation), summary-stage events
+                        # by _journal_truncation_write_ahead (awaited before
+                        # the object carrying the truncated summary is
+                        # upserted).
                         "operation_llm_truncation": _operation_truncation_record(),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }
@@ -2325,6 +2364,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             relation_chunks_storage=self.relation_chunks,
                             file_path=file_path,
                             truncation_tally=truncation_tally,
+                            truncation_write_ahead=_journal_truncation_write_ahead,
                         )
 
                     # ---- Commit: flush ALL derived stores, union the patch
@@ -2365,10 +2405,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         failed_journal = {
                             **journal,
                             "phase": "failed",
-                            # Recompute — overwrites the applying write's copy
-                            # (which already folded this attempt in) with the
-                            # same carried-plus-current merge, now including
-                            # any merge-stage summary events recorded since.
+                            # Recompute — overwrites the applying write's and
+                            # the write-ahead hook's copies (which already
+                            # folded this attempt in) with the same
+                            # carried-plus-current merge; the tally has
+                            # absorbed the merge's summary events by now, so
+                            # this is always a superset of those snapshots.
                             "operation_llm_truncation": (
                                 _operation_truncation_record()
                             ),
