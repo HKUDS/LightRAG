@@ -460,3 +460,120 @@ async def test_custom_chunk_failure_records_truncation(tmp_path, monkeypatch):
         assert summary["stages"] == {"initial": 1}
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_patch_truncation_merges_with_the_base_documents_record(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): a patch ADDS to the document, so its tally
+    must combine with the base run's record, not overwrite it — the base
+    run's truncated objects are still in the graph."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _truncating_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+        await rag.ainsert_custom_chunks("base", ["bob is there"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert summary["events"] == 2, "the patch overwrote the base run's count"
+        assert summary["affected"] == 2
+        assert summary["stages"] == {"initial": 2}
+        assert summary["samples"] == [
+            _chunk_id("doc-1", "alice is here"),
+            _chunk_id("doc-1", "bob is there"),
+        ]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_a_clean_patch_leaves_the_base_documents_record_standing(
+    tmp_path, monkeypatch
+):
+    rag = await _build_rag(tmp_path)
+    try:
+        _truncating_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+        base_summary = (
+            (await rag.doc_status.get_by_id("doc-1")).get("metadata") or {}
+        )[LLM_TRUNCATION_METADATA_KEY]
+
+        _fake_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["bob is there"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert summary == base_summary, (
+            "a clean patch must not disturb the base run's truncation record"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_rollback_drops_a_failed_patchs_truncation_from_a_clean_base(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): the rollback restore copies the FAILED row,
+    whose metadata carries the dead attempt's tally — describing extractions
+    the rollback just purged. A clean base must come back clean."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+
+        _truncating_extraction(rag, monkeypatch, then_fail=True)
+        with pytest.raises(Exception, match="extraction exploded"):
+            await rag.ainsert_custom_chunks("base", ["bob is there"], doc_id="doc-1")
+        failed_row = await rag.doc_status.get_by_id("doc-1")
+        assert LLM_TRUNCATION_METADATA_KEY in (failed_row.get("metadata") or {}), (
+            "precondition: the FAILED row carries the attempt's stamp"
+        )
+
+        result = await rag.arollback_failed_custom_chunk_patches()
+        assert result["rolled_back_count"] == 1
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        assert LLM_TRUNCATION_METADATA_KEY not in (row.get("metadata") or {}), (
+            "rolled-back content must not leave a truncation record behind"
+        )
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_rollback_restores_the_base_documents_truncation_record(
+    tmp_path, monkeypatch
+):
+    """A truncated base rolled back from a truncating patch keeps exactly its
+    own record — neither blanked nor inflated by the dead attempt's counts."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _truncating_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["alice is here"], doc_id="doc-1")
+        base_summary = (
+            (await rag.doc_status.get_by_id("doc-1")).get("metadata") or {}
+        )[LLM_TRUNCATION_METADATA_KEY]
+
+        _truncating_extraction(rag, monkeypatch, then_fail=True)
+        with pytest.raises(Exception, match="extraction exploded"):
+            await rag.ainsert_custom_chunks("base", ["bob is there"], doc_id="doc-1")
+        failed_summary = (
+            (await rag.doc_status.get_by_id("doc-1")).get("metadata") or {}
+        )[LLM_TRUNCATION_METADATA_KEY]
+        assert failed_summary["events"] == 2, (
+            "precondition: the FAILED row carries base + attempt merged"
+        )
+
+        result = await rag.arollback_failed_custom_chunk_patches()
+        assert result["rolled_back_count"] == 1
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        summary = (row.get("metadata") or {}).get(LLM_TRUNCATION_METADATA_KEY)
+        assert summary == base_summary
+    finally:
+        await rag.finalize_storages()

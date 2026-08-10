@@ -4636,6 +4636,63 @@ class TokenLimitTruncationTally:
         return {LLM_TRUNCATION_METADATA_KEY: payload} if payload else {}
 
 
+def merge_truncation_metadata(
+    base: dict[str, Any] | None, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Combine two persisted ``llm_truncation`` payloads into one.
+
+    Exists for the custom-chunk patch path, which ADDS chunks to a document
+    whose earlier contributions stay in the graph: a patch that truncates must
+    not overwrite the base run's record, and a truncated base must not have
+    its record blanked by a clean patch. The pipeline never needs this — a
+    full reprocess replaces the document's whole contribution, so there
+    replace-or-clear is the correct semantics.
+
+    Merging live tallies would be exact, but only the persisted payloads
+    survive (the base run's tally object is long gone), and those are lossy:
+    ``samples`` is capped at :data:`TRUNCATION_METADATA_SAMPLE_LIMIT`, so
+    subjects beyond the cap cannot be de-duplicated. ``events`` and ``stages``
+    are exact sums regardless. ``affected`` is exact whenever both sample
+    lists are complete (no ``samples_omitted``); otherwise it deduplicates
+    what the samples do show and over-counts a subject that truncated in both
+    runs but is visible in neither — chunk subjects cannot collide across a
+    base run and a patch (different id schemes), so in practice this only
+    brushes repeat ``summary`` subjects.
+    """
+    if not base:
+        return dict(extra) if extra else None
+    if not extra:
+        return dict(base)
+
+    base_samples = [s for s in (base.get("samples") or []) if isinstance(s, str)]
+    extra_samples = [s for s in (extra.get("samples") or []) if isinstance(s, str)]
+    # Ordered union, base first — mirrors the tally's first-seen ordering.
+    union_samples = list(dict.fromkeys(base_samples + extra_samples))
+
+    both_complete = not base.get("samples_omitted") and not extra.get("samples_omitted")
+    if both_complete:
+        affected = len(union_samples)
+    else:
+        overlap = len(set(base_samples) & set(extra_samples))
+        affected = int(base.get("affected") or 0) + int(extra.get("affected") or 0)
+        affected -= overlap
+
+    stages: dict[str, int] = dict(base.get("stages") or {})
+    for stage, count in (extra.get("stages") or {}).items():
+        stages[stage] = stages.get(stage, 0) + int(count)
+
+    merged: dict[str, Any] = {
+        "events": int(base.get("events") or 0) + int(extra.get("events") or 0),
+        "affected": affected,
+        "stages": stages,
+        "samples": union_samples[:TRUNCATION_METADATA_SAMPLE_LIMIT],
+    }
+    omitted = affected - len(merged["samples"])
+    if omitted > 0:
+        merged["samples_omitted"] = omitted
+    return merged
+
+
 def remove_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and their content from the text.
 
