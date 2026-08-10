@@ -33,6 +33,14 @@ type-strict verification will abort a migration that lost nothing. That
 failure is visible, diagnosable at the source, and recoverable; the
 opposite error — blessing a payload that silently changed type — is not.
 
+Manual e2e checklist (not testable with fakes): real AGE builds the edge
+``source``/``target`` ids via ``(agtype_access_operator(...))::text``;
+whether that cast can carry agtype quoting into the id strings can only be
+answered against a live AGE instance (cf. the lossy agtype-quote-strip
+work in #3587, same territory). If it ever does, the failure mode here is
+fail-closed — endpoint ids diverge, verification aborts and compensates —
+not silent loss.
+
 Known caveat: a payload key literally named ``source`` or ``target`` is
 already destroyed upstream — ``PGGraphStorage.get_all_edges`` overwrites
 those keys with the endpoint ids when flattening each row — so by the time
@@ -208,6 +216,51 @@ def count_parallel_edges(
     return counts
 
 
+def detect_divergent_duplicate_nodes(
+    nodes: Iterable[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Detect node ids enumerated more than once with differing payloads.
+
+    The node-axis mirror of ``detect_divergent_reciprocals``: the target's
+    ``upsert_nodes_batch`` dedups in-batch last-write-wins, so a duplicated
+    source id would keep one payload and silently drop the rest — and
+    source-driven verification cannot catch it afterwards, because its own
+    per-id map collapses the same way. So the invariant must be checked on
+    the raw enumeration, before any write.
+
+    Policy mirrors the reciprocal rule exactly: duplicates whose payloads
+    are ``payloads_equal`` PASS (collapsing equal payloads loses nothing,
+    just as equal reciprocal rows pass), any observable difference is
+    returned for the caller to fail closed on.
+
+    Returns (node_id, payloads) pairs sorted by node id, with each payload
+    list in canonical-JSON order — the source enumeration has no ORDER BY,
+    so the report must not depend on enumeration order.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        groups.setdefault(node["id"], []).append(_node_payload(node))
+    divergent: list[tuple[str, list[dict[str, Any]]]] = []
+    for node_id in sorted(groups):
+        payloads = groups[node_id]
+        if len(payloads) < 2:
+            continue
+        if all(payloads_equal(payloads[0], other) for other in payloads[1:]):
+            continue
+        divergent.append(
+            (
+                node_id,
+                sorted(
+                    payloads,
+                    key=lambda p: json.dumps(
+                        p, sort_keys=True, ensure_ascii=False, default=str
+                    ),
+                ),
+            )
+        )
+    return divergent
+
+
 def derive_written_node_ids(
     migrated_node_ids: Iterable[str],
     edges: Iterable[dict[str, Any]],
@@ -304,6 +357,14 @@ class VerificationReport:
     # arbitrary survivor — so verification must fail regardless of whether
     # the caller already ran the backstop.
     source_parallel_violations: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Node ids enumerated more than once in the SOURCE with differing
+    # payloads. Same last-line-of-defense reasoning: the per-id maps below
+    # collapse duplicates last-write-wins, so this is only detectable on the
+    # raw enumeration — and without it a lost duplicate payload would verify
+    # clean.
+    source_duplicate_node_divergence: list[tuple[str, list[dict[str, Any]]]] = field(
+        default_factory=list
+    )
 
     @property
     def ok(self) -> bool:
@@ -316,6 +377,7 @@ class VerificationReport:
             or self.edge_property_mismatches
             or self.source_reciprocal_divergence
             or self.source_parallel_violations
+            or self.source_duplicate_node_divergence
         )
 
 
@@ -348,8 +410,9 @@ def verify_source_side(
 
     Node ids are compared as sets, then per-id payloads with the shared
     type-strict ``payloads_equal`` rule; edges as canonical-key sets, then
-    per-key payloads under the same rule. Both source-side preconditions —
-    no divergent reciprocals, no parallel rows per ordered pair — are
+    per-key payloads under the same rule. All three source-side
+    preconditions — no divergent reciprocals, no parallel rows per ordered
+    pair, no divergent duplicate node ids — are
     re-checked here and reported rather than assumed, because verification
     is the last line of defense: a source that fails its own precondition
     has no well-defined expected target, and it must not depend on the
@@ -368,9 +431,23 @@ def verify_source_side(
 
     # AGE enumerates with no ORDER BY; pin the order so map construction
     # (last-write-wins on violating input) and every derived field are
-    # reproducible across runs.
+    # reproducible across runs. Nodes get the same treatment as edges: on
+    # duplicate-id input the per-id map below keeps the last payload, which
+    # must not depend on enumeration order.
     source_edges = sort_directed_edges(source_edges)
+    source_nodes = sorted(
+        source_nodes,
+        key=lambda node: (
+            node["id"],
+            json.dumps(
+                _node_payload(node), sort_keys=True, ensure_ascii=False, default=str
+            ),
+        ),
+    )
 
+    report.source_duplicate_node_divergence = detect_divergent_duplicate_nodes(
+        source_nodes
+    )
     report.source_reciprocal_divergence = detect_divergent_reciprocals(source_edges)
     report.source_parallel_violations = {
         pair: count
@@ -498,10 +575,13 @@ def check_migration_pair(source: Any, target: Any) -> None:
 async def target_slice_is_empty(target: Any) -> bool:
     """Empty-target gate, via ``get_all_nodes``.
 
-    NEVER ``is_empty()``: the BaseGraphStorage stub has a docstring-only
-    body (returns None) and PGTableGraphStorage does not override it, so a
-    gate built on it silently passes on a populated target — the exact
-    fail-open this check exists to prevent.
+    NEVER ``is_empty()``: graph storages do not have that method at all —
+    the None-returning stub in ``lightrag/base.py`` belongs to
+    ``BaseKVStorage``, a different branch of the hierarchy, and
+    ``BaseGraphStorage`` defines nothing like it. A gate written against it
+    would crash with AttributeError on a real backend (fail-closed by
+    accident, and for the wrong reason); this gate asks a question the
+    graph API actually answers.
     """
     return len(await target.get_all_nodes()) == 0
 
@@ -570,6 +650,14 @@ async def migrate_graph(
             "source has reciprocal directed edges with divergent properties; "
             "canonicalization would silently drop one payload per pair: "
             f"{[d.canonical_key for d in divergent]}"
+        )
+    duplicate_nodes = detect_divergent_duplicate_nodes(source_nodes)
+    if duplicate_nodes:
+        raise MigrationDataError(
+            "source enumerates node ids more than once with divergent "
+            "properties; the batch upsert would keep one payload and "
+            "silently drop the rest: "
+            f"{[node_id for node_id, _ in duplicate_nodes]}"
         )
 
     node_items: list[tuple[str, dict[str, Any]]] = []

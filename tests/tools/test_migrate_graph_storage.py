@@ -21,6 +21,7 @@ from lightrag.tools.migrate_graph_storage import (
     compensate_partial_migration,
     count_parallel_edges,
     derive_written_node_ids,
+    detect_divergent_duplicate_nodes,
     detect_divergent_reciprocals,
     edge_properties,
     migrate_graph,
@@ -251,6 +252,53 @@ class TestCountParallelEdges:
 
 
 # ---------------------------------------------------------------------------
+# detect_divergent_duplicate_nodes — node-axis mirror of the reciprocal rule
+# ---------------------------------------------------------------------------
+
+
+class TestDetectDivergentDuplicateNodes:
+    def test_divergent_duplicate_detected(self):
+        nodes = [
+            {"id": "a", "entity_id": "a", "p": 1},
+            {"id": "a", "entity_id": "a", "p": 2},
+            {"id": "b", "entity_id": "b"},
+        ]
+        result = detect_divergent_duplicate_nodes(nodes)
+        assert [node_id for node_id, _ in result] == ["a"]
+        assert result[0][1] == [
+            {"entity_id": "a", "p": 1},
+            {"entity_id": "a", "p": 2},
+        ]
+
+    def test_equal_duplicates_pass(self):
+        # Mirrors the reciprocal rule: collapsing equal payloads loses
+        # nothing, so byte-equal duplicates are not flagged.
+        nodes = [
+            {"id": "a", "entity_id": "a", "p": 1},
+            {"id": "a", "entity_id": "a", "p": 1},
+        ]
+        assert detect_divergent_duplicate_nodes(nodes) == []
+
+    def test_type_strict(self):
+        nodes = [
+            {"id": "a", "entity_id": "a", "p": 1},
+            {"id": "a", "entity_id": "a", "p": 1.0},
+        ]
+        assert len(detect_divergent_duplicate_nodes(nodes)) == 1
+
+    def test_order_independent(self):
+        nodes = [
+            {"id": "a", "entity_id": "a", "p": 2},
+            {"id": "a", "entity_id": "a", "p": 1},
+            {"id": "a", "entity_id": "a", "p": 1},
+        ]
+        forward = detect_divergent_duplicate_nodes(nodes)
+        backward = detect_divergent_duplicate_nodes(list(reversed(nodes)))
+        assert forward == backward
+        assert len(forward) == 1
+
+
+# ---------------------------------------------------------------------------
 # derive_written_node_ids — compensation set under the empty-target invariant
 # ---------------------------------------------------------------------------
 
@@ -447,6 +495,21 @@ class TestVerifySourceSide:
         assert not report.ok
         assert [m[0] for m in report.edge_property_mismatches] == [("a", "c")]
 
+    def test_source_duplicate_node_divergence_reported(self):
+        # Parity with source_parallel_violations: verify is the last line of
+        # defense and re-checks the node-axis invariant itself — without
+        # this, a lost duplicate payload verifies clean (per-id maps are
+        # last-write-wins on both sides).
+        source_nodes, source_edges, target_nodes, target_edges = self._clean_migration()
+        source_nodes = source_nodes + [
+            {"id": "a", "entity_id": "a", "entity_type": "MUTATED"}
+        ]
+        report = verify_source_side(
+            source_nodes, source_edges, target_nodes, target_edges
+        )
+        assert not report.ok
+        assert [n for n, _ in report.source_duplicate_node_divergence] == ["a"]
+
     def test_source_reciprocal_divergence_reported(self):
         source_nodes, source_edges, target_nodes, target_edges = self._clean_migration()
         source_edges[1] = _edge("b", "a", weight=555.0)  # diverge the reciprocal
@@ -526,8 +589,11 @@ class PGTableGraphStorage:
       auto-creates missing endpoints as stub nodes (returns None);
     - remove_* mirror DELETE ... = ANY: absent ids are silent no-ops;
     - get_all_* merge ids into the dicts ("id" / "source"+"target");
-    - is_empty records the call and returns None, exactly like the base-class
-      stub the empty gate must never trust.
+    - is_empty records the call and returns None. Real graph storages do
+      not have this attribute AT ALL (the None-returning stub in base.py is
+      BaseKVStorage's; BaseGraphStorage defines nothing like it) — the fake
+      carries one purely as a never-call tripwire so AC-a can assert the
+      gate never even attempts it.
 
     ``foreign_nodes`` stands in for another workspace slice: the real
     remove_* are workspace-scoped, so compensation must leave it untouched.
@@ -544,7 +610,7 @@ class PGTableGraphStorage:
         self.fail_edge_batch_after = fail_edge_batch_after
 
     async def is_empty(self):
-        self.is_empty_called = True  # forbidden gate: base stub returns None
+        self.is_empty_called = True  # tripwire: real graph storages lack this
 
     async def get_all_nodes(self):
         self.calls.append("get_all_nodes")
@@ -664,6 +730,41 @@ class TestMigrationPreconditions:
         with pytest.raises(MigrationDataError):
             await migrate_graph(source, target)
         assert "upsert_nodes_batch" not in target.calls
+
+    async def test_duplicate_node_ids_with_divergent_payloads_fail_before_any_write(
+        self,
+    ):
+        # The gate's demonstrated defect: [{id:a,p:1},{id:a,p:2}] previously
+        # migrated "verified" with p:1 silently gone (both the batch writer
+        # and verification collapse per-id last-write-wins).
+        target = PGTableGraphStorage()
+        source = PGGraphStorage(
+            [
+                {"id": "a", "entity_id": "a", "p": 1},
+                {"id": "a", "entity_id": "a", "p": 2},
+            ],
+            [],
+        )
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target)
+        assert "upsert_nodes_batch" not in target.calls
+        assert "upsert_edges_batch" not in target.calls
+        assert target.nodes == {}
+
+    async def test_equal_duplicate_node_ids_migrate(self):
+        # Byte-equal duplicates collapse losslessly and are allowed through,
+        # mirroring the equal-reciprocal-edge policy.
+        target = PGTableGraphStorage()
+        source = PGGraphStorage(
+            [
+                {"id": "a", "entity_id": "a", "p": 1},
+                {"id": "a", "entity_id": "a", "p": 1},
+            ],
+            [],
+        )
+        report = await migrate_graph(source, target)
+        assert report.verified
+        assert target.nodes == {"a": {"entity_id": "a", "p": 1}}
 
     async def test_node_without_entity_id_fails_before_any_write(self):
         target = PGTableGraphStorage()
