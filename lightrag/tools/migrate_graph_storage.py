@@ -550,6 +550,11 @@ class MigrationRunReport:
 
     source_backend: str
     target_backend: str
+    # The workspace the backends actually resolved to, which is not
+    # necessarily the one requested (POSTGRES_WORKSPACE outranks the
+    # constructor argument). Reported so the slice a destructive run acted on
+    # is never left implicit.
+    resolved_workspace: str | None = None
     node_count: int = 0
     edge_count: int = 0
     # Everything this run wrote (or would have written when a write failed
@@ -638,20 +643,35 @@ async def migrate_graph(
     check_migration_pair(source, target)
 
     target_non_empty = not await target_slice_is_empty(target)
-    if target_non_empty:
-        if not force_empty_target:
-            raise MigrationPreconditionError(
-                "target graph slice is not empty; refusing to write "
-                "(pass force_empty_target to drop it instead)"
-            )
-        await target.drop()
+    if target_non_empty and not force_empty_target:
+        raise MigrationPreconditionError(
+            "target graph slice is not empty; refusing to write "
+            "(pass force_empty_target to drop it instead)"
+        )
 
+    # Plan BEFORE dropping. _plan_migration is read-only and runs every
+    # fail-closed source check, so ordering it first means a source that fails
+    # one of them cannot cost the operator their existing target slice: the
+    # single destructive action happens only once the migration is known to be
+    # able to proceed.
     source_nodes, source_edges, node_items, edge_items, report = await _plan_migration(
         source, target
     )
+    report.resolved_workspace = getattr(target, "workspace", None)
     report.target_was_non_empty = target_non_empty
-    # Reaching here with a non-empty target means the force path ran drop().
-    report.dropped_target_slice = target_non_empty
+
+    if target_non_empty:
+        # PGTableGraphStorage.drop() reports failure by RETURNING
+        # {"status": "error"} instead of raising, so an unchecked call would
+        # record a slice as dropped while its rows are still there — and the
+        # migration would then write into, and later compensate against, data
+        # it does not own.
+        drop_result = await target.drop()
+        if isinstance(drop_result, dict) and drop_result.get("status") == "error":
+            raise MigrationPreconditionError(
+                f"failed to drop the target graph slice: {drop_result.get('message')}"
+            )
+        report.dropped_target_slice = True
 
     try:
         await target.upsert_nodes_batch(node_items)
@@ -787,6 +807,7 @@ async def dry_run_migration(
     # WILL drop the pre-existing slice. The report must say so — a
     # clean-looking force-mode preview of a destructive apply is exactly the
     # operator trap this field exists to prevent.
+    report.resolved_workspace = getattr(target, "workspace", None)
     report.target_was_non_empty = target_non_empty
     return report
 
@@ -794,6 +815,32 @@ async def dry_run_migration(
 # ---------------------------------------------------------------------------
 # CLI — dry-run by default, --apply to migrate
 # ---------------------------------------------------------------------------
+
+
+def _check_resolved_workspace(requested: str, source: Any, target: Any) -> None:
+    """Fail closed when the backends did not land on the workspace we asked for.
+
+    The graph backends resolve their workspace as ``POSTGRES_WORKSPACE`` env >
+    the value passed to the constructor > ``"default"`` (pgtable_impl.py:531),
+    so an environment variable silently outranks ``--workspace``. That matters
+    because this tool has a destructive mode: without this check,
+    ``--workspace staging --force-empty-target`` could drop a slice the
+    operator never named. An empty request means the operator named nothing, so
+    any resolution is legitimate.
+    """
+    resolved_source = getattr(source, "workspace", None)
+    resolved_target = getattr(target, "workspace", None)
+    if resolved_source != resolved_target:
+        raise MigrationPreconditionError(
+            "source and target resolved to different workspaces "
+            f"({resolved_source!r} vs {resolved_target!r}); refusing to migrate"
+        )
+    if requested and resolved_target != requested:
+        raise MigrationPreconditionError(
+            f"requested workspace {requested!r} but the backends resolved to "
+            f"{resolved_target!r} (POSTGRES_WORKSPACE overrides --workspace); "
+            "refusing to operate on a workspace that was not named"
+        )
 
 
 async def _build_graph_storage(backend_name: str, workspace: str) -> Any:
@@ -855,6 +902,7 @@ def _report_dict(
         "mode": mode,
         "source_backend": report.source_backend,
         "target_backend": report.target_backend,
+        "workspace": report.resolved_workspace,
         "nodes": report.node_count,
         "edges": report.edge_count,
         "verified": report.verified,
@@ -918,6 +966,10 @@ async def _async_main(args: argparse.Namespace) -> int:
 
             source = await _build_graph_storage(args.source_backend, args.workspace)
             target = await _build_graph_storage(args.target_backend, args.workspace)
+            _check_resolved_workspace(args.workspace, source, target)
+        except MigrationPreconditionError as exc:
+            print({"mode": mode, "error": str(exc)})
+            return exc.exit_code
         except Exception as exc:
             # Match rebuild_vdb: a storage build/initialize failure (DB
             # unreachable being the common real case) reports and exits

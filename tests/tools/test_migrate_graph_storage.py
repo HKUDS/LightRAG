@@ -20,6 +20,7 @@ from lightrag.tools.migrate_graph_storage import (
     MigrationPreconditionError,
     MigrationWriteError,
     VerificationReport,
+    _check_resolved_workspace,
     canonicalize_edge,
     compensate_partial_migration,
     count_parallel_edges,
@@ -572,9 +573,13 @@ class TestDeterministicPipeline:
 class _FakeAGESource:
     """AGE-shaped source: returns whatever node/edge dicts it was seeded with."""
 
-    def __init__(self, nodes, edges):
+    def __init__(self, nodes, edges, workspace=""):
         self._nodes = nodes
         self._edges = edges
+        # Real graph storages carry the workspace they resolved to; the tool
+        # cross-checks it against --workspace before doing anything
+        # destructive, so the fake must carry one too.
+        self.workspace = workspace
         self.finalized = False
 
     async def initialize(self):
@@ -611,7 +616,18 @@ class PGTableGraphStorage:
     remove_* are workspace-scoped, so compensation must leave it untouched.
     """
 
-    def __init__(self, seed_nodes=None, foreign_nodes=None, fail_edge_batch_after=None):
+    def __init__(
+        self,
+        seed_nodes=None,
+        foreign_nodes=None,
+        fail_edge_batch_after=None,
+        drop_result=None,
+        workspace="",
+    ):
+        # drop_result: force drop() to report a failure the way the real
+        # backend does (a returned {"status": "error"} dict, not an exception).
+        self.drop_result = drop_result
+        self.workspace = workspace
         self.nodes: dict[str, dict[str, Any]] = dict(seed_nodes or {})
         self.edges: dict[tuple[str, str], dict[str, Any]] = {}
         self.foreign_nodes: dict[str, dict[str, Any]] = dict(foreign_nodes or {})
@@ -679,8 +695,15 @@ class PGTableGraphStorage:
 
     async def drop(self):
         self.calls.append("drop")
+        # Mirrors the real contract: PGTableGraphStorage.drop() reports failure
+        # by RETURNING {"status": "error", ...} rather than raising, so a fake
+        # that returned None (or always succeeded) would hide an unchecked
+        # return value in the caller.
+        if self.drop_result is not None:
+            return self.drop_result
         self.nodes.clear()
         self.edges.clear()
+        return {"status": "success", "message": "data dropped"}
 
 
 def _source(nodes=None, edges=None):
@@ -688,6 +711,68 @@ def _source(nodes=None, edges=None):
         {"id": nid, "entity_id": nid, "entity_type": "thing"} for nid in (nodes or [])
     ]
     return PGGraphStorage(node_dicts, edges or [])
+
+
+class TestForceModeOrdering:
+    """force_empty_target drops pre-existing data; that must be the LAST thing
+    that can go wrong, not the first thing that happens."""
+
+    async def test_source_check_failure_does_not_destroy_the_target(self):
+        # Regression: drop() used to run before the source was validated, so a
+        # source that fails a fail-closed check cost the operator their
+        # existing target slice and produced nothing in return.
+        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
+        source = PGGraphStorage(
+            [
+                {"id": "a", "entity_id": "a", "description": "one"},
+                {"id": "a", "entity_id": "a", "description": "two"},
+            ],
+            [],
+        )
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target, force_empty_target=True)
+        assert "drop" not in target.calls, "the target was dropped before validation"
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+    async def test_failed_drop_is_not_reported_as_a_successful_drop(self):
+        # Regression: PGTableGraphStorage.drop() reports failure by RETURNING
+        # {"status": "error"} rather than raising. An unchecked return value
+        # recorded the slice as dropped and let the migration write into — and
+        # later compensate against — rows it does not own.
+        target = PGTableGraphStorage(
+            seed_nodes={"pre": {"entity_id": "pre"}},
+            drop_result={"status": "error", "message": "permission denied"},
+        )
+        source = _source(["a", "b"], [_edge("a", "b", weight=1.0)])
+        with pytest.raises(MigrationPreconditionError, match="permission denied"):
+            await migrate_graph(source, target, force_empty_target=True)
+        assert "upsert_nodes_batch" not in target.calls
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+
+class TestResolvedWorkspace:
+    """POSTGRES_WORKSPACE outranks the constructor argument, so --workspace
+    alone does not determine which slice a destructive run acts on."""
+
+    def test_env_override_of_requested_workspace_is_refused(self):
+        source = PGGraphStorage([], [])
+        source.workspace = "production"
+        target = PGTableGraphStorage(workspace="production")
+        with pytest.raises(MigrationPreconditionError, match="was not named"):
+            _check_resolved_workspace("staging", source, target)
+
+    def test_empty_request_accepts_whatever_the_backends_resolve(self):
+        source = PGGraphStorage([], [])
+        source.workspace = "default"
+        target = PGTableGraphStorage(workspace="default")
+        _check_resolved_workspace("", source, target)
+
+    def test_divergent_workspaces_between_backends_are_refused(self):
+        source = PGGraphStorage([], [])
+        source.workspace = "a"
+        target = PGTableGraphStorage(workspace="b")
+        with pytest.raises(MigrationPreconditionError, match="different workspaces"):
+            _check_resolved_workspace("", source, target)
 
 
 class TestMigrationPreconditions:
@@ -936,6 +1021,10 @@ def _patch_factory(monkeypatch, source, target):
 
         def ctor(**kwargs):
             ctor_kwargs[name] = kwargs
+            # Mimic the backends resolving their workspace. Without a
+            # POSTGRES_WORKSPACE override they land on what was requested,
+            # which is what the tool cross-checks before acting.
+            instance.workspace = kwargs.get("workspace", "")
             return instance
 
         return ctor
