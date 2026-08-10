@@ -558,6 +558,12 @@ class MigrationRunReport:
     verification: VerificationReport | None = None
     compensated: bool = False
     compensation_error: str | None = None
+    # Whether the target slice held pre-existing data at the gate, and
+    # whether this run actually drop()ped it (apply + force_empty_target
+    # only). Surfaced so a force-mode dry run cannot look like a no-risk
+    # preview of a run that will destroy the slice.
+    target_was_non_empty: bool = False
+    dropped_target_slice: bool = False
 
 
 def check_migration_pair(source: Any, target: Any) -> None:
@@ -626,7 +632,8 @@ async def migrate_graph(
     """
     check_migration_pair(source, target)
 
-    if not await target_slice_is_empty(target):
+    target_non_empty = not await target_slice_is_empty(target)
+    if target_non_empty:
         if not force_empty_target:
             raise MigrationPreconditionError(
                 "target graph slice is not empty; refusing to write "
@@ -637,6 +644,9 @@ async def migrate_graph(
     source_nodes, source_edges, node_items, edge_items, report = await _plan_migration(
         source, target
     )
+    report.target_was_non_empty = target_non_empty
+    # Reaching here with a non-empty target means the force path ran drop().
+    report.dropped_target_slice = target_non_empty
 
     try:
         await target.upsert_nodes_batch(node_items)
@@ -760,12 +770,19 @@ async def dry_run_migration(
     apply run.
     """
     check_migration_pair(source, target)
-    if not await target_slice_is_empty(target) and not force_empty_target:
+    target_non_empty = not await target_slice_is_empty(target)
+    if target_non_empty and not force_empty_target:
+        # Identical wording to migrate_graph: same code path, same claim.
         raise MigrationPreconditionError(
-            "target graph slice is not empty; refusing to migrate "
+            "target graph slice is not empty; refusing to write "
             "(pass force_empty_target to drop it instead)"
         )
     _, _, _, _, report = await _plan_migration(source, target)
+    # Reaching here with a non-empty target means force mode: the apply run
+    # WILL drop the pre-existing slice. The report must say so — a
+    # clean-looking force-mode preview of a destructive apply is exactly the
+    # operator trap this field exists to prevent.
+    report.target_was_non_empty = target_non_empty
     return report
 
 
@@ -795,7 +812,18 @@ async def _build_graph_storage(backend_name: str, workspace: str) -> Any:
         global_config={},
         embedding_func=None,
     )
-    await storage.initialize()
+    try:
+        await storage.initialize()
+    except BaseException:
+        # Best-effort release of whatever initialize acquired before it
+        # failed (e.g. a ClientManager reference, whose refcount would
+        # otherwise stay stranded); the initialize failure is the error
+        # worth surfacing, so a secondary finalize failure is swallowed.
+        try:
+            await storage.finalize()
+        except Exception:
+            pass
+        raise
     return storage
 
 
@@ -811,7 +839,15 @@ def _report_dict(
         "edges": report.edge_count,
         "verified": report.verified,
         "compensated": report.compensated,
+        "target_non_empty": report.target_was_non_empty,
     }
+    # Symmetric destructive-consequence fields: the force-mode dry run must
+    # disclose that the apply run will drop the pre-existing slice, and the
+    # apply run must disclose that it did.
+    if mode == "dry-run":
+        out["would_drop_target_slice"] = report.target_was_non_empty
+    else:
+        out["dropped_target_slice"] = report.dropped_target_slice
     if report.compensation_error is not None:
         out["compensation_error"] = report.compensation_error
         # The manual-cleanup contract: compensation did not finish, so the
@@ -849,8 +885,15 @@ async def _async_main(args: argparse.Namespace) -> int:
     source = None
     target = None
     try:
-        source = await _build_graph_storage(args.source_backend, args.workspace)
-        target = await _build_graph_storage(args.target_backend, args.workspace)
+        try:
+            source = await _build_graph_storage(args.source_backend, args.workspace)
+            target = await _build_graph_storage(args.target_backend, args.workspace)
+        except Exception as exc:
+            # Match rebuild_vdb: a storage build/initialize failure (DB
+            # unreachable being the common real case) reports and exits
+            # non-zero instead of escaping as a raw traceback.
+            print({"mode": mode, "error": f"storage initialization failed: {exc}"})
+            return 1
         if args.apply:
             report = await migrate_graph(
                 source, target, force_empty_target=args.force_empty_target
@@ -867,6 +910,10 @@ async def _async_main(args: argparse.Namespace) -> int:
     except MigrationError as exc:
         print({"mode": mode, "error": str(exc)})
         return exc.exit_code
+    # A non-MigrationError failure during the migration itself escapes as a
+    # raw traceback — deliberate, matching kg_integrity_repair and
+    # source_conflict_repair; the process still exits non-zero, and a
+    # blanket catch here would only hide genuine bugs.
     finally:
         for storage in (source, target):
             if storage is not None:

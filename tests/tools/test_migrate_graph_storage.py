@@ -893,7 +893,10 @@ class TestMigrationCompensation:
 
     async def test_failed_compensation_is_reported_not_swallowed(self):
         class BrokenRemoveTarget(PGTableGraphStorage):
+            # Parameter name matches the base signature (keyword callers must
+            # keep working); it is unused because the fake fails up front.
             async def remove_nodes(self, nodes):
+                del nodes
                 raise RuntimeError("connection lost during compensation")
 
         # Keep the class-name allowlist matching despite the subclass.
@@ -967,6 +970,9 @@ class TestCli:
         assert "'mode': 'dry-run'" in out
         assert "'nodes': 2" in out and "'edges': 1" in out
         assert "'verified': False" in out
+        # Empty target: no destructive consequence to disclose.
+        assert "'target_non_empty': False" in out
+        assert "'would_drop_target_slice': False" in out
         assert source.finalized and target.finalized
 
     def test_apply_performs_migration_and_exits_zero(self, monkeypatch, capsys):
@@ -977,6 +983,7 @@ class TestCli:
         out = capsys.readouterr().out
         assert "'mode': 'apply'" in out
         assert "'verified': True" in out
+        assert "'dropped_target_slice': False" in out
 
     def test_failing_migration_exits_nonzero_without_writes(self, monkeypatch, capsys):
         # Non-empty target: precondition failure must surface as a non-zero
@@ -1008,7 +1015,9 @@ class TestCli:
         import lightrag.kg.factory as factory
 
         def exploding_get_storage_class(name):
-            raise AssertionError("factory must not be called for a rejected pair")
+            raise AssertionError(
+                f"factory must not be called for a rejected pair (got {name!r})"
+            )
 
         monkeypatch.setattr(factory, "get_storage_class", exploding_get_storage_class)
         with pytest.raises(SystemExit) as excinfo:
@@ -1016,7 +1025,7 @@ class TestCli:
         assert excinfo.value.code == 1
         assert "unsupported migration pair" in capsys.readouterr().out
 
-    def test_workspace_flag_overrides_env(self, monkeypatch, capsys):
+    def test_workspace_flag_overrides_env(self, monkeypatch):
         source, target = self._fakes()
         ctor_kwargs = _patch_factory(monkeypatch, source, target)
         monkeypatch.setenv("WORKSPACE", "env-ws")
@@ -1024,7 +1033,7 @@ class TestCli:
         assert ctor_kwargs["PGGraphStorage"]["workspace"] == "cli-ws"
         assert ctor_kwargs["PGTableGraphStorage"]["workspace"] == "cli-ws"
 
-    def test_workspace_defaults_to_env(self, monkeypatch, capsys):
+    def test_workspace_defaults_to_env(self, monkeypatch):
         source, target = self._fakes()
         ctor_kwargs = _patch_factory(monkeypatch, source, target)
         monkeypatch.setenv("WORKSPACE", "env-ws")
@@ -1042,7 +1051,42 @@ class TestCli:
         main(["--force-empty-target"])
         assert "drop" not in target.calls
         assert target.nodes["pre"] == {"entity_id": "pre"}
-        assert "'mode': 'dry-run'" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "'mode': 'dry-run'" in out
+        # The preview must disclose the destructive consequence of apply.
+        assert "'target_non_empty': True" in out
+        assert "'would_drop_target_slice': True" in out
+
+    def test_apply_force_reports_dropped_slice(self, monkeypatch, capsys):
+        source, target = self._fakes()
+        target.nodes["pre"] = {"entity_id": "pre"}
+        _patch_factory(monkeypatch, source, target)
+        main(["--apply", "--force-empty-target"])
+        assert "drop" in target.calls
+        out = capsys.readouterr().out
+        assert "'target_non_empty': True" in out
+        assert "'dropped_target_slice': True" in out
+
+    def test_storage_init_failure_reports_and_finalizes(self, monkeypatch, capsys):
+        # DB-unreachable analogue: initialize of the SECOND storage fails.
+        # rebuild_vdb precedent: report + non-zero exit, no raw traceback.
+        # Both the fully-built source (via the finally) and the partially
+        # built target (best-effort finalize inside the builder) must be
+        # released.
+        source, _ = self._fakes()
+
+        class FailingInitTarget(PGTableGraphStorage):
+            async def initialize(self):
+                raise RuntimeError("db unreachable")
+
+        target = FailingInitTarget()
+        _patch_factory(monkeypatch, source, target)
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--apply"])
+        assert excinfo.value.code == 1
+        assert "storage initialization failed" in capsys.readouterr().out
+        assert source.finalized
+        assert target.finalized
 
     async def test_dry_run_migration_rejects_non_empty_target(self):
         # Library-level twin of the CLI default-refusal path.
