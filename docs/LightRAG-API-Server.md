@@ -947,7 +947,7 @@ python -m lightrag.tools.migrate_graph_storage
 python -m lightrag.tools.migrate_graph_storage --apply
 ```
 
-Only the graph moves; vector and KV data are untouched and stay valid, because the migrated graph keeps the same entity and relation identities. The tool requires an empty target graph slice and refuses rather than migrating a graph it cannot reproduce faithfully; if a write fails it removes exactly what that run wrote. Re-indexing remains the general guidance for changing storage backends — this is an advanced path for one specific pair. For preconditions, the report format, and the failure handling, refer to [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
+Only the graph moves; vector and KV data are untouched and stay valid, because the migrated graph keeps the same entity and relation identities. The tool requires an empty target graph slice and refuses, before writing anything, on every construct it can see that would not survive the move — a node without a usable identity, a duplicate node id, a reciprocal edge pair, or a value PostgreSQL `jsonb` cannot store. If a write fails it removes exactly what that run wrote. One limit worth knowing: Apache AGE enumerates edges with `SELECT DISTINCT`, so two byte-identical relationships between the same pair arrive as one row and the tool cannot see that the graph's degree will change. Re-indexing remains the general guidance for changing storage backends — this is an advanced path for one specific pair. For preconditions, the report format, and the failure handling, refer to [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
 ### LightRAG API Server Command Line Options
 

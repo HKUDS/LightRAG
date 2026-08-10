@@ -369,8 +369,9 @@ class TestSortDirectedEdges:
 
 class TestVerifySourceSide:
     def _clean_migration(self):
-        # Source: AGE-shaped, one edge enumerated in both directions with
-        # identical payloads (legal reciprocal), plus a directed-only edge.
+        # Source: AGE-shaped, one directed row per pair. A reciprocal — even
+        # with identical payloads — is refused now, so a "clean" source has
+        # none: collapsing one would change degree on the way into the target.
         source_nodes: list[dict[str, Any]] = [
             {"id": "a", "entity_id": "a", "entity_type": "person"},
             {"id": "b", "entity_id": "b", "entity_type": "place"},
@@ -378,7 +379,6 @@ class TestVerifySourceSide:
         ]
         source_edges = [
             _edge("a", "b", weight=1.0),
-            _edge("b", "a", weight=1.0),
             _edge("c", "a", weight=2.0),
         ]
         # Target: canonicalized, each undirected edge once.
@@ -509,30 +509,27 @@ class TestVerifySourceSide:
         assert not report.ok
         assert [m[0] for m in report.edge_property_mismatches] == [("a", "c")]
 
-    def test_source_duplicate_node_divergence_reported(self):
-        # Parity with source_parallel_violations: verify is the last line of
-        # defense and re-checks the node-axis invariant itself — without
-        # this, a lost duplicate payload verifies clean (per-id maps are
-        # last-write-wins on both sides).
+    def test_duplicate_node_id_reported_even_with_equal_payload(self):
+        # Verify runs the SAME detectors as the plan phase, so a duplicate id
+        # fails it whether or not the payloads agree — per-id maps are
+        # last-write-wins on both sides, so only the raw enumeration can show
+        # that two source rows became one.
         source_nodes, source_edges, target_nodes, target_edges = self._clean_migration()
-        source_nodes = source_nodes + [
-            {"id": "a", "entity_id": "a", "entity_type": "MUTATED"}
-        ]
+        source_nodes = source_nodes + [dict(source_nodes[0])]  # byte-equal duplicate
         report = verify_source_side(
             source_nodes, source_edges, target_nodes, target_edges
         )
         assert not report.ok
-        assert [n for n, _ in report.source_duplicate_node_divergence] == ["a"]
+        assert report.source_duplicate_node_ids == ["a"]
 
-    def test_source_reciprocal_divergence_reported(self):
+    def test_reciprocal_reported_even_with_equal_payload(self):
         source_nodes, source_edges, target_nodes, target_edges = self._clean_migration()
-        source_edges[1] = _edge("b", "a", weight=555.0)  # diverge the reciprocal
+        source_edges = source_edges + [_edge("b", "a", weight=1.0)]  # equal reciprocal
         report = verify_source_side(
             source_nodes, source_edges, target_nodes, target_edges
         )
         assert not report.ok
-        assert len(report.source_reciprocal_divergence) == 1
-        assert report.source_reciprocal_divergence[0].canonical_key == ("a", "b")
+        assert report.source_reciprocal_pairs == [("a", "b")]
 
 
 # ---------------------------------------------------------------------------

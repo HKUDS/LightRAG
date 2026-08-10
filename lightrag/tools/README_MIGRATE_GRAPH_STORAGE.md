@@ -128,9 +128,13 @@ rather than migrating a graph it cannot faithfully reproduce:
   every property while changing degree and traversal. LightRAG's own write
   path matches edges undirected, so it does not create reciprocals: finding
   one means the source violates the invariant this tool assumes;
-- a payload contains `NaN`, `Infinity` or `-Infinity`. `agtype` represents
-  them; PostgreSQL `jsonb` rejects all three, so the write would fail — under
-  `--force-empty-target`, after the point of no return;
+- a payload contains a value PostgreSQL `jsonb` cannot store faithfully:
+  `NaN`, `Infinity` and `-Infinity` (which `agtype` represents and `jsonb`
+  rejects outright), or `-0.0` (which `jsonb` accepts but normalises to `0.0`,
+  and this tool's comparison treats signed zeros as different — so the write
+  would succeed and then fail its own verification). The general rule: if the
+  target cannot round-trip a value, refuse before the destructive step rather
+  than discover it after the point of no return;
 - more than one directed row *reaches the tool* for the same ordered pair — a
   violation of the invariant that makes the canonical merge lossless. Note the
   limit of this backstop: AGE enumerates edges with `SELECT DISTINCT source,

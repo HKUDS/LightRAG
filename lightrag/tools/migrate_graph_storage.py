@@ -183,37 +183,59 @@ def validate_source_nodes(nodes: Iterable[dict[str, Any]]) -> None:
             )
 
 
-def _non_finite_paths(value: Any, path: str = "") -> list[str]:
-    """Paths of every NaN / +-Infinity inside a payload."""
+def _unrepresentable_paths(value: Any, path: str = "") -> list[str]:
+    """Paths of every value PostgreSQL jsonb cannot store faithfully.
+
+    Two float families qualify, for the same underlying reason — the target
+    cannot round-trip them, so the migration would fail or silently change a
+    value AFTER the point of no return:
+
+    - ``NaN`` / ``+-Infinity``: agtype represents them, jsonb rejects them
+      outright ("invalid input syntax for type json");
+    - ``-0.0``: jsonb accepts it but normalises the sign away
+      (``'{"w": -0.0}'::jsonb`` stores ``{"w": 0.0}``). This tool's comparison
+      rule deliberately treats signed zeros as different, so migrating one
+      would write successfully and then fail its own verification.
+    """
     found: list[str] = []
-    if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+    if isinstance(value, float) and not isinstance(value, bool):
+        import math
+
+        if (
+            value != value
+            or value in (float("inf"), float("-inf"))
+            or (value == 0.0 and math.copysign(1.0, value) < 0)
+        ):
             found.append(path or "<root>")
     elif isinstance(value, dict):
         for key, item in value.items():
-            found.extend(_non_finite_paths(item, f"{path}.{key}" if path else str(key)))
+            found.extend(
+                _unrepresentable_paths(item, f"{path}.{key}" if path else str(key))
+            )
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            found.extend(_non_finite_paths(item, f"{path}[{index}]"))
+            found.extend(_unrepresentable_paths(item, f"{path}[{index}]"))
     return found
 
 
 def find_non_jsonb_representable(
     labelled_payloads: Iterable[tuple[str, dict[str, Any]]],
 ) -> list[tuple[str, list[str]]]:
-    """Find payloads PostgreSQL ``jsonb`` cannot store.
+    """Find payloads PostgreSQL ``jsonb`` cannot store faithfully.
 
-    AGE's ``agtype`` represents ``NaN``, ``Infinity`` and ``-Infinity``;
-    ``jsonb`` rejects all three ("invalid input syntax for type json"). Nothing
-    in the plan phase serializes to JSONB, so without this check such a payload
-    passes the dry run and only fails at the write — which under
-    ``--force-empty-target`` is after the pre-existing slice was dropped. The
-    tool already knows it is migrating agtype into jsonb, so it can refuse
-    before the destructive step instead.
+    The general rule this enforces: if the target cannot round-trip a value,
+    refuse BEFORE the destructive step. Nothing in the plan phase serializes to
+    JSONB, so without this check such a payload passes the dry run and only
+    fails at the write — which under ``--force-empty-target`` is after the
+    pre-existing slice was dropped, leaving neither the old data nor the new.
+    The tool already knows it is migrating agtype into jsonb, so a deterministic
+    failure can be predicted instead of discovered.
+
+    See ``_unrepresentable_paths`` for what qualifies and why.
     """
     offenders = []
     for label, payload in labelled_payloads:
-        paths = _non_finite_paths(payload)
+        paths = _unrepresentable_paths(payload)
         if paths:
             offenders.append((label, sorted(paths)))
     return sorted(offenders)
@@ -479,9 +501,7 @@ class VerificationReport:
     # Divergent reciprocals found in the SOURCE enumeration itself. Non-empty
     # means the fail-closed precondition was violated upstream; the source
     # cannot be compared meaningfully until resolved.
-    source_reciprocal_divergence: list[DivergentReciprocal] = field(
-        default_factory=list
-    )
+    source_reciprocal_pairs: list[tuple[str, str]] = field(default_factory=list)
     # Ordered pairs enumerated more than once in the SOURCE (parallel rows),
     # with their counts. Same reasoning as reciprocal divergence: a source
     # violating the at-most-one-row-per-ordered-pair invariant has no
@@ -494,9 +514,7 @@ class VerificationReport:
     # collapse duplicates last-write-wins, so this is only detectable on the
     # raw enumeration — and without it a lost duplicate payload would verify
     # clean.
-    source_duplicate_node_divergence: list[tuple[str, list[dict[str, Any]]]] = field(
-        default_factory=list
-    )
+    source_duplicate_node_ids: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -507,9 +525,9 @@ class VerificationReport:
             or self.missing_edges
             or self.unexpected_edges
             or self.edge_property_mismatches
-            or self.source_reciprocal_divergence
+            or self.source_reciprocal_pairs
             or self.source_parallel_violations
-            or self.source_duplicate_node_divergence
+            or self.source_duplicate_node_ids
         )
 
 
@@ -577,10 +595,12 @@ def verify_source_side(
         ),
     )
 
-    report.source_duplicate_node_divergence = detect_divergent_duplicate_nodes(
-        source_nodes
-    )
-    report.source_reciprocal_divergence = detect_divergent_reciprocals(source_edges)
+    # Same detectors the plan phase uses, so verification re-runs the source
+    # checks rather than an older, weaker version of them: duplicates and
+    # reciprocals count whether or not their payloads agree, because both
+    # change cardinality on the way into the target.
+    report.source_duplicate_node_ids = detect_duplicate_node_ids(source_nodes)
+    report.source_reciprocal_pairs = detect_reciprocal_pairs(source_edges)
     report.source_parallel_violations = {
         pair: count
         for pair, count in sorted(count_parallel_edges(source_edges).items())
@@ -908,9 +928,10 @@ async def _plan_migration(
     )
     if non_jsonb:
         raise MigrationDataError(
-            "source payloads contain NaN or +-Infinity, which agtype "
-            "represents but PostgreSQL jsonb rejects; the write would fail "
-            "after the point of no return: "
+            "source payloads contain values PostgreSQL jsonb cannot store "
+            "faithfully (NaN, +-Infinity, or -0.0, whose sign jsonb "
+            "normalises away); migrating them would fail after the point of "
+            "no return: "
             f"{[(label, paths) for label, paths in non_jsonb]}"
         )
 
