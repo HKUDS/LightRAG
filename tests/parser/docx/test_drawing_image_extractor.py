@@ -8,7 +8,7 @@ image references travel through ``src`` and never through ``path``.
 from __future__ import annotations
 
 import zipfile
-from errno import ENOSPC
+from errno import EMFILE, ENOSPC
 from pathlib import Path
 from unittest import mock
 from xml.etree import ElementTree as ET
@@ -261,7 +261,9 @@ def test_exact_image_and_total_budget_boundary_is_allowed(
 
 
 @pytest.mark.offline
-def test_stream_failure_removes_partial_file(tmp_path: Path, monkeypatch) -> None:
+def test_transient_stream_failure_retries_and_removes_partial_file(
+    tmp_path: Path, monkeypatch
+) -> None:
     data = b"A" * (1024 * 1024 + 1)
     docx_path = tmp_path / "doc.docx"
     with zipfile.ZipFile(docx_path, "w", compression=zipfile.ZIP_STORED) as zf:
@@ -284,11 +286,109 @@ def test_stream_failure_removes_partial_file(tmp_path: Path, monkeypatch) -> Non
         docx_path=docx_path,
         export_dir_name="assets",
         export_dir_path=export_dir,
+        parse_warnings={},
     )
+    rel = _embedded_rel("rId1", "image.png")
 
-    assert ctx.export_embedded_image(_embedded_rel("rId1", "image.png")) is None
-    assert calls == 2
-    assert list(export_dir.iterdir()) == []
+    with mock.patch(
+        "lightrag.parser.docx.drawing_image_extractor.logger.warning"
+    ) as log_warning:
+        assert ctx.export_embedded_image(rel) is None
+        assert calls == 2
+        assert list(export_dir.iterdir()) == []
+
+        assert ctx.export_embedded_image(rel) == "assets/image.png"
+
+    assert (export_dir / "image.png").read_bytes() == data
+    assert rel.part_name not in ctx._skipped_parts
+    assert ctx.parse_warnings == {"docx_image_read_failed_count": 1}
+    log_warning.assert_called_once()
+    assert log_warning.call_args.args[4] == "later references will retry"
+
+
+@pytest.mark.offline
+def test_transient_zip_open_failure_retries_and_records_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docx_path = tmp_path / "doc.docx"
+    with zipfile.ZipFile(docx_path, "w") as zf:
+        zf.writestr("word/media/image.png", b"PNGDATA")
+
+    original_open = zipfile.ZipFile.open
+    open_calls = 0
+
+    def _fail_first_open(self, *args, **kwargs):
+        nonlocal open_calls
+        open_calls += 1
+        if open_calls == 1:
+            raise OSError(EMFILE, "simulated descriptor exhaustion")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", _fail_first_open)
+    export_dir = tmp_path / "assets"
+    export_dir.mkdir()
+    ctx = DrawingExtractionContext(
+        docx_path=docx_path,
+        export_dir_name="assets",
+        export_dir_path=export_dir,
+        parse_warnings={},
+    )
+    rel = _embedded_rel("rId1", "image.png")
+
+    with mock.patch(
+        "lightrag.parser.docx.drawing_image_extractor.logger.warning"
+    ) as log_warning:
+        assert ctx.export_embedded_image(rel) is None
+        assert ctx.export_embedded_image(rel) == "assets/image.png"
+
+    assert open_calls == 2
+    assert (export_dir / "image.png").read_bytes() == b"PNGDATA"
+    assert rel.part_name not in ctx._skipped_parts
+    assert ctx.parse_warnings == {"docx_image_read_failed_count": 1}
+    log_warning.assert_called_once()
+    assert "OSError" in log_warning.call_args.args[3]
+    assert log_warning.call_args.args[4] == "later references will retry"
+
+
+@pytest.mark.offline
+def test_permanent_zip_failure_is_reported_once_and_memoized(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docx_path = tmp_path / "doc.docx"
+    with zipfile.ZipFile(docx_path, "w") as zf:
+        zf.writestr("word/media/image.png", b"PNGDATA")
+
+    open_calls = 0
+
+    def _fail_open(*args, **kwargs):
+        nonlocal open_calls
+        open_calls += 1
+        raise zipfile.BadZipFile("simulated corrupt member")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", _fail_open)
+    export_dir = tmp_path / "assets"
+    export_dir.mkdir()
+    ctx = DrawingExtractionContext(
+        docx_path=docx_path,
+        export_dir_name="assets",
+        export_dir_path=export_dir,
+        parse_warnings={},
+    )
+    rel = _embedded_rel("rId1", "image.png")
+
+    with mock.patch(
+        "lightrag.parser.docx.drawing_image_extractor.logger.warning"
+    ) as log_warning:
+        assert ctx.export_embedded_image(rel) is None
+        assert ctx.export_embedded_image(rel) is None
+
+    assert open_calls == 1
+    assert rel.part_name in ctx._skipped_parts
+    assert ctx.parse_warnings == {"docx_image_read_failed_count": 1}
+    log_warning.assert_called_once()
+    assert log_warning.call_args.args[4] == (
+        "the damaged or missing part will be skipped"
+    )
 
 
 @pytest.mark.offline
@@ -377,7 +477,7 @@ def test_failed_source_read_does_not_reserve_filename(tmp_path: Path, monkeypatc
     )
 
     assert ctx.export_embedded_image(failed) is None
-    assert ctx.export_embedded_image(failed) is None
+    assert failed.part_name not in ctx._skipped_parts
     assert ctx.export_embedded_image(successful) == "assets/image.png"
     assert (export_dir / "image.png").read_bytes() == b"GOOD"
     assert not (export_dir / "image_2.png").exists()

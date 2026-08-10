@@ -105,6 +105,9 @@ class DrawingExtractionContext:
     parse_warnings: Optional[Dict[str, object]] = None
     _exported_part_to_relpath: Dict[str, str] = field(default_factory=dict)
     _skipped_parts: set[str] = field(default_factory=set, init=False, repr=False)
+    _reported_read_failure_parts: set[str] = field(
+        default_factory=set, init=False, repr=False
+    )
     _used_filenames: Dict[str, str] = field(default_factory=dict)
     _max_image_bytes: int = field(
         default_factory=_default_image_max_bytes, init=False, repr=False
@@ -142,15 +145,15 @@ class DrawingExtractionContext:
         written = 0
         try:
             zf = zipfile.ZipFile(self.docx_path, "r")
-        except Exception:
-            self._skipped_parts.add(rel.part_name)
+        except Exception as exc:
+            self._record_image_read_failure(rel.part_name, exc)
             return None
 
         try:
             try:
                 info = zf.getinfo(zip_member)
-            except Exception:
-                self._skipped_parts.add(rel.part_name)
+            except Exception as exc:
+                self._record_image_read_failure(rel.part_name, exc)
                 return None
 
             declared_size = max(0, info.file_size)
@@ -169,8 +172,8 @@ class DrawingExtractionContext:
 
             try:
                 source = zf.open(info, "r")
-            except Exception:
-                self._skipped_parts.add(rel.part_name)
+            except Exception as exc:
+                self._record_image_read_failure(rel.part_name, exc)
                 return None
 
             try:
@@ -197,9 +200,10 @@ class DrawingExtractionContext:
                         output.write(chunk)
 
                 partial_file.replace(output_file)
-            except _EmbeddedImageReadFailed:
+            except _EmbeddedImageReadFailed as exc:
                 partial_file.unlink(missing_ok=True)
-                self._skipped_parts.add(rel.part_name)
+                source_error = exc.__cause__ or exc
+                self._record_image_read_failure(rel.part_name, source_error)
                 return None
             except _EmbeddedImageBudgetExceeded:
                 partial_file.unlink(missing_ok=True)
@@ -218,6 +222,38 @@ class DrawingExtractionContext:
         self._exported_part_to_relpath[rel.part_name] = rel_path
         self._exported_image_bytes += written
         return rel_path
+
+    def _record_image_read_failure(self, part_name: str, error: BaseException) -> None:
+        """Record a ZIP-side image read failure without hiding retryability."""
+        retryable = isinstance(error, OSError)
+        if not retryable:
+            self._skipped_parts.add(part_name)
+
+        # Reporting is deduplicated separately from the skip verdict. A
+        # transient OSError must remain retryable for a later relationship,
+        # while a persistently damaged ZIP part should not flood logs.
+        if part_name in self._reported_read_failure_parts:
+            return
+        self._reported_read_failure_parts.add(part_name)
+
+        disposition = (
+            "later references will retry"
+            if retryable
+            else "the damaged or missing part will be skipped"
+        )
+        logger.warning(
+            "[parse_native] Failed to read DOCX image %s from %s (%s); %s",
+            safe_log_value(part_name),
+            safe_log_value(str(self.docx_path)),
+            safe_log_value(f"{type(error).__name__}: {error}"),
+            disposition,
+        )
+        if self.parse_warnings is None:
+            return
+        count_key = "docx_image_read_failed_count"
+        self.parse_warnings[count_key] = (
+            int(self.parse_warnings.get(count_key, 0) or 0) + 1
+        )
 
     def _record_image_budget_skip(self, part_name: str, byte_count: int) -> None:
         self._skipped_parts.add(part_name)
