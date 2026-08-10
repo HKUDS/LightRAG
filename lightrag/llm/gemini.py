@@ -545,6 +545,21 @@ async def gemini_complete_if_cache(
     )
     length_limited = finish_reason == types.FinishReason.MAX_TOKENS
 
+    # Count usage BEFORE the empty-response validation below: the request
+    # consumed its budget whether or not the response is usable — a thinking
+    # model that burned the whole output budget on its reasoning trace is
+    # exactly the case that raises, and omitting it would under-report by a
+    # full-budget generation. The streaming path already tracks in a finally.
+    usage = getattr(response, "usage_metadata", None)
+    if token_tracker and usage:
+        token_tracker.add_usage(
+            {
+                "prompt_tokens": getattr(usage, "prompt_token_count", 0),
+                "completion_tokens": getattr(usage, "candidates_token_count", 0),
+                "total_tokens": getattr(usage, "total_token_count", 0),
+            }
+        )
+
     def _empty_response_error(thought_len: int) -> Exception:
         """Diagnose an empty Gemini response the way the OpenAI binding does.
 
@@ -617,16 +632,6 @@ async def gemini_complete_if_cache(
             f"(finish_reason=MAX_TOKENS, content_len={len(final_text)}), returning partial content"
         )
         final_text = TruncatedResponse(final_text)
-
-    usage = getattr(response, "usage_metadata", None)
-    if token_tracker and usage:
-        token_tracker.add_usage(
-            {
-                "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-                "completion_tokens": getattr(usage, "candidates_token_count", 0),
-                "total_tokens": getattr(usage, "total_token_count", 0),
-            }
-        )
 
     logger.debug("Gemini response length: %s", len(final_text))
     return final_text

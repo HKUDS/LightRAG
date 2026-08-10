@@ -689,6 +689,21 @@ async def openai_complete_if_cache(
 
     else:
         try:
+            # Count usage BEFORE the validation raises below: the request
+            # consumed its budget whether or not the response is usable — a
+            # reasoning model that burned the whole output budget on its
+            # trace is exactly the case that raises, and omitting it would
+            # under-report by a full-budget generation.
+            if token_tracker and hasattr(response, "usage"):
+                token_counts = {
+                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                    "completion_tokens": getattr(
+                        response.usage, "completion_tokens", 0
+                    ),
+                    "total_tokens": getattr(response.usage, "total_tokens", 0),
+                }
+                token_tracker.add_usage(token_counts)
+
             if (
                 not response
                 or not response.choices
@@ -820,16 +835,6 @@ async def openai_complete_if_cache(
                     f"(finish_reason=length, content_len={len(final_content)}), returning partial content"
                 )
                 final_content = TruncatedResponse(final_content)
-
-            if token_tracker and hasattr(response, "usage"):
-                token_counts = {
-                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(
-                        response.usage, "completion_tokens", 0
-                    ),
-                    "total_tokens": getattr(response.usage, "total_tokens", 0),
-                }
-                token_tracker.add_usage(token_counts)
 
             logger.debug(f"Response content len: {len(final_content)}")
             verbose_debug(f"Response: {response}")

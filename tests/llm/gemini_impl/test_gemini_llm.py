@@ -422,3 +422,45 @@ async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, requ
     )
 
     assert result == ""
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_counts_usage_before_the_empty_truncated_raise(
+    monkeypatch, request
+):
+    """Codex review (PR #3607): the thought-only MAX_TOKENS raise happened
+    before the token accounting, so the request that consumed its ENTIRE
+    output budget on reasoning was the one request missing from usage
+    reporting. Usage is now recorded before any validation raise, mirroring
+    the streaming path's finally."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+
+    fake_client = _make_nonstreaming_client(
+        _make_fake_gemini_response(
+            thought_text="let me carefully consider the entities",
+            finish_reason="MAX_TOKENS",
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    tracked: list[dict] = []
+    tracker = SimpleNamespace(add_usage=tracked.append)
+
+    with pytest.raises(EmptyTruncatedResponseError):
+        await gemini_module.gemini_complete_if_cache(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+            enable_cot=True,
+            token_tracker=tracker,
+        )
+
+    assert tracked == [
+        {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+    ], (
+        "the exhausted request's tokens vanished from usage accounting "
+        "because the raise preceded token_tracker.add_usage"
+    )

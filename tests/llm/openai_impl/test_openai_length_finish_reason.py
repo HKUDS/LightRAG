@@ -414,3 +414,36 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
     assert "hit the token limit" in message
     assert "consider raising max_tokens" in message
     fake_client.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_content_length_raise_still_counts_usage():
+    """Codex review (PR #3607, flagged on the Gemini twin): the empty-content
+    raise happened before token accounting, so the request that consumed its
+    ENTIRE completion budget on reasoning was the one missing from usage
+    reporting. Usage is now recorded before any validation raise."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
+    completion = _make_completion("", finish_reason="length")
+    fake_client = _make_fake_client(completion)
+
+    tracked: list[dict] = []
+    tracker = SimpleNamespace(add_usage=tracked.append)
+
+    with patch(
+        "lightrag.llm.openai.create_openai_async_client",
+        return_value=fake_client,
+    ):
+        with pytest.raises(EmptyTruncatedResponseError):
+            await openai_complete_if_cache(
+                model="test-model",
+                prompt="Describe the image",
+                token_tracker=tracker,
+            )
+
+    assert tracked == [
+        {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+    ], (
+        "the exhausted request's tokens vanished from usage accounting "
+        "because the raise preceded token_tracker.add_usage"
+    )
