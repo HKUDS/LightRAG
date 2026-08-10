@@ -942,7 +942,7 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 Deployments already running `PGGraphStorage` can move their extracted graph to `PGTableGraphStorage` without re-processing the source documents. An offline tool copies the graph through the public storage API:
 
 ```bash
-# Stop every LightRAG writer first. Dry run by default — nothing is written.
+# Stop every LightRAG writer first. Dry run by default — migrates nothing.
 python -m lightrag.tools.migrate_graph_storage
 python -m lightrag.tools.migrate_graph_storage --apply
 ```

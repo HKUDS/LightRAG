@@ -7,6 +7,7 @@ the parallel-edge backstop, derived written-node sets for compensation, and
 source-driven verification.
 """
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from lightrag.tools.migrate_graph_storage import (
     MigrationWriteError,
     VerificationReport,
     _check_resolved_workspace,
+    _precheck_requested_workspace,
     canonicalize_edge,
     compensate_partial_migration,
     count_parallel_edges,
@@ -713,6 +715,31 @@ def _source(nodes=None, edges=None):
     return PGGraphStorage(node_dicts, edges or [])
 
 
+class TestCancellationCompensates:
+    async def test_cancellation_mid_write_still_compensates(self):
+        # Regression: the write block caught `Exception`, but
+        # asyncio.CancelledError does not subclass it — a Ctrl-C or a cancelled
+        # task partway through the writes left the target populated with no
+        # compensation and no report, which is the exact outcome the id-scoped
+        # undo exists to prevent.
+        target = PGTableGraphStorage()
+
+        async def cancel_during_edges(edges):
+            target.calls.append("upsert_edges_batch")
+            raise asyncio.CancelledError()
+
+        target.upsert_edges_batch = cancel_during_edges
+        source = _source(["a", "b"], [_edge("a", "b", weight=1.0)])
+
+        with pytest.raises(asyncio.CancelledError):
+            await migrate_graph(source, target)
+
+        # Compensation ran, and cancellation kept propagating as itself.
+        assert "remove_edges" in target.calls
+        assert "remove_nodes" in target.calls
+        assert target.nodes == {}
+
+
 class TestForceModeOrdering:
     """force_empty_target drops pre-existing data; that must be the LAST thing
     that can go wrong, not the first thing that happens."""
@@ -766,6 +793,40 @@ class TestResolvedWorkspace:
         source.workspace = "default"
         target = PGTableGraphStorage(workspace="default")
         _check_resolved_workspace("", source, target)
+
+    def test_env_override_is_refused_before_anything_is_constructed(self, monkeypatch):
+        # Regression: the resolved-workspace check could only run AFTER both
+        # storages were initialized, and initialize() is not read-only — it runs
+        # DDL and _normalize_legacy_edges, which deletes and re-inserts edge
+        # rows. Refusing afterwards still mutated the workspace we refused to
+        # touch, so the check has to happen before any connection is opened.
+        monkeypatch.setenv("POSTGRES_WORKSPACE", "production")
+        with pytest.raises(MigrationPreconditionError, match="outranks it"):
+            _precheck_requested_workspace("staging")
+
+    def test_precheck_allows_matching_or_unnamed_workspace(self, monkeypatch):
+        monkeypatch.setenv("POSTGRES_WORKSPACE", "production")
+        _precheck_requested_workspace("production")
+        _precheck_requested_workspace("")  # operator named nothing
+        monkeypatch.delenv("POSTGRES_WORKSPACE", raising=False)
+        _precheck_requested_workspace("staging")
+
+    def test_cli_refuses_env_override_before_touching_the_factory(
+        self, monkeypatch, capsys
+    ):
+        import lightrag.kg.factory as factory
+
+        def exploding_get_storage_class(name):
+            raise AssertionError(
+                f"no backend may be constructed for a refused workspace (got {name!r})"
+            )
+
+        monkeypatch.setattr(factory, "get_storage_class", exploding_get_storage_class)
+        monkeypatch.setenv("POSTGRES_WORKSPACE", "production")
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--workspace", "staging"])
+        assert excinfo.value.code == 1
+        assert "outranks it" in capsys.readouterr().out
 
     def test_divergent_workspaces_between_backends_are_refused(self):
         source = PGGraphStorage([], [])

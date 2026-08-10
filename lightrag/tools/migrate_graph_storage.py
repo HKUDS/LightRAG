@@ -685,7 +685,11 @@ async def migrate_graph(
         )
         if not report.verification.ok:
             raise MigrationError("source-driven verification failed")
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException, not Exception: asyncio.CancelledError does NOT subclass
+        # Exception, so Ctrl-C or a cancelled task partway through the writes
+        # would otherwise leave the target populated with no compensation and no
+        # report — the one failure mode the id-scoped undo exists to prevent.
         try:
             await compensate_partial_migration(
                 target, report.written_node_ids, report.written_edge_keys
@@ -693,6 +697,10 @@ async def migrate_graph(
             report.compensated = True
         except Exception as compensation_exc:  # noqa: BLE001 — report, then surface the original failure
             report.compensation_error = repr(compensation_exc)
+        if isinstance(exc, asyncio.CancelledError):
+            # Compensate, then let cancellation keep propagating as itself:
+            # converting it would break the caller's cancellation semantics.
+            raise
         raise MigrationWriteError(
             f"migration failed after writes began ({exc}); "
             + (
@@ -816,6 +824,29 @@ async def dry_run_migration(
 # ---------------------------------------------------------------------------
 # CLI — dry-run by default, --apply to migrate
 # ---------------------------------------------------------------------------
+
+
+def _precheck_requested_workspace(requested: str) -> None:
+    """Refuse an env-overridden workspace BEFORE anything is constructed.
+
+    ``initialize()`` is not read-only: ``PGTableGraphStorage`` runs its DDL and
+    then ``_normalize_legacy_edges``, which DELETEs and re-INSERTs edge rows.
+    So a check that can only read the *resolved* workspace — which the backend
+    settles during ``initialize()`` — necessarily runs after the wrong slice has
+    already been touched. This mirrors the backend's documented priority
+    (``POSTGRES_WORKSPACE`` env > constructor argument > ``"default"``,
+    pgtable_impl.py:531) to catch the dangerous case before any connection is
+    opened. ``_check_resolved_workspace`` stays as the backstop for whatever
+    this cannot predict.
+    """
+    env_workspace = os.getenv("POSTGRES_WORKSPACE")
+    if requested and env_workspace and env_workspace != requested:
+        raise MigrationPreconditionError(
+            f"requested workspace {requested!r} but POSTGRES_WORKSPACE is set to "
+            f"{env_workspace!r} and outranks it; refusing before opening any "
+            "connection, because initializing a graph storage mutates the "
+            "workspace it lands in"
+        )
 
 
 def _check_resolved_workspace(requested: str, source: Any, target: Any) -> None:
@@ -965,6 +996,12 @@ async def _async_main(args: argparse.Namespace) -> int:
 
             initialize_share_data(workers=1)
 
+            # Before ANY connection: initializing a graph storage mutates the
+            # workspace it lands in (DDL plus _normalize_legacy_edges, which
+            # deletes and re-inserts edge rows), so an env-overridden workspace
+            # has to be refused here rather than after the fact.
+            _precheck_requested_workspace(args.workspace)
+
             source = await _build_graph_storage(args.source_backend, args.workspace)
             target = await _build_graph_storage(args.target_backend, args.workspace)
             _check_resolved_workspace(args.workspace, source, target)
@@ -1012,13 +1049,14 @@ def main(argv: list[str] | None = None) -> None:
             "Migrate a LightRAG graph between storage backends through the "
             "public storage API (Phase 1: PGGraphStorage -> "
             "PGTableGraphStorage). Stop every LightRAG writer first. "
-            "Default is a read-only dry run."
+            "Default is a dry run: no graph data is migrated, though "
+            "initializing the backends does touch their storage."
         )
     )
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Perform the migration (default: dry-run, nothing is written)",
+        help="Perform the migration (default: dry-run, which migrates nothing)",
     )
     parser.add_argument(
         "--workspace",

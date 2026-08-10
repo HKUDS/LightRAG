@@ -942,7 +942,7 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 已经运行 `PGGraphStorage` 的部署，可以把已抽取的图迁移到 `PGTableGraphStorage`，无需重新处理源文档。该离线工具通过公共存储 API 复制图数据：
 
 ```bash
-# 请先停止所有 LightRAG 写入进程。默认为 dry run —— 不写入任何数据。
+# 请先停止所有 LightRAG 写入进程。默认为 dry run —— 不迁移任何图数据。
 python -m lightrag.tools.migrate_graph_storage
 python -m lightrag.tools.migrate_graph_storage --apply
 ```

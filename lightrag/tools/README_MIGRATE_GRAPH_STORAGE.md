@@ -68,12 +68,14 @@ real run, so it predicts what `--apply` will do. With `--force-empty-target`
 it reports that the apply run *would* drop the pre-existing slice, but never
 drops anything itself.
 
-**A dry run performs no migration writes, but it is not read-only at the
-schema level.** Both backends have to be initialized before their contents can
-be inspected, and `initialize()` is what creates the tables `PGTableGraphStorage`
-needs (and, on the AGE side, the graph and its indexes) and runs any legacy-edge
-normalization. Against a database that has never hosted this backend, a dry run
-therefore creates schema. It writes no graph data and moves nothing.
+**A dry run migrates nothing, but it is not read-only.** Both backends have to
+be initialized before their contents can be inspected, and `initialize()` is not
+a passive step: `PGTableGraphStorage` creates its tables and then runs
+`_normalize_legacy_edges`, which **deletes and re-inserts edge rows** (reversed
+duplicates, legacy orderings); the AGE side creates the graph and its indexes.
+So a dry run can modify the workspace it touches. It migrates no data and
+copies nothing between backends — that is the guarantee, and it is narrower
+than "writes nothing".
 
 **`--workspace` is cross-checked, not trusted.** The backends resolve their
 workspace as `POSTGRES_WORKSPACE` env > the value passed in > `"default"`, so
@@ -124,8 +126,11 @@ rather than migrating a graph it cannot faithfully reproduce:
   limit of this backstop: AGE enumerates edges with `SELECT DISTINCT source,
   target, properties`, so byte-identical parallel relationships are already
   collapsed to one row before the tool sees them. It can therefore only catch
-  parallels whose payloads differ — which is the case that would lose data;
-  identical parallels collapse losslessly.
+  parallels whose payloads *differ*. Byte-identical parallels pass through
+  undetected and are **not** carried over faithfully: AGE counts relationship
+  rows when computing degree, while the target's primary key admits one row per
+  canonical pair, so edge multiplicity — and therefore degree — is not
+  preserved. No payload is lost, but the graph is not identical.
 
 Verification after the write re-runs the source-side checks and compares node
 ids, canonical edges and properties. It is driven from the source because the
@@ -142,6 +147,13 @@ the foreign key. It never uses `drop()` for this; whole-slice deletion is
 reachable only through `--force-empty-target`. The written set is computed
 before the first write, so a failure at any point still has the complete set,
 and removing it is exact precisely because the slice started empty.
+
+`--force-empty-target` has an irreducible window. Every source check runs
+before the drop, so a malformed source cannot cost you the slice — but nothing
+proves the *write* will succeed. If the migration fails after the drop, the
+compensation removes what this run wrote and the target ends up empty: the
+pre-existing data is gone and the new data never landed. That is the bargain
+the flag asks for; take a backup before using it.
 
 A failed `drop()` under `--force-empty-target` aborts the run rather than
 proceeding: the backend reports that failure by returning an error status
