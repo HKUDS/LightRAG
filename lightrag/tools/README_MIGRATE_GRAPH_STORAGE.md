@@ -113,12 +113,11 @@ rather than migrating a graph it cannot faithfully reproduce:
 
 - the storage pair is not allow-listed;
 - the target graph slice is not empty (unless `--force-empty-target`);
-- a node carries no `entity_id` — the target requires one, and a source graph
-  can legitimately contain such a node (for example NetworkX creates an
-  edge's unknown endpoint as an attribute-less node);
 - a node has no usable identity — `id` or `entity_id` missing, not a string,
-  or the two disagreeing. A vertex created with no properties at all is legal
-  in AGE and enumerates as `{"id": None}`;
+  or the two disagreeing. Both backends can legitimately produce such a row: a
+  vertex created with no properties is legal in AGE and enumerates as
+  `{"id": None}`, and NetworkX creates an edge's unknown endpoint as an
+  attribute-less node;
 - the same node id appears more than once, **whether or not the payloads
   match**. The target keeps one row per id, so two physical source vertices
   become one node and the graph's node count changes;
