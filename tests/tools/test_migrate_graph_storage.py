@@ -29,6 +29,9 @@ from lightrag.tools.migrate_graph_storage import (
     derive_written_node_ids,
     detect_divergent_duplicate_nodes,
     detect_divergent_reciprocals,
+    detect_duplicate_node_ids,
+    detect_reciprocal_pairs,
+    find_non_jsonb_representable,
     dry_run_migration,
     edge_properties,
     main,
@@ -40,6 +43,9 @@ from lightrag.tools.migrate_graph_storage import (
 )
 
 pytestmark = pytest.mark.offline
+
+
+_UNSET = object()  # distinguishes "return None" from "not configured"
 
 
 def _edge(source, target, **props):
@@ -623,7 +629,7 @@ class PGTableGraphStorage:
         seed_nodes=None,
         foreign_nodes=None,
         fail_edge_batch_after=None,
-        drop_result=None,
+        drop_result=_UNSET,
         workspace="",
     ):
         # drop_result: force drop() to report a failure the way the real
@@ -701,7 +707,7 @@ class PGTableGraphStorage:
         # by RETURNING {"status": "error", ...} rather than raising, so a fake
         # that returned None (or always succeeded) would hide an unchecked
         # return value in the caller.
-        if self.drop_result is not None:
+        if self.drop_result is not _UNSET:
             return self.drop_result
         self.nodes.clear()
         self.edges.clear()
@@ -713,6 +719,125 @@ def _source(nodes=None, edges=None):
         {"id": nid, "entity_id": nid, "entity_type": "thing"} for nid in (nodes or [])
     ]
     return PGGraphStorage(node_dicts, edges or [])
+
+
+class TestSourceNodeIdentity:
+    """A real AGE graph can hold a vertex with no properties (`CREATE (n:base)`),
+    which enumerates as {"id": None}. That must be refused, not crashed on."""
+
+    async def test_node_without_identity_is_refused_before_any_write(self):
+        target = PGTableGraphStorage()
+        source = PGGraphStorage([{"id": None}], [])
+        with pytest.raises(MigrationDataError, match="non-string id"):
+            await migrate_graph(source, target)
+        assert target.calls.count("upsert_nodes_batch") == 0
+
+    async def test_explicit_none_entity_id_is_refused(self):
+        target = PGTableGraphStorage()
+        source = PGGraphStorage([{"id": None, "entity_id": None}], [])
+        with pytest.raises(MigrationDataError, match="non-string id"):
+            await migrate_graph(source, target)
+        assert target.calls.count("upsert_nodes_batch") == 0
+
+    async def test_mixed_valid_and_identityless_raises_data_error_not_typeerror(self):
+        # Regression: identity used to be checked after the duplicate scan and
+        # the deterministic sort, so a None id blew up with
+        # "TypeError: '<' not supported between instances of 'NoneType' and
+        # 'str'" — a crash where the operator needed a diagnosis.
+        target = PGTableGraphStorage()
+        source = PGGraphStorage(
+            [{"id": "alice", "entity_id": "alice"}, {"id": None}], []
+        )
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target)
+
+    async def test_entity_id_disagreeing_with_id_is_refused(self):
+        target = PGTableGraphStorage()
+        source = PGGraphStorage([{"id": "a", "entity_id": "b"}], [])
+        with pytest.raises(MigrationDataError, match="disagrees"):
+            await migrate_graph(source, target)
+
+    async def test_force_mode_refuses_identityless_node_before_dropping(self):
+        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
+        source = PGGraphStorage([{"id": None}], [])
+        with pytest.raises(MigrationDataError):
+            await migrate_graph(source, target, force_empty_target=True)
+        assert "drop" not in target.calls
+        assert target.calls.count("upsert_nodes_batch") == 0
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+
+class TestCardinalityPreservingPolicy:
+    """Reciprocals and duplicates are refused regardless of payload equality:
+    collapsing them preserves payloads but changes degree and cardinality."""
+
+    async def test_equal_reciprocal_edges_are_refused(self):
+        target = PGTableGraphStorage()
+        source = _source(
+            ["a", "b"], [_edge("a", "b", weight=1.0), _edge("b", "a", weight=1.0)]
+        )
+        with pytest.raises(MigrationDataError, match="reciprocal"):
+            await migrate_graph(source, target)
+        assert target.calls.count("upsert_nodes_batch") == 0
+
+    def test_self_loop_is_not_a_reciprocal(self):
+        assert detect_reciprocal_pairs([_edge("a", "a", w=1)]) == []
+
+    def test_duplicate_detection_ignores_payloads(self):
+        nodes = [{"id": "a", "entity_id": "a", "p": 1}, {"id": "a", "entity_id": "a"}]
+        assert detect_duplicate_node_ids(nodes) == ["a"]
+
+
+class TestJsonbRepresentability:
+    """agtype represents NaN/+-Infinity; PostgreSQL jsonb rejects all three."""
+
+    async def test_non_finite_payload_is_refused_before_the_drop(self):
+        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
+        source = _source(["a", "b"], [_edge("a", "b", weight=float("nan"))])
+        with pytest.raises(MigrationDataError, match="NaN"):
+            await migrate_graph(source, target, force_empty_target=True)
+        # The point of the check: the destructive step never ran.
+        assert "drop" not in target.calls
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
+
+    def test_finds_nan_and_infinities_with_paths(self):
+        offenders = find_non_jsonb_representable(
+            [
+                ("edge x", {"w": float("inf")}),
+                ("node y", {"meta": {"vals": [1.0, float("-inf")]}}),
+                ("node z", {"w": 1.0}),
+            ]
+        )
+        assert [label for label, _ in offenders] == ["edge x", "node y"]
+        assert offenders[0][1] == ["w"]
+        assert offenders[1][1] == ["meta.vals[1]"]
+
+
+class TestNegativeZero:
+    def test_signed_zero_is_a_difference(self):
+        assert not payloads_equal(-0.0, 0.0)
+        assert payloads_equal(-0.0, -0.0)
+        assert not payloads_equal({"w": -0.0}, {"w": 0.0})
+
+
+class TestDropStatusContract:
+    @pytest.mark.parametrize(
+        "drop_result",
+        [None, {"status": "failed"}, {"message": "no status"}, "success"],
+        ids=["none", "failed", "no-status", "not-a-dict"],
+    )
+    async def test_only_explicit_success_counts_as_dropped(self, drop_result):
+        # "not an error" is not the same as "succeeded": a no-op drop returning
+        # any of these would otherwise let the run write into rows it does not
+        # own and then compensate against them.
+        target = PGTableGraphStorage(
+            seed_nodes={"pre": {"entity_id": "pre"}}, drop_result=drop_result
+        )
+        source = _source(["a", "b"], [_edge("a", "b", weight=1.0)])
+        with pytest.raises(MigrationPreconditionError, match="status"):
+            await migrate_graph(source, target, force_empty_target=True)
+        assert target.calls.count("upsert_nodes_batch") == 0
+        assert target.nodes == {"pre": {"entity_id": "pre"}}
 
 
 class TestCancellationCompensates:
@@ -916,9 +1041,11 @@ class TestMigrationPreconditions:
         assert "upsert_edges_batch" not in target.calls
         assert target.nodes == {}
 
-    async def test_equal_duplicate_node_ids_migrate(self):
-        # Byte-equal duplicates collapse losslessly and are allowed through,
-        # mirroring the equal-reciprocal-edge policy.
+    async def test_equal_duplicate_node_ids_are_refused(self):
+        # Policy: duplicate ids are refused whether or not their payloads
+        # agree. Two physical source vertices become one target row, so node
+        # cardinality changes even when nothing about the payload is lost —
+        # and `verified` is meant to cover cardinality, not just payloads.
         target = PGTableGraphStorage()
         source = PGGraphStorage(
             [
@@ -927,9 +1054,9 @@ class TestMigrationPreconditions:
             ],
             [],
         )
-        report = await migrate_graph(source, target)
-        assert report.verified
-        assert target.nodes == {"a": {"entity_id": "a", "p": 1}}
+        with pytest.raises(MigrationDataError, match="more than once"):
+            await migrate_graph(source, target)
+        assert target.calls.count("upsert_nodes_batch") == 0
 
     async def test_node_without_entity_id_fails_before_any_write(self):
         target = PGTableGraphStorage()
@@ -945,7 +1072,6 @@ class TestMigrationSuccess:
             ["a", "b", "한국"],
             [
                 _edge("a", "b", weight=1.0),
-                _edge("b", "a", weight=1.0),  # equal reciprocal: one canonical row
                 _edge("한국", "a", rel="이웃"),
             ],
         )

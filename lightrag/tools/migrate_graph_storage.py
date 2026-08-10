@@ -131,10 +131,92 @@ def payloads_equal(a: Any, b: Any) -> bool:
         )
     if isinstance(a, (list, tuple)):
         return len(a) == len(b) and all(payloads_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, float) and not isinstance(a, bool):
+        # -0.0 == +0.0 is True, but they are observably different: json.dumps
+        # renders them differently and math.copysign distinguishes them. Under
+        # the fail-closed rule an observable difference must count.
+        import math
+
+        return a == b and math.copysign(1.0, a) == math.copysign(1.0, b)
     if type(a) in (str, int, float, bool, type(None)):
         return a == b
     # Unknown type: fail closed rather than trust its __eq__.
     return False
+
+
+def validate_source_nodes(nodes: Iterable[dict[str, Any]]) -> None:
+    """Reject malformed enumerated nodes BEFORE anything sorts or groups them.
+
+    A real AGE graph can contain a vertex with no properties at all (``CREATE
+    (n:base)``), which enumerates as ``{"id": None}``. Sorting or grouping that
+    alongside real ids raises ``TypeError: '<' not supported between instances
+    of 'NoneType' and 'str'`` — a crash instead of the refusal the operator
+    needs, and it happens before the entity_id check can speak. So identity is
+    validated first, and the error names the offending node and the type it
+    actually had.
+
+    ``id`` and ``entity_id`` must both be present, both be ``str``, and agree:
+    the enumerator derives ``id`` from ``entity_id``, so a disagreement means
+    the row is not what this tool assumes and is refused defensively.
+    """
+    for position, node in enumerate(nodes):
+        node_id = node.get("id")
+        entity_id = node.get("entity_id")
+        if not isinstance(node_id, str):
+            raise MigrationDataError(
+                f"source node at position {position} has a non-string id "
+                f"({type(node_id).__name__}: {node_id!r}); a vertex with no "
+                "properties enumerates this way. Repair or remove it before "
+                "migrating."
+            )
+        if not isinstance(entity_id, str):
+            raise MigrationDataError(
+                f"source node {node_id!r} has no usable entity_id "
+                f"({type(entity_id).__name__}: {entity_id!r}); the target "
+                "requires one on every node."
+            )
+        if node_id != entity_id:
+            raise MigrationDataError(
+                f"source node id {node_id!r} disagrees with its entity_id "
+                f"{entity_id!r}; refusing rather than guessing which is the "
+                "identity."
+            )
+
+
+def _non_finite_paths(value: Any, path: str = "") -> list[str]:
+    """Paths of every NaN / +-Infinity inside a payload."""
+    found: list[str] = []
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            found.append(path or "<root>")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            found.extend(_non_finite_paths(item, f"{path}.{key}" if path else str(key)))
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            found.extend(_non_finite_paths(item, f"{path}[{index}]"))
+    return found
+
+
+def find_non_jsonb_representable(
+    labelled_payloads: Iterable[tuple[str, dict[str, Any]]],
+) -> list[tuple[str, list[str]]]:
+    """Find payloads PostgreSQL ``jsonb`` cannot store.
+
+    AGE's ``agtype`` represents ``NaN``, ``Infinity`` and ``-Infinity``;
+    ``jsonb`` rejects all three ("invalid input syntax for type json"). Nothing
+    in the plan phase serializes to JSONB, so without this check such a payload
+    passes the dry run and only fails at the write — which under
+    ``--force-empty-target`` is after the pre-existing slice was dropped. The
+    tool already knows it is migrating agtype into jsonb, so it can refuse
+    before the destructive step instead.
+    """
+    offenders = []
+    for label, payload in labelled_payloads:
+        paths = _non_finite_paths(payload)
+        if paths:
+            offenders.append((label, sorted(paths)))
+    return sorted(offenders)
 
 
 @dataclass(frozen=True)
@@ -199,6 +281,47 @@ def detect_divergent_reciprocals(
             )
     divergent.sort(key=lambda d: d.canonical_key)
     return divergent
+
+
+def detect_reciprocal_pairs(
+    directed_edges: Iterable[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Canonical keys that have BOTH directions present, payloads irrelevant.
+
+    Phase 1 refuses every reciprocal pair, not only the ones whose payloads
+    disagree. Even an identical ``a->b`` / ``b->a`` pair is two relationship
+    rows in AGE and one row in the target, and AGE computes degree by counting
+    relationship rows — so collapsing them changes degree and traversal even
+    though no property is lost. LightRAG's own write path matches edges
+    undirected (``OPTIONAL MATCH (source)-[old:DIRECTED]-(target)``), so it does
+    not produce reciprocals: finding one means the source violates the
+    invariant this tool assumes, and refusing keeps ``verified`` meaning that
+    node/edge cardinality and degree were preserved too.
+    """
+    seen: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for edge in directed_edges:
+        src, tgt = edge["source"], edge["target"]
+        if src == tgt:
+            continue  # a self-loop has only one orientation
+        seen.setdefault(canonicalize_edge(src, tgt), set()).add((src, tgt))
+    return sorted(key for key, directions in seen.items() if len(directions) > 1)
+
+
+def detect_duplicate_node_ids(nodes: Iterable[dict[str, Any]]) -> list[str]:
+    """Node ids enumerated more than once, payloads irrelevant.
+
+    Same reasoning as reciprocals: the target's primary key keeps one row per
+    id, so two physical source vertices sharing an entity_id become one node
+    and the graph's node cardinality (and any degree derived from the edges
+    that pointed at each of them) changes. Refused regardless of whether the
+    payloads match.
+    """
+    counts: dict[str, int] = {}
+    for node in nodes:
+        node_id = node.get("id")
+        if isinstance(node_id, str):
+            counts[node_id] = counts.get(node_id, 0) + 1
+    return sorted(node_id for node_id, count in counts.items() if count > 1)
 
 
 def count_parallel_edges(
@@ -668,9 +791,18 @@ async def migrate_graph(
         # migration would then write into, and later compensate against, data
         # it does not own.
         drop_result = await target.drop()
-        if isinstance(drop_result, dict) and drop_result.get("status") == "error":
+        # Only an explicit success counts. The backend signals failure by
+        # RETURNING {"status": "error"}, but treating "anything that is not
+        # error" as success would also bless None, {"status": "failed"} or a
+        # missing status — after which the run writes into, and compensates
+        # against, rows it does not own. Phase 1 allow-lists exactly one target,
+        # so its contract can be required exactly.
+        if not (
+            isinstance(drop_result, dict) and drop_result.get("status") == "success"
+        ):
             raise MigrationPreconditionError(
-                f"failed to drop the target graph slice: {drop_result.get('message')}"
+                "failed to drop the target graph slice; expected "
+                f'{{"status": "success"}} but got {drop_result!r}'
             )
         report.dropped_target_slice = True
 
@@ -729,6 +861,11 @@ async def _plan_migration(
     plan. Read-only; shared verbatim by migrate_graph and dry_run_migration
     so the dry run exercises exactly the checks the apply run would."""
     source_nodes = await source.get_all_nodes()
+    # Identity FIRST: a vertex with no properties enumerates as {"id": None},
+    # and sorting or grouping that alongside real ids raises TypeError before
+    # any check can report anything useful.
+    validate_source_nodes(source_nodes)
+
     source_edges = sort_directed_edges(await source.get_all_edges())
 
     violations = {
@@ -741,20 +878,40 @@ async def _plan_migration(
             f"source violates the one-directed-edge-per-ordered-pair "
             f"invariant; parallel rows for: {sorted(violations)}"
         )
-    divergent = detect_divergent_reciprocals(source_edges)
-    if divergent:
+    # Reciprocals and duplicate ids are refused whether or not their payloads
+    # agree. Collapsing them loses no property but does change node/edge
+    # cardinality and degree, and `verified` is meant to mean the graph came
+    # across — not merely its payload set.
+    reciprocals = detect_reciprocal_pairs(source_edges)
+    if reciprocals:
         raise MigrationDataError(
-            "source has reciprocal directed edges with divergent properties; "
-            "canonicalization would silently drop one payload per pair: "
-            f"{[d.canonical_key for d in divergent]}"
+            "source has reciprocal directed edges (a->b and b->a); the target "
+            "stores one row per canonical pair, so degree and traversal would "
+            f"change even where payloads match: {reciprocals}"
         )
-    duplicate_nodes = detect_divergent_duplicate_nodes(source_nodes)
+    duplicate_nodes = detect_duplicate_node_ids(source_nodes)
     if duplicate_nodes:
         raise MigrationDataError(
-            "source enumerates node ids more than once with divergent "
-            "properties; the batch upsert would keep one payload and "
-            "silently drop the rest: "
-            f"{[node_id for node_id, _ in duplicate_nodes]}"
+            "source enumerates the same node id more than once; the target "
+            "keeps one row per id, so node cardinality would change even "
+            f"where payloads match: {duplicate_nodes}"
+        )
+    non_jsonb = find_non_jsonb_representable(
+        [(f"node {n['id']!r}", _node_payload(n)) for n in source_nodes]
+        + [
+            (
+                f"edge {canonicalize_edge(e['source'], e['target'])!r}",
+                edge_properties(e),
+            )
+            for e in source_edges
+        ]
+    )
+    if non_jsonb:
+        raise MigrationDataError(
+            "source payloads contain NaN or +-Infinity, which agtype "
+            "represents but PostgreSQL jsonb rejects; the write would fail "
+            "after the point of no return: "
+            f"{[(label, paths) for label, paths in non_jsonb]}"
         )
 
     node_items: list[tuple[str, dict[str, Any]]] = []
