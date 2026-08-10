@@ -2367,15 +2367,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             truncation_write_ahead=_journal_truncation_write_ahead,
                         )
 
-                    # ---- Commit: flush ALL derived stores, union the patch
-                    # into the base document's anchors, then write PROCESSED
-                    # (the commit record) last with the journal cleared.
+                    # ---- Commit: flush ALL derived stores, union the
+                    # accumulated candidates into the document's anchors, then
+                    # write PROCESSED (the commit record) last with the
+                    # journal cleared.
                     await self._insert_done()
 
-                    if mode == "patch":
+                    # Patch mode AND resumed creates, not patch alone. Patch
+                    # merges pass None for the anchor storages, so this union
+                    # is their only anchor write. Create merges DO write
+                    # anchors in Phase 0 — but from the current attempt's
+                    # chunk_results only (replace semantics, correct for the
+                    # pipeline's whole-document reprocess). A resumed create
+                    # can extract a DIFFERENT sample (truncated responses are
+                    # never cached), and the PROCESSED write below clears the
+                    # journal — without this union, first-attempt-only graph
+                    # objects would be named nowhere durable and stranded
+                    # from later document purges. A first-attempt create
+                    # skips it: Phase 0 already wrote exactly these
+                    # candidates.
+                    if mode == "patch" or resume:
                         await self._union_doc_recovery_anchors(
                             doc_key, candidate_entities, candidate_relations
                         )
+                    if mode == "patch":
                         base_chunks = [
                             cid
                             for cid in ((status_row or {}).get("chunks_list") or [])

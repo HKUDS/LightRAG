@@ -685,6 +685,52 @@ async def test_resume_with_a_different_sample_keeps_both_attempts_candidates(
         await rag.finalize_storages()
 
 
+@pytest.mark.asyncio
+async def test_resumed_create_unions_both_attempts_into_the_durable_anchors(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): the commit-time anchor union was restricted
+    to patch mode. A create merge writes Phase 0 anchors from the CURRENT
+    attempt's chunk_results only, so a resume that extracted a different
+    sample (truncated responses are never cached) overwrote the anchors with
+    attempt 2's candidates — and the PROCESSED write then cleared the
+    journal, leaving attempt 1's possibly-merged objects named nowhere
+    durable and stranded from later document purges."""
+    rag = await _build_rag(tmp_path)
+    try:
+        attempts = {"n": 0}
+
+        async def _per_attempt_extract(chunks, *args, **kwargs):
+            attempts["n"] += 1
+            name = "ALICE" if attempts["n"] == 1 else "BOB"
+            return [_entity_result(name, chunk_id) for chunk_id in chunks]
+
+        monkeypatch.setattr(rag, "_process_extract_entities", _per_attempt_extract)
+        await _fail_one_merge(monkeypatch)
+
+        # Attempt 1: CREATE fails inside the merge, after possibly partial
+        # graph writes; the journal keeps ALICE.
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["carol is here"], doc_id="doc-1")
+
+        # Resume: extraction genuinely re-runs and yields BOB; the create
+        # merge's Phase 0 writes anchors from THIS attempt's results.
+        await rag.ainsert_custom_chunks("base", ["carol is here"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        assert _journal(row) is None, "commit must clear the journal"
+        anchors = await rag.full_entities.get_by_id("doc-1")
+        assert "ALICE" in anchors["entity_names"], (
+            "attempt 1's candidate vanished from the durable anchors: with "
+            "the journal cleared, a later purge can no longer discover the "
+            "objects its merge may have written"
+        )
+        assert "BOB" in anchors["entity_names"]
+    finally:
+        await rag.finalize_storages()
+
+
 def _entity_result(name: str, chunk_id: str) -> tuple[dict, dict]:
     return (
         {
