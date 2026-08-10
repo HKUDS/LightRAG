@@ -264,6 +264,12 @@ class NativeParserBase(BaseParser):
         )
 
         cancel_event = threading.Event()
+        # Captured ONCE here, deliberately: _shutdown_parser_executor() sets the
+        # current event and then replaces the attribute with a fresh, unset one,
+        # so an in-flight parse must keep its reference to the event that was
+        # live when it started. Re-reading ctx.rag._parser_shutdown_event later
+        # would observe the replacement and miss the shutdown entirely.
+        shutdown_event = getattr(ctx.rag, "_parser_shutdown_event", None)
         # Built once and shared by every consumer in the worker thread — the
         # LLM bridge and, since GHSA-25c3-j78v-83qx, the native markdown image
         # downloader. Before that the pipeline event reached the bridge only,
@@ -272,7 +278,7 @@ class NativeParserBase(BaseParser):
         cancel_events = (
             cancel_event,
             (ctx.pipeline_cancel_event, LLMBridgePipelineCancelled),
-            (getattr(ctx.rag, "_parser_shutdown_event", None), LLMBridgeShutdown),
+            (shutdown_event, LLMBridgeShutdown),
         )
         llm_invoke = None
         smartheading_cache_keys: list = []
@@ -351,8 +357,23 @@ class NativeParserBase(BaseParser):
             # cancel case the future is already cancelled, so awaiting it raises
             # CancelledError regardless of what the worker raised — one uniform
             # raise covers both.
+            #
+            # The rag-level shutdown event is checked here too, and raises the
+            # distinct LLMBridgeShutdown. _shutdown_parser_executor() sets it
+            # and then calls executor.shutdown(wait=False), i.e. it does NOT
+            # wait for a running extract — its contract is that in-flight work
+            # exits via the event. Without this branch a worker still inside
+            # validate_source_blocking when finalize_storages() runs would walk
+            # on to rmtree parsed_dir and extract into storages being torn down.
+            # Shutdown stays a generic parse failure for audit (the parse worker
+            # catches only PipelineCancelledException / LLMBridgePipelineCancelled
+            # as "cancelled"), which is the documented intent.
             pipeline_cancelled = ctx.pipeline_cancel_event
             with cleanup_lock:
+                if shutdown_event is not None and shutdown_event.is_set():
+                    raise LLMBridgeShutdown(
+                        f"parser executor shut down before extraction: {ctx.file_path}"
+                    )
                 if cancel_event.is_set() or (
                     pipeline_cancelled is not None and pipeline_cancelled.is_set()
                 ):

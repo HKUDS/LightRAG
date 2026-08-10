@@ -208,9 +208,19 @@ def test_embedded_nul_is_skipped_not_raised(sidecar_dir):
     assert outcome is _SidecarPathOutcome.REFUSED
 
 
+# The exact OUTCOME label for a symlink loop is platform-dependent, so these
+# two assert the invariant that matters (no path is handed back, so nothing is
+# read) rather than pinning the label. On macOS ``Path.resolve()`` raises
+# ("Symlink loop from ..."), which the shared guard turns into REFUSED; on
+# Linux CPython's non-strict ``realpath`` does not raise — it returns the
+# partially-resolved path — so containment passes and the loop surfaces as
+# MISSING at the ``is_file()`` check. Both refuse, and containment still holds
+# in the escaping case: a loop that leaves the directory first resolves to the
+# outside prefix and is REFUSED on every platform (covered by
+# ``test_symlink_escaping_the_sidecar_is_refused``).
+
+
 def test_symlink_loop_is_skipped_not_raised(sidecar_dir):
-    # RuntimeError("Symlink loop") on CPython < 3.13, OSError(ELOOP) from
-    # 3.13 on — the guard covers both, and CI exercises 3.12 and 3.14.
     assets = sidecar_dir / "report.blocks.assets"
     (assets / "loopA.png").symlink_to(assets / "loopB.png")
     (assets / "loopB.png").symlink_to(assets / "loopA.png")
@@ -219,7 +229,7 @@ def test_symlink_loop_is_skipped_not_raised(sidecar_dir):
         "report.blocks.assets/loopA.png", sidecar_dir
     )
     assert path is None
-    assert outcome is _SidecarPathOutcome.REFUSED
+    assert outcome is not _SidecarPathOutcome.RESOLVED
 
 
 def test_symlink_loop_in_the_sidecar_dir_itself_is_skipped(tmp_path):
@@ -232,4 +242,4 @@ def test_symlink_loop_in_the_sidecar_dir_itself_is_skipped(tmp_path):
 
     path, outcome = _resolve_sidecar_image_path("report.blocks.assets/x.png", a)
     assert path is None
-    assert outcome is _SidecarPathOutcome.REFUSED
+    assert outcome is not _SidecarPathOutcome.RESOLVED

@@ -625,3 +625,92 @@ def test_pipeline_cancel_event_raises_the_catchable_cancel_type(tmp_path, monkey
                 await task
 
     asyncio.run(_run())
+
+
+def test_parser_shutdown_stops_the_worker_before_cleanup(tmp_path, monkeypatch):
+    """finalize_storages() must also stop a worker still inside validation.
+
+    _shutdown_parser_executor() sets the shutdown event and then calls
+    executor.shutdown(wait=False) — it does NOT wait for a running extract; its
+    documented contract is that in-flight work exits via the event. A worker
+    still inside validate_source_blocking would otherwise walk on to rmtree
+    parsed_dir and extract into storages being torn down, destroying a prior
+    complete sidecar exactly as the cancel case does.
+
+    The event is captured once at parse start on purpose: the shutdown helper
+    replaces the attribute with a fresh, unset Event after setting the old one,
+    so re-reading it would observe the replacement and miss the shutdown.
+
+    Fix-proof: pre-fix the checkpoint tested only the per-parse and pipeline
+    events, so the worker proceeded into extract and no exception was raised.
+    """
+    import asyncio
+    import threading
+    import time
+    from unittest import mock
+
+    from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
+    from lightrag.parser.base import ParseContext
+    from lightrag.parser.debug import build_debug_rag
+    from lightrag.parser.llm_bridge import LLMBridgeShutdown
+    from lightrag.parser.registry import get_parser
+
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    monkeypatch.setenv("INPUT_DIR", str(input_dir))
+    source_path = input_dir / "doc.docx"
+    _benign(source_path)
+
+    # A first parse that succeeds and leaves a complete sidecar behind.
+    result = _parse_via_real_pipeline(
+        source_path, tmp_path, monkeypatch, "doc-shutdown"
+    )
+    parsed_dir = Path(result.blocks_path).parent
+    survivors = sorted(p.name for p in parsed_dir.iterdir())
+    assert "doc.blocks.jsonl" in survivors
+
+    shutdown_event = threading.Event()
+    entered = threading.Event()
+    reached_extract = threading.Event()
+
+    def _slow_validate(self, source, file_path):
+        entered.set()
+        for _ in range(1000):
+            if shutdown_event.is_set():
+                return
+            time.sleep(0.005)
+
+    def _spy_extract(self, source, **kwargs):
+        reached_extract.set()
+        return [], {}, {}
+
+    async def _run():
+        _benign(source_path)  # the first parse consumed the source
+        with (
+            mock.patch.object(
+                NativeDocxParser, "validate_source_blocking", _slow_validate
+            ),
+            mock.patch.object(NativeDocxParser, "extract", _spy_extract),
+        ):
+            rag = build_debug_rag()
+            rag._parser_shutdown_event = shutdown_event
+            ctx = ParseContext(
+                rag,
+                "doc-shutdown",
+                str(source_path),
+                {"parse_format": FULL_DOCS_FORMAT_PENDING_PARSE, "content": ""},
+            )
+            task = asyncio.create_task(get_parser("native").parse(ctx))
+            await asyncio.to_thread(entered.wait, 5)
+            # What _shutdown_parser_executor does: set the live event, then
+            # swap in a fresh one without waiting for the running thread.
+            shutdown_event.set()
+            rag._parser_shutdown_event = threading.Event()
+            with pytest.raises(LLMBridgeShutdown):
+                await task
+
+    asyncio.run(_run())
+
+    assert not reached_extract.is_set(), "worker continued into extraction"
+    assert parsed_dir.is_dir(), "shutdown destroyed the previous sidecar"
+    assert sorted(p.name for p in parsed_dir.iterdir()) == survivors
