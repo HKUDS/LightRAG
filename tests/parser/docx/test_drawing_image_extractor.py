@@ -7,6 +7,7 @@ image references travel through ``src`` and never through ``path``.
 
 from __future__ import annotations
 
+import tempfile
 import zipfile
 from errno import EMFILE, ENOSPC
 from pathlib import Path
@@ -261,6 +262,33 @@ def test_exact_image_and_total_budget_boundary_is_allowed(
 
 
 @pytest.mark.offline
+def test_temporary_file_cannot_delete_an_existing_dot_part_asset(
+    tmp_path: Path,
+) -> None:
+    docx_path = tmp_path / "doc.docx"
+    with zipfile.ZipFile(docx_path, "w") as zf:
+        zf.writestr("word/media/.foo.part", b"FIRST")
+        zf.writestr("word/media/foo", b"SECOND")
+
+    export_dir = tmp_path / "assets"
+    export_dir.mkdir()
+    ctx = DrawingExtractionContext(
+        docx_path=docx_path,
+        export_dir_name="assets",
+        export_dir_path=export_dir,
+    )
+
+    first = _embedded_rel("rId1", ".foo.part")
+    second = _embedded_rel("rId2", "foo")
+    assert ctx.export_embedded_image(first) == "assets/.foo.part"
+    assert ctx.export_embedded_image(second) == "assets/foo"
+
+    assert (export_dir / ".foo.part").read_bytes() == b"FIRST"
+    assert (export_dir / "foo").read_bytes() == b"SECOND"
+    assert sorted(path.name for path in export_dir.iterdir()) == [".foo.part", "foo"]
+
+
+@pytest.mark.offline
 def test_transient_stream_failure_retries_and_removes_partial_file(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -407,28 +435,27 @@ def test_output_write_failure_propagates_and_removes_partial_file(
         export_dir_path=export_dir,
         parse_warnings={},
     )
-    original_open = Path.open
+    original_named_temporary_file = tempfile.NamedTemporaryFile
 
     class _FailingWriter:
-        def __init__(self, path: Path):
-            self._output = original_open(path, "wb")
+        def __init__(self, output):
+            self._output = output
+            self.name = output.name
 
         def __enter__(self):
             return self
 
         def __exit__(self, *args):
-            self._output.close()
+            return self._output.__exit__(*args)
 
         def write(self, data: bytes):
             self._output.write(data[:1])
             raise OSError(ENOSPC, "simulated full disk")
 
-    def _fail_partial_write(path: Path, mode="r", *args, **kwargs):
-        if path.name.endswith(".part") and mode == "wb":
-            return _FailingWriter(path)
-        return original_open(path, mode, *args, **kwargs)
+    def _fail_partial_write(*args, **kwargs):
+        return _FailingWriter(original_named_temporary_file(*args, **kwargs))
 
-    monkeypatch.setattr(Path, "open", _fail_partial_write)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", _fail_partial_write)
 
     with pytest.raises(OSError) as exc:
         ctx.export_embedded_image(_embedded_rel("rId1", "image.png"))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from html import escape, unescape
@@ -167,8 +168,6 @@ class DrawingExtractionContext:
                 PurePosixPath(rel.part_name).name or "image"
             )
             output_file = self.export_dir_path / filename
-            partial_file = output_file.with_name(f".{output_file.name}.part")
-            partial_file.unlink(missing_ok=True)
 
             try:
                 source = zf.open(info, "r")
@@ -177,7 +176,21 @@ class DrawingExtractionContext:
                 return None
 
             try:
-                with source, partial_file.open("wb") as output:
+                # Keep the temporary file in the destination directory so the
+                # final replace stays atomic, but allocate it exclusively: a
+                # deterministic ``.<name>.part`` can be a legitimate earlier
+                # asset and must never be unlinked or overwritten here.
+                with (
+                    source,
+                    tempfile.NamedTemporaryFile(
+                        mode="wb",
+                        prefix=".lightrag-docx-image-",
+                        suffix=".part",
+                        dir=self.export_dir_path,
+                        delete=False,
+                    ) as output,
+                ):
+                    partial_file = Path(output.name)
                     while True:
                         # Ask for at most one byte beyond what remains. That
                         # makes a lying metadata size a bounded stop too, while
@@ -201,18 +214,21 @@ class DrawingExtractionContext:
 
                 partial_file.replace(output_file)
             except _EmbeddedImageReadFailed as exc:
-                partial_file.unlink(missing_ok=True)
+                if partial_file is not None:
+                    partial_file.unlink(missing_ok=True)
                 source_error = exc.__cause__ or exc
                 self._record_image_read_failure(rel.part_name, source_error)
                 return None
             except _EmbeddedImageBudgetExceeded:
-                partial_file.unlink(missing_ok=True)
+                if partial_file is not None:
+                    partial_file.unlink(missing_ok=True)
                 self._record_image_budget_skip(
                     rel.part_name, max(declared_size, written)
                 )
                 return None
             except BaseException:
-                partial_file.unlink(missing_ok=True)
+                if partial_file is not None:
+                    partial_file.unlink(missing_ok=True)
                 raise
         finally:
             zf.close()
