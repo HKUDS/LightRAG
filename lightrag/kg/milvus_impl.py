@@ -61,6 +61,15 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
+# Read-path response-size ceiling (issue #3584). Unlike the write path above,
+# a query() response that crosses the gRPC message ceiling isn't rejected by
+# self-hosted Milvus's much larger ~64MB limit — it's rejected by the ~4MB
+# gRPC default that managed gateways (e.g. Zilliz Cloud) enforce and don't
+# expose a way to raise. 2MB keeps a 2x margin under that 4MB ceiling.
+MILVUS_QUERY_MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2MB
+MILVUS_QUERY_MAX_RECORDS_PER_BATCH = 256
+MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
+
 # Schema-migration resilience. A transient Milvus outage during the long
 # iterator-based migration must not kill worker startup: when pymilvus'
 # internal reconnect fails it closes the gRPC channel for good, so every later
@@ -2698,6 +2707,60 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
         )
 
+    def _resolve_query_page_size(self, *, includes_vector: bool) -> int:
+        """Derive how many ids a single query() page may safely carry.
+
+        Rows carrying a vector dominate response size, so their page is
+        sized from the byte budget at the embedding dimension, capped by the
+        record count. Rows without a vector (``get_by_ids``) have no
+        estimable size here — ``content`` alone can reach 64KB — so the
+        record cap is used alone; it's a heuristic, not a byte-level
+        guarantee (see issue #3584 discussion).
+        """
+        if not includes_vector:
+            return MILVUS_QUERY_MAX_RECORDS_PER_BATCH
+
+        embedding_dim = self.embedding_func.embedding_dim
+        if embedding_dim <= 0:
+            return MILVUS_QUERY_MAX_RECORDS_PER_BATCH
+
+        row_bytes = embedding_dim * 4 + MILVUS_QUERY_ROW_OVERHEAD_BYTES
+        page_size = MILVUS_QUERY_MAX_RESPONSE_BYTES // row_bytes
+        return max(1, min(page_size, MILVUS_QUERY_MAX_RECORDS_PER_BATCH))
+
+    async def _query_rows_by_ids(
+        self,
+        ids: list[str],
+        output_fields: list[str],
+        *,
+        includes_vector: bool,
+    ) -> list[dict[str, Any]]:
+        """Fetch rows for `ids`, paging so no single query() response can
+        cross the gRPC message ceiling some gateways enforce.
+
+        Exceptions propagate uncaught: a page failing partway through must
+        not return the pages that already succeeded, since callers treat an
+        incomplete result as a storage-consistency signal, not a partial one.
+        """
+        self._ensure_collection_loaded()
+
+        page_size = self._resolve_query_page_size(includes_vector=includes_vector)
+        rows: list[dict[str, Any]] = []
+        for page_num, start in enumerate(range(0, len(ids), page_size), start=1):
+            page = ids[start : start + page_size]
+            id_list = '", "'.join(_escape_milvus_str(doc_id) for doc_id in page)
+            filter_expr = f'id in ["{id_list}"]'
+
+            page_rows = self._client.query(
+                collection_name=self.final_namespace,
+                filter=filter_expr,
+                output_fields=output_fields,
+            )
+            rows.extend(page_rows or [])
+            await _cooperative_yield(page_num)
+
+        return rows
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer."""
         async with self._flush_lock:
@@ -2755,31 +2818,23 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         result_map: dict[str, dict[str, Any]] = {}
         if remaining:
             try:
-                # Ensure collection is loaded before querying
-                self._ensure_collection_loaded()
-
                 # Include all meta_fields (created_at is now always included) plus id
                 output_fields = list(self.meta_fields) + ["id"]
 
-                id_list = '", "'.join(_escape_milvus_str(i) for i in remaining)
-                filter_expr = f'id in ["{id_list}"]'
-
-                result = self._client.query(
-                    collection_name=self.final_namespace,
-                    filter=filter_expr,
-                    output_fields=output_fields,
+                rows = await self._query_rows_by_ids(
+                    remaining, output_fields, includes_vector=False
                 )
 
-                if result:
-                    for row in result:
-                        if not row:
-                            continue
-                        row_id = row.get("id")
-                        if row_id is not None:
-                            result_map[str(row_id)] = row
+                for row in rows:
+                    if not row:
+                        continue
+                    row_id = row.get("id")
+                    if row_id is not None:
+                        result_map[str(row_id)] = row
             except Exception as e:
                 logger.error(
-                    f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
+                    f"[{self.workspace}] Error retrieving vector data for "
+                    f"{len(remaining)} IDs (sample: {remaining[:5]}): {e}"
                 )
                 return []
 
@@ -2852,18 +2907,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             return result
 
         try:
-            self._ensure_collection_loaded()
-
-            id_list = '", "'.join(_escape_milvus_str(i) for i in remaining)
-            filter_expr = f'id in ["{id_list}"]'
-
-            rows = self._client.query(
-                collection_name=self.final_namespace,
-                filter=filter_expr,
-                output_fields=["id", "vector"],
+            rows = await self._query_rows_by_ids(
+                remaining, ["id", "vector"], includes_vector=True
             )
 
-            for item in rows or []:
+            for item in rows:
                 if item and "vector" in item and "id" in item:
                     vector_data = item["vector"]
                     if isinstance(vector_data, np.ndarray):
