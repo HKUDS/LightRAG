@@ -59,6 +59,7 @@ from ..utils import (
     logger,
     compute_mdhash_id,
     _cooperative_yield,
+    get_env_value,
     performance_timing_log,
     validate_workspace,
 )
@@ -96,6 +97,14 @@ PG_MAX_IDENTIFIER_LENGTH = 63
 DEFAULT_PG_UPSERT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MiB
 DEFAULT_PG_UPSERT_MAX_RECORDS_PER_BATCH = 200
 DEFAULT_PG_DELETE_MAX_RECORDS_PER_BATCH = 1000
+
+# First Apache AGE version whose graph queries can crash the PostgreSQL backend from
+# PGGraphStorage. Deliberately an upper bound rather than a blocklist of known-bad
+# points: a later AGE release is only safe once someone has verified it, and letting
+# unverified versions through would defeat the check. Raise this only with evidence.
+# See https://github.com/apache/age/issues/2500.
+AGE_FIRST_UNSUPPORTED_VERSION = (1, 8, 0)
+AGE_ALLOW_UNSUPPORTED_ENV = "POSTGRES_AGE_ALLOW_UNSUPPORTED_VERSION"
 
 
 def _estimate_record_bytes(record: tuple[Any, ...]) -> int:
@@ -832,13 +841,71 @@ class PostgreSQLDB:
 
     @staticmethod
     async def configure_age_extension(connection: asyncpg.Connection) -> None:
-        """Create AGE extension if it doesn't exist for graph operations."""
+        """Create the AGE extension and refuse versions known to break PGGraphStorage.
+
+        AGE 1.8.0 changed Cypher ``id()`` to return ``graphid``. That breaks
+        ``get_knowledge_graph`` twice over: the labelled branch fails on the
+        ``graphid`` -> ``bigint`` column cast, and the wildcard branch segfaults the
+        backend, taking the whole instance through crash recovery. The wildcard is
+        what the WebUI issues by default, so this is refused at startup rather than
+        left to surface as an instance-wide crash on the first graph request.
+
+        See https://github.com/apache/age/issues/2500.
+        """
         try:
             await connection.execute("CREATE EXTENSION IF NOT EXISTS AGE CASCADE")  # type: ignore
             logger.info("PostgreSQL, AGE extension enabled")
         except Exception as e:
             logger.warning(f"Could not create AGE extension: {e}")
             # Don't raise - let the system continue without AGE extension
+            return
+
+        row = await connection.fetchrow(
+            "SELECT extversion FROM pg_extension WHERE extname = 'age'"
+        )
+        if not row or not row["extversion"]:
+            raise RuntimeError(
+                "Could not read the Apache AGE extension version, which PGGraphStorage "
+                "needs in order to reject versions that crash the PostgreSQL backend "
+                "(https://github.com/apache/age/issues/2500). Ensure "
+                "CREATE EXTENSION age succeeded."
+            )
+        raw_version = row["extversion"]
+        try:
+            parts = [int(p) for p in str(raw_version).split(".")[:3]]
+            while len(parts) < 3:
+                parts.append(0)
+            version_tuple = (parts[0], parts[1], parts[2])
+        except (ValueError, IndexError):
+            raise RuntimeError(
+                f"Could not parse the Apache AGE version {raw_version!r}. PGGraphStorage "
+                "needs it in order to reject versions that crash the PostgreSQL backend "
+                "(https://github.com/apache/age/issues/2500)."
+            ) from None
+
+        if version_tuple < AGE_FIRST_UNSUPPORTED_VERSION:
+            return
+
+        unsupported = ".".join(str(p) for p in AGE_FIRST_UNSUPPORTED_VERSION)
+        if get_env_value(AGE_ALLOW_UNSUPPORTED_ENV, False, bool):
+            logger.warning(
+                f"PostgreSQL, Apache AGE {raw_version} is known to crash the backend from "
+                f"PGGraphStorage's graph queries, but {AGE_ALLOW_UNSUPPORTED_ENV} is set, so "
+                "the check is being skipped. A single graph request may take the whole "
+                "PostgreSQL instance through crash recovery."
+            )
+            return
+
+        raise RuntimeError(
+            f"Apache AGE {raw_version} is not supported by PGGraphStorage: from {unsupported} "
+            "onward, a graph query can terminate the PostgreSQL backend with SIGSEGV and take "
+            "the whole instance through crash recovery "
+            "(https://github.com/apache/age/issues/2500). Verified good: AGE 1.7.0. "
+            "Either pin AGE to 1.7.x, or switch LIGHTRAG_GRAPH_STORAGE to PGTableGraphStorage, "
+            "which needs no PostgreSQL extension. Note that AGE reports its version per release, "
+            f"not per commit, so a build that fixes the crash may still report {raw_version}; "
+            f"set {AGE_ALLOW_UNSUPPORTED_ENV}=true to run against such a build at your own risk."
+        )
 
     @staticmethod
     async def configure_age(connection: asyncpg.Connection, graph_name: str) -> None:
