@@ -353,9 +353,10 @@ class TestSummaryStage:
 
         assert not tally
 
-    async def test_merge_publishes_one_aggregate_and_feeds_the_document_tally(self):
-        """End of the merge chain: merge_nodes_and_edges → _merge_nodes_then_upsert
-        → _handle_entity_relation_summary → _summarize_descriptions."""
+    async def _run_merge(self, graph, pipeline_status, document_tally):
+        """Drive the whole merge chain: merge_nodes_and_edges →
+        _merge_nodes_then_upsert → _handle_entity_relation_summary →
+        _summarize_descriptions, with ALICE's summary truncated."""
         import asyncio
 
         from lightrag.kg.shared_storage import initialize_share_data
@@ -388,12 +389,10 @@ class TestSummaryStage:
             }
 
         chunk_results = [({"ALICE": [_node("first", "c1"), _node("second", "c2")]}, {})]
-        pipeline_status = {"history_messages": [], "latest_message": ""}
-        document_tally = TokenLimitTruncationTally()
 
         await merge_nodes_and_edges(
             chunk_results,
-            _MemGraph(),
+            graph,
             _MemVdb(),
             _MemVdb(),
             config,
@@ -407,11 +406,46 @@ class TestSummaryStage:
             truncation_tally=document_tally,
         )
 
+    async def test_merge_publishes_one_aggregate_and_feeds_the_document_tally(self):
+        pipeline_status = {"history_messages": [], "latest_message": ""}
+        document_tally = TokenLimitTruncationTally()
+
+        await self._run_merge(_MemGraph(), pipeline_status, document_tally)
+
         lines = _truncation_lines(pipeline_status["history_messages"])
         assert len(lines) == 1, f"expected one aggregate line, got {lines}"
         assert lines[0].startswith("Warning:")
         assert "1 description summary" in lines[0]
         assert document_tally.as_metadata()["stages"] == {"summary": 1}
+
+    async def test_a_failing_merge_still_reports_what_it_truncated(self):
+        """A truncation recorded before the merge dies must not be lost.
+
+        The summary is produced (and recorded) in step 8 of the entity merge;
+        the graph write that fails comes after. The exception then leaves
+        merge_nodes_and_edges through wait_tasks_with_drain, skipping the tail
+        — so without a failure-path publish the FAILED document's metadata
+        would claim extraction was the only stage that truncated.
+        """
+
+        class _FailingGraph(_MemGraph):
+            async def upsert_node(self, name, node_data):
+                raise RuntimeError("graph write exploded")
+
+        pipeline_status = {"history_messages": [], "latest_message": ""}
+        document_tally = TokenLimitTruncationTally()
+
+        with pytest.raises(Exception, match="graph write exploded"):
+            await self._run_merge(_FailingGraph(), pipeline_status, document_tally)
+
+        payload = document_tally.as_metadata()
+        assert payload is not None, (
+            "the merge recorded a truncated summary but the failure path "
+            "never handed it to the document-scoped tally"
+        )
+        assert payload["stages"] == {"summary": 1}
+        lines = _truncation_lines(pipeline_status["history_messages"])
+        assert len(lines) == 1, f"expected one aggregate line, got {lines}"
 
 
 class _MemGraph:

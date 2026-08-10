@@ -3419,9 +3419,37 @@ async def merge_nodes_and_edges(
     status_logger = PipelineStatusLogger(pipeline_status)
 
     # Merge-scoped tally: one aggregated status line for the whole merge rather
-    # than one per truncated summary, folded into the document-scoped tally at
-    # the end so the doc_status record covers extraction and merge together.
+    # than one per truncated summary, folded into the document-scoped tally so
+    # the doc_status record covers extraction and merge together.
     summary_tally = TokenLimitTruncationTally()
+    summary_truncation_published = False
+
+    def _publish_summary_truncation() -> None:
+        """Publish the merge's truncation aggregate and hand its counts upward.
+
+        Called on the success path AND from each phase's failure path: a
+        summary truncated by an entity that completed is already recorded when
+        a LATER sibling raises, and losing it there would leave the FAILED
+        document's metadata claiming extraction was the only stage that
+        truncated. Idempotent, so the two callers cannot double-publish, and
+        await-free, so it is safe to run inside a cancellation window.
+        """
+        nonlocal summary_truncation_published
+        if summary_truncation_published:
+            return
+        summary_truncation_published = True
+        if summary_tally:
+            noun = "summary" if summary_tally.affected == 1 else "summaries"
+            truncation_message = (
+                f"Warning: token-limit truncation hit {summary_tally.affected} "
+                f"description {noun} during merge "
+                f"({summary_tally.events} responses); "
+                f"merged descriptions may be incomplete"
+            )
+            logger.warning(truncation_message)
+            status_logger.log(truncation_message)
+        if truncation_tally is not None:
+            truncation_tally.absorb(summary_tally)
 
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
@@ -3583,9 +3611,13 @@ async def merge_nodes_and_edges(
     # survive failure handling — issue #3400).
     processed_entities = []
     if entity_tasks:
-        processed_entities = await wait_tasks_with_drain(
-            entity_tasks, context=f"entity merge {doc_id}"
-        )
+        try:
+            processed_entities = await wait_tasks_with_drain(
+                entity_tasks, context=f"entity merge {doc_id}"
+            )
+        except BaseException:
+            _publish_summary_truncation()
+            raise
         await asyncio.sleep(0)
 
     # ===== Phase 2: Process all relationships concurrently =====
@@ -3678,11 +3710,15 @@ async def merge_nodes_and_edges(
     all_added_entities = []
 
     if edge_tasks:
-        edge_results = await wait_tasks_with_drain(
-            edge_tasks,
-            context=f"relation merge {doc_id}",
-            task_labels=edge_task_labels,
-        )
+        try:
+            edge_results = await wait_tasks_with_drain(
+                edge_tasks,
+                context=f"relation merge {doc_id}",
+                task_labels=edge_task_labels,
+            )
+        except BaseException:
+            _publish_summary_truncation()
+            raise
         for edge_data, added_entities in edge_results:
             if edge_data is not None:
                 processed_edges.append(edge_data)
@@ -3702,17 +3738,7 @@ async def merge_nodes_and_edges(
     # exceptions — is gone: a merge whose anchors cannot be persisted no
     # longer mutates the graph at all (issue #3400).
 
-    if summary_tally:
-        noun = "summary" if summary_tally.affected == 1 else "summaries"
-        truncation_message = (
-            f"Warning: token-limit truncation hit {summary_tally.affected} "
-            f"description {noun} during merge "
-            f"({summary_tally.events} responses); merged descriptions may be incomplete"
-        )
-        logger.warning(truncation_message)
-        status_logger.log(truncation_message)
-    if truncation_tally is not None:
-        truncation_tally.absorb(summary_tally)
+    _publish_summary_truncation()
 
     log_message = f"Completed merging: {len(processed_entities)} entities, {len(all_added_entities)} extra entities, {len(processed_edges)} relations"
     logger.info(log_message)
