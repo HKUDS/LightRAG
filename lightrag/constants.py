@@ -170,6 +170,10 @@ DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 # in play. It applies only above DEFAULT_DOCX_RATIO_FLOOR_BYTES, because small
 # documents legitimately compress far better than large ones and a floor-less
 # ratio gate would reject them.
+# The same budget governs the other OPC/OOXML formats the legacy engine parses
+# locally — .pptx (python-pptx) and .xlsx (openpyxl) are the identical ZIP-bomb
+# class — so the DOCX_* knobs below bound all three, enforced in the legacy
+# ``extract_text`` dispatcher as well as the native docx engine.
 # Env: DOCX_MAX_UNCOMPRESSED_BYTES / DOCX_MAX_COMPRESSION_RATIO /
 # DOCX_RATIO_FLOOR_BYTES / DOCX_MAX_ENTRIES, read live at parse time.
 DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024

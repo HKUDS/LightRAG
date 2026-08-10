@@ -268,18 +268,51 @@ def test_legacy_engine_is_guarded_too(tmp_path, monkeypatch):
 
     The legacy extractor also hands a .docx to python-docx, and the default
     routing (``*:native-teP,*:legacy-R``) reaches it both as a fallback and
-    from a ``bomb.[legacy].docx`` filename hint. It takes bytes rather than a
-    path, which is why the budget accepts either.
+    from a ``bomb.[legacy].docx`` filename hint. The budget is enforced in the
+    ``extract_text`` dispatcher, before the extractor opens the archive.
     """
-    from lightrag.parser.legacy.extractors import _extract_docx
+    from lightrag.parser.legacy.extractors import extract_text
 
     payload = _bomb(tmp_path / "bomb.docx").read_bytes()
     with pytest.raises(DocxDecompressionBudgetError):
-        _extract_docx(payload)
+        extract_text(payload, "docx", file_path="bomb.docx")
 
     # And an ordinary document still parses through the same entry point.
     monkeypatch.delenv("DOCX_MAX_COMPRESSION_RATIO", raising=False)
-    assert isinstance(_extract_docx(_benign(tmp_path / "ok.docx").read_bytes()), str)
+    assert isinstance(
+        extract_text(_benign(tmp_path / "ok.docx").read_bytes(), "docx"), str
+    )
+
+
+@pytest.mark.parametrize("suffix", ["pptx", "xlsx"])
+def test_legacy_pptx_xlsx_share_the_budget(tmp_path, suffix):
+    """.pptx / .xlsx are the same OPC/ZIP bomb class as .docx.
+
+    They register in the legacy suffix dispatch and route to legacy by default
+    (native handles only docx/md/textpack). The budget runs in the dispatcher
+    BEFORE python-pptx/openpyxl open the archive, so this fires without those
+    libraries — and _extract_xlsx would otherwise double the blowup by loading
+    the workbook twice.
+    """
+    from lightrag.parser.legacy.extractors import extract_text
+
+    payload = _bomb(tmp_path / f"bomb.{suffix}").read_bytes()
+    with pytest.raises(DocxDecompressionBudgetError):
+        extract_text(payload, suffix, file_path=f"bomb.{suffix}")
+
+
+def test_budget_error_names_the_file_not_the_extension(tmp_path):
+    """The refusal must name the source, not the literal 'docx'.
+
+    LegacyParser.parse threads ctx.file_path through extract_text; the native
+    path already names the real file for the identical refusal.
+    """
+    from lightrag.parser.legacy.extractors import extract_text
+
+    payload = _bomb(tmp_path / "quarterly-report.docx").read_bytes()
+    with pytest.raises(DocxDecompressionBudgetError) as exc:
+        extract_text(payload, "docx", file_path="quarterly-report.docx")
+    assert "quarterly-report.docx" in str(exc.value)
 
 
 def test_budget_accepts_bytes_and_path_equivalently(tmp_path):
