@@ -116,27 +116,47 @@ rather than migrating a graph it cannot faithfully reproduce:
 - a node carries no `entity_id` — the target requires one, and a source graph
   can legitimately contain such a node (for example NetworkX creates an
   edge's unknown endpoint as an attribute-less node);
-- the same node id appears more than once with differing properties — the
-  write path would silently keep only the last;
-- `a→b` and `b→a` exist with differing properties. The target stores
-  undirected edges in canonical order, so the two would merge and one payload
-  would be lost. Phase 1 fails closed here rather than picking a winner;
+- a node has no usable identity — `id` or `entity_id` missing, not a string,
+  or the two disagreeing. A vertex created with no properties at all is legal
+  in AGE and enumerates as `{"id": None}`;
+- the same node id appears more than once, **whether or not the payloads
+  match**. The target keeps one row per id, so two physical source vertices
+  become one node and the graph's node count changes;
+- `a→b` and `b→a` both exist, **whether or not the payloads match**. The
+  target stores one row per canonical pair, and AGE computes degree by
+  counting relationship rows — so collapsing an identical reciprocal preserves
+  every property while changing degree and traversal. LightRAG's own write
+  path matches edges undirected, so it does not create reciprocals: finding
+  one means the source violates the invariant this tool assumes;
+- a payload contains `NaN`, `Infinity` or `-Infinity`. `agtype` represents
+  them; PostgreSQL `jsonb` rejects all three, so the write would fail — under
+  `--force-empty-target`, after the point of no return;
 - more than one directed row *reaches the tool* for the same ordered pair — a
   violation of the invariant that makes the canonical merge lossless. Note the
   limit of this backstop: AGE enumerates edges with `SELECT DISTINCT source,
   target, properties`, so byte-identical parallel relationships are already
   collapsed to one row before the tool sees them. It can therefore only catch
-  parallels whose payloads *differ*. Byte-identical parallels pass through
-  undetected and are **not** carried over faithfully: AGE counts relationship
-  rows when computing degree, while the target's primary key admits one row per
-  canonical pair, so edge multiplicity — and therefore degree — is not
-  preserved. No payload is lost, but the graph is not identical.
+  parallels whose payloads *differ*. **This is the one cardinality gap the tool
+  cannot close**: byte-identical same-direction parallels are invisible to it,
+  and collapsing them changes degree without losing any property. Everything
+  else that would change cardinality — reciprocals, duplicate ids — is refused
+  outright.
 
 Verification after the write re-runs the source-side checks and compares node
 ids, canonical edges and properties. It is driven from the source because the
 target has already canonicalized and therefore cannot reveal what was lost.
 Property comparison is type-strict: `1`, `1.0`, `True` and `"1"` are four
-different values, because all four are distinguishable downstream.
+different values, and `-0.0` differs from `0.0` — all are distinguishable
+downstream.
+
+**What `verified` claims.** Node and edge identity, payloads, and cardinality
+all came across: every source construct that would have collapsed is refused
+before the write rather than migrated and blessed. Two caveats it does not
+cover: byte-identical same-direction parallel relationships (invisible behind
+AGE's `SELECT DISTINCT`, see above), and payload keys named `id`, `source` or
+`target`, which `PGGraphStorage`'s enumerator overwrites with identity values
+before this tool ever sees the row — a business property under one of those
+names is already gone upstream.
 
 ## If a write fails
 
@@ -178,4 +198,9 @@ rows can be removed by hand.
 - **It does not run in a single transaction.** Two backends, no shared
   transaction; the failure handling above is the substitute.
 - **It does not protect you from a live writer.** See the preconditions.
+- **It does not disambiguate workspaces that share an AGE graph.** AGE derives
+  its graph name by replacing every non-alphanumeric character with `_`, so
+  `team-a` and `team_a` name the same AGE graph while PGTable keeps them as
+  distinct workspaces. Check which graph a workspace actually resolves to
+  before migrating one whose name contains punctuation.
 - **It does not move vectors, KV data or document status.**
