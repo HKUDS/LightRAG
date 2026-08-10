@@ -111,6 +111,8 @@ from lightrag.utils import (
     save_to_cache,
     serialize_llm_cache_identity,
     strip_control_characters,
+    LLM_TRUNCATION_METADATA_KEY,
+    merge_truncation_metadata,
     TokenLimitTruncationTally,
     tolerant_load_json_dict,
     validate_file_path_security,
@@ -4747,6 +4749,21 @@ class _PipelineMixin:
         # terminal transition, where it survives the bounded pipeline-status
         # ring and reaches /documents and the WebUI.
         truncation_tally = TokenLimitTruncationTally()
+        # Analyze-stage (multimodal VLM/EXTRACT) truncations arrive on the
+        # hand-off dict: an accepted-but-truncated analysis feeds a partial
+        # description into extraction below, so it belongs in the same
+        # document record. Merged at the terminal writes — the analyze stage
+        # cannot stamp doc_status itself, because the key is per-attempt (not
+        # carried over) and would be dropped at the PROCESSING transition.
+        analyze_truncation = parsed_data.get("llm_truncation")
+        if not isinstance(analyze_truncation, dict):
+            analyze_truncation = None
+
+        def truncation_metadata_extra() -> dict[str, Any]:
+            merged = merge_truncation_metadata(
+                analyze_truncation, truncation_tally.as_metadata()
+            )
+            return {LLM_TRUNCATION_METADATA_KEY: merged} if merged else {}
 
         def get_failed_chunk_snapshot() -> tuple[list[str], int]:
             if chunks:
@@ -5336,7 +5353,7 @@ class _PipelineMixin:
                         **extraction_meta,
                         # A run that truncated and then failed keeps the
                         # evidence: truncation is often why it failed.
-                        **truncation_tally.as_metadata_extra(),
+                        **truncation_metadata_extra(),
                     },
                     pipeline_status=ctx.pipeline_status,
                     pipeline_status_lock=ctx.pipeline_status_lock,
@@ -5424,7 +5441,7 @@ class _PipelineMixin:
                             # previous attempt's summary: the key is not in the
                             # carry-over whitelist, so absence means "this
                             # attempt did not truncate", never "unchanged".
-                            **truncation_tally.as_metadata_extra(),
+                            **truncation_metadata_extra(),
                         },
                         # A PROCESSED document has no purge in flight by
                         # definition, so retire any journal that a resume purge
@@ -5487,7 +5504,7 @@ class _PipelineMixin:
                             "process_start_time": process_start_time,
                             "process_end_time": int(time.time()),
                             **extraction_meta,
-                            **truncation_tally.as_metadata_extra(),
+                            **truncation_metadata_extra(),
                         },
                         pipeline_status=ctx.pipeline_status,
                         pipeline_status_lock=ctx.pipeline_status_lock,
@@ -6630,6 +6647,33 @@ class _PipelineMixin:
                     "message": message,
                 }
 
+            # Stage-scoped truncation tally, shared by every item task on this
+            # loop (record() is await-free). A token-limit-truncated analysis
+            # that still parses is ACCEPTED — the partial description feeds KG
+            # extraction — so the condition must reach the document's durable
+            # metadata, not just the server log. Handed to the process stage
+            # via ``parsed_data["llm_truncation"]``, which merges it with the
+            # extraction/merge tally at the terminal doc_status write.
+            mm_truncation_tally = TokenLimitTruncationTally()
+
+            def _record_mm_truncation(fresh: bool, result_text: str, subject: str):
+                """Record an accepted-but-truncated fresh analysis.
+
+                Independent of ``analysis_cache_enabled`` on purpose: with the
+                cache off, the old cache-skip branch never even inspected the
+                marker. Cache hits (``fresh=False``) cannot be truncated —
+                truncated responses are never persisted.
+                """
+                if fresh and is_truncated_response(result_text):
+                    logger.warning(
+                        f"[analyze_multimodal] {subject}: token-limit-truncated "
+                        "response accepted; analysis may be incomplete "
+                        "(never cached)"
+                    )
+                    mm_truncation_tally.record("multimodal", subject)
+                    return True
+                return False
+
             async def _analyze_drawing(
                 item_id: str, item: dict[str, Any], sidecar_dir: Path
             ) -> tuple[dict[str, Any], str | None]:
@@ -6760,38 +6804,35 @@ class _PipelineMixin:
                     lambda parsed: _validate_drawing_analysis(item_id, parsed),
                 )
                 cache_id_to_attach: str | None = None
-                if fresh and analysis_cache_enabled:
-                    if is_truncated_response(result_text):
-                        # A token-limit-truncated VLM response that still
-                        # parsed must not be persisted: the cache would replay
-                        # the partial analysis on every later run, even once a
-                        # larger token budget would have completed it.
-                        logger.warning(
-                            f"[analyze_multimodal] drawings/{item_id}: skipping "
-                            "analysis cache write for token-limit-truncated "
-                            "VLM response"
-                        )
-                    else:
-                        audit_blob = image_audit_metadata(normalized_images)
-                        original_prompt = prompt + (
-                            f"\n<vlm_images>"
-                            f"{json.dumps(audit_blob, ensure_ascii=False)}"
-                            "</vlm_images>"
-                            if audit_blob
-                            else ""
-                        )
-                        await save_to_cache(
-                            self.llm_response_cache,
-                            CacheData(
-                                args_hash=args_hash,
-                                content=str(result_text),
-                                prompt=original_prompt,
-                                mode="default",
-                                cache_type="analysis",
-                                chunk_id=None,
-                            ),
-                        )
-                        cache_id_to_attach = cache_id
+                # A token-limit-truncated VLM response that still parsed is
+                # recorded for the document's metadata and must not be
+                # persisted: the cache would replay the partial analysis on
+                # every later run, even once a larger token budget would have
+                # completed it.
+                response_truncated = _record_mm_truncation(
+                    fresh, result_text, f"drawings/{item_id}"
+                )
+                if fresh and analysis_cache_enabled and not response_truncated:
+                    audit_blob = image_audit_metadata(normalized_images)
+                    original_prompt = prompt + (
+                        f"\n<vlm_images>"
+                        f"{json.dumps(audit_blob, ensure_ascii=False)}"
+                        "</vlm_images>"
+                        if audit_blob
+                        else ""
+                    )
+                    await save_to_cache(
+                        self.llm_response_cache,
+                        CacheData(
+                            args_hash=args_hash,
+                            content=str(result_text),
+                            prompt=original_prompt,
+                            mode="default",
+                            cache_type="analysis",
+                            chunk_id=None,
+                        ),
+                    )
+                    cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit: the entry exists, so attaching its id is
                     # safe (and necessary for document-delete cleanup).
@@ -7054,26 +7095,24 @@ class _PipelineMixin:
                 if kind == "equation":
                     result_obj["equation"] = analysis_fields["equation"]
                 cache_id_to_attach: str | None = None
-                if fresh and analysis_cache_enabled:
-                    if is_truncated_response(result_text):
-                        logger.warning(
-                            f"[analyze_multimodal] {kind}/{item_id}: skipping "
-                            "analysis cache write for token-limit-truncated "
-                            "EXTRACT response"
-                        )
-                    else:
-                        await save_to_cache(
-                            self.llm_response_cache,
-                            CacheData(
-                                args_hash=args_hash,
-                                content=str(result_text),
-                                prompt=prompt,
-                                mode="default",
-                                cache_type="analysis",
-                                chunk_id=None,
-                            ),
-                        )
-                        cache_id_to_attach = cache_id
+                # Same contract as the drawings branch: record the accepted
+                # truncation for document metadata, never persist it.
+                response_truncated = _record_mm_truncation(
+                    fresh, result_text, f"{kind}/{item_id}"
+                )
+                if fresh and analysis_cache_enabled and not response_truncated:
+                    await save_to_cache(
+                        self.llm_response_cache,
+                        CacheData(
+                            args_hash=args_hash,
+                            content=str(result_text),
+                            prompt=prompt,
+                            mode="default",
+                            cache_type="analysis",
+                            chunk_id=None,
+                        ),
+                    )
+                    cache_id_to_attach = cache_id
                 elif not fresh:
                     # Cache hit path (handle_cache already gated by flag):
                     # safe to surface the existing cache_id for cleanup.
@@ -7315,6 +7354,24 @@ class _PipelineMixin:
                 stage_label="multimodal analyze",
                 doc_id=doc_id,
             )
+            if mm_truncation_tally:
+                truncation_message = (
+                    f"Warning: token-limit truncation hit "
+                    f"{mm_truncation_tally.affected} multimodal analyses for "
+                    f"{file_path} ({mm_truncation_tally.events} responses); "
+                    f"descriptions may be incomplete"
+                )
+                logger.warning(truncation_message)
+                if pipeline_status is not None and pipeline_status_lock is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = truncation_message
+                        append_pipeline_history(pipeline_status, truncation_message)
+                # Ride the analyze→process hand-off dict rather than doc_status:
+                # LLM_TRUNCATION_METADATA_KEY is per-attempt (not carried over),
+                # so a stamp written here would be dropped at the PROCESSING
+                # transition. The process stage merges this into its own tally
+                # at the terminal write, which is where the key becomes durable.
+                parsed_data["llm_truncation"] = mm_truncation_tally.as_metadata()
             parsed_data["multimodal_processed"] = True
             logger.info(f"[analyze_multimodal] completed for d-id: {doc_id}")
         except PipelineCancelledException:

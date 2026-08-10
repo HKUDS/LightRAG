@@ -154,3 +154,44 @@ def test_the_summary_marks_a_pending_row_as_carrying_stale_attempt_metadata():
     from lightrag.utils_pipeline import _DOC_STATUS_METADATA_ATTEMPT_KEYS
 
     assert LLM_TRUNCATION_METADATA_KEY in _DOC_STATUS_METADATA_ATTEMPT_KEYS
+
+
+async def test_analyze_stage_truncation_reaches_the_processed_row(tmp_path):
+    """Codex review (PR #3607): multimodal analysis runs BEFORE the process
+    stage creates the document tally, and the metadata key is per-attempt
+    (dropped at the PROCESSING transition), so its truncations rode only in
+    server logs. They arrive on the analyze→process hand-off dict and must be
+    merged into the terminal metadata alongside extraction's own counts."""
+
+    async def _truncating_llm(prompt, **kwargs):
+        return TruncatedResponse(_EXTRACTION_RESULT)
+
+    rag = _new_rag(tmp_path, _truncating_llm)
+    await rag.initialize_storages()
+
+    original_analyze = rag.analyze_multimodal
+
+    async def _analyze_with_truncation(*args, **kwargs):
+        parsed_data = await original_analyze(*args, **kwargs)
+        # What analyze_multimodal records when a schema-valid truncated VLM
+        # analysis is accepted (covered by its own stage tests).
+        parsed_data["llm_truncation"] = {
+            "events": 2,
+            "affected": 2,
+            "stages": {"multimodal": 2},
+            "samples": ["drawings/im-001", "table/tb-001"],
+        }
+        return parsed_data
+
+    rag.analyze_multimodal = _analyze_with_truncation
+    try:
+        status = await _ingest(rag, doc_id="doc-mm", body="Alice is an analyst.")
+    finally:
+        await rag.finalize_storages()
+
+    assert status["status"] == DocStatus.PROCESSED
+    summary = status["metadata"][LLM_TRUNCATION_METADATA_KEY]
+    # Both stages in one record: the analyze hand-off merged with extraction.
+    assert summary["stages"]["multimodal"] == 2
+    assert summary["stages"]["initial"] >= 1
+    assert "drawings/im-001" in summary["samples"]

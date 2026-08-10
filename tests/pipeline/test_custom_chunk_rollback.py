@@ -610,3 +610,69 @@ async def test_rollback_report_samples_are_capped(tmp_path, monkeypatch):
         assert result["failed_sample"] == []
     finally:
         await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_resume_with_a_different_sample_keeps_both_attempts_candidates(
+    tmp_path, monkeypatch
+):
+    """Codex review (PR #3607): truncated extraction results are never cached,
+    so a resume re-runs the LLM and can extract a DIFFERENT sample. The first
+    attempt's merge may have partially applied its candidates to the graph;
+    the applying-phase journal write must UNION across attempts — replacing it
+    stranded attempt-1-only objects from both the journal (rollback's anchor)
+    and the commit's anchor union."""
+    rag = await _build_rag(tmp_path)
+    try:
+        _fake_extraction(rag, monkeypatch)
+        await rag.ainsert_custom_chunks("base", ["carol is here"], doc_id="doc-1")
+
+        # Patch attempt 1 extracts ALICE and dies inside the merge (after the
+        # applying-phase journal write, after possibly partial graph writes).
+        calls = {"n": 0}
+
+        async def _per_attempt_extract(chunks, *args, **kwargs):
+            calls["n"] += 1
+            name = "ALICE" if calls["n"] == 1 else "BOB"
+            return [
+                (
+                    {
+                        name: [
+                            {
+                                "entity_name": name,
+                                "entity_type": "person",
+                                "description": f"{name} description",
+                                "source_id": chunk_id,
+                                "file_path": "custom",
+                                "timestamp": 1,
+                            }
+                        ]
+                    },
+                    {},
+                )
+                for chunk_id in chunks
+            ]
+
+        monkeypatch.setattr(rag, "_process_extract_entities", _per_attempt_extract)
+        await _fail_one_merge(monkeypatch)
+        with pytest.raises(RuntimeError, match="merge boom"):
+            await rag.ainsert_custom_chunks("base", ["dave is there"], doc_id="doc-1")
+
+        journal = _journal(await rag.doc_status.get_by_id("doc-1"))
+        assert journal["entity_names"] == ["ALICE"], "precondition: attempt 1 journaled"
+
+        # Resume: same input, but extraction now yields BOB (the truncated
+        # first response was never cached, so the LLM genuinely re-runs).
+        await rag.ainsert_custom_chunks("base", ["dave is there"], doc_id="doc-1")
+
+        row = await rag.doc_status.get_by_id("doc-1")
+        assert _status_text(row) == DocStatus.PROCESSED.value
+        anchors = await rag.full_entities.get_by_id("doc-1")
+        assert "ALICE" in anchors["entity_names"], (
+            "attempt 1's candidate vanished from the recovery anchors: a purge "
+            "can no longer discover the objects its merge may have written"
+        )
+        assert "BOB" in anchors["entity_names"]
+        assert "CAROL" in anchors["entity_names"]
+    finally:
+        await rag.finalize_storages()

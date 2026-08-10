@@ -2215,9 +2215,32 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                     # Persist the complete candidate set in the journal BEFORE
                     # merging — the write-ahead anchor for this operation.
+                    #
+                    # UNIONED with the previous attempt's candidates (carried
+                    # into ``journal`` at the prepared write), never replaced:
+                    # truncated extraction responses are deliberately excluded
+                    # from the LLM cache, so a resume re-runs those calls and
+                    # can extract a DIFFERENT sample. A previous attempt whose
+                    # Stage 3 merge partially applied has already written ITS
+                    # candidates into the graph; dropping them here would strand
+                    # exactly those objects — the journal is this operation's
+                    # only recovery anchor and must keep naming the complete
+                    # superset across every attempt. Union is safe on the
+                    # consuming side by contract: candidates are a superset,
+                    # and purge/commit treat absent objects as no-ops.
                     candidate_entities, candidate_relations = (
                         collect_kg_merge_candidates(chunk_results or [])
                     )
+                    candidate_entities |= {
+                        name
+                        for name in (journal.get("entity_names") or [])
+                        if isinstance(name, str) and name
+                    }
+                    candidate_relations |= {
+                        (pair[0], pair[1])
+                        for pair in (journal.get("relation_pairs") or [])
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2
+                    }
                     journal = {
                         **journal,
                         "phase": "applying",
