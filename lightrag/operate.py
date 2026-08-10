@@ -1707,7 +1707,11 @@ async def _rebuild_single_entity(
             logger.error(error_msg)
             raise  # Re-raise exception
 
-    # normalized_chunk_ids = merge_source_ids([], chunk_ids)
+    # No merge_source_ids() normalization here: the rebuild caller derives
+    # chunk_ids from subtract_source_ids() over either entity_chunks_storage
+    # rows or an already-split graph `source_id` (see _purge_kg_contributions),
+    # so the ids arrive individual and non-empty. Normalizing again would only
+    # re-walk the list on the purge hot path.
     normalized_chunk_ids = chunk_ids
 
     if entity_chunks_storage is not None and normalized_chunk_ids:
@@ -1845,16 +1849,18 @@ async def _rebuild_single_entity(
             f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
         )
 
+    # Get most common entity type from raw entity_types list before deduplicating
+    if entity_types:
+        type_counts = Counter(entity_types)
+        entity_type = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[0][
+            0
+        ]
+    else:
+        entity_type = current_entity.get("entity_type", "UNKNOWN")
+
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
     entity_types = list(dict.fromkeys(entity_types))
-
-    # Get most common entity type
-    entity_type = (
-        max(set(entity_types), key=entity_types.count)
-        if entity_types
-        else current_entity.get("entity_type", "UNKNOWN")
-    )
 
     # Generate final description from entities or fallback to current
     if description_list:
@@ -1920,7 +1926,8 @@ async def _rebuild_single_relationship(
     if not current_relationship:
         return False
 
-    # normalized_chunk_ids = merge_source_ids([], chunk_ids)
+    # Same as _rebuild_single_entity: chunk_ids reach this function already
+    # split and non-empty, so no merge_source_ids() normalization is needed.
     normalized_chunk_ids = chunk_ids
 
     if relation_chunks_storage is not None and normalized_chunk_ids:
@@ -1970,7 +1977,7 @@ async def _rebuild_single_relationship(
 
     # Merge descriptions and keywords
     descriptions = [current_relationship.get("description", "")] if degraded else []
-    keywords = [current_relationship.get("keywords", "")] if degraded else []
+    raw_keywords = [current_relationship.get("keywords", "")] if degraded else []
     weights = [current_relationship.get("weight", 1.0)] if degraded else []
     file_paths_list = (
         _surviving_chunk_file_paths(
@@ -1987,7 +1994,7 @@ async def _rebuild_single_relationship(
         if rel_data.get("description"):
             descriptions.append(rel_data["description"])
         if rel_data.get("keywords"):
-            keywords.append(rel_data["keywords"])
+            raw_keywords.append(rel_data["keywords"])
         if rel_data.get("weight"):
             weights.append(rel_data["weight"])
         if rel_data.get("file_path"):
@@ -2021,11 +2028,15 @@ async def _rebuild_single_relationship(
 
     # Remove duplicates while preserving order
     description_list = list(dict.fromkeys(descriptions))
-    keywords = list(dict.fromkeys(keywords))
+    # Collect and normalize keywords by splitting comma-separated tokens
+    all_keywords = set()
+    for kw_str in raw_keywords:
+        if kw_str:
+            all_keywords.update(k.strip() for k in kw_str.split(",") if k.strip())
 
     combined_keywords = (
-        ", ".join(set(keywords))
-        if keywords
+        ", ".join(sorted(all_keywords))
+        if all_keywords
         else current_relationship.get("keywords", "")
     )
 

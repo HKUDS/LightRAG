@@ -1069,3 +1069,61 @@ async def test_client_local_encodes_task_id_into_url_path_segments(
         assert "?" not in url
         assert "/admin" not in url
     assert manifest.task_id == _LocalInjectionDispatcher.TASK_ID
+
+
+@pytest.mark.offline
+async def test_client_local_result_bundle_entry_budget_is_enforced(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MinerU's result bundle must go through the shared zip-bomb budget.
+
+    _download_zip previously hand-rolled ZipFile.extractall with only a
+    path-traversal check, so a compromised/misbehaving endpoint (the default
+    MINERU_ENDPOINT is the remote mineru.net API) could expand a bundle
+    unbounded onto disk. It now routes through safe_extract_zip with the
+    result_bundle_limits() budget; a low PARSER_RESULT_BUNDLE_MAX_ENTRIES
+    trips before anything is written.
+    """
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("PARSER_RESULT_BUNDLE_MAX_ENTRIES", "1")  # flat zip has 2
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDF" * 50)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _LocalFlatZipDispatcher()
+    with pytest.raises(RuntimeError, match="entries"):
+        await MinerURawClient().download_into(raw, src)
+
+    # Nothing from the bundle was extracted.
+    assert not (raw / "content_list.json").exists()
+
+
+@pytest.mark.offline
+async def test_client_local_result_bundle_byte_budget_is_enforced(
+    tmp_path: Path,
+    fake_httpx: type,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The uncompressed-size gate is live-read too."""
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    monkeypatch.setenv("MINERU_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv(
+        "PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES", "1"
+    )  # any real zip trips
+
+    src = tmp_path / "demo.pdf"
+    src.write_bytes(b"PDF" * 50)
+    raw = tmp_path / "demo.mineru_raw"
+    raw.mkdir()
+
+    _CURRENT.dispatcher = _LocalFlatZipDispatcher()
+    with pytest.raises(RuntimeError, match="uncompressed size"):
+        await MinerURawClient().download_into(raw, src)
+    assert not (raw / "content_list.json").exists()

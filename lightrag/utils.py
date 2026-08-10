@@ -261,6 +261,57 @@ def parse_optional_float(raw: str | None) -> float | None:
     return value
 
 
+def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[Path]:
+    """
+    Validate file path security to prevent Path Traversal attacks.
+
+    Args:
+        file_path_str: The file path string to validate
+        base_dir: The base directory that the file must be within
+
+    Returns:
+        Path: Safe file path (resolved, contained to ``base_dir``) if valid;
+            None if unsafe, malformed, or unresolvable. Does NOT check
+            existence — a returned path is guaranteed inside ``base_dir`` but
+            may not exist; the caller decides what "inside but absent" means.
+    """
+    if not file_path_str or not file_path_str.strip():
+        return None
+
+    try:
+        # Clean the file path string
+        clean_path_str = file_path_str.strip()
+
+        # Check for obvious path traversal patterns before processing
+        # This catches both Unix (..) and Windows (..\) style traversals
+        if ".." in clean_path_str:
+            # Additional check for Windows-style backslash traversal
+            if (
+                "\\..\\" in clean_path_str
+                or clean_path_str.startswith("..\\")
+                or clean_path_str.endswith("\\..")
+            ):
+                return None
+
+        # Normalize path separators (convert backslashes to forward slashes)
+        # This helps handle Windows-style paths on Unix systems
+        normalized_path = clean_path_str.replace("\\", "/")
+
+        # Create path object and resolve it (handles symlinks and relative paths)
+        candidate_path = (base_dir / normalized_path).resolve()
+        base_dir_resolved = base_dir.resolve()
+
+        # Check if the resolved path is within the base directory
+        if not candidate_path.is_relative_to(base_dir_resolved):
+            return None
+
+        return candidate_path
+
+    except Exception as e:
+        logger.warning(f"Invalid file path detected: {file_path_str} - {str(e)}")
+        return None
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -5729,7 +5780,30 @@ def normalize_source_ids_limit_method(method: str | None) -> str:
 def merge_source_ids(
     existing_ids: Iterable[str] | None, new_ids: Iterable[str] | None
 ) -> list[str]:
-    """Merge two iterables of source IDs while preserving order and removing duplicates."""
+    """Merge two iterables of source IDs into one flat, ordered, deduplicated list.
+
+    Every element is split on ``GRAPH_FIELD_SEP``, stripped, and deduplicated by
+    first-seen order. The split is what makes this the normalization boundary
+    for chunk-id lists: an element that is itself a joined string
+    (``"chunk-a<SEP>chunk-b"``) would otherwise be stored as a single id, and
+    such an id matches no key in ``text_chunks``. It would then corrupt the
+    ``chunk_ids``/``count`` rows of ``entity_chunks_storage`` /
+    ``relation_chunks_storage``, miscount ``apply_source_ids_limit``'s
+    truncation (two chunks counted as one), and miss every downstream
+    ``get_by_ids`` lookup.
+
+    No in-tree producer passes a joined element today — every caller splits its
+    graph ``source_id`` first, and extraction emits one ``chunk_key`` per record
+    — so the split is a guard against a future upstream regression rather than a
+    fix for a live path. A joined element arriving here therefore means an
+    upstream bug and is logged at debug level so the silent repair does not hide
+    the root cause.
+
+    Despite the name, this also merges the sibling union fields that share the
+    same ``GRAPH_FIELD_SEP`` encoding: ``file_path`` and ``description`` in the
+    edge-dedup merges of ``mongo_impl`` / ``opensearch_impl``. Stripping applies
+    to those fragments too, so ``" foo"`` and ``"foo"`` collapse into one entry.
+    """
 
     merged: list[str] = []
     seen: set[str] = set()
@@ -5740,9 +5814,26 @@ def merge_source_ids(
         for source_id in sequence:
             if not source_id:
                 continue
-            if source_id not in seen:
-                seen.add(source_id)
-                merged.append(source_id)
+            if not isinstance(source_id, str):
+                # Coerce rather than skip: dropping the value would silently
+                # lose provenance, which is the failure mode this function
+                # exists to prevent. The warning surfaces the type bug.
+                logger.warning(
+                    f"merge_source_ids received a non-string id "
+                    f"{source_id!r} ({type(source_id).__name__}); coercing to str"
+                )
+                source_id = str(source_id)
+            if GRAPH_FIELD_SEP in source_id:
+                logger.debug(
+                    f"merge_source_ids splitting a GRAPH_FIELD_SEP-joined value "
+                    f"{source_id!r}; callers are expected to pass individual ids"
+                )
+            # split_string_by_multi_markers already strips each fragment and
+            # drops the empty ones, so a whitespace-only element yields nothing.
+            for sid in split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]):
+                if sid not in seen:
+                    seen.add(sid)
+                    merged.append(sid)
 
     return merged
 
@@ -5792,7 +5883,26 @@ def compute_incremental_chunk_ids(
 
     This function applies delta changes (additions and removals) to an existing
     list of chunk IDs while maintaining order and ensuring deduplication.
-    Delta additions from new_chunk_ids are placed at the end.
+    Delta additions from new_chunk_ids are placed at the end. Empty IDs are
+    dropped from both inputs.
+
+    Authority model:
+        ``existing_full_chunk_ids`` — the entity/relation chunk-tracking row — is
+        AUTHORITATIVE. A graph node's ``source_id`` is only a truncated view of it
+        (see ``apply_source_ids_limit``), and it may legitimately retain STALE chunk
+        IDs that tracking has already pruned: the purge path reads tracking first and
+        falls back to ``source_id`` only when the tracking row is absent, and its
+        ``graph_references_deleted_chunks`` branch exists precisely to handle a graph
+        that still references chunks tracking has dropped.
+
+        Consequently an ID present in BOTH ``old_chunk_ids`` and ``new_chunk_ids`` but
+        absent from ``existing_full_chunk_ids`` is treated as intentionally pruned and
+        is NOT restored — only genuine additions (``new - old``) are appended. Widening
+        Step 2 to append every entry of ``new_chunk_ids`` would resurrect stale
+        attribution into the authoritative store, which a later purge would then use to
+        rebuild or retain KG objects sourced from chunks that no longer exist.
+        Repairing genuinely missing attribution is the job of
+        ``audit_kg_integrity(..., apply=True)``, never of this function.
 
     Args:
         existing_full_chunk_ids: Complete list of existing chunk IDs from storage
@@ -5807,22 +5917,25 @@ def compute_incremental_chunk_ids(
         >>> old = ['chunk-1', 'chunk-2']
         >>> new = ['chunk-2', 'chunk-4']
         >>> compute_incremental_chunk_ids(existing, old, new)
-        ['chunk-3', 'chunk-2', 'chunk-4']
+        ['chunk-2', 'chunk-3', 'chunk-4']
     """
     # Calculate changes
     chunks_to_remove = set(old_chunk_ids) - set(new_chunk_ids)
     chunks_to_add = set(new_chunk_ids) - set(old_chunk_ids)
 
-    # Apply changes to full chunk_ids
     # Step 1: Remove chunks that are no longer needed
     updated_chunk_ids = [
-        cid for cid in existing_full_chunk_ids if cid not in chunks_to_remove
+        cid for cid in existing_full_chunk_ids if cid and cid not in chunks_to_remove
     ]
+    seen = set(updated_chunk_ids)
 
-    # Step 2: Add new chunks (preserving order from new_chunk_ids)
-    # Note: 'cid not in updated_chunk_ids' check ensures deduplication
+    # Step 2: Append genuine additions only (preserving order from new_chunk_ids).
+    # The `seen` check is not redundant with `chunks_to_add`: tracking may already
+    # hold an ID that is in new_chunk_ids but not in old_chunk_ids, because
+    # source_id is a truncated view of the tracking row.
     for cid in new_chunk_ids:
-        if cid in chunks_to_add and cid not in updated_chunk_ids:
+        if cid and cid in chunks_to_add and cid not in seen:
+            seen.add(cid)
             updated_chunk_ids.append(cid)
 
     return updated_chunk_ids

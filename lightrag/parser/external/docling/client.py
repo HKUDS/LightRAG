@@ -46,7 +46,7 @@ from lightrag.parser.external._common import (
     env_int,
     raise_for_status_with_detail,
 )
-from lightrag.parser.external._zip import safe_extract_zip
+from lightrag.parser.external._zip import result_bundle_limits, safe_extract_zip
 from lightrag.parser.external.docling.cache import (
     compute_options_signature,
     current_endpoint_signature,
@@ -312,7 +312,13 @@ class DoclingRawClient:
                 f"Docling result {task_id} returned non-zip content-type "
                 f"{ctype!r}; body prefix={resp.text[:400]!r}"
             )
-        safe_extract_zip(resp.content, raw_dir)
+        max_entries, max_total_bytes = result_bundle_limits()
+        safe_extract_zip(
+            resp.content,
+            raw_dir,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
 
 
 # ---------------------------------------------------------------------------
