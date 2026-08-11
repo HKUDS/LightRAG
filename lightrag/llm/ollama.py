@@ -50,6 +50,56 @@ class InvalidResponseError(Exception):
 _OLLAMA_CLOUD_HOST = "https://ollama.com"
 _CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
 
+# think= (OllamaLLMOptions.think) needs ollama-python>=0.5.3 on its own -- the
+# version where ChatRequest.think widened from Optional[bool] to a Union with a
+# Literal, so both the booleans and the named reasoning levels
+# ("low"/"medium"/"high") serialize. The gate is pinned to the binding's
+# declared floor (>=0.5.4, raised by ollama_embed forwarding dimensions=) rather
+# than to think's own 0.5.3, so there is one ollama version to reason about
+# instead of a per-feature matrix: an install below the declared floor is out of
+# contract for this binding as a whole.
+# This check is what enforces that floor where the declaration was never applied
+# -- the auto-install at the top of this module installs a *missing* ollama but
+# never upgrades an outdated one, so an in-place LightRAG upgrade can still be
+# sitting on an old version. Installed-package metadata only (no network call),
+# consulted solely from ensure_think_supported: an environment on an older
+# ollama still imports and works normally for every call that doesn't set think.
+_OLLAMA_SUPPORTS_THINK = pm.is_installed("ollama", ">=0.5.4")
+
+
+def ensure_think_supported(options: Any, *, context: str = "") -> None:
+    """Reject a think= option the installed ollama package cannot forward.
+
+    Called from two places on purpose:
+
+    - ``_ollama_model_if_cache``, right before the option is lifted out --
+      the only defence library callers (who never go through the API server)
+      get.
+    - the API server's option-resolution chokepoints, so a misconfigured
+      OLLAMA_LLM_THINK fails while the server is still starting up instead of
+      mid-pipeline, hours into a document run.
+
+    ``options`` that is not a dict, or carries no ``think`` key at all (e.g.
+    the embedding options dict, which has no such field), is left alone: the
+    model keeps its own thinking default and an older ollama stays usable.
+
+    Only the installed *package* is checkable here. Whether the Ollama server
+    is new enough for reasoning levels, and whether the model supports thinking
+    at all, are answerable only by a live request and so stay runtime errors.
+    """
+    if not isinstance(options, dict) or "think" not in options:
+        return
+    if _OLLAMA_SUPPORTS_THINK:
+        return
+    where = f" for {context}" if context else ""
+    raise RuntimeError(
+        f"OLLAMA_LLM_THINK / {{ROLE}}_OLLAMA_LLM_THINK is set{where} to "
+        f"{options['think']!r}, but the installed ollama package does not "
+        'support think= (needs ollama>=0.5.4). Run `pip install -U "ollama'
+        '>=0.5.4"` (or `uv sync`) to use it, or unset the option to leave '
+        "thinking at the model's own default."
+    )
+
 
 def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional[str]:
     if host:
@@ -173,6 +223,23 @@ async def _ollama_model_if_cache(
         kwargs.pop("keyword_extraction", None)
 
     _normalize_ollama_response_format(kwargs)
+
+    # `think` (OllamaLLMOptions) travels in with the rest of the generation
+    # options, but Ollama's chat() takes it as its own top-level argument,
+    # not a key inside `options` -- lift it out here rather than at every
+    # call site. Absent entirely (e.g. the embedding options dict, which has
+    # no `think` field) leaves thinking at the model's own default.
+    options = kwargs.get("options")
+    ensure_think_supported(options)
+    if isinstance(options, dict) and "think" in options:
+        # Read without mutating -- options can be the same dict object
+        # reused across every call for a role's lifetime (library callers
+        # pass it once via llm_model_kwargs), so popping from it here would
+        # only lift `think` out on the first call and silently lose it on
+        # every call after that.
+        kwargs["think"] = options["think"]
+        kwargs["options"] = {k: v for k, v in options.items() if k != "think"}
+
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
     if timeout == 0:

@@ -1758,14 +1758,22 @@ def create_app(args):
             try:
                 from lightrag.llm.binding_options import OllamaLLMOptions
 
-                return {
-                    "host": args.llm_binding_host,
-                    "timeout": llm_timeout,
-                    "options": OllamaLLMOptions.options_dict(args),
-                    "api_key": args.llm_binding_api_key,
-                }
+                options = OllamaLLMOptions.options_dict(args)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} options: {e}")
+            if binding == "ollama":
+                # Imported lazily (the module installs the ollama package on
+                # import) and only for the binding that actually forwards
+                # think= -- lollms never reaches the ollama client.
+                from lightrag.llm.ollama import ensure_think_supported
+
+                ensure_think_supported(options, context="the base LLM binding")
+            return {
+                "host": args.llm_binding_host,
+                "timeout": llm_timeout,
+                "options": options,
+                "api_key": args.llm_binding_api_key,
+            }
         return {}
 
     def resolve_role_llm_settings(
@@ -1840,6 +1848,17 @@ def create_app(args):
                 )
             else:
                 role_provider_options = {}
+
+        if role_binding == "ollama":
+            # Validated after the whole resolution above (including the
+            # override_meta short-circuit), so what is checked is exactly what
+            # the role will call with -- inherited global OLLAMA_LLM_THINK
+            # included. Every role is resolved once while create_app builds
+            # role_llm_configs, so an unsupported think= stops the server at
+            # startup rather than at the role's first call.
+            from lightrag.llm.ollama import ensure_think_supported
+
+            ensure_think_supported(role_provider_options, context=f"LLM role '{role}'")
 
         bedrock_aws_options = {}
         if role_binding == "bedrock":
