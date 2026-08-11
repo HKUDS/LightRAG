@@ -1034,15 +1034,21 @@ id     = "ws_" + base36_lower(value).rjust(16, "0")                     # 固定
 
 ## 附录 B：需要同步修改的 authz PRD 条目
 
-本方案落地后，`LR2-auhtorization-file-policy-phase1.md` 需按下列条目更新（维护者已批准修改该 PRD）：
+`LR2-auhtorization-file-policy-phase1.md` 的下列条目已按本方案更新（维护者已批准修改该 PRD，改动随本 PRD 一并提交）：
 
-| 位置 | 现内容 | 改为 |
+| 位置 | 原内容 | 已改为 |
 | --- | --- | --- |
-| §3 权限目录 | 26 个权限码 | 增加 `workspace.read` / `workspace.create` / `workspace.update` / `workspace.delete` |
-| §5.1 公共路由 | `/health` 双重身份（"始终 200，未认证只给 liveness，完整配置需 `system.health.read`"） | `/health` 退化为**纯 liveness**；完整配置移至 `GET /status`（受 `system.health.read`），并从 `PUBLIC_ROUTES` 移出 |
-| §5.2 受保护路由 | 40 条 | 增加 `/status` 与 6 个 `/workspaces*` 端点，共 47 条 |
-| §11.4 `LEGACY_USER_PERMISSIONS` | 18 项冻结列表 | **不变**（4 个新码按约束 2 不自动进入）；补一句说明工作区管理在 legacy 模式下不可用 |
-| §1.2 非目标 | "不做 workspace / tenant 维度的授权。放到第2阶段实现" | 改为"工作区维度的**可达性**由工作区目录承载（见多工作空间 PRD §14）；策略文件 v1 的 scope 字段禁令（§7.3 #4）**保持不变**；租户维度仍是非目标" |
-| §16 遗留风险 | "无 workspace/tenant 作用域 → 第三阶段" | 拆成两行：工作区可达性 → 已由多工作空间 PRD 解决；租户作用域 → 后续阶段。（顺带修正 §1.2 说"第2阶段"、§16 说"第三阶段"的既有不一致） |
-| §4.2 扩展点 | `AuthorizationContext` 本版本不序列化 | 补一句：多工作空间落地后运行期会填充 `ResourceScope("workspace", ws_id)`，但**仍不进策略文件序列化** |
-| §12 WebUI | 四路状态码分流 | 补两条工作区特有分流（404 静默回落、503 重试），见多工作空间 PRD §15.5 |
+| TL;DR 唯一权威口径 | 6 条 | 增加"`/health` 与 `/status` 的分工 = §5.1"；`documents.artifacts.*` 那条扩到含 `workspace.*`；并加一段"与多工作空间方案的关系"说明四类改动与"schema 一字未改"的边界 |
+| §1.2 非目标 | "不做 workspace / tenant 维度的授权。放到第2阶段实现" | 拆开：策略文件里**永不**表达任何作用域（§7.3 #4 禁令不变）；工作区**可达性**由工作区目录承载（本 PRD §14）；租户维度仍是非目标 |
+| §2 现状分析 | 40 处 `Depends(combined_auth)`（含 `/health`） | 补注：`/health` 那一处**不迁移而是移除**，故 §5.2 由 39 处起算 |
+| §3 权限目录 | 26 个权限码 | 增加 `workspace.read` / `create` / `update` / `delete`，并加一条规则说明"只管动作、不管可达性" |
+| §4.2 扩展点 | `AuthorizationContext` 本版本不序列化 | 补：运行期会真正填充 `ResourceScope("workspace", ws_id)`，但**策略文件序列化面不变**，scope 字段禁令永远有效 |
+| §5.1 公共路由 | `/health` 双重身份（"始终 200，未认证只给 liveness，完整配置需 `system.health.read`"） | `/health` 退化为**纯 liveness**，**仍留在 `PUBLIC_ROUTES` 里**（它依旧免认证，只是不再分档）；完整配置移至受 `system.health.read` 保护的 `GET /status`；并写明两条连带影响（`/health` 不再挂任何认证依赖；`/status` 进 stale 503 覆盖面而 `/health` 不进） |
+| §5.2 受保护路由 | 43 条 | 增加 `/status` 与 6 个 `/workspaces*`，共 **50** 条；并写明"权限码只管动作，可达性另由成员表判定" |
+| §6 路由审计 | 敏感路由白名单 = `DELETE` / `clear` / `force_reset` / `cancel_pipeline` / artifact 下载 | 增加**工作区删除**；golden 示例把 `/health` 改为纯 `public`，并补 `/status` 与 `DELETE /workspaces/{id}` 两行 |
+| §9.1 热重载端点 | 三个 `/auth/policy/*` | 补一条命名注意：正文里裸 `/status` 简写已全部改写为 `/auth/policy/status`，与新的顶层 `GET /status` 区分 |
+| §11.4 `LEGACY_USER_PERMISSIONS` | 18 项冻结列表 | 列表**一个字未改**；新增一小节说明后果：legacy 模式下七条 `/workspaces*` 一律 403，但 `GET /status` 可访问（`system.health.read` 在列表内） |
+| §12 WebUI | 四路状态码分流 | 补两条工作区特有分流（404 静默回落、503 按错误码区分文案），见本 PRD §15.5 |
+| §13 测试计划 | legacy 对照 40 条路由 | 改为 39 条；增加 `workspace.*` 不可获得、`GET /status` 在 legacy 下可访问两条；新增"`/health` 去双身份"整节（四个断言） |
+| §14 PR5 | "`/health` 双身份需专门测试" | 改为"去双身份"：三类调用者拿到逐字节相同的载荷；并划清与本 PRD PR5 的分工（全工作区汇总不在 authz PR5 内） |
+| §16 遗留风险 | "无 workspace/tenant 作用域 → 第三阶段" | 拆两行：工作区作用域 → **已解决**；租户作用域 → 后续阶段。（顺带修正 §1.2 说"第2阶段"、§16 说"第三阶段"的既有不一致。）另加一行"legacy 部署用不上工作区管理"，并给审计日志字段补 `workspace` / `catalog_revision` |

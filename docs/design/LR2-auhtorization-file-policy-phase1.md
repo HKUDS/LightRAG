@@ -15,7 +15,9 @@
 | 前端 | §12（401/403/500/503 分流与 `/auth/me`） |
 | 评审 | §15（RFC 偏离裁决）、§16（遗留风险）、§9.7（被否决方案） |
 
-**唯一权威口径**（其它位置只作引用，不再复述理由）：四档状态码语义 = §10.2；`documents.artifacts.*` 仅 policy 模式可授予 = §11.4；`WHITELIST_PATHS` 处置 = §11.2 #1；冷启动"磁盘是权威" = §9.5；`STALE_AFTER` 公式 = §9.4；传播协议伪代码 = 附录 A。
+**唯一权威口径**（其它位置只作引用，不再复述理由）：四档状态码语义 = §10.2；`documents.artifacts.*` 与 `workspace.*` 仅 policy 模式可授予 = §11.4；`WHITELIST_PATHS` 处置 = §11.2 #1；冷启动"磁盘是权威" = §9.5；`STALE_AFTER` 公式 = §9.4；`/health` 与 `/status` 的分工 = §5.1；传播协议伪代码 = 附录 A。
+
+> **与多工作空间方案的关系**：[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) 建立在本文件之上，并要求本文件做四类改动，均已落入正文 —— 新增 `workspace.*` 四个权限码（§3）、`/health` 去双身份并新增 `/status`（§5.1 / §5.2）、`legacy_user` 冻结列表的后果说明（§11.4）、WebUI 两条工作区分流（§12）。**本文件的策略文件 schema、加载器与 §7.3 的 16 条校验规则一个字未改**：工作区的可达性由工作区目录承载，不进策略文件（§1.2 / §4.2）。
 
 ---
 
@@ -33,7 +35,8 @@
 ### 1.2 非目标（第一阶段明确不做）
 
 - 不做用户/角色管理界面，也不做写策略文件的 API（服务端只读文件 + 重载，从不回写；策略文件与运行时真相的关系见 §9.5）。
-- 不做 workspace / tenant 维度的授权。放到第2阶段实现；本版本是"单一默认数据边界"，策略文件里出现 `scope` / `workspace` / `tenant` 字段一律**拒绝加载**，代码也不允许伪造 `tenant_id="default"`。
+- 不做 tenant 维度的授权，也不在**策略文件里**表达任何作用域：文件里出现 `scope` / `workspace` / `tenant` 字段一律**拒绝加载**（§7.3 #4），代码也不允许伪造 `tenant_id="default"`。本版本是"单一默认数据边界"。
+  工作区维度的**可达性**（哪个 principal 能进哪些工作区）后来由多工作空间方案承载，落在**工作区目录**而不是策略文件里 —— 见 [LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §14。本文件的加载器与 v1 schema 因此**不需要任何改动**：策略文件继续只回答"能做什么动作"，目录回答"能进哪个工作区"，两者取交集（多工作空间 PRD §14.2）。租户维度仍是非目标。
 - 不做用户自助改密、注册、找回密码、OIDC/SSO/LDAP。
 - 不做行级 / 单文档 ACL（`documents.read` 是全库粒度）。
 - 不做审计日志落库（只做结构化日志字段，落库留后续；但需要做必要的控制台日志输出）。
@@ -49,7 +52,7 @@
 | `whitelist_paths` / `whitelist_patterns` / `auth_configured` 均为**模块级常量** | [utils_api.py:242-257](../../lightrag/api/utils_api.py#L242-L257) | 同上；且白名单是"免认证"，无法表达权限 |
 | `get_combined_auth_dependency(api_key)` 只做认证，闭包**按值捕获** `api_key` | [utils_api.py:375-519](../../lightrag/api/utils_api.py#L375-L519) | 没有任何授权概念；api_key 无法重载 |
 | `credentials_accepted()` 是认证判定的唯一咽喉，被路由依赖与 ASGI 中间件共用 | [utils_api.py:336-372](../../lightrag/api/utils_api.py#L336-L372) | 保留这个"单咽喉"设计，替换其内部实现 |
-| 40 处 `dependencies=[Depends(combined_auth)]` | `document_routes.py` **19** 处、`graph_routes.py` **12** 处、`query_routes.py` 3 处、`ollama_api.py` 5 处、`lightrag_server.py` 1 处（`/health`）—— 合计 40（计数已按当前代码校正） | 主体 diff 量，按 router 分期迁移 |
+| 40 处 `dependencies=[Depends(combined_auth)]` | `document_routes.py` **19** 处、`graph_routes.py` **12** 处、`query_routes.py` 3 处、`ollama_api.py` 5 处、`lightrag_server.py` 1 处（`/health`）—— 合计 40（计数已按当前代码校正） | 主体 diff 量，按 router 分期迁移。其中 `/health` 那一处**不迁移而是移除**：它拆成纯公共的 `/health` 与受保护的 `/status`（§5.1），故 §5.2 的受保护表由这 40 处中的 39 处起算 |
 | JWT 载荷含 `role`（`"user"` / `"guest"`），但**从不用于授权** | [auth.py:43-47](../../lightrag/api/auth.py#L43-L47)、[auth.py:247-253](../../lightrag/api/auth.py#L247-L253) | 保留为显示字段，授权一律走 provider |
 | `WHITELIST_PATHS` 默认 `"/health,/api/*"` | [config.py:804](../../lightrag/api/config.py#L804) | 默认把整个 Ollama 兼容面免认证，policy 模式下必须去掉 |
 | admission 中间件在读 body 前用 `credentials_accepted()` 预认证 | [admission_middleware.py:117-135](../../lightrag/api/admission_middleware.py#L117-L135) | 必须与路由依赖共用同一 provider，否则两层判定分裂 |
@@ -95,6 +98,10 @@ class Permission(str, Enum):
     GRAPH_READ = "graph.read"
     GRAPH_WRITE = "graph.write"
     GRAPH_DELETE = "graph.delete"
+    WORKSPACE_READ = "workspace.read"        # 新增：读工作区目录
+    WORKSPACE_CREATE = "workspace.create"    # 新增：创建工作区
+    WORKSPACE_UPDATE = "workspace.update"    # 新增：改名 / 成员 / tag / 默认值 / 迁移重试
+    WORKSPACE_DELETE = "workspace.delete"    # 新增：删除工作区（级联销毁数据）
 ```
 
 规则：
@@ -104,6 +111,8 @@ class Permission(str, Enum):
 - `auth.policy.reload` 与 `system.config.write` 分开：重载策略等于改授权本身，权限面必须比"改运行时配置"更窄（RFC 的"破坏性操作权限更窄"原则）。
 - `ollama.metadata.read` 与 `auth.session.read` 分开：后者是"任何登录用户都该有"的会话自省权限，把 `/api/tags`、`/api/version` 挂上去等于任何 reader 都能枚举后端模型配置。改一个枚举值的成本远低于以后再拆。
 - `documents.artifacts.*` 三个权限码**只能通过策略文件授予**（唯一权威口径与理由见 §11.4；对旧配置属新能力 deny-by-default，不是行为变更）。
+- `workspace.*` 四个权限码由多工作空间方案引入（[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §14.4）。`workspace.delete` 与 `workspace.update` 分开，同样是"破坏性操作权限更窄"：删除会级联销毁该工作区四类存储的全部数据。这四个码同属"仅 policy 模式可授予"的新能力（§11.4）。
+  **它们只管动作，不管可达性**：一个 principal 能进哪些工作区由工作区目录的成员表决定，不进策略文件 —— 策略文件的 `scope` / `workspace` / `tenant` 字段禁令（§7.3 #4）**保持不变**。两层如何取交集见多工作空间 PRD §14.2。
 
 ---
 
@@ -178,6 +187,8 @@ class AuthorizationContext:
 
 当前所有请求传 `AuthorizationContext()`。文件 provider 见到任何 `scope`/`workspace`/`tenant` 字段就**报错拒绝加载**，而不是忽略。
 
+多工作空间方案落地后，运行期会把 `ResourceScope("workspace", ws_id)` 真正填进这个上下文并传给 provider（[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §14.2），使将来换 DB provider 时接口形态不变。但**策略文件的序列化面不变**：作用域的权威是工作区目录的成员表，不是文件；上面那条"见到 `scope`/`workspace`/`tenant` 就拒绝加载"的规则**永远有效**，不因多工作空间落地而放宽。
+
 ### 4.3 快照持有者与请求内绑定
 
 ```python
@@ -203,7 +214,7 @@ class PolicyRuntime:
 PUBLIC_ROUTES = {
     ("POST", "/login"),
     ("GET", "/auth-status"),
-    ("GET", "/health"),          # 仅最小 liveness；完整配置需 system.health.read
+    ("GET", "/health"),          # 纯 liveness，无条件返回同一份最小载荷
     ("GET", "/"),                # WebUI 重定向
     ("GET", "/webui"), ("GET", "/webui/"),   # 无资产时的重定向路由
 }
@@ -217,7 +228,14 @@ API_DOCS_ROUTES = {                # 由 AUTH_EXPOSE_API_DOCS 决定是否注册
 }
 ```
 
-`/health` 的双重身份保持现状语义：始终 200，但**未认证只给 liveness**，完整配置需 `system.health.read`（现在的实现已经是"认证与否决定返回内容"，只是把"认证"换成"持有权限"）。
+`/health` 是**纯 liveness 探针**，无条件返回同一份最小载荷（`status`、core/api 版本、WebUI 可用性）。它**不再有"认证与否决定返回内容"的双重身份** —— 完整的运行时配置（LLM / embedding / 存储后端 / 队列 / keyed-lock）移到受 `system.health.read` 保护的 `GET /status`（§5.2）。
+
+改动理由由多工作空间方案给出（[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §12.3）：`/health` 的两类消费者要求相反 —— k8s / 负载均衡探针每 10–30 秒一次、不需要配置、**绝不容忍副作用**；运维排障偶发调用、需要完整信息。把两者塞进一个端点，就意味着探针路径必须携带"够不够权限"的分支；多工作空间下更进一步：任何"看一眼状态"的端点若能触碰实例池，就会变成"建 N 套连接 + 跑 N 次迁移"。拆开后 `/health` 退化为常量响应，`/status` 独占需要读目录与共享状态的那部分。
+
+对本方案的连带影响有两条，都必须落实：
+
+1. `/health` 上**不再挂任何认证依赖**（今天它是 `lightrag_server.py` 里唯一那处 `Depends(combined_auth)`，见 §2）。它留在 `PUBLIC_ROUTES` 里，但语义从"公共且分档"变成"公共且单一"。
+2. `/status` 是一条**新的受保护路由**，进 §5.2 的表。它同时也是 stale worker（§9.4）的 503 覆盖面之一 —— 一个无法信任自己授权判定的 worker 不得回答"服务状态是什么"。`/health` 不在覆盖面内（stale 时仍 200，见 §9.4 的表）。
 
 #### API 文档面：四个端点，全有或全无
 
@@ -270,12 +288,23 @@ API_DOCS_ROUTES = {                # 由 AUTH_EXPOSE_API_DOCS 决定是否注册
 | POST | `/graph/entities/merge` | `graph.delete` | graph_routes.py:675 |
 | DELETE | `/graph/entity/delete` | `graph.delete` | graph_routes.py:761 |
 | DELETE | `/graph/relation/delete` | `graph.delete` | graph_routes.py:797 |
+| GET | `/status` | `system.health.read` | 新增（§5.1，承接原 `/health` 的完整配置面 + 全工作区汇总） |
+| GET | `/workspaces` | `workspace.read` | 新增（多工作空间 §12.4） |
+| GET | `/workspaces/{id}` | `workspace.read` | 新增（多工作空间 §12.4） |
+| POST | `/workspaces` | `workspace.create` | 新增（多工作空间 §12.4） |
+| PATCH | `/workspaces/{id}` | `workspace.update` | 新增（多工作空间 §12.4） |
+| POST | `/workspaces/{id}/migrate` | `workspace.update` | 新增（多工作空间 §12.4） |
+| DELETE | `/workspaces/{id}` | `workspace.delete` | 新增（多工作空间 §12.4，级联销毁） |
 | GET | `/auth/me` | `auth.session.read` | 新增（§12） |
 | GET | `/auth/policy/status` | `auth.policy.read` | 新增（§9，仅 policy 模式挂载） |
 | POST | `/auth/policy/validate` | `auth.policy.read` | 新增（§9，仅 policy 模式挂载） |
 | POST | `/auth/policy/reload` | `auth.policy.reload` | 新增（§9，仅 policy 模式挂载） |
 
-`/graph/entities/merge` 归 `graph.delete` 而非 `graph.write`：合并会销毁实体，属于破坏性操作。
+合计 **50** 条（改造前 43 条：40 处既有 `Depends(combined_auth)` 去掉转公共的 `/health`，加 `/auth/me` 与三个 `/auth/policy/*`；本次再加 `/status` 与 6 个 `/workspaces*`）。
+
+`/graph/entities/merge` 归 `graph.delete` 而非 `graph.write`：合并会销毁实体，属于破坏性操作。同理 `DELETE /workspaces/{id}` 归 `workspace.delete` 而非 `workspace.update`。
+
+`/workspaces*` 七条路由的权限码只决定**能不能做这个动作**；它们返回哪些工作区、以及能不能操作某个具体工作区，还要过工作区目录的成员表判定（多工作空间 PRD §14.2 / §14.3）。这不是本文件的授权引擎在做作用域判定 —— 成员表是目录快照上的一次 O(1) 查表，挂在 `authorize` 之后，不引入第二套 path→permission 映射。
 
 `/documents/scan` 是**唯一需要两个 scope 的路由**：它名义上是"扫描"，实际会遍历 input 目录**发现并摄取新文件**（`run_scanning_process` → `pipeline_index_files`，[document_routes.py:3535](../../lightrag/api/routers/document_routes.py#L3535)），同时兼做 FAILED 重试。只挂 `documents.retry` 等于给出一条绕过 `documents.write` 的摄取通道 —— 一个"只能重试、不能上传"的 principal 把文件放进共享输入目录（挂载卷、sidecar、另一个只有写盘权限的进程）后调用 scan，就完成了写入。因此要求 `documents.retry AND documents.write`。
 
@@ -310,7 +339,7 @@ def audit_route_coverage(app: FastAPI) -> RouteInventory
 - 每个 `APIRoute` 要么在公共清单里（含 `API_DOCS_ROUTES`，即 FastAPI 自动注册的 `/redoc`、`/openapi.json` 与自定义 `/docs*`），要么带 `authorize` 依赖且 scopes 全部是已知权限码；
 - 每个 `Mount` 要么在 `PUBLIC_MOUNTS` 里（按**实际挂载路径**匹配，不是 `name=`），要么递归审计其子路由；
 - `WebSocketRoute` 与任何其它路由类型必须显式归类，否则启动失败；
-- 敏感路由（`DELETE`、`clear`、`force_reset`、`cancel_pipeline`、artifact 下载）不得只挂通用 read/write 权限（白名单式断言，新增敏感路由必须同步更新，属于刻意的"改动即评审"）；
+- 敏感路由（`DELETE`、`clear`、`force_reset`、`cancel_pipeline`、artifact 下载、**工作区删除**）不得只挂通用 read/write 权限（白名单式断言，新增敏感路由必须同步更新，属于刻意的"改动即评审"）。`DELETE /workspaces/{id}` 必须挂 `workspace.delete`，挂 `workspace.update` 或任何通用码都要让审计失败 —— 它是本清单里破坏面最大的一条（级联销毁四类存储 + 输入目录）；
 - OpenAPI 中写入 `x-required-permissions`。
 
 产出可评审清单（CI artifact）：
@@ -320,7 +349,9 @@ TYPE       METHOD  PATH                                                   PERMIS
 APIRoute   POST    /query                                                 query.execute
 APIRoute   POST    /documents/upload                                      documents.write
 APIRoute   DELETE  /documents/delete_document                             documents.delete
-APIRoute   GET     /health                                                public (+system.health.read for detail)
+APIRoute   GET     /health                                                public
+APIRoute   GET     /status                                                system.health.read
+APIRoute   DELETE  /workspaces/{id}                                       workspace.delete
 Mount      -       /webui                                                 public-static
 ```
 
@@ -583,6 +614,8 @@ credential_epoch = sha256(
 
 `/auth/policy/validate` 是自锁保护的第一道闸：运维改完文件先 validate，再 reload。
 
+> **命名注意**：本节这三个端点必须始终写成完整路径。顶层 `GET /status`（§5.2）是**另一个端点** —— 它报的是服务运行状态与工作区汇总，与策略传播的收敛状态毫无关系。本文档早期版本在正文里用裸 `/status` 简写指代 `/auth/policy/status`，已全部改写为完整路径；实现与测试中也不得再用该简写。
+
 ### 9.2 单进程流程（uvicorn 单 worker）
 
 ```
@@ -687,7 +720,7 @@ POST /auth/policy/reload
 
   另一半同样重要：**上报失败不是授权失败，`publish_report()` 自己也从不升级失败** —— 它只返回成败。已经发布并换入成功的 reload 不得因为写 `adoptions` 失败而返错；运行期 tick 的上报失败只是观测通道的问题，由调度点在下一 tick 重试、心跳自愈。**把持续失败升级成致命错误的地方只有一个：启动期的 `register_or_die()`**（见下）—— 升级逻辑住在启动路径里，不在上报原语里，所以"reload/运行期不致命"与"启动期注册不成功就起不来"这两条并不矛盾，测试也必须分开断言（§13）。
 
-  **但"不致命"必须配一个启动硬前置，否则会伪造收敛。** `_pid_alive` 只能校验**已有记录**的 pid，共享布局里没有任何 worker 名册，所以一个"换入成功、首次上报失败"的 worker 对 `/status` 是**完全不可见**的 —— 别的 worker 只看已有记录，照样报 `converged=true`，而那个隐形 worker 正按旧 revision 服务。这是最坏的一类假收敛（CI 门禁绿灯、实际未收敛），"存活 pid 无记录也算未收敛"这条要求本身也无从实现，因为无从枚举"应该有哪些 pid"。
+  **但"不致命"必须配一个启动硬前置，否则会伪造收敛。** `_pid_alive` 只能校验**已有记录**的 pid，共享布局里没有任何 worker 名册，所以一个"换入成功、首次上报失败"的 worker 对 `/auth/policy/status` 是**完全不可见**的 —— 别的 worker 只看已有记录，照样报 `converged=true`，而那个隐形 worker 正按旧 revision 服务。这是最坏的一类假收敛（CI 门禁绿灯、实际未收敛），"存活 pid 无记录也算未收敛"这条要求本身也无从实现，因为无从枚举"应该有哪些 pid"。
 
   **仅仅让它 503 不够**：进程照样起来了、`/health` 照样 200、照样在接流量，而它的 pid 从未进过 `adoptions` —— 远端依旧看不见它，`converged` 依旧可能为真。"不可见"这个问题不能靠"可见地拒绝服务"来解决。
 
@@ -695,7 +728,7 @@ POST /auth/policy/reload
 
   于是不变式成立：**凡在服务的 worker，共享表里必有它的记录**（注册发生在开始接流量之前）。`converged = 全部已知记录都新鲜、自报 ok 且在目标上` 由此可靠，不需要外部名册。分工也就清楚了：**启动期注册失败 ⇒ 退出；运行期上报失败 ⇒ 不致命**，前者建立可见性，后者保证已建立的可见性不因抖动拖垮授权（记录还在，只是 `reported_at` 变旧，超期即 `unresponsive`）。
 
-  补充（**仅供人眼，不进 `converged` 判据**）：arbiter 在 pre-fork 时已经知道 worker 数（[run_with_gunicorn.py:289](../../lightrag/api/run_with_gunicorn.py#L289) 把 `workers_count` 传给 `initialize_share_data`），可以把它写成 `expected_workers` 供 `/status` 对照，用来发现"某个 worker 压根没起来"。它不进收敛判据，因为 `TTIN`/`TTOU` 运行期改并发数会让这个数字过期，而收敛断言是 CI 门禁，不能建立在会过期的数字上。
+  补充（**仅供人眼，不进 `converged` 判据**）：arbiter 在 pre-fork 时已经知道 worker 数（[run_with_gunicorn.py:289](../../lightrag/api/run_with_gunicorn.py#L289) 把 `workers_count` 传给 `initialize_share_data`），可以把它写成 `expected_workers` 供 `/auth/policy/status` 对照，用来发现"某个 worker 压根没起来"。它不进收敛判据，因为 `TTIN`/`TTOU` 运行期改并发数会让这个数字过期，而收敛断言是 CI 门禁，不能建立在会过期的数字上。
 - **"epoch 缺失"在锁内锁外必须是同一个判定**。锁外用 `shared_get` 得到 `ABSENT` 才进冷启动，锁内却写 `shared["epoch"] is None` —— 两种表示不通：键真的不存在时，锁内那句会抛 `KeyError`；而键存在且值为 `None` 时，锁外早就被折成 `RETRY`、根本进不来。**没有任何初始状态能走通这条路径**，冷启动一样死。锁内必须复用同一个 `shared_get`，并把它的 `RETRY` 处理成"出锁重试本轮"（锁内绝不重试，不占着跨进程锁等 RPC）。
 - **`ABSENT` 与 `RETRY` 必须是两个不同的返回值**。把两者都折成"失败"会造出一个致命的死结：`startup` 正是用"epoch 不存在"判定冷启动，若那也是 `RETRY`，第一个 worker 会一直重试到 `MAX_STARTUP_ATTEMPTS` 耗尽然后退出 —— **全新部署永远选不出 leader、永远起不来**。反方向同样致命：把 `RETRY`（读不出来）当成 `ABSENT`（确认不存在），会让一个 Manager 短暂抽风的 worker 以为自己在冷启动，用磁盘内容发布一个 `revision=1` 覆盖掉舰队正在跑的 rev 7。**"不存在"与"读不出来"是两件事，任何一侧的混淆都会造成事故。**
 - **重试必须有界**：`MAX_STARTUP_ATTEMPTS` 建议 5，之间让出事件循环。撕裂只在"发布进行中"这一瞬发生，重试一次几乎必然成功；连续多次失败说明有别的问题（例如共享状态被外力清空），此时启动失败退出比无限重试更可诊断。
@@ -733,7 +766,7 @@ tick 的结构（完整伪代码见附录 A.4）= 先 `step()`（纯判定与换
 
 要点：
 
-- **follower 完全不读磁盘**，所以"reload 之后文件又被改过"不再影响传播 —— 原先设计里的 `drift` 状态**被彻底移除**，采纳状态收敛为 `ok` / `error` / `pending` 三种 —— 三种都是 worker **自报**的（`pending` 由 `last_attempt_kind` 处于 `UNREACHABLE` / `CONTENDED` 推导，见 `intended_record()`），不是 `/status` 从版本落后倒推的。冷启动的磁盘-共享内容分歧不是一种采纳状态，而是上报里的 `revision_source` / `adoption_source` 字段（§9.5）。
+- **follower 完全不读磁盘**，所以"reload 之后文件又被改过"不再影响传播 —— 原先设计里的 `drift` 状态**被彻底移除**，采纳状态收敛为 `ok` / `error` / `pending` 三种 —— 三种都是 worker **自报**的（`pending` 由 `last_attempt_kind` 处于 `UNREACHABLE` / `CONTENDED` 推导，见 `intended_record()`），不是 `/auth/policy/status` 从版本落后倒推的。冷启动的磁盘-共享内容分歧不是一种采纳状态，而是上报里的 `revision_source` / `adoption_source` 字段（§9.5）。
 - 稳态每 worker 每 2 秒一次小 RPC、零文件 I/O。这个开销相对摄取管线自身的 proxy RPC 量可忽略；**轮询无法去掉**：Manager 没有廉价的跨进程推送原语，`Event.wait` 要么每 worker 常驻烧一个线程并长期占住一条 Manager 连接（更差），要么退回轮询。共享内容是对轮询的**修正**，不是替代 —— 轮询保留为触发机制。
 - 校验失败是**确定性失败** ⇒ 报 `error` 并**立即**进入 §9.4 的 stale 状态（受保护请求 503），**不享受宽限期、更不是"拿旧快照继续服务"**。**唯一还会 per-worker 分叉的原因是 env**：`password_env` / `secret_env` 按各 worker 自己的环境解析（规则 #7 / #9）。fork 模型下所有 worker 继承同一份 env，所以实际极难发生；但路径必须存在，且必须 fail closed。
 - 采纳报告的写与不写**全部收在 `maybe_publish()` 一个调度点上**：意图记录（state / message / 版本字段）变化 ⇒ 立即写；不变 ⇒ 只在距上次成功写入 ≥ `AUTH_POLICY_HEARTBEAT_SECONDS` 时写。两个方向的退化都被它挡住：稳态**和持续 `error`** 都不是每 tick 一次写 RPC，而心跳也不再依赖"哪条路径记得刷 `reported_at`" —— tick 的每条退出路径（含稳态 `confirm()`）都经过调度点，`reported_at` 必然按期刷新。写失败不推进调度状态，下一 tick 自动重试。调度状态（`last_published` / `last_published_at`）是观测侧的，绝不进 `is_stale()`。一个显式接受的故障模式成本：Manager 抖动会让 `ok` ↔ `pending` 交替，每次翻转都是记录变化 ⇒ 立即写，最坏在抖动期间退化为每 tick 一写 —— 不做去抖，因为去抖推迟的正是 `pending` 的远端可见性；"不每 tick 写"的成本约束只针对稳态。
@@ -741,14 +774,14 @@ tick 的结构（完整伪代码见附录 A.4）= 先 `step()`（纯判定与换
 
 收敛判定：`converged = 全部已知记录都"报告新鲜"、state == "ok"、且 (revision, digest) == epoch 的 (revision, digest)`。**三个条件缺一不可**：只查新鲜度与版本元组的公式有一个漏洞 —— epoch 读持续失败而 `adoptions` 写正常的 worker 停在与 epoch 相同的 rev7 上，记录新鲜、版本匹配，公式给出 `converged=true`，而它本地时钟早已过期、正对受保护请求返 503。`state == "ok"` 这个条件配合"未定失败自报 `pending`"（`intended_record()`）恰好堵住它：确认不了自己在目标上的 worker 写出来的就不是 `ok`。它之所以可靠，靠的是"注册即 ready"这条不变式（见上）：凡在服务的 worker，共享表里必有它的记录，所以"已知记录"就是"在服务的 worker"全集。"报告新鲜"= `now - reported_at <= 2 × AUTH_POLICY_HEARTBEAT_SECONDS`；超期的 pid 归入 `unresponsive_workers`，**并让 `converged` 为假**。响应里给 `pending_workers`（自报 `pending` 或版本落后）/ `failed_workers` / `unresponsive_workers` 三个列表，运维和 CI 都能断言。
 
-**`/status` 能报什么、不能报什么（必须写清，否则会被过度信任）**：
+**`/auth/policy/status` 能报什么、不能报什么（必须写清，否则会被过度信任）**：
 
 | 视角 | 能区分的 | 不能区分的 |
 | --- | --- | --- |
 | 远端 `/auth/policy/status`（读共享 `adoptions`） | `ok` / `pending` / `error`（这三种是该 worker 自己写进共享状态的）、以及 `unresponsive`（报告超期）。**读坏写好的部分故障**（epoch 读持续失败、`adoptions` 写正常）会以新鲜的 `pending` 记录呈现，远端可见 | **共享完全不可达（读写皆失败）时，`unreachable` 与 `stalled` 分不开** —— 两者的现象完全相同：那个 worker 没在跟共享状态说话，只剩报告超期的 `unresponsive`。这种情形下原理上就不可分，因为唯一的信息通道正是坏掉的那条 |
 | 该 worker 本地（日志 + 它自己 503 响应体的 `cause` 字段） | `error` / `unreachable` / `stalled` / `contended` 可分 —— 靠 `last_attempt_kind` 这个不带时间的枚举（§9.4 第 4 点给出推导） | — |
 
-所以 §9.4 第 4 点那三种成因的区分**是本地能力**：运维先从任一健康 worker 的 `/status` 看到"哪个 pid 不响应"，再去那个 pid 的日志里看是 `unreachable` 还是 `stalled`。文档与测试都不得声称 `/status` 能远端区分这两者。
+所以 §9.4 第 4 点那三种成因的区分**是本地能力**：运维先从任一健康 worker 的 `/auth/policy/status` 看到"哪个 pid 不响应"，再去那个 pid 的日志里看是 `unreachable` 还是 `stalled`。文档与测试都不得声称 `/auth/policy/status` 能远端区分这两者。
 
 ### 9.4 stale worker 状态机（未采纳 ⇒ 停止授权）
 
@@ -1008,6 +1041,16 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 
 `AUTH_LEGACY_ACCOUNTS_COMPAT=true`（policy 模式下允许 `AUTH_ACCOUNTS` 共存）时，那些账号同样映射到本角色。
 
+#### 工作区管理在 legacy 模式下不可用（约束 2 的一次实际应用）
+
+`workspace.read` / `workspace.create` / `workspace.update` / `workspace.delete` 是本文件之后新增的权限码（§3），按约束 2 它们**不进入**上面这份 18 项冻结列表 —— 列表只有显式改动才会增长。后果是明确的、且是刻意的：
+
+- **未启用 policy 模式的部署无法创建、改名或删除工作区**，七条 `/workspaces*` 路由一律 403，只能使用启动时自动登记的那一条 legacy 记录（多工作空间 PRD §9.2）。
+- 这不是行为变更，而是新能力对旧配置 deny-by-default —— 与 `documents.artifacts.*` 的处置同源（§11.4 开头那条），同样构成迁移到 policy 模式的正向激励。
+- `system.health.read` **在**列表里（第 2 项），所以 legacy 用户能访问新的 `GET /status`。这一条必须如此：`/status` 承接的是原 `/health` 的完整配置面，而 legacy 用户今天就能通过认证后的 `/health` 看到它。若把它挡掉，就成了"legacy 行为逐字不变"的反例。
+
+`legacy_user` 的**权限集仍是 18 项，一个字不改**；本节新增的只是上述后果说明。§13 的 golden 断言（字面 18 项枚举）与"往 catalog 加权限码 ⇒ legacy 不获得它"的 fix-proof 测试因此原样有效，且新增的四个码正好又给它添了一组真实用例。
+
 ---
 
 ## 12. WebUI 影响（最小改造）
@@ -1019,6 +1062,9 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
   - `403` ⇒ 只提示"当前账号无此权限"，**不得**清 token（否则用户点一次无权按钮就被登出）。
   - `500` ⇒ 提示服务端错误，不清 token（provider 内部错误会走这里，§10.2）。
   - `503` ⇒ 提示"服务端授权策略未收敛，请稍后重试"，**不清 token**、可按 `Retry-After` 自动重试一次。这是 §9.4 的 stale worker；把它当会话失效清 token 会让一次配置事故变成全员登出。
+- 多工作空间落地后追加两条分流，**都不清 token**（详见 [LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §15.5）：
+  - `404` + 工作区上下文 ⇒ 当前选中的工作区已被删除或已不可访问 ⇒ **静默回落**到第一个可访问的工作区并重试一次。不提示、不跳登录页。
+  - `503` + `Retry-After` **且响应体带工作区错误码**（`workspace_not_ready` / `workspace_capacity_exhausted`）⇒ 提示"工作区正在准备中"，按 `Retry-After` 自动重试一次。它与上面那条 stale worker 的 503 是**两种不同成因**：前端靠响应体的错误码区分，两者的处置恰好相同（不清 token + 有界重试），所以实现上可以共用一个分支，但**提示文案必须分开** —— 把"工作区正在迁移"说成"授权策略未收敛"会让运维查错方向。
 - 权限列表随 `/auth/me` 拉取，热重载后前端最迟在下次刷新/轮询时看到新权限；不做 WebSocket 推送。
 - **前端只允许轮询 `/auth/me`（0 RPC 的快照读），不得轮询 `/auth/policy/status`** —— 后者是运维/CI 的收敛断言工具，每次调用都要遍历 `adoptions` 并做 `_pid_alive` 探测（§10.4 禁令 4）。策略变更是低频运维动作，前端不需要秒级感知。
 
@@ -1037,10 +1083,18 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 **legacy 预设角色**（`test_legacy_preset.py`）
 - golden 断言 `LEGACY_USER_PERMISSIONS` 恰好等于 §11.4 的 18 项枚举（**不是**"catalog 减排除清单"的动态计算 —— 断言必须写成字面列表，否则往 catalog 加权限码时测试跟着一起漂）。
 - 往 catalog 里加一个假权限码 ⇒ `legacy_user` **不**获得它（约束 2 的 fix-proof）。
-- 行为保持对照：legacy profile 下，认证用户对 §5.2 全部 40 条路由的判定与改造前逐字一致（用改造前的 `combined_dependency` 判定作为对照表）。这条要能抓住"误用 `operator` 做预设"—— 那会让 delete/clear/graph.write 等变 403。
+- 行为保持对照：legacy profile 下，认证用户对 §5.2 里**改造前就存在的那 39 条**路由（40 处 `Depends(combined_auth)` 去掉转为公共的 `/health`）的判定与改造前逐字一致（用改造前的 `combined_dependency` 判定作为对照表）。这条要能抓住"误用 `operator` 做预设"—— 那会让 delete/clear/graph.write 等变 403。
 - `documents.artifacts.*` 在 legacy profile 与无策略文件的开放模式下**都拿不到**（403），无论 env 怎么配。
+- `workspace.*` 四个码同样在 legacy profile 与开放模式下**都拿不到**：七条 `/workspaces*` 路由一律 403（§11.4 的"工作区管理在 legacy 模式下不可用"）。与 artifact 那条共用一张参数化表，新增"仅 policy 可授予"的权限码时只加一行。
+- 但 `GET /status` 在 legacy profile 下**可访问**（`system.health.read` 在 18 项列表里），且返回的完整配置与改造前认证态 `/health` 的载荷等价 —— 这是"legacy 行为逐字不变"的正向断言，与上面两条方向相反，不能混写。
 - `WHITELIST_PATHS` 未设置时，legacy profile 的默认值仍是 `/health,/api/*`（§11.2 #1 的回归钉子）。
 - legacy profile 下 `/auth/policy/*` 返回 404（未挂载），不是 403。
+
+**`/health` 去双身份**（`test_health_status_split.py`，§5.1）
+- 未认证、已认证但无 `system.health.read`、已认证且有该权限 —— 三种调用者拿到的 `/health` 响应体**逐字节相同**。fix-proof：实现里若残留任何"按权限决定返回内容"的分支，这条必红。
+- `/health` 上**不存在**任何认证依赖（遍历该 `APIRoute` 的 `dependant`，断言 scopes 为空）；stale worker（§9.4）下 `/health` 仍 200。
+- `/status` 无凭据 401、有凭据无权限 403、有权限 200 且载荷包含改造前 `/health` 的全部配置字段（用改造前的响应做对照表，逐 key 比对，防止拆分时丢字段）。
+- stale worker 下 `/status` 返回 503（它在覆盖面内），与 `/health` 的 200 形成对照。
 
 **快照与请求内一致性**（`test_policy_runtime.py`）
 - `swap()` 期间正在执行的请求全程使用旧快照（用两个依赖 + 中途 swap 构造）。
@@ -1090,9 +1144,9 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 - **RETRY 带原因**：content 读失败 ⇒ `cause=unreachable`；撕裂 / 构建期 epoch 变更 ⇒ `cause=contended`。
 - **`publish_report` 三态**：adoptions 读 RETRY ⇒ 放弃本次写、其它 worker 记录不被清空（`shared_get(...) or {}` 的实现会抹掉全部报告）；ABSENT ⇒ 初始化空字典写入。
 - **stale 成因本地可分**（§9.4 第 4 点）：① 读写皆失败的整体不可达（轮询器仍在跑）⇒ `cause=unreachable`；② 停掉任务 ⇒ `cause=stalled`（两条必须成对存在）；③ 构建失败 ⇒ `cause=error`。断言落在本地 `cause` 字段与日志，不断言 /status 能远端区分①②（§9.3 能力边界表）；①要读写皆失败，与"只坏读"的假收敛用例注入不要混。
-- **`reported_at` 心跳与 `unresponsive`**：停掉某 worker 轮询 ⇒ ① 它自己 `STALE_AFTER` 后 503；② 从健康 worker 读 `/status`，该 pid 在 `2 × AUTH_POLICY_HEARTBEAT_SECONDS` 后落入 `unresponsive_workers` 且 `converged=false`。
+- **`reported_at` 心跳与 `unresponsive`**：停掉某 worker 轮询 ⇒ ① 它自己 `STALE_AFTER` 后 503；② 从健康 worker 读 `/auth/policy/status`，该 pid 在 `2 × AUTH_POLICY_HEARTBEAT_SECONDS` 后落入 `unresponsive_workers` 且 `converged=false`。
 - **上报调度五断言**（§9.3 `maybe_publish`）：① 稳态心跳真的在发（`reported_at` 按心跳周期刷新；稳态分支绕过调度点的实现在此失败）；② 稳态写入次数 ≈ 运行时长 / 心跳间隔，而非 / 轮询间隔；③ 持续 `error` 同样不每 tick 写（转入时立即写一次，其后按心跳频率）；④ 变化立即写，不等心跳到期；⑤ 写失败不推进调度状态（下一 tick 即重试，成功后才前进）。
-- **未定失败不得自称 `ok`**（§9.3 假收敛）：epoch 读持续失败、adoptions 写正常（按调用注入，非整体断连），worker 与 epoch 同在 rev7 ⇒ ① 本地 `STALE_AFTER` 后 503；② 共享记录新鲜、版本 rev7、`state="pending"`；③ 健康 worker `/status` ⇒ `converged=false`、pid 在 `pending_workers`；④ 恢复后下一 tick `state` 立即回 `ok`（不等心跳）。
+- **未定失败不得自称 `ok`**（§9.3 假收敛）：epoch 读持续失败、adoptions 写正常（按调用注入，非整体断连），worker 与 epoch 同在 rev7 ⇒ ① 本地 `STALE_AFTER` 后 503；② 共享记录新鲜、版本 rev7、`state="pending"`；③ 健康 worker `/auth/policy/status` ⇒ `converged=false`、pid 在 `pending_workers`；④ 恢复后下一 tick `state` 立即回 `ok`（不等心跳）。
 - **心跳与 reload 交错不乱序覆盖**（§9.3 `publish_mutex`）：心跳在共享锁获取处挂起（注入慢锁）、期间同 worker 的 reload 完成换入并上报 rev8 ⇒ 全部在途 `maybe_publish` 结束后，共享记录与 `last_published` 都是 rev8。
 - **发布原子性**：`epoch` 与 `content` 两次写之间插入 follower tick ⇒ 不出现"新 revision 旧字节"。
 - **轮询成本**：稳态 tick 只读 `epoch` 一个 key（key 级 spy，防把字节塞回 header），revision 变化的那一 tick 才读 `content` 一次。
@@ -1138,10 +1192,10 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 | PR | 内容 | 风险 / 验收 |
 | --- | --- | --- |
 | PR1 | `lightrag/api/authz/` 骨架：`catalog.py`（含 `ollama.metadata.read`）、`models.py`、`policy_file.py`（loader + strict schema + §7.3 全 16 条校验 + #13 的信任链路径解析）、`LEGACY_USER_PERMISSIONS` 冻结常量、`hashpw.py`（**不是新命令**：console script 沿用已注册的 `lightrag-hash-password`，entry point 从 `lightrag.tools.hash_password` 改指本模块；`AUTH_ACCOUNTS` 模式行为逐字保持——含 `{bcrypt}` 前缀输出，新增 `--format policy` 模式输出裸 bcrypt spec + `credential_version` 提醒 + `AUTH_ACCOUNTS` 批量转换）。**不接线**，纯新增 | 无行为变更；验收 = §13 加载与校验 + legacy 预设 golden 全绿 + `lightrag-hash-password` 旧模式（无 `--format`）输出格式回归（`username:{bcrypt}$2b$...` 逐字不变，钉住 entry point 迁移） |
-| PR2 | `PolicyRuntime` + 两个 provider + `authorize` 依赖（含 §8.5 凭据优先级）+ `/auth/me`；拆解 §10.3 的四个 import 期单例；legacy profile 走 `legacy_user` 预设，行为**逐字保持不变**（含 `WHITELIST_PATHS` 旧默认） | 最容易回归的一步。验收 = 现有 `tests/api/` 全绿 + §13 的 40 条路由 legacy 行为对照测试 |
+| PR2 | `PolicyRuntime` + 两个 provider + `authorize` 依赖（含 §8.5 凭据优先级）+ `/auth/me`；拆解 §10.3 的四个 import 期单例；legacy profile 走 `legacy_user` 预设，行为**逐字保持不变**（含 `WHITELIST_PATHS` 旧默认） | 最容易回归的一步。验收 = 现有 `tests/api/` 全绿 + §13 的 39 条路由 legacy 行为对照测试（`/health` 在 PR5 才拆，本 PR 保持现状） |
 | PR3 | 迁移 `query_routes.py`(3) + `ollama_api.py`(5) 到 `Security(authorize, scopes=[...])`；`/api/tags`、`/api/version`、`/api/ps` 用 `ollama.metadata.read` | 小面积试点，先验证形态 |
 | PR4 | 迁移 `document_routes.py`(19) | 最大 diff；逐条对照 §5.2 表，含 `/documents/scan` 的双 scope |
-| PR5 | 迁移 `graph_routes.py`(12) + `lightrag_server.py` 的 `/health`、公共路由分离（public router，含 `API_DOCS_ROUTES`） | `/health` 双身份需专门测试 |
+| PR5 | 迁移 `graph_routes.py`(12) + `lightrag_server.py` 的 `/health` → 拆成纯 liveness 的 `/health`（去掉认证依赖）与受 `system.health.read` 保护的 `/status`（§5.1）、公共路由分离（public router，含 `API_DOCS_ROUTES`） | `/health` 的**去双身份**需专门测试：未认证与已认证拿到**逐字节相同**的最小载荷；原完整配置在 `/status` 上可取且未授权时 403。多工作空间的全工作区汇总不在本 PR，由多工作空间 PRD 的 PR5 往 `/status` 上叠加 |
 | PR6 | 路由覆盖审计 + CI golden 清单（按 profile 各一份）；`AUTH_ROUTE_AUDIT` 先 `report` 一轮再切 `enforce` | 验收 = 裸路由 fix-proof 测试 |
 | **PR7a** | 传播机制骨架，**不接任何端点**：共享 epoch 与内容字节（分 key、同临界区发布）+ 附录 A 的全部原语（`shared_get` 三态 / `adopt_from_shared` / `apply_snapshot` / `publish_report` / `maybe_publish`）+ 冷启动初始化事务 + 轮询任务与 `register_or_die` 启动前置 + `stale`/`pending` 状态机与 503 闸门（§9.3–§9.4）。发布动作由内部函数触发（测试直接调），不经 HTTP | 验收 = §13“热重载”节里除 status 汇总与端点外的**全部**用例（用例清单以 §13 为唯一权威，此处不重复点名） |
 | **PR7b** | 接线与可观测：三个端点（仅 policy 模式挂载）+ `/auth/policy/status` 汇总与收敛判定（含 `reported_at` 心跳与 `unresponsive_workers`）+ 死 pid 清理 + `stale` 的 503 响应体 + WebUI 的 401/403/500/503 四路分流 | 验收 = 收敛断言（`converged` / `pending_workers` / `failed_workers` / `unresponsive_workers`，含停摆 worker 不得显示收敛）+ 自锁保护三条（含 disabled 持有者 422）+ 轮询 key 级成本断言 + 前端不因 503 清 token |
@@ -1197,9 +1251,11 @@ LEGACY_USER_PERMISSIONS: frozenset[Permission] = frozenset({
 | API 文档面（`/docs`、`/redoc`、`/openapi.json`）默认公开 | 保持现状；要收敛攻击面用 `AUTH_EXPOSE_API_DOCS=false` 整片关闭，不做部分鉴权（§5.1） | 接受 |
 | API Key 明文轮换需重启 | env 属进程启动态 | 接受，文档写明 |
 | legacy 部署用不上 artifact 下载 | 刻意：下载能力仅 policy 模式可授予（§11.4），也是迁移的正向激励 | 接受 |
-| 无审计日志落库 | 只做结构化日志字段 `principal_type` / `principal_id` / `permission` / `decision` / `policy_revision` | 第二阶段 |
+| legacy 部署用不上工作区管理 | 同上：`workspace.*` 四个码不进 `legacy_user` 冻结列表（§11.4），legacy 部署只有一条自动登记的默认工作区 | 接受 |
+| 无审计日志落库 | 只做结构化日志字段 `principal_type` / `principal_id` / `permission` / `decision` / `policy_revision`（多工作空间落地后增加 `workspace` 与 `catalog_revision`） | 第二阶段 |
 | 无 DB provider、无管理界面 | 接口已按可替换设计 | 第二阶段 |
-| 无 workspace/tenant 作用域 | `AuthorizationContext` 已留扩展点，v1 文件不含相关字段 | 第三阶段 |
+| ~~无 workspace 作用域~~ | **已解决**：工作区**可达性**由工作区目录的成员表承载，与本文件的动作权限取交集（[LR2-multi-workspace-phase1.md](./LR2-multi-workspace-phase1.md) §14）。策略文件 v1 的 schema 与加载器不变，§7.3 #4 的 scope 字段禁令继续有效 | 已解决 |
+| 无 tenant 作用域 | 多工作空间明确不涉及多租户；工作区已是独立于租户的对象且 ID 去中心化，为将来的租户层留了空间 | 后续阶段 |
 | artifact 导出路由尚未落地 | §5.3 预留行 + 审计强制 | 随 LR2 下载管线 |
 | ~~`/api/tags`、`/api/version` 用 `auth.session.read` 过宽~~ | **已解决**：拆出 `ollama.metadata.read`（§3） | 已解决 |
 
@@ -1267,7 +1323,7 @@ publish_report(state, message="") -> bool:          # True = 这次写成功了
 # **整个调度点**，rec 与 due 都在锁内重算。不串行化的交错是实打实的乱序覆盖：
 # publish_report 里 current() 的读取发生在 await 共享锁**之前**，于是旧心跳可以
 # 先按 rev7 算好记录、在共享锁上等待；reload 换入并上报 rev8；旧心跳恢复后把
-# rev7 覆盖回共享表、还把 last_published 一并回退 —— 刚成功的 reload 在 /status
+# rev7 覆盖回共享表、还把 last_published 一并回退 —— 刚成功的 reload 在 /auth/policy/status
 # 上显示未收敛，要等下一 tick 才修复。串行化后，最后完成的写入必然是在最后一次
 # swap 之后才计算的（每次 swap 的执行方随后都要进调度点排队），共享表的**最终**
 # 状态因此总是正确；中间至多出现一次立刻被后续排队写入覆盖的过期写入，窗口以
