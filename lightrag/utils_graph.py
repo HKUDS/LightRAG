@@ -11,12 +11,151 @@ from .operate import _truncate_vdb_content
 from .utils import (
     VectorStorageConsistencyError,
     compute_mdhash_id,
+    graph_attribute_value_rejection,
     logger,
     make_relation_vdb_ids,
     normalize_entity_name,
     safe_vdb_operation_with_exception,
 )
 from .base import StorageNameSpace
+
+# Field specs for the manual entity/relation mutation APIs. The value is the
+# expected shape: "text" for a string attribute, "number" for a numeric one.
+#
+# These are an allowlist, not documentation. `updated_data` used to be merged
+# into the stored object wholesale (`{**node_data, **updated_data}`), so any key
+# a caller invented was written with whatever value it carried -- including
+# values no graph backend can store. See `_sanitize_graph_fields`.
+_TEXT_FIELD = "text"
+_NUMBER_FIELD = "number"
+
+# `entity_name` is the rename target, which `aedit_entity` resolves and writes
+# back into `updated_data` before the merge; it is a legal edit field but not a
+# legal *create* field (create takes the name as its own argument).
+_EDITABLE_ENTITY_FIELDS: dict[str, str] = {
+    "entity_name": _TEXT_FIELD,
+    "entity_type": _TEXT_FIELD,
+    "description": _TEXT_FIELD,
+    "source_id": _TEXT_FIELD,
+    "file_path": _TEXT_FIELD,
+}
+_ENTITY_DATA_FIELDS: dict[str, str] = {
+    key: kind for key, kind in _EDITABLE_ENTITY_FIELDS.items() if key != "entity_name"
+}
+_RELATION_DATA_FIELDS: dict[str, str] = {
+    "description": _TEXT_FIELD,
+    "keywords": _TEXT_FIELD,
+    "source_id": _TEXT_FIELD,
+    "file_path": _TEXT_FIELD,
+    "weight": _NUMBER_FIELD,
+}
+
+
+def _sanitize_graph_fields(
+    data: dict[str, Any],
+    *,
+    allowed_fields: dict[str, str],
+    object_type: str,
+    reject_unknown: bool,
+) -> dict[str, Any]:
+    """Return *data* reduced to well-typed, storable graph attributes.
+
+    Two call shapes, because the two families of caller differ in what they do
+    with a key they do not recognise:
+
+    * ``reject_unknown=True`` (the edit/merge paths) -- these merge the caller's
+      mapping into the stored object, so an unrecognised key *is written*. It
+      has to be refused, and refused loudly: silently dropping it on an edit
+      endpoint would report success for a change that never happened.
+    * ``reject_unknown=False`` (the create paths) -- these already copy a fixed
+      set of named fields out of the mapping, so an unrecognised key is
+      structurally incapable of reaching storage. Only the values of the
+      recognised keys need checking, and refusing extra keys here would break
+      payloads that work today for no security gain.
+
+    Per-field types matter as much as the allowlist. A value can be a perfectly
+    storable scalar and still be wrong: ``{"source_id": 123}`` serializes fine
+    (GraphML long, JSON number), reaches disk, survives a restart, and then
+    breaks every later reader that splits ``source_id`` on ``GRAPH_FIELD_SEP``
+    -- a durable failure, unlike the transient one a non-scalar causes.
+
+    Args:
+        data: Caller-supplied attribute mapping.
+        allowed_fields: Field name to expected shape (``_TEXT_FIELD`` /
+            ``_NUMBER_FIELD``).
+        object_type: ``"entity"`` or ``"relation"``, for error messages.
+        reject_unknown: Whether an unrecognised key is an error (see above).
+
+    Returns:
+        A new mapping holding only recognised fields, with numeric fields
+        coerced to ``float``.
+
+    Raises:
+        ValueError: On an unknown field (when ``reject_unknown``), a field whose
+            value has the wrong shape, or a value no graph backend can store.
+    """
+    sanitized: dict[str, Any] = {}
+    for key, value in data.items():
+        kind = allowed_fields.get(key)
+        if kind is None:
+            if reject_unknown:
+                raise ValueError(
+                    f"Unknown {object_type} field '{key}'. Allowed fields: "
+                    f"{', '.join(sorted(allowed_fields))}"
+                )
+            continue
+
+        rejection = graph_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{object_type.capitalize()} field '{key}' {rejection}")
+
+        if kind == _NUMBER_FIELD:
+            # bool is an int subclass, and `float(True)` would quietly become
+            # 1.0 -- a boolean weight is a caller mistake, not a number.
+            if isinstance(value, bool):
+                raise ValueError(
+                    f"{object_type.capitalize()} field '{key}' must be a number, "
+                    "got bool"
+                )
+            try:
+                # A numeric string is accepted because the create paths have
+                # always run the value through `float()`; normalizing here means
+                # the *stored* attribute is a float on the edit paths too,
+                # instead of a string that only the VDB payload converted.
+                coerced = float(value)
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError is what `float()` raises for an int too large to
+                # convert. The int64 bound in `graph_attribute_value_rejection`
+                # already refuses those above, so this is belt-and-braces for a
+                # future caller passing some other type whose `__float__`
+                # overflows -- without it the endpoint returns 500 for what is a
+                # validation failure.
+                raise ValueError(
+                    f"{object_type.capitalize()} field '{key}' must be a number, "
+                    f"got {value!r}"
+                ) from None
+            # Re-check the *coerced* value. The check above ran on what the
+            # caller sent, and for a numeric string that is a perfectly storable
+            # `str` -- it is this conversion that can produce the non-scalar the
+            # contract forbids ("nan" -> NaN, "1e999" -> inf). Skipping it would
+            # accept the request and then fail in storage: PGTableGraphStorage's
+            # jsonb column rejects the bare `NaN` json.dumps emits, so a 400
+            # would arrive as a 500, while permissive backends keep the value.
+            rejection = graph_attribute_value_rejection(coerced)
+            if rejection is not None:
+                raise ValueError(
+                    f"{object_type.capitalize()} field '{key}' {rejection}"
+                )
+            sanitized[key] = coerced
+        elif not isinstance(value, str):
+            raise ValueError(
+                f"{object_type.capitalize()} field '{key}' must be a string, got "
+                f"{type(value).__name__}"
+            )
+        else:
+            sanitized[key] = value
+
+    return sanitized
 
 
 def _require_non_empty_description(
@@ -590,7 +729,11 @@ async def aedit_entity(
         entities_vdb: Vector database storage for entities
         relationships_vdb: Vector database storage for relationships
         entity_name: Name of the entity to edit
-        updated_data: Dictionary containing updated attributes, e.g. {"description": "new description", "entity_type": "new type"}
+        updated_data: Attributes to update. Allowed fields: ``entity_name``
+            (rename target), ``entity_type``, ``description``,
+            ``source_id``, ``file_path`` -- all strings. Any other key,
+            or a value that is not a storable string, is rejected with
+            ``ValueError``.
         allow_rename: Whether to allow entity renaming, defaults to True
         allow_merge: Whether to merge into an existing entity when renaming to an existing name, defaults to False
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
@@ -625,14 +768,27 @@ async def aedit_entity(
             - "failed": Merge operation failed
             - "not_attempted": No merge was attempted (normal update/rename)
     """
+    # Order matters: the empty-description check runs first so a `None`
+    # description keeps reporting itself as empty (which is what it means to a
+    # caller) rather than as a type error. Both refuse before any storage is
+    # touched, so the ordering is about the message, not about safety.
     if "description" in updated_data:
         _require_non_empty_description(
             updated_data.get("description"), operation="edit", object_type="entity"
         )
 
+    # Reduce to allowed, well-typed fields before anything else: this runs
+    # outside the storage lock and before the first graph read, so a rejected
+    # payload has touched nothing at all.
+    updated_data = _sanitize_graph_fields(
+        updated_data,
+        allowed_fields=_EDITABLE_ENTITY_FIELDS,
+        object_type="entity",
+        reject_unknown=True,
+    )
+
     requested_entity_name = entity_name
     normalized_entity_name = _normalize_manual_entity_name(requested_entity_name)
-    updated_data = dict(updated_data)
 
     has_new_entity_name = "entity_name" in updated_data
     requested_new_entity_name = updated_data.get("entity_name")
@@ -856,16 +1012,27 @@ async def aedit_relation(
         relationships_vdb: Vector database storage for relationships
         source_entity: Name of the source entity
         target_entity: Name of the target entity
-        updated_data: Dictionary containing updated attributes, e.g. {"description": "new description", "keywords": "new keywords"}
+        updated_data: Attributes to update. Allowed fields:
+            ``description``, ``keywords``, ``source_id``, ``file_path``
+            (strings) and ``weight`` (number). Any other key, or a value
+            of the wrong shape, is rejected with ``ValueError``.
         relation_chunks_storage: Optional KV storage for tracking chunks that reference this relation
 
     Returns:
         Dictionary containing updated relation information
     """
+    # See `aedit_entity` for the ordering rationale.
     if "description" in updated_data:
         _require_non_empty_description(
             updated_data.get("description"), operation="edit", object_type="relation"
         )
+
+    updated_data = _sanitize_graph_fields(
+        updated_data,
+        allowed_fields=_RELATION_DATA_FIELDS,
+        object_type="relation",
+        reject_unknown=True,
+    )
 
     # Normalize entity order for undirected graph (ensures consistent key generation)
     if source_entity > target_entity:
@@ -1063,6 +1230,17 @@ async def acreate_entity(
         entity_data.get("description"), operation="create", object_type="entity"
     )
 
+    # The named-field copy below stops an unknown *key* from reaching storage,
+    # but not an unstorable *value* on a known one: a non-scalar `entity_type`
+    # reaches `upsert_node` unexamined. Type-check the recognised fields (extra
+    # keys stay ignored, as they always were -- see `_sanitize_graph_fields`).
+    entity_data = _sanitize_graph_fields(
+        entity_data,
+        allowed_fields=_ENTITY_DATA_FIELDS,
+        object_type="entity",
+        reject_unknown=False,
+    )
+
     requested_entity_name = entity_name
     entity_name = _normalize_manual_entity_name(requested_entity_name)
     if not entity_name:
@@ -1204,6 +1382,15 @@ async def acreate_relation(
     """
     _require_non_empty_description(
         relation_data.get("description"), operation="create", object_type="relation"
+    )
+
+    # Same reasoning as `acreate_entity`: values of the recognised fields are
+    # type-checked, unrecognised keys stay ignored.
+    relation_data = _sanitize_graph_fields(
+        relation_data,
+        allowed_fields=_RELATION_DATA_FIELDS,
+        object_type="relation",
+        reject_unknown=False,
     )
 
     # Use keyed lock for relation to ensure atomic graph and vector db operations
@@ -1880,6 +2067,18 @@ async def amerge_entities(
     """
     if not source_entities:
         raise ValueError("At least one source entity is required for merge")
+
+    # `_merge_entities_impl` copies these keys onto the merged node verbatim
+    # (`merged_entity_data[key] = value`), which is the same wholesale merge the
+    # edit paths do. Not reachable from the HTTP route today -- the merge
+    # endpoint does not pass it -- but it is part of the public Python API.
+    if target_entity_data:
+        target_entity_data = _sanitize_graph_fields(
+            target_entity_data,
+            allowed_fields=_ENTITY_DATA_FIELDS,
+            object_type="entity",
+            reject_unknown=True,
+        )
 
     requested_source_entities = list(source_entities)
     normalized_source_entities = [

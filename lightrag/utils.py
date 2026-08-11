@@ -6738,3 +6738,114 @@ def validate_workspace(workspace: str) -> str:
             "separators ('/', '\\') or be a relative path reference ('.', '..')"
         )
     return workspace
+
+
+# Complement of the XML 1.0 ``Char`` production. GraphML is XML, so a string
+# holding any other code point cannot be serialized at all -- tab, newline and
+# carriage return are the only C0 controls XML admits, and descriptions
+# legitimately carry those.
+_XML_INCOMPATIBLE_CHAR_PATTERN = re.compile(
+    r"[^\u0009\u000a\u000d\u0020-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
+
+# Graph attribute names must be plain identifiers. This is deliberately
+# narrower than "any string": MongoGraphStorage passes attribute names straight
+# into a ``$set`` document, where a dot is a *path* separator (``source_ids.0``
+# would rewrite an element of the chunk-attribution array rather than create a
+# field) and a leading ``$`` is read as an update operator.
+_GRAPH_ATTRIBUTE_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Integer attributes must fit in a signed 64-bit integer. Verified against the
+# installed driver rather than assumed: neo4j's packstream Packer raises
+# ``OverflowError("Integer ... out of range")`` outside ``[-2**63, 2**63)``
+# (``neo4j/_codec/packstream/v1/__init__.py``), and GraphML declares an int
+# attribute as ``attr.type="long"``, which is ``xsd:long`` -- also int64. So a
+# larger int is outside the intersection this module defines, even though
+# networkx will happily write it and PostgreSQL's arbitrary-precision ``jsonb``
+# numeric will happily store it.
+_GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
+_GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
+
+
+def graph_attribute_value_rejection(value: Any) -> str | None:
+    """Explain why *value* cannot be stored as a graph node/edge attribute.
+
+    Every graph backend accepts scalars; none of them accepts the same
+    non-scalar. Rather than each backend discovering that in its own way and at
+    its own time, this is the single definition of a storable attribute value,
+    applied before any storage is touched.
+
+    The rules are the intersection of what the seven registered
+    ``GRAPH_STORAGE`` backends can carry, so the same payload behaves the same
+    way on all of them:
+
+    * ``bool`` -- accepted everywhere.
+    * ``int`` -- must fit in int64. A larger int is written happily by networkx
+      and stored happily by PostgreSQL's arbitrary-precision ``jsonb`` numeric,
+      but the Neo4j driver refuses to pack it and GraphML mislabels it as
+      ``xsd:long``. See ``_GRAPH_ATTRIBUTE_INT_MIN``.
+    * ``float`` -- must be finite. ``NaN`` / ``inf`` survive GraphML but
+      ``json.dumps`` renders them as bare ``NaN`` / ``Infinity``, which is not
+      valid JSON and is rejected by the ``jsonb`` column PGTableGraphStorage
+      writes to.
+    * ``str`` -- must be XML-compatible, because GraphML cannot encode the
+      other code points at all (see ``_XML_INCOMPATIBLE_CHAR_PATTERN``).
+    * anything else (``dict``, ``list``, ``None``, ``bytes``, ...) -- rejected.
+      ``None`` is called out because it is the one non-scalar that reads as
+      harmless: GraphML refuses it outright, while on the Cypher backends
+      ``SET n += {k: null}`` silently *deletes* the property.
+
+    Args:
+        value: Candidate attribute value.
+
+    Returns:
+        A reason fragment suitable for appending to ``"attribute 'x' "``, or
+        ``None`` when the value is storable.
+    """
+    # bool before int: bool is a subclass of int, and both are storable, but
+    # keeping the branches separate keeps the intent readable.
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if not _GRAPH_ATTRIBUTE_INT_MIN <= value <= _GRAPH_ATTRIBUTE_INT_MAX:
+            return (
+                "must be a 64-bit integer "
+                f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
+            )
+        return None
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return "must be a finite number"
+        return None
+    if isinstance(value, str):
+        match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
+        if match:
+            return (
+                "must not contain the character "
+                f"U+{ord(match.group()):04X}, which XML cannot encode"
+            )
+        return None
+    return f"must be a string, number or boolean, got {type(value).__name__}"
+
+
+def validate_graph_attributes(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject a node/edge attribute mapping no graph backend could store.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written, used in the error
+            message (e.g. ``"entity 'Tesla'"``).
+
+    Raises:
+        ValueError: On the first unusable attribute name or value.
+    """
+    for key, value in attributes.items():
+        if not isinstance(key, str) or not _GRAPH_ATTRIBUTE_KEY_PATTERN.match(key):
+            raise ValueError(
+                f"{context}: invalid attribute name {key!r}: must start with a "
+                "letter or underscore and contain only letters, digits and "
+                "underscores"
+            )
+        rejection = graph_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute {key!r} {rejection}")

@@ -673,6 +673,23 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
 
+        Attribute contract (applies to ``upsert_edge`` and the batch variants
+        too):
+            Every attribute name must be a plain identifier
+            (``[A-Za-z_][A-Za-z0-9_]*``) and every value must be a storable
+            scalar -- ``str`` (XML-compatible), ``int``, finite ``float``, or
+            ``bool``. Nothing else: no nested containers, and no ``None``.
+
+            This is the intersection of what the registered backends can carry,
+            and callers are responsible for it because the backends disagree on
+            what happens when it is violated. The same non-scalar is refused by
+            the Neo4j driver, stored verbatim by MongoDB and by
+            PostgreSQL's ``jsonb`` column, and fatal to GraphML serialization;
+            ``None`` deletes the property on the Cypher backends but is a hard
+            error on NetworkX. ``lightrag.utils.validate_graph_attributes``
+            is the shared enforcement point -- prefer it over re-deriving the
+            rule per backend.
+
         Args:
             node_id: The ID of the node to insert or update
             node_data: A dictionary of node properties
