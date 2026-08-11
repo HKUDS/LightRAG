@@ -6823,6 +6823,10 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
     through GraphML unchanged, so they are accepted here even though
     ``graph_attribute_value_rejection`` refuses them.
 
+    "Serialized" is the operative word, and it is not the same as "is a scalar":
+    an integer with more digits than ``sys.get_int_max_str_digits()`` cannot be
+    rendered as text at all, so GraphML cannot hold it however ordinary it looks.
+
     That difference is deliberate, and it is what keeps a backend guard from
     stranding data. A workspace can already hold such a value -- the manual edit
     API accepted anything before its field allowlist landed -- and every rewrite
@@ -6838,8 +6842,25 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
         A reason fragment suitable for appending to ``"attribute 'x' "``, or
         ``None`` when XML can carry the value.
     """
-    # bool before int purely for readability; both are encodable.
-    if isinstance(value, (bool, int, float)):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        # GraphML stores values as text, and networkx stringifies them on write.
+        # CPython refuses to stringify an integer with more digits than
+        # ``sys.get_int_max_str_digits()`` (4300 by default since 3.11, and
+        # settable at runtime), so a large enough int makes ``write_graphml``
+        # raise even though the int itself is a perfectly ordinary scalar.
+        # Attempt the same conversion the writer will make rather than comparing
+        # against the limit, so this cannot drift from it if the limit is changed.
+        try:
+            str(value)
+        except ValueError:
+            return (
+                "has more digits than Python will render as text "
+                f"(sys.get_int_max_str_digits() = {sys.get_int_max_str_digits()})"
+            )
+        return None
+    if isinstance(value, float):
         return None
     if isinstance(value, str):
         match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
