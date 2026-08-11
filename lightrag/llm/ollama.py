@@ -36,6 +36,14 @@ from lightrag.utils import (
 _OLLAMA_CLOUD_HOST = "https://ollama.com"
 _CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
 
+# think= (OllamaLLMOptions.think) needs ollama-python>=0.5.0, matching the
+# floor declared in pyproject.toml and both offline-requirements files.
+# Checked once here (no network call, just installed-package metadata) and
+# consulted only where think is actually forwarded, in
+# _ollama_model_if_cache -- an environment that already has an older ollama
+# still imports and works normally for every call that doesn't set think.
+_OLLAMA_SUPPORTS_THINK = pm.is_installed("ollama", ">=0.5.0")
+
 
 def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional[str]:
     if host:
@@ -145,6 +153,14 @@ async def _ollama_model_if_cache(
     # no `think` field) leaves thinking at the model's own default.
     options = kwargs.get("options")
     if isinstance(options, dict) and "think" in options:
+        if not _OLLAMA_SUPPORTS_THINK:
+            raise RuntimeError(
+                "OLLAMA_LLM_THINK / {ROLE}_OLLAMA_LLM_THINK is set, but the "
+                "installed ollama package does not support think= (needs "
+                'ollama>=0.5.0). Run `pip install -U "ollama>=0.5.0"` (or '
+                "`uv sync`) to use it, or unset the option to leave thinking "
+                "at the model's own default."
+            )
         # Read without mutating -- options can be the same dict object
         # reused across every call for a role's lifetime (library callers
         # pass it once via llm_model_kwargs), so popping from it here would
