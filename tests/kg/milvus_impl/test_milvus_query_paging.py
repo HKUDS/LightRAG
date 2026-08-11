@@ -31,7 +31,9 @@ class MockEmbeddingFunc:
 
 
 @pytest.fixture(autouse=True)
-def patch_namespace_lock() -> Generator[dict[tuple[str, str], asyncio.Lock], None, None]:
+def patch_namespace_lock() -> Generator[
+    dict[tuple[str, str], asyncio.Lock], None, None
+]:
     """Cache real asyncio.Locks per (namespace, workspace) for shared semantics.
 
     Two storage instances whose ``final_namespace`` matches must observe the
@@ -121,7 +123,7 @@ def _echo_query_side_effect(
     embedding_dim: int, call_sizes: list[int]
 ) -> Callable[..., list[dict[str, Any]]]:
     """query() side_effect: records the id count of each call
-     and echoes that many unique placeholder rows."""
+    and echoes that many unique placeholder rows."""
     row_ids = itertools.count()
 
     def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
