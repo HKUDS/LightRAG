@@ -15,6 +15,8 @@ caller (including the Python API) gets the same answer.
 
 from __future__ import annotations
 
+import sys
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -36,6 +38,10 @@ UNENCODABLE = [
 # Refused by the *caller* contract (the Neo4j driver cannot pack them) but
 # round-tripped by GraphML unchanged, so this backend must accept them -- see
 # TestPortableButUnencodableValuesAreNotThisBackendsBusiness.
+#
+# 10**400 is 401 digits, deliberately below sys.get_int_max_str_digits(): past
+# that limit an int cannot be rendered as text at all, which is a different
+# failure covered by test_an_int_too_long_to_stringify_is_rejected.
 NOT_PORTABLE_BUT_ENCODABLE = [
     pytest.param(float("nan"), id="nan"),
     pytest.param(float("inf"), id="inf"),
@@ -310,3 +316,51 @@ class TestPortableButUnencodableValuesAreNotThisBackendsBusiness:
         await storage.upsert_edge("a", "b", {**stored, "description": "an update"})
 
         assert await storage.index_done_callback() is True
+
+
+class TestIntegerStringificationLimit:
+    """A big int is a scalar, but past a point it cannot be rendered as text.
+
+    GraphML stores values as text and networkx stringifies them on write, while
+    CPython refuses to stringify an integer with more digits than
+    `sys.get_int_max_str_digits()` (4300 by default since 3.11). So such a value
+    makes `write_graphml` raise however ordinary it looks -- the same
+    instance-wide outage as a non-scalar, reached through an accepted type.
+
+    Safe to refuse on a rewrite payload: writing it fails, so no GraphML file
+    produced under an active limit can contain one. (A file written with the
+    limit disabled fails in `read_graphml` at load time instead -- a pre-existing
+    condition this guard neither creates nor worsens.)
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_int_too_long_to_stringify_is_rejected(self, storage):
+        await _seed(storage)
+        oversized = 10 ** (sys.get_int_max_str_digits() + 100)
+
+        with pytest.raises(ValueError, match="more digits than Python will render"):
+            await storage.upsert_node("bad", {"entity_id": "bad", "n": oversized})
+
+        assert not await storage.has_node("bad")
+        await storage.upsert_node("after", {"entity_id": "after"})
+        assert await storage.index_done_callback() is True
+        assert "after" in _graphml(storage)
+
+    @pytest.mark.asyncio
+    async def test_an_int_just_under_the_limit_is_still_accepted(self, storage):
+        """The boundary is the digit limit, not the magnitude."""
+        under = 10 ** (sys.get_int_max_str_digits() - 10)
+
+        await storage.upsert_node("n1", {"entity_id": "n1", "n": under})
+
+        assert await storage.index_done_callback() is True
+        assert nx.read_graphml(storage._graphml_xml_file).nodes["n1"]["n"] == under
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_int_in_an_edge_is_rejected(self, storage):
+        oversized = 10 ** (sys.get_int_max_str_digits() + 100)
+
+        with pytest.raises(ValueError, match="more digits than Python will render"):
+            await storage.upsert_edge("a", "b", {"weight": 1.0, "n": oversized})
+
+        assert not await storage.has_edge("a", "b")

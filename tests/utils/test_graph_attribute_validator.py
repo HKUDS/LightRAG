@@ -15,11 +15,14 @@ The behavioural regression tests for the vulnerability this validator closes
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from lightrag.utils import (
     validate_graph_attributes,
     validate_xml_attributes,
+    xml_attribute_value_rejection,
 )
 
 pytestmark = pytest.mark.offline
@@ -245,3 +248,41 @@ class TestTheTwoValueRulesDiffer:
             validate_xml_attributes({name: "x"}, context="entity 'X'")
         with pytest.raises(ValueError, match="attribute name"):
             validate_graph_attributes({name: "x"}, context="entity 'X'")
+
+
+class TestIntegerStringificationLimit:
+    """ "Serializable" is not the same as "is a scalar".
+
+    GraphML stores values as text, and CPython refuses to stringify an integer
+    with more digits than ``sys.get_int_max_str_digits()``. So an int past that
+    limit is unencodable even though its *type* is fine -- both rules must refuse
+    it, unlike the merely-unportable big ints only the portable rule refuses.
+    """
+
+    def test_an_int_too_long_to_stringify_is_refused_by_both(self):
+        oversized = 10 ** (sys.get_int_max_str_digits() + 100)
+
+        assert "more digits" in (xml_attribute_value_rejection(oversized) or "")
+        with pytest.raises(ValueError, match="more digits than Python will render"):
+            validate_xml_attributes({"n": oversized}, context="entity 'X'")
+        with pytest.raises(ValueError):
+            validate_graph_attributes({"n": oversized}, context="entity 'X'")
+
+    def test_the_check_tracks_the_runtime_limit(self):
+        """The limit is settable, so the rule attempts the conversion rather
+        than comparing against a hardcoded threshold."""
+        original = sys.get_int_max_str_digits()
+        value = 10**700  # 701 digits: over a 640-digit limit, under the default
+        try:
+            sys.set_int_max_str_digits(640)
+            assert xml_attribute_value_rejection(value) is not None
+            sys.set_int_max_str_digits(original)
+            assert xml_attribute_value_rejection(value) is None
+        finally:
+            sys.set_int_max_str_digits(original)
+
+    def test_an_int_just_under_the_default_limit_is_accepted(self):
+        assert (
+            xml_attribute_value_rejection(10 ** (sys.get_int_max_str_digits() - 10))
+            is None
+        )
