@@ -36,6 +36,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
+    validate_graph_attribute_names,
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -2298,10 +2299,45 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
+    # MongoDB owns ``_id``: it is the node/edge document key and this class uses
+    # it as the update *filter*, so a caller-supplied ``_id`` in the attribute
+    # mapping is never an attribute -- it is an attempt to move the document.
+    # (``source_node_id`` / ``target_node_id`` / ``edge_lo`` / ``edge_hi`` need no
+    # entry here: ``upsert_edge`` assigns them *after* spreading the caller's
+    # mapping, so a supplied value is discarded by construction.)
+    _RESERVED_ATTRIBUTE_NAMES = frozenset({"_id"})
+
+    def _validate_attribute_names(self, attributes: dict, *, context: str) -> None:
+        """Reject attribute names MongoDB would interpret rather than store.
+
+        Attribute names reach the server inside a ``$set`` document, where they
+        are *field paths*: a dot addresses a subfield, so ``{"source_ids.0": x}``
+        rewrites the first element of the chunk-attribution array instead of
+        creating a field called ``source_ids.0``, and a leading ``$`` is read as
+        an update operator. Unlike the value rules, this hazard is specific to
+        this backend -- see ``validate_graph_attribute_names``.
+        """
+        validate_graph_attribute_names(attributes, context=context)
+        reserved = sorted(self._RESERVED_ATTRIBUTE_NAMES.intersection(attributes))
+        if reserved:
+            raise ValueError(
+                f"{context}: attribute name(s) {', '.join(reserved)} are reserved "
+                "by MongoDB and cannot be set as graph attributes"
+            )
+
+    def _node_context(self, node_id: str) -> str:
+        """Error-message prefix identifying a node write."""
+        return f"[{self.workspace}] node `{node_id}`"
+
+    def _edge_context(self, source_node_id: str, target_node_id: str) -> str:
+        """Error-message prefix identifying an edge write."""
+        return f"[{self.workspace}] edge `{source_node_id}`~`{target_node_id}`"
+
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Insert or update a node document.
         """
+        self._validate_attribute_names(node_data, context=self._node_context(node_id))
         update_doc = {"$set": {**node_data}}
         if node_data.get("source_id", ""):
             update_doc["$set"]["source_ids"] = node_data["source_id"].split(
@@ -2332,6 +2368,9 @@ class MongoGraphStorage(BaseGraphStorage):
         # One bulk_write instead of two round trips, and $setOnInsert (the form
         # upsert_edges_batch already uses) so an endpoint that already carries
         # real properties is never touched. dict.fromkeys collapses a self-loop.
+        self._validate_attribute_names(
+            edge_data, context=self._edge_context(source_node_id, target_node_id)
+        )
         await self.collection.bulk_write(
             [
                 UpdateOne({"_id": nid}, {"$setOnInsert": {"_id": nid}}, upsert=True)
@@ -2375,6 +2414,9 @@ class MongoGraphStorage(BaseGraphStorage):
             return
         ops: list[tuple[Any, int, str]] = []
         for node_id, node_data in nodes:
+            self._validate_attribute_names(
+                node_data, context=self._node_context(node_id)
+            )
             update_doc: dict = {"$set": {**node_data}}
             if node_data.get("source_id", ""):
                 update_doc["$set"]["source_ids"] = node_data["source_id"].split(
@@ -2425,6 +2467,14 @@ class MongoGraphStorage(BaseGraphStorage):
         """
         if not edges:
             return
+
+        # Whole batch first: the endpoint-placeholder bulk_write below happens
+        # before any edge document is written, so rejecting mid-loop would leave
+        # placeholder nodes behind for edges that were never created.
+        for src, tgt, edge_data in edges:
+            self._validate_attribute_names(
+                edge_data, context=self._edge_context(src, tgt)
+            )
 
         # Both endpoints, not just the source — see upsert_edge for why a
         # target-only endpoint is externally visible as an inconsistency.

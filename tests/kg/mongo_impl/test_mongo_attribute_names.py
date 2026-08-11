@@ -1,0 +1,146 @@
+"""MongoGraphStorage rejects attribute names the server would interpret.
+
+Attribute names reach MongoDB inside a ``$set`` document, where they are field
+*paths*, not names. ``{"source_ids.0": x}`` therefore rewrites the first element
+of the chunk-attribution array instead of creating a field called
+``source_ids.0``, and a leading ``$`` is read as an update operator. ``_id``
+addresses the document this class uses as its update filter.
+
+Companion to the entry-layer allowlist in ``utils_graph`` (GHSA-c922-pw4m-4wcv):
+that stops the reported route from delivering such a name, this stops any other
+caller, including the Python API.
+
+The collection is a double -- the assertion is that the write is refused
+*before* any server call, so no live MongoDB is needed or wanted here.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from lightrag.kg.mongo_impl import MongoGraphStorage
+
+pytestmark = pytest.mark.offline
+
+UNSAFE_NAMES = [
+    pytest.param("source_ids.0", id="dotted-array-element"),
+    pytest.param("a.b", id="dotted"),
+    pytest.param("$set", id="update-operator"),
+    pytest.param("$where", id="query-operator"),
+    pytest.param("has space", id="space"),
+    pytest.param("", id="empty"),
+]
+
+
+def _make_storage():
+    storage = MongoGraphStorage.__new__(MongoGraphStorage)
+    storage.workspace = "test"
+    storage.global_config = {}
+    storage._collection_name = "test_nodes"
+    storage._edge_collection_name = "test_edges"
+    storage._max_upsert_payload_bytes = 1_000_000
+    storage._max_upsert_records_per_batch = 100
+    storage.collection = SimpleNamespace(update_one=AsyncMock(), bulk_write=AsyncMock())
+    storage.edge_collection = SimpleNamespace(
+        update_one=AsyncMock(), bulk_write=AsyncMock()
+    )
+    return storage
+
+
+def _assert_no_server_call(storage):
+    storage.collection.update_one.assert_not_awaited()
+    storage.collection.bulk_write.assert_not_awaited()
+    storage.edge_collection.update_one.assert_not_awaited()
+    storage.edge_collection.bulk_write.assert_not_awaited()
+
+
+class TestUpsertNode:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", UNSAFE_NAMES)
+    async def test_unsafe_name_is_refused(self, name):
+        storage = _make_storage()
+
+        with pytest.raises(ValueError, match="invalid attribute name"):
+            await storage.upsert_node("n1", {"entity_id": "n1", name: "x"})
+
+        _assert_no_server_call(storage)
+
+    @pytest.mark.asyncio
+    async def test_reserved_id_is_refused(self):
+        """``_id`` is identifier-shaped, so the generic rule alone lets it past.
+
+        Setting it is not an attribute write -- it is an attempt to move the
+        document, which the server refuses as an immutable-field error.
+        """
+        storage = _make_storage()
+
+        with pytest.raises(ValueError, match="reserved by MongoDB"):
+            await storage.upsert_node("n1", {"entity_id": "n1", "_id": "elsewhere"})
+
+        _assert_no_server_call(storage)
+
+    @pytest.mark.asyncio
+    async def test_ordinary_names_still_reach_the_server(self):
+        storage = _make_storage()
+
+        await storage.upsert_node(
+            "n1",
+            {
+                "entity_id": "n1",
+                "description": "d",
+                "source_id": "chunk-1",
+                "created_at": 1,
+            },
+        )
+
+        storage.collection.update_one.assert_awaited_once()
+        _filter, update = storage.collection.update_one.await_args.args
+        assert update["$set"]["description"] == "d"
+        # The derived array the dotted-name attack targets.
+        assert update["$set"]["source_ids"] == ["chunk-1"]
+
+
+class TestUpsertEdge:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", UNSAFE_NAMES)
+    async def test_unsafe_name_is_refused(self, name):
+        storage = _make_storage()
+
+        with pytest.raises(ValueError, match="invalid attribute name"):
+            await storage.upsert_edge("a", "b", {"weight": 1.0, name: "x"})
+
+        # Refused before the endpoint-placeholder bulk_write, so no orphan
+        # endpoint nodes are created for an edge that never lands.
+        _assert_no_server_call(storage)
+
+
+class TestBatchesValidateBeforeWriting:
+    @pytest.mark.asyncio
+    async def test_nodes_batch_refuses_whole_batch(self):
+        storage = _make_storage()
+        nodes = [
+            ("good", {"entity_id": "good", "description": "a"}),
+            ("bad", {"entity_id": "bad", "source_ids.0": "x"}),
+        ]
+
+        with pytest.raises(ValueError, match="invalid attribute name"):
+            await storage.upsert_nodes_batch(nodes)
+
+        _assert_no_server_call(storage)
+
+    @pytest.mark.asyncio
+    async def test_edges_batch_refuses_before_creating_endpoints(self):
+        """The placeholder endpoints go in first, so validation must precede them."""
+        storage = _make_storage()
+        edges = [
+            ("a", "b", {"weight": 1.0}),
+            ("c", "d", {"weight": 1.0, "$set": "x"}),
+        ]
+
+        with pytest.raises(ValueError, match="invalid attribute name"):
+            await storage.upsert_edges_batch(edges)
+
+        _assert_no_server_call(storage)

@@ -6,7 +6,11 @@ from typing import final
 
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from lightrag.utils import logger, validate_workspace
+from lightrag.utils import (
+    logger,
+    validate_graph_attribute_values,
+    validate_workspace,
+)
 from lightrag.base import BaseGraphStorage
 import networkx as nx
 from .shared_storage import (
@@ -105,6 +109,32 @@ class NetworkXStorage(BaseGraphStorage):
           ``remove_edges``); each goes through ``_get_graph`` once and
           then operates synchronously on ``self._graph``.
 
+    Attribute validation (why this backend validates and most do not):
+        The ``upsert_*`` methods reject an unstorable attribute *value*
+        (``validate_graph_attribute_values``) **before** touching
+        ``self._graph``. This backend needs the guard more than the
+        others because of the shape above, not because its callers are
+        less trustworthy: the mutation happens in memory, the
+        serialization that would reject the value happens later in
+        ``index_done_callback``, and nothing rolls the mutation back. One
+        unstorable value therefore stops *all* persistence for the life
+        of the process -- ``write_nx_graph`` serializes the whole graph,
+        so every later flush by any caller re-hits the same failure while
+        reads keep succeeding. Validating first converts that into a
+        failed single write. See GHSA-c922-pw4m-4wcv.
+
+        Values only, deliberately. GraphML places no constraint on
+        attribute *names*, so rejecting them here would buy nothing and
+        would additionally refuse to re-ingest a node whose stored
+        attributes predate this validation. The name rules belong to the
+        backends that interpret names (MongoDB's ``$set`` paths,
+        OpenSearch's dynamic mapping).
+
+        The batch variants validate the entire batch before applying any
+        of it: rejecting halfway would leave the earlier items in the
+        in-memory graph, which is exactly the partial-mutation state the
+        guard exists to prevent.
+
     Non-pipeline write paths:
         The pipeline's ``busy`` gate serializes mutation calls reached
         through the document ingestion and purge flows. The following
@@ -121,6 +151,14 @@ class NetworkXStorage(BaseGraphStorage):
               must arrange single-writer serialization the same way the
               pipeline does.
     """
+
+    def _node_context(self, node_id: str) -> str:
+        """Error-message prefix identifying a node write."""
+        return f"[{self.workspace}] node `{node_id}`"
+
+    def _edge_context(self, source_node_id: str, target_node_id: str) -> str:
+        """Error-message prefix identifying an edge write."""
+        return f"[{self.workspace}] edge `{source_node_id}`~`{target_node_id}`"
 
     @staticmethod
     def load_nx_graph(file_name) -> nx.Graph:
@@ -273,7 +311,11 @@ class NetworkXStorage(BaseGraphStorage):
 
         Correctness relies on the class docstring *Lock scope* invariant
         (synchronous networkx ops + single-writer pipeline gate).
+
+        Validates before mutating: see *Attribute validation* in the class
+        docstring.
         """
+        validate_graph_attribute_values(node_data, context=self._node_context(node_id))
         graph = await self._get_graph()
         graph.add_node(node_id, **node_data)
 
@@ -288,7 +330,13 @@ class NetworkXStorage(BaseGraphStorage):
             pipeline must persist explicitly.
 
         Correctness relies on the class docstring *Lock scope* invariant.
+
+        Validates before mutating: see *Attribute validation* in the class
+        docstring.
         """
+        validate_graph_attribute_values(
+            edge_data, context=self._edge_context(source_node_id, target_node_id)
+        )
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
@@ -306,6 +354,13 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             nodes: List of (node_id, node_data) tuples.
         """
+        # Validate the whole batch first: a rejection halfway through the loop
+        # would leave the earlier nodes applied to the in-memory graph, which is
+        # the partial-mutation state this validation exists to prevent.
+        for node_id, node_data in nodes:
+            validate_graph_attribute_values(
+                node_data, context=self._node_context(node_id)
+            )
         graph = await self._get_graph()
         for node_id, node_data in nodes:
             graph.add_node(node_id, **node_data)
@@ -332,6 +387,11 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             edges: List of (source_id, target_id, edge_data) tuples.
         """
+        # Whole batch first -- see upsert_nodes_batch.
+        for src, tgt, edge_data in edges:
+            validate_graph_attribute_values(
+                edge_data, context=self._edge_context(src, tgt)
+            )
         graph = await self._get_graph()
         for src, tgt, edge_data in edges:
             graph.add_edge(src, tgt, **edge_data)

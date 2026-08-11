@@ -6819,13 +6819,58 @@ def validate_graph_attributes(attributes: dict[str, Any], *, context: str) -> No
     Raises:
         ValueError: On the first unusable attribute name or value.
     """
-    for key, value in attributes.items():
+    validate_graph_attribute_names(attributes, context=context)
+    validate_graph_attribute_values(attributes, context=context)
+
+
+def validate_graph_attribute_names(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject attribute names a backend would read as something other than a name.
+
+    Split from the value check because a backend should guard the hazard it
+    actually has, and the two hazards live in different backends:
+
+    * Names are dangerous where they are interpreted. MongoDB passes them into a
+      ``$set`` document, so a dot is a *path* (``source_ids.0`` rewrites an
+      element of the chunk-attribution array instead of creating a field) and a
+      leading ``$`` is an update operator; OpenSearch turns a dotted name into a
+      nested object in the index mapping.
+    * Names are inert in GraphML, which is why NetworkXStorage validates values
+      only. Enforcing names there would additionally reject re-ingesting a node
+      whose *stored* attributes predate this validation, which is a migration
+      failure with no safety benefit.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first unusable attribute name.
+    """
+    for key in attributes:
         if not isinstance(key, str) or not _GRAPH_ATTRIBUTE_KEY_PATTERN.match(key):
             raise ValueError(
                 f"{context}: invalid attribute name {key!r}: must start with a "
                 "letter or underscore and contain only letters, digits and "
                 "underscores"
             )
+
+
+def validate_graph_attribute_values(
+    attributes: dict[str, Any], *, context: str
+) -> None:
+    """Reject attribute values no graph backend can store.
+
+    See ``graph_attribute_value_rejection`` for the rules and
+    ``validate_graph_attribute_names`` for why the two halves are separate.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first unstorable value.
+    """
+    for key, value in attributes.items():
         rejection = graph_attribute_value_rejection(value)
         if rejection is not None:
             raise ValueError(f"{context}: attribute {key!r} {rejection}")
