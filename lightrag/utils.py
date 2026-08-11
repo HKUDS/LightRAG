@@ -6842,9 +6842,34 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
         A reason fragment suitable for appending to ``"attribute 'x' "``, or
         ``None`` when XML can carry the value.
     """
-    if isinstance(value, bool):
+    # Exact type, not ``isinstance``. networkx's GraphML writer resolves a value
+    # by looking its type up in a dict (``add_data``: ``if element_type not in
+    # self.xml_type``), so a *subclass* of a supported scalar is rejected at write
+    # time -- ``enum.StrEnum``, ``enum.IntEnum``, ``np.str_``, ``Decimal`` and any
+    # user ``class X(str)`` all satisfy ``isinstance`` and all make
+    # ``write_graphml`` raise. Read from the installed networkx, not assumed.
+    #
+    # Deliberately narrower than that dict, which also lists the concrete numpy
+    # int/float scalar types: ``networkx`` carries no version floor in
+    # pyproject.toml, so the four builtins are the only entries guaranteed across
+    # the range we allow. Being stricter is free here in a way it is not for the
+    # rules on stored data -- a value this refuses could never have been
+    # persisted, because the write that would have stored it fails -- and nothing
+    # in this codebase puts a numpy scalar on a graph attribute.
+    value_type = type(value)
+    if value_type not in (str, int, float, bool):
+        if isinstance(value, (str, int, float, bool)):
+            # A subclass: worth saying so, because the caller reasonably expects
+            # a `str` subclass to be a string.
+            return (
+                f"must be exactly a str, int, float or bool, got "
+                f"{value_type.__name__} (GraphML resolves value types exactly, "
+                "so a subclass is refused)"
+            )
+        return f"must be a string, number or boolean, got {value_type.__name__}"
+    if value_type is bool:
         return None
-    if isinstance(value, int):
+    if value_type is int:
         # GraphML stores values as text, and networkx stringifies them on write.
         # CPython refuses to stringify an integer with more digits than
         # ``sys.get_int_max_str_digits()`` (4300 by default since 3.11, and
@@ -6860,17 +6885,15 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
                 f"(sys.get_int_max_str_digits() = {sys.get_int_max_str_digits()})"
             )
         return None
-    if isinstance(value, float):
+    if value_type is float:
         return None
-    if isinstance(value, str):
-        match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
-        if match:
-            return (
-                "must not contain the character "
-                f"U+{ord(match.group()):04X}, which XML cannot encode"
-            )
-        return None
-    return f"must be a string, number or boolean, got {type(value).__name__}"
+    match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
+    if match:
+        return (
+            "must not contain the character "
+            f"U+{ord(match.group()):04X}, which XML cannot encode"
+        )
+    return None
 
 
 def graph_attribute_value_rejection(value: Any) -> str | None:
@@ -6911,18 +6934,16 @@ def graph_attribute_value_rejection(value: Any) -> str | None:
     rejection = xml_attribute_value_rejection(value)
     if rejection is not None:
         return rejection
-    # bool before int: bool is a subclass of int, so it would otherwise be
-    # range-checked as one.
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
+    # The XML rule above already pinned the exact type, so ``type(value) is int``
+    # here rather than ``isinstance`` -- a bool cannot reach the range check.
+    if type(value) is int:
         if not _GRAPH_ATTRIBUTE_INT_MIN <= value <= _GRAPH_ATTRIBUTE_INT_MAX:
             return (
                 "must be a 64-bit integer "
                 f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
             )
         return None
-    if isinstance(value, float) and not math.isfinite(value):
+    if type(value) is float and not math.isfinite(value):
         return "must be a finite number"
     return None
 

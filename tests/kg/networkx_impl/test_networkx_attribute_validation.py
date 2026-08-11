@@ -15,6 +15,7 @@ caller (including the Python API) gets the same answer.
 
 from __future__ import annotations
 
+import enum
 import sys
 
 import networkx as nx
@@ -364,3 +365,82 @@ class TestIntegerStringificationLimit:
             await storage.upsert_edge("a", "b", {"weight": 1.0, "n": oversized})
 
         assert not await storage.has_edge("a", "b")
+
+
+class _Colour(enum.StrEnum):
+    RED = "red"
+
+
+class _Level(enum.IntEnum):
+    ONE = 1
+
+
+class _MyStr(str):
+    pass
+
+
+class _MyFloat(float):
+    pass
+
+
+class TestScalarSubclasses:
+    """`isinstance` is the wrong test: networkx resolves value types exactly.
+
+    `GraphMLWriter.add_data` looks the value's type up in a dict
+    (`if element_type not in self.xml_type`), so a subclass of a supported scalar
+    satisfies `isinstance` and still makes `write_graphml` raise. A Python API
+    caller passing a `StrEnum` for `description` therefore mutated the graph and
+    poisoned every later flush.
+
+    Safe to refuse on a rewrite payload: such a value cannot have been persisted,
+    because the write that would have stored it fails, and a GraphML reload
+    produces plain `str` / `int` / `float`.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(_Colour.RED, id="str-enum"),
+            pytest.param(_Level.ONE, id="int-enum"),
+            pytest.param(_MyStr("x"), id="str-subclass"),
+            pytest.param(_MyFloat(1.5), id="float-subclass"),
+            pytest.param(np.str_("x"), id="numpy-str"),
+        ],
+    )
+    async def test_a_subclass_is_rejected_before_mutating(self, storage, value):
+        await _seed(storage)
+
+        with pytest.raises(ValueError, match="GraphML resolves value types exactly"):
+            await storage.upsert_node("bad", {"entity_id": "bad", "v": value})
+
+        assert not await storage.has_node("bad")
+        await storage.upsert_node("after", {"entity_id": "after"})
+        assert await storage.index_done_callback() is True
+        assert "after" in _graphml(storage)
+
+    @pytest.mark.asyncio
+    async def test_a_subclass_in_an_edge_is_rejected(self, storage):
+        with pytest.raises(ValueError, match="GraphML resolves value types exactly"):
+            await storage.upsert_edge("a", "b", {"weight": 1.0, "v": _Colour.RED})
+
+        assert not await storage.has_edge("a", "b")
+
+    @pytest.mark.asyncio
+    async def test_the_four_builtin_scalars_are_still_accepted(self, storage):
+        await storage.upsert_node(
+            "n1",
+            {"entity_id": "n1", "s": "text", "i": 5, "f": 1.5, "b": True},
+        )
+
+        assert await storage.index_done_callback() is True
+
+    @pytest.mark.asyncio
+    async def test_a_str_subclass_attribute_name_is_still_accepted(self, storage):
+        """Names are not type-resolved -- they are dict keys and XML text."""
+        await storage.upsert_node("n1", {"entity_id": "n1", _MyStr("legacy"): "kept"})
+
+        assert await storage.index_done_callback() is True
+        assert (
+            nx.read_graphml(storage._graphml_xml_file).nodes["n1"]["legacy"] == "kept"
+        )
