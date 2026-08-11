@@ -690,13 +690,23 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             is the shared enforcement point -- prefer it over re-deriving the
             rule per backend.
 
-            The name rule is limited to what a backend *interprets* rather than
-            stores, and nothing beyond it. Every rewrite path (entity edit,
-            rename, merge, extraction rebuild) spreads a fetched object's stored
-            attributes back into the upsert payload, so a stricter name rule
-            would make any object holding an unusual-but-harmless name -- which
-            the manual edit API accepted before its field allowlist landed --
-            permanently unmodifiable.
+            This is a **caller** contract, enforced where input enters the
+            system. An implementation should reject only what *it* cannot store,
+            which may be less: ``NetworkXStorage`` accepts ``NaN`` and integers
+            past int64 because GraphML round-trips them, even though the Neo4j
+            driver cannot pack either.
+
+            That asymmetry is deliberate, and the reason is the same for names
+            and values. Every rewrite path (entity edit, rename, merge,
+            extraction rebuild) spreads a fetched object's stored attributes back
+            into the upsert payload, and a workspace can already hold values or
+            names that predate this contract -- the manual edit API accepted
+            anything before its field allowlist landed. An implementation that
+            enforced the full contract on a rewrite would make those objects
+            permanently unmodifiable, gaining nothing it could not already store.
+            So: ``lightrag.utils.graph_attribute_value_rejection`` at the
+            ingress, ``xml_attribute_value_rejection`` (or the equivalent for
+            that store) inside it.
 
         Args:
             node_id: The ID of the node to insert or update
