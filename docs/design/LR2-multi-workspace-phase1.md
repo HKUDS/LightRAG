@@ -631,7 +631,7 @@ LIGHTRAG-WORKSPACE: ws_0mkq3f1x7d9b2v4c
 | 工作区管理（删除） | 显式生命周期 | ✅（维护实例） | ❌ | 仅清理 | `DELETE /workspaces/{id}` |
 | 工作区管理（迁移重试） | 显式生命周期 | ✅ | ❌ | ✅ | `POST /workspaces/{id}/migrate` |
 | 数据读 | 解析 ACTIVE | ✅ | ❌ | ❌ | `/query/*`、`/documents`（列表/状态/计数/track）、`/graph*`、缓存读 |
-| 数据写 | 解析 ACTIVE | ✅ | ❌ | ❌ | `/documents/upload|text|texts|scan|delete_document`、`DELETE /documents`、`/graph/*` 变更、`/documents/clear_cache` |
+| 数据写 | 解析 ACTIVE | ✅ | ❌ | ❌ | `/documents/upload\|text\|texts\|scan\|delete_document`、`DELETE /documents`、`/graph/*` 变更、`/documents/clear_cache` |
 | Ollama 推理 | 解析 ACTIVE（按 tag） | ✅ | ❌ | ❌ | `/api/generate`、`/api/chat` |
 | Ollama 元数据 | 只读目录 | ❌ | ❌ | ❌ | `/api/tags`、`/api/version`、`/api/ps` |
 
