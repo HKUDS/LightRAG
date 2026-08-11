@@ -5,6 +5,7 @@ from collections.abc import Callable, Generator
 from typing import Any
 from unittest.mock import patch, MagicMock
 
+import grpc  # type: ignore
 import numpy as np
 import pytest
 from pymilvus import MilvusException
@@ -146,6 +147,42 @@ async def _page_and_record(
     s._client.query.side_effect = _echo_query_side_effect(embedding_dim, call_sizes)
     vectors = await s.get_vectors_by_ids(ids)
     return vectors, call_sizes
+
+
+def _oversize_above_side_effect(
+    max_ids_per_response: int, call_sizes: list[int]
+) -> Callable[..., list[dict[str, Any]]]:
+    """query() side_effect modelling a gateway that rejects any response
+    carrying more than `max_ids_per_response` rows.
+
+    Metadata rows have no client-estimable size, so this is the failure the
+    record cap alone cannot prevent: the caller must shrink the page itself.
+    """
+
+    def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
+        count = _requested_id_count(filter)
+        call_sizes.append(count)
+        if count > max_ids_per_response:
+            raise MilvusException(
+                message=(
+                    "<MilvusException: (code=1, message=grpc: received message "
+                    f"larger than max ({count} rows vs. {max_ids_per_response}))>"
+                )
+            )
+        return []
+
+    return _side_effect
+
+
+class _ResourceExhaustedRpcError(grpc.RpcError):
+    """grpc error carrying RESOURCE_EXHAUSTED with a message that holds no
+    size marker — so only the status-code branch can classify it."""
+
+    def code(self) -> grpc.StatusCode:
+        return grpc.StatusCode.RESOURCE_EXHAUSTED
+
+    def __str__(self) -> str:
+        return "rpc terminated"
 
 
 def _ordered_echo_side_effect(
@@ -379,3 +416,170 @@ class TestGetByIdsPaging:
         joined_filters = " ".join(captured_filters)
         assert f'"{_escape_milvus_str(quote_id)}"' in joined_filters
         assert f'"{_escape_milvus_str(backslash_id)}"' in joined_filters
+
+
+@pytest.mark.offline
+class TestOversizePageBisection:
+    """The record cap bounds metadata pages by count, not by bytes: `content`
+    and `source_id` are each capped only by MILVUS_MAX_VARCHAR_BYTES, so 256
+    rows can still cross the gateway ceiling. Such a page must be halved and
+    retried rather than failing the whole read."""
+
+    @pytest.mark.asyncio
+    async def test_oversize_metadata_page_is_bisected_and_returns_every_row(
+        self,
+    ) -> None:
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        server_ids = [f"srv-{i}" for i in range(12)]
+        captured_filters: list[str] = []
+        echo = _ordered_echo_side_effect(server_ids, captured_filters)
+
+        # Reject any response above 4 rows, echoing the requested rows below it.
+        def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
+            if _requested_id_count(filter) > 4:
+                raise MilvusException(
+                    message="grpc: received message larger than max (x vs. y)"
+                )
+            return echo(filter=filter, **kwargs)
+
+        s._client.query.side_effect = _side_effect
+
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 8):
+            results = await s.get_by_ids(server_ids)
+
+        # Every row came back, in the caller's order, despite the first page
+        # overflowing.
+        assert results == [
+            {"id": doc_id, "content": f"server-{doc_id}"} for doc_id in server_ids
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reduced_page_size_carries_to_the_remaining_pages(self) -> None:
+        """After one page overflows, the smaller size must be kept for the rest
+        of the id list — otherwise every subsequent page pays its own failure
+        first, turning one overflow into one per page."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        call_sizes: list[int] = []
+        s._client.query.side_effect = _oversize_above_side_effect(4, call_sizes)
+
+        ids = [f"srv-{i}" for i in range(20)]
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 8):
+            await s.get_by_ids(ids)
+
+        # One rejected 8-id page, then five accepted 4-id pages. A page size
+        # that reset to 8 each time would instead reject five times (10 calls).
+        assert call_sizes == [8, 4, 4, 4, 4, 4]
+
+    @pytest.mark.asyncio
+    async def test_bisection_classifies_grpc_resource_exhausted_status(self) -> None:
+        """The size signal can arrive as a RESOURCE_EXHAUSTED status whose
+        message carries no marker text — the status code alone must classify
+        it, or a real overflow would propagate as a hard failure."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        call_sizes: list[int] = []
+
+        def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
+            count = _requested_id_count(filter)
+            call_sizes.append(count)
+            if count > 2:
+                raise _ResourceExhaustedRpcError()
+            return []
+
+        s._client.query.side_effect = _side_effect
+
+        ids = [f"srv-{i}" for i in range(4)]
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 4):
+            results = await s.get_by_ids(ids)
+
+        assert call_sizes == [4, 2, 2]
+        assert results == [None] * 4
+
+    @pytest.mark.asyncio
+    async def test_non_size_error_is_not_bisected(self) -> None:
+        """A connection or schema failure must fail the read immediately. Retrying
+        it at half the page size cannot help and would multiply the outage."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        s._client.query.side_effect = MilvusException(message="milvus down")
+
+        ids = [f"srv-{i}" for i in range(8)]
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 4):
+            results = await s.get_by_ids(ids)
+
+        assert s._client.query.call_count == 1
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_overflow_surviving_to_a_single_id_returns_no_partial_rows(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Bisection bottoms out at one id. The read then fails whole: the pages
+        that already succeeded must not be returned, since a short result is a
+        storage-consistency signal to callers, not a partial one."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        call_sizes: list[int] = []
+        # Rejects at every size, including a single id.
+        s._client.query.side_effect = _oversize_above_side_effect(0, call_sizes)
+
+        ids = [f"srv-{i}" for i in range(8)]
+        lightrag_logger = logging.getLogger("lightrag")
+        previous_propagate = lightrag_logger.propagate
+        lightrag_logger.propagate = True  # caplog hooks the root logger
+        try:
+            with caplog.at_level(logging.ERROR, logger="lightrag"):
+                with patch(
+                    "lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 8
+                ):
+                    results = await s.get_by_ids(ids)
+        finally:
+            lightrag_logger.propagate = previous_propagate
+
+        assert call_sizes == [8, 4, 2, 1]
+        assert results == []
+        assert "Error retrieving vector data" in caplog.text
+        # The error logs a bounded 5-id sample, never the whole id list.
+        assert "srv-7" not in caplog.text
+
+
+@pytest.mark.offline
+class TestPagingCooperativeYield:
+    @pytest.mark.asyncio
+    async def test_event_loop_runs_between_pages(self) -> None:
+        """Each page is a blocking gRPC round-trip, so the loop must be released
+        between pages. At `_cooperative_yield`'s default 64-iteration cadence a
+        realistic id count (page size caps at 256) would never reach the first
+        yield, starving every other coroutine for the whole read.
+        """
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+        s._client.query.side_effect = lambda **kwargs: []
+
+        observer_ticks = 0
+
+        async def observer() -> None:
+            nonlocal observer_ticks
+            while True:
+                observer_ticks += 1
+                await asyncio.sleep(0)
+
+        ids = [f"srv-{i}" for i in range(20)]
+        task = asyncio.create_task(observer())
+        try:
+            with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 2):
+                await s.get_by_ids(ids)  # 10 pages
+        finally:
+            task.cancel()
+
+        # 10 pages yield 9 times (the last page does not), so the observer must
+        # have been scheduled at least that often. Without a per-page yield the
+        # read never suspends and the observer never runs at all.
+        assert observer_ticks >= 9

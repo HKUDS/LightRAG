@@ -70,6 +70,20 @@ MILVUS_QUERY_MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2MB
 MILVUS_QUERY_MAX_RECORDS_PER_BATCH = 256
 MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
 
+# Substrings that mark a query() failure as "the response was too large"
+# rather than a connection or parameter error. Metadata rows carry no
+# estimable size (`content` and `source_id` are each capped only by
+# MILVUS_MAX_VARCHAR_BYTES), so the record cap above cannot be a byte-level
+# guarantee for them; a page that still overflows is bisected and retried
+# instead of failing the whole read. Deriving the metadata page size from
+# those schema limits statically would instead assume ~200KB per row and
+# shrink every page to ~10 ids, inflating the common case (multi-KB
+# `content`) by roughly an order of magnitude for an overflow that is rare.
+MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = (
+    "received message larger than max",
+    "resource_exhausted",
+)
+
 # Schema-migration resilience. A transient Milvus outage during the long
 # iterator-based migration must not kill worker startup: when pymilvus'
 # internal reconnect fails it closes the gRPC channel for good, so every later
@@ -2707,15 +2721,44 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             f"[{self.workspace}] Buffered delete for {len(ids)} vectors in {self.namespace}"
         )
 
+    @staticmethod
+    def _is_response_too_large_error(error: BaseException) -> bool:
+        """Return True when the error chain says a query() response overflowed.
+
+        Walks __cause__/__context__ like _is_retryable_connection_error:
+        pymilvus wraps the grpc error in MilvusException, so the
+        RESOURCE_EXHAUSTED status usually sits one level down. Connection,
+        schema and parameter errors fall through to False — bisecting those
+        would only re-issue a failure that a smaller page cannot fix.
+        """
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, grpc.RpcError):
+                code_getter = getattr(current, "code", None)
+                code = code_getter() if callable(code_getter) else None
+                if code is grpc.StatusCode.RESOURCE_EXHAUSTED:
+                    return True
+            if any(
+                marker in str(current).lower()
+                for marker in MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS
+            ):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
     def _resolve_query_page_size(self, *, includes_vector: bool) -> int:
         """Derive how many ids a single query() page may safely carry.
 
         Rows carrying a vector dominate response size, so their page is
         sized from the byte budget at the embedding dimension, capped by the
         record count. Rows without a vector (``get_by_ids``) have no
-        estimable size here — ``content`` alone can reach 64KB — so the
-        record cap is used alone; it's a heuristic, not a byte-level
-        guarantee (see issue #3584 discussion).
+        estimable size here — ``content`` and ``source_id`` are each capped
+        only by MILVUS_MAX_VARCHAR_BYTES — so the record cap is used alone.
+        That cap is a heuristic rather than a byte-level guarantee; a page
+        that still overflows is caught and bisected by ``_query_rows_by_ids``
+        (see issue #3584 discussion).
         """
         if not includes_vector:
             return MILVUS_QUERY_MAX_RECORDS_PER_BATCH
@@ -2738,26 +2781,53 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """Fetch rows for `ids`, paging so no single query() response can
         cross the gRPC message ceiling some gateways enforce.
 
-        Exceptions propagate uncaught: a page failing partway through must
-        not return the pages that already succeeded, since callers treat an
-        incomplete result as a storage-consistency signal, not a partial one.
+        A page that overflows anyway (the record cap bounds metadata rows by
+        count, not by bytes) is halved and retried, and the reduced size is
+        kept for the remaining pages so each of them does not have to fail
+        once first. Bisection stops at a single id: at that point a smaller
+        page is not available and the error is the caller's to see.
+
+        Every other error, and an overflow that survives down to one id,
+        propagates uncaught: a page failing partway through must not return
+        the pages that already succeeded, since callers treat an incomplete
+        result as a storage-consistency signal, not a partial one.
         """
         self._ensure_collection_loaded()
 
         page_size = self._resolve_query_page_size(includes_vector=includes_vector)
         rows: list[dict[str, Any]] = []
-        for page_num, start in enumerate(range(0, len(ids), page_size), start=1):
+        page_num = 0
+        start = 0
+        while start < len(ids):
             page = ids[start : start + page_size]
             id_list = '", "'.join(_escape_milvus_str(doc_id) for doc_id in page)
             filter_expr = f'id in ["{id_list}"]'
 
-            page_rows = self._client.query(
-                collection_name=self.final_namespace,
-                filter=filter_expr,
-                output_fields=output_fields,
-            )
+            try:
+                page_rows = self._client.query(
+                    collection_name=self.final_namespace,
+                    filter=filter_expr,
+                    output_fields=output_fields,
+                )
+            except Exception as e:
+                if len(page) == 1 or not self._is_response_too_large_error(e):
+                    raise
+                page_size = max(1, len(page) // 2)
+                logger.warning(
+                    f"[{self.workspace}] Milvus query response too large for "
+                    f"{len(page)} ids in {self.namespace}; retrying the page at "
+                    f"size {page_size}"
+                )
+                continue
+
             rows.extend(page_rows or [])
-            await _cooperative_yield(page_num)
+            start += len(page)
+            page_num += 1
+            # Each page is a blocking gRPC round-trip, so yield between pages
+            # rather than at the default 64-iteration cadence — that would
+            # need >16k ids before releasing the event loop once.
+            if start < len(ids):
+                await _cooperative_yield(page_num, every=1)
 
         return rows
 
