@@ -6880,10 +6880,14 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
         try:
             str(value)
         except ValueError:
-            return (
-                "has more digits than Python will render as text "
-                f"(sys.get_int_max_str_digits() = {sys.get_int_max_str_digits()})"
-            )
+            # `get_int_max_str_digits` arrived in 3.11 and was backported to
+            # 3.10.7, so it can be missing on the `requires-python = ">=3.10"`
+            # floor. It is unreachable here when missing -- no limit means
+            # `str()` cannot raise -- but read it defensively rather than relying
+            # on that.
+            read_limit = getattr(sys, "get_int_max_str_digits", None)
+            limit = f" (limit {read_limit()} digits)" if read_limit else ""
+            return f"has more digits than Python will render as text{limit}"
         return None
     if value_type is float:
         return None

@@ -319,6 +319,10 @@ class TestPortableButUnencodableValuesAreNotThisBackendsBusiness:
         assert await storage.index_done_callback() is True
 
 
+@pytest.mark.skipif(
+    not hasattr(sys, "get_int_max_str_digits"),
+    reason="int_max_str_digits arrived in 3.11 (backported to 3.10.7)",
+)
 class TestIntegerStringificationLimit:
     """A big int is a scalar, but past a point it cannot be rendered as text.
 
@@ -367,7 +371,13 @@ class TestIntegerStringificationLimit:
         assert not await storage.has_edge("a", "b")
 
 
-class _Colour(enum.StrEnum):
+# `enum.StrEnum` is 3.11+, and this package declares
+# `requires-python = ">=3.10"`. At module level that would fail
+# collection and silently disable every test in the file, and CI only
+# runs 3.12/3.14 so it would not be caught here. `(str, Enum)` has the
+# property these tests need on every supported version: an exact type
+# that is not `str`, with `isinstance(x, str)` true.
+class _Colour(str, enum.Enum):
     RED = "red"
 
 
