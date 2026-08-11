@@ -123,7 +123,13 @@ def _sanitize_graph_fields(
                 # the *stored* attribute is a float on the edit paths too,
                 # instead of a string that only the VDB payload converted.
                 coerced = float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError is what `float()` raises for an int too large to
+                # convert. The int64 bound in `graph_attribute_value_rejection`
+                # already refuses those above, so this is belt-and-braces for a
+                # future caller passing some other type whose `__float__`
+                # overflows -- without it the endpoint returns 500 for what is a
+                # validation failure.
                 raise ValueError(
                     f"{object_type.capitalize()} field '{key}' must be a number, "
                     f"got {value!r}"

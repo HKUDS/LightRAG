@@ -394,6 +394,27 @@ class TestAllowedFieldsAndTypes:
         assert "AFTER" in rag.graphml_text()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("weight", [10**400, 2**63, -(10**400)])
+    async def test_relation_weight_rejects_oversized_integers(self, rag, weight):
+        """A huge JSON integer must be a 400, not an uncaught OverflowError.
+
+        `json.loads` yields a Python int of unbounded size, and `float()` raises
+        `OverflowError` past ~1e308 -- which is neither `TypeError` nor
+        `ValueError`, so it escaped the coercion handler and reached the route as
+        a 500. The int64 bound refuses it before the conversion is attempted.
+        """
+        await rag.create_entity("REL_A")
+        await rag.create_entity("REL_B")
+        await rag.create_relation("REL_A", "REL_B")
+
+        with pytest.raises(ValueError, match="must be a 64-bit integer"):
+            await rag.edit_relation("REL_A", "REL_B", {"weight": weight})
+
+        assert (await rag.graph.get_edge("REL_A", "REL_B"))["weight"] == 1.0
+        await rag.create_entity("AFTER")
+        assert "AFTER" in rag.graphml_text()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("weight", [True, "abc", NESTED, None])
     async def test_relation_weight_rejects_non_numbers(self, rag, weight):
         await rag.create_entity("REL_A")

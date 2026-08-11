@@ -61,6 +61,26 @@ class TestUnstorableValues:
             validate_graph_attributes({"attr": value}, context="entity 'X'")
 
     @pytest.mark.parametrize(
+        "value",
+        [2**63, -(2**63) - 1, 10**400, -(10**400)],
+    )
+    def test_integers_outside_int64_are_rejected(self, value):
+        """networkx writes them and jsonb stores them; Neo4j cannot pack them.
+
+        Verified against the installed driver: neo4j's packstream Packer raises
+        ``OverflowError`` outside ``[-2**63, 2**63)``. GraphML also mislabels
+        such a value, declaring ``attr.type="long"`` (``xsd:long`` is int64). So
+        it is outside the intersection this validator defines even though two of
+        the three backends accept it.
+        """
+        with pytest.raises(ValueError, match="must be a 64-bit integer"):
+            validate_graph_attributes({"created_at": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize("value", [2**63 - 1, -(2**63), 0, 1786431045])
+    def test_integers_inside_int64_are_accepted(self, value):
+        validate_graph_attributes({"created_at": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize(
         "value", [float("nan"), float("inf"), float("-inf"), float("1e999")]
     )
     def test_non_finite_floats_are_rejected(self, value):

@@ -6755,6 +6755,17 @@ _XML_INCOMPATIBLE_CHAR_PATTERN = re.compile(
 # field) and a leading ``$`` is read as an update operator.
 _GRAPH_ATTRIBUTE_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Integer attributes must fit in a signed 64-bit integer. Verified against the
+# installed driver rather than assumed: neo4j's packstream Packer raises
+# ``OverflowError("Integer ... out of range")`` outside ``[-2**63, 2**63)``
+# (``neo4j/_codec/packstream/v1/__init__.py``), and GraphML declares an int
+# attribute as ``attr.type="long"``, which is ``xsd:long`` -- also int64. So a
+# larger int is outside the intersection this module defines, even though
+# networkx will happily write it and PostgreSQL's arbitrary-precision ``jsonb``
+# numeric will happily store it.
+_GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
+_GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
+
 
 def graph_attribute_value_rejection(value: Any) -> str | None:
     """Explain why *value* cannot be stored as a graph node/edge attribute.
@@ -6768,7 +6779,11 @@ def graph_attribute_value_rejection(value: Any) -> str | None:
     ``GRAPH_STORAGE`` backends can carry, so the same payload behaves the same
     way on all of them:
 
-    * ``bool`` / ``int`` -- accepted everywhere.
+    * ``bool`` -- accepted everywhere.
+    * ``int`` -- must fit in int64. A larger int is written happily by networkx
+      and stored happily by PostgreSQL's arbitrary-precision ``jsonb`` numeric,
+      but the Neo4j driver refuses to pack it and GraphML mislabels it as
+      ``xsd:long``. See ``_GRAPH_ATTRIBUTE_INT_MIN``.
     * ``float`` -- must be finite. ``NaN`` / ``inf`` survive GraphML but
       ``json.dumps`` renders them as bare ``NaN`` / ``Infinity``, which is not
       valid JSON and is rejected by the ``jsonb`` column PGTableGraphStorage
@@ -6792,6 +6807,11 @@ def graph_attribute_value_rejection(value: Any) -> str | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
+        if not _GRAPH_ATTRIBUTE_INT_MIN <= value <= _GRAPH_ATTRIBUTE_INT_MAX:
+            return (
+                "must be a 64-bit integer "
+                f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
+            )
         return None
     if isinstance(value, float):
         if not math.isfinite(value):
