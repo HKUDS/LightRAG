@@ -515,3 +515,68 @@ class TestNoValidationToMutationWindow:
         # Whole batch refused, so the clean first item is not applied either.
         assert not await storage.has_node("n1")
         assert not await storage.has_node("n2")
+
+
+class TestNumpyScalarsNetworkxSupports:
+    """This backend takes what its writer takes, which includes numpy numerics.
+
+    `write_graphml` persists `np.float64` / `float32` / `int64` / `uint32` and
+    reloads them as plain `float` / `int`. Refusing them here would break a
+    direct-backend write that works today, and would strand an in-memory value:
+    a node upserted with `np.float64` earlier in the process still holds it, and
+    every rewrite path spreads stored attributes back into the payload.
+
+    The portable contract still refuses them — `json.dumps` and `bson` both do —
+    which is enforced where caller input enters, not here.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(np.float64(1.5), id="np-float64"),
+            pytest.param(np.float32(1.5), id="np-float32"),
+            pytest.param(np.int64(5), id="np-int64"),
+            pytest.param(np.uint32(5), id="np-uint32"),
+        ],
+    )
+    async def test_a_numpy_scalar_is_accepted_and_persists(self, storage, value):
+        await storage.upsert_node("n1", {"entity_id": "n1", "v": value})
+
+        assert await storage.index_done_callback() is True
+        reread = nx.read_graphml(storage._graphml_xml_file).nodes["n1"]["v"]
+        assert reread == pytest.approx(float(value))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # `np.longdouble` is an `np.floating` that networkx does *not* list,
+            # which is why the rule reads its table rather than testing
+            # `isinstance(value, np.floating)`.
+            pytest.param(np.longdouble(1.5), id="np-longdouble"),
+            pytest.param(np.bool_(True), id="np-bool"),
+        ],
+    )
+    async def test_a_numpy_type_networkx_cannot_write_is_refused(self, storage, value):
+        await _seed(storage)
+
+        with pytest.raises(ValueError, match="attribute 'v'"):
+            await storage.upsert_node("bad", {"entity_id": "bad", "v": value})
+
+        assert not await storage.has_node("bad")
+        await storage.upsert_node("after", {"entity_id": "after"})
+        assert await storage.index_done_callback() is True
+        assert "after" in _graphml(storage)
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_carrying_a_stored_numpy_value_still_writes(self, storage):
+        """The in-memory value keeps its numpy type until a reload replaces it."""
+        await storage.upsert_node("n1", {"entity_id": "n1", "v": np.float64(1.5)})
+
+        stored = await storage.get_node("n1")
+        assert type(stored["v"]) is np.float64  # not yet round-tripped
+        await storage.upsert_node("n1", {**stored, "description": "an update"})
+
+        assert (await storage.get_node("n1"))["description"] == "an update"
+        assert await storage.index_done_callback() is True

@@ -339,13 +339,55 @@ class TestExactTypeResolution:
             xml_attribute_value_rejection(Decimal("1.5")) or ""
         )
 
-    def test_a_numpy_float_is_refused_although_networkx_lists_it(self):
-        """Deliberately stricter than networkx's table.
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(np.float64(1.5), id="np-float64"),
+            pytest.param(np.float32(1.5), id="np-float32"),
+            pytest.param(np.int64(5), id="np-int64"),
+            pytest.param(np.uint32(5), id="np-uint32"),
+        ],
+    )
+    def test_numpy_scalars_split_the_two_rules(self, value):
+        """GraphML writes them (reloading as plain float/int); nothing else takes them.
 
-        Its ``construct_types`` also registers the concrete numpy int/float
-        scalar types, but ``networkx`` has no version floor in pyproject.toml, so
-        only the four builtins are guaranteed across the range we allow. Being
-        stricter costs nothing here: a refused value could never have been
-        persisted, so nothing is stranded.
+        The XML rule's type set comes from networkx's own ``construct_types``
+        table, so it accepts exactly what the writer accepts. The portable rule
+        does not: ``json.dumps`` (PGTableGraphStorage's jsonb column) and ``bson``
+        (MongoGraphStorage) both refuse ``np.float32`` / ``np.int64`` /
+        ``np.uint32`` outright, so a numpy value that persists fine on NetworkX
+        cannot cross to another backend.
         """
-        assert xml_attribute_value_rejection(np.float64(1.5)) is not None
+        validate_xml_attributes({"v": value}, context="entity 'X'")
+        with pytest.raises(ValueError, match="portable across graph backends"):
+            validate_graph_attributes({"v": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # An ``np.floating`` that networkx does *not* list -- which is why the
+            # rule reads the table instead of testing ``isinstance(np.floating)``.
+            pytest.param(np.longdouble(1.5), id="np-longdouble"),
+            pytest.param(np.str_("x"), id="np-str"),
+            pytest.param(np.bool_(True), id="np-bool"),
+        ],
+    )
+    def test_numpy_types_networkx_cannot_write_are_refused_by_both(self, value):
+        with pytest.raises(ValueError, match="attribute 'v'"):
+            validate_xml_attributes({"v": value}, context="entity 'X'")
+        with pytest.raises(ValueError, match="attribute 'v'"):
+            validate_graph_attributes({"v": value}, context="entity 'X'")
+
+    def test_the_encodable_set_is_sourced_from_networkx(self):
+        """Every refused type must be one the write would have failed on.
+
+        That claim is only true by construction if the set *is* networkx's table,
+        so pin the sourcing rather than a hardcoded list.
+        """
+        from networkx.readwrite.graphml import GraphML
+
+        from lightrag.utils import _GRAPHML_ENCODABLE_TYPES
+
+        probe = GraphML()
+        probe.construct_types()
+        assert frozenset(probe.xml_type) <= _GRAPHML_ENCODABLE_TYPES
