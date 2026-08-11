@@ -51,6 +51,7 @@ LEGACY_STORED_NAMES = [
 def _make_storage():
     storage = MongoGraphStorage.__new__(MongoGraphStorage)
     storage.workspace = "test"
+    storage.namespace = "chunk_entity_relation"
     storage.global_config = {}
     storage._collection_name = "test_nodes"
     storage._edge_collection_name = "test_edges"
@@ -202,3 +203,61 @@ class TestLegacyStoredNamesStillWrite:
 
         _filter, update = storage.collection.update_one.await_args.args
         assert update["$set"]["cost$usd"] == "5"
+
+
+class TestNoValidationToMutationWindow:
+    """The edge paths await MongoDB between the check and the use.
+
+    `upsert_edge` materializes both endpoints before writing the edge document,
+    and `upsert_edges_batch` does the same for the whole batch. Validating the
+    caller's own mapping left a window in which a coroutine holding it could add
+    a field path such as `source_ids.0` after the check -- which is the attack
+    the name rule exists to stop, since a dotted key in `$set` rewrites an
+    element of the chunk-attribution array. Both paths now validate a snapshot
+    and build the update from that same snapshot.
+
+    The mutation is injected from inside the endpoint `bulk_write`, which is the
+    only place it could ever have happened.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_mutation_during_the_endpoint_write_does_not_reach_mongo(self):
+        storage = _make_storage()
+        payload = {"weight": 1.0, "description": "clean"}
+
+        async def poison_during_bulk_write(*args, **kwargs):
+            payload["source_ids.0"] = "attribution rewritten"
+
+        storage.collection.bulk_write = AsyncMock(side_effect=poison_during_bulk_write)
+
+        await storage.upsert_edge("a", "b", payload)
+
+        storage.edge_collection.update_one.assert_awaited_once()
+        _filter, update = storage.edge_collection.update_one.await_args.args
+        assert "source_ids.0" not in update["$set"]
+        assert update["$set"]["description"] == "clean"
+
+    @pytest.mark.asyncio
+    async def test_the_batch_path_uses_the_validated_snapshots(self, monkeypatch):
+        storage = _make_storage()
+        payload = {"weight": 1.0, "description": "clean"}
+        captured: list = []
+
+        async def fake_bulk(collection, ops, **kwargs):
+            # First call materializes endpoints; poison the mapping then, exactly
+            # as an aliasing caller would.
+            if not captured:
+                payload["source_ids.0"] = "attribution rewritten"
+                captured.append("endpoints")
+            else:
+                captured.append(ops)
+
+        monkeypatch.setattr("lightrag.kg.mongo_impl._run_batched_bulk_write", fake_bulk)
+
+        await storage.upsert_edges_batch([("a", "b", payload)])
+
+        edge_ops = captured[-1]
+        assert edge_ops, "edge ops were never written"
+        update = edge_ops[0][0]._doc
+        assert "source_ids.0" not in update["$set"]
+        assert update["$set"]["description"] == "clean"

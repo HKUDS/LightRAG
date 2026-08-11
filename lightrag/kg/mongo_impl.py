@@ -2385,8 +2385,15 @@ class MongoGraphStorage(BaseGraphStorage):
         # One bulk_write instead of two round trips, and $setOnInsert (the form
         # upsert_edges_batch already uses) so an endpoint that already carries
         # real properties is never touched. dict.fromkeys collapses a self-loop.
+        # Snapshot before validating, and build the update from the snapshot
+        # below. The endpoint bulk_write awaits between the check and the use, so
+        # validating the caller's own mapping would leave a window in which a
+        # caller that retains it could add a field path such as ``source_ids.0``
+        # after the check. (This also subsumes the "copy so we never mutate the
+        # caller's dict" reason the copy below already existed for.)
+        edge_attributes = dict(edge_data)
         self._validate_attribute_names(
-            edge_data, context=self._edge_context(source_node_id, target_node_id)
+            edge_attributes, context=self._edge_context(source_node_id, target_node_id)
         )
         await self.collection.bulk_write(
             [
@@ -2398,10 +2405,9 @@ class MongoGraphStorage(BaseGraphStorage):
 
         edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
 
-        # Copy so we never mutate the caller's edge_data dict.
-        set_doc: dict = {**edge_data}
-        if edge_data.get("source_id", ""):
-            set_doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
+        set_doc: dict = dict(edge_attributes)
+        if edge_attributes.get("source_id", ""):
+            set_doc["source_ids"] = edge_attributes["source_id"].split(GRAPH_FIELD_SEP)
         set_doc["source_node_id"] = source_node_id
         set_doc["target_node_id"] = target_node_id
         set_doc["edge_lo"] = edge_lo
@@ -2488,10 +2494,17 @@ class MongoGraphStorage(BaseGraphStorage):
         # Whole batch first: the endpoint-placeholder bulk_write below happens
         # before any edge document is written, so rejecting mid-loop would leave
         # placeholder nodes behind for edges that were never created.
+        #
+        # Snapshot each mapping as it is validated and use the snapshots for the
+        # documents built after the placeholder await -- see upsert_edge for the
+        # window that closes.
+        validated_edges: list[tuple[str, str, dict]] = []
         for src, tgt, edge_data in edges:
+            edge_attributes = dict(edge_data)
             self._validate_attribute_names(
-                edge_data, context=self._edge_context(src, tgt)
+                edge_attributes, context=self._edge_context(src, tgt)
             )
+            validated_edges.append((src, tgt, edge_attributes))
 
         # Both endpoints, not just the source — see upsert_edge for why a
         # target-only endpoint is externally visible as an inconsistency.
@@ -2524,10 +2537,10 @@ class MongoGraphStorage(BaseGraphStorage):
         # and avoids an intra-batch duplicate-key error from two ops inserting
         # the same endpoint pair.
         deduped_ops: dict[tuple[str, str], tuple[Any, int, str]] = {}
-        for source_node_id, target_node_id, edge_data in edges:
-            update_doc: dict = {"$set": {**edge_data}}
-            if edge_data.get("source_id", ""):
-                update_doc["$set"]["source_ids"] = edge_data["source_id"].split(
+        for source_node_id, target_node_id, edge_attributes in validated_edges:
+            update_doc: dict = {"$set": dict(edge_attributes)}
+            if edge_attributes.get("source_id", ""):
+                update_doc["$set"]["source_ids"] = edge_attributes["source_id"].split(
                     GRAPH_FIELD_SEP
                 )
             update_doc["$set"]["source_node_id"] = source_node_id

@@ -454,3 +454,64 @@ class TestScalarSubclasses:
         assert (
             nx.read_graphml(storage._graphml_xml_file).nodes["n1"]["legacy"] == "kept"
         )
+
+
+class TestNoValidationToMutationWindow:
+    """A caller that keeps the mapping must not be able to revise it post-check.
+
+    Validation used to run before `_get_graph()`, which awaits. A coroutine
+    holding the same dict could add an unencodable value in that window, and the
+    value reached the live graph -- restoring the instance-wide flush failure the
+    guard exists to prevent. Validation now runs after that await, so the check
+    and the mutation are one synchronous block (class docstring, invariant 3).
+
+    The test injects the mutation *from inside* the await, which is the only
+    place it could ever have happened.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_mutation_during_the_await_cannot_slip_through(
+        self, storage, monkeypatch
+    ):
+        await _seed(storage)
+        payload = {"entity_id": "victim", "description": "clean"}
+        real_get_graph = storage._get_graph
+
+        async def get_graph_and_poison():
+            graph = await real_get_graph()
+            payload["poison"] = {"any": ["object"]}  # the aliasing caller strikes
+            return graph
+
+        monkeypatch.setattr(storage, "_get_graph", get_graph_and_poison)
+
+        with pytest.raises(ValueError, match="attribute 'poison'"):
+            await storage.upsert_node("victim", payload)
+
+        assert not await storage.has_node("victim")
+        monkeypatch.undo()
+        await storage.upsert_node("after", {"entity_id": "after"})
+        assert await storage.index_done_callback() is True
+        assert "after" in _graphml(storage)
+
+    @pytest.mark.asyncio
+    async def test_a_mutation_during_the_await_cannot_slip_into_a_batch(
+        self, storage, monkeypatch
+    ):
+        second = {"entity_id": "n2", "description": "clean"}
+        real_get_graph = storage._get_graph
+
+        async def get_graph_and_poison():
+            graph = await real_get_graph()
+            second["poison"] = None
+            return graph
+
+        monkeypatch.setattr(storage, "_get_graph", get_graph_and_poison)
+
+        with pytest.raises(ValueError, match="attribute 'poison'"):
+            await storage.upsert_nodes_batch(
+                [("n1", {"entity_id": "n1", "description": "clean"}), ("n2", second)]
+            )
+
+        # Whole batch refused, so the clean first item is not applied either.
+        assert not await storage.has_node("n1")
+        assert not await storage.has_node("n2")
