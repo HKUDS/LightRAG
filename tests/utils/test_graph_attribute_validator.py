@@ -60,7 +60,9 @@ class TestUnstorableValues:
         with pytest.raises(ValueError, match=expected):
             validate_graph_attributes({"attr": value}, context="entity 'X'")
 
-    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    @pytest.mark.parametrize(
+        "value", [float("nan"), float("inf"), float("-inf"), float("1e999")]
+    )
     def test_non_finite_floats_are_rejected(self, value):
         """They survive GraphML but ``json.dumps`` emits bare ``NaN``/``Infinity``.
 
