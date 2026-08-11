@@ -6776,6 +6776,44 @@ _GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
 _GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
 
 
+def xml_attribute_name_rejection(name: Any) -> str | None:
+    """Explain why *name* cannot be used as an XML-serialized attribute name.
+
+    GraphML writes attribute names into the XML ``attr.name`` field, so a name is
+    subject to the same character rule as a value -- a claim checked against
+    networkx rather than assumed: a name holding a control character, a lone
+    surrogate or U+FFFE makes ``write_graphml`` raise, which on
+    ``NetworkXStorage`` is the instance-wide persistence outage the storage guard
+    exists to prevent.
+
+    Everything else is allowed, including names a *portable* rule would refuse
+    (``a.b``, ``$set``, ``display-name``, ``has space``, ``""``). Two reasons:
+    GraphML round-trips all of those, and -- the load-bearing one -- a name this
+    function rejects can never have been persisted in an existing GraphML file,
+    because the write that would have stored it failed. That is what makes the
+    check safe to apply to a rewrite payload, which spreads a fetched object's
+    stored names back in.
+
+    Args:
+        name: Candidate attribute name.
+
+    Returns:
+        A reason fragment, or ``None`` when XML can carry the name.
+    """
+    if not isinstance(name, str):
+        # networkx raises TypeError("keywords must be strings") before mutating,
+        # so this cannot poison the graph -- it is folded in so the caller gets a
+        # validation error rather than an unhandled TypeError.
+        return f"must be a string, got {type(name).__name__}"
+    match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(name)
+    if match:
+        return (
+            "must not contain the character "
+            f"U+{ord(match.group()):04X}, which XML cannot encode"
+        )
+    return None
+
+
 def xml_attribute_value_rejection(value: Any) -> str | None:
     """Explain why *value* cannot be encoded in XML at all.
 
@@ -6879,15 +6917,24 @@ def validate_graph_attributes(attributes: dict[str, Any], *, context: str) -> No
     Raises:
         ValueError: On the first unusable attribute name or value.
     """
-    validate_graph_attribute_names(attributes, context=context)
+    # The portable contract is the intersection, so it owns both name rules: a
+    # name XML cannot encode is unstorable on NetworkX, and a name MongoDB would
+    # read as a field path is unstorable there. Neither backend needs the other's
+    # rule (see each rejection helper), but caller input has to satisfy both.
+    validate_xml_attributes(attributes, context=context)
+    validate_interpreted_attribute_names(attributes, context=context)
     validate_graph_attribute_values(attributes, context=context)
 
 
-def validate_graph_attribute_names(attributes: dict[str, Any], *, context: str) -> None:
+def validate_interpreted_attribute_names(
+    attributes: dict[str, Any], *, context: str
+) -> None:
     """Reject attribute names a backend would read as something other than a name.
 
-    Split from the value check because a backend should guard the hazard it
-    actually has, and the two hazards live in different backends:
+    The *interpretation* rule, not the serialization one: see
+    ``xml_attribute_name_rejection`` for the character rule a GraphML-backed
+    store needs. A backend should enforce the hazard it actually has, and the two
+    hazards live in different backends:
 
     * Names are dangerous only where they are *interpreted*. MongoDB passes them
       into a ``$set`` document, so a dot is a path (``source_ids.0`` rewrites an
@@ -6931,20 +6978,26 @@ def validate_graph_attribute_names(attributes: dict[str, Any], *, context: str) 
             )
 
 
-def validate_xml_attribute_values(attributes: dict[str, Any], *, context: str) -> None:
-    """Reject attribute values XML cannot encode.
+def validate_xml_attributes(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject attribute names or values XML cannot encode.
 
-    For a GraphML-backed store. See ``xml_attribute_value_rejection`` for why
-    this is narrower than the portable rule.
+    For a GraphML-backed store. Names are checked as well as values because
+    GraphML serializes them into the XML ``attr.name`` field, so an unencodable
+    name breaks the same write. See ``xml_attribute_name_rejection`` and
+    ``xml_attribute_value_rejection`` for why both rules are narrower than the
+    portable contract.
 
     Args:
         attributes: Attribute mapping about to be written to graph storage.
         context: Prefix identifying the object being written.
 
     Raises:
-        ValueError: On the first value XML cannot carry.
+        ValueError: On the first name or value XML cannot carry.
     """
     for key, value in attributes.items():
+        rejection = xml_attribute_name_rejection(key)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute name {key!r} {rejection}")
         rejection = xml_attribute_value_rejection(value)
         if rejection is not None:
             raise ValueError(f"{context}: attribute {key!r} {rejection}")
@@ -6956,7 +7009,7 @@ def validate_graph_attribute_values(
     """Reject attribute values no graph backend can store.
 
     See ``graph_attribute_value_rejection`` for the rules and
-    ``validate_graph_attribute_names`` for why the two halves are separate.
+    ``validate_interpreted_attribute_names`` for why the halves are separate.
 
     Args:
         attributes: Attribute mapping about to be written to graph storage.
