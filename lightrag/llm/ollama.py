@@ -268,11 +268,11 @@ async def ollama_model_complete(
 async def ollama_embed(
     texts: list[str],
     embed_model: str = "bge-m3:latest",
-    embedding_dim: int | None = None,
     max_token_size: int | None = None,
     context: str = "document",
     query_prefix: str | None = None,
     document_prefix: str | None = None,
+    embedding_dim: int | None = None,
     **kwargs,
 ) -> np.ndarray:
     """Generate embeddings using Ollama's API.
@@ -280,8 +280,6 @@ async def ollama_embed(
     Args:
         texts: List of texts to embed.
         embed_model: The Ollama embedding model to use. Default is "bge-m3:latest".
-        embedding_dim: Optional target dimension. When set, forwarded to Ollama's
-            embed API so the model actually returns a vector of that size.
         max_token_size: Maximum tokens per text. This parameter is automatically
             injected by the EmbeddingFunc wrapper when the underlying function
             signature supports it (via inspect.signature check). Ollama will
@@ -292,6 +290,10 @@ async def ollama_embed(
             when supports_asymmetric=True. Default is "document".
         query_prefix: Optional prefix to prepend to texts when context="query" (e.g., "search_query: ").
         document_prefix: Optional prefix to prepend to texts when context="document" (e.g., "search_document: ").
+        embedding_dim: Optional target dimension. When set, forwarded to Ollama's
+            embed API so the model actually returns a vector of that size. Kept as
+            the last named parameter (before **kwargs) so existing positional
+            callers of the pre-existing parameters are unaffected.
         **kwargs: Additional arguments passed to the Ollama client.
 
     Returns:

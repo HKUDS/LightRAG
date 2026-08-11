@@ -45,3 +45,22 @@ async def test_no_embedding_dim_means_no_dimensions_kwarg():
     fake_client.embed.assert_awaited_once_with(
         model="test-model", input=["hello"], options={}
     )
+
+
+@pytest.mark.asyncio
+async def test_positional_third_arg_still_binds_max_token_size_not_embedding_dim():
+    """embedding_dim must stay the last named parameter, after max_token_size,
+    context, query_prefix and document_prefix. Those five parameters predate
+    embedding_dim; a pre-existing positional caller like
+    ollama_embed.func(texts, model, 4096) has always meant max_token_size=4096.
+    Inserting embedding_dim earlier in the signature would silently reinterpret
+    that same call as embedding_dim=4096 and forward an unwanted
+    dimensions=4096 to Ollama."""
+    fake_client = _make_fake_client({"embeddings": [[0.1, 0.2, 0.3]]})
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        await ollama_embed.func(["hello"], "test-model", 4096)
+
+    fake_client.embed.assert_awaited_once_with(
+        model="test-model", input=["hello"], options={}
+    )
