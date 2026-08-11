@@ -146,75 +146,6 @@ async def _page_and_record(
     return vectors, call_sizes
 
 
-@pytest.mark.asyncio
-async def test_get_vectors_by_ids_returns_all_vectors_above_grpc_size_limit() -> None:
-    """600 ids at dim=3072 would exceed the gRPC ceiling in one query() call;
-    all 600 vectors must still come back."""
-    embed = MockEmbeddingFunc(dim=3072)
-    s = _make_storage(embed)
-    s._client.query.side_effect = _resource_exhausted_query_side_effect(
-        embedding_dim=3072
-    )
-
-    ids = [f"chunk-{i}" for i in range(600)]
-    vectors = await s.get_vectors_by_ids(ids)
-
-    assert len(vectors) == 600
-    assert s._client.query.call_count > 1
-
-
-@pytest.mark.asyncio
-async def test_get_vectors_by_ids_skips_id_missing_from_database() -> None:
-    """A single id that is neither buffered nor pending-delete but simply
-    doesn't exist in Milvus must not appear in the result and must not
-    raise — the server matches nothing, not an error."""
-    embed = MockEmbeddingFunc(dim=8)
-    s = _make_storage(embed)
-    s._client.query.return_value = []  # nothing in the database for this id
-
-    vectors = await s.get_vectors_by_ids(["missing-1"])
-
-    assert vectors == {}
-
-
-@pytest.mark.asyncio
-async def test_page_size_shrinks_with_higher_dimension() -> None:
-    """Heavier rows (higher embedding dim) fit fewer ids per call, so paging
-    the same 1000 ids must take more query() calls at dim=3072 than at
-    dim=8 — while every call, at either dimension, stays within its
-    dimension's derived page-size bound."""
-    ids = [f"chunk-{i}" for i in range(1000)]
-
-    vectors_dim8, call_sizes_dim8 = await _page_and_record(8, ids)
-    vectors_dim3072, call_sizes_dim3072 = await _page_and_record(3072, ids)
-
-    assert len(vectors_dim8) == len(ids)
-    assert len(vectors_dim3072) == len(ids)
-    assert sum(call_sizes_dim8) == len(ids)
-    assert sum(call_sizes_dim3072) == len(ids)
-
-    # Smaller pages at the higher dimension mean more calls to cover the
-    # same id list.
-    assert len(call_sizes_dim3072) > len(call_sizes_dim8)
-
-
-@pytest.mark.asyncio
-async def test_record_cap_binds_at_small_dimension() -> None:
-    """At a tiny embedding dim the byte budget alone would allow a huge
-    page, so the record-count cap is the only thing left to bind it. Patch
-    the module constant to a small value instead of relying on the shipped
-    256."""
-    ids = [f"chunk-{i}" for i in range(20)]
-
-    with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 5):
-        vectors, call_sizes = await _page_and_record(1, ids)
-
-    assert len(vectors) == len(ids)
-    assert sum(call_sizes) == len(ids)
-    assert len(call_sizes) > 1
-    assert all(size <= 5 for size in call_sizes)
-
-
 def _ordered_echo_side_effect(
     ordered_ids: list[str], captured_filters: list[str]
 ) -> Callable[..., list[dict[str, Any]]]:
@@ -234,147 +165,215 @@ def _ordered_echo_side_effect(
     return _side_effect
 
 
-@pytest.mark.asyncio
-async def test_get_by_ids_preserves_order_and_excludes_buffered_and_deleted() -> None:
-    """get_by_ids must preserve the caller's input order across a paginated
-    server query, never send buffered/pending-delete ids to the server, and
-    return None for an id that is pending delete."""
-    embed = MockEmbeddingFunc(dim=8)
-    s = _make_storage(embed, meta_fields={"content"})
+@pytest.mark.offline
+class TestGetVectorsByIdsPaging:
+    @pytest.mark.asyncio
+    async def test_returns_all_vectors_above_grpc_size_limit(self) -> None:
+        """600 ids at dim=3072 would exceed the gRPC ceiling in one query() call;
+        all 600 vectors must still come back."""
+        embed = MockEmbeddingFunc(dim=3072)
+        s = _make_storage(embed)
+        s._client.query.side_effect = _resource_exhausted_query_side_effect(
+            embedding_dim=3072
+        )
 
-    await s.upsert({"buffered-1": {"content": "buffered content"}})
-    await s.delete(["deleted-1"])
+        ids = [f"chunk-{i}" for i in range(600)]
+        vectors = await s.get_vectors_by_ids(ids)
 
-    server_ids = [f"srv-{i}" for i in range(12)]
-    # Interleave the buffered/deleted ids among the server ids so a
-    # positional check actually exercises order preservation.
-    ids = [
-        server_ids[0],
-        "buffered-1",
-        server_ids[1],
-        "deleted-1",
-        *server_ids[2:],
-    ]
+        assert len(vectors) == 600
+        assert s._client.query.call_count > 1
 
-    captured_filters: list[str] = []
-    s._client.query.side_effect = _ordered_echo_side_effect(
-        server_ids, captured_filters
-    )
+    @pytest.mark.asyncio
+    async def test_skips_id_missing_from_database(self) -> None:
+        """A single id that is neither buffered nor pending-delete but simply
+        doesn't exist in Milvus must not appear in the result and must not
+        raise — the server matches nothing, not an error."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed)
+        s._client.query.return_value = []
 
-    with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 5):
-        results = await s.get_by_ids(ids)
+        vectors = await s.get_vectors_by_ids(["missing-1"])
 
-    assert len(results) == len(ids)
-    for doc_id, row in zip(ids, results):
-        if doc_id == "deleted-1":
-            assert row is None
-        elif doc_id == "buffered-1":
-            assert row["id"] == "buffered-1"
-            assert row["content"] == "buffered content"
-        else:
-            assert row == {"id": doc_id, "content": f"server-{doc_id}"}
+        assert vectors == {}
 
-    # The buffered upsert and the pending delete must never reach the server.
-    for filter_expr in captured_filters:
-        assert "buffered-1" not in filter_expr
-        assert "deleted-1" not in filter_expr
+    @pytest.mark.asyncio
+    async def test_page_size_shrinks_with_higher_dimension(self) -> None:
+        """Heavier rows (higher embedding dim) fit fewer ids per call, so paging
+        the same 1000 ids must take more query() calls at dim=3072 than at
+        dim=8 — while every call, at either dimension, stays within its
+        dimension's derived page-size bound."""
+        ids = [f"chunk-{i}" for i in range(1000)]
 
-    assert s._client.query.call_count > 1
+        vectors_dim8, call_sizes_dim8 = await _page_and_record(8, ids)
+        vectors_dim3072, call_sizes_dim3072 = await _page_and_record(3072, ids)
+
+        assert len(vectors_dim8) == len(ids)
+        assert len(vectors_dim3072) == len(ids)
+        assert sum(call_sizes_dim8) == len(ids)
+        assert sum(call_sizes_dim3072) == len(ids)
+
+        # Smaller pages at the higher dimension mean more calls to cover the
+        # same id list.
+        assert len(call_sizes_dim3072) > len(call_sizes_dim8)
+
+    @pytest.mark.asyncio
+    async def test_record_cap_binds_at_small_dimension(self) -> None:
+        """At a tiny embedding dim the byte budget alone would allow a huge
+        page, so the record-count cap is the only thing left to bind it. Patch
+        the module constant to a small value instead of relying on the shipped
+        256."""
+        ids = [f"chunk-{i}" for i in range(20)]
+
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 5):
+            vectors, call_sizes = await _page_and_record(1, ids)
+
+        assert len(vectors) == len(ids)
+        assert sum(call_sizes) == len(ids)
+        assert len(call_sizes) > 1
+        assert all(size <= 5 for size in call_sizes)
+
+    @pytest.mark.asyncio
+    async def test_returns_buffered_portion_on_page_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A page raising partway through server-side pagination must not crash
+        get_vectors_by_ids: it falls back to whatever was already resolved from
+        the buffer, logs the failure, and swallows the exception — and the
+        first page's rows, which succeeded before the second page raised, must
+        not leak into the result either (no partial pages)."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed)
+
+        await s.upsert({"buffered-1": {"content": "hello"}})
+
+        remaining_ids = [f"srv-{i}" for i in range(10)]
+        ids = ["buffered-1", *remaining_ids]
+
+        call_count = 0
+
+        def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise MilvusException(message="milvus down mid-page")
+            count = _requested_id_count(filter)
+            return [
+                {"id": f"row-{call_count}-{i}", "vector": [0.0] * 8}
+                for i in range(count)
+            ]
+
+        s._client.query.side_effect = _side_effect
+
+        lightrag_logger = logging.getLogger("lightrag")
+        previous_propagate = lightrag_logger.propagate
+        lightrag_logger.propagate = True  # caplog hooks the root logger
+        try:
+            with caplog.at_level(logging.ERROR, logger="lightrag"):
+                with patch(
+                    "lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 2
+                ):
+                    vectors = await s.get_vectors_by_ids(ids)
+        finally:
+            lightrag_logger.propagate = previous_propagate
+
+        # Buffered vector survives; nothing from the server (not even the
+        # first, successful page) leaked into the result.
+        assert vectors == {"buffered-1": s._pending_vector_docs["buffered-1"].vector}
+        assert not any(doc_id.startswith("row-") for doc_id in vectors)
+        assert "Error retrieving vectors by IDs" in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_get_by_ids_returns_none_for_ids_missing_from_the_database() -> None:
-    """An id that is neither buffered nor pending-delete but simply doesn't
-    exist in Milvus must come back as None at its own position — the missing
-    row must not raise, and must not shift the other results out of place."""
-    embed = MockEmbeddingFunc(dim=8)
-    s = _make_storage(embed, meta_fields={"content"})
+@pytest.mark.offline
+class TestGetByIdsPaging:
+    @pytest.mark.asyncio
+    async def test_preserves_order_and_excludes_buffered_and_deleted(self) -> None:
+        """get_by_ids must preserve the caller's input order across a paginated
+        server query, never send buffered/pending-delete ids to the server, and
+        return None for an id that is pending delete."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
 
-    ids = ["missing-1"]
+        await s.upsert({"buffered-1": {"content": "buffered content"}})
+        await s.delete(["deleted-1"])
 
-    results = await s.get_by_ids(ids)
-
-    assert results == [None]
-
-
-@pytest.mark.asyncio
-async def test_get_by_ids_escapes_special_characters_across_pages() -> None:
-    """Escaping must hold for every page's filter, not just a single
-    unpaginated call — an id containing `"` or `\\` must still come out correctly
-    escaped in whichever page it lands in."""
-    embed = MockEmbeddingFunc(dim=8)
-    s = _make_storage(embed, meta_fields={"content"})
-
-    quote_id = 'doc"1'
-    backslash_id = "doc\\2"
-    plain_ids = [f"plain-{i}" for i in range(4)]
-    # Interleaved so the two special ids land in different pages once the
-    # record cap is patched down to 2.
-    ids = [plain_ids[0], quote_id, plain_ids[1], backslash_id, *plain_ids[2:]]
-
-    captured_filters: list[str] = []
-
-    def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
-        captured_filters.append(filter)
-        return []
-
-    s._client.query.side_effect = _side_effect
-
-    with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 2):
-        await s.get_by_ids(ids)
-
-    assert s._client.query.call_count > 1  # actually paged, not one shot
-
-    joined_filters = " ".join(captured_filters)
-    assert f'"{_escape_milvus_str(quote_id)}"' in joined_filters
-    assert f'"{_escape_milvus_str(backslash_id)}"' in joined_filters
-
-
-@pytest.mark.asyncio
-async def test_get_vectors_by_ids_returns_buffered_portion_on_page_failure(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A page raising partway through server-side pagination must not crash
-    get_vectors_by_ids: it falls back to whatever was already resolved from
-    the buffer, logs the failure, and swallows the exception — and the
-    first page's rows, which succeeded before the second page raised, must
-    not leak into the result either (no partial pages)."""
-    embed = MockEmbeddingFunc(dim=8)
-    s = _make_storage(embed)
-
-    await s.upsert({"buffered-1": {"content": "hello"}})
-
-    remaining_ids = [f"srv-{i}" for i in range(10)]
-    ids = ["buffered-1", *remaining_ids]
-
-    call_count = 0
-
-    def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise MilvusException(message="milvus down mid-page")
-        count = _requested_id_count(filter)
-        return [
-            {"id": f"row-{call_count}-{i}", "vector": [0.0] * 8} for i in range(count)
+        server_ids = [f"srv-{i}" for i in range(12)]
+        # Interleave the buffered/deleted ids among the server ids so a
+        # positional check actually exercises order preservation.
+        ids = [
+            server_ids[0],
+            "buffered-1",
+            server_ids[1],
+            "deleted-1",
+            *server_ids[2:],
         ]
 
-    s._client.query.side_effect = _side_effect
+        captured_filters: list[str] = []
+        s._client.query.side_effect = _ordered_echo_side_effect(
+            server_ids, captured_filters
+        )
 
-    lightrag_logger = logging.getLogger("lightrag")
-    previous_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True  # caplog hooks the root logger
-    try:
-        with caplog.at_level(logging.ERROR, logger="lightrag"):
-            with patch(
-                "lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 2
-            ):
-                vectors = await s.get_vectors_by_ids(ids)
-    finally:
-        lightrag_logger.propagate = previous_propagate
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 5):
+            results = await s.get_by_ids(ids)
 
-    # Buffered vector survives; nothing from the server (not even the first,
-    # successful page) leaked into the result.
-    assert vectors == {"buffered-1": s._pending_vector_docs["buffered-1"].vector}
-    assert not any(doc_id.startswith("row-") for doc_id in vectors)
-    assert "Error retrieving vectors by IDs" in caplog.text
+        assert len(results) == len(ids)
+        for doc_id, row in zip(ids, results):
+            if doc_id == "deleted-1":
+                assert row is None
+            elif doc_id == "buffered-1":
+                assert row["id"] == "buffered-1"
+                assert row["content"] == "buffered content"
+            else:
+                assert row == {"id": doc_id, "content": f"server-{doc_id}"}
+
+        # The buffered upsert and the pending delete must never reach the server.
+        for filter_expr in captured_filters:
+            assert "buffered-1" not in filter_expr
+            assert "deleted-1" not in filter_expr
+
+        assert s._client.query.call_count > 1
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_ids_missing_from_the_database(self) -> None:
+        """An id that is neither buffered nor pending-delete but simply doesn't
+        exist in Milvus must come back as None at its own position — the missing
+        row must not raise, and must not shift the other results out of place."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        ids = ["missing-1"]
+
+        results = await s.get_by_ids(ids)
+
+        assert results == [None]
+
+    @pytest.mark.asyncio
+    async def test_escapes_special_characters_across_pages(self) -> None:
+        """Escaping must hold for every page's filter, not just a single
+        unpaginated call — an id containing `"` or `\\` must still come out
+        correctly escaped in whichever page it lands in."""
+        embed = MockEmbeddingFunc(dim=8)
+        s = _make_storage(embed, meta_fields={"content"})
+
+        quote_id = 'doc"1'
+        backslash_id = "doc\\2"
+        plain_ids = [f"plain-{i}" for i in range(4)]
+        # Interleaved so the two special ids land in different pages once the
+        # record cap is patched down to 2.
+        ids = [plain_ids[0], quote_id, plain_ids[1], backslash_id, *plain_ids[2:]]
+
+        captured_filters: list[str] = []
+
+        def _side_effect(*, filter: str, **kwargs: Any) -> list[dict[str, Any]]:
+            captured_filters.append(filter)
+            return []
+
+        s._client.query.side_effect = _side_effect
+
+        with patch("lightrag.kg.milvus_impl.MILVUS_QUERY_MAX_RECORDS_PER_BATCH", 2):
+            await s.get_by_ids(ids)
+
+        assert s._client.query.call_count > 1
+
+        joined_filters = " ".join(captured_filters)
+        assert f'"{_escape_milvus_str(quote_id)}"' in joined_filters
+        assert f'"{_escape_milvus_str(backslash_id)}"' in joined_filters
