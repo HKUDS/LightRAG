@@ -19,7 +19,7 @@ import pytest
 
 from lightrag.utils import (
     validate_graph_attributes,
-    validate_xml_attribute_values,
+    validate_xml_attributes,
 )
 
 pytestmark = pytest.mark.offline
@@ -163,10 +163,16 @@ class TestAttributeNames:
         """Only the *leading* ``$`` is an operator; mid-name it is just a char."""
         validate_graph_attributes({"cost$usd": "x"}, context="entity 'X'")
 
-    @pytest.mark.parametrize("key", [1, None, ("a",), ""])
-    def test_non_string_and_empty_names_are_rejected(self, key):
-        with pytest.raises(ValueError, match="must be a non-empty string"):
+    @pytest.mark.parametrize("key", [1, None, ("a",)])
+    def test_non_string_names_are_rejected(self, key):
+        """Caught by the character rule first, which names the actual type."""
+        with pytest.raises(ValueError, match="must be a string, got"):
             validate_graph_attributes({key: "x"}, context="entity 'X'")
+
+    def test_an_empty_name_is_rejected(self):
+        """XML would encode it; it is the interpretation rule that refuses it."""
+        with pytest.raises(ValueError, match="must be a non-empty string"):
+            validate_graph_attributes({"": "x"}, context="entity 'X'")
 
 
 def test_context_appears_in_the_message():
@@ -193,7 +199,7 @@ class TestTheTwoValueRulesDiffer:
     )
     def test_unportable_but_encodable_values_split_the_two_rules(self, value):
         # XML can carry it -- GraphML round-trips all of these unchanged.
-        validate_xml_attribute_values({"legacy": value}, context="entity 'X'")
+        validate_xml_attributes({"legacy": value}, context="entity 'X'")
         # The portable contract cannot: the Neo4j driver refuses to pack them.
         with pytest.raises(ValueError, match="attribute 'legacy'"):
             validate_graph_attributes({"legacy": value}, context="entity 'X'")
@@ -203,11 +209,39 @@ class TestTheTwoValueRulesDiffer:
     )
     def test_unencodable_values_are_refused_by_both(self, value):
         with pytest.raises(ValueError, match="attribute 'attr'"):
-            validate_xml_attribute_values({"attr": value}, context="entity 'X'")
+            validate_xml_attributes({"attr": value}, context="entity 'X'")
         with pytest.raises(ValueError, match="attribute 'attr'"):
             validate_graph_attributes({"attr": value}, context="entity 'X'")
 
     @pytest.mark.parametrize("value", ["text", 1, 2.5, True, "multi\nline"])
     def test_ordinary_values_are_accepted_by_both(self, value):
-        validate_xml_attribute_values({"attr": value}, context="entity 'X'")
+        validate_xml_attributes({"attr": value}, context="entity 'X'")
         validate_graph_attributes({"attr": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize("name", ["a.b", "$set", "", "source_ids.0"])
+    def test_interpreted_names_split_the_two_rules(self, name):
+        """GraphML stores them; MongoDB would read them as a path or operator."""
+        validate_xml_attributes({name: "x"}, context="entity 'X'")
+        with pytest.raises(ValueError, match="invalid attribute name"):
+            validate_graph_attributes({name: "x"}, context="entity 'X'")
+
+    @pytest.mark.parametrize("name", ["display-name", "has space", "名前", "cost$usd"])
+    def test_merely_unusual_names_are_accepted_by_both(self, name):
+        """Neither backend interprets these, and both can store them."""
+        validate_xml_attributes({name: "x"}, context="entity 'X'")
+        validate_graph_attributes({name: "x"}, context="entity 'X'")
+
+    @pytest.mark.parametrize(
+        "name", ["bad\x0bname", "bad\x00name", "bad\ud800name", "bad\ufffename"]
+    )
+    def test_unencodable_names_are_refused_by_both(self, name):
+        """The portable rule is a superset: XML cannot encode it, so no backend can.
+
+        A name MongoDB stores happily but GraphML cannot serialize is still
+        outside the intersection, so caller input must not carry one even on a
+        Mongo deployment.
+        """
+        with pytest.raises(ValueError, match="attribute name"):
+            validate_xml_attributes({name: "x"}, context="entity 'X'")
+        with pytest.raises(ValueError, match="attribute name"):
+            validate_graph_attributes({name: "x"}, context="entity 'X'")

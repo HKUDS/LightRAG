@@ -36,7 +36,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
-    validate_graph_attribute_names,
+    validate_interpreted_attribute_names,
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -2317,7 +2317,12 @@ class MongoGraphStorage(BaseGraphStorage):
         rewrites the first element of the chunk-attribution array instead of
         creating a field called ``source_ids.0``, and a leading ``$`` is read as
         an update operator. Unlike the value rules, this hazard is specific to
-        this backend -- see ``validate_graph_attribute_names``.
+        this backend -- see ``validate_interpreted_attribute_names``.
+
+        Characters are deliberately not checked: MongoDB stores a name holding a
+        control character just fine, so rejecting one here would be a rule wider
+        than this backend's hazard. That character rule belongs to the
+        GraphML-backed store, which genuinely cannot serialize such a name.
 
         Safe against pre-existing data despite rewrite paths spreading stored
         attributes back into the payload: the two refused shapes cannot come
@@ -2329,7 +2334,7 @@ class MongoGraphStorage(BaseGraphStorage):
         *is* stored flat and does round-trip, so rejecting it would strand the
         entity.
         """
-        validate_graph_attribute_names(attributes, context=context)
+        validate_interpreted_attribute_names(attributes, context=context)
         reserved = sorted(self._RESERVED_ATTRIBUTE_NAMES.intersection(attributes))
         if reserved:
             raise ValueError(

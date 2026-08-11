@@ -8,7 +8,7 @@ from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
     logger,
-    validate_xml_attribute_values,
+    validate_xml_attributes,
     validate_workspace,
 )
 from lightrag.base import BaseGraphStorage
@@ -111,8 +111,8 @@ class NetworkXStorage(BaseGraphStorage):
 
     Attribute validation (why this backend validates, and why the rule is
     narrower than the caller contract):
-        The ``upsert_*`` methods reject a value XML cannot encode
-        (``validate_xml_attribute_values``) **before** touching
+        The ``upsert_*`` methods reject an attribute name or value XML
+        cannot encode (``validate_xml_attributes``) **before** touching
         ``self._graph``. This backend needs the guard more than the
         others because of the shape above, not because its callers are
         less trustworthy: the mutation happens in memory, the
@@ -135,11 +135,19 @@ class NetworkXStorage(BaseGraphStorage):
         caller input enters (``utils_graph``) costs nothing. The portable
         bounds are not this backend's to police.
 
-        Names are not checked at all, for the same reason: GraphML places
-        no constraint on them, so a rule would buy nothing and would
-        strand a node whose stored names predate this validation. Name
-        rules belong to the backends that *interpret* names (MongoDB's
-        ``$set`` paths).
+        Names get the same XML rule and nothing more. GraphML writes them
+        into the XML ``attr.name`` field, so an unencodable *name* breaks
+        the write exactly like an unencodable value -- but ``a.b``,
+        ``$set``, ``display-name`` and ``has space`` all round-trip, so
+        refusing those would strand a node whose stored names predate
+        this validation while preventing nothing. Rules about names a
+        backend *interprets* belong to the backends that interpret them
+        (MongoDB's ``$set`` paths).
+
+        The XML name rule is safe to apply to a rewrite payload for the
+        reason a portable rule would not be: a name it rejects can never
+        have been persisted here, because the write that would have
+        stored it failed.
 
         The batch variants validate the entire batch before applying any
         of it: rejecting halfway would leave the earlier items in the
@@ -326,7 +334,7 @@ class NetworkXStorage(BaseGraphStorage):
         Validates before mutating: see *Attribute validation* in the class
         docstring.
         """
-        validate_xml_attribute_values(node_data, context=self._node_context(node_id))
+        validate_xml_attributes(node_data, context=self._node_context(node_id))
         graph = await self._get_graph()
         graph.add_node(node_id, **node_data)
 
@@ -345,7 +353,7 @@ class NetworkXStorage(BaseGraphStorage):
         Validates before mutating: see *Attribute validation* in the class
         docstring.
         """
-        validate_xml_attribute_values(
+        validate_xml_attributes(
             edge_data, context=self._edge_context(source_node_id, target_node_id)
         )
         graph = await self._get_graph()
@@ -369,9 +377,7 @@ class NetworkXStorage(BaseGraphStorage):
         # would leave the earlier nodes applied to the in-memory graph, which is
         # the partial-mutation state this validation exists to prevent.
         for node_id, node_data in nodes:
-            validate_xml_attribute_values(
-                node_data, context=self._node_context(node_id)
-            )
+            validate_xml_attributes(node_data, context=self._node_context(node_id))
         graph = await self._get_graph()
         for node_id, node_data in nodes:
             graph.add_node(node_id, **node_data)
@@ -400,9 +406,7 @@ class NetworkXStorage(BaseGraphStorage):
         """
         # Whole batch first -- see upsert_nodes_batch.
         for src, tgt, edge_data in edges:
-            validate_xml_attribute_values(
-                edge_data, context=self._edge_context(src, tgt)
-            )
+            validate_xml_attributes(edge_data, context=self._edge_context(src, tgt))
         graph = await self._get_graph()
         for src, tgt, edge_data in edges:
             graph.add_edge(src, tgt, **edge_data)

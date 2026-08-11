@@ -1,4 +1,4 @@
-"""NetworkXStorage rejects an unencodable attribute value before mutating.
+"""NetworkXStorage rejects an unencodable attribute name or value before mutating.
 
 This backend mutates ``self._graph`` in ``upsert_*`` and serializes it later in
 ``index_done_callback``, with no rollback in between. A value GraphML cannot
@@ -118,18 +118,73 @@ class TestUpsertNode:
         assert await storage.index_done_callback() is True
 
     @pytest.mark.asyncio
-    async def test_attribute_names_are_not_restricted(self, storage):
-        """Names are inert in GraphML, and rejecting them would break re-ingest.
-
-        A graph written before this validation existed can hold an attribute
-        name this backend would now refuse; the ingestion merge re-writes stored
-        attributes verbatim, so a name check here would turn that node into a
-        permanently failing document for no safety gain.
-        """
+    async def test_a_name_a_portable_rule_would_refuse_is_kept(self, storage):
+        """See TestAttributeNames for the full name contract."""
         await storage.upsert_node("n1", {"entity_id": "n1", "legacy.name": "kept"})
 
         assert (await storage.get_node("n1"))["legacy.name"] == "kept"
         assert await storage.index_done_callback() is True
+
+
+class TestAttributeNames:
+    """Names get the XML rule too -- GraphML writes them into ``attr.name``.
+
+    Checked against networkx, not assumed: a name holding a control character, a
+    lone surrogate or U+FFFE makes ``write_graphml`` raise, which is the same
+    instance-wide outage an unencodable value causes. And the check is safe on a
+    rewrite payload precisely because such a name can never have been persisted
+    here -- the write that would have stored it failed.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("bad\x0bname", id="control-char"),
+            pytest.param("bad\x00name", id="nul"),
+            pytest.param("bad\ud800name", id="lone-surrogate"),
+            pytest.param("bad\ufffename", id="non-character"),
+        ],
+    )
+    async def test_unencodable_name_is_rejected_before_mutating(self, storage, name):
+        await _seed(storage)
+
+        with pytest.raises(ValueError, match="attribute name"):
+            await storage.upsert_node("bad", {"entity_id": "bad", name: "x"})
+
+        assert not await storage.has_node("bad")
+        await storage.upsert_node("after", {"entity_id": "after"})
+        assert await storage.index_done_callback() is True
+        assert "after" in _graphml(storage)
+
+    @pytest.mark.asyncio
+    async def test_a_non_string_name_is_a_validation_error(self, storage):
+        """networkx would raise TypeError; a 500 for bad input is not useful."""
+        with pytest.raises(ValueError, match="must be a string, got int"):
+            await storage.upsert_node("n1", {"entity_id": "n1", 1: "x"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name",
+        ["a.b", "$set", "display-name", "has space", "名前", "", "tab\tname"],
+    )
+    async def test_encodable_names_are_accepted_and_round_trip(self, storage, name):
+        """A portable rule would refuse several of these; GraphML stores them all.
+
+        Refusing them would strand any node whose stored names predate this
+        validation, since rewrites spread stored attributes back into the payload.
+        """
+        await storage.upsert_node("n1", {"entity_id": "n1", name: "kept"})
+        assert await storage.index_done_callback() is True
+
+        assert nx.read_graphml(storage._graphml_xml_file).nodes["n1"][name] == "kept"
+
+    @pytest.mark.asyncio
+    async def test_edge_names_are_validated_too(self, storage):
+        with pytest.raises(ValueError, match="attribute name"):
+            await storage.upsert_edge("a", "b", {"weight": 1.0, "bad\x0bname": "x"})
+
+        assert not await storage.has_edge("a", "b")
 
 
 class TestUpsertEdge:
