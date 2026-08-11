@@ -15,8 +15,11 @@ The behavioural regression tests for the vulnerability this validator closes
 
 from __future__ import annotations
 
+import enum
 import sys
+from decimal import Decimal
 
+import numpy as np
 import pytest
 
 from lightrag.utils import (
@@ -286,3 +289,53 @@ class TestIntegerStringificationLimit:
             xml_attribute_value_rejection(10 ** (sys.get_int_max_str_digits() - 10))
             is None
         )
+
+
+class _Colour(enum.StrEnum):
+    RED = "red"
+
+
+class TestExactTypeResolution:
+    """A subclass of a supported scalar is not a supported scalar.
+
+    networkx's GraphML writer looks the value's type up in a dict, so
+    ``isinstance`` is the wrong test -- an ``enum.StrEnum`` passes it and still
+    breaks the write. Both rules refuse subclasses, since neither backend can
+    take one: the portable rule delegates to the XML rule for exactly this.
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(_Colour.RED, id="str-enum"),
+            pytest.param(np.str_("x"), id="numpy-str"),
+        ],
+    )
+    def test_subclasses_are_refused_by_both(self, value):
+        with pytest.raises(ValueError, match="GraphML resolves value types exactly"):
+            validate_xml_attributes({"v": value}, context="entity 'X'")
+        with pytest.raises(ValueError, match="GraphML resolves value types exactly"):
+            validate_graph_attributes({"v": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize("value", ["text", 5, 1.5, True, False, 0, ""])
+    def test_the_four_builtin_scalars_are_accepted(self, value):
+        validate_xml_attributes({"v": value}, context="entity 'X'")
+        validate_graph_attributes({"v": value}, context="entity 'X'")
+
+    def test_a_non_scalar_keeps_the_plain_message(self):
+        """`Decimal` is not a subclass of any supported scalar, so the subclass
+        remark would be noise -- it gets the ordinary type message."""
+        assert "string, number or boolean" in (
+            xml_attribute_value_rejection(Decimal("1.5")) or ""
+        )
+
+    def test_a_numpy_float_is_refused_although_networkx_lists_it(self):
+        """Deliberately stricter than networkx's table.
+
+        Its ``construct_types`` also registers the concrete numpy int/float
+        scalar types, but ``networkx`` has no version floor in pyproject.toml, so
+        only the four builtins are guaranteed across the range we allow. Being
+        stricter costs nothing here: a refused value could never have been
+        persisted, so nothing is stranded.
+        """
+        assert xml_attribute_value_rejection(np.float64(1.5)) is not None
