@@ -6776,6 +6776,46 @@ _GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
 _GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
 
 
+def _graphml_encodable_types() -> frozenset[type]:
+    """The exact types networkx's GraphML writer knows how to encode.
+
+    Asked of networkx rather than enumerated here, because ``add_data`` resolves
+    a value by looking its type up in ``self.xml_type`` -- so that table *is* the
+    definition, and reproducing it by hand would drift. Sourcing it also makes
+    the guard's justification true by construction: every type this module
+    refuses is a type the write would have failed on.
+
+    An ``isinstance`` shortcut over ``np.integer`` / ``np.floating`` would be
+    wrong, not merely loose: ``np.longdouble`` is an ``np.floating`` and is *not*
+    in the table, so it would be accepted here and rejected at write time --
+    the poisoning this exists to prevent.
+
+    The four builtins are unioned in as a floor, and a failure to read the table
+    degrades to exactly that floor. ``networkx`` carries no version bound in
+    pyproject.toml, so its internals could move; degrading to the floor is
+    stricter, never looser, so it cannot open the hole it guards.
+    """
+    builtin_scalars = frozenset({str, int, float, bool})
+    try:
+        from networkx.readwrite.graphml import GraphML
+
+        probe = GraphML()
+        probe.construct_types()
+        return frozenset(probe.xml_type) | builtin_scalars
+    except Exception:  # networkx internals moved: fall back to the strict floor
+        return builtin_scalars
+
+
+_GRAPHML_ENCODABLE_TYPES = _graphml_encodable_types()
+
+# The intersection every registered backend can carry. Narrower than
+# ``_GRAPHML_ENCODABLE_TYPES``, which also holds the numpy scalar types GraphML
+# writes: those are not portable, and not marginally so -- ``json.dumps``
+# (PGTableGraphStorage's jsonb column) and ``bson`` (MongoGraphStorage) both
+# refuse ``np.float32`` / ``np.int64`` / ``np.uint32`` / ``np.bool_`` outright.
+_PORTABLE_SCALAR_TYPES = frozenset({str, int, float, bool})
+
+
 def xml_attribute_name_rejection(name: Any) -> str | None:
     """Explain why *name* cannot be used as an XML-serialized attribute name.
 
@@ -6849,25 +6889,24 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
     # user ``class X(str)`` all satisfy ``isinstance`` and all make
     # ``write_graphml`` raise. Read from the installed networkx, not assumed.
     #
-    # Deliberately narrower than that dict, which also lists the concrete numpy
-    # int/float scalar types: ``networkx`` carries no version floor in
-    # pyproject.toml, so the four builtins are the only entries guaranteed across
-    # the range we allow. Being stricter is free here in a way it is not for the
-    # rules on stored data -- a value this refuses could never have been
-    # persisted, because the write that would have stored it fails -- and nothing
-    # in this codebase puts a numpy scalar on a graph attribute.
+    # The set comes from that same table (see ``_graphml_encodable_types``), so
+    # it includes the numpy scalar types GraphML writes -- and so that every type
+    # refused here is one the write would genuinely have failed on.
     value_type = type(value)
-    if value_type not in (str, int, float, bool):
+    if value_type not in _GRAPHML_ENCODABLE_TYPES:
         if isinstance(value, (str, int, float, bool)):
             # A subclass: worth saying so, because the caller reasonably expects
             # a `str` subclass to be a string.
             return (
-                f"must be exactly a str, int, float or bool, got "
-                f"{value_type.__name__} (GraphML resolves value types exactly, "
-                "so a subclass is refused)"
+                f"must be a type GraphML can encode, got {value_type.__name__} "
+                "(GraphML resolves value types exactly, so a subclass of a "
+                "supported scalar is still refused)"
             )
         return f"must be a string, number or boolean, got {value_type.__name__}"
-    if value_type is bool:
+    if value_type is not str and value_type is not int:
+        # bool, float and the numpy numeric scalars need nothing further: the
+        # only remaining checks are the digit limit (int) and the character rule
+        # (str). A numpy int is width-bounded, so it cannot hit the digit limit.
         return None
     if value_type is int:
         # GraphML stores values as text, and networkx stringifies them on write.
@@ -6888,8 +6927,6 @@ def xml_attribute_value_rejection(value: Any) -> str | None:
             read_limit = getattr(sys, "get_int_max_str_digits", None)
             limit = f" (limit {read_limit()} digits)" if read_limit else ""
             return f"has more digits than Python will render as text{limit}"
-        return None
-    if value_type is float:
         return None
     match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
     if match:
@@ -6938,16 +6975,27 @@ def graph_attribute_value_rejection(value: Any) -> str | None:
     rejection = xml_attribute_value_rejection(value)
     if rejection is not None:
         return rejection
-    # The XML rule above already pinned the exact type, so ``type(value) is int``
-    # here rather than ``isinstance`` -- a bool cannot reach the range check.
-    if type(value) is int:
+    # The XML rule accepts what GraphML can write, which includes numpy scalars;
+    # portability is narrower. ``json.dumps`` (PGTableGraphStorage's jsonb
+    # column) and ``bson`` (MongoGraphStorage) both refuse ``np.float32`` /
+    # ``np.int64`` / ``np.uint32`` / ``np.bool_``, so a numpy value that persists
+    # fine on NetworkX cannot cross to another backend.
+    value_type = type(value)
+    if value_type not in _PORTABLE_SCALAR_TYPES:
+        return (
+            f"must be a str, int, float or bool to be portable across graph "
+            f"backends, got {value_type.__name__}"
+        )
+    # The type is pinned exactly now, so ``is int`` rather than ``isinstance`` --
+    # a bool cannot reach the range check.
+    if value_type is int:
         if not _GRAPH_ATTRIBUTE_INT_MIN <= value <= _GRAPH_ATTRIBUTE_INT_MAX:
             return (
                 "must be a 64-bit integer "
                 f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
             )
         return None
-    if type(value) is float and not math.isfinite(value):
+    if value_type is float and not math.isfinite(value):
         return "must be a finite number"
     return None
 
