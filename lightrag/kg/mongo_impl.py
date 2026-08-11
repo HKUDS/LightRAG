@@ -36,6 +36,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
+    validate_interpreted_attribute_names,
     validate_workspace,
 )
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -799,12 +800,19 @@ class MongoDocStatusStorage(DocStatusStorage):
         result = await cursor.to_list()
         processed_result = {}
         for doc in result:
+            doc_id_hint = doc.get("_id", "<unknown>") if doc else "<unknown>"
             try:
-                data = self._prepare_doc_status_data(doc)
-                processed_result[doc["_id"]] = DocProcessingStatus(**data)
-            except KeyError as e:
+                processed_result[doc["_id"]] = (
+                    self._mongo_doc_processing_status_from_doc(doc)
+                )
+            except (KeyError, TypeError) as e:
+                # TypeError, not just KeyError: DocProcessingStatus is a
+                # dataclass, so a row missing a required field (or carrying an
+                # unknown one) raises TypeError. Catching KeyError alone left
+                # the real failure uncaught and crashed the whole listing.
                 logger.error(
-                    f"[{self.workspace}] Missing required field for document {doc['_id']}: {e}"
+                    f"[{self.workspace}] Missing required field for document "
+                    f"{doc_id_hint}: {e}"
                 )
                 continue
         return processed_result
@@ -2291,10 +2299,62 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
+    # MongoDB owns ``_id``: it is the node/edge document key and this class uses
+    # it as the update *filter*, so a caller-supplied ``_id`` in the attribute
+    # mapping is never an attribute -- it is an attempt to move the document.
+    # No legacy exposure: ``get_node`` / ``get_edge`` already strip ``_id`` for
+    # exactly this reason, so a rewrite never carries it back in.
+    # (``source_node_id`` / ``target_node_id`` / ``edge_lo`` / ``edge_hi`` need no
+    # entry here: ``upsert_edge`` assigns them *after* spreading the caller's
+    # mapping, so a supplied value is discarded by construction.)
+    _RESERVED_ATTRIBUTE_NAMES = frozenset({"_id"})
+
+    def _validate_attribute_names(self, attributes: dict, *, context: str) -> None:
+        """Reject attribute names MongoDB would interpret rather than store.
+
+        Attribute names reach the server inside a ``$set`` document, where they
+        are *field paths*: a dot addresses a subfield, so ``{"source_ids.0": x}``
+        rewrites the first element of the chunk-attribution array instead of
+        creating a field called ``source_ids.0``, and a leading ``$`` is read as
+        an update operator. Unlike the value rules, this hazard is specific to
+        this backend -- see ``validate_interpreted_attribute_names``.
+
+        Characters are deliberately not checked: MongoDB stores a name holding a
+        control character just fine, so rejecting one here would be a rule wider
+        than this backend's hazard. That character rule belongs to the
+        GraphML-backed store, which genuinely cannot serialize such a name.
+
+        Safe against pre-existing data despite rewrite paths spreading stored
+        attributes back into the payload: the two refused shapes cannot come
+        *out* of this collection. A legacy ``{"a.b": v}`` was interpreted as a
+        path when it was written, so the document holds ``{"a": {"b": v}}`` and
+        ``get_node`` returns the key ``a``; a ``$``-prefixed name was refused by
+        the server outright. That is also why the rule stops at the
+        interpretation hazard -- a merely unusual name such as ``display-name``
+        *is* stored flat and does round-trip, so rejecting it would strand the
+        entity.
+        """
+        validate_interpreted_attribute_names(attributes, context=context)
+        reserved = sorted(self._RESERVED_ATTRIBUTE_NAMES.intersection(attributes))
+        if reserved:
+            raise ValueError(
+                f"{context}: attribute name(s) {', '.join(reserved)} are reserved "
+                "by MongoDB and cannot be set as graph attributes"
+            )
+
+    def _node_context(self, node_id: str) -> str:
+        """Error-message prefix identifying a node write."""
+        return f"[{self.workspace}] node `{node_id}`"
+
+    def _edge_context(self, source_node_id: str, target_node_id: str) -> str:
+        """Error-message prefix identifying an edge write."""
+        return f"[{self.workspace}] edge `{source_node_id}`~`{target_node_id}`"
+
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Insert or update a node document.
         """
+        self._validate_attribute_names(node_data, context=self._node_context(node_id))
         update_doc = {"$set": {**node_data}}
         if node_data.get("source_id", ""):
             update_doc["$set"]["source_ids"] = node_data["source_id"].split(
@@ -2325,6 +2385,16 @@ class MongoGraphStorage(BaseGraphStorage):
         # One bulk_write instead of two round trips, and $setOnInsert (the form
         # upsert_edges_batch already uses) so an endpoint that already carries
         # real properties is never touched. dict.fromkeys collapses a self-loop.
+        # Snapshot before validating, and build the update from the snapshot
+        # below. The endpoint bulk_write awaits between the check and the use, so
+        # validating the caller's own mapping would leave a window in which a
+        # caller that retains it could add a field path such as ``source_ids.0``
+        # after the check. (This also subsumes the "copy so we never mutate the
+        # caller's dict" reason the copy below already existed for.)
+        edge_attributes = dict(edge_data)
+        self._validate_attribute_names(
+            edge_attributes, context=self._edge_context(source_node_id, target_node_id)
+        )
         await self.collection.bulk_write(
             [
                 UpdateOne({"_id": nid}, {"$setOnInsert": {"_id": nid}}, upsert=True)
@@ -2335,10 +2405,9 @@ class MongoGraphStorage(BaseGraphStorage):
 
         edge_lo, edge_hi = _canonical_edge_endpoints(source_node_id, target_node_id)
 
-        # Copy so we never mutate the caller's edge_data dict.
-        set_doc: dict = {**edge_data}
-        if edge_data.get("source_id", ""):
-            set_doc["source_ids"] = edge_data["source_id"].split(GRAPH_FIELD_SEP)
+        set_doc: dict = dict(edge_attributes)
+        if edge_attributes.get("source_id", ""):
+            set_doc["source_ids"] = edge_attributes["source_id"].split(GRAPH_FIELD_SEP)
         set_doc["source_node_id"] = source_node_id
         set_doc["target_node_id"] = target_node_id
         set_doc["edge_lo"] = edge_lo
@@ -2368,6 +2437,9 @@ class MongoGraphStorage(BaseGraphStorage):
             return
         ops: list[tuple[Any, int, str]] = []
         for node_id, node_data in nodes:
+            self._validate_attribute_names(
+                node_data, context=self._node_context(node_id)
+            )
             update_doc: dict = {"$set": {**node_data}}
             if node_data.get("source_id", ""):
                 update_doc["$set"]["source_ids"] = node_data["source_id"].split(
@@ -2419,6 +2491,21 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
+        # Whole batch first: the endpoint-placeholder bulk_write below happens
+        # before any edge document is written, so rejecting mid-loop would leave
+        # placeholder nodes behind for edges that were never created.
+        #
+        # Snapshot each mapping as it is validated and use the snapshots for the
+        # documents built after the placeholder await -- see upsert_edge for the
+        # window that closes.
+        validated_edges: list[tuple[str, str, dict]] = []
+        for src, tgt, edge_data in edges:
+            edge_attributes = dict(edge_data)
+            self._validate_attribute_names(
+                edge_attributes, context=self._edge_context(src, tgt)
+            )
+            validated_edges.append((src, tgt, edge_attributes))
+
         # Both endpoints, not just the source — see upsert_edge for why a
         # target-only endpoint is externally visible as an inconsistency.
         endpoint_ids = list(
@@ -2450,10 +2537,10 @@ class MongoGraphStorage(BaseGraphStorage):
         # and avoids an intra-batch duplicate-key error from two ops inserting
         # the same endpoint pair.
         deduped_ops: dict[tuple[str, str], tuple[Any, int, str]] = {}
-        for source_node_id, target_node_id, edge_data in edges:
-            update_doc: dict = {"$set": {**edge_data}}
-            if edge_data.get("source_id", ""):
-                update_doc["$set"]["source_ids"] = edge_data["source_id"].split(
+        for source_node_id, target_node_id, edge_attributes in validated_edges:
+            update_doc: dict = {"$set": dict(edge_attributes)}
+            if edge_attributes.get("source_id", ""):
+                update_doc["$set"]["source_ids"] = edge_attributes["source_id"].split(
                     GRAPH_FIELD_SEP
                 )
             update_doc["$set"]["source_node_id"] = source_node_id
@@ -2612,6 +2699,83 @@ class MongoGraphStorage(BaseGraphStorage):
             docs_by_id[str(doc["_id"])] = doc
         return [docs_by_id[node_id] for node_id in node_ids if node_id in docs_by_id]
 
+    async def _rank_edge_endpoints_by_degree(
+        self, limit: int, skip: int = 0
+    ) -> list[str]:
+        """Rank edge endpoints by undirected degree, ties on the label ascending.
+
+        Paged rather than fetched whole because the ``$limit`` runs server-side:
+        the caller cannot tell how many of a page really have node documents
+        until it has fetched them, so it needs a way to ask for the next ones.
+        The sort is a TOTAL order -- degree descending, then the unique ``_id``
+        -- which is what makes ``$skip`` paging over it stable across passes.
+        """
+        if limit <= 0:
+            return []
+
+        pipeline: list[dict[str, Any]] = [
+            {"$project": {"source_node_id": 1, "_id": 0}},
+            {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
+            {
+                "$unionWith": {
+                    "coll": self._edge_collection_name,
+                    "pipeline": [
+                        {"$project": {"target_node_id": 1, "_id": 0}},
+                        {
+                            "$group": {
+                                "_id": "$target_node_id",
+                                "degree": {"$sum": 1},
+                            }
+                        },
+                    ],
+                }
+            },
+            {"$group": {"_id": "$_id", "degree": {"$sum": "$degree"}}},
+            # Degree descending, then label ascending. The tie-break is the
+            # BaseGraphStorage contract: $limit cuts a band of equal-degree
+            # entities, and without a second sort key which ones survive is
+            # whatever order the aggregation happens to emit.
+            {"$sort": {"degree": -1, "_id": 1}},
+        ]
+        if skip:
+            pipeline.append({"$skip": skip})
+        pipeline.append({"$limit": limit})
+
+        cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
+        return [str(doc["_id"]) async for doc in cursor]
+
+    async def _accept_existing_nodes(
+        self,
+        candidate_ids: list[str],
+        limit: int,
+        result: KnowledgeGraph,
+        accepted: list[str],
+    ) -> None:
+        """Append the candidates that really have node documents, up to `limit`.
+
+        ``_fetch_nodes_by_ids`` preserves the requested order and drops ids with
+        no document, so consuming it in order preserves the ranking and never
+        lets an id that resolves to nothing occupy a slot.
+
+        Asks for the current shortfall first and for the remainder only if that
+        did not fill it, so at most two queries: the caller passes whole ranked
+        pages, and filling the handful of slots a few dangling ids vacated must
+        not pull a page of node documents to place a few nodes.
+        """
+        if not candidate_ids or len(accepted) >= limit:
+            return
+
+        head = candidate_ids[: limit - len(accepted)]
+        for chunk in (head, candidate_ids[len(head) :]):
+            if not chunk or len(accepted) >= limit:
+                break
+            docs = await self._fetch_nodes_by_ids(chunk, {"source_ids": 0})
+            for doc in docs:
+                if len(accepted) >= limit:
+                    break
+                accepted.append(str(doc["_id"]))
+                result.nodes.append(self._construct_graph_node(doc["_id"], doc))
+
     async def get_knowledge_graph_all_by_degree(
         self, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
@@ -2626,49 +2790,65 @@ class MongoGraphStorage(BaseGraphStorage):
 
         result.is_truncated = total_node_count > max_nodes
         if result.is_truncated:
-            # Get all node_ids ranked by degree if max_nodes exceeds total node count
-            pipeline = [
-                {"$project": {"source_node_id": 1, "_id": 0}},
-                {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
-                {
-                    "$unionWith": {
-                        "coll": self._edge_collection_name,
-                        "pipeline": [
-                            {"$project": {"target_node_id": 1, "_id": 0}},
-                            {
-                                "$group": {
-                                    "_id": "$target_node_id",
-                                    "degree": {"$sum": 1},
-                                }
-                            },
-                        ],
-                    }
-                },
-                {"$group": {"_id": "$_id", "degree": {"$sum": "$degree"}}},
-                {"$sort": {"degree": -1}},
-                {"$limit": max_nodes},
-            ]
-            cursor = await self.edge_collection.aggregate(pipeline, allowDiskUse=True)
-
-            node_ids = []
-            async for doc in cursor:
-                node_id = str(doc["_id"])
-                node_ids.append(node_id)
+            # The ranked ids are edge ENDPOINTS, and upsert_edge only guarantees
+            # the source node exists, so one can be a dangling id with no node
+            # document -- a legacy state this backend deliberately tolerates
+            # (see the traversal, which counts only documents it actually read).
+            # Taking the $limit as final let such an id consume a slot and the
+            # answer came back short, reachable as soon as ties break on the
+            # label because a dangling label sorts like any other.
+            # Page the band until the cap fills or the band runs out, so a
+            # vacated slot always goes to the next-ranked entry. The loop is
+            # what keeps the top-up below meaning what it says: it is reachable
+            # only once every edge-backed entity has been offered a slot, so
+            # everything it can still pick really is degree-0. Stopping earlier
+            # would let an isolate outrank an entity further down the band --
+            # only ONE dangling id in this page plus one in the next is enough
+            # to reach that, so it is not a corner.
+            #
+            # Whole pages, not shortfall-sized ones: a page is {_id, degree}
+            # rows, cheap next to the aggregation that produces it, so each
+            # extra pass should make as much progress as it can. The document
+            # fetch inside _accept_existing_nodes stays shortfall-sized.
+            node_ids: list[str] = []
+            skip = 0
+            while len(node_ids) < max_nodes:
+                ranked_page = await self._rank_edge_endpoints_by_degree(
+                    max_nodes, skip=skip
+                )
+                skip += len(ranked_page)
+                await self._accept_existing_nodes(
+                    ranked_page, max_nodes, result, node_ids
+                )
+                if len(ranked_page) < max_nodes:
+                    break  # short page: the band is exhausted
 
             if len(node_ids) < max_nodes:
+                # Top up from the isolated (degree-0) entities, in label order
+                # for the same reason the ranking above breaks ties on the
+                # label: an unordered `find` handed the shortfall to whichever
+                # documents the collection scan reached first. These come from
+                # the node collection, so they exist by construction and are
+                # appended directly. list(node_ids), not node_ids: the cursor is
+                # consumed while appending to the same list, and a live
+                # reference makes the $nin filter depend on when it serializes.
                 remaining = max_nodes - len(node_ids)
-                cursor = self.collection.find(
-                    {"_id": {"$nin": node_ids}},
-                    {"source_ids": 0},
-                ).limit(remaining)
+                cursor = (
+                    self.collection.find(
+                        {"_id": {"$nin": list(node_ids)}},
+                        {"source_ids": 0},
+                    )
+                    .sort("_id", 1)
+                    .limit(remaining)
+                )
                 async for doc in cursor:
                     node_ids.append(str(doc["_id"]))
+                    result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
-            docs = await self._fetch_nodes_by_ids(node_ids, {"source_ids": 0})
-            for doc in docs:
-                result.nodes.append(self._construct_graph_node(doc["_id"], doc))
-
-            # As node count reaches the limit, only need to fetch the edges that directly connect to these nodes
+            # As node count reaches the limit, only need to fetch the edges that
+            # directly connect to these nodes. Filtered on the RESOLVED ids: a
+            # dangling endpoint left in here would surface an edge pointing at a
+            # node the response does not contain.
             edge_cursor = self.edge_collection.find(
                 {
                     "$and": [
@@ -2682,7 +2862,6 @@ class MongoGraphStorage(BaseGraphStorage):
             cursor = self.collection.find({}, {"source_ids": 0})
 
             async for doc in cursor:
-                node_id = str(doc["_id"])
                 result.nodes.append(self._construct_graph_node(doc["_id"], doc))
 
             edge_cursor = self.edge_collection.find({})

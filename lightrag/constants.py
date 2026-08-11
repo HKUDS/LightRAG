@@ -151,6 +151,68 @@ DEFAULT_CHUNK_P_SIZE = 2000
 DEFAULT_P_REFERENCES_TAIL_N = 0
 DEFAULT_P_REFERENCES_HEADINGS = ("References", "Bibliography", "参考文献")
 
+# Decompression budget for the native DOCX engine. A .docx is a ZIP, so the
+# bytes it costs to parse are its UNCOMPRESSED size, which no other control on
+# the ingestion path bounds: MAX_UPLOAD_SIZE bounds the compressed artifact on
+# disk and MAX_REQUEST_BODY_BYTES bounds the request body. A 449 KiB .docx
+# declaring 200 MiB of document.xml passed both and drove peak RSS past 1.1 GB
+# (GHSA-2wpj-ffvv-2pq8).
+#
+# Both quantities come from the ZIP central directory, so the check costs one
+# infolist() and no decompression. A central directory that UNDERSTATES a
+# member is self-limiting rather than a bypass: CPython's zipfile stops
+# decompressing at the declared file_size and then fails the CRC, so a liar
+# buys at most the size it declared — which is the size this budget bounds.
+#
+# The ratio gate is what actually closes the amplification: 512 MiB alone would
+# still let a ~1 MB upload expand 500x. It is enforced both archive-wide and
+# against the cumulative expansion by which individual members exceed their
+# ratio budgets, so member splitting cannot dilute it. The allowance is the
+# fixed DEFAULT_DOCX_RATIO_FLOOR_BYTES plus archive bytes outside those members
+# at 1:1: real stored media can support repetitive XML, while padding cannot buy
+# another ratio-cap multiple of expansion.
+# The same budget governs the other OPC/OOXML formats the legacy engine parses
+# locally — .pptx (python-pptx) and .xlsx (openpyxl) are the identical ZIP-bomb
+# class — so the DOCX_* knobs below bound all three, enforced in the legacy
+# ``extract_text`` dispatcher as well as the native docx engine.
+# Env: DOCX_MAX_UNCOMPRESSED_BYTES / DOCX_MAX_COMPRESSION_RATIO /
+# DOCX_RATIO_FLOOR_BYTES / DOCX_MAX_ENTRIES, read live at parse time.
+DEFAULT_DOCX_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+DEFAULT_DOCX_MAX_COMPRESSION_RATIO = 100
+# RATIO_FLOOR_BYTES exempts small content from the two ratio views above; it is
+# not a gate itself. Archive-wide it acts as a size THRESHOLD: the ratio is only
+# checked once the uncompressed total exceeds it. Per member it acts as a fixed
+# ALLOWANCE, added to the 1:1 supporting-archive-bytes budget for the cumulative
+# excess by which over-ratio members overrun their individual ratio budgets — so
+# it is an amount of tolerated expansion there, not a file-size cut-off. A
+# non-positive value removes the exemption (strictest) in both views, it does not
+# disable the ratio gate. See lightrag/parser/docx/zip_budget.py.
+DEFAULT_DOCX_RATIO_FLOOR_BYTES = 16 * 1024 * 1024
+# Member-count ceiling. Its "checked after the central-directory walk" scope
+# note lives once, on the lightrag/parser/docx/zip_budget.py module docstring.
+DEFAULT_DOCX_MAX_ENTRIES = 10_000
+
+# Native DOCX embedded-image export budgets. Unlike the archive-wide limits
+# above, these cap the bytes materialized into ``*.blocks.assets``: one image
+# and the sum retained for one document. Sized like the native Markdown image
+# budgets so DEFAULT_MAX_PARALLEL_PARSE_NATIVE=5 keeps attacker-controlled
+# output bounded across concurrent parses. Env: NATIVE_DOCX_IMAGE_MAX_BYTES /
+# NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES, read live for each parse. Non-positive
+# values fall back to these safe defaults rather than disabling the guard.
+DEFAULT_NATIVE_DOCX_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_NATIVE_DOCX_IMAGE_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+
+# Zip-bomb guards for the result BUNDLE an external parser engine (docling,
+# mineru) returns — a zip fetched from an operator-configured server and
+# extracted locally. Distinct from the DOCX_* budget above (attacker-uploaded
+# source), this is defense-in-depth against a compromised/misbehaving endpoint.
+# The .textpack extraction guard shares these defaults (attacker-uploaded, so
+# it stays env-less). docling and mineru live-read the env pair below; a
+# non-positive value disables that one gate. Env: PARSER_RESULT_BUNDLE_MAX_ENTRIES
+# / PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES.
+DEFAULT_PARSER_RESULT_BUNDLE_MAX_ENTRIES = 10_000
+DEFAULT_PARSER_RESULT_BUNDLE_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB
+
 # Native docx smart_heading (opt-in engine param) tunables. Each DEFAULT_*
 # below has a matching env var (drop the DEFAULT_ prefix) read at run time
 # by lightrag/parser/docx/smart_heading (same live-env pattern as the

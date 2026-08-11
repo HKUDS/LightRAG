@@ -28,9 +28,23 @@ import numpy as np
 from typing import Any, Optional, Union
 from lightrag.utils import (
     TruncatedResponse,
+    empty_length_truncated_hint,
+    format_response_diagnostics,
     wrap_embedding_func_with_attrs,
     logger,
 )
+
+
+class InvalidResponseError(Exception):
+    """A response that cannot be used, e.g. empty content.
+
+    Declared per binding, as in ``lightrag.llm.openai`` / ``gemini`` /
+    ``anthropic``: each provider owns its own so importing one binding never
+    drags in another's import-time setup. Deliberately absent from the retry
+    predicate below — see the raise site for why re-running is pointless here.
+    """
+
+    pass
 
 
 _OLLAMA_CLOUD_HOST = "https://ollama.com"
@@ -59,6 +73,28 @@ def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional
         )
         return _OLLAMA_CLOUD_HOST
     return host
+
+
+def _response_message_field(response: Any, field: str) -> Any:
+    """Read ``message.<field>`` across the ollama response shapes.
+
+    ollama<0.4 returns raw dicts, ollama>=0.4 a ChatResponse whose ``message``
+    is a SubscriptableBaseModel; both expose ``.get``, and attribute access
+    covers anything that does not. Used only for diagnostics, so an unexpected
+    shape must degrade to ``None`` rather than raise over the failure the
+    caller is in the middle of reporting.
+    """
+    try:
+        message = response["message"]
+    except Exception:
+        return None
+    getter = getattr(message, "get", None)
+    if getter is None:
+        return getattr(message, field, None)
+    try:
+        return getter(field)
+    except Exception:
+        return None
 
 
 def _normalize_ollama_response_format(kwargs: dict) -> None:
@@ -236,6 +272,38 @@ async def _ollama_model_if_cache(
             # SubscriptableBaseModel ChatResponse (ollama>=0.4); a missing key
             # returns None and keeps the previous cache-everything behavior.
             if response.get("done_reason") == "length":
+                if not model_response or not model_response.strip():
+                    # Empty AND cut off: nothing was generated at all, which is
+                    # structurally broken rather than merely short. Returning ""
+                    # here indexed an empty knowledge graph and still reported
+                    # the document PROCESSED (issue #3601 gap 4, seen with
+                    # thinking models burning the whole num_predict budget on
+                    # the reasoning trace). Raise like the OpenAI binding does,
+                    # so the document ends FAILED and stays retryable.
+                    #
+                    # Deliberately NOT added to the @retry set: unlike the
+                    # OpenAI check — which also covers non-deterministic
+                    # empty-content modes — this fires only on the token limit,
+                    # and re-running the same prompt against the same budget
+                    # would just burn three calls before failing anyway.
+                    thinking = _response_message_field(response, "thinking") or ""
+                    diagnostics = format_response_diagnostics(
+                        done_reason="length",
+                        eval_count=response.get("eval_count"),
+                        prompt_eval_count=response.get("prompt_eval_count"),
+                        thinking_len=len(thinking.strip()),
+                    )
+                    hint = empty_length_truncated_hint(
+                        "consider raising OLLAMA_LLM_NUM_PREDICT or disabling "
+                        "thinking mode",
+                        reasoning_consumed_budget=bool(thinking.strip()),
+                    )
+                    error_message = (
+                        f"Received empty content from Ollama API "
+                        f"({diagnostics}): {hint}"
+                    )
+                    logger.error(error_message)
+                    raise InvalidResponseError(error_message)
                 logger.warning(
                     "Ollama response truncated by token limit "
                     f"(done_reason=length, content_len={len(model_response)}), returning partial content"
