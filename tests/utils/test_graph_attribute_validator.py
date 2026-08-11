@@ -253,6 +253,10 @@ class TestTheTwoValueRulesDiffer:
             validate_graph_attributes({name: "x"}, context="entity 'X'")
 
 
+@pytest.mark.skipif(
+    not hasattr(sys, "get_int_max_str_digits"),
+    reason="int_max_str_digits arrived in 3.11 (backported to 3.10.7)",
+)
 class TestIntegerStringificationLimit:
     """ "Serializable" is not the same as "is a scalar".
 
@@ -291,7 +295,13 @@ class TestIntegerStringificationLimit:
         )
 
 
-class _Colour(enum.StrEnum):
+# `enum.StrEnum` is 3.11+, and this package declares
+# `requires-python = ">=3.10"`. At module level that would fail
+# collection and silently disable every test in the file, and CI only
+# runs 3.12/3.14 so it would not be caught here. `(str, Enum)` has the
+# property these tests need on every supported version: an exact type
+# that is not `str`, with `isinstance(x, str)` true.
+class _Colour(str, enum.Enum):
     RED = "red"
 
 
