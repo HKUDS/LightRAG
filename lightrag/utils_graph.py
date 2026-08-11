@@ -122,12 +122,25 @@ def _sanitize_graph_fields(
                 # always run the value through `float()`; normalizing here means
                 # the *stored* attribute is a float on the edit paths too,
                 # instead of a string that only the VDB payload converted.
-                sanitized[key] = float(value)
+                coerced = float(value)
             except (TypeError, ValueError):
                 raise ValueError(
                     f"{object_type.capitalize()} field '{key}' must be a number, "
                     f"got {value!r}"
                 ) from None
+            # Re-check the *coerced* value. The check above ran on what the
+            # caller sent, and for a numeric string that is a perfectly storable
+            # `str` -- it is this conversion that can produce the non-scalar the
+            # contract forbids ("nan" -> NaN, "1e999" -> inf). Skipping it would
+            # accept the request and then fail in storage: PGTableGraphStorage's
+            # jsonb column rejects the bare `NaN` json.dumps emits, so a 400
+            # would arrive as a 500, while permissive backends keep the value.
+            rejection = graph_attribute_value_rejection(coerced)
+            if rejection is not None:
+                raise ValueError(
+                    f"{object_type.capitalize()} field '{key}' {rejection}"
+                )
+            sanitized[key] = coerced
         elif not isinstance(value, str):
             raise ValueError(
                 f"{object_type.capitalize()} field '{key}' must be a string, got "

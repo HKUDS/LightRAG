@@ -368,6 +368,32 @@ class TestAllowedFieldsAndTypes:
         assert stored == expected
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "weight", ["nan", "NaN", "inf", "Infinity", "1e999", "-1e999"]
+    )
+    async def test_relation_weight_rejects_strings_that_coerce_to_non_finite(
+        self, rag, weight
+    ):
+        """The value check has to run on the *coerced* number, not the input.
+
+        A numeric string is a perfectly storable `str`, so validating only what
+        the caller sent lets the `float()` conversion manufacture the non-scalar
+        the contract forbids. That would be accepted here and rejected later in
+        storage -- PGTableGraphStorage's jsonb column refuses the bare `NaN`
+        `json.dumps` emits -- turning an intended 400 into a 500.
+        """
+        await rag.create_entity("REL_A")
+        await rag.create_entity("REL_B")
+        await rag.create_relation("REL_A", "REL_B")
+
+        with pytest.raises(ValueError, match="'weight' must be a finite number"):
+            await rag.edit_relation("REL_A", "REL_B", {"weight": weight})
+
+        assert (await rag.graph.get_edge("REL_A", "REL_B"))["weight"] == 1.0
+        await rag.create_entity("AFTER")
+        assert "AFTER" in rag.graphml_text()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("weight", [True, "abc", NESTED, None])
     async def test_relation_weight_rejects_non_numbers(self, rag, weight):
         await rag.create_entity("REL_A")
