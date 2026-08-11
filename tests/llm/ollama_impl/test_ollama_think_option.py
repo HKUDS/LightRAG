@@ -81,20 +81,43 @@ async def test_options_dict_is_not_mutated_across_repeated_calls():
 
 
 @pytest.mark.asyncio
-async def test_think_on_an_old_ollama_is_refused_before_the_call(monkeypatch):
+async def test_a_reasoning_level_is_lifted_out_the_same_way_a_bool_is():
+    """think is on/off *or* a named reasoning level; the lift must not assume
+    a bool or the level would end up nested back inside options."""
+    fake_client = _make_fake_client()
+
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        await _ollama_model_if_cache(
+            model="test-model",
+            prompt="Extract",
+            options={"think": "high", "num_predict": 4096},
+        )
+
+    call_kwargs = fake_client.chat.call_args.kwargs
+    assert call_kwargs["think"] == "high"
+    assert call_kwargs["options"] == {"num_predict": 4096}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("think", [False, "high"])
+async def test_think_on_an_old_ollama_is_refused_before_the_call(monkeypatch, think):
     """The API server validates think= at startup, but library callers never
     go through create_app -- so the call path keeps its own refusal, and it
-    must fire before chat() is reached rather than letting the ollama client
-    silently drop the argument."""
+    must fire before chat() is reached rather than letting the request go out
+    and fail inside the client's own validation.
+
+    Both value forms sit behind the same floor: ChatRequest.think only widened
+    from Optional[bool] to a Union with a Literal in 0.5.3, which is why that
+    is the declared dependency floor rather than 0.5.0."""
     import lightrag.llm.ollama as ollama_binding
 
     monkeypatch.setattr(ollama_binding, "_OLLAMA_SUPPORTS_THINK", False)
     fake_client = _make_fake_client()
 
     with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        with pytest.raises(RuntimeError, match="ollama>=0.5.0"):
+        with pytest.raises(RuntimeError, match="ollama>=0.5.3"):
             await _ollama_model_if_cache(
-                model="test-model", prompt="Extract", options={"think": False}
+                model="test-model", prompt="Extract", options={"think": think}
             )
 
     fake_client.chat.assert_not_called()

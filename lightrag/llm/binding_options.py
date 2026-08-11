@@ -9,10 +9,18 @@ from argparse import ArgumentParser, Namespace
 import argparse
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, ClassVar, List, get_args, get_origin
+from typing import Any, ClassVar, List, Literal, Union, get_args, get_origin
 
 from lightrag.utils import get_env_value
 from lightrag.constants import DEFAULT_TEMPERATURE
+
+# Spellings accepted for boolean-valued options. Shared so the plain-bool and
+# the bool-or-literal parsers below cannot drift apart.
+_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
+# Only consulted by the bool-or-literal parser: plain bools treat "anything not
+# true" as false, whereas an option that also accepts named values has to tell
+# a deliberate false from a typo (see _make_bool_or_literal_parser).
+_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
 
 
 def _resolve_optional_type(field_type: Any) -> Any:
@@ -27,6 +35,60 @@ def _resolve_optional_type(field_type: Any) -> Any:
         if len(non_none_args) == 1:
             return non_none_args[0]
     return field_type
+
+
+def _bool_or_literal_choices(field_type: Any) -> tuple[str, ...] | None:
+    """Named string values of a ``Union[bool, Literal["a", "b"]]`` annotation.
+
+    Some provider options are a boolean that additionally accepts a few named
+    levels -- Ollama's ``think`` is on/off *or* ``low``/``medium``/``high``.
+    Returns the literal spellings for such an annotation and ``None`` for
+    everything else, so the parsers below stay generic instead of special-casing
+    one field. Written with ``typing.Union`` on purpose: ``bool | Literal[...]``
+    builds a ``types.UnionType`` whose ``get_origin`` is not ``Union``, and this
+    detection would silently miss it.
+    """
+    if get_origin(field_type) is not Union:
+        return None
+    args = get_args(field_type)
+    literals = [arg for arg in args if get_origin(arg) is Literal]
+    if len(args) != 2 or len(literals) != 1 or bool not in args:
+        return None
+    choices = get_args(literals[0])
+    if not all(isinstance(choice, str) for choice in choices):
+        return None
+    return choices
+
+
+def _make_bool_or_literal_parser(choices: tuple[str, ...], env_name: str):
+    """Build the value parser for a :func:`_bool_or_literal_choices` field.
+
+    Unrecognized input raises instead of falling back. A plain bool option can
+    afford "not true means false", but here a typo (``hgih`` for ``high``) would
+    otherwise be silently downgraded to *off* -- turning a feature the user
+    asked to dial up into one they turned off, with nothing in the logs. That
+    also deliberately differs from the list/dict branches of ``add_args``, which
+    treat unparseable env values as unset: raising surfaces the mistake while
+    the server is still starting.
+    """
+
+    def parse(value):
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in _BOOL_TRUE_WORDS:
+            return True
+        if text in _BOOL_FALSE_WORDS:
+            return False
+        if text in choices:
+            return text
+        raise argparse.ArgumentTypeError(
+            f"{env_name}={value!r} is not valid: expected a boolean "
+            f"({'/'.join(_BOOL_TRUE_WORDS[:2])}/{'/'.join(_BOOL_FALSE_WORDS[:2])}) "
+            f"or one of {', '.join(choices)}"
+        )
+
+    return parse
 
 
 # =============================================================================
@@ -168,6 +230,27 @@ class BindingOptions:
                     default=env_value,
                     help=arg_item["help"],
                 )
+            # Handle booleans that also accept a few named levels (Ollama's
+            # think). Checked before the plain-bool branch: the annotation is a
+            # Union, so `is bool` would miss it and argparse would be handed the
+            # Union itself as a value converter.
+            elif bool_literal_choices := _bool_or_literal_choices(arg_item["type"]):
+                bool_or_literal_parser = _make_bool_or_literal_parser(
+                    bool_literal_choices, arg_item["env_name"]
+                )
+                # get_env_value with no value_type hands back the raw string;
+                # the parser owns every conversion, including the raise on
+                # garbage -- which propagates out of parse_args() by design.
+                env_value = get_env_value(f"{arg_item['env_name']}", argparse.SUPPRESS)
+                if env_value is not argparse.SUPPRESS:
+                    env_value = bool_or_literal_parser(env_value)
+
+                group.add_argument(
+                    f"--{arg_item['argname']}",
+                    type=bool_or_literal_parser,
+                    default=env_value,
+                    help=arg_item["help"],
+                )
             # Handle boolean types specially to avoid argparse bool() constructor issues
             elif arg_item["type"] is bool:
 
@@ -176,7 +259,7 @@ class BindingOptions:
                     if isinstance(value, bool):
                         return value
                     if isinstance(value, str):
-                        return value.lower() in ("true", "1", "yes", "t", "on")
+                        return value.lower() in _BOOL_TRUE_WORDS
                     return bool(value)
 
                 # Get environment variable with proper type conversion
@@ -381,15 +464,23 @@ class BindingOptions:
                 continue
 
             field_type = _resolve_optional_type(arg_item["type"])
+
+            # Handled ahead of (and outside) the try below on purpose: that
+            # except clause turns a failed conversion into "store the raw
+            # string", which for a bool-or-literal option would smuggle e.g.
+            # "hgih" into the provider payload and fail at request time instead
+            # of here. ArgumentTypeError is not caught by it either way; the
+            # placement makes the intent explicit rather than incidental.
+            literal_choices = _bool_or_literal_choices(field_type)
+            if literal_choices is not None:
+                base[field_name] = _make_bool_or_literal_parser(
+                    literal_choices, role_env
+                )(env_raw)
+                continue
+
             try:
                 if field_type is bool:
-                    base[field_name] = env_raw.lower() in (
-                        "true",
-                        "1",
-                        "yes",
-                        "t",
-                        "on",
-                    )
+                    base[field_name] = env_raw.lower() in _BOOL_TRUE_WORDS
                 elif field_type in (list, List[str]):
                     base[field_name] = json.loads(env_raw)
                 elif field_type is dict:
@@ -516,7 +607,13 @@ class _OllamaOptionsMixin:
         "embedding_only": "Only use for embeddings",
         "penalize_newline": "Penalize newline tokens",
         "stop": 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
-        "think": "Enable the model's extended-thinking/reasoning trace (LLM only, ignored for embeddings)",
+        "think": (
+            "Enable the model's extended-thinking/reasoning trace (LLM only, ignored "
+            "for embeddings). true/false or a reasoning level (low/medium/high, needs "
+            "an Ollama server that supports levels). Leave unset to follow the "
+            "model's own default -- setting true for a model without thinking support "
+            "makes Ollama reject the request"
+        ),
     }
 
 
@@ -545,7 +642,15 @@ class OllamaLLMOptions(_OllamaOptionsMixin, BindingOptions):
     # placed to make than this library: set EXTRACT_OLLAMA_LLM_THINK=false
     # / KEYWORD_OLLAMA_LLM_THINK=false (or OLLAMA_LLM_THINK=false globally)
     # if your model needs it.
-    think: bool = True
+    #
+    # The True here is documentation, not a value that ships: every field is
+    # argparse.SUPPRESS-defaulted, so an unconfigured think stays absent from
+    # the options dict and out of the request body entirely, leaving Ollama to
+    # apply its own default (which, for a thinking-capable model, is exactly
+    # this True). Beyond on/off, Ollama accepts named reasoning levels, hence
+    # the Union -- spelled with typing.Union because `bool | Literal[...]` is a
+    # types.UnionType that _bool_or_literal_choices does not recognize.
+    think: Union[bool, Literal["low", "medium", "high"]] = True
 
     # mandatory name of binding
     _binding_name: ClassVar[str] = "ollama_llm"

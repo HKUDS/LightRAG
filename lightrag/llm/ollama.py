@@ -50,13 +50,18 @@ class InvalidResponseError(Exception):
 _OLLAMA_CLOUD_HOST = "https://ollama.com"
 _CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
 
-# think= (OllamaLLMOptions.think) needs ollama-python>=0.5.0, matching the
-# floor declared in pyproject.toml and both offline-requirements files.
-# Checked once here (no network call, just installed-package metadata) and
-# consulted only where think is actually forwarded, in
-# ensure_think_supported -- an environment that already has an older ollama
-# still imports and works normally for every call that doesn't set think.
-_OLLAMA_SUPPORTS_THINK = pm.is_installed("ollama", ">=0.5.0")
+# think= (OllamaLLMOptions.think) needs ollama-python>=0.5.3 -- the version
+# where ChatRequest.think widened from Optional[bool] to a Union with a Literal,
+# so both the booleans and the named reasoning levels ("low"/"medium"/"high")
+# serialize. It matches the floor declared in pyproject.toml and both
+# offline-requirements files; this check is what enforces that floor in an
+# environment where the declaration was never applied -- the auto-install at
+# the top of this module installs a *missing* ollama but never upgrades an
+# outdated one, so an in-place LightRAG upgrade can still be sitting on 0.5.0.
+# Installed-package metadata only (no network call), consulted solely from
+# ensure_think_supported -- an environment on an older ollama still imports and
+# works normally for every call that doesn't set think.
+_OLLAMA_SUPPORTS_THINK = pm.is_installed("ollama", ">=0.5.3")
 
 
 def ensure_think_supported(options: Any, *, context: str = "") -> None:
@@ -74,6 +79,10 @@ def ensure_think_supported(options: Any, *, context: str = "") -> None:
     ``options`` that is not a dict, or carries no ``think`` key at all (e.g.
     the embedding options dict, which has no such field), is left alone: the
     model keeps its own thinking default and an older ollama stays usable.
+
+    Only the installed *package* is checkable here. Whether the Ollama server
+    is new enough for reasoning levels, and whether the model supports thinking
+    at all, are answerable only by a live request and so stay runtime errors.
     """
     if not isinstance(options, dict) or "think" not in options:
         return
@@ -81,11 +90,11 @@ def ensure_think_supported(options: Any, *, context: str = "") -> None:
         return
     where = f" for {context}" if context else ""
     raise RuntimeError(
-        f"OLLAMA_LLM_THINK / {{ROLE}}_OLLAMA_LLM_THINK is set{where}, but the "
-        "installed ollama package does not support think= (needs "
-        'ollama>=0.5.0). Run `pip install -U "ollama>=0.5.0"` (or `uv sync`) '
-        "to use it, or unset the option to leave thinking at the model's own "
-        "default."
+        f"OLLAMA_LLM_THINK / {{ROLE}}_OLLAMA_LLM_THINK is set{where} to "
+        f"{options['think']!r}, but the installed ollama package does not "
+        'support think= (needs ollama>=0.5.3). Run `pip install -U "ollama'
+        '>=0.5.3"` (or `uv sync`) to use it, or unset the option to leave '
+        "thinking at the model's own default."
     )
 
 

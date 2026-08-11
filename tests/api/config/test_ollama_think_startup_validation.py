@@ -1,6 +1,6 @@
 """think= is validated against the installed ollama package at server startup.
 
-think= (OLLAMA_LLM_THINK / {ROLE}_OLLAMA_LLM_THINK) needs ollama>=0.5.0. The
+think= (OLLAMA_LLM_THINK / {ROLE}_OLLAMA_LLM_THINK) needs ollama>=0.5.3. The
 check itself is cheap installed-package metadata, but where it fires matters:
 raising only inside ``_ollama_model_if_cache`` means a server boots happily and
 then dies on the first LLM call -- potentially hours into a document run, once
@@ -94,7 +94,7 @@ def _create_app(monkeypatch, *, supports_think: bool):
 def test_global_think_is_refused_at_startup_when_ollama_is_too_old(monkeypatch):
     monkeypatch.setenv("OLLAMA_LLM_THINK", "false")
 
-    with pytest.raises(RuntimeError, match="ollama>=0.5.0"):
+    with pytest.raises(RuntimeError, match="ollama>=0.5.3"):
         _create_app(monkeypatch, supports_think=False)
 
 
@@ -123,6 +123,17 @@ def test_cross_provider_role_think_is_refused_at_startup(monkeypatch):
         _create_app(monkeypatch, supports_think=False)
 
 
+def test_a_reasoning_level_is_refused_at_startup_too(monkeypatch):
+    """think is on/off *or* a named reasoning level, and the level form is the
+    one an old package fails on most confusingly (a pydantic error about a
+    string, far from the .env line that set it). It must be caught by the same
+    startup check, and the message must quote the value."""
+    monkeypatch.setenv("OLLAMA_LLM_THINK", "high")
+
+    with pytest.raises(RuntimeError, match="'high'"):
+        _create_app(monkeypatch, supports_think=False)
+
+
 def test_startup_succeeds_when_the_installed_ollama_supports_think(monkeypatch):
     monkeypatch.setenv("OLLAMA_LLM_THINK", "false")
     monkeypatch.setenv("EXTRACT_OLLAMA_LLM_THINK", "false")
@@ -131,6 +142,8 @@ def test_startup_succeeds_when_the_installed_ollama_supports_think(monkeypatch):
 
 
 def test_startup_succeeds_on_an_old_ollama_when_think_is_unconfigured(monkeypatch):
-    """An environment stuck on ollama<0.5.0 stays fully usable as long as
-    nothing asks for think= -- the check must not become an install floor."""
+    """0.5.3 is the declared floor, but an in-place upgrade can still leave an
+    older package installed (the import-time auto-install only installs a
+    missing ollama, it never upgrades an outdated one). Such an environment
+    must keep working for everything that doesn't ask for think=."""
     assert _create_app(monkeypatch, supports_think=False) is not None
