@@ -675,10 +675,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
         Attribute contract (applies to ``upsert_edge`` and the batch variants
         too):
-            Every attribute name must be a plain identifier
-            (``[A-Za-z_][A-Za-z0-9_]*``) and every value must be a storable
-            scalar -- ``str`` (XML-compatible), ``int``, finite ``float``, or
-            ``bool``. Nothing else: no nested containers, and no ``None``.
+            Every value must be a storable scalar -- ``str``
+            (XML-compatible), ``int``, finite ``float``, or ``bool``. Nothing
+            else: no nested containers, and no ``None``. Attribute names must
+            not contain ``"."`` or start with ``"$"``.
 
             This is the intersection of what the registered backends can carry,
             and callers are responsible for it because the backends disagree on
@@ -689,6 +689,24 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             error on NetworkX. ``lightrag.utils.validate_graph_attributes``
             is the shared enforcement point -- prefer it over re-deriving the
             rule per backend.
+
+            This is a **caller** contract, enforced where input enters the
+            system. An implementation should reject only what *it* cannot store,
+            which may be less: ``NetworkXStorage`` accepts ``NaN`` and integers
+            past int64 because GraphML round-trips them, even though the Neo4j
+            driver cannot pack either.
+
+            That asymmetry is deliberate, and the reason is the same for names
+            and values. Every rewrite path (entity edit, rename, merge,
+            extraction rebuild) spreads a fetched object's stored attributes back
+            into the upsert payload, and a workspace can already hold values or
+            names that predate this contract -- the manual edit API accepted
+            anything before its field allowlist landed. An implementation that
+            enforced the full contract on a rewrite would make those objects
+            permanently unmodifiable, gaining nothing it could not already store.
+            So: ``lightrag.utils.graph_attribute_value_rejection`` at the
+            ingress, ``xml_attribute_value_rejection`` (or the equivalent for
+            that store) inside it.
 
         Args:
             node_id: The ID of the node to insert or update
