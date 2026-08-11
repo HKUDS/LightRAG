@@ -3521,6 +3521,21 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         field=f"relationships[{index}].tgt_id",
                     )
                 )
+                # Compared after normalization, because the normalized values
+                # are the ones written as the graph edge below: two spellings
+                # that canonicalize to the same name are the same self-loop.
+                # Extraction drops self-loops (operate.py) and amerge_entities
+                # refuses to form one, so accepting them here would make this
+                # the only path that puts src == tgt into the graph.
+                if (
+                    normalized_relationship_data["src_id"]
+                    == normalized_relationship_data["tgt_id"]
+                ):
+                    raise ValueError(
+                        f"Custom KG relationships[{index}] is a self-loop on "
+                        f"'{normalized_relationship_data['src_id']}': src_id and "
+                        "tgt_id must be different entities"
+                    )
                 normalized_relationships.append(normalized_relationship_data)
 
             # Insert chunks into vector storage
