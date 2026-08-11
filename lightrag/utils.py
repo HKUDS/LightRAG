@@ -6776,13 +6776,51 @@ _GRAPH_ATTRIBUTE_INT_MIN = -(2**63)
 _GRAPH_ATTRIBUTE_INT_MAX = 2**63 - 1
 
 
+def xml_attribute_value_rejection(value: Any) -> str | None:
+    """Explain why *value* cannot be encoded in XML at all.
+
+    The narrower of the two value rules, and the one a GraphML-backed store
+    should enforce: it rejects only what cannot be *serialized*, not what is
+    merely unportable. ``NaN``, ``inf`` and an integer past int64 all round-trip
+    through GraphML unchanged, so they are accepted here even though
+    ``graph_attribute_value_rejection`` refuses them.
+
+    That difference is deliberate, and it is what keeps a backend guard from
+    stranding data. A workspace can already hold such a value -- the manual edit
+    API accepted anything before its field allowlist landed -- and every rewrite
+    path (entity edit, extraction rebuild) spreads a fetched object's stored
+    attributes back into the upsert payload. Enforcing the *portable* rule at the
+    storage layer would therefore make those objects unmodifiable, while
+    enforcing it where caller input enters costs nothing.
+
+    Args:
+        value: Candidate attribute value.
+
+    Returns:
+        A reason fragment suitable for appending to ``"attribute 'x' "``, or
+        ``None`` when XML can carry the value.
+    """
+    # bool before int purely for readability; both are encodable.
+    if isinstance(value, (bool, int, float)):
+        return None
+    if isinstance(value, str):
+        match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
+        if match:
+            return (
+                "must not contain the character "
+                f"U+{ord(match.group()):04X}, which XML cannot encode"
+            )
+        return None
+    return f"must be a string, number or boolean, got {type(value).__name__}"
+
+
 def graph_attribute_value_rejection(value: Any) -> str | None:
     """Explain why *value* cannot be stored as a graph node/edge attribute.
 
-    Every graph backend accepts scalars; none of them accepts the same
-    non-scalar. Rather than each backend discovering that in its own way and at
-    its own time, this is the single definition of a storable attribute value,
-    applied before any storage is touched.
+    The wider of the two value rules: the intersection of what *every*
+    registered backend can carry, meant for the point where caller input enters
+    (see ``xml_attribute_value_rejection`` for the narrower serialization rule a
+    storage backend should enforce instead, and why the two differ).
 
     The rules are the intersection of what the seven registered
     ``GRAPH_STORAGE`` backends can carry, so the same payload behaves the same
@@ -6811,8 +6849,11 @@ def graph_attribute_value_rejection(value: Any) -> str | None:
         A reason fragment suitable for appending to ``"attribute 'x' "``, or
         ``None`` when the value is storable.
     """
-    # bool before int: bool is a subclass of int, and both are storable, but
-    # keeping the branches separate keeps the intent readable.
+    rejection = xml_attribute_value_rejection(value)
+    if rejection is not None:
+        return rejection
+    # bool before int: bool is a subclass of int, so it would otherwise be
+    # range-checked as one.
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -6822,19 +6863,9 @@ def graph_attribute_value_rejection(value: Any) -> str | None:
                 f"({_GRAPH_ATTRIBUTE_INT_MIN} to {_GRAPH_ATTRIBUTE_INT_MAX})"
             )
         return None
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return "must be a finite number"
-        return None
-    if isinstance(value, str):
-        match = _XML_INCOMPATIBLE_CHAR_PATTERN.search(value)
-        if match:
-            return (
-                "must not contain the character "
-                f"U+{ord(match.group()):04X}, which XML cannot encode"
-            )
-        return None
-    return f"must be a string, number or boolean, got {type(value).__name__}"
+    if isinstance(value, float) and not math.isfinite(value):
+        return "must be a finite number"
+    return None
 
 
 def validate_graph_attributes(attributes: dict[str, Any], *, context: str) -> None:
@@ -6898,6 +6929,25 @@ def validate_graph_attribute_names(attributes: dict[str, Any], *, context: str) 
                 f"{_GRAPH_ATTRIBUTE_NAME_DISALLOWED_PREFIX!r}, which is read as "
                 "an update operator"
             )
+
+
+def validate_xml_attribute_values(attributes: dict[str, Any], *, context: str) -> None:
+    """Reject attribute values XML cannot encode.
+
+    For a GraphML-backed store. See ``xml_attribute_value_rejection`` for why
+    this is narrower than the portable rule.
+
+    Args:
+        attributes: Attribute mapping about to be written to graph storage.
+        context: Prefix identifying the object being written.
+
+    Raises:
+        ValueError: On the first value XML cannot carry.
+    """
+    for key, value in attributes.items():
+        rejection = xml_attribute_value_rejection(value)
+        if rejection is not None:
+            raise ValueError(f"{context}: attribute {key!r} {rejection}")
 
 
 def validate_graph_attribute_values(

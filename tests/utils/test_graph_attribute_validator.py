@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import pytest
 
-from lightrag.utils import validate_graph_attributes
+from lightrag.utils import (
+    validate_graph_attributes,
+    validate_xml_attribute_values,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -173,3 +176,38 @@ def test_context_appears_in_the_message():
 
 def test_empty_mapping_is_accepted():
     validate_graph_attributes({}, context="entity 'X'")
+
+
+class TestTheTwoValueRulesDiffer:
+    """``xml_...`` is what a store cannot serialize; ``graph_...`` is portability.
+
+    Keeping them apart is what lets a storage backend guard itself without
+    stranding data: a workspace can already hold a value the portable rule
+    refuses, and every rewrite path spreads a fetched object's stored attributes
+    back into the upsert payload.
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        [float("nan"), float("inf"), float("-inf"), 2**63, -(2**63) - 1, 10**400],
+    )
+    def test_unportable_but_encodable_values_split_the_two_rules(self, value):
+        # XML can carry it -- GraphML round-trips all of these unchanged.
+        validate_xml_attribute_values({"legacy": value}, context="entity 'X'")
+        # The portable contract cannot: the Neo4j driver refuses to pack them.
+        with pytest.raises(ValueError, match="attribute 'legacy'"):
+            validate_graph_attributes({"legacy": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize(
+        "value", [None, {"a": 1}, ["a"], b"bytes", "a\x0bb", "a\x00b"]
+    )
+    def test_unencodable_values_are_refused_by_both(self, value):
+        with pytest.raises(ValueError, match="attribute 'attr'"):
+            validate_xml_attribute_values({"attr": value}, context="entity 'X'")
+        with pytest.raises(ValueError, match="attribute 'attr'"):
+            validate_graph_attributes({"attr": value}, context="entity 'X'")
+
+    @pytest.mark.parametrize("value", ["text", 1, 2.5, True, "multi\nline"])
+    def test_ordinary_values_are_accepted_by_both(self, value):
+        validate_xml_attribute_values({"attr": value}, context="entity 'X'")
+        validate_graph_attributes({"attr": value}, context="entity 'X'")

@@ -1,4 +1,4 @@
-"""NetworkXStorage rejects an unstorable attribute value before mutating.
+"""NetworkXStorage rejects an unencodable attribute value before mutating.
 
 This backend mutates ``self._graph`` in ``upsert_*`` and serializes it later in
 ``index_done_callback``, with no rollback in between. A value GraphML cannot
@@ -15,6 +15,7 @@ caller (including the Python API) gets the same answer.
 
 from __future__ import annotations
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -24,12 +25,23 @@ from lightrag.utils import EmbeddingFunc
 
 pytestmark = pytest.mark.offline
 
-UNSTORABLE = [
+UNENCODABLE = [
     pytest.param({"any": ["object"]}, id="dict"),
     pytest.param(["a", "b"], id="list"),
     pytest.param(None, id="none"),
     pytest.param("a\x0bb", id="control-char"),
+    pytest.param("a\x00b", id="nul"),
+]
+
+# Refused by the *caller* contract (the Neo4j driver cannot pack them) but
+# round-tripped by GraphML unchanged, so this backend must accept them -- see
+# TestPortableButUnencodableValuesAreNotThisBackendsBusiness.
+NOT_PORTABLE_BUT_ENCODABLE = [
     pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="inf"),
+    pytest.param(float("-inf"), id="negative-inf"),
+    pytest.param(2**63, id="int64-max-plus-one"),
+    pytest.param(10**400, id="huge-int"),
 ]
 
 
@@ -70,7 +82,7 @@ def _graphml(storage) -> str:
 
 class TestUpsertNode:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("value", UNSTORABLE)
+    @pytest.mark.parametrize("value", UNENCODABLE)
     async def test_unstorable_value_is_rejected_before_mutating(self, storage, value):
         await _seed(storage)
 
@@ -122,7 +134,7 @@ class TestUpsertNode:
 
 class TestUpsertEdge:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("value", UNSTORABLE)
+    @pytest.mark.parametrize("value", UNENCODABLE)
     async def test_unstorable_value_is_rejected_before_mutating(self, storage, value):
         await _seed(storage)
 
@@ -191,3 +203,55 @@ class TestBatchesAreAllOrNothing:
         assert await storage.has_edge("n1", "n2")
         assert await storage.index_done_callback() is True
         assert "n1" in _graphml(storage)
+
+
+class TestPortableButUnencodableValuesAreNotThisBackendsBusiness:
+    """The guard is "can GraphML encode this", not the portable contract.
+
+    `NaN`, `inf` and an integer past int64 are all refused by
+    `BaseGraphStorage.upsert_node`'s caller contract, because the Neo4j driver
+    cannot pack them -- but GraphML round-trips all of them unchanged. So a
+    workspace can already hold one, and since every rewrite path spreads a
+    fetched object's stored attributes back into the payload, enforcing the
+    portable rule *here* would make those objects permanently unmodifiable. The
+    portable bounds are enforced where caller input enters instead.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", NOT_PORTABLE_BUT_ENCODABLE)
+    async def test_node_accepts_and_round_trips_the_value(self, storage, value):
+        await storage.upsert_node("n1", {"entity_id": "n1", "legacy": value})
+        assert await storage.index_done_callback() is True
+
+        reread = nx.read_graphml(storage._graphml_xml_file).nodes["n1"]["legacy"]
+        # NaN is never equal to itself; compare by identity of behaviour instead.
+        assert reread == value or (reread != reread and value != value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", NOT_PORTABLE_BUT_ENCODABLE)
+    async def test_a_rewrite_carrying_the_stored_value_still_writes(
+        self, storage, value
+    ):
+        """The dead-end this split removes: an ordinary edit of a legacy object."""
+        await storage.upsert_node("n1", {"entity_id": "n1", "legacy": value})
+        await storage.index_done_callback()
+
+        stored = await storage.get_node("n1")
+        # Exactly what _edit_entity_impl / the extraction rebuild construct.
+        await storage.upsert_node("n1", {**stored, "description": "an update"})
+
+        assert (await storage.get_node("n1"))["description"] == "an update"
+        assert await storage.index_done_callback() is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", NOT_PORTABLE_BUT_ENCODABLE)
+    async def test_edge_rewrite_carrying_the_stored_value_still_writes(
+        self, storage, value
+    ):
+        await storage.upsert_edge("a", "b", {"weight": 1.0, "legacy": value})
+        await storage.index_done_callback()
+
+        stored = await storage.get_edge("a", "b")
+        await storage.upsert_edge("a", "b", {**stored, "description": "an update"})
+
+        assert await storage.index_done_callback() is True
