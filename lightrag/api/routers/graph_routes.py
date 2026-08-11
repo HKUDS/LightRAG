@@ -291,7 +291,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Args:
             request (EntityUpdateRequest): Request containing:
                 - entity_name (str): Name of the entity to update
-                - updated_data (Dict[str, Any]): Dictionary of properties to update
+                - updated_data (Dict[str, Any]): Properties to update. Only
+                  entity_name (rename target), entity_type, description,
+                  source_id and file_path are accepted, each as a string; any
+                  other key or a non-string value is rejected with 400.
                 - allow_rename (bool): Whether to allow entity renaming (default: False)
                 - allow_merge (bool): Whether to merge into existing entity when renaming
                                      causes name conflict (default: False)
@@ -476,7 +479,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """Update a relation's properties in the knowledge graph
 
         Args:
-            request (RelationUpdateRequest): Request containing source ID, target ID and updated data
+            request (RelationUpdateRequest): Request containing source ID,
+                target ID and updated data. Only description, keywords,
+                source_id and file_path (strings) and weight (number) are
+                accepted in updated_data; any other key or a value of the wrong
+                shape is rejected with 400.
 
         Returns:
             Dict: Updated relation information
